@@ -4,7 +4,8 @@ The WebApp checks the signed-in owner and current consent, then streams these
 bytes on; callers name a capture and digest, never a path or object key. The
 web-sized scene preview a site opens from its job page (``website_scene_preview``)
 is read the same way, and so is the silent clip an approved deployment company
-watches (``website_company_clip``), which also answers one byte range.
+watches (``website_company_clip``), which also answers one byte range, and so is the
+simulation package an approved company downloads (``website_company_simulation``).
 """
 import logging
 import os
@@ -133,6 +134,46 @@ def register_website_atlas_preview_routes(app: FastAPI, *, require_admission: Ca
             raise HTTPException(status_code=404, detail="website_company_clip_unavailable")
         return JSONResponse({"schema_version": RECHECK_SCHEMA, "accepted": True}, status_code=202,
                             headers={"Cache-Control": "private, no-store"})
+
+    @app.get("/api/live-pipeline/website-company-simulations/{capture_id}/simulation.zip",
+             dependencies=[Depends(require_admission)])
+    async def read_company_simulation(request: Request, capture_id: str, request_id: str = "",
+                                      digest: str = "") -> StreamingResponse:
+        """The simulation package (``website_company_simulation``), read like the company clip, by range."""
+        from fastapi.responses import JSONResponse
+
+        from .website_company_clip import RangeNotSatisfiable
+        from .website_company_simulation import CompanySimulationUnavailable, open_company_simulation
+        if (not request.headers.get("x-blueprint-pipeline-signature")
+                or getattr(request.state, "intake_client_id", "") != "blueprint-webapp"):
+            raise HTTPException(status_code=403, detail="website company simulation issuer not authorized")
+        try:
+            body, size, served = await run_in_threadpool(
+                open_company_simulation, request_id=request_id, capture_id=capture_id, digest=digest,
+                storage_root=_storage_root(), range_header=request.headers.get("range"))
+        except CompanySimulationUnavailable:
+            raise HTTPException(status_code=404, detail="website_company_simulation_unavailable") from None
+        except RangeNotSatisfiable as exc:
+            return JSONResponse({"detail": "website_company_simulation_range_not_satisfiable"}, status_code=416,
+                                headers={"Content-Range": f"bytes */{exc.size}", "Cache-Control": "private, no-store"})
+        except Exception as exc:  # noqa: BLE001 - storage errors can carry signed URLs; name only the class
+            logger.warning("website_company_simulation_read_unavailable type=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="website_company_simulation_storage_unavailable") from None
+
+        def chunks():
+            try:
+                yield from body.iter_chunks(CHUNK_BYTES)
+            finally:
+                body.close()
+        headers = {"Accept-Ranges": "bytes", "X-Blueprint-Artifact-SHA256": digest,
+                   "Content-Disposition": 'attachment; filename="simulation.zip"',
+                   "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+        if served is None:
+            return StreamingResponse(chunks(), media_type="application/zip",
+                                     headers={**headers, "Content-Length": str(size)})
+        first, last = served
+        return StreamingResponse(chunks(), status_code=206, media_type="application/zip", headers={
+            **headers, "Content-Length": str(last - first + 1), "Content-Range": f"bytes {first}-{last}/{size}"})
 
     @app.get("/api/live-pipeline/website-atlas-previews/{capture_id}/bundle",
              dependencies=[Depends(require_admission)])

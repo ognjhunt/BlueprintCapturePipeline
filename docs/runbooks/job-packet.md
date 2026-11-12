@@ -111,12 +111,30 @@ Every refusal names the file or place it is about. A packet is never held for
 the simulation, the success rule or the early trial: the status line says what
 is not in it yet.
 
+The simulation is in the packet only as one composed stage,
+`files/simulation/scene.usda`. Open that file: it places the room, its hidden
+collision geometry and the job's object where Blueprint's simulation puts them,
+in metres, with the up axis the scene plan states. Each part's file is
+referenced on a child prim (`/World/<part>/Asset`), so its own transform is
+kept under the plan's pose. The plan itself, a record, is never copied. When a
+plan row cannot be placed (a missing pose, a file that was not copied), there is
+no `scene.usda`, and the sheet says the simulation is not finished. The success
+rule (`files/task/success_rule.json`) passes through the same allow-list as the
+company download: numbers and fixed mode words only, so no label the site typed
+is in it.
+
 ## 4. Before it leaves
 
 Read the whole sheet, `JOB_SHEET.md`, before the packet leaves. The tool
 removes email addresses, phone numbers and web links from the site's own words,
-and reads every copied file for ids, keys, paths and links, but a name or a
-street address the site typed is still there in its words: take it out by hand.
+and reads every copied file for ids, keys, paths, links, email and IP addresses,
+and for the site's identity: its name, organisation, typed address (whole and
+each part), contact and submitter names, email and phone as its records hold
+them, in any case and in any spelling of separators (`Zebra Plant Foods` is also
+found as `ZebraPlant_Foods` or `zebraplantfoods`). The site's description of its
+job is not looked for: the site agreed to share it, and the sheet quotes it on
+purpose. So a name or a street address the site typed into its description is
+still there: take it out by hand.
 The packet holds no site name, address, contact, token, link or storage path
 from the records; an introduction is made only when the site asks for one on
 its job page.

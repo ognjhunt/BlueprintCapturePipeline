@@ -652,3 +652,34 @@ def test_a_storage_fault_is_503_and_names_nothing(served, monkeypatch):
     monkeypatch.setattr(clip, "open_company_clip", broken)
     response = served["client"].get(served["url"], headers=served["signed"])
     assert response.status_code == 503 and "secret" not in response.text
+
+
+def test_an_owned_clip_is_refused_by_the_route_and_taken_back_once_a_definite_no_is_recorded(tmp_path, monkeypatch):
+    # The live check is shared with the simulation package: a "no" either pass records stops every basis.
+    from blueprint_pipeline import company_share_permission as permission
+    capture = _capture(tmp_path, version=OLDER)
+    digest = _sha(capture / "raw/walkthrough.mp4")
+    monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, [
+        {"capture_id": "walkthrough-req1", "approved_by": "owner", "approved_on": "2026-11-12", "evidence": "test",
+         "video_sha256_prefix": digest[7:19]}]))
+    world = World(rights=_rights(OLDER))
+    assert world.publish(capture)["status"] == "published"
+    stored = _manifest(capture)["archive"]["digest"]
+
+    def route():
+        try:
+            return clip.open_company_clip(request_id="req1", capture_id="walkthrough-req1", digest=stored,
+                                          storage_root=capture.parents[4], client=_Bucket(world.objects), bucket="b")[1]
+        except clip.CompanyClipUnavailable:
+            return "unavailable"
+    assert route() != "unavailable"
+    permission.record_live(capture, permission.capture_identity(capture),
+                           lambda _i: _rights(OLDER, consent="revoked", revoked=True), NOW + 30)
+    assert route() == "unavailable"
+    assert world.publish(capture, now=lambda: NOW + 60)["status"] == "refused"
+    assert len(world.retracted) == 1 and _manifest(capture)["archive"]["retracted"] is True
+
+
+def test_the_clip_route_serves_nothing_once_the_capture_folder_is_gone(served):
+    shutil.rmtree(served["capture"])
+    assert served["client"].get(served["url"], headers=served["signed"]).status_code == 404
