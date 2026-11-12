@@ -127,12 +127,21 @@ is in it.
 
 Read the whole sheet, `JOB_SHEET.md`, before the packet leaves. The tool
 removes email addresses, phone numbers and web links from the site's own words,
-and reads every copied file for ids, keys, paths, links, email and IP addresses,
-and for the site's identity: its name, organisation, typed address (whole and
-each part), contact and submitter names, email and phone as its records hold
-them, in any case and in any spelling of separators (`Zebra Plant Foods` is also
-found as `ZebraPlant_Foods` or `zebraplantfoods`). The site's description of its
-job is not looked for: the site agreed to share it, and the sheet quotes it on
+and reads every copied file with the shared scan (`outbound_file_scan`; its
+rules are a table in the module's docstring). The simulation folders
+(`files/simulation/`, `files/object/`) may hold only USD layers, usdz archives,
+PNG and JPEG images and text: any other kind of file there refuses the packet.
+Kinds are decided by content, not by the file's ending. Parsed text (a USD
+layer's text form, image metadata, text files) is read for ids, keys, paths,
+links, email and IP addresses and the site's identity; the raw bytes of binary
+files (the video, clips, reconstruction) only for the job's long ids and keys
+and long-prefix tokens. The site's identity is its name, organisation, typed
+address, contact and submitter names, email and phone. It is matched as whole
+words, ignoring case and accents; a value of two or more words is also matched
+with separators removed (`Zebra Plant Foods` as `ZebraPlant_Foods`). Single
+words under five letters, common scene words and address parts that are only a
+unit, a number or a country are not matched. The site's description of its job
+is not looked for: the site agreed to share it, and the sheet quotes it on
 purpose. So a name or a street address the site typed into its description is
 still there: take it out by hand.
 The packet holds no site name, address, contact, token, link or storage path

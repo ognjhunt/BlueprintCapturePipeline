@@ -1207,8 +1207,9 @@ def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]], words: list[tup
     site's description of its job is not looked for: the site agreed to share it, and the sheet quotes it.
     """
     from .outbound_file_scan import first_finding, literal_forms
+    # Only the closed list of kinds may ship as simulation files; the video and clips are checked by their own code.
     finding = first_finding(packet, [*literal_forms(secrets), *(words or [])], words_only_under="files/",
-                           words_except=(SIMULATION_STAGE,))
+                            words_except=(SIMULATION_STAGE,), closed=("files/simulation/", "files/object/"))
     if finding is not None:
         raise JobPacketRefused("job_packet_file_names_the_site", finding.sentence())
 

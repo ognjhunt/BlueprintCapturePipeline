@@ -398,6 +398,23 @@ def _rewrite_strings(layer: Any, rewrite: Callable[[str], str]) -> None:
 
 
 _UDIM = "<UDIM>"
+#: The closed list of kinds a scene may ship (``outbound_file_scan``, Rule 1), by ending and by content.
+_KIND_BY_SUFFIX = {".usd": ("usdc", "usda"), ".usda": ("usda",), ".usdc": ("usdc",), ".usdz": ("usdz",),
+                   ".png": ("png",), ".jpg": ("jpeg",), ".jpeg": ("jpeg",)}
+KIND_NOT_SHIPPED = "website_company_simulation_file_kind_not_shipped"
+
+
+def _shippable(path: Path, label: str) -> None:
+    """Refuse, naming the role and the kind, a file a scene depends on that is not on the closed list."""
+    from .outbound_file_scan import content_kind
+    suffix = path.suffix.lower()
+    allowed = _KIND_BY_SUFFIX.get(suffix)
+    try:
+        actual = content_kind(path)
+    except OSError:
+        actual = None
+    if allowed is None or actual not in allowed:
+        raise PackageRefused(KIND_NOT_SHIPPED, f"{label} {suffix or 'no ending'}")
 
 
 class _Localizer:
@@ -419,6 +436,7 @@ class _Localizer:
 
     def place(self, source: Path, target: Path, label: str) -> None:
         source = source.resolve()
+        _shippable(source, label)
         self.placed[source] = target
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.suffix.lower() == ".usdz":
@@ -481,6 +499,7 @@ class _Localizer:
                 return reference
             stem = self._target("")
             for tile in tiles:
+                _shippable(tile.resolve(), label)
                 number = pattern.fullmatch(tile.name).group(1)
                 tile_target = stem.with_name(f"{stem.name}.{number}{tail.lower() or tile.suffix.lower()}")
                 tile_target.parent.mkdir(parents=True, exist_ok=True)
@@ -652,8 +671,11 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
         on_time()
         _resolves_inside(staging)
         findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time,
-                             words_except=("README.txt", "scene.usda"))
+                             words_except=("README.txt", "scene.usda"), closed=True)
         on_time()
+        from .outbound_file_scan import NOT_SHIPPED
+        if findings and findings[0].kind == NOT_SHIPPED:
+            raise PackageRefused(KIND_NOT_SHIPPED, findings[0].file)
         if findings:
             raise PackageRefused("website_company_simulation_file_names_the_site", findings[0].sentence())
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())

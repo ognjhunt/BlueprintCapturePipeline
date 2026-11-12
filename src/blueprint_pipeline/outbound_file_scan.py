@@ -1,35 +1,57 @@
-"""One scan for every file that leaves Blueprint: ids, keys, host paths and links.
+"""One scan for every file that leaves Blueprint: ids, keys, host paths, links and the site's identity.
 
 The job packet tool (``job_packet_export``) and the simulation package for deployment companies
-(``website_company_simulation``) both read every file they are about to hand over with this module
-and refuse, naming the file, when one holds something that says who or where the site is, where
-Blueprint keeps things, or how to reach it.
+(``website_company_simulation``) both read every file they are about to hand over with this module and refuse,
+naming the file, when one holds something that says who or where the site is, where Blueprint keeps things, or how
+to reach it. A finding names the file, the kind and where; it never repeats what matched.
 
-What it looks for:
+Rule 1: a closed list of file kinds, each with one stated way its text is obtained. A file's kind is decided by
+its content (its magic bytes, or valid UTF-8 with no NUL byte for text), never by its ending.
 
-- the caller's own values (``literals``): the job's ids, account ids, delivery keys and the like.
-  An id is looked for in its hyphen form and its underscore form (``capture-1`` and ``capture_1``);
-- storage links (``gs://``, ``s3://``), local file links (``file://``) and host paths
-  (``/var/lib/blueprint``, ``/mnt/blueprint-work``, ``/home/``, ``/tmp/``, ``/opt/``, a Windows
-  drive path);
-- web links (``http://``, ``https://``), except XML namespace identifiers, which point at no site;
-- in text (a text file, the text form of a USD layer, an image's text metadata) also bare web
-  addresses: a word with a dot and a known top-level domain. File names such as ``scene.usd`` and
-  version numbers are left alone, because their last part is not a top-level domain;
-- tokens and keys in the forms secret scanners know (provider API keys, cloud access key ids,
-  signed-link query parameters, private key blocks, bearer and web tokens).
+| Kind | How its text is obtained | Pattern classes applied |
+|---|---|---|
+| USD layer (``.usd``, ``.usda``, ``.usdc``; a usdz member) | ``pxr``: the text export for a layer up to ``SPEC_WALK_BYTES``, the spec walk above; a ``.usda`` file is also text itself | parsed text: all classes; raw bytes of a binary layer: long fixed strings only |
+| USDZ archive | each member by its own kind | as each member's kind |
+| PNG, JPEG | their metadata chunks (tEXt, zTXt, iTXt, eXIf; APPn and COM), decompressed; pixels never searched | metadata: all classes; raw bytes: long fixed strings only |
+| Text (by content), Blueprint's own README, ``success_rule.json``, ``scene.usda``, or a text usdz member | the file itself | all classes |
+| Any other kind | none | refused where only the closed list may ship (``closed``: the package, the packet's simulation folders); elsewhere (the packet's video, clips and reconstruction) raw bytes: long fixed strings only |
 
-Binary USD (``.usdc``, and every USD layer inside a ``.usdz``) is opened with ``pxr`` and exported to
-text, and that text is read too, so an id kept as a crate string is found. A USD file that cannot be
-opened is a finding, never skipped. Zip members are read one by one.
+Rule 2: each pattern class has one place it is applied.
 
-A finding names the file, the kind and where. It never repeats what matched.
+| Pattern class | In parsed text | In raw bytes of a binary file |
+|---|---|---|
+| The caller's ids, account ids and keys (hyphen and underscore forms) | yes, any length of 4 or more | only those of ``RAW_LITERAL_MINIMUM`` (16) characters or more |
+| Token formats with long fixed prefixes (``AKIA``/``ASIA`` key ids, ``github_pat_``, ``glpat-``, private-key blocks, JWTs, ``aws_secret_access_key=``) | yes | yes (``_RAW_TOKENS``; chance in 512 MiB of random bytes below 1e-9 each) |
+| Other tokens (``sk-``, ``gh*_``, ``xox*-``, ``AIza``, ``hf_``, bearer) and signed-link parameters | yes | no |
+| Storage links, ``file:`` links, host paths (``/var/lib/blueprint``, ``/mnt/blueprint-work``, ``/home/``, ``/root/``, ``/Users/``, ``/data/``, ``/tmp/``, ``/opt/``, ``/srv/``, ``~/``, drive and UNC paths) | yes | no |
+| Web links and any other ``scheme://`` (except ``http://www.w3.org/`` namespaces), email and IPv4 addresses, bare web addresses | yes | no |
+| The site's identity (``site_identity``) | yes, whole words, accents folded | never |
+
+The site's identity, looked for in parsed text only, with accents folded (NFKD, combining marks dropped) and case
+ignored on both sides:
+
+- each value as whole words (no letter or digit either side);
+- a value of two or more words also in its normalised form (lower-case letters and digits, separators removed),
+  matched only where it starts and ends on a word boundary of the text, so ``Zebra Plant Foods`` is found as
+  ``ZebraPlantFoods``, ``zebra_plant_foods`` or ``zebra-plant-foods``, and ``Unit 1`` could not match inside
+  ``metersPerUnit = 1``; a value of digits only (a phone) needs 11 digits in that form;
+- a single-word value is matched only when it has five or more characters and is not one of ``COMMON_WORDS``
+  (words scenes and addresses use: World, Floor, Wall, Station, North, ...); shorter single words such as
+  ``Bob`` or ``York`` are not matched;
+- an address is matched whole, and each line or comma-separated part that has a run of four or more letters, is
+  not only a country, and is not a unit or a number (it does not start with Unit, Suite, Flat, Apt, Apartment,
+  Floor, Level, Building, Bldg, Block, Room, Office, No, Number, Box or PO Box followed by at most one short
+  word); a part that is a single word follows the single-word rule.
+
+Binary USD is read through ``pxr`` (a layer that cannot be opened is a finding, never skipped).
 """
 from __future__ import annotations
 
+import codecs
 import re
 import struct
 import tempfile
+import unicodedata
 import zipfile
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -40,13 +62,14 @@ from typing import BinaryIO
 #: Links a file may carry: XML namespace identifiers (an SVG, XML or USD header names them).
 ALLOWED_LINK_PREFIXES = (b"http://www.w3.org/",)
 USD_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz"})
-TEXT_SUFFIXES = frozenset({".usda", ".json", ".txt", ".md", ".csv", ".yaml", ".yml", ".xml", ".svg", ".mtl",
-                           ".obj", ".urdf", ".sdf", ".html", ".toml", ".ini", ".cfg"})
+#: What a scene may ship (Rule 1). Blueprint's own text files are recognised by their content.
+SHIPPED_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz", ".png", ".jpg", ".jpeg"})
 CHUNK_BYTES = 8 << 20
 UNREADABLE_ZIP = "a zip that cannot be read"
 UNREADABLE_USD = "a USD file that cannot be opened"
 UNREADABLE_FILE = "a file that cannot be read"
-UNREADABLE = frozenset({UNREADABLE_ZIP, UNREADABLE_USD, UNREADABLE_FILE})
+NOT_SHIPPED = "a kind of file that may not ship"
+UNREADABLE = frozenset({UNREADABLE_ZIP, UNREADABLE_USD, UNREADABLE_FILE, NOT_SHIPPED})
 
 STORAGE_LINK, HOST_PATH, FILE_LINK, WEB_LINK, WEB_ADDRESS, KEY = (
     "a storage link", "a host path", "a local file link", "a web link", "a web address", "a key or token")
@@ -55,60 +78,42 @@ OTHER_LINK, IP_ADDRESS, EMAIL = "a link", "an IP address", "an email address"
 #: site's description of its job is shared by its own agreement and is not looked for.
 SITE_IDENTITY = "the site's name or contact details"
 SITE_WORDS = SITE_IDENTITY  # the earlier name, kept for callers
-#: A normalised identity value (lower-case, every non-alphanumeric removed) is looked for in normalised text when it
-#: has at least ``NORMALISED_TEXT_MINIMUM`` characters, and in binary data only from ``NORMALISED_BINARY_MINIMUM``
-#: (a random 5-letter string would match about twice in 512 MiB of binary; 10 letters about 3e-8 times). A value of
-#: digits only (a phone) needs ``NORMALISED_DIGITS_MINIMUM`` digits: the text form of float geometry is mostly
-#: digits once its separators are removed.
-NORMALISED_TEXT_MINIMUM, NORMALISED_BINARY_MINIMUM, NORMALISED_DIGITS_MINIMUM = 5, 10, 11
+#: A caller's value is looked for in raw binary bytes only from this length (a random match is then impossible).
+RAW_LITERAL_MINIMUM = 16
 _WORD, _NORMALISED = b"\x00w:", b"\x00n:"
-_NOT_ALNUM = re.compile(rb"[^a-z0-9]+")
 #: A binary USD layer larger than this is read by walking its specs (every name, string, token, asset path and
 #: metadata value; numeric arrays skipped) instead of exporting all its geometry to text.
 SPEC_WALK_BYTES = 8 << 20
 
-#: Checked on every byte of every file, binary included, in this order (after the caller's own values). Only a
-#: pattern with at least six fixed bytes is here: in 512 MiB of random bytes each is expected to match by chance
-#: fewer than 1 time in 10,000 (``/data/``, the weakest, about 2e-6; ``file:/`` about 3e-5). Shorter patterns would
-#: match ordinary float geometry (``~/`` about 8 times a MiB) and are in ``_TEXT_PATTERNS``.
-_BINARY_PATTERNS: tuple[tuple[re.Pattern[bytes], str], ...] = (
-    (re.compile(rb"/var/+lib/+blueprint|/mnt/+blueprint-work"
-                rb"|(?<![A-Za-z0-9_.])/(?:home|root|Users|data)/"), HOST_PATH),
-    (re.compile(rb"(?i)\bfile:/"), FILE_LINK),
-    (re.compile(
-        rb"(?:(?<![A-Za-z0-9])sk-(?:proj-|live-|svcacct-|ant-)?[A-Za-z0-9_-]{20,}"
-        rb"|(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"
-        rb"|(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{30,}|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{30,}"
-        rb"|(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}|(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}"
-        rb"|(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}"
-        rb"|(?<![A-Za-z0-9])(?:ntn|secret)_[A-Za-z0-9]{40,}|(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{20,}"
-        rb"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
-        rb"|(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\."
-        rb"|(?i:(?:aws_)?secret_access_key\s*[=:])"
-        rb"|(?i:(?<![A-Za-z0-9])bearer\s+[A-Za-z0-9._~+/-]{20,}))"), KEY),
-)
-#: Looked for only in text: text files, the text form (or spec walk) of a USD layer, image text metadata. Each
-#: would match random bytes by chance in 512 MiB: ``gs://``/``s3://`` about 0.002 times, ``/tmp/``, ``/opt/`` and
-#: ``/srv/`` about 0.0015, a signed-link parameter about 0.005, any ``scheme://`` about 1,000, a UNC share about
-#: 500, a Windows drive path about 1,600 and ``~/`` about 4,000.
+#: Raw bytes of a binary file: only token formats with long fixed prefixes.
+_RAW_TOKENS = re.compile(
+    rb"(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{30,}"
+    rb"|(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    rb"|(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.|(?i:aws_secret_access_key\s*[=:])")
+#: Parsed text: every class, in this order.
 _TEXT_PATTERNS: tuple[tuple[re.Pattern[bytes], str], ...] = (
     (re.compile(rb"(?i)\b(?:gs|s3)://"), STORAGE_LINK),
-    (re.compile(rb"(?<![A-Za-z0-9_.])/(?:tmp|opt|srv)/|(?<![A-Za-z0-9_.])~/"), HOST_PATH),
+    (re.compile(rb"/var/+lib/+blueprint|/mnt/+blueprint-work"
+                rb"|(?<![A-Za-z0-9_.])/(?:home|root|Users|data|tmp|opt|srv)/|(?<![A-Za-z0-9_.])~/"), HOST_PATH),
     (re.compile(rb"(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\s\"'@<>|:*?\\/\x00-\x1f]{1,64}[\\/]"), HOST_PATH),
     (re.compile(rb"(?<![A-Za-z0-9_\\])\\\\[A-Za-z0-9][A-Za-z0-9._$-]{0,62}\\[A-Za-z0-9._$ -]{1,80}"), HOST_PATH),
-    (re.compile(rb"(?i:[?&](?:access_token|refresh_token|id_token|token|api_key|apikey|key|secret|password|sig"
-                rb"|signature|x-amz-signature|x-goog-signature|x-amz-credential|x-goog-credential)=[^\s&\"'<>]{8,})"),
-     KEY),
+    (re.compile(rb"(?i)\bfile:/"), FILE_LINK),
+    (_RAW_TOKENS, KEY),
+    (re.compile(
+        rb"(?:(?<![A-Za-z0-9])sk-(?:proj-|live-|svcacct-|ant-)?[A-Za-z0-9_-]{20,}"
+        rb"|(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{30,}"
+        rb"|(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,}|(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}"
+        rb"|(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}|(?<![A-Za-z0-9])(?:ntn|secret)_[A-Za-z0-9]{40,}"
+        rb"|(?i:(?<![A-Za-z0-9])bearer\s+[A-Za-z0-9._~+/-]{20,})"
+        rb"|(?i:[?&](?:access_token|refresh_token|id_token|token|api_key|apikey|key|secret|password|sig"
+        rb"|signature|x-amz-signature|x-goog-signature|x-amz-credential|x-goog-credential)=[^\s&\"'<>]{8,}))"), KEY),
+    (re.compile(rb"(?i)https?://"), WEB_LINK),
+    (re.compile(rb"(?i)(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]{1,15}://"), OTHER_LINK),
+    (re.compile(rb"(?<![A-Za-z0-9._%+-])[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@[A-Za-z0-9-]{1,63}"
+                rb"(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,24}(?![A-Za-z0-9-])"), EMAIL),
 )
-_WEB_LINK = re.compile(rb"(?i)https?://")
-#: Any other scheme: Blueprint's own offload (``b2://``), ``ftp://``, ``omniverse://`` and the like.
-_ANY_LINK = re.compile(rb"(?i)(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]{1,15}://")
-#: In text only. Four dotted numbers 0 to 255 standing alone (a version string has three parts or more digits).
 _IP_ADDRESS = re.compile(rb"(?<![0-9A-Za-z.])(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}"
                          rb"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?![0-9A-Za-z]|\.[0-9])")
-_EMAIL = re.compile(rb"(?<![A-Za-z0-9._%+-])[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@[A-Za-z0-9-]{1,63}"
-                    rb"(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,24}(?![A-Za-z0-9-])")
-#: Common top-level domains, without those that are also common file name endings (md, py, sh, so, in, pl, rs).
 _TLDS = ("com", "net", "org", "io", "ai", "co", "dev", "app", "gov", "edu", "info", "biz", "cloud", "xyz", "site",
          "online", "tech", "me", "us", "uk", "de", "fr", "ca", "au", "nl", "eu", "jp", "cn", "br", "es", "it", "se",
          "ch", "ly", "tv", "gg", "int", "mil", "store", "shop", "company", "email", "link", "page", "ws", "be", "at",
@@ -145,26 +150,25 @@ def literal_forms(literals: Iterable[tuple[str | bytes, str]], *, minimum: int =
     return found
 
 
-def _blank_allowed_links(window: bytes) -> bytes:
-    """The window with every allowed namespace link replaced by spaces, so no other check sees it."""
-    if b"://" not in window:
-        return window
-    out = bytearray(window)
-    for prefix in ALLOWED_LINK_PREFIXES:
-        start = window.find(prefix)
-        while start >= 0:
-            end = start + len(prefix)
-            while end < len(window) and window[end] not in b" \t\r\n\"'<>@)":
-                end += 1
-            out[start:end] = b" " * (end - start)
-            start = window.find(prefix, end)
-    return bytes(out)
+def fold(text: str) -> str:
+    """Lower-case with accents folded: NFKD, combining marks dropped."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in decomposed if not unicodedata.combining(char)).lower()
 
 
-def _normalised(text: str) -> bytes:
-    return _NOT_ALNUM.sub(b"", text.lower().encode("utf-8", "replace"))
-
-
+_TOKEN = re.compile(r"[0-9a-z]+")
+#: Words scenes and addresses use; a single-word identity value that is one of these is not matched.
+COMMON_WORDS = frozenset({
+    "world", "scene", "stage", "root", "asset", "object", "objects", "point", "points", "light", "lights", "floor",
+    "floors", "wall", "walls", "tile", "tiles", "mesh", "meshes", "room", "rooms", "station", "north", "south",
+    "east", "west", "table", "shelf", "shelves", "door", "doors", "window", "ground", "plane", "camera", "cube",
+    "material", "materials", "looks", "geometry", "collision", "appearance", "support", "render", "model", "base",
+    "center", "centre", "kitchen", "office", "store", "shop", "warehouse", "factory", "plant", "house", "building",
+    "street", "road", "lane", "avenue", "court", "place", "square", "park", "estate", "industrial", "unit", "units",
+    "suite", "level", "block", "upper", "lower", "inner", "outer", "front", "back", "left", "right", "middle",
+    "volume", "field", "gaussians", "capture", "captured", "particle", "transform", "default", "xform", "scope"})
+_UNIT_PART = re.compile(r"(?:unit|suite|flat|apt|apartment|floor|level|building|bldg|block|room|office|no|number"
+                        r"|box|po box)\.?\s*[0-9a-z-]{0,6}")
 #: An address part that is only a country says nothing about which site it is.
 _COUNTRIES = frozenset({"uk", "u.k.", "united kingdom", "england", "scotland", "wales", "northern ireland", "usa",
                         "u.s.a.", "us", "united states", "united states of america", "america", "canada", "ireland",
@@ -173,32 +177,36 @@ _COUNTRIES = frozenset({"uk", "u.k.", "united kingdom", "england", "scotland", "
 
 
 def site_identity(values: Iterable[str], *, addresses: Iterable[str] = ()) -> list[tuple[bytes, str]]:
-    """The site's identity as needles: each value (and each address part) as whole words without regard to case,
-    and in its normalised form (lower-case, separators removed) so ``Zebra Plant Foods`` is also found as
-    ``ZebraPlant_Foods``, ``zebra-plant-foods`` or ``zebraplantfoods``.
-
-    A value shorter than three characters is not looked for. An address is looked for whole and by each line or
-    comma-separated part of three characters or more that is not just a country or a number.
-    """
+    """The site's identity as needles (see the module's rules): whole words, and for values of two or more words
+    also the normalised form; single words of five or more characters that are not common words; address parts
+    that are not a unit, a number or a country."""
     found: dict[bytes, None] = {}
 
     def add(text: str) -> None:
-        text = " ".join(str(text).split())
-        if len(text) < 3:
+        folded = " ".join(fold(str(text)).split())
+        words = _TOKEN.findall(folded)
+        if not words:
             return
-        found[_WORD + text.lower().encode("utf-8", "replace")] = None
-        normal = _normalised(text)
-        # An email is looked for as written: its normalised form would also match a link to its domain.
-        if "@" not in text and len(normal) >= NORMALISED_TEXT_MINIMUM and (not normal.isdigit() or len(normal) >= NORMALISED_DIGITS_MINIMUM):
-            found[_NORMALISED + normal] = None
+        if "@" in folded:  # an email: as written
+            found[_WORD + folded.encode()] = None
+            return
+        if len(words) == 1:
+            word = words[0]
+            if len(word) >= 5 and word not in COMMON_WORDS and not word.isdigit():
+                found[_WORD + folded.encode()] = None
+            return
+        found[_WORD + folded.encode()] = None
+        normal = "".join(words)
+        if (normal.isdigit() and len(normal) >= 11) or (not normal.isdigit() and len(normal) >= 5):
+            found[_NORMALISED + normal.encode()] = None
     for value in values:
         add(value)
     for address in addresses:
         add(address)
         for part in re.split(r"[,\n;]+", str(address)):
-            part = " ".join(part.split())
-            if (len(part) >= 3 and part.lower() not in _COUNTRIES
-                    and not re.fullmatch(r"[0-9 #-]+", part)):
+            folded = " ".join(fold(part).split())
+            if (re.search(r"[a-z]{4}", folded) and folded not in _COUNTRIES
+                    and not _UNIT_PART.fullmatch(folded)):
                 add(part)
     return [(value, SITE_IDENTITY) for value in found]
 
@@ -272,50 +280,86 @@ def capture_site_identity(capture_root: Path) -> list[tuple[bytes, str]]:
 capture_site_words = capture_site_identity  # the earlier name, kept for callers
 
 
-def _whole_word(haystack: bytes, needle: bytes) -> int:
+def _blank_allowed_links(window: bytes) -> bytes:
+    """The window with every allowed namespace link replaced by spaces, so no other check sees it."""
+    if b"://" not in window:
+        return window
+    out = bytearray(window)
+    for prefix in ALLOWED_LINK_PREFIXES:
+        start = window.find(prefix)
+        while start >= 0:
+            end = start + len(prefix)
+            while end < len(window) and window[end] not in b" \t\r\n\"'<>@)":
+                end += 1
+            out[start:end] = b" " * (end - start)
+            start = window.find(prefix, end)
+    return bytes(out)
+
+
+def _whole_word(haystack: str, needle: str) -> int:
     """The first place ``needle`` stands as whole words in ``haystack`` (no letter or digit either side), or -1."""
     start = haystack.find(needle)
     while start >= 0:
         end = start + len(needle)
-        before = haystack[start - 1:start]
-        after = haystack[end:end + 1]
-        if not (before.isalnum() or after.isalnum()):
+        if not (haystack[start - 1:start].isalnum() or haystack[end:end + 1].isalnum()):
             return start
         start = haystack.find(needle, start + 1)
     return -1
 
 
-def _match_window(window: bytes, literals: Sequence[tuple[bytes, str]], *, text: bool) -> tuple[str, int] | None:
-    lowered = normal = None
-    for value, kind in literals:
+def _normalised_at_boundaries(tokens: list[str], needle: str) -> bool:
+    """``needle`` equals the joined text of consecutive whole tokens (it starts and ends on token boundaries)."""
+    for index, first in enumerate(tokens):
+        if not needle.startswith(first):
+            continue
+        joined = first
+        for token in tokens[index + 1:]:
+            if len(joined) >= len(needle):
+                break
+            joined += token
+        if joined == needle:
+            return True
+    return False
+
+
+def _identity_found(window: bytes, needles: Sequence[tuple[bytes, str]]) -> str | None:
+    if not needles:
+        return None
+    text = fold(window.decode("utf-8", "replace"))
+    tokens: list[str] | None = None
+    for value, kind in needles:
+        needle = value[3:].decode("utf-8", "replace")
         if value.startswith(_WORD):
-            lowered = window.lower() if lowered is None else lowered
-            position = _whole_word(lowered, value[len(_WORD):])
-        elif value.startswith(_NORMALISED):
-            needle = value[len(_NORMALISED):]
-            if len(needle) < (NORMALISED_TEXT_MINIMUM if text else NORMALISED_BINARY_MINIMUM):
-                continue
-            lowered = window.lower() if lowered is None else lowered
-            normal = _NOT_ALNUM.sub(b"", lowered) if normal is None else normal
-            position = 0 if needle in normal else -1  # the place in the original is not kept
+            if _whole_word(text, needle) >= 0:
+                return kind
         else:
-            position = window.find(value)
+            tokens = _TOKEN.findall(text) if tokens is None else tokens
+            if _normalised_at_boundaries(tokens, needle):
+                return kind
+    return None
+
+
+def _match_window(window: bytes, literals: Sequence[tuple[bytes, str]], *, text: bool) -> tuple[str, int] | None:
+    """The kind and offset of the first finding in one window. ``text``: parsed text, every class (Rule 2);
+    otherwise raw bytes of a binary file: long caller values and long-prefix tokens only."""
+    identity = [row for row in literals if row[0].startswith((_WORD, _NORMALISED))]
+    for value, kind in literals:
+        if value.startswith((_WORD, _NORMALISED)) or (not text and len(value) < RAW_LITERAL_MINIMUM):
+            continue
+        position = window.find(value)
         if position >= 0:
             return kind, position
+    if not text:
+        match = _RAW_TOKENS.search(window)
+        return (KEY, match.start()) if match else None
+    found = _identity_found(window, identity)
+    if found:
+        return found, 0
     cleaned = _blank_allowed_links(window)
-    for pattern, kind in _BINARY_PATTERNS:
+    for pattern, kind in (*_TEXT_PATTERNS, (_WEB_ADDRESS, WEB_ADDRESS), (_IP_ADDRESS, IP_ADDRESS)):
         match = pattern.search(cleaned)
         if match:
             return kind, match.start()
-    match = _WEB_LINK.search(cleaned)
-    if match:
-        return WEB_LINK, match.start()
-    if text:
-        for pattern, kind in (*_TEXT_PATTERNS, (_ANY_LINK, OTHER_LINK), (_EMAIL, EMAIL), (_WEB_ADDRESS, WEB_ADDRESS),
-                              (_IP_ADDRESS, IP_ADDRESS)):
-            match = pattern.search(cleaned)
-            if match:
-                return kind, match.start()
     return None
 
 
@@ -374,7 +418,6 @@ def _inflate(value: bytes) -> bytes:
         return b""
 
 
-_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg"})
 _IMAGE_METADATA_LIMIT = 256 << 20
 
 
@@ -467,66 +510,101 @@ def _usd_text_finding(path: Path, literals: Sequence[tuple[bytes, str]],
         return found[0], f"line {line} of its text form"
 
 
-def scan_file(path: Path, relative: str, literals: Sequence[tuple[bytes, str]],
-              scratch: Path | None = None) -> Finding | None:
-    """The first finding in one file (its bytes, zip members, image metadata, USD text form), or None."""
-    path = Path(path)
-    suffix = path.suffix.lower()
+def content_kind(path: Path) -> str:
+    """``usdc``, ``usda``, ``usdz``, ``png``, ``jpeg``, ``text`` or ``other``, by content (Rule 1)."""
+    with Path(path).open("rb") as stream:
+        head = stream.read(8)
+        if head.startswith(b"PXR-USDC"):
+            return "usdc"
+        if head.startswith(b"#usda"):
+            return "usda"
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if head.startswith(b"\xff\xd8\xff"):
+            return "jpeg"
+        if head.startswith(b"PK\x03\x04") and Path(path).suffix.lower() == ".usdz":
+            return "usdz"
+        stream.seek(0)
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        try:
+            for chunk in iter(lambda: stream.read(1 << 20), b""):
+                if b"\x00" in chunk:
+                    return "other"
+                decoder.decode(chunk)
+            decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            return "other"
+    return "zip" if zipfile.is_zipfile(path) else "text"
+
+
+def _scan_kind(path: Path, relative: str, kind: str, literals: Sequence[tuple[bytes, str]], *, closed: bool,
+               scratch: Path | None, member: str = "") -> Finding | None:
+    suffix = " inside a zip member" if member else ""
+    where = f"{member}, " if member else ""
+    if kind == "other" and closed:
+        return Finding(relative, NOT_SHIPPED, f"{where}the file")
     try:
-        with path.open("rb") as stream:
-            head = stream.read(5)
-            stream.seek(0)
-            found = scan_stream(stream, literals, text=suffix in TEXT_SUFFIXES or head == b"#usda")
+        with Path(path).open("rb") as stream:
+            found = scan_stream(stream, literals, text=kind in ("text", "usda"))
         if found:
-            return Finding(relative, found[0], f"byte {found[1]}")
-        if suffix in _IMAGE_SUFFIXES and path.stat().st_size <= _IMAGE_METADATA_LIMIT:
-            for label, value in _image_text(path.read_bytes(), suffix):
+            return Finding(relative, found[0] + suffix, f"{where}byte {found[1]}")
+        if kind in ("png", "jpeg") and Path(path).stat().st_size <= _IMAGE_METADATA_LIMIT:
+            for label, value in _image_text(Path(path).read_bytes(), ".png" if kind == "png" else ".jpg"):
                 hit = _match_window(value, literals, text=True)
                 if hit:
-                    return Finding(relative, hit[0], f"image metadata ({label})")
+                    return Finding(relative, hit[0] + suffix, f"{where}image metadata ({label})")
     except OSError:
         return Finding(relative, UNREADABLE_FILE, "the file")
-    if suffix == ".usdz" or (suffix != ".usd" and zipfile.is_zipfile(path)):
-        return _scan_zip(path, relative, literals, usdz=suffix == ".usdz", scratch=scratch)
-    if suffix in USD_SUFFIXES:
+    if kind in ("usda", "usdc"):
         found_text = _usd_text_finding(path, literals, scratch)
-        return Finding(relative, *found_text) if found_text else None
+        if found_text:
+            name = found_text[0] if found_text[0] in UNREADABLE else found_text[0] + suffix
+            return Finding(relative, name, f"{where}{found_text[1]}")
     return None
 
 
+def scan_file(path: Path, relative: str, literals: Sequence[tuple[bytes, str]],
+              scratch: Path | None = None, *, closed: bool = False) -> Finding | None:
+    """The first finding in one file, read by its kind (Rule 1), or None. ``closed``: a kind not on the list is
+    itself a finding."""
+    path = Path(path)
+    try:
+        kind = content_kind(path)
+    except OSError:
+        return Finding(relative, UNREADABLE_FILE, "the file")
+    if path.suffix.lower() == ".usdz" and kind not in ("usdz",):
+        return Finding(relative, UNREADABLE_USD, "the file")
+    if path.suffix.lower() in (".usd", ".usdc", ".usda") and kind not in ("usdc", "usda"):
+        return Finding(relative, UNREADABLE_USD, "the file")
+    if kind in ("usdz", "zip"):
+        return _scan_zip(path, relative, literals, usdz=kind == "usdz", scratch=scratch, closed=closed)
+    return _scan_kind(path, relative, kind, literals, closed=closed, scratch=scratch)
+
+
 def _scan_zip(path: Path, relative: str, literals: Sequence[tuple[bytes, str]], *, usdz: bool,
-              scratch: Path | None = None) -> Finding | None:
+              scratch: Path | None = None, closed: bool = False) -> Finding | None:
+    """Each member by its own kind (a usdz's members are its layers, textures and any text)."""
     try:
         with zipfile.ZipFile(path) as archive, tempfile.TemporaryDirectory(prefix="outbound-scan-",
                                                                            dir=scratch) as folder:
+            layers = 0
             for index, info in enumerate(archive.infolist()):
                 if info.is_dir():
                     continue
-                member_suffix = Path(info.filename).suffix.lower()
-                with archive.open(info) as member:
-                    head = member.read(5)
-                with archive.open(info) as member:
-                    found = scan_stream(member, literals,
-                                        text=member_suffix in TEXT_SUFFIXES or head == b"#usda")
+                extracted = Path(folder) / f"member-{index}{Path(info.filename).suffix.lower()}"
+                with archive.open(info) as source, extracted.open("wb") as target:
+                    while chunk := source.read(CHUNK_BYTES):
+                        target.write(chunk)
+                kind = content_kind(extracted)
+                layers += kind in ("usda", "usdc")
+                if kind in ("usdz", "zip"):
+                    kind = "other"  # an archive inside an archive is not read
+                found = _scan_kind(extracted, relative, kind, literals, closed=closed or usdz, scratch=folder,
+                                   member=f"member {index + 1}")
+                extracted.unlink()
                 if found:
-                    return Finding(relative, found[0] + " inside a zip member", f"member {index + 1}")
-                if member_suffix in _IMAGE_SUFFIXES and info.file_size <= _IMAGE_METADATA_LIMIT:
-                    for label, value in _image_text(archive.read(info), member_suffix):
-                        hit = _match_window(value, literals, text=True)
-                        if hit:
-                            return Finding(relative, hit[0] + " inside a zip member",
-                                           f"member {index + 1}, image metadata ({label})")
-                if member_suffix in USD_SUFFIXES - {".usdz"}:
-                    extracted = Path(folder) / f"member-{index}{member_suffix}"
-                    with archive.open(info) as source, extracted.open("wb") as target:
-                        while chunk := source.read(CHUNK_BYTES):
-                            target.write(chunk)
-                    found_text = _usd_text_finding(extracted, literals, folder)
-                    extracted.unlink()
-                    if found_text:
-                        kind = found_text[0] if found_text[0] in UNREADABLE else found_text[0] + " inside a zip member"
-                        return Finding(relative, kind, f"member {index + 1}, {found_text[1]}")
-            if usdz and not any(Path(info.filename).suffix.lower() in USD_SUFFIXES for info in archive.infolist()):
+                    return found
+            if usdz and not layers:
                 return Finding(relative, UNREADABLE_USD, "no USD layer inside")
     except (OSError, zipfile.BadZipFile, RuntimeError, EOFError, zlib.error):
         return Finding(relative, UNREADABLE_USD if usdz else UNREADABLE_ZIP, "the file")
@@ -539,16 +617,21 @@ def _needles(relative: str, literals: Sequence[tuple[bytes, str]], words_only_un
     never in a file Blueprint writes with fixed text (``words_except``)."""
     if relative not in words_except and (words_only_under is None or relative.startswith(words_only_under)):
         return literals
-    return [row for row in literals if row[1] != SITE_WORDS]
+    return [row for row in literals if row[1] != SITE_IDENTITY]
+
+
+def _closed(relative: str, closed: bool | Sequence[str]) -> bool:
+    return closed if isinstance(closed, bool) else relative.startswith(tuple(closed))
 
 
 def scan_tree(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Path | None = None,
               words_only_under: str | None = None, words_except: Sequence[str] = (),
-              before_each: Callable[[], None] | None = None) -> list[Finding]:
+              before_each: Callable[[], None] | None = None, closed: bool | Sequence[str] = False) -> list[Finding]:
     """Every file under ``root`` in name order, at most one finding per file.
 
     ``words_only_under``: look for the site's identity only in files under this prefix. ``before_each`` is
-    called before each file (a caller's deadline check, which may raise).
+    called before each file (a caller's deadline check, which may raise). ``closed``: True, or the prefixes under
+    which, only the closed list of kinds may ship.
     """
     root = Path(root)
     findings = []
@@ -556,24 +639,29 @@ def scan_tree(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Pat
         if before_each is not None:
             before_each()
         relative = path.relative_to(root).as_posix()
-        finding = scan_file(path, relative, _needles(relative, literals, words_only_under, words_except), scratch)
+        finding = scan_file(path, relative, _needles(relative, literals, words_only_under, words_except), scratch,
+                            closed=_closed(relative, closed))
         if finding:
             findings.append(finding)
     return findings
 
 
 def first_finding(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Path | None = None,
-                  words_only_under: str | None = None, words_except: Sequence[str] = ()) -> Finding | None:
+                  words_only_under: str | None = None, words_except: Sequence[str] = (),
+                  closed: bool | Sequence[str] = False) -> Finding | None:
     """The first finding under ``root`` in name order, or None; stops at the first."""
     root = Path(root)
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix()
-        finding = scan_file(path, relative, _needles(relative, literals, words_only_under, words_except), scratch)
+        finding = scan_file(path, relative, _needles(relative, literals, words_only_under, words_except), scratch,
+                            closed=_closed(relative, closed))
         if finding:
             return finding
     return None
 
 
-__all__ = ["ALLOWED_LINK_PREFIXES", "Finding", "SITE_WORDS", "UNREADABLE", "UNREADABLE_USD", "UNREADABLE_ZIP",
-           "capture_site_identity", "capture_site_words", "first_finding", "record_site_identity",
-           "record_site_words", "site_identity", "literal_forms", "scan_file", "scan_stream", "scan_tree", "site_words"]
+__all__ = ["ALLOWED_LINK_PREFIXES", "COMMON_WORDS", "Finding", "NOT_SHIPPED", "RAW_LITERAL_MINIMUM",
+           "SHIPPED_SUFFIXES", "SITE_IDENTITY", "SITE_WORDS", "UNREADABLE", "UNREADABLE_USD", "UNREADABLE_ZIP",
+           "capture_site_identity", "capture_site_words", "content_kind", "first_finding", "fold", "literal_forms",
+           "record_site_identity", "record_site_words", "scan_file", "scan_stream", "scan_tree", "site_identity",
+           "site_words"]

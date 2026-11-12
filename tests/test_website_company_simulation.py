@@ -245,8 +245,10 @@ def test_ordinary_file_names_versions_and_namespaces_are_left_alone(tmp_path, te
 
 
 def test_a_bare_web_address_counts_only_in_text(tmp_path):
-    assert _scan_text(tmp_path, "abc example.com", name="x.bin") is None
-    assert _scan_text(tmp_path, "abc example.com", name="x.json").kind == "a web address"
+    # Text is decided by content, never by the ending: a file of text is text whatever it is called.
+    binary = _write(tmp_path / "x.json", b"\x00\x01abc example.com\xff")
+    assert scan.scan_file(binary, "x.json", []) is None
+    assert _scan_text(tmp_path, "abc example.com", name="x.bin").kind == "a web address"
 
 
 def test_ids_inside_a_binary_usd_are_found_through_its_text_form(tmp_path):
@@ -1006,14 +1008,25 @@ def test_identity_is_gathered_from_the_records_and_the_job_is_not(job):
         assert not any(job_words in value for value in words | normal)
 
 
-def test_a_short_common_word_never_matches_inside_another():
-    from blueprint_pipeline import outbound_file_scan
-    needles = outbound_file_scan.site_identity(["Bath"], addresses=["Bath"])
-    assert outbound_file_scan._match_window(b"def Xform bathroom_sink", needles, text=True) is None
-    assert outbound_file_scan._match_window(b"made in Bath today", needles, text=True) is not None
-    # A normalised needle under the minimum is not looked for in binary data at all.
-    assert outbound_file_scan._match_window(b"\x00zebraplant\x01", outbound_file_scan.site_identity(["Zebra"]),
-                                            text=False) is None
+def test_short_and_common_identity_values_are_not_matched_and_identity_is_text_only():
+    from blueprint_pipeline import outbound_file_scan as o
+    assert o.site_identity(["Bob", "York", "Bath", "World", "Station", "North"]) == []
+    needles = o.site_identity(["Harbourton"], addresses=["Unit 1, Mill Lane, York"])
+    words = {value for value, _ in needles}
+    assert b"\x00w:mill lane" in words and b"\x00n:milllane" in words and b"\x00w:harbourton" in words
+    assert not words & {b"\x00w:unit 1", b"\x00n:unit1", b"\x00w:york", b"\x00n:york"}
+    assert o._match_window(b"def Xform harbourtonian_sink", needles, text=True) is None  # whole words only
+    assert o._match_window(b"made in Harbourton today", needles, text=True) is not None
+    assert o._match_window(b"metersPerUnit = 1", needles, text=True) is None
+    # Identity is never looked for in raw binary bytes.
+    assert o._match_window(b"\x00made in Harbourton\x01", needles, text=False) is None
+
+
+def test_accents_are_folded_on_both_sides():
+    from blueprint_pipeline import outbound_file_scan as o
+    needles = o.site_identity(["Café Zürich"])
+    for text in ("CAFE ZURICH", "cafe_zurich", "CafeZurich", "Café Zürich"):
+        assert o._match_window(f"x {text} y".encode(), needles, text=True) is not None, text
 
 
 def test_a_clean_package_does_not_trip_on_the_sites_words(job):
@@ -1438,3 +1451,81 @@ def test_a_reused_half_whose_file_changed_is_refused_exactly_as_a_compiled_one(j
 def test_an_outcome_that_is_not_a_success_is_ignored(job, outcome):
     _set_outcome(job, outcome)
     assert World(job).publish() == {"status": "no_source"}
+
+
+# --- the closed list of file kinds, and identity in parsed text only (round 4) -------------------------------
+
+PLANTED = (b"// made from gs://bucket-x/capture/scan and /tmp/work/look, contact jane@acmemail.example, "
+           b"ftp://files.example.org/x\n")
+
+
+@pytest.mark.parametrize("suffix", [".mdl", ".gltf", ".exr", ".hdr", ".tga", ".ply", ".mtlx"])
+def test_a_scene_depending_on_a_kind_not_on_the_list_is_refused_for_its_kind(job, suffix):
+    (job.assets / f"textures/look{suffix}").write_bytes(PLANTED)
+    stage = Usd.Stage.Open(str(job.appearance))
+    shader = stage.DefinePrim("/Appearance/Look/Mdl", "Shader")
+    shader.CreateAttribute("info:mdl:sourceAsset", Sdf.ValueTypeNames.Asset).Set(f"./textures/look{suffix}")
+    stage.GetRootLayer().Save()
+    job.seal()
+    world = World(job)
+    result = world.publish()
+    assert result == {"status": "refused", "reason": "website_company_simulation_file_kind_not_shipped",
+                      "detail": f"scene_appearance {suffix}"}
+    assert world.archived == [] and not _package(job).exists()
+
+
+def test_a_png_that_is_not_a_png_is_refused_for_its_kind(job):
+    (job.assets / "textures/wood.png").write_bytes(PLANTED)
+    job.seal()
+    result = World(job).publish()
+    assert result["reason"] == "website_company_simulation_file_kind_not_shipped"
+    assert result["detail"] == "scene_appearance .png"
+
+
+def _random_png(size: int) -> bytes:
+    """A real PNG whose pixel data is random (as compressed image data is): about ``size`` bytes."""
+    import random
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    side = int((size / 3) ** 0.5)
+    rng = random.Random(11)
+    rows = b"".join(b"\x00" + rng.randbytes(side * 3) for _ in range(side))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 1)) + chunk(b"IEND", b""))
+
+
+@pytest.mark.parametrize(("name", "address"), [("Bob", None), ("York", None), ("Bob", "Unit 1, Mill Lane, York")])
+def test_short_or_common_identity_values_never_refuse_a_clean_scene(job, name, address):
+    descriptor = json.loads((job.capture / "capture_descriptor.json").read_text())
+    descriptor["metadata"]["site_identity"] = {"name": name, **({"address": address} if address else {})}
+    _write(job.capture / "capture_descriptor.json", descriptor)
+    _write(job.assets / "textures/wood.png", _random_png(12 << 20))
+    job.seal()
+    assert World(job).publish()["status"] == "published"
+
+
+def test_a_text_member_with_an_odd_ending_inside_a_usdz_is_read(job, tmp_path):
+    layer = _stage(tmp_path / "obj.usdc", "Object")
+    job.object.unlink()
+    with zipfile.ZipFile(job.object, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.write(layer, "obj.usdc")
+        archive.writestr("notes.cfgx", "made at gs://bucket-x/scan\n")
+    job.seal()
+    result = World(job).publish()
+    assert result["status"] == "refused" and result["detail"] == "object.usdz holds a storage link inside a zip member"
+    finding = scan.scan_file(job.object, "object.usdz", [])
+    assert finding.kind == "a storage link inside a zip member"
+
+
+def test_a_binary_member_of_another_kind_inside_a_usdz_never_ships(job, tmp_path):
+    layer = _stage(tmp_path / "obj.usdc", "Object")
+    job.object.unlink()
+    with zipfile.ZipFile(job.object, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.write(layer, "obj.usdc")
+        archive.writestr("look.exr", b"v/1\x01\x00\x00\x00" + PLANTED)
+    job.seal()
+    world = World(job)
+    result = world.publish()
+    assert result == {"status": "refused", "reason": "website_company_simulation_file_kind_not_shipped",
+                      "detail": "object.usdz"}
+    assert world.archived == []

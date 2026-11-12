@@ -1535,10 +1535,10 @@ PLANTED_FILES = {
     "usdz_member": (lambda inputs: _zip(inputs.configured_scene_dir / "replacement_asset.usdz", "asset.usda",
                                         f'#usda 1.0\n(doc = "gs://{STORAGE}/a")\n'.encode()),
                     "files/object/replacement_asset.usdz", "a storage link inside a zip member"),
-    "bundle_member": (lambda inputs: _bundle(inputs, f"owned by {USER}".encode()),
+    "bundle_member": (lambda inputs: _bundle(inputs, _usd_bytes(f"owned_by_{USER}")),
                       "files/simulation/configured-scene/appearance.usdc", "an owner or organisation id"),
     "clip_bytes": (lambda inputs: _write(inputs.review_videos_dir / "cell_runs" / "01" / f"{CAPTURE}-camera.mp4",
-                                         b"\x00moov req-1 site-req-1"), "files/early-trial/clips/clip-01.mp4", "a job id"),
+                                         b"\x00moov " + CAPTURE.encode()), "files/early-trial/clips/clip-01.mp4", "a job id"),
     "reconstruction_link": (lambda inputs: _write(inputs.capture_dir / SPLAT, f"ply\ncomment {LINK}\n".encode()),
                             "files/reconstruction/atlas_depth_splat_levelled.ply", "a web link"),
     "pull_root_path": (lambda inputs: _write(inputs.capture_dir / COLLISION, str(inputs.pull_root.absolute()).encode()),
@@ -1557,7 +1557,7 @@ def test_a_copied_file_that_names_the_site_or_a_path_is_refused_by_file_and_kind
         assert value not in str(refusal)
 
 
-@pytest.mark.parametrize("words", [NAME, STREET, EMAIL, PHONE, NAME.lower().replace("e", "e_", 1)])
+@pytest.mark.parametrize("words", [NAME, STREET, EMAIL, PHONE, NAME.lower()])
 def test_the_sites_identity_in_a_copied_file_refuses_the_packet(tmp_path, job, words) -> None:
     inputs = job()
     _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", f'#usda 1.0\n(doc = "made for {words}")\n')
