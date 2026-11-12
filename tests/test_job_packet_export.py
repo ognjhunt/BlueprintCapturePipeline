@@ -659,26 +659,27 @@ def test_conditional_rows_are_worded_with_the_pipelines_own_sentences_in_order()
     lines = packet.fit_lines(_fit_table_of(_first_look_rows()))
     sheet = "\n".join(lines)
     shown = [line.split(" | ")[0][2:] for line in lines if line.startswith("| ") and not line.startswith("| Robot")]
-    # fits, then fits if (by payload limit, as the Pipeline orders them), then does not fit, then unknown.
-    assert shown == ["UR5e", "Stretch 3", "Panda (FER)", "xArm 7", "GP12", "UR10e", "Franka Research 3 (FR3)"]
+    # The order is the projection's row_order: fits, then fits if (fewest conditions first, then the highest
+    # payload limit), then does not fit, then unknown.
+    assert shown == ["UR5e", "GP12", "xArm 7", "Panda (FER)", "Stretch 3", "UR10e", "Franka Research 3 (FR3)"]
     assert "| Stretch 3 | Hello Robot | arm on a moving base | fits if the conditions below hold | " \
            "a place to stand (a condition below), reach (a condition below), access from the entrance " \
            "(a condition below) |" in lines
     worded = [line for line in lines if line.startswith("- ")]
     assert worded == [
+        "- GP12, payload: fits if the item weighs no more than 11.1 kg; not known for this job.",
+        "- xArm 7, cycle time: fits if the cycle stays within the 30 s target; this job seems to need 20 to 40 s, "
+        "estimated from the video.",
+        "- Panda (FER), reach: fits if the job needs no more than its 0.855 m reach; this job seems to need 0.701 to "
+        "1.219 m, estimated from the video.",
+        "- Panda (FER), payload: fits if the item weighs no more than 2.1 kg; this job seems to need 0.024 to "
+        "33.647 kg, estimated from the video.",
         # The floor condition holds when the floor is at least the base's size: never "no more than".
         "- Stretch 3, a place to stand: fits if there is 0.62 m of clear floor to stand on; this job seems to offer "
         "0.5 to 1.4 m, estimated from the video.",
         "- Stretch 3, reach: fits if the job's heights are within its hand range up to 1.1 m; it seems to need 0.6 "
         "to 1.06 m, estimated from the video.",
-        "- Stretch 3, access from the entrance: fits if it has a clear route to the job; the route was not checked.",
-        "- Panda (FER), reach: fits if the job needs no more than its 0.855 m reach; this job seems to need 0.701 to "
-        "1.219 m, estimated from the video.",
-        "- Panda (FER), payload: fits if the item weighs no more than 2.1 kg; this job seems to need 0.024 to "
-        "33.647 kg, estimated from the video.",
-        "- xArm 7, cycle time: fits if the cycle stays within the 30 s target; this job seems to need 20 to 40 s, "
-        "estimated from the video.",
-        "- GP12, payload: fits if the item weighs no more than 11.1 kg; not known for this job."]
+        "- Stretch 3, access from the entrance: fits if it has a clear route to the job; the route was not checked."]
     assert ("Counts: fits on published figures: 1, fits if the conditions below hold: 4, does not fit: 1, "
             "unknown: 1") in lines
     # The table's own text is never copied: names come from the catalog, sentences from the Pipeline's words.

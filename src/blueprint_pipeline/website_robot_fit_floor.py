@@ -19,6 +19,7 @@ in the reconstructed floor, so ``upper_hole_possible`` says the floor may offer 
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -89,9 +90,11 @@ def widest_clear_square(*, preparation: Mapping[str, Any], collision_path: Path,
         row: dict[str, Any] = {"half_extent_m": round(half, 6), "clear": True}
         if isinstance(found, Mapping):
             position = found.get("position_world_m")
-            if isinstance(position, Sequence) and len(position) == 3:
+            # Only finite numbers enter the table: a non-finite place or floor is dropped, never measured from.
+            if (isinstance(position, Sequence) and len(position) == 3
+                    and all(isinstance(v, (int, float)) and math.isfinite(v) for v in position)):
                 row["position_world_m"] = [round(float(v), 6) for v in position]
-            if isinstance(found.get("floor_z_m"), (int, float)):
+            if isinstance(found.get("floor_z_m"), (int, float)) and math.isfinite(found["floor_z_m"]):
                 floor.append(float(found["floor_z_m"]))  # the floor the search stood on, for hand heights
         searches.append(row)
         return True

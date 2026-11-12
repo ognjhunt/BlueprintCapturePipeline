@@ -256,12 +256,14 @@ def test_the_lightest_mass_with_the_default_tool_rules_a_model_out_and_only_an_a
     payload = {name: _check(row, "payload") for name, row in rows.items()}
     assert {name: check["result"] for name, check in payload.items()} == {
         "arm": "fail", "tiny_arm": "fail", "humanoid": "pass"}
-    assert payload["arm"]["values"]["required_kg"] == {"optimistic": 1.8, "pessimistic": 3.1}
+    # One rule: the item plus the default tool, both ends of the band, against the rating.
+    assert payload["arm"]["values"]["required_kg"] == {"optimistic": 2.7, "pessimistic": 3.1}
     assert payload["humanoid"]["values"]["required_kg"] == {"optimistic": 1.8, "pessimistic": 2.2}
     assert [(payload[name]["values"]["end_effector"], payload[name]["values"]["tool_mass_kg"])
             for name in ("arm", "humanoid")] == [("default_tool", 0.9), ("own_hand", 0.0)]
-    assert payload["tiny_arm"]["reason"] == "even the lightest mass, before any tool, exceeds the rated payload"
-    assert payload["arm"]["reason"] == "even the lightest mass plus the default tool exceeds the rated payload"
+    # The reason says the gripper is counted, so nobody reads it as the item alone.
+    gripper = "even the lightest mass plus a 0.9 kg gripper (the default tool) exceeds the rated payload"
+    assert payload["tiny_arm"]["reason"] == payload["arm"]["reason"] == gripper
     assert "condition" not in payload["arm"] and rows["arm"]["first_look_verdict"] == "doesnt_fit"
 
 

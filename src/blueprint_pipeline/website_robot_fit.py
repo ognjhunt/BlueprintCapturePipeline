@@ -198,7 +198,7 @@ def _stations(preparation: Mapping[str, Any], verdict: Mapping[str, Any], collis
     if results and verdict.get("status") != "clear":
         # Every grasp was tried from every station the search returned: these are all of them.
         unique = {tuple(row["position_world_m"]): None for row in results}
-        return [list(map(float, position)) for position in unique], "capability_verdict_stations"
+        return _finite_positions(unique), "capability_verdict_stations"
     blockers = [code for code in verdict.get("blockers") or [] if str(code).startswith("robot_station_")]
     if blockers:
         return [], "capability_verdict_station_search:" + ",".join(blockers)
@@ -211,7 +211,18 @@ def _stations(preparation: Mapping[str, Any], verdict: Mapping[str, Any], collis
         found = ground_stance(collision_path=collision, collision_sha256=digest, **carry_station_search(preparation))
     except TeamEmbodimentError as exc:
         return [], "ground_stance_search:" + ",".join(exc.blockers)
-    return [[float(v) for v in row["position_world_m"]] for row in found], "ground_stance_search"
+    return _finite_positions(row["position_world_m"] for row in found), "ground_stance_search"
+
+
+def _finite_positions(positions: Any) -> list[list[float]]:
+    """Stations as floats, each dropped unless it is three finite numbers: nothing is measured from it."""
+    kept = []
+    for position in positions:
+        values = list(position) if isinstance(position, (list, tuple)) else []
+        if len(values) == 3 and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                                    for v in values):
+            kept.append([float(v) for v in values])
+    return kept
 
 
 #: A robot that drives to the job is not limited by the distance between the spots but by how high and
@@ -523,21 +534,17 @@ def _payload(model: Mapping[str, Any], mass_range: Sequence[float] | None, tool_
         row.update(basis="unavailable", condition=_condition(
             "item_mass_kg", None, float(limit), need_basis="unavailable", limit_basis="catalog"))
         return row
-    # A lighter tool may replace the default, so only the object's own mass can rule a model out.
-    need = (mass_range[0], mass_range[1] + tool)
-    plus = " plus the tool" if tool else ""
+    # One rule, the item plus the default tool against the rating, so a fail never reads as the item alone.
+    need = (mass_range[0] + tool, mass_range[1] + tool)
+    plus = f" plus a {tool:g} kg gripper (the default tool)" if tool else ""
     values["required_kg"] = {"optimistic": _r(need[0]), "pessimistic": _r(need[1])}
     # The condition is on the item alone: the heaviest item that passes with the default tool.
     row = _within("payload", need, float(payload), values, {
         "pass": f"the heaviest mass{plus} is within the rated payload",
-        "fail": "even the lightest mass, before any tool, exceeds the rated payload",
-        "unknown": f"the rated payload falls between the lightest mass and the heaviest{plus}"}, basis=basis,
+        "fail": f"even the lightest mass{plus} exceeds the rated payload",
+        "unknown": f"the rated payload falls between the lightest mass{plus} and the heaviest{plus}"}, basis=basis,
         condition=_condition("item_mass_kg", mass_range, float(limit), need_basis=basis, limit_basis="catalog"))
-    if row["result"] == "unknown" and mass_range[0] > float(limit):
-        # Even the lightest estimate is above what passes with the default tool: the condition would be false.
-        row = _check("payload", "fail", "even the lightest mass plus the default tool exceeds the rated payload",
-                     values) | {"basis": basis}
-    elif limit <= 0:
+    if limit <= 0:
         row.pop("condition", None)  # the default tool alone outweighs the rating: no item weight fits with it
     return row
 

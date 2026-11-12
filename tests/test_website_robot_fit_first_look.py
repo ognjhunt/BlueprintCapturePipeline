@@ -380,3 +380,65 @@ def test_the_v2_schema_lists_every_cause_and_quantity_the_code_writes():
     model = schema["properties"]["models"]["items"]["properties"]
     assert set(model["missing"]["items"]["properties"]["cause"]["enum"]) == set(projection.UNKNOWN_CAUSES)
     assert set(model["conditions"]["items"]["properties"]["quantity"]["enum"]) == set(projection.QUANTITY_UNITS)
+
+
+def test_a_base_needing_a_large_square_never_passes_from_where_only_small_squares_stand(tmp_path, monkeypatch):
+    # The re-check's case C: squares up to 0.45 m half stand next to the task, larger ones only 1.7 m away,
+    # nothing over 0.6 m half. A 0.75 m base needs a 0.5 m half square at 0.75x: only the far place holds it.
+    # A 1.05 m base sets the search's top (0.7 m half), so the bisection also stands a near, smaller square.
+    near, far = [0.2, 0.0, 0.0], [-1.5, 0.0, 0.0]
+
+    def search(*, footprint_half_extent_m, **_):
+        half = footprint_half_extent_m[0]
+        if half > 0.6:
+            raise TeamEmbodimentError(["team_embodiment_free_base_no_clear_stance"])
+        return {"floor_z_m": 0.0, "position_world_m": near if half <= 0.45 else far}
+
+    real = floor_module.widest_clear_square
+    monkeypatch.setattr(floor_module, "widest_clear_square", lambda **kwargs: real(search=search, **kwargs))
+    def rows(*sides):
+        catalog = sealed(*[_model(f"base_{side}", base_footprint_diameter_m=None, base_footprint_l_w_m=_square(side),
+                                  max_reach_m=_reach(0.8), rated_payload_kg=_payload(30)) for side in sides])
+        collision, job = _collision(tmp_path), _job()
+        table = fit.robot_fit_table(preparation=job, collision_path=collision, verdict=_verdict(job, collision),
+                                    catalog=catalog)
+        return {row["model_id"]: row for row in table["rows"]}, table["inputs"]["floor_search"]["result"]["searches"]
+
+    found, searches = rows(0.75, 1.05)
+    assert near in [row.get("position_world_m") for row in searches]  # a near square was found, too small
+    large = _check(found["base_0.75"], "stance")
+    assert large["result"] == "pass" and large["values"]["own_stance_positions_world_m"]
+    # Every place it is measured from held a square at least as wide as the base needs at 0.75x (0.5 m half).
+    held = [row["position_world_m"] for row in searches if row["clear"] and row["half_extent_m"] >= 0.5]
+    assert all(place in held for place in large["values"]["own_stance_positions_world_m"])
+    assert near not in large["values"]["own_stance_positions_world_m"]
+    # Reach is measured from the far place only, where it misses: never a pass from the near one.
+    assert _check(found["base_0.75"], "reach")["cause"] == "own_stance_reach_unproven"
+    assert found["base_0.75"]["first_look_verdict"] == "unknown"
+    # Alone, the smaller base is searched at its own size, held next to the task, and reaches from there.
+    found, _ = rows(0.45)
+    assert _check(found["base_0.45"], "stance")["values"]["own_stance_positions_world_m"] == [near]
+    assert found["base_0.45"]["first_look_verdict"] == "fits_spec"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_non_finite_stations_and_places_are_dropped_never_measured_from(tmp_path, monkeypatch, bad):
+    # A station from the capability verdict: a 0.1 m reach arm must not fit from a NaN or infinite station.
+    job, collision = _job(), _collision(tmp_path)
+    table = fit.robot_fit_table(preparation=job, collision_path=collision,
+                                verdict=_verdict(job, collision, stations=([bad, 0.0, 0.0],)),
+                                catalog=sealed(_model("short", max_reach_m=_reach(0.1))))
+    row = table["rows"][0]
+    assert table["inputs"]["stations"]["positions_world_m"] == []
+    assert row["first_look_verdict"] != "fits_spec" and _check(row, "stance")["cause"] == "no_clear_station"
+    json.dumps(table, allow_nan=False)  # nothing non-finite is written into the digested table
+
+    # A place or floor height the floor search returns that is not finite is dropped too.
+    def search(*, footprint_half_extent_m, **_):
+        return {"floor_z_m": bad, "position_world_m": [0.0, bad, 0.0]}
+
+    found = floor_module.widest_clear_square(preparation=job, collision_path=Path("unused"),
+                                             collision_sha256="sha256:x", known_clear_half_m=0.15,
+                                             needed_half_m=1.0, search=search)
+    assert found["floor_z_m"] is None and all("position_world_m" not in row for row in found["searches"])
+    json.dumps(found, allow_nan=False)
