@@ -7,7 +7,7 @@ the site is withdrawn.
 
 A site is withdrawn when ``<root>/scenes/<site>/website_withdrawal/tombstone.json``
 or ``<root>/<bucket>/scenes/<site>/website_withdrawal/tombstone.json`` exists
-under a configured site root: the file the intake writes on withdrawal
+under a configured site root (a hidden folder is never a bucket, ``site_roots.is_bucket``): the file the intake writes on withdrawal
 (``website_capture_withdrawal.acknowledge_withdrawal``) and the one automatic
 withdrawal deletion looks for (``website_capture_withdrawal_automatic``). Its
 presence is enough: a privacy stop never waits for the tombstone to validate.
@@ -26,6 +26,8 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from .site_roots import is_bucket
 
 SITE_ROOTS_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_SITE_ROOTS"
 WITHDRAWN_BLOCKER = "beta_screening_site_consent_withdrawn"
@@ -65,7 +67,7 @@ def site_withdrawal_state(site_id: str, *, environ: Mapping[str, str] | None = N
         try:
             with os.scandir(root) as entries:
                 buckets = [Path(entry.path) for entry in entries
-                           if entry.name != "scenes" and entry.is_dir(follow_symlinks=False)]
+                           if is_bucket(entry.name) and entry.is_dir(follow_symlinks=False)]
         except OSError:
             unknown = True
             continue

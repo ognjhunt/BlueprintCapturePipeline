@@ -1,46 +1,40 @@
-"""Write one finished website job's job packet folder from files the operator pulled from the host.
+"""Write one website job's job packet folder from files the operator pulled from the host.
 
-The job packet is the unit of the product (owner direction 2026-11-12): what a deployment company
-gets to evaluate a job without visiting. V1 is by hand: the operator pulls the job's files, runs this
-offline (no network, no door, no provider), checks the folder and carries it. Nothing here sends it.
+The job packet is the unit of the product (owner direction 2026-11-12): what an approved deployment company reads
+to judge one job without a visit. Sharing is the service (owner decision 2026-11-12): a job is shared in full, agreed
+once at submission. V1 is by hand: the operator pulls the job's files, runs this offline (no network, no door, no
+provider), checks the folder and carries it. Nothing here sends it.
 
-Two levels:
+One packet holds, when each exists: a packet number, a status line, the site's own sentence and constraints, the
+video without its sound, the first look on paper, the 3D reconstruction, the simulation and the success rule, the
+early trial (a scripted run kept apart as a check of the simulation) and how to answer. A packet is never held for
+what does not exist yet: the status line says what is not in it.
 
-- ``summary`` (the default) is what may be shared today. Every site has agreed only that its video
-  stays private (the Pipeline records website derivatives as ``admitted_for_internal_development``,
-  ``public_redistribution_allowed: false``, ``website_native_background.construction_rights_admission``).
-  The summary is built so it cannot carry site text: every value on it is a sentence written here, a
-  robot or software name taken from the Pipeline's own catalog (``robot_spec_catalog``,
-  ``config/beta_policy_candidates.v1.json``) for an id the input names exactly, a member of an
-  enumerated set (``website_robot_fit.VERDICTS``, its check names and results,
-  ``beta_policy_screening_result.CANDIDATE_STATUSES``) printed in this module's own words, or a whole
-  number of tries. Anything else is left out and counted. Its folder and manifest carry nothing that
-  identifies the site; what ties the packet to the job goes in an operator record beside the folder.
-- ``full`` adds the site's sentence, the video, the simulation, the success rule and the trial clips.
-  It is refused unless (a) the task context's ``capture_rights.statement_version`` is a recording
-  statement that covers sharing (``SHARING_PERMISSION_STATEMENT_VERSIONS``, empty until the owner
-  words one), or (b) the operator states the capture is Blueprint's own, names the approver, the date
-  and quotes the owner, and the capture id is on ``config/blueprint_owned_captures.v1.json``. No task
-  context field tells Blueprint's own capture from a site's, so the allow-list is the only evidence.
-  Every input must be bound to this job, and the full manifest keeps the job's ids.
+Who may get one: (a) the task context's ``capture_rights.statement_version`` is a recording statement that covers
+sharing (``SHARING_PERMISSION_STATEMENT_VERSIONS``); a job under any older version is refused until the site accepts
+the current one; or (b) the operator states the capture is Blueprint's own, names the approver, the date and quotes
+the owner, and the capture id is on ``config/blueprint_owned_captures.v1.json``.
 
-Both levels refuse what the Pipeline itself would treat as withdrawn, not consented, ended or closed:
+What never goes in: the site's name or organisation, its street address, contact details, sign-in or upload tokens,
+links and storage paths. Blueprint makes the introduction by hand. So the sheet is written from named fields only,
+no record that carries such a field is copied, and the job's ids go in an operator record beside the folder.
+
+Refused, as the Pipeline itself would treat the job:
 
 - withdrawal: ``screening_site_withdrawal.site_withdrawal_state`` over the pull root (every
-  ``<root>[/<bucket>]/scenes/<site>/website_withdrawal/tombstone.json``) and
-  ``website_atlas_preview_store.capture_withdrawn`` on the capture; the pull root's ``pull_record.json``
-  must show every such place, and the capture's takedown directory, pulled or absent on the host;
-- delivery: ``consent_takedown.evaluate_delivery_time_takedown_gate`` must say ``allowed`` (an open
-  takedown manifest or a consent state the files cannot verify is refused), and every consent file
+  ``<root>[/<bucket>]/scenes/<site>/website_withdrawal/tombstone.json``; a hidden folder is never a bucket,
+  ``site_roots.is_bucket``) and ``website_atlas_preview_store.capture_withdrawn`` on the capture;
+- delivery: ``consent_takedown.evaluate_delivery_time_takedown_gate`` must say ``allowed``, and every consent file
   present must parse;
 - consent: ``consent_takedown.read_consent_state`` (its consent files) and
   ``consent_normalization.resolve_consent_signals`` on the task context, which must be ``active``;
-- authority ended: ``pubsub_handoff_listener.AUTHORITY_ENDING_CODES`` and ``authority_ending_code``
-  over every text in the job ledger and its terminal receipt, and status ``terminal_authority_ended``;
-- owner closed: ``website_run_closed_by_owner`` matched as a whole token, as the unreleased
-  ``job_retry_policy.owner_closed`` does (not on ``main`` yet, so the literal is matched here).
+- authority ended: ``pubsub_handoff_listener.AUTHORITY_ENDING_CODES`` and ``authority_ending_code`` over every text
+  in the job ledger and its terminal receipt, and status ``terminal_authority_ended``;
+- owner closed: ``website_run_closed_by_owner`` matched as a whole token.
 
-A record that cannot be read, or is not a regular file, refuses too: these are privacy and rights stops.
+Every file the tool reads must be pulled, or recorded absent on the host in the pull root's ``pull_record.json``:
+a pull cut short is a refusal naming the missing file, never "nothing recorded". A record that cannot be read, or
+is not a regular file, refuses too. Every refusal names the place or file it is about.
 """
 from __future__ import annotations
 
@@ -53,6 +47,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import zipfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -60,34 +55,40 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "job_packet_manifest.v2"
-OPERATOR_RECORD_SCHEMA = "job_packet_operator_record.v1"
+from .site_roots import is_bucket
+
+SCHEMA_VERSION = "job_packet_manifest.v3"
+OPERATOR_RECORD_SCHEMA = "job_packet_operator_record.v2"
 EARLY_TRIAL_LABEL = ("Early trial of openly available robot software. It does not predict what a "
                      "deployment company's own robot would do.")
 TERMS_LINE = ("This packet is shared for evaluating one job. Do not pass it on, train on it, or keep it "
               "after you are asked to delete it.")
-#: Recording statement versions whose wording lets the site's video and simulation go to approved
-#: deployment companies. Empty: no statement covers sharing yet (WebApp ``recordingRightsStatement``
-#: v2 does not). A version is added only in a reviewed change once the owner has worded it.
-SHARING_PERMISSION_STATEMENT_VERSIONS: tuple[str, ...] = ()
+#: Recording statement versions whose wording shares the job in full with approved deployment companies. The
+#: website records the accepted version at ``request.consent_attestation.statement_version``; it reaches the task
+#: context as ``capture_rights.statement_version``. The last one is the current statement.
+SHARING_PERMISSION_STATEMENT_VERSIONS: tuple[str, ...] = ("2026-11-12.v4",)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OWNED_CAPTURES_SCHEMA = "blueprint_owned_captures.v1"
 OWNED_CAPTURES_PATH = REPO_ROOT / "config" / "blueprint_owned_captures.v1.json"
 POLICY_CATALOG_PATH = REPO_ROOT / "config" / "beta_policy_candidates.v1.json"
 TASK_CONTEXT_SCHEMA = "website_site_task_context.v1"
+FIT_TABLE_SCHEMA = "website_robot_fit_table.v1"
 #: ``job_retry_policy.OWNER_CLOSED_CODE`` in unreleased work; matched as its whole token, as there.
 OWNER_CLOSED_CODE = "website_run_closed_by_owner"
 _OWNER_CLOSED = re.compile(r"(?<![A-Za-z0-9_-])" + OWNER_CLOSED_CODE + r"(?![A-Za-z0-9_-])")
 AUTHORITY_ENDED_STATUS = "terminal_authority_ended"
-LEVELS = ("summary", "full")
 NOT_RECORDED = "not recorded"
 INVALID = "not recorded (invalid value)"
 GENERIC_KIND = "a pick-up-and-put-down job"
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v"}
 USD_SUFFIXES = {".usd", ".usda", ".usdc", ".usdz"}
-RECONSTRUCTION_SUFFIXES = {".spz", ".ply", ".glb"}
+TASK_CONTEXT = "pipeline/website_task_context.json"
+PREPARATION = "pipeline/website_scene_preparation"
+TAKEDOWN_DIRECTORY = "pipeline/consent_takedown"
 #: The consent files ``consent_takedown.read_consent_state`` reads, checked to be regular files first.
 CONSENT_FILES = ("raw/rights_consent.json", "rights_consent.json", "raw/manifest.json", "capture_descriptor.json")
+#: The job's own records the hard stops read, beside the task context.
+JOB_RECORDS = ("pipeline_job_ledger.json", "pipeline_job_terminal_receipt.json")
 #: The checks ``website_robot_fit`` writes (its ``_check`` calls) and their results, in fixed words.
 CHECK_WORDS = {"stance": "a place to stand", "reach": "reach", "payload": "payload",
                "cycle_time": "cycle time", "access": "access from the entrance"}
@@ -108,7 +109,7 @@ STATUS_WORDS = {"pending": "waiting to run", "waitlisted": "waiting for budget",
 CAMPAIGN_WORDS = {"completed": "completed", "running": "still running", "queued": "waiting to run",
                   "blocked": "stopped", "reconciliation_required": "being reconciled"}
 MAX_TRIES = 1000
-#: The most left-out rows the summary counts out loud; above it, "more than" this.
+#: The most left-out rows the sheet counts out loud; above it, "more than" this.
 MAX_SHOWN_LEFT_OUT = 20
 MAX_APPROVAL_AGE_DAYS = 90
 #: Plain sentences for the scene estimate flags (``atlas_scene_estimates``).
@@ -130,7 +131,7 @@ KIND_WORDS = {"articulated": "open or close one moving part of a fixture (a door
 
 
 class JobPacketRefused(Exception):
-    """A refusal with a typed code; nothing has been written."""
+    """A refusal with a typed code and the place it is about; nothing has been written."""
 
     def __init__(self, code: str, detail: str = "") -> None:
         super().__init__(code + (f": {detail}" if detail else ""))
@@ -144,7 +145,6 @@ class JobInputs:
     configured_scene_dir: Path | None = None
     screening_publication: Path | None = None
     review_videos_dir: Path | None = None
-    first_look_file: Path | None = None
     video: Path | None = None
     #: The directory the operator pulled into, laid out as the host's site roots
     #: (``<root>[/<bucket>]/scenes/site-<request>/captures/<capture>``) with its ``pull_record.json``.
@@ -166,7 +166,7 @@ def _inside(root: Path, path: Path) -> Path:
     """The real path behind ``path``; refused when it (or a link on the way) leaves ``root``."""
     real_root, real = root.resolve(), path.resolve()
     if real != real_root and not real.is_relative_to(real_root):
-        raise JobPacketRefused("job_packet_input_symlink_outside_inputs", path.name)
+        raise JobPacketRefused("job_packet_input_symlink_outside_inputs", str(path))
     return real
 
 
@@ -185,17 +185,17 @@ def _regular(real: Path, name: str) -> Path:
 def _file_argument(path: Path) -> tuple[Path, Path]:
     """A single named input file: its directory is its root; the file itself may not be a link."""
     if path.is_symlink():
-        raise JobPacketRefused("job_packet_input_symlink_outside_inputs", path.name)
+        raise JobPacketRefused("job_packet_input_symlink_outside_inputs", str(path))
     if not os.path.lexists(path):
-        raise JobPacketRefused("job_packet_input_missing", path.name)
-    _regular(path, path.name)
+        raise JobPacketRefused("job_packet_input_missing", str(path))
+    _regular(path, str(path))
     return path.parent, path
 
 
 def _walk(root: Path) -> list[Path]:
     """Every regular file under ``root``, in order. Links must stay inside; anything else is refused."""
     if root.is_symlink() or not root.is_dir():
-        raise JobPacketRefused("job_packet_input_missing", root.name)
+        raise JobPacketRefused("job_packet_input_missing", str(root))
     files: list[Path] = []
     for directory, dirnames, filenames in os.walk(root, followlinks=False):
         here = Path(directory)
@@ -208,7 +208,7 @@ def _walk(root: Path) -> list[Path]:
             real = _inside(root, path)
             if path.is_symlink() and real.is_dir():
                 continue
-            _regular(real, name)
+            _regular(real, str(path.relative_to(root)))
             files.append(path)
     return files
 
@@ -221,17 +221,18 @@ def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _read_json(root: Path, path: Path, *, required: bool = False) -> dict[str, Any] | None:
+    name = path.relative_to(root).as_posix() if path.is_relative_to(root) and path != root else path.name
     if not os.path.lexists(path):
         if required:
-            raise JobPacketRefused("job_packet_input_missing", path.name)
+            raise JobPacketRefused("job_packet_input_missing", name)
         return None
-    real = _regular(_inside(root, path), path.name)
+    real = _regular(_inside(root, path), name)
     try:
         value = json.loads(real.read_bytes().decode("utf-8"), object_pairs_hook=_unique_pairs)
     except (OSError, UnicodeError, ValueError) as exc:
-        raise JobPacketRefused("job_packet_input_unreadable", path.name) from exc
+        raise JobPacketRefused("job_packet_input_unreadable", name) from exc
     if not isinstance(value, dict):
-        raise JobPacketRefused("job_packet_input_unreadable", path.name)
+        raise JobPacketRefused("job_packet_input_unreadable", name)
     return value
 
 
@@ -255,75 +256,95 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _texts(value: Any) -> Iterable[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, Mapping):
-        for item in value.values():
-            yield from _texts(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _texts(item)
+def _in_capture(capture_dir: Path, host_path: Any) -> str | None:
+    """A host path inside this capture (``.../scenes/<site>/captures/<capture>/<rest>``) as ``<rest>``, else None."""
+    marker = f"/scenes/{capture_dir.parent.parent.name}/captures/{capture_dir.name}/"
+    if not isinstance(host_path, str) or host_path.count(marker) != 1:
+        return None
+    rest = host_path.split(marker, 1)[1]
+    return None if any(part in {"", ".", ".."} for part in rest.split("/")) else rest
 
 
-# --- the hard stops -----------------------------------------------------------------------------------
+# --- the pull record -----------------------------------------------------------------------------------
 
 PULL_RECORD = "pull_record.json"
 PULL_RECORD_SCHEMA = "job_packet_pull_record.v1"
-TAKEDOWN_DIRECTORY = "pipeline/consent_takedown"
+WITHDRAWAL_NOT_PULLED = "job_packet_withdrawal_state_not_pulled"
+INPUT_NOT_PULLED = "job_packet_input_not_pulled"
+
+
+@dataclass(frozen=True)
+class PullRecord:
+    """The operator's own statement of what was pulled and what the host lacked.
+
+    ``buckets`` is every site-root bucket the host has (``""`` for the root itself, from ``door ls``; a hidden name
+    is not a bucket and is ignored) and ``absent_on_host`` every place the door reported missing, relative to the
+    pull root. A place neither pulled nor recorded absent is a refusal naming it.
+    """
+
+    root: Path
+    capture: str
+    buckets: tuple[str, ...]
+    absent: frozenset[str]
+    value: dict[str, Any]
+
+    def pulled(self, place: str, *, code: str = INPUT_NOT_PULLED, directory: bool = False) -> bool:
+        """True when ``place`` was pulled, False when it is recorded absent on the host."""
+        here = self.root / place
+        if place in self.absent:
+            if os.path.lexists(here):
+                raise JobPacketRefused(code, f"{place} is recorded absent but present")
+            return False
+        # A file that is there is checked by its reader (a link, a pipe or a hard link is refused there).
+        if (here.is_symlink() or not here.is_dir()) if directory else not os.path.lexists(here):
+            raise JobPacketRefused(code, f"pull {place}, or record it absent")
+        return True
+
+    def in_capture(self, relative: str, **kwargs: Any) -> bool:
+        return self.pulled(f"{self.capture}/{relative}", **kwargs)
 
 
 def _layout(capture_dir: Path, pull_root: Path | None) -> tuple[Path, str]:
     """The pull root and the capture's bucket ('' at the root), when the layout is the host's; else a refusal."""
     if pull_root is None:
-        raise JobPacketRefused("job_packet_pull_root_required")
+        raise JobPacketRefused("job_packet_pull_root_required", "pass --pull-root")
     root = Path(pull_root)
     if root.is_symlink() or not root.is_dir():
-        raise JobPacketRefused("job_packet_withdrawal_state_unknown", "pull root")
+        raise JobPacketRefused("job_packet_withdrawal_state_unknown", f"pull root {root} is not a directory")
     try:
         relative = capture_dir.absolute().relative_to(root.absolute()).parts
     except ValueError:
-        raise JobPacketRefused("job_packet_withdrawal_state_unknown", "capture outside the pull root") from None
+        raise JobPacketRefused("job_packet_withdrawal_state_unknown", f"{capture_dir} is outside the pull root") from None
     shape = relative[-4:]
     if (len(relative) not in (4, 5) or shape[0] != "scenes" or not shape[1].startswith("site-")
             or shape[2] != "captures" or any(part.startswith(".") for part in relative)):
-        raise JobPacketRefused("job_packet_withdrawal_state_unknown", "layout")
+        raise JobPacketRefused("job_packet_withdrawal_state_unknown",
+                               f"{capture_dir} is not laid out as <root>[/<bucket>]/scenes/site-<request>/captures/<capture>")
     return root, relative[0] if len(relative) == 5 else ""
 
 
-def _pulled_or_absent(root: Path, capture_dir: Path, bucket: str) -> None:
-    """Every place a withdrawal or takedown record could live was pulled, or recorded as absent on the host.
-
-    The operator writes ``pull_record.json`` at the pull root: ``buckets`` (every site-root bucket the
-    host has, ``""`` for the root itself, from ``door ls``) and ``absent_on_host`` (the places the door
-    reported missing). A place neither pulled nor recorded absent is a refusal naming it.
-    """
+def _pull_record(root: Path, capture_dir: Path, bucket: str) -> PullRecord:
     try:
-        record = _read_json(root, root / PULL_RECORD, required=True)
+        value = _read_json(root, root / PULL_RECORD, required=True)
     except JobPacketRefused as exc:
-        raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", "write pull_record.json at the pull root") from exc
-    buckets, absent = record.get("buckets"), record.get("absent_on_host")
-    if (record.get("schema_version") != PULL_RECORD_SCHEMA or not isinstance(buckets, list) or not isinstance(absent, list)
+        raise JobPacketRefused(WITHDRAWAL_NOT_PULLED, f"write {PULL_RECORD} at the pull root ({exc})") from exc
+    buckets, absent = value.get("buckets"), value.get("absent_on_host")
+    if (value.get("schema_version") != PULL_RECORD_SCHEMA or not isinstance(buckets, list) or not isinstance(absent, list)
             or not all(isinstance(item, str) and "/" not in item and item not in {".", ".."} for item in buckets)
             or not all(isinstance(item, str) for item in absent) or bucket not in buckets):
-        raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", "pull_record.json invalid")
+        raise JobPacketRefused(WITHDRAWAL_NOT_PULLED, f"{PULL_RECORD} is not a {PULL_RECORD_SCHEMA} record naming the "
+                               f"capture's bucket {bucket!r}")
+    listed = tuple(item for item in buckets if item == "" or is_bucket(item))
     local = {""} if (root / "scenes").is_dir() else set()
-    local |= {entry.name for entry in root.iterdir() if entry.is_dir() and not entry.is_symlink()
-              and entry.name != "scenes" and (entry / "scenes").is_dir()}
-    if not local <= set(buckets):
-        raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", "a pulled bucket is not in pull_record.json")
-    site = capture_dir.parent.parent.name
-    capture_relative = capture_dir.absolute().relative_to(root.absolute()).as_posix()
-    needed = [f"{b}/scenes/{site}/website_withdrawal".lstrip("/") for b in buckets]
-    needed.append(f"{capture_relative}/{TAKEDOWN_DIRECTORY}")
-    for place in needed:
-        here = root / place
-        if place in absent:
-            if os.path.lexists(here):
-                raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", f"{place} is recorded absent but present")
-        elif here.is_symlink() or not here.is_dir():
-            raise JobPacketRefused("job_packet_withdrawal_state_not_pulled", f"pull {place}, or record it absent")
+    local |= {entry.name for entry in root.iterdir() if is_bucket(entry.name) and entry.is_dir()
+              and not entry.is_symlink() and (entry / "scenes").is_dir()}
+    if not local <= set(listed):
+        raise JobPacketRefused(WITHDRAWAL_NOT_PULLED, f"pulled bucket(s) {sorted(local - set(listed))} are not in {PULL_RECORD}")
+    return PullRecord(root=root, capture=capture_dir.absolute().relative_to(root.absolute()).as_posix(),
+                      buckets=listed, absent=frozenset(absent), value=value)
 
+
+# --- the hard stops -----------------------------------------------------------------------------------
 
 def _ended_or_closed(texts: list[str]) -> str | None:
     from .pubsub_handoff_listener import AUTHORITY_ENDING_CODES, authority_ending_code
@@ -362,82 +383,92 @@ def _expired(value: Any, now: datetime) -> bool:
     return False
 
 
-def job_state_refusal(capture_dir: Path, context: Mapping[str, Any], *, pull_root: Path | None = None,
-                      now: datetime | None = None) -> str | None:
-    """Why this job may not be packed at any level (withdrawn, not consented, ended, closed), or None."""
+def check_job_state(capture_dir: Path, context: Mapping[str, Any], *, pull_root: Path | None = None,
+                    now: datetime | None = None) -> PullRecord:
+    """Refuse a job that is withdrawn, not consented, ended or closed, or whose state was not pulled; else its pull record."""
     from .consent_normalization import resolve_consent_signals
     from .consent_takedown import TAKEDOWN_MANIFEST_RELATIVE_PATH, evaluate_delivery_time_takedown_gate
     from .screening_site_withdrawal import SITE_ROOTS_ENV, site_withdrawal_state
     from .website_atlas_preview_store import capture_withdrawn
 
-    try:
-        root, bucket = _layout(capture_dir, pull_root)
-    except JobPacketRefused as exc:
-        return exc.code
+    root, bucket = _layout(capture_dir, pull_root)
     site = capture_dir.parent.parent.name
     # Whatever a tombstone is (a file, a directory, a link, a pipe), its presence is a withdrawal; answering
-    # first keeps a pipe from ever being opened by the pipeline's readers below.
+    # first keeps a pipe from ever being opened by the pipeline's readers below. Looked for beside every folder,
+    # hidden or not: what is not a bucket need not be pulled, but a tombstone found anywhere still refuses.
     places = [root / "scenes" / site] + [entry / "scenes" / site for entry in root.iterdir() if entry.name != "scenes"]
-    if any(os.path.lexists(place / "website_withdrawal" / "tombstone.json") for place in places):
-        return "job_packet_capture_withdrawn"
+    for place in places:
+        tombstone = place / "website_withdrawal" / "tombstone.json"
+        if os.path.lexists(tombstone):
+            raise JobPacketRefused("job_packet_capture_withdrawn", tombstone.relative_to(root).as_posix())
     site_state = site_withdrawal_state(site, environ={SITE_ROOTS_ENV: str(root)})
     if site_state == "withdrawn":
-        return "job_packet_capture_withdrawn"
+        raise JobPacketRefused("job_packet_capture_withdrawn", f"scenes/{site}/website_withdrawal in the pulled site roots")
     if site_state != "not_withdrawn":
-        return "job_packet_withdrawal_state_unknown"
-    try:
-        _pulled_or_absent(root, capture_dir, bucket)
-    except JobPacketRefused as exc:
-        return exc.code
+        raise JobPacketRefused("job_packet_withdrawal_state_unknown", f"scenes/{site}/website_withdrawal could not be read")
+    pull = _pull_record(root, capture_dir, bucket)
+    for name in pull.buckets:
+        pull.pulled(f"{name}/scenes/{site}/website_withdrawal".lstrip("/"), code=WITHDRAWAL_NOT_PULLED, directory=True)
+    pull.in_capture(TAKEDOWN_DIRECTORY, code=WITHDRAWAL_NOT_PULLED, directory=True)
+    for relative in CONSENT_FILES:
+        pull.in_capture(relative, code=WITHDRAWAL_NOT_PULLED)
+    for relative in JOB_RECORDS:
+        pull.in_capture(relative)
     # Every consent or takedown file the pipeline reads must be a regular file that parses as an object;
     # a present file that does not is a refusal, never skipped.
     consent_records = []
-    try:
-        for relative in (*CONSENT_FILES, TAKEDOWN_MANIFEST_RELATIVE_PATH):
-            if os.path.lexists(capture_dir / relative):
+    for relative in (*CONSENT_FILES, TAKEDOWN_MANIFEST_RELATIVE_PATH):
+        if os.path.lexists(capture_dir / relative):
+            try:
                 consent_records.append((relative, _read_json(capture_dir, capture_dir / relative)))
-    except JobPacketRefused:
-        return "job_packet_consent_state_unreadable"
+            except JobPacketRefused as exc:
+                raise JobPacketRefused("job_packet_consent_state_unreadable", relative) from exc
     if capture_withdrawn(capture_dir):
-        return "job_packet_capture_withdrawn"
+        raise JobPacketRefused("job_packet_capture_withdrawn", "the capture's consent source")
     for relative, value in consent_records:  # each one, not only the first the reader stops at
         if relative == TAKEDOWN_MANIFEST_RELATIVE_PATH:
             continue
         signals = resolve_consent_signals(value)
         if signals["state"] == "revoked":
-            return "job_packet_capture_withdrawn"
+            raise JobPacketRefused("job_packet_capture_withdrawn", relative)
         if signals["has_consent_fields"] and signals["state"] != "active":
-            return "job_packet_consent_not_active"
+            raise JobPacketRefused("job_packet_consent_not_active", relative)
     signals = resolve_consent_signals(context)
+    where = f"{TASK_CONTEXT} capture_rights"
     if signals["state"] == "revoked":
-        return "job_packet_capture_withdrawn"
+        raise JobPacketRefused("job_packet_capture_withdrawn", where)
     if signals["state"] != "active":
-        return "job_packet_consent_not_active"
+        raise JobPacketRefused("job_packet_consent_not_active", where)
     if _expired(context, now or datetime.now(timezone.utc)):
-        return "job_packet_consent_expired"
+        raise JobPacketRefused("job_packet_consent_expired", where)
     rights = context.get("capture_rights")
     if (not isinstance(rights, Mapping) or rights.get("derived_scene_generation_allowed") is not True
             or rights.get("consent_revoked") is not False):
-        return "job_packet_capture_rights_not_granted"
-    try:
-        ledger = _read_json(capture_dir, capture_dir / "pipeline_job_ledger.json")
-        receipt = _read_json(capture_dir, capture_dir / "pipeline_job_terminal_receipt.json")
-    except JobPacketRefused:
-        return "job_packet_job_state_unreadable"
+        raise JobPacketRefused("job_packet_capture_rights_not_granted", where)
+    records = {}
+    for relative in JOB_RECORDS:
+        try:
+            records[relative] = _read_json(capture_dir, capture_dir / relative)
+        except JobPacketRefused as exc:
+            raise JobPacketRefused("job_packet_job_state_unreadable", relative) from exc
+    ledger, receipt = records["pipeline_job_ledger.json"], records["pipeline_job_terminal_receipt.json"]
     if ledger is None:
-        return "job_packet_job_ledger_missing"
+        raise JobPacketRefused("job_packet_job_ledger_missing", "pipeline_job_ledger.json")
     ended = _ended_or_closed([*_keys_and_texts(ledger), *_keys_and_texts(receipt or {})])
     if ended:
-        return ended
+        raise JobPacketRefused(ended, "pipeline_job_ledger.json or pipeline_job_terminal_receipt.json")
     if ledger.get("status") == AUTHORITY_ENDED_STATUS or (receipt or {}).get("status") == "authority_ended":
-        return "job_packet_capture_authority_ended"
+        raise JobPacketRefused("job_packet_capture_authority_ended", "pipeline_job_ledger.json or pipeline_job_terminal_receipt.json")
     if ledger.get("status") == "corrupt" or not isinstance(ledger.get("status"), str):
-        return "job_packet_job_state_unreadable"
+        raise JobPacketRefused("job_packet_job_state_unreadable", "pipeline_job_ledger.json")
     # A packet is a delivery: the pipeline's own serve-time gate must allow it.
     gate = evaluate_delivery_time_takedown_gate(capture_root=capture_dir, surface="job_packet")
     if gate.get("status") != "allowed":
-        return "job_packet_delivery_gate_" + re.sub(r"[^a-z0-9_]", "_", str(gate.get("status")))
-    return None
+        source = _mapping(gate.get("consent")).get("source_path")
+        raise JobPacketRefused("job_packet_delivery_gate_" + re.sub(r"[^a-z0-9_]", "_", str(gate.get("status"))),
+                               f"{TAKEDOWN_MANIFEST_RELATIVE_PATH}; consent source: "
+                               + (os.path.relpath(source, capture_dir) if source else "none found"))
+    return pull
 
 
 def owned_capture_ids(path: Path | None = None) -> set[str]:
@@ -453,34 +484,36 @@ def owned_capture_ids(path: Path | None = None) -> set[str]:
                 raise ValueError("id")
             ids.append(row["capture_id"])
     except (OSError, UnicodeError, ValueError, TypeError, AttributeError) as exc:
-        raise JobPacketRefused("job_packet_owned_capture_list_invalid") from exc
+        raise JobPacketRefused("job_packet_owned_capture_list_invalid", str(path or OWNED_CAPTURES_PATH)) from exc
     return set(ids)
 
 
-def permission_basis(level: str, context: Mapping[str, Any], *, owned: OwnedCaptureApproval | None,
+def permission_basis(context: Mapping[str, Any], *, owned: OwnedCaptureApproval | None,
                      owned_list: Path | None = None, now: datetime | None = None) -> dict[str, Any]:
-    """Which rule allows this level, or a refusal."""
-    if level == "summary":
-        return {"rule": "summary_only"}
+    """Which rule allows this job to be shared, or a refusal."""
     version = _mapping(context.get("capture_rights")).get("statement_version")
     if isinstance(version, str) and version in SHARING_PERMISSION_STATEMENT_VERSIONS:
         return {"rule": "site_sharing_permission", "statement_version": version}
     if owned is None:
-        raise JobPacketRefused("job_packet_full_level_requires_sharing_permission")
+        raise JobPacketRefused("job_packet_sharing_statement_not_accepted",
+                               f"the site must accept the current statement ({SHARING_PERMISSION_STATEMENT_VERSIONS[-1]}) "
+                               f"first; {TASK_CONTEXT} capture_rights.statement_version is {version!r}")
     try:
         approved_on = date.fromisoformat(owned.approved_on.strip()) if isinstance(owned.approved_on, str) else None
     except ValueError:
         approved_on = None
     if not owned.approved_by.strip() or not owned.approval_evidence.strip() or approved_on is None:
-        raise JobPacketRefused("job_packet_owned_capture_approval_missing")
+        raise JobPacketRefused("job_packet_owned_capture_approval_missing",
+                               "--approved-by, --approved-on (YYYY-MM-DD) and --approval-evidence")
     today = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
     if approved_on > today or (today - approved_on).days > MAX_APPROVAL_AGE_DAYS:
-        raise JobPacketRefused("job_packet_owned_capture_approval_out_of_date")
+        raise JobPacketRefused("job_packet_owned_capture_approval_out_of_date",
+                               f"--approved-on must be within the last {MAX_APPROVAL_AGE_DAYS} days")
     if owned.capture_id != context.get("capture_id"):
-        raise JobPacketRefused("job_packet_owned_capture_id_mismatch")
+        raise JobPacketRefused("job_packet_owned_capture_id_mismatch", f"--capture-id against {TASK_CONTEXT} capture_id")
     path = owned_list or OWNED_CAPTURES_PATH
     if owned.capture_id not in owned_capture_ids(path):
-        raise JobPacketRefused("job_packet_capture_not_blueprint_owned")
+        raise JobPacketRefused("job_packet_capture_not_blueprint_owned", f"the capture id is not on {path.name}")
     return {"rule": "blueprint_owned_capture", "capture_id": owned.capture_id,
             "approved_by": owned.approved_by.strip(), "approved_on": approved_on.isoformat(),
             "approval_evidence": owned.approval_evidence.strip(), "allow_list_sha256": _sha256(path)}
@@ -488,13 +521,13 @@ def permission_basis(level: str, context: Mapping[str, Any], *, owned: OwnedCapt
 
 # --- what the records say -----------------------------------------------------------------------------
 
-def _preparation(capture_dir: Path, handoff: Mapping[str, Any] | None) -> tuple[dict | None, Path | None]:
+def _preparation(capture_dir: Path, handoff: Mapping[str, Any] | None, pull: PullRecord) -> tuple[dict | None, Path | None]:
     """The preparation the handoff names (by digest), with the directory it sits in."""
-    base = capture_dir / "pipeline" / "website_scene_preparation"
-    candidates = [base / "preparation.json"]
-    if (base / "revisions").is_dir():
+    base = capture_dir / PREPARATION
+    candidates = [base / "preparation.json"] if pull.in_capture(f"{PREPARATION}/preparation.json") else []
+    if pull.in_capture(f"{PREPARATION}/revisions", directory=True):
         candidates += sorted((base / "revisions").glob("*/preparation.json"))
-    found = [(path, _read_json(capture_dir, path)) for path in candidates if os.path.lexists(path)]
+    found = [(path, _read_json(capture_dir, path)) for path in candidates]
     wanted = _mapping(handoff).get("preparation_digest")
     chosen = [row for row in found if wanted and row[1].get("digest") == wanted]
     if not chosen and len(found) == 1:
@@ -502,8 +535,43 @@ def _preparation(capture_dir: Path, handoff: Mapping[str, Any] | None) -> tuple[
     return (chosen[0][1], chosen[0][0].parent) if len(chosen) == 1 else (None, None)
 
 
+def _fit_table(capture_dir: Path, handoff: Mapping[str, Any] | None, preparation: Mapping[str, Any] | None,
+               context: Mapping[str, Any], pull: PullRecord) -> tuple[dict | None, str]:
+    """The fit table the handoff points to, read and checked as ``website_robot_fit_projection`` does.
+
+    The table and ``"shown"``; or None and why: ``"none"`` (no table for this job), ``"not_on_host"`` (recorded
+    absent), or ``"not_verified"`` (not the file the handoff names, or not bound to this job's preparation).
+    """
+    from .decision_evidence_contracts import canonical_digest
+    from .website_robot_fit import VERDICTS
+    hand = _mapping(handoff)
+    reference = (_mapping(hand.get("fit_check")).get("robot_fit_table") if hand.get("atlas_route") == "geometry_only"
+                 else hand.get("robot_fit_table"))
+    if not isinstance(reference, Mapping):
+        return None, "none"
+    relative = _in_capture(capture_dir, reference.get("path"))
+    if relative is None:
+        return None, "not_verified"
+    if not pull.in_capture(relative):
+        return None, "not_on_host"
+    table, prep = _read_json(capture_dir, capture_dir / relative), _mapping(preparation)
+    rows = table.get("rows")
+    if (hand.get("digest") != canonical_digest(hand, digest_field="digest")
+            or prep.get("digest") != canonical_digest(prep, digest_field="digest")
+            or _mapping(prep.get("binding")).get("task_context_digest") != context.get("context_digest")
+            or hand.get("preparation_digest") != prep.get("digest")
+            or table.get("schema_version") != FIT_TABLE_SCHEMA or table.get("preparation_digest") != prep.get("digest")
+            or table.get("table_digest") != canonical_digest(table, digest_field="table_digest")
+            or table.get("table_digest") != reference.get("digest")
+            or table.get("evidence_label") != "spec_bounded_estimate"
+            or table.get("physical_world_truth_claimed") is not False
+            or not isinstance(rows, list) or any(_mapping(row).get("verdict") not in VERDICTS for row in rows)):
+        return None, "not_verified"
+    return table, "shown"
+
+
 def kind_of_job(preparation: Mapping[str, Any] | None, context: Mapping[str, Any]) -> str:
-    """The kind of job in fixed words, chosen from structured fields only; never the site's sentence."""
+    """The kind of job in fixed words, chosen from structured fields."""
     prep = _mapping(preparation)
     strategy = _mapping(_mapping(prep.get("intake_request")).get("task")).get("strategy")
     destination = _mapping(prep.get("destination"))
@@ -528,12 +596,12 @@ def _robot_catalog() -> dict[str, Mapping[str, Any]]:
 
 
 def _policy_catalog() -> dict[str, Mapping[str, Any]]:
-    # The reviewed checkout's catalog, never the host override: its names are what the summary may print.
+    # The reviewed checkout's catalog, never the host override: its names are what the sheet prints.
     try:
         from .beta_policy_candidate_catalog import load_catalog
         return {row["candidate_id"]: row for row in load_catalog(POLICY_CATALOG_PATH)["candidates"]}
     except Exception as exc:  # noqa: BLE001 - e.g. BetaPolicyCatalogError for a group-writable file
-        raise JobPacketRefused("job_packet_policy_catalog_unreadable", type(exc).__name__) from exc
+        raise JobPacketRefused("job_packet_policy_catalog_unreadable", f"{POLICY_CATALOG_PATH} ({type(exc).__name__})") from exc
 
 
 def _left_out(dropped: int) -> list[str]:
@@ -545,11 +613,18 @@ def _left_out(dropped: int) -> list[str]:
             "sets this tool knows, or counts out of range."]
 
 
-def summary_fit_lines(table: Mapping[str, Any] | None) -> list[str]:
-    """The first look from the fit table, every value from the catalog or a fixed word."""
+def _range(value: Any, unit: str) -> str:
+    if value is None:
+        return NOT_RECORDED
+    if (isinstance(value, (list, tuple)) and len(value) == 2 and all(_number(v) is not None for v in value)
+            and float(value[0]) <= float(value[1])):
+        return f"{float(value[0]):.3g}–{float(value[1]):.3g} {unit}".strip()
+    return INVALID
+
+
+def fit_lines(table: Mapping[str, Any]) -> list[str]:
+    """The first look from the verified fit table: names from the catalog, verdicts and checks in fixed words."""
     from .website_robot_fit import VERDICTS
-    if not table:
-        return [f"First look: {NOT_RECORDED} (the job's robot fit table was not among the files given)."]
     catalog, rows, dropped, seen = _robot_catalog(), [], 0, set()
     for row in table.get("rows") if isinstance(table.get("rows"), list) else []:
         model = catalog.get(row.get("model_id")) if isinstance(row, Mapping) and isinstance(row.get("model_id"), str) else None
@@ -560,22 +635,33 @@ def summary_fit_lines(table: Mapping[str, Any] | None) -> list[str]:
             dropped += 1
         else:
             seen.add(model["model_id"])
-            open_checks = [f"{CHECK_WORDS[c['check']]} ({RESULT_WORDS[c['result']]})" for c in checks
-                           if c["result"] not in NOT_A_FAILED_CHECK]
-            rows.append((model, row["verdict"], open_checks))
+            rows.append((model, row["verdict"], checks))
     lines = ["Source: the pipeline's robot fit table.", ""]
-    if rows:
-        lines += ["| Robot | Maker | Kind | Fit | Checks not passed |", "|---|---|---|---|---|"]
-        for model, verdict, open_checks in rows:
-            lines.append(f"| {model['name']} | {model['manufacturer']} | {BODY_WORDS.get(model['body_type'], 'robot')} | "
-                         f"{VERDICT_WORDS[verdict]} | {', '.join(open_checks) or 'none'} |")
-        counts = Counter(verdict for _, verdict, _ in rows)
-        lines += ["", "Counts: " + ", ".join(f"{VERDICT_WORDS[k]}: {counts[k]}" for k in VERDICTS if counts[k])]
-    else:
-        lines.append("No row of the table could be shown.")
-    lines += [*_left_out(dropped), "",
-              "Checked against published specifications and the scene's estimated geometry (reach, payload, "
-              "base footprint, cycle time). It is not a test of any robot."]
+    if not rows:
+        return lines + ["No row of the table could be shown.", *_left_out(dropped)]
+    lines += ["| Robot | Maker | Kind | Fit | Checks not passed |", "|---|---|---|---|---|"]
+    for model, verdict, checks in rows:
+        open_checks = [f"{CHECK_WORDS[c['check']]} ({RESULT_WORDS[c['result']]})" for c in checks
+                       if c["result"] not in NOT_A_FAILED_CHECK]
+        lines.append(f"| {model['name']} | {model['manufacturer']} | {BODY_WORDS.get(model['body_type'], 'robot')} | "
+                     f"{VERDICT_WORDS[verdict]} | {', '.join(open_checks) or 'none'} |")
+    counts = Counter(verdict for _, verdict, _ in rows)
+    lines += ["", "Counts: " + ", ".join(f"{VERDICT_WORDS[k]}: {counts[k]}" for k in VERDICTS if counts[k]),
+              *_left_out(dropped)]
+    results = [(c["check"], c["result"]) for _, _, checks in rows for c in checks]
+    ran = [CHECK_WORDS[name] for name in CHECK_WORDS if any(c == name and r != "not_requested" for c, r in results)]
+    lines += ["", f"Checked against published specifications and the scene's estimated geometry: {', '.join(ran)}. "
+              "It is not a test of any robot."]
+    if any(c == "cycle_time" for c, _ in results) and all(r == "not_requested" for c, r in results if c == "cycle_time"):
+        lines.append("Cycle time was not checked: the site gave no target.")
+    inputs = _mapping(table.get("inputs"))
+    payload_unknown = sum(1 for _, _, checks in rows if any(c["check"] == "payload" and c["result"] == "unknown"
+                                                             for c in checks))
+    if payload_unknown and inputs.get("mass_basis") == "estimated":
+        mass = _range(inputs.get("mass_kg_range"), "kg")
+        lines.append(f"Payload is unknown for {payload_unknown} of the {len(rows)} robots listed: the object was not "
+                     "weighed, and its mass is estimated from the video only"
+                     + (f" (the paper check allows {mass})." if mass not in (NOT_RECORDED, INVALID) else "."))
     return lines
 
 
@@ -622,19 +708,21 @@ def _table_lines(rows: list, header: str) -> list[str]:
               for entry, status, scored, succeeded in rows)]
 
 
-def summary_trial_lines(publication: Mapping[str, Any] | None) -> list[str]:
+def trial_lines(publication: Mapping[str, Any] | None, clips: int = 0) -> list[str]:
     """The early trial of learned robot software, and apart from it any scripted check of the simulation.
 
     Every name is the catalog's; the two sections are never added together.
     """
     lines = [f"**{EARLY_TRIAL_LABEL}**", ""]
     if publication is None:
-        return lines + ["No early trial result is included: none was given to the tool for this job."]
+        return lines + ["No early trial of openly available robot software is in this packet."]
     rows, dropped, scripted_dropped = _trial_rows(publication)
     lines += _table_lines(rows["learned"], "Robot software") if rows["learned"] else ["No row of the trial could be shown."]
     lines += _left_out(dropped)
     campaign = CAMPAIGN_WORDS.get(publication.get("status")) if isinstance(publication.get("status"), str) else None
     lines += ["", f"Trial status: {campaign or NOT_RECORDED}. A zero is a valid result of the trial."]
+    if clips:
+        lines += ["", f"Clips of the trial's runs: {clips}, in `files/early-trial/clips/`."]
     if rows["scripted"] or scripted_dropped:
         lines += ["", f"## {SCRIPTED_CHECK_TITLE}", "", SCRIPTED_CHECK_SENTENCE, ""]
         lines += _table_lines(rows["scripted"], "Scripted run") if rows["scripted"] else ["No row of the check could be shown."]
@@ -644,27 +732,6 @@ def summary_trial_lines(publication: Mapping[str, Any] | None) -> list[str]:
 
 def _cell(value: Any) -> str:
     return str(value if value not in (None, "") else NOT_RECORDED).replace("|", "/").replace("\n", " ")
-
-
-def _full_fit_lines(table: Mapping[str, Any]) -> list[str]:
-    rows = [row for row in table.get("rows") or [] if isinstance(row, Mapping)]
-    lines = ["Source: the pipeline's robot fit table (`website_scene_preparation/handoff.json`).", ""]
-    if not rows:
-        return lines + ["The robot fit table has no rows."]
-    lines += ["| Robot | Maker | Kind | Fit | Reasons |", "|---|---|---|---|---|"]
-    for row in rows:
-        lines.append("| " + " | ".join(_cell(v) for v in (
-            row.get("name"), row.get("manufacturer"), BODY_WORDS.get(row.get("body_type"), row.get("body_type")),
-            VERDICT_WORDS.get(row.get("verdict"), row.get("verdict")),
-            "; ".join(str(r) for r in row.get("reasons") or []) or "none")) + " |")
-    return lines + ["", "Checked against published specifications and the scene's estimated geometry. It is not "
-                    "a test of any robot."]
-
-
-def _full_trial_lines(publication: Mapping[str, Any] | None) -> list[str]:
-    # The same rows as the summary: which section a row belongs in is decided from the catalog either way,
-    # and the publication itself is attached under files/early-trial/.
-    return summary_trial_lines(publication)
 
 
 def _length(value: Any) -> str:
@@ -681,15 +748,6 @@ def _point(value: Any) -> str:
         return NOT_RECORDED
     if isinstance(value, (list, tuple)) and len(value) in (2, 3) and all(_number(v) is not None for v in value):
         return "(" + ", ".join(f"{float(v):.3f}" for v in value) + ") m"
-    return INVALID
-
-
-def _range(value: Any, unit: str) -> str:
-    if value is None:
-        return NOT_RECORDED
-    if (isinstance(value, (list, tuple)) and len(value) == 2 and all(_number(v) is not None for v in value)
-            and float(value[0]) <= float(value[1])):
-        return f"{float(value[0]):.3g}–{float(value[1]):.3g} {unit}".strip()
     return INVALID
 
 
@@ -713,7 +771,7 @@ def done_sentence(contract: Mapping[str, Any] | None, *, object_name: str | None
                   assumption: Mapping[str, Any] | None = None) -> str:
     """What counts as done, in words a person can check, built only from the sealed contract's fields."""
     if not isinstance(contract, Mapping):
-        return "What counts as done: not recorded (no sealed success contract was given to the tool)."
+        return "No success rule is in this packet yet. It will follow with the simulation."
     criteria = _mapping(contract.get("criteria"))
     target = _mapping(criteria.get("surface_target"))
     thing = f"the {object_name}" if object_name else f"the object (its name: {NOT_RECORDED})"
@@ -772,15 +830,16 @@ def done_sentence(contract: Mapping[str, Any] | None, *, object_name: str | None
             + _site_answer_words(assumption, _mapping(contract.get("provenance"))))
 
 
-def _measured_and_estimated(preparation: Mapping[str, Any] | None, base_scene: Mapping[str, Any] | None,
-                            fit_table: Mapping[str, Any] | None, publication: Mapping[str, Any] | None,
-                            context: Mapping[str, Any]) -> tuple[list[str], list[str]]:
-    prep = _mapping(preparation)
+def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[str, Any] | None,
+                            fit_table: Mapping[str, Any] | None, publication: Mapping[str, Any] | None
+                            ) -> tuple[list[str], list[str]]:
+    prep = preparation
     residual = _length(_mapping(_mapping(prep.get("registration")).get("task_region")).get("trimmed_rmse_m"))
     measured = [f"How closely the video's geometry and the reconstruction line up around the task (registration "
                 f"residual, trimmed RMS): {residual}, in the scene's estimated metres."]
     frame = _mapping(prep.get("coordinate_frame"))
-    band = _mapping(_mapping(fit_table).get("inputs")).get("scale_band")
+    inputs = _mapping(_mapping(fit_table).get("inputs"))
+    band = inputs.get("scale_band")
     error = _number(_mapping(_mapping(prep.get("authoring_inputs")).get("metric_envelope")).get("maximum_dimension_relative_error"))
     estimated = [f"Scale: basis {_cell(frame.get('scale_authority'))}; physical scale measured: "
                  f"{_cell(frame.get('physical_scale_measured'))}. Scale band: "
@@ -793,15 +852,17 @@ def _measured_and_estimated(preparation: Mapping[str, Any] | None, base_scene: M
             and all(_number(v) is not None for v in (*low, *high)) and all(a <= b for a, b in zip(low, high, strict=True))):
         estimated.append("Object size: " + " × ".join(_length(b - a) for a, b in zip(low, high, strict=True))
                          + ", from the video.")
-    else:
-        estimated.append(f"Object size: {NOT_RECORDED}.")
     bounds = _mapping(_mapping(prep.get("physics")).get("bounds"))
-    estimated.append(f"Mass: {_range(bounds.get('mass_kg'), 'kg')}, a prior from the object's size, not weighed.")
-    estimated.append(f"Friction: static {_range(bounds.get('static_friction'), '')}, dynamic "
-                     f"{_range(bounds.get('dynamic_friction'), '')}; prior ranges, not measured.")
-    weight = _mapping(context.get("operator_task_details")).get("item_weight")
-    if isinstance(weight, str) and weight.strip():
-        estimated.append(f"The site stated the object's weight as \"{weight.strip()}\"; not checked.")
+    if "mass_kg" in bounds:
+        estimated.append(f"Mass used in the simulation: {_range(bounds.get('mass_kg'), 'kg')}, a prior from the object's "
+                         "size, not weighed.")
+    if "static_friction" in bounds or "dynamic_friction" in bounds:
+        estimated.append(f"Friction: static {_range(bounds.get('static_friction'), '')}, dynamic "
+                         f"{_range(bounds.get('dynamic_friction'), '')}; prior ranges, not measured.")
+    straight, path = _range(inputs.get("straight_line_m"), "m"), _range(inputs.get("carry_path_m"), "m")
+    if straight not in (NOT_RECORDED, INVALID) and path not in (NOT_RECORDED, INVALID):
+        estimated.append(f"Carry distance: {straight} in a straight line, {path} along the carry path, from the scene's "
+                         "estimated geometry.")
     codes = {row["code"] for row in _mapping(base_scene).get("scene_estimates") or []
              if isinstance(row, Mapping) and isinstance(row.get("code"), str)}
     codes |= {code for code in _mapping(_mapping(publication).get("scene_feasibility")).get("flags") or []
@@ -809,88 +870,87 @@ def _measured_and_estimated(preparation: Mapping[str, Any] | None, base_scene: M
     for code in sorted(codes):
         estimated.append(f"`{code}`: {ESTIMATE_SENTENCES.get(code, 'an estimate the scene rests on (no plain sentence recorded for this code).')}")
     if not codes:
-        estimated.append(f"Scene estimate flags (`scene_estimate:*`): none recorded{'' if base_scene else ' (base_scene.json not given)'}.")
+        estimated.append("Scene estimate flags (`scene_estimate:*`): " + (
+            "none recorded." if base_scene else "not known: the scene's base record is not on the host."))
     return measured, estimated
 
 
-# --- binding the full level's inputs to this job --------------------------------------------------------
+# --- binding the inputs to this job ---------------------------------------------------------------------
 
 def _not_this_job(what: str) -> JobPacketRefused:
     return JobPacketRefused("job_packet_input_not_this_job", what)
 
 
-def _video(inputs: JobInputs) -> tuple[Path, Path] | None:
+def _video(inputs: JobInputs, pull: PullRecord, raw_manifest: Mapping[str, Any] | None) -> Path | None:
+    """The job's video: ``--video``, else the file the raw manifest names, else the one video file in ``raw/``."""
     capture = inputs.capture_dir
     if inputs.video is not None:
         if inputs.video.is_symlink() or not inputs.video.resolve().is_relative_to(capture.resolve()):
-            raise _not_this_job("video")
-        _regular(inputs.video, inputs.video.name)
-        return capture, inputs.video
+            raise _not_this_job(f"video {inputs.video}")
+        _regular(inputs.video, str(inputs.video))
+        return inputs.video
+    named = _mapping(raw_manifest).get("video_uri")
+    prefix = f"scenes/{capture.parent.parent.name}/captures/{capture.name}/raw/"
+    if isinstance(named, str) and named.startswith(prefix) and re.fullmatch(r"[A-Za-z0-9._-]+", named[len(prefix):]) \
+            and Path(named).suffix.lower() in VIDEO_SUFFIXES:
+        relative = "raw/" + named[len(prefix):]
+        if not pull.in_capture(relative):
+            return None
+        _regular(_inside(capture, capture / relative), relative)
+        return capture / relative
     raw = capture / "raw"
     found = [path for path in (_walk(raw) if raw.is_dir() else []) if path.parent == raw
              and path.suffix.lower() in VIDEO_SUFFIXES]
     if len(found) > 1:
-        raise JobPacketRefused("job_packet_video_ambiguous", "pass --video")
-    return (raw, found[0]) if found else None
+        raise JobPacketRefused("job_packet_video_ambiguous", "raw/ holds more than one video: pass --video")
+    return found[0] if found else None
 
 
-def _bind_full_inputs(inputs: JobInputs, context: Mapping[str, Any], team_record: Mapping[str, Any] | None,
-                      plan: Mapping[str, Any] | None) -> None:
+def _bind_inputs(inputs: JobInputs, context: Mapping[str, Any], team_record: Mapping[str, Any] | None,
+                 plan: Mapping[str, Any] | None) -> None:
     scene, capture = context["scene_id"], context["capture_id"]
     if inputs.team_scene_dir is not None:
         contract = _mapping(_mapping(team_record).get("task_success_contract"))
         if team_record is None or plan is None or plan.get("scene_id") != scene \
                 or _mapping(contract.get("scope")).get("site_id") != scene:
-            raise _not_this_job("team scene")
+            raise _not_this_job(f"team scene {inputs.team_scene_dir}")
     if inputs.configured_scene_dir is not None:
         revision = _read_json(inputs.configured_scene_dir, inputs.configured_scene_dir / "configured_scene_revision.v1.json")
         if (revision is None or team_record is None
                 or revision.get("revision_digest") != team_record.get("scene_revision_digest")):
-            raise _not_this_job("configured scene (bound through the team scene's revision digest)")
+            raise _not_this_job(f"configured scene {inputs.configured_scene_dir} (bound through the team scene's "
+                                "revision digest)")
     if inputs.review_videos_dir is not None:
         manifest = _read_json(inputs.review_videos_dir, inputs.review_videos_dir / "manifest.json")
         if manifest is None or manifest.get("site_id") != scene or manifest.get("capture_id") != capture:
-            raise _not_this_job("trial clips")
+            raise _not_this_job(f"trial clips {inputs.review_videos_dir}")
 
 
-def _full_files(inputs: JobInputs, plan_dir: Path | None) -> list[tuple[Path, Path, str]]:
-    """(root, source, packet path) for every file the full level copies."""
+def _reconstruction(capture_dir: Path, base_scene: Mapping[str, Any] | None, pull: PullRecord) -> list[tuple[Path, Path, str]]:
+    """The levelled splat and the collision mesh the scene is built on, as ``base_scene.json`` names them."""
+    rows = []
+    for key in ("splat_path", "collision_mesh_path"):
+        relative = _in_capture(capture_dir, _mapping(base_scene).get(key))
+        if relative is not None and pull.in_capture(relative):
+            rows.append((capture_dir, capture_dir / relative, f"files/reconstruction/{Path(relative).name}"))
+    return rows
+
+
+def _packet_files(inputs: JobInputs, plan_dir: Path | None) -> list[tuple[Path, Path, str]]:
+    """(root, source, packet path) for every simulation and trial file copied as it is. No record is copied."""
     rows: list[tuple[Path, Path, str]] = []
-    video = _video(inputs)
-    if video is not None:
-        rows.append((video[0], video[1], f"files/video/{video[1].name}"))
-    atlas = inputs.capture_dir / "pipeline" / "atlas"
-    if atlas.is_dir():
-        rows += [(atlas, path, f"files/simulation/reconstruction/{path.name}") for path in _walk(atlas)
-                 if path.parent == atlas and path.suffix.lower() in RECONSTRUCTION_SUFFIXES]
     if inputs.configured_scene_dir is not None:
         root = inputs.configured_scene_dir
-        for path in _walk(root):
-            if path.parent != root:
-                continue
-            if path.name == "configured_scene_bundle.v1.zip":
-                rows.append((root, path, f"files/simulation/configured-scene/{path.name}"))
-            elif path.suffix.lower() == ".usdz":
-                rows.append((root, path, f"files/object/{path.name}"))
+        rows += [(root, path, f"files/object/{path.name}") for path in _walk(root)
+                 if path.parent == root and path.suffix.lower() == ".usdz"]
     if inputs.team_scene_dir is not None:
         root = inputs.team_scene_dir
-        for path in _walk(root):
-            relative = path.relative_to(root).as_posix()
-            if path.suffix.lower() in USD_SUFFIXES:
-                rows.append((root, path, f"files/simulation/team-scene/{relative}"))
-            elif path.name == "team_scene_inputs.v1.json" or (
-                    plan_dir is not None and path == plan_dir / "native_task_arena_scene_plan.v1.json"):
-                rows.append((root, path, f"files/task/{relative}"))
-    if inputs.screening_publication is not None:
-        root, path = _file_argument(inputs.screening_publication)
-        rows.append((root, path, f"files/early-trial/{path.name}"))
+        rows += [(root, path, f"files/simulation/team-scene/{path.relative_to(root).as_posix()}") for path in _walk(root)
+                 if path.suffix.lower() in USD_SUFFIXES and (plan_dir is None or path.is_relative_to(plan_dir))]
     if inputs.review_videos_dir is not None:
         root = inputs.review_videos_dir
-        rows += [(root, path, f"files/early-trial/clips/{path.relative_to(root).as_posix()}") for path in _walk(root)
-                 if path.suffix.lower() == ".mp4" or path.name == "manifest.json"]
-    if inputs.first_look_file is not None:
-        root, path = _file_argument(inputs.first_look_file)
-        rows.append((root, path, f"files/first-look/{path.name}"))
+        clips = [path for path in _walk(root) if path.suffix.lower() == ".mp4"]
+        rows += [(root, path, f"files/early-trial/clips/clip-{index:02d}.mp4") for index, path in enumerate(clips, 1)]
     unique_destinations(rows)
     return rows
 
@@ -898,7 +958,44 @@ def _full_files(inputs: JobInputs, plan_dir: Path | None) -> list[tuple[Path, Pa
 def unique_destinations(rows: list[tuple[Path, Path, str]]) -> None:
     destinations = [row[2] for row in rows]
     if len(set(destinations)) != len(destinations):
-        raise JobPacketRefused("job_packet_file_name_collision")
+        raise JobPacketRefused("job_packet_file_name_collision", ", ".join(sorted(
+            {item for item in destinations if destinations.count(item) > 1})))
+
+
+def _configured_members(directory: Path | None) -> list[tuple[zipfile.ZipFile, zipfile.ZipInfo, str]]:
+    """The configured scene bundle's scene files (appearance, collision, replacement); its record is left out."""
+    if directory is None:
+        return []
+    bundle = directory / "configured_scene_bundle.v1.zip"
+    if not os.path.lexists(bundle):
+        return []
+    _regular(_inside(directory, bundle), bundle.name)
+    try:
+        archive = zipfile.ZipFile(bundle)
+        members = [info for info in archive.infolist() if not info.is_dir() and not info.filename.endswith(".json")]
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise JobPacketRefused("job_packet_input_unreadable", bundle.name) from exc
+    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", info.filename) for info in members):
+        raise JobPacketRefused("job_packet_input_unreadable", f"{bundle.name}: a member is not a plain file name")
+    return [(archive, info, f"files/simulation/configured-scene/{info.filename}") for info in members]
+
+
+def _require_sound_tools() -> None:
+    from .capture_audio_minimization import media_tool_blockers
+    if media_tool_blockers() or not shutil.which("ffprobe"):
+        raise JobPacketRefused("job_packet_video_sound_tool_missing",
+                               "ffmpeg and ffprobe are needed to remove the video's sound; install them and run again")
+
+
+def _copy_without_sound(source: Path, target: Path) -> dict[str, Any]:
+    """The video stream copied as it is, with no sound; refused unless ffprobe counts no audio stream in the copy."""
+    from .capture_audio_minimization import write_audio_free_video
+    receipt = write_audio_free_video(source, target)
+    if receipt.get("evidence") != "ffprobe_output_has_no_audio_stream" or receipt.get("output_audio_stream_count") != 0:
+        target.unlink(missing_ok=True)
+        raise JobPacketRefused("job_packet_video_sound_not_removed",
+                               f"{source.name}: {receipt.get('reason') or receipt.get('evidence')}; the video was not copied")
+    return receipt
 
 
 def _code_revision() -> str:
@@ -911,16 +1008,13 @@ def _code_revision() -> str:
     return revision if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", revision) else NOT_RECORDED
 
 
-def _readme(*, level: str, files: list[str], preparation: Mapping[str, Any] | None,
-            base_scene: Mapping[str, Any] | None) -> str:
+def _readme(*, files: list[str], preparation: Mapping[str, Any] | None, base_scene: Mapping[str, Any] | None) -> str:
     lines = ["# Job packet", "", TERMS_LINE, "",
-             f"Level: **{level}**. `JOB_SHEET.md` describes the job; `manifest.json` lists every file with "
-             "its size and SHA-256 and the rule that allowed this level.", "", "## Opening the simulation", ""]
+             "`JOB_SHEET.md` describes the job; `manifest.json` lists every file with its size and SHA-256.", "",
+             "## Opening the 3D files", ""]
     has = lambda prefix: any(path.startswith(prefix) for path in files)  # noqa: E731
-    if level == "summary":
-        lines.append("This summary carries no simulation files.")
-    elif not has("files/simulation/") and not has("files/object/"):
-        lines.append("This packet carries no simulation files: none were given to the tool.")
+    if not any(has(prefix) for prefix in ("files/simulation/", "files/object/", "files/reconstruction/")):
+        lines.append("This packet has no 3D files yet.")
     else:
         if has("files/simulation/team-scene/"):
             lines.append("- `files/simulation/team-scene/`: OpenUSD for NVIDIA Isaac Sim. Blueprint runs these in "
@@ -928,61 +1022,69 @@ def _readme(*, level: str, files: list[str], preparation: Mapping[str, Any] | No
                          "Gaussian splat, which Isaac Sim 6 reads; other USD tools may show only the collision geometry "
                          "and the object.")
         if has("files/simulation/configured-scene/"):
-            lines.append("- `files/simulation/configured-scene/`: the configured scene Blueprint built, zipped.")
+            lines.append("- `files/simulation/configured-scene/`: the configured scene Blueprint built: the room's look, "
+                         "its collision geometry and the replacement object.")
         if has("files/object/"):
             lines.append("- `files/object/`: the job's object as USDZ, as Blueprint authored it from the video (its "
                          "size, mass and friction are estimates; see the sheet).")
-        if has("files/simulation/reconstruction/"):
-            lines.append("- `files/simulation/reconstruction/`: the raw reconstruction. `.spz` / `.ply` are Gaussian "
-                         "splats (common splat viewers open them); `.glb` is a mesh (Blender or any glTF viewer).")
+        if has("files/reconstruction/"):
+            lines.append("- `files/reconstruction/`: the 3D reconstruction of the site from the video. `.ply` / `.spz` "
+                         "are Gaussian splats (common splat viewers open them); `.glb` is the collision mesh (Blender or "
+                         "any glTF viewer).")
         frame = _mapping(_mapping(preparation).get("coordinate_frame"))
         lines += ["", f"Task coordinates: {_cell(frame.get('task_coordinates'))}; up axis "
                   f"{_cell(frame.get('declared_up_axis'))}; physical scale measured: "
                   f"{_cell(frame.get('physical_scale_measured'))}. The reconstruction's own up axis: "
                   f"{_cell(_mapping(base_scene).get('up_axis'))}."]
-    for prefix, words in (("files/video/", "- `files/video/`: the job's video as uploaded."),
-                          ("files/task/", "- `files/task/`: the sealed task records (success contract, scene plan)."),
-                          ("files/early-trial/", "- `files/early-trial/`: the early trial's publication and clips."),
-                          ("files/first-look/", "- `files/first-look/`: the website's first look, as exported.")):
+    for prefix, words in (("files/video/", "- `files/video/`: the job's video as uploaded, with its sound removed."),
+                          ("files/task/", "- `files/task/success_rule.json`: the success rule's thresholds, as the "
+                                          "simulation checks them."),
+                          ("files/early-trial/", "- `files/early-trial/clips/`: clips of the early trial's runs.")):
         if has(prefix):
             lines += ["", words] if not lines[-1].startswith("- `files/") else [words]
     lines += ["", "## Who received this packet", "",
               "`manifest.json` has an empty `recipients` list on purpose: the register of which deployment company "
-              "received which packet (by `packet_id`) is kept on the website side, not in this folder.", ""]
+              "received which packet (by its packet number) is kept on the website side, not in this folder.", ""]
     return "\n".join(lines)
 
 
-def build_job_packet(inputs: JobInputs, *, output_root: Path, level: str = "summary",
-                     owned: OwnedCaptureApproval | None = None, operator: str | None = None,
-                     now: datetime | None = None, owned_list: Path | None = None,
-                     first_look_checked_by: str | None = None, redact_terms: Iterable[str] = ()) -> dict[str, Any]:
-    """Check everything, then write ``packet-<random>/`` and its operator record under ``output_root``.
+def _status(*, video: bool, first_look: bool, reconstruction: bool, simulation: bool, rule: bool, trial: bool) -> str:
+    present = [words for flag, words in ((True, "the site's description of the job"), (video, "the video, without sound"),
+                                         (first_look, "the first look on paper"),
+                                         (reconstruction, "the 3D reconstruction of the site"),
+                                         (simulation, "the simulation of the site"), (rule, "the success rule"),
+                                         (trial, "the early trial's result")) if flag]
+    missing = [words for flag, words in ((video, "the video"), (first_look, "the first look on paper")) if not flag]
+    text = "In this packet: " + ", ".join(present[:-1]) + (" and " if len(present) > 1 else "") + present[-1] + "."
+    if missing:
+        text += " Not in it: " + " and ".join(missing) + "."
+    if not simulation:
+        text += (" The simulation of the site with the job's object in it is not finished; it will follow"
+                 + (" with the success rule." if not rule else "."))
+    elif not rule:
+        text += " The success rule will follow."
+    if not trial:
+        text += " No early trial of openly available robot software has been added."
+    return text
 
-    ``first_look_checked_by`` and ``redact_terms`` are refused: a summary takes no free text, so there
-    is nothing to check by hand or redact.
-    """
-    if level not in LEVELS:
-        raise JobPacketRefused("job_packet_level_invalid")
-    if first_look_checked_by or list(redact_terms):
-        raise JobPacketRefused("job_packet_option_removed", "a summary takes no free text")
-    if level == "summary" and inputs.first_look_file is not None:
-        raise JobPacketRefused("job_packet_first_look_full_level_only")
+
+def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptureApproval | None = None,
+                     operator: str | None = None, now: datetime | None = None,
+                     owned_list: Path | None = None) -> dict[str, Any]:
+    """Check everything, then write ``packet-<number>/`` and its operator record under ``output_root``."""
     capture_dir = inputs.capture_dir
     if capture_dir.is_symlink() or not capture_dir.is_dir():
-        raise JobPacketRefused("job_packet_input_missing", "capture directory")
-    context = _read_json(capture_dir, capture_dir / "pipeline" / "website_task_context.json", required=True)
+        raise JobPacketRefused("job_packet_input_missing", f"capture directory {capture_dir}")
+    context = _read_json(capture_dir, capture_dir / TASK_CONTEXT, required=True)
     if context.get("schema_version") != TASK_CONTEXT_SCHEMA:
-        raise JobPacketRefused("job_packet_task_context_unsupported")
-    refusal = job_state_refusal(capture_dir, context, pull_root=inputs.pull_root, now=now)
-    if refusal:
-        raise JobPacketRefused(refusal)
+        raise JobPacketRefused("job_packet_task_context_unsupported", f"{TASK_CONTEXT} schema_version")
+    pull = check_job_state(capture_dir, context, pull_root=inputs.pull_root, now=now)
     if context.get("capture_id") != capture_dir.name or context.get("scene_id") != capture_dir.parent.parent.name:
-        raise JobPacketRefused("job_packet_input_identity_mismatch", "task context")
-    basis = permission_basis(level, context, owned=owned, owned_list=owned_list, now=now)
-    full = level == "full"
+        raise JobPacketRefused("job_packet_input_identity_mismatch", f"{TASK_CONTEXT} names another capture or site")
+    basis = permission_basis(context, owned=owned, owned_list=owned_list, now=now)
     output_root = Path(output_root)
     if output_root.is_symlink() or not output_root.is_dir():
-        raise JobPacketRefused("job_packet_output_root_invalid")
+        raise JobPacketRefused("job_packet_output_root_invalid", str(output_root))
 
     read: dict[str, str] = {}  # input digests, for the operator record
 
@@ -991,19 +1093,27 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, level: str = "summ
             read[path.name if root == path.parent else path.relative_to(root).as_posix()] = _sha256(_inside(root, path))
         return value
 
-    record(capture_dir, capture_dir / "pipeline" / "website_task_context.json", context)
-    handoff_path = capture_dir / "pipeline" / "website_scene_preparation" / "handoff.json"
-    handoff = record(capture_dir, handoff_path, _read_json(capture_dir, handoff_path))
-    preparation, prep_dir = _preparation(capture_dir, handoff)
-    base_scene = _read_json(capture_dir, prep_dir / "base_scene.json") if prep_dir is not None else None
-    fit_table = _mapping(_mapping(handoff).get("robot_fit_table")) or None
+    def capture_json(relative: str) -> dict[str, Any] | None:
+        if not pull.in_capture(relative):
+            return None
+        return record(capture_dir, capture_dir / relative, _read_json(capture_dir, capture_dir / relative))
+
+    record(capture_dir, capture_dir / TASK_CONTEXT, context)
+    handoff = capture_json(f"{PREPARATION}/handoff.json")
+    preparation, prep_dir = _preparation(capture_dir, handoff, pull)
+    base_scene = (capture_json((prep_dir / "base_scene.json").relative_to(capture_dir).as_posix())
+                  if prep_dir is not None else None)
+    fit_table, first_look = _fit_table(capture_dir, handoff, preparation, context, pull)
+    video = _video(inputs, pull, _read_json(capture_dir, capture_dir / "raw" / "manifest.json"))
+    if video is not None:
+        _require_sound_tools()
     publication = None
     if inputs.screening_publication is not None:
         root, path = _file_argument(inputs.screening_publication)
         publication = record(root, path, _read_json(root, path, required=True))
         if (publication.get("site_id") != context["scene_id"]
                 or _mapping(publication.get("source")).get("capture_id") not in (None, context["capture_id"])):
-            raise _not_this_job("early trial publication")
+            raise _not_this_job(f"early trial publication {path}")
     team_record = plan = plan_dir = None
     if inputs.team_scene_dir is not None:
         root = inputs.team_scene_dir
@@ -1013,111 +1123,136 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, level: str = "summ
             if plan is not None:
                 plan_dir = root / name
                 break
-    if full:
-        _bind_full_inputs(inputs, context, team_record, plan)
-    copies = _full_files(inputs, plan_dir) if full else []
+    _bind_inputs(inputs, context, team_record, plan)
+    copies = _reconstruction(capture_dir, base_scene, pull) + _packet_files(inputs, plan_dir)
+    members = _configured_members(inputs.configured_scene_dir)
+    contract = _mapping(team_record).get("task_success_contract")
+    criteria = _mapping(contract).get("criteria") if isinstance(contract, Mapping) else None
+    written_files = [row[2] for row in copies] + [row[2] for row in members]
+    written_files += [f"files/video/video{video.suffix.lower()}"] if video is not None else []
+    written_files += ["files/task/success_rule.json"] if isinstance(criteria, Mapping) else []
+    clips = sum(1 for path in written_files if path.startswith("files/early-trial/clips/"))
+    simulation = any(path.startswith(("files/simulation/", "files/object/")) for path in written_files)
+    reconstruction = any(path.startswith("files/reconstruction/") for path in written_files)
+    prep = _mapping(preparation)
     kind = kind_of_job(preparation, context)
+    number = secrets.token_hex(8)
 
     # --- the sheet ---
-    sheet = [f"# Job sheet ({level})", "", TERMS_LINE, ""]
-    if full:
-        criteria = _mapping(context.get("success_criteria"))
-        details = _mapping(context.get("operator_task_details"))
-        sheet += ["## The job, in the site's words", "", f"> {_cell(context.get('description'))}", "",
-                  f"Kind of job: {kind}.", "", "## Constraints and what the site told us", "",
-                  f"- The site's own success definition: {_cell(criteria.get('successDefinition'))}",
-                  f"- Success rate the site wants: {_cell(criteria.get('successRate'))} %",
-                  f"- Cycle time the site wants: {_cell(criteria.get('cycleTimeSeconds'))} s",
-                  f"- Object weight (stated): {_cell(details.get('item_weight'))}",
-                  f"- Object make and model (stated): {_cell(details.get('item_make_model'))}"]
-        sheet += [f"- {_cell(key)}: {_cell(value)}" for key, value in sorted(_mapping(context.get("operator_answers")).items())]
-        unresolved = context.get("unresolved")
-        if isinstance(unresolved, list) and unresolved:
-            sheet.append("- Still unanswered: " + ", ".join(_cell(item) for item in unresolved))
-        sheet.append(f"- Other constraints: {NOT_RECORDED} (the task context has no constraints field).")
-        prep = _mapping(preparation)
-        subject, destination, support = (_mapping(prep.get(k)) for k in ("subject", "destination", "support"))
-        low, high = subject.get("aabb_min_xyz"), subject.get("aabb_max_xyz")
-        start = ([(float(a) + float(b)) / 2 for a, b in zip(low, high, strict=True)]
-                 if _point(low) not in (NOT_RECORDED, INVALID) and _point(high) not in (NOT_RECORDED, INVALID)
-                 and len(low) == len(high) else None)
-        contract = _mapping(team_record).get("task_success_contract")
-        target = _mapping(_mapping(_mapping(contract).get("criteria")).get("surface_target"))
-        sheet += ["", "## The object and where it goes", "",
-                  f"- Object: {_cell(subject.get('description'))}; starts at {_point(start)} on "
-                  f"{_cell(support.get('description'))}.",
-                  f"- Goes to: {_cell(target.get('visible_label') or destination.get('visible_label'))}; centre "
-                  f"{_point(target.get('surface_position_world_m') or destination.get('position_world_m'))}; radius "
-                  f"{_length(target.get('radius_m'))}.",
-                  "", "## What counts as done", "",
-                  done_sentence(contract, object_name=subject.get("description"),
-                                place_label=destination.get("visible_label"),
-                                assumption=_mapping(_mapping(team_record).get("owner_success_assumption")) or None), ""]
-        measured, estimated = _measured_and_estimated(preparation, base_scene, fit_table, publication, context)
-        sheet += ["## Measured", ""] + [f"- {line}" for line in measured]
-        sheet += ["", "## Estimated", ""] + [f"- {line}" for line in estimated] + ["", "## First look on paper", ""]
-        if inputs.first_look_file is not None:
-            sheet += ["Source: the website's first look, exported by the operator; attached under `files/first-look/`.", ""]
-        elif fit_table:
-            sheet += _full_fit_lines(fit_table) + [""]
-        else:
-            sheet += [f"First look: {NOT_RECORDED}.", ""]
-        sheet += ["## Early trial", ""] + _full_trial_lines(publication) + [""]
-    else:
-        sheet += ["## The job", "", f"Kind of job: {kind}.", "",
-                  "Described in general words. The site's own description, its name and its location, the video, "
-                  "the simulation and the success rule are not in this summary: the site has not given permission "
-                  "to share them.", "", "## First look on paper", ""]
-        sheet += summary_fit_lines(fit_table) + ["", "## Early trial", ""] + summary_trial_lines(publication) + [""]
-    present = {row[2].split("/")[1] for row in copies}
-    missing = [words for item, words in (("video", "the video"), ("simulation", "the simulation"),
-                                         ("object", "the object asset"), ("task", "the sealed task records"),
-                                         ("early-trial", "the early trial's files")) if full and item not in present]
-    sheet += ["## What this packet does not show", "",
-              "- No test at the site: everything here comes from one video and a simulation of it.",
-              "- No safety assessment of any robot at this site."]
-    sheet += [f"- {words[0].upper() + words[1:]}: not given to the tool, so not in this packet." for words in missing] + [""]
+    description = str(context.get("description") or "").strip()
+    sheet = ["# Job packet", "", f"Packet number: {number}", "", TERMS_LINE, "", "Status: " + _status(
+        video=video is not None, first_look=first_look == "shown", reconstruction=reconstruction, simulation=simulation,
+        rule=isinstance(contract, Mapping), trial=publication is not None), "",
+        "## The job, in the site's words", "", *(f"> {line}" for line in description.splitlines()), "",
+        f"Kind of job: {kind}.", "", "## Constraints and what the site told us", ""]
+    stated = _mapping(context.get("success_criteria"))
+    details = _mapping(context.get("operator_task_details"))
+    constraints = [(words, value) for words, value in (
+        ("The site's own success definition", stated.get("successDefinition")),
+        ("Success rate the site wants (%)", stated.get("successRate")),
+        ("Cycle time the site wants (s)", stated.get("cycleTimeSeconds")),
+        ("Object weight, as the site stated it (not checked)", details.get("item_weight")),
+        ("Object make and model, as the site stated it", details.get("item_make_model")),
+        *sorted(_mapping(context.get("operator_answers")).items())) if value not in (None, "")]
+    sheet += [f"- {_cell(words)}: {_cell(value)}" for words, value in constraints]
+    unresolved = context.get("unresolved")
+    if isinstance(unresolved, list) and unresolved:
+        sheet.append("- Still unanswered: " + ", ".join(_cell(item) for item in unresolved))
+    if sheet[-1] == "":
+        sheet.append("The site stated nothing beyond its description.")
+    if prep:
+        subject, destination = _mapping(prep.get("subject")), _mapping(prep.get("destination"))
+        target = _mapping(_mapping(criteria).get("surface_target"))
+        place = target.get("visible_label") or destination.get("visible_label")
+        centre = target.get("surface_position_world_m") or destination.get("position_world_m")
+        sheet += ["", "## The object and where it goes", ""]
+        if subject.get("description"):
+            sheet.append(f"- Object: {_cell(subject.get('description'))}.")
+        if place or centre is not None:
+            sheet.append("- Goes to: " + "; ".join(item for item in (
+                _cell(place) if place else "", f"centre {_point(centre)}" if centre is not None else "",
+                f"within {_length(target.get('radius_m') or destination.get('radius_m'))}"
+                if (target.get("radius_m") or destination.get("radius_m")) is not None else "") if item) + ".")
+        measured, estimated = _measured_and_estimated(prep, base_scene, fit_table, publication)
+        sheet += ["", "## Measured", ""] + [f"- {line}" for line in measured]
+        sheet += ["", "## Estimated", ""] + [f"- {line}" for line in estimated]
+    sheet += ["", "## The video", "", "`files/video/`: the job's video as uploaded, with its sound removed. A deployment "
+              "company does not need sound to judge a job." if video is not None else "The video is not in this packet."]
+    sheet += ["", "## First look on paper", ""]
+    sheet += fit_lines(fit_table) if fit_table is not None else [
+        "The first look is not shown: its table did not match the record that names it, so it could not be checked."
+        if first_look == "not_verified" else "No first look on paper is in this packet yet."]
+    sheet += ["", "## The simulation", "", "The simulation files are under `files/`; `README.md` says how to open them."
+              if simulation else "The simulation of the site with the job's object in it is not finished. It will follow."]
+    if reconstruction and not simulation:
+        sheet.append("The 3D reconstruction of the site it is built on is under `files/reconstruction/`.")
+    sheet += ["", "## What counts as done", "", done_sentence(
+        contract, object_name=_mapping(prep.get("subject")).get("description"),
+        place_label=_mapping(prep.get("destination")).get("visible_label"),
+        assumption=_mapping(_mapping(team_record).get("owner_success_assumption")) or None)]
+    sheet += ["", "## Early trial", "", *trial_lines(publication, clips)]
+    sheet += ["", "## How to answer", "", "Reply to the person who sent you this packet. Give the packet number and one "
+              "of: interested; not a fit; would need something (say what).", "",
+              "## What this packet does not show", "",
+              "- No test at the site: everything here comes from one video" + (" and a simulation of it." if simulation
+                                                                               else "."),
+              "- No safety assessment of any robot at this site.", ""]
 
     # --- write: the packet folder, then the operator record beside it ---
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    name = f"packet-{secrets.token_hex(8)}"
+    name = f"packet-{number}"
     packet, operator_record = output_root / name, output_root / f"{name}.operator-record.json"
     packet.mkdir()
     try:
         written = {"JOB_SHEET.md": "\n".join(sheet), "README.md": _readme(
-            level=level, files=[row[2] for row in copies], preparation=preparation, base_scene=base_scene)}
+            files=written_files, preparation=preparation, base_scene=base_scene)}
+        if isinstance(criteria, Mapping):
+            written["files/task/success_rule.json"] = json.dumps({"criteria": criteria}, indent=2, sort_keys=True) + "\n"
         for filename, text in written.items():
+            (packet / filename).parent.mkdir(parents=True, exist_ok=True)
             (packet / filename).write_text(text, encoding="utf-8")
         for root, source, relative in copies:
             target = packet / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(_regular(_inside(root, source), source.name), target)
+        for archive, info, relative in members:
+            target = packet / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as stream, target.open("wb") as handle:
+                shutil.copyfileobj(stream, handle)
+        sound = None
+        if video is not None:
+            target = packet / "files" / "video" / f"video{video.suffix.lower()}"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            sound = _copy_without_sound(video, target)
         listed = []
-        for relative in sorted([*written, *(row[2] for row in copies)]):
+        for relative in sorted([*written, *(row[2] for row in copies), *(row[2] for row in members),
+                                *([f"files/video/video{video.suffix.lower()}"] if video is not None else [])]):
             path = packet / relative
             listed.append({"path": relative, "size": path.stat().st_size, "sha256": _sha256(path)})
-        packet_id = "sha256:" + hashlib.sha256("\n".join(f"{row['path']} {row['sha256']}" for row in listed)
-                                                 .encode()).hexdigest()
+        # The packet number is random, so the content id reads the sheet without it: the same inputs give the same id.
+        unnumbered = hashlib.sha256(written["JOB_SHEET.md"].replace(number, "").encode()).hexdigest()
+        packet_id = "sha256:" + hashlib.sha256("\n".join(
+            f"{row['path']} {unnumbered if row['path'] == 'JOB_SHEET.md' else row['sha256']}" for row in listed
+        ).encode()).hexdigest()
         keys = {"request_id": context.get("request_id"), "scene_id": context["scene_id"],
                 "capture_id": context["capture_id"]}
-        manifest = {"schema_version": SCHEMA_VERSION, "packet_id": packet_id, "level": level,
+        manifest = {"schema_version": SCHEMA_VERSION, "packet_number": number, "packet_id": packet_id,
                     "created_on": moment.date().isoformat(), "code_revision": _code_revision(),
-                    "permission_basis": basis if full else {"rule": "summary_only"},
-                    "first_look_source": ("website_export" if inputs.first_look_file is not None else
-                                          "pipeline_robot_fit_table" if fit_table else NOT_RECORDED),
-                    **({"job": keys, "takedown_keys": keys} if full else {}),
+                    "permission_basis": {key: basis[key] for key in ("rule", "statement_version") if key in basis},
+                    "first_look_source": "pipeline_robot_fit_table" if first_look == "shown" else "none",
                     "files": listed, "recipients": []}
         (packet / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         operator_value = {
-            "schema_version": OPERATOR_RECORD_SCHEMA, "packet_folder": name, "packet_id": packet_id, "level": level,
-            "created_at": moment.isoformat().replace("+00:00", "Z"), "run_by": operator or NOT_RECORDED,
-            "code_revision": manifest["code_revision"], "job": keys, "takedown_keys": {
-                **keys, "withdrawal_tombstone": f"scenes/{context['scene_id']}/website_withdrawal/tombstone.json"},
+            "schema_version": OPERATOR_RECORD_SCHEMA, "packet_folder": name, "packet_number": number,
+            "packet_id": packet_id, "created_at": moment.isoformat().replace("+00:00", "Z"),
+            "run_by": operator or NOT_RECORDED, "code_revision": manifest["code_revision"], "job": keys,
+            "takedown_keys": {**keys, "withdrawal_tombstone": f"scenes/{context['scene_id']}/website_withdrawal/tombstone.json"},
             "permission_basis": basis, "input_sha256": dict(sorted(read.items())),
+            "first_look": first_look, "video_sound_removal": sound,
             # The operator's own statement of what was pulled and what the host lacked, kept whole, so a
             # false "absent" can be traced to who made the packet.
-            "pull_record": _read_json(Path(inputs.pull_root), Path(inputs.pull_root) / PULL_RECORD, required=True),
-            "pull_record_sha256": _sha256(_inside(Path(inputs.pull_root), Path(inputs.pull_root) / PULL_RECORD)),
+            "pull_record": pull.value, "pull_record_sha256": _sha256(_inside(pull.root, pull.root / PULL_RECORD)),
             "job_state_checked": {"capture_rights": {k: _mapping(context.get("capture_rights")).get(k)
                                                      for k in ("consent_status", "statement_version", "consent_revoked")},
                                   "withdrawal": "not withdrawn in the pulled site roots"},
@@ -1127,4 +1262,7 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, level: str = "summ
         shutil.rmtree(packet, ignore_errors=True)
         operator_record.unlink(missing_ok=True)
         raise
+    finally:
+        for archive in {id(row[0]): row[0] for row in members}.values():
+            archive.close()
     return {**manifest, "packet_dir": str(packet), "operator_record": str(operator_record)}

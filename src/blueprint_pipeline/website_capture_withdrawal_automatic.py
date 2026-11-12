@@ -62,6 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from .core.common import write_json
+from .site_roots import is_bucket
 
 UNIT = "blueprint-website-withdrawal-deletion.service"
 # The owner installs this file once, by hand; no deploy step writes it (deploy/website-withdrawal-deletion/).
@@ -272,9 +273,7 @@ def discover_withdrawals(site_roots: Sequence[Path]) -> tuple[list[Path], list[d
     """Every site directory with a tombstone under ``<root>/scenes/`` or ``<root>/*/scenes/``, and what could not be listed.
 
     A root, bucket, ``scenes`` or site directory that cannot be read (or a missing root) is reported, never read as
-    empty, and the scan goes on. A hidden folder is never a bucket: a bucket is named after its GCS bucket, which
-    never starts with a dot, and the hidden folders beside them are spools, evidence and caches (the storage GC's
-    root-only ``.scene-workspace-inventory`` among them).
+    empty, and the scan goes on. A hidden folder is never a bucket (``site_roots.is_bucket``).
     """
 
     sites: list[Path] = []
@@ -295,8 +294,7 @@ def discover_withdrawals(site_roots: Sequence[Path]) -> tuple[list[Path], list[d
             problems.append({"path": str(root), "reason": "site_root_missing"})
             continue
         bases = [root, *(Path(entry.path) for entry in children(root)
-                         if entry.name != "scenes" and not entry.name.startswith(".")
-                         and entry.is_dir(follow_symlinks=False))]
+                         if is_bucket(entry.name) and entry.is_dir(follow_symlinks=False))]
         for base in bases:
             scenes = base / "scenes"
             try:
