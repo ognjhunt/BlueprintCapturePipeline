@@ -48,7 +48,9 @@ STATUS_V6 = "website_preparation_status.v6"
 # (website_recapture_required); the site is asked to film again. v3 to v6 readers never see it.
 STATUS_V7 = "website_preparation_status.v7"
 # v8 is v7 with the robot fit table in its second shape (website_robot_fit_projection.v2): a row that
-# fits if the item weighs no more than its payload limit, and each row's limit. v5 to v7 keep v1.
+# fits if its conditions hold (each the job's estimated range beside the robot's limit: weight, reach,
+# hand height, cycle time, floor width, or a clear route), why an open row is open, and each row's
+# payload limit. v5 to v7 keep v1.
 STATUS_V8 = "website_preparation_status.v8"
 _FROM_V7 = frozenset({STATUS_V7, STATUS_V8})
 _FROM_V6 = _FROM_V7 | {STATUS_V6}

@@ -39,7 +39,8 @@ WEIGHT_BASES = frozenset({"owner_stated", "estimated", "unavailable"})
 ESTIMATE_STRADDLES = "estimate_straddles_limit"
 UNKNOWN_CAUSES = (ESTIMATE_STRADDLES, "item_mass_missing", "catalog_figure_missing", "tool_figure_missing",
                   "no_clear_station", "footprint_not_searched", "arm_pose_search_inconclusive",
-                  "carry_check_undecided", "not_modelled", "not_checked")
+                  "carry_check_undecided", "not_modelled", "not_checked", "own_stance_reach_unproven",
+                  "base_stance_not_found", "job_geometry_not_finite", "point_below_floor", "floor_height_not_found")
 #: The quantities a condition bounds, and their units.
 #: For ``floor_width_m`` the range is the clear floor the job seems to offer, and the condition holds
 #: when the true floor is at least ``limit`` (the base's longest side); every other holds at most.
@@ -65,14 +66,18 @@ def _first_look(row: Mapping[str, Any]) -> Any:
     return row.get("first_look_verdict", row.get("verdict"))
 
 
-def row_order(row: Mapping[str, Any]) -> tuple[int, float]:
-    """The most useful rows first: fits, fits_spec, the conditional ones by ascending payload limit, then
+def row_order(row: Mapping[str, Any]) -> tuple[int, int, float]:
+    """The most useful rows first: fits, fits_spec, then ``fits_if`` by fewest conditions and then the
+    highest payload limit (the rows most likely to hold, so a cut to the byte budget keeps them), then
     doesnt_fit and unknown. Used with a stable sort, which keeps catalog order within each."""
     verdict = _first_look(row)
     rank = FIRST_LOOK_VERDICTS.index(verdict) if verdict in FIRST_LOOK_VERDICTS else len(FIRST_LOOK_VERDICTS)
+    if verdict != FITS_IF:
+        return rank, 0, 0.0
     limit = row.get("payload_limit_kg")
     usable = isinstance(limit, (int, float)) and not isinstance(limit, bool) and math.isfinite(limit)
-    return rank, float(limit) if verdict == FITS_IF and usable else 0.0
+    conditions = row.get("conditions")
+    return rank, len(conditions) if isinstance(conditions, list) else 0, -float(limit) if usable else 0.0
 
 
 #: Where a condition's need came from, as the first look says it.

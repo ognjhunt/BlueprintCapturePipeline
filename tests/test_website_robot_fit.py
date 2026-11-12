@@ -90,7 +90,8 @@ def _floor_at(monkeypatch, floor_z=0.0, lower_half=2.0):
 
     monkeypatch.setattr(website_robot_fit_floor, "widest_clear_square", lambda **_: {
         "floor_z_m": floor_z, "lower_half_m": lower_half, "upper_half_m": None, "upper_hole_possible": False,
-        "searches": [], "seconds": 0.0})
+        "budget_exhausted": False,
+        "searches": [{"half_extent_m": lower_half, "clear": True, "position_world_m": [0.0, 0.0, 0.0]}]})
 
 
 def _reach(metres):
@@ -244,22 +245,24 @@ def test_payload_takes_the_owners_weight_with_a_band_else_the_estimate(tmp_path)
     assert estimated["inputs"]["owner_item_weight"] == {"text": "2-3 kg", "parsed_kg": None, "used": False}
 
 
-def test_only_the_objects_own_mass_rules_a_model_out_and_only_an_arm_takes_the_tool(tmp_path):
-    # A 2 kg item is 1.8 to 2.2 kg. A lighter tool could replace the 0.9 kg default on an arm's
-    # flange; a humanoid lifts with its own hand, so no tool is added for it.
+def test_the_lightest_mass_with_the_default_tool_rules_a_model_out_and_only_an_arm_takes_the_tool(tmp_path):
+    # A 2 kg item is 1.8 to 2.2 kg. With the 0.9 kg default tool on an arm's flange even 1.8 kg is over
+    # a 2.5 kg rating, so no item this heavy passes with it: a fail, never a condition already false.
+    # A humanoid lifts with its own hand, so no tool is added for it.
     rows = _rows(_table(tmp_path, sealed(_model("arm", rated_payload_kg=_payload(2.5)),
                                          _model("tiny_arm", rated_payload_kg=_payload(1.5)),
                                          _model("humanoid", "humanoid", rated_payload_kg=_payload(2.5))),
                         job=_job(weight="2 kg")))
     payload = {name: _check(row, "payload") for name, row in rows.items()}
     assert {name: check["result"] for name, check in payload.items()} == {
-        "arm": "unknown", "tiny_arm": "fail", "humanoid": "pass"}
+        "arm": "fail", "tiny_arm": "fail", "humanoid": "pass"}
     assert payload["arm"]["values"]["required_kg"] == {"optimistic": 1.8, "pessimistic": 3.1}
     assert payload["humanoid"]["values"]["required_kg"] == {"optimistic": 1.8, "pessimistic": 2.2}
     assert [(payload[name]["values"]["end_effector"], payload[name]["values"]["tool_mass_kg"])
             for name in ("arm", "humanoid")] == [("default_tool", 0.9), ("own_hand", 0.0)]
     assert payload["tiny_arm"]["reason"] == "even the lightest mass, before any tool, exceeds the rated payload"
-    assert payload["arm"]["reason"] == "the rated payload falls between the lightest mass and the heaviest plus the tool"
+    assert payload["arm"]["reason"] == "even the lightest mass plus the default tool exceeds the rated payload"
+    assert "condition" not in payload["arm"] and rows["arm"]["first_look_verdict"] == "doesnt_fit"
 
 
 @pytest.mark.parametrize("target, result", [(None, "not_requested"), (0.3, "fail"), (2.0, "unknown"),
@@ -319,8 +322,9 @@ def test_a_row_open_only_on_estimates_fits_if_its_conditions_hold(tmp_path, monk
     assert [entry["quantity"] for entry in rows["mobile"]["conditions"]] == ["item_mass_kg", "route_clear"]
     assert rows["mobile"]["missing"] == []
     assert rows["mobile"]["payload_limit_kg"] == 2.0  # its own hand: no tool is subtracted
-    # Most useful first: fits_spec, fits_if by ascending payload limit, doesnt_fit, unknown.
-    assert [row["model_id"] for row in table["rows"]] == ["heavy", "light", "both", "mobile", "short", "unrated"]
+    # Most useful first: fits_spec, fits_if by fewest conditions and then the highest payload limit (the
+    # rows most likely to hold), doesnt_fit, unknown.
+    assert [row["model_id"] for row in table["rows"]] == ["heavy", "light", "mobile", "both", "short", "unrated"]
 
 
 def test_a_known_weight_that_straddles_a_rating_is_conditional_on_the_sites_word(tmp_path):
@@ -620,10 +624,13 @@ def test_the_floor_is_searched_once_for_the_widest_base_it_stands(tmp_path):
     band = (0.75, 1.333333)
     # The floor offers 2 x 0.38-0.4 m at 1x: 0.57 m at the smaller scale, 1.08 m at the larger.
     assert floor_stance([[0.5, 0.4]], floor, band)["result"] == "pass"
-    assert floor_stance([[1.25, 1.0]], floor, band)["result"] == "unknown"
+    # The floor seems to offer 0.57 to 1.08 m: a 1 m base is a condition, a 1.25 m one is not found (the
+    # largest width the job seems to offer is short of it), never a condition already false.
+    assert floor_stance([[1.0, 1.0]], floor, band)["result"] == "conditional"
+    assert floor_stance([[1.25, 1.0]], floor, band)["result"] == "not_found"
     assert floor_stance([[1.6, 1.5]], floor, band)["result"] == "fail"
     # A refusal on a scanned room's own mesh may be a hole in the reconstruction: never a fail.
-    assert floor_stance([[1.6, 1.5]], {**floor, "upper_hole_possible": True}, band)["result"] == "unknown"
+    assert floor_stance([[1.6, 1.5]], {**floor, "upper_hole_possible": True}, band)["result"] == "not_found"
 
     def no_floor(**_):
         raise TeamEmbodimentError(["team_embodiment_scene_floor_not_found"])
@@ -646,7 +653,7 @@ def test_a_base_larger_than_the_station_is_stood_on_the_scenes_own_floor(tmp_pat
     assert (stance["result"], stance["basis"]) == ("pass", "estimated_from_video")
     assert stance["values"]["floor_search"] == "widest_clear_square_base"
     search = table["inputs"]["floor_search"]["result"]
-    assert search["searches"] and search["seconds"] >= 0
+    assert search["searches"] and "seconds" not in search
     # The same search found the floor, so its hand heights decide reach: the box top is 0.1 m up.
     assert search["floor_z_m"] == pytest.approx(0.0, abs=0.02)
     assert _check(table["rows"][0], "reach")["result"] == "pass"
@@ -660,7 +667,8 @@ def test_a_floor_that_holds_the_base_only_at_some_scales_is_a_condition(tmp_path
 
     monkeypatch.setattr(website_robot_fit_floor, "widest_clear_square",
                         lambda **_: {"lower_half_m": 0.45, "upper_half_m": 0.475, "upper_hole_possible": False,
-                                     "searches": [], "seconds": 0.0})
+                                     "budget_exhausted": False, "floor_z_m": 0.0, "searches": [
+                                         {"half_extent_m": 0.45, "clear": True, "position_world_m": [0.0, 0.0, 0.0]}]})
     catalog = sealed(_model("wide", base_footprint_diameter_m=None, base_footprint_l_w_m=_figure(
         [1.0, 0.8], "m", "1000 x 800 mm", "1000 mm = 1.0 m; 800 mm = 0.8 m")))
     row = _table(tmp_path, catalog)["rows"][0]
@@ -683,7 +691,9 @@ def test_a_humanoid_names_the_figures_its_reach_needs(tmp_path):
 
 @pytest.mark.parametrize("top, bottom, result, condition", [
     (1.5, 0.0, "pass", False), (0.05, 0.0, "fail", False), (0.11, 0.0, "unknown", True),
-    (1.5, 0.5, "fail", False), (1.5, None, "unknown", False)])
+    (1.5, 0.5, "fail", False), (1.5, None, "unknown", False),
+    # The bottom straddles: a band that only dips below it is no fail, and no condition is written for it.
+    (1.5, 0.1, "unknown", False)])
 def test_a_robot_that_drives_is_judged_on_its_hand_heights(tmp_path, monkeypatch, top, bottom, result, condition):
     # The box top and the place are 0.1 m above the floor: 0.075-0.133 m across the scale band.
     _floor_at(monkeypatch)

@@ -112,7 +112,7 @@
         {
           "type": "object",
           "propertyNames": {
-            "pattern": "^(stance|reach|payload|cycle_time|access):(estimate_straddles_limit|item_mass_missing|catalog_figure_missing|tool_figure_missing|no_clear_station|footprint_not_searched|arm_pose_search_inconclusive|carry_check_undecided|not_modelled|not_checked)$"
+            "pattern": "^(stance|reach|payload|cycle_time|access):(estimate_straddles_limit|item_mass_missing|catalog_figure_missing|tool_figure_missing|no_clear_station|footprint_not_searched|arm_pose_search_inconclusive|carry_check_undecided|not_modelled|not_checked|own_stance_reach_unproven|base_stance_not_found|job_geometry_not_finite|point_below_floor|floor_height_not_found)$"
           },
           "additionalProperties": {
             "type": "integer",
@@ -287,7 +287,12 @@
                     "arm_pose_search_inconclusive",
                     "carry_check_undecided",
                     "not_modelled",
-                    "not_checked"
+                    "not_checked",
+                    "own_stance_reach_unproven",
+                    "base_stance_not_found",
+                    "job_geometry_not_finite",
+                    "point_below_floor",
+                    "floor_height_not_found"
                   ]
                 }
               }

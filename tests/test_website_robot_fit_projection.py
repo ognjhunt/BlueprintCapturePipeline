@@ -264,10 +264,10 @@ def test_v2_says_what_each_robot_can_do_most_useful_first(tmp_path):
         "counts": {"fits": 0, "fits_spec": 1, "fits_if": 3, "doesnt_fit": 1, "unknown": 1},
         "geometry_basis": "estimated_from_video", "unknown_causes": {"stance:catalog_figure_missing": 1},
         "table_digest": table["table_digest"]}
-    # fits_spec, then fits_if by ascending payload limit, then doesnt_fit, then unknown.
-    assert [row["name"] for row in value["models"]] == ["Arm Spec", "Arm Small", "Arm Big", "Base Roaming",
+    # fits_spec, then fits_if by fewest conditions and highest payload limit, then doesnt_fit, then unknown.
+    assert [row["name"] for row in value["models"]] == ["Arm Spec", "Base Roaming", "Arm Big", "Arm Small",
                                                         "Arm Short", "Arm Open"]
-    small = value["models"][1]
+    small = value["models"][3]
     assert small == {"name": "Arm Small", "manufacturer": "Maker", "verdict": "fits_if",
                      "verdict_if_conditions_hold": "fits", "rated_payload_kg": 3.0, "payload_limit_kg": 2.1,
                      "failed_checks": [],
@@ -276,7 +276,7 @@ def test_v2_says_what_each_robot_can_do_most_useful_first(tmp_path):
                                     {"quantity": "item_mass_kg", "need_min": 0.024, "need_max": 33.647, "limit": 2.1,
                                      "need_basis": "estimated_from_video", "limit_basis": "catalog"}],
                      "missing": []}
-    assert value["models"][3]["conditions"] == [{"quantity": "route_clear", "need_min": None, "need_max": None,
+    assert value["models"][1]["conditions"] == [{"quantity": "route_clear", "need_min": None, "need_max": None,
                                                   "limit": None, "need_basis": "not_checked",
                                                   "limit_basis": "not_checked"}]
     assert value["models"][4]["failed_checks"] == ["reach"] and value["models"][4]["conditions"] == []
@@ -301,7 +301,7 @@ def test_v2_reads_a_table_written_before_the_first_look(tmp_path):
 
 
 @pytest.mark.parametrize("fault", ["fits_if_legacy_fits", "no_conditions", "unknown_quantity", "unknown_cause",
-                                   "unknown_first_look", "route_with_numbers", "route_on_payload"])
+                                   "unknown_first_look", "route_with_numbers", "route_on_payload", "reversed_need"])
 def test_a_first_look_row_a_reader_could_not_word_is_left_out(tmp_path, fault):
     rows = [dict(row) for row in FIRST_LOOK_ROWS]
     big = rows[1]
@@ -315,6 +315,8 @@ def test_a_first_look_row_a_reader_could_not_word_is_left_out(tmp_path, fault):
         rows[5]["missing"] = [{"check": "stance", "cause": "felt_wrong"}]
     elif fault == "route_with_numbers":
         rows[3]["conditions"] = [{**rows[3]["conditions"][0], "limit": 1.0}]
+    elif fault == "reversed_need":
+        big["conditions"] = [{**big["conditions"][0], "need_min": 40.0, "need_max": 0.5}]
     elif fault == "route_on_payload":
         rows[3]["conditions"] = [{**rows[3]["conditions"][0], "check": "payload"}]
     else:
