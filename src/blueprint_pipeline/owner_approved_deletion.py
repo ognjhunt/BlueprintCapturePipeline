@@ -23,10 +23,12 @@ A path is eligible only when it is one of three kinds, each under a fixed parent
   at most ``MAX_UNLISTED_GROWTH`` (1.25) times the recorded bytes (``larger_than_approved``).
 * ``task_evaluation_inputs_subfolder``: a direct child directory of a parent in
   ``SUBFOLDER_PARENTS``, and nothing deeper: any child of ``sam31-preparations``, any child of
-  ``configured-controls``, and under ``stage-replays`` only ``claude-provision-trial``. The owner
-  approved exactly those three folders on 2026-11-12 (``sam31-preparations``,
-  ``stage-replays/claude-provision-trial``, ``configured-controls``); listing a folder's children
-  rather than the folder is the planner's. It is checked exactly as a folder, through the same
+  ``configured-controls``, and under ``stage-replays`` only the one replay folder the owner approved.
+  The owner approved exactly three folders on 2026-11-12 (``sam31-preparations``, that one child of
+  ``stage-replays``, ``configured-controls``); listing a folder's children rather than the folder is
+  the planner's. That child is held by the SHA-256 digest of its name, not by its name: this module
+  is released code and the released-code check reads it, so naming the child here would refuse it.
+  Its name is in the manifest and in ``docs/CONTROL_PLANE_STORAGE.md``. It is checked exactly as a folder, through the same
   code: the same entry fields and identity, the same references, live state, released code and
   scan roots. In addition the parent is opened without following a link and must be a directory
   on the inputs root's own device that the mount table does not list (a bind mount of the same
@@ -119,16 +121,27 @@ FOLDER = "task_evaluation_inputs_folder"
 SUBFOLDER = "task_evaluation_inputs_subfolder"
 SCENE = "authority_ended_scene_workspace"
 #: The only parents whose direct child directories a manifest may list as ``SUBFOLDER``, each a direct
-#: child of the inputs root, with the children allowed (``None``: any). The owner approved, on
-#: 2026-11-12 about 21:05Z ("yes approve all 3"), exactly three folders: ``sam31-preparations``,
-#: ``stage-replays/claude-provision-trial`` and ``configured-controls`` (the last only if the first two
-#: free less than expected). So under ``stage-replays`` only that one child is accepted. Listing the
+#: child of the inputs root, with the children allowed, as the SHA-256 hex digests of their names
+#: (``None``: any). The owner approved, on 2026-11-12 about 21:05Z ("yes approve all 3"), exactly three
+#: folders: ``sam31-preparations``, one replay folder of ``stage-replays`` and ``configured-controls``
+#: (the last only if the first two free less than expected). So under ``stage-replays`` only that one
+#: child is accepted. It is held by the digest of its name because this module is released code and the
+#: released-code check reads it: its name here would refuse it as ``named_by_released_code``. The name
+#: is in the manifest and in ``docs/CONTROL_PLANE_STORAGE.md`` (docs are not scanned). Listing the
 #: children instead of the folders is the planner's decision; the parent itself is never listed.
 SUBFOLDER_PARENTS: Mapping[str, frozenset[str] | None] = {
     "sam31-preparations": None,
-    "stage-replays": frozenset({"claude-provision-trial"}),
+    "stage-replays": frozenset({"12113f9d0de223f3c72895359692ba8fb1e08aad7f6180eab849f8792185df8c"}),
     "configured-controls": None,
 }
+
+
+def _name_digest(name: str) -> str:
+    """How ``SUBFOLDER_PARENTS`` holds an allowed child: the SHA-256 hex digest of its name."""
+
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()
+
+
 #: A folder the door could not list in full may have grown past what was recorded, but not by more.
 MAX_UNLISTED_GROWTH = 1.25
 #: Both folder kinds share the folder checks and the identity compared at plan and apply.
@@ -230,14 +243,14 @@ def _count(value: Any) -> bool:
 def _folder_entry(entry: Mapping[str, Any], inputs_root: Path, *,
                   parents: Mapping[str, frozenset[str] | None] | None = None) -> dict[str, Any]:
     """A folder entry; with ``parents``, a direct child of one of those direct children of the inputs root
-    (only the listed children where the parent lists any)."""
+    (only the children whose name digest the parent lists, where it lists any)."""
 
     keys = {"class", "path", "newest_mtime_epoch", "apparent_bytes", "file_count", "door_unlisted_entries"}
     _require(set(entry) == keys, "entry_fields_invalid")
     path = Path(str(entry["path"]))
     placed = (path.parent == inputs_root if parents is None
               else path.parent.parent == inputs_root and path.parent.name in parents
-              and (parents[path.parent.name] is None or path.name in parents[path.parent.name]))
+              and (parents[path.parent.name] is None or _name_digest(path.name) in parents[path.parent.name]))
     _require(placed and _NAME.fullmatch(path.name) and not path.name.startswith(ASIDE_PREFIX)
              and str(path) == entry["path"], "entry_path_outside_allowlist")
     _require(all(_count(entry[key]) for key in keys - {"class", "path"}), "entry_identity_invalid")

@@ -1399,8 +1399,18 @@ def test_the_2026_11_12_host_work_volume_manifests_list_only_subfolders_and_the_
 # --- after the independent review of 2026-11-12 (D1 to D5) ------------------------------------------
 
 
+def _approved_replay() -> str:
+    """The one approved child of ``stage-replays``, as the shipped manifest names it (the module holds only
+    the digest of its name)."""
+
+    active, _ = oad.load_manifest(REPO_ROOT / "deploy" / "owner-approved-deletions" / "2026-11-12-host-work-volume.json")
+    (name,) = [Path(entry["path"]).name for entry in active["entries"] if Path(entry["path"]).parent.name == "stage-replays"]
+    return name
+
+
 def test_under_stage_replays_only_the_approved_replay_is_accepted(tmp_path):
-    (approved,) = oad.SUBFOLDER_PARENTS["stage-replays"]
+    approved = _approved_replay()
+    assert oad.SUBFOLDER_PARENTS["stage-replays"] == frozenset({oad._name_digest(approved)})
 
     def load(name: str):
         manifest = tmp_path / "m.json"
@@ -1415,6 +1425,36 @@ def test_under_stage_replays_only_the_approved_replay_is_accepted(tmp_path):
     for other in ("agent-execution", approved + "-2", approved.upper()):
         with pytest.raises(oad.OwnerApprovedDeletionError, match="entry_path_outside_allowlist"):
             load(other)
+
+
+def test_the_tools_own_released_code_names_nothing_its_runnable_manifests_list(host):
+    # 2026-11-12 23:06Z: the tool's allow-list held the approved replay's name, so the released-code scan read
+    # the tool itself and refused the one child the allow-list permits. The repository's own tree is the release.
+    host.settings.release_roots = (REPO_ROOT,)
+    state = host.settings.live_state()
+    assert not state.unreadable
+
+    tool = str(REPO_ROOT / "src" / "blueprint_pipeline" / "owner_approved_deletion.py")
+    runnable = {manifest.stem: oad.load_manifest(manifest)[0]["entries"]
+                for manifest in oad.manifests(REPO_ROOT / "deploy" / "owner-approved-deletions")}
+    named = {entry["path"]: state.code_files(Path(entry["path"]).name)
+             for entries in runnable.values() for entry in entries}
+
+    # (a) The tool never names anything a runnable manifest lists. Other released code or host configuration
+    # naming an entry of another runnable manifest is an expected refusal on the host, not a failure here.
+    assert named and {path: files for path, files in named.items() if tool in files} == {}
+    # (b) Nothing in the release names the entries of the 2026-11-12 host work volume manifest.
+    assert {entry["path"]: named[entry["path"]] for entry in runnable["2026-11-12-host-work-volume"]
+            if named[entry["path"]]} == {}
+
+
+def test_the_approved_replay_planned_against_the_repositorys_own_tree_is_eligible(host):
+    replay = _sub(host, "stage-replays", _approved_replay())
+    host.settings.release_roots = (REPO_ROOT,)
+
+    row = host.plan(host.manifest([_sub_entry(host, replay)]))["entries"][0]
+
+    assert (row["status"], row["reasons"], row["named_by_released_code"]) == ("eligible", [], [])
 
 
 def test_the_plan_journal_names_every_eligible_path_with_measured_and_recorded_bytes(host, capsys):
@@ -1467,6 +1507,7 @@ def test_the_real_held_manifests_are_neither_planned_nor_applied(tmp_path, monke
         assert oad.main([*action, "--manifest-dir", str(directory), "--report-root", str(tmp_path / "reports"),
                          "--pins-root", str(tmp_path / "pins"), "--intent-root", str(tmp_path / "intents")]) == 0
     assert seen == ["2026-11-12-host-work-volume.json"] * 2
+    assert all(not (directory / path.name).exists() for path in (directory / "held").glob("*.json"))
 
 
 def _live_states() -> list[tuple[str, str]]:
