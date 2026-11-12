@@ -1,3 +1,5 @@
+> **Superseded 2026-11-12.** This describes an earlier frame, which the owner replaced. Current frame: the shared block of PLATFORM_CONTEXT.md.
+
 # Cross-Repo Readiness Matrix
 
 > **Capture, 2026-11-11.** No capture app is in use, and nobody else films for a

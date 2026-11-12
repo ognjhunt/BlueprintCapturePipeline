@@ -6,7 +6,6 @@
     "blueprint_overview",
     "blueprint_capture",
     "blueprint_pipeline_qualification",
-    "blueprint_webapp_operations",
-    "blueprint_validation_followon"
+    "blueprint_webapp_operations"
   ]
 }

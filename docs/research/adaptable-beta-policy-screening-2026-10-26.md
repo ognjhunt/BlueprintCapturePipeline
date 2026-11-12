@@ -1,3 +1,5 @@
+> **Paused 2026-11-12.** No new work is started on this under the current frame (the shared block of PLATFORM_CONTEXT.md). Kept for reference.
+
 # Adaptable beta policy screening
 
 Research and implementation specification, October 26, 2026. This continues the owner’s request to evaluate dozens of policies and APIs against each reconstructed job, with Blueprint-WebApp alongside the pipeline.

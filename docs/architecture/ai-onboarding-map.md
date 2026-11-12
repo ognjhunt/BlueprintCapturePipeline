@@ -2,12 +2,11 @@
 
 ## Two Active Programs
 
-BlueprintCapturePipeline supports the free beta's **job-first automation
-service** and **Arm Decision Proof v1**, per owner direction on 2026-10-21.
-Read `doctrine/` and the shared blocks first. Assessment requires retained job
-video; use existing operator and owner workspaces.
-Only unresolved technical questions need the Decision/Evidence Router and
-qualified evidence. A scientific verdict is not a commercial recommendation.
+BlueprintCapturePipeline is the packet factory for the free beta's **job
+packet** (owner direction 2026-11-12) and supports **Arm Decision Proof v1**.
+Read the shared block of `PLATFORM_CONTEXT.md` first. A job starts from
+retained video. Blueprint's own test is an early trial inside the packet, never
+the site's answer.
 
 For capture-derived bounded evaluation, use
 [first site/team acceptance](../runbooks/first-site-team-beta.md),
@@ -15,7 +14,7 @@ For capture-derived bounded evaluation, use
 [execution recovery](../team-evaluation-recovery-contract.md). Those are
 conditional technical routes, not mandatory stages for every job. The
 historical north-star `sole_active_program` label does not override the owner
-update, and the job journey does not widen ADP's proof protocol.
+update, and the job packet does not widen ADP's proof protocol.
 
 Read completely, in order:
 

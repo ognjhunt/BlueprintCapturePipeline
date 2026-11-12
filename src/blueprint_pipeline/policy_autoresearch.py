@@ -1,7 +1,6 @@
 """Sim-only policy autoresearch lane for robot-eval jobs.
 
-This module bridges Blueprint's bounded autoresearch pattern from skill text to
-site policy recipes. It intentionally treats the scenario matrix and verifier as
+This module applies a bounded autoresearch pattern to site policy recipes. It intentionally treats the scenario matrix and verifier as
 immutable inputs: candidates may mutate only policy recipe parameters, and a
 candidate is promoted only when heldout task success reaches the target while
 safety/contact gates stay clean.

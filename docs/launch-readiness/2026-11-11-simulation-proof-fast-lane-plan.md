@@ -1,3 +1,5 @@
+> **Superseded 2026-11-12.** This describes the frame "the simulation test's result is the site's answer", which the owner replaced. Current frame: the shared block of PLATFORM_CONTEXT.md.
+
 # Plan: one fast, validated simulation proof lane
 
 Written 2026-11-11. It follows the
