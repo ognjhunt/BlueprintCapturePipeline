@@ -29,8 +29,7 @@ to them would invert the independence this ADR is trying to protect.
 
 By that definition adaptation is already shipped, unnamed:
 `g1_microwave_*_finetune*` (fine-tuned weights),
-`droid_oscar_skeleton_conditioning` and `franka_droid_skeleton_conditioning`
-(conditioning channels at inference), and `oscar_visual_augmentation_*`
+`franka_droid_skeleton_conditioning` (conditioning channels at inference), and `oscar_visual_augmentation_*`
 (constructed generation inputs).
 
 Explicitly **outside** this ADR: `policy_ranking_causal_conditioning` (archived
