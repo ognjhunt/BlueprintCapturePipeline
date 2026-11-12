@@ -526,50 +526,6 @@ def _read_bound_locked_joint_state(
     }
 
 
-#: Plan roles that are movable bodies: the task subject, every co-present replacement and the
-#: task support. The same set ``read_native_task_arena_object_reset_state`` reads at reset.
-MOVABLE_BODY_ROLES = frozenset({"task_object", "replacement", "task_support"})
-
-
-def scored_subject_count(plan: Mapping[str, Any]) -> int:
-    """How many of the plan's objects are scored subjects (``task_subject``); one on every plan today."""
-    return sum(1 for row in plan.get("objects") or [] if isinstance(row, Mapping) and row.get("task_subject") is True)
-
-
-def read_native_task_arena_object_poses(built: NativeTaskArenaEnvironment, scene: Any) -> dict[str, Any]:
-    """Every movable body's live asset-root pose, keyed by its ``asset_id``, and the ones unreadable now.
-
-    Returns ``{"poses": {asset_id: [x, y, z, qx, qy, qz, qw]}, "unreadable": [asset_id, ...]}``.
-    The pose is the body's own root, in the same logical frame as its planned ``pose_world``; it
-    is not the task object's scoring frame (``task_object_pose_world``, read exactly as before).
-    Reading these extra bodies never ends or fails a try: a body the scene cannot read at this
-    step, or reads as non-finite, is listed as unreadable for this step, and a rule that needs it
-    is unscored (``task_predicates``).
-    """
-    poses: dict[str, list[float]] = {}
-    unreadable: list[str] = []
-    for planned in built.plan.get("objects") or []:
-        if not (planned.get("task_subject") is True or planned.get("semantic_role") in MOVABLE_BODY_ROLES):
-            continue
-        runtime_name = str(planned.get("name") or "")
-        asset_id = str(planned.get("asset_id") or runtime_name)
-        try:
-            asset = scene[built.scene_asset_names[runtime_name]]
-            native = _first_environment(getattr(getattr(asset, "data", None), "root_pose_w", None),
-                                        error=f"native_task_arena_object_pose_missing:{asset_id}")
-            logical = _logical_root_pose(planned, native) if len(native) >= 7 else None
-            pose = None if logical is None else [float(v) for v in
-                                                 (*logical["position_world_m"], *logical["orientation_xyzw"])]
-        except Exception:  # noqa: BLE001 - an extra body's readback must never end a try
-            pose = None
-        if pose is None or asset_id in poses or not all(math.isfinite(value) for value in pose):
-            unreadable.append(asset_id)
-            poses.pop(asset_id, None)
-            continue
-        poses[asset_id] = pose
-    return {"poses": poses, "unreadable": sorted(set(unreadable))}
-
-
 def read_native_task_arena_object_reset_state(
     built: NativeTaskArenaEnvironment,
     *,
@@ -1476,13 +1432,6 @@ class NativeRigidTaskArenaReadback:
         if destination_pose is not None:
             sample["destination_pose_world"] = destination_pose
         sample["grasp_frame_position_source"] = grasp_position_source
-        # Every movable body's root, for the predicate scorer's several-object kinds, only when the
-        # plan scores several subjects: a one-object try's sample keeps exactly origin/main's keys.
-        if scored_subject_count(self._built.plan) > 1:
-            bodies = read_native_task_arena_object_poses(self._built, scene)
-            sample["object_poses_world"] = bodies["poses"]
-            if bodies["unreadable"]:
-                sample["object_poses_unreadable"] = bodies["unreadable"]
         return sample
 
 
@@ -1490,10 +1439,7 @@ __all__ = [
     "NativeArticulatedTaskArenaReadback",
     "NativeNavigationArenaReadback",
     "NativeRigidTaskArenaReadback",
-    "MOVABLE_BODY_ROLES",
     "NativeTaskArenaReadbackError",
-    "read_native_task_arena_object_poses",
-    "scored_subject_count",
     "read_native_task_arena_object_reset_state",
     "read_native_task_arena_scenario_parameters",
 ]

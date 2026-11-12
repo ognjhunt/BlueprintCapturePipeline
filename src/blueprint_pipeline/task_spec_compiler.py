@@ -300,19 +300,6 @@ def compile_task_spec(*, brief: Mapping[str, Any], scene: Mapping[str, Any],
     return validate_task_spec(spec)
 
 
-#: Kinds that read whether the robot has let go of each object, and the producer they wait for:
-#: no runtime writes ``object_robot_contact_active`` per subject yet, so every real try would be unscored.
-RELEASE_KINDS = ("resting_on", "inside", "at_least")
-MISSING_RELEASE_PRODUCER = "native_task_arena_readback.object_robot_contact_active"
-
-
-def _require_release_channel(success: Mapping[str, Any]) -> None:
-    """Refuse, by name, a spec whose success needs a per-object release channel no runtime writes yet."""
-    kinds = {row.get("kind") for row in success.get("predicates") or [] if isinstance(row, Mapping)}
-    for kind in RELEASE_KINDS:
-        _require(kind not in kinds, f"task_spec_predicate_release_channel_missing:{kind}:{MISSING_RELEASE_PRODUCER}")
-
-
 def validate_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
     spec = _clone(dict(value))
     _require(spec.get("schema_version") == SCHEMA and spec.get("claim_ceiling") == CLAIM_CEILING,
@@ -323,7 +310,6 @@ def validate_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
              "task_spec_fields_invalid")
     requirements(**spec["requirements"])
     validate_predicates(spec["success"])
-    _require_release_channel(spec["success"])
     goals = {row["id"]: row for row in spec["success"]["predicates"] if row["kind"] == "region_reached"}
     start = spec["start"]["region"]["center_world_m"]
     for marker in spec["markers"]:

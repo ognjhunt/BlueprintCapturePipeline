@@ -743,9 +743,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         source.write_text("[Unit]\nDescription=Exact release lifecycle fixture\n", encoding="utf-8")
         release_lifecycle_units.append(source)
     owner_deletion_units = []
-    for name in ("blueprint-owner-approved-deletion-plan.service", "blueprint-owner-approved-deletion.service",
-                 "blueprint-scene-retirement-runtime-prune-plan.service",
-                 "blueprint-scene-retirement-runtime-prune.service"):
+    for name in ("blueprint-owner-approved-deletion-plan.service", "blueprint-owner-approved-deletion.service"):
         source = unit_dir / name
         source.write_text("[Service]\nExecStart=/usr/bin/blueprint-owner-approved-deletion\n", encoding="utf-8")
         owner_deletion_units.append(source)
@@ -980,8 +978,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-control-plane-release-lifecycle.timer",
         "blueprint-owner-approved-deletion-plan.service",
         "blueprint-owner-approved-deletion.service",
-        "blueprint-scene-retirement-runtime-prune-plan.service",
-        "blueprint-scene-retirement-runtime-prune.service",
         "blueprint-control-plane-capacity.service",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.service",

@@ -68,7 +68,6 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.control_plane_storage_gc",
     "blueprint_pipeline.control_plane_release_lifecycle",
     "blueprint_pipeline.owner_approved_deletion",
-    "blueprint_pipeline.scene_retirement_runtime_prune",
     "blueprint_pipeline.control_plane_capacity_controller",
     "blueprint_pipeline.task_evaluation_production_chain_preflight",
     "blueprint_pipeline.paid_resource_allocator",

@@ -66,11 +66,9 @@ _ASSESSMENT_PENDING = "website_control_scene-sponsorship_http_409:website_assess
 # refusal from any website control operation, e.g. preparation-spend.
 _BUDGET_RE = re.compile(r"(?<![A-Za-z0-9_-])website_control_[a-z0-9-]+_http_409:"
                         r"website_scene_preparation_budget_exhausted(?![A-Za-z0-9_-])")
-# Disk and staging shortages on the control plane, never something a site provides; and a job
-# waiting, before its first paid step, for the month to have room for it (website_job_start_room).
+# Disk and staging shortages on the control plane, never something a site provides.
 _CAPACITY_RE = re.compile(r"(?<![A-Za-z0-9_-])(?:pubsub_handoff_staging_capacity_insufficient"
-                          r"|control_plane_disk_budget_exceeded"
-                          r"|account_monthly_spend_job_start_wait)(?![A-Za-z0-9_-])")
+                          r"|control_plane_disk_budget_exceeded)(?![A-Za-z0-9_-])")
 
 
 def silence_seconds() -> int:

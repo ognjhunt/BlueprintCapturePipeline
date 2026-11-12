@@ -1578,9 +1578,6 @@ def _finish_terminal_authority_ending(
     redelivery writes the receipt from it.
     """
 
-    # A grant that ran out while the job waited for the month's room: Blueprint held it, not the site.
-    from .website_job_start_room import room_wait_ending
-    code = room_wait_ending(code, previous_history)
     ended_at = utc_now_iso()
     ledger = _finish_job_lease(
         capture_root,

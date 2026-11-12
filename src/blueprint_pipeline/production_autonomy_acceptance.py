@@ -152,25 +152,7 @@ def _epoch_stamp(value: Any) -> datetime:
         raise AcceptanceEvidenceError("provider_observation_timestamp_invalid") from exc
 
 
-#: The publication site limit this acceptance has always accepted (the screening allowance it was written for).
-PUBLICATION_LIMIT_USD = Decimal("15")
-
-
-def publication_limit_bound(plan: Mapping[str, Any]) -> Decimal:
-    """The most a publication's ``budget.limit_usd`` may be for ``plan``.
-
-    At ``nested`` (``website_job_limits``, shipped): $15, as before 2026-11-11. At ``fuse`` a plan sized
-    to its website job's ceiling may publish a site limit up to that ceiling; any other plan keeps $15.
-    """
-    from .website_job_limits import fuse
-
-    if not fuse():
-        return PUBLICATION_LIMIT_USD
-    from .beta_policy_screening_site_limit import plan_site_limit
-    return max(PUBLICATION_LIMIT_USD, plan_site_limit(plan, PUBLICATION_LIMIT_USD))
-
-
-def _publication_contract(value: Mapping[str, Any], *, limit_bound: Decimal = PUBLICATION_LIMIT_USD) -> dict[str, str]:
+def _publication_contract(value: Mapping[str, Any]) -> dict[str, str]:
     """Existing exact WebApp v1/v2/v3 wire variants, with no tier conversion.
 
     Mirrors betaPolicyScreeningContract's strict variants and count/budget
@@ -215,7 +197,7 @@ def _publication_contract(value: Mapping[str, Any], *, limit_bound: Decimal = PU
                 or not _MONEY.fullmatch(budget[key]) for key in amounts)):
         raise AcceptanceEvidenceError("publication_contract_invalid")
     limit, committed, spent, reserved = (Decimal(budget[key]) for key in amounts)
-    if limit > limit_bound or spent + reserved != committed or committed > limit:
+    if limit > 15 or spent + reserved != committed or committed > limit:
         raise AcceptanceEvidenceError("publication_contract_invalid")
     rows = value.get("candidates")
     if not isinstance(rows, list) or not 1 <= len(rows) <= 256:
@@ -648,7 +630,7 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
         if probe["receipt_digest"] != plan["robot_free_probe_digest"]:
             raise AcceptanceEvidenceError("probe_plan_mismatch")
         publication = evidence["publication"]
-        report["publication_contract"] = _publication_contract(publication, limit_bound=publication_limit_bound(plan))
+        report["publication_contract"] = _publication_contract(publication)
         if (publication.get("campaign_id") != plan["campaign_id"]
                 or publication.get("plan_digest") != plan["plan_digest"] or publication.get("source") != plan["source"]
                 or publication.get("site_id") != plan["site_id"] or publication.get("status") != "completed"
@@ -759,7 +741,7 @@ def _join_observations(observed: Mapping[str, TrustedObservation], *, attempt: M
             or _stamp(authority.get("expires_at")) < stamps["publication"]):
         blockers.append("current_authority_not_proven")
     cap = Decimal(str(authority.get("cap_usd")))
-    if (not cap.is_finite() or not Decimal("0") < cap <= publication_limit_bound(plan)
+    if (not cap.is_finite() or not Decimal("0") < cap <= Decimal("15")
             or Decimal(str(plan["maximum_planned_cost_usd"])) > cap
             or Decimal(str(site_budget["committed_upper_bound_usd"])) > cap
             or facts["site_budget"].get("budget_ledger_id") != authority.get("budget_ledger_id")):

@@ -4,11 +4,10 @@ The catalog describes candidates; trusted runtime capabilities and fresh cost
 quotes determine what can be scheduled. This pure planner performs no launch.
 It reuses the existing bounded scenario draws under a separate screening seed
 domain and never consumes the private scored matrix. The completed campaign is
-the job's evaluation result. A website job's plan budgets everything the job's
-one dollar ceiling leaves after its build (``build_job_ceiling_screening_plan``,
-owner decision 2026-11-11): every AI robot that can run is funded in plan order
-while the ceiling has room. A plan without a website job ceiling (an internal
-plan) keeps the old site allowance as its bound.
+the job's evaluation result; only spend beyond the site allowance needs the
+owner's approval, and no plan can exceed it. A website job's plan is also
+sized to what the job's one dollar ceiling leaves
+(``build_job_ceiling_screening_plan``).
 """
 
 from __future__ import annotations
@@ -58,12 +57,12 @@ QUOTE_SCHEMA_VERSION = "beta_policy_screening_cost_quote.v1"
 # Decision Proof qualified or physical evidence. It does not limit the job's
 # use of its own result, which is published as a simulation estimate.
 CLAIM_CEILING = "diagnostic_policy_execution"
-#: The most a plan made without a website job ceiling may budget (an internal plan; no
-#: production path builds one). Since 2026-11-11 a website job's plan is bounded by its job's
-#: ceiling instead (``beta_policy_screening_site_limit.plan_site_limit``), not by this.
+#: The most one plan may budget: the site's whole screening allowance (the coordinator's
+#: ``SITE_LIMIT``, raised from $15 on 2026-11-05 on the owner's approval).
 SITE_BUDGET_USD = Decimal("30.00")
-#: What an internal plan budgets when its caller names nothing. Not used for a website job:
-#: its plan budgets what the job's ceiling leaves (``build_job_ceiling_screening_plan``).
+#: What a plan budgets when its caller names nothing: one campaign's share. A re-plan is a
+#: new campaign, so a site reaches its allowance across re-plans; the site limit decides
+#: every reservation either way.
 CAMPAIGN_BUDGET_USD = Decimal("15.00")
 # A runnable candidate the budget cannot fund yet. Plans built before the
 # waitlist list such rows as ``deferred`` with the same reason and no
@@ -597,8 +596,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                          cost_quotes: Mapping[str, Any] | None = None,
                          now: dt.datetime | None = None,
                          priority: Sequence[str] | None = None, intake_ranking: bool = False,
-                         website: bool = False, site_remaining_usd: str | None = None,
-                         job_ceiling: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                         website: bool = False, site_remaining_usd: str | None = None) -> dict[str, Any]:
     """Every requested candidate gets a status and reason; the budget decides how many run.
 
     ``site_remaining_usd``: what the site's screening allowance has left after every
@@ -608,10 +606,6 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     candidate instead of deferring every row. Hosted and G1 candidates keep their
     quotes (their provider caps are set elsewhere). The coordinator's site limit
     still decides every reservation.
-
-    ``job_ceiling``: the ``job_ceiling_record`` a website job's plan is sized to
-    (``build_job_ceiling_screening_plan``). The budget is then bounded by what that read
-    leaves, possibly nothing, instead of the internal plan's site allowance.
 
     ``website``: a website job's plan (``build_job_ceiling_screening_plan``). A scripted
     baseline is never funded there (``website_switched_off``), so the site's money only goes
@@ -645,12 +639,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     scene = _scene(scene)
     _id(campaign_id, "beta_screening_campaign_id_invalid")
     budget = money(budget_usd)
-    ceiling_fields = ({} if job_ceiling is None else
-                      {"budget_basis": JOB_CEILING_BASIS, "website_job_ceiling": _json(job_ceiling)})
-    if ceiling_fields:
-        if budget > _job_ceiling_available(ceiling_fields["website_job_ceiling"]):
-            raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_exceeded")
-    elif budget <= 0 or budget > SITE_BUDGET_USD:
+    if budget <= 0 or budget > SITE_BUDGET_USD:
         raise BetaPolicyScreeningPlanError("beta_screening_site_budget_exceeded")
     capabilities = _json(capabilities or {})
     bindings = capabilities.get("candidate_bindings") or {}
@@ -807,7 +796,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         HARNESS_REVISION_FIELD: SCREENING_HARNESS_REVISION,
         # Optional: plans of a scene built on no estimate, and every plan written before 2026-11-10, carry none.
         **({SCENE_ESTIMATE_FLAGS_FIELD: _estimate_flags(scene, cells)} if _estimate_flags(scene, cells) else {}),
-        "candidates": candidates, **ceiling_fields, "plan_digest": "",
+        "candidates": candidates, "plan_digest": "",
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return validate_screening_plan(plan)
@@ -997,18 +986,16 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _plan_budget(plan: Mapping[str, Any]) -> Decimal:
-    """A plan's budget: for a plan sized to its website job's ceiling, within
-    what that read left (possibly nothing); for any other plan, positive and
-    within the internal site allowance. Plans built before the job ceiling
-    carry no basis; those sized to it before 2026-11-11 are within $15 and
-    validate alike."""
+    """A plan's budget: positive, within the site allowance and, for a plan
+    sized to its website job's ceiling, within what that read left (possibly
+    nothing). Plans built before the job ceiling carry no basis."""
     budget = money(plan["budget_usd"])
     available = None
     if _JOB_CEILING_FIELDS & set(plan):
         if plan.get("budget_basis") != JOB_CEILING_BASIS:
             raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
         available = _job_ceiling_available(plan.get("website_job_ceiling"))
-    if available is None and (budget <= 0 or budget > SITE_BUDGET_USD):
+    if budget > SITE_BUDGET_USD or not (budget > 0 or available is not None and budget == 0):
         raise BetaPolicyScreeningPlanError("beta_screening_site_budget_exceeded")
     if available is not None and budget > available:
         raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_exceeded")
@@ -1069,46 +1056,36 @@ def _job_ceiling_available(record: Any) -> Decimal:
 
 
 def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *,
-                                     job_ceiling: Mapping[str, Any], budget_usd: str | None = None,
+                                     job_ceiling: Mapping[str, Any], budget_usd: str = str(CAMPAIGN_BUDGET_USD),
                                      **options: Any) -> dict[str, Any]:
     """``build_screening_plan`` within its website job's one dollar ceiling.
 
-    The switch (``website_job_limits``) decides how much: at ``nested`` (shipped) the budget is the
-    smaller of ``budget_usd`` ($15 by default) and what the ceiling leaves, and only when the ceiling
-    is what binds do budget deferrals name it, as before 2026-11-11. At ``fuse`` it is everything the
-    ceiling leaves, ``budget_usd`` is not taken, and every budget deferral names the ceiling:
-
-    Owner decision 2026-11-11 ("yes replace them - $300 monthly limit, $100 fuse"): testing is
-    not rationed below the job's ceiling. The budget is what ``job_ceiling`` (a
-    ``job_ceiling_record``) leaves after the build and this queue's own holds, decided once: a
-    built plan is never resized. Every AI robot that can run is funded in the plan's order (the
-    job's ranking first) while that budget has room; one it cannot fund is waitlisted, and one
-    it could never fund deferred, each with the ceiling's own reason (``JOB_CEILING_DEFERRED``).
-    With less left than any quote, every candidate is deferred and the plan still publishes, so
-    the job sees why nothing ran. The $4 cap per AI robot test and the $3 scripted reference
-    check are guards on a single run and stay as they are.
+    The budget is the smaller of ``budget_usd`` and what ``job_ceiling`` (a
+    ``job_ceiling_record``) leaves, decided once: a built plan is never
+    resized. When the ceiling is what binds, every budget deferral names it;
+    with less left than any quote, every candidate is deferred and the plan
+    still publishes, so the job sees why nothing ran.
     """
-    from .website_job_limits import fuse
-
     job_ceiling = _json(job_ceiling)
-    available = _job_ceiling_available(job_ceiling)
-    unrationed = fuse()
-    if unrationed and budget_usd is not None:
-        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_budget_not_taken")
-    requested = available if unrationed else money(budget_usd or str(CAMPAIGN_BUDGET_USD))
-    budget = min(requested, available)
-    plan = build_screening_plan(catalog, scene, budget_usd=f"{budget:.2f}", website=True,
-                                job_ceiling=job_ceiling, **options)
-    for row in plan["candidates"] if budget < requested or unrationed else ():
-        if row["status"] == "deferred" and row["blockers"] == [WAITLIST_BLOCKER]:
-            for key in set(row) - {"candidate_id", "display_name", "configuration_digest", "execution_evidence_kind",
-                                   "reach_rank", "grasp_screen"}:
-                del row[key]
-            row.update(status="deferred", blockers=[JOB_CEILING_DEFERRED])
-        elif row["status"] == WAITLISTED:
-            # Still fundable within the ceiling-sized budget from money a
-            # selected candidate releases; the ceiling is what holds it back.
-            row["blockers"] = [JOB_CEILING_DEFERRED]
+    requested = money(budget_usd)
+    budget = min(requested, _job_ceiling_available(job_ceiling))
+    # The planner needs a positive budget. With none left it plans at the
+    # requested one, and every selection is deferred below.
+    plan = build_screening_plan(catalog, scene, budget_usd=f"{budget:.2f}" if budget > 0 else budget_usd,
+                                website=True, **options)
+    if budget < requested:
+        for row in plan["candidates"]:
+            if (row["status"] in {"selected", WAITLISTED} and budget == 0
+                    or row["status"] == "deferred" and row["blockers"] == [WAITLIST_BLOCKER]):
+                for key in set(row) - {"candidate_id", "display_name", "configuration_digest", "execution_evidence_kind",
+                                       "reach_rank", "grasp_screen"}:
+                    del row[key]
+                row.update(status="deferred", blockers=[JOB_CEILING_DEFERRED])
+            elif row["status"] == WAITLISTED:
+                # Still fundable within the ceiling-sized budget from money a
+                # selected candidate releases; the ceiling is what holds it back.
+                row["blockers"] = [JOB_CEILING_DEFERRED]
+    plan.update(budget_usd=f"{budget:.2f}", budget_basis=JOB_CEILING_BASIS, website_job_ceiling=job_ceiling)
     # A new website campaign's known-good control, planned after every candidate and never ahead of one.
     append_control_row(plan, catalog, scene, {"now": dt.datetime.now(dt.timezone.utc), **options})
     planned = sum((money(row["max_cost_usd"]) for row in plan["candidates"] if row["status"] == "selected"), Decimal(0))

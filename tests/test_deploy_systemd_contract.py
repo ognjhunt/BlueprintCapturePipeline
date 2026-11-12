@@ -358,25 +358,6 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                 expected = ["/var/lib/blueprint/task-evaluation-inputs", "/var/lib/blueprint/pubsub-handoffs", *expected]
             assert writable == expected, unit.name
             continue
-        if unit.name in {"blueprint-scene-retirement-runtime-prune-plan.service",
-                         "blueprint-scene-retirement-runtime-prune.service"}:
-            # Root oneshots an operator starts by hand: the in-use check reads every process's descriptors
-            # and maps; only the apply unit may write the two runtime roots.
-            text = unit.read_text(encoding="utf-8")
-            assert "User=root" in text
-            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_PTRACE\n" in text
-            for control in ("NoNewPrivileges=true", "ProtectSystem=strict", "PrivateNetwork=true",
-                            "RestrictAddressFamilies=AF_UNIX\n", "InaccessiblePaths=-/etc/blueprint/provider-secrets",
-                            "SystemCallFilter=@system-service", "TasksMax=32", "MemoryMax=1G"):
-                assert control in text, (unit.name, control)
-            writable = next(line for line in text.splitlines()
-                            if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
-            expected = ["/var/lib/blueprint/pipeline-control-plane/storage-gc"]
-            if unit.name == "blueprint-scene-retirement-runtime-prune.service":
-                expected = ["/mnt/blueprint-work/scene-retirement-runtime",
-                            "/mnt/blueprint-work/scene-retirement-runtime-sdk-inputs", *expected]
-            assert writable == expected, unit.name
-            continue
         if unit.name == "blueprint-control-plane-preflight.service":
             # Root housekeeping: replays each unit's sandbox through PID 1 and
             # writes one evidence root; blockers are content, so exit 2 is success.
@@ -497,9 +478,6 @@ HOST_MEMORY_KEPT = {
     "blueprint-control-plane-release-lifecycle.service": ("200", "512M"),
     "blueprint-owner-approved-deletion-plan.service": ("200", "1G"),
     "blueprint-owner-approved-deletion.service": ("200", "1G"),
-    # Not measured on the host yet: one listing and one tree walk at a time, the deletion units' cap.
-    "blueprint-scene-retirement-runtime-prune-plan.service": ("200", "1G"),
-    "blueprint-scene-retirement-runtime-prune.service": ("200", "1G"),
     # Not measured on the host yet: one site's plan, the owner-approved deletion units' cap.
     "blueprint-website-withdrawal-deletion.service": ("200", "1G"),
     # Not measured on the host yet: one file of at most 16 MiB and one 8 MiB part held at a time.
@@ -648,8 +626,6 @@ OUTSIDE_BATCH_SLICE = {
     "blueprint-control-plane-preflight.service": "a diagnostic, capped at 1G",
     "blueprint-owner-approved-deletion-plan.service": "started by hand, capped at 1G",
     "blueprint-owner-approved-deletion.service": "started by hand, capped at 1G",
-    "blueprint-scene-retirement-runtime-prune-plan.service": "started by hand, capped at 1G",
-    "blueprint-scene-retirement-runtime-prune.service": "started by hand, capped at 1G",
     "blueprint-website-withdrawal-deletion.service": "privacy housekeeping at low priority, capped at 1G",
     REAPER_HEARTBEAT_UNIT: "money safety: the off-host GPU reaper's heartbeat",
 }

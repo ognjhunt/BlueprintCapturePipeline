@@ -246,9 +246,6 @@ def test_native_bootstrap_loads_one_exact_selected_source_sdk_cohort(tmp_path, m
     assert all(path.parent == source / "src/blueprint_pipeline" and raw == b'value = "selected-cohort"\n'
                for path, raw in values.values())
     assert values.runtime_root == source and values.dependencies_root == sdk
-    # The process holds both selected generations open, which is how the runtime pruner sees them.
-    held = {os.readlink(f"/proc/self/fd/{fd}") for _, fd in module._SELECTED}
-    assert {str(source), str(sdk)} <= held
 
 
 @pytest.mark.parametrize("change", ["sdk-tuple", "bootstrap-bytes", "linked-current"])
@@ -265,19 +262,3 @@ def test_mixed_or_replaced_current_cohort_refuses_before_source_import(tmp_path,
         (boot / "CURRENT.json").symlink_to(boot / "foreign-current.json")
     with pytest.raises(ValueError, match="scene_retirement_bootstrap_unproven"):
         module._core_sources()
-
-
-def test_the_bootstrap_still_starts_when_it_cannot_hold_its_selection(tmp_path, monkeypatch):
-    """Holding the selected directories is best effort: the runtime pruner then counts it unknown."""
-    module, source, sdk, _, _ = _selected_cohort_fixture(tmp_path, monkeypatch)
-    real_open = os.open
-
-    def refusing(path, *args, **kwargs):
-        if isinstance(path, Path) and path in (source, sdk):
-            raise PermissionError("descriptor refused")
-        return real_open(path, *args, **kwargs)
-    monkeypatch.setattr(module.os, "open", refusing)
-    monkeypatch.setattr(module, "_SELECTED", [])
-    values = module._core_sources()
-    assert values.runtime_root == source and values.dependencies_root == sdk
-    assert module._SELECTED == []

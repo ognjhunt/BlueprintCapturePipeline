@@ -528,10 +528,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     # no timer or path unit starts them. See src/blueprint_pipeline/owner_approved_deletion.py.
     "blueprint-owner-approved-deletion-plan.service",
     "blueprint-owner-approved-deletion.service",
-    # Old scene-retirement runtime snapshots: oneshots an operator starts by hand (plan, then apply);
-    # no timer or path unit starts them. See src/blueprint_pipeline/scene_retirement_runtime_prune.py.
-    "blueprint-scene-retirement-runtime-prune-plan.service",
-    "blueprint-scene-retirement-runtime-prune.service",
     "blueprint-control-plane-capacity.service",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.service",

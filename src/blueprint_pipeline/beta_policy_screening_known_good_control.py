@@ -517,8 +517,7 @@ def control_gate(ledger: Mapping[str, Any], campaign_id: str, plan: Mapping[str,
     if (committed(state["site_id"]) + cap <= site_limit
             and committed(state["site_id"], campaign_id=campaign_id) + cap <= money(plan["budget_usd"])):
         return "proceed"
-    from .beta_policy_screening_site_limit import budget_reason
-    row.update(status="deferred", blockers=[budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
+    row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
     return "closed"
 
 

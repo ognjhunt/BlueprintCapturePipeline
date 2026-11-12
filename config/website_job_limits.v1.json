@@ -1,9 +1,0 @@
-{
-  "schema_version": "blueprint.website_job_limits.v1",
-  "mode": "nested",
-  "decision": {
-    "by": "owner",
-    "on": "2026-11-11",
-    "note": "\"yes replace them - $300 monthly limit, $100 fuse\". Ships switched off (nested: every amount as before); \"fuse\" turns on testing up to each job's ceiling and the start check, in a later reviewed config change together with the $300 monthly limit."
-  }
-}

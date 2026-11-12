@@ -6,7 +6,7 @@ without its reservation. The expensive worker lives behind the existing
 allocator bridge; this coordinator never invokes a provider API. Ambiguous
 launches retain their reservation and are reconciled, never retried blindly.
 
-A site's limit is the largest job ceiling its campaigns recorded (``beta_policy_screening_site_limit``),
+The standing allowance is USD 30 (``SITE_LIMIT``) for the stable website site submission,
 shared across candidate sets and scene revisions. Once allocation is observed,
 the entire reserved upper bound is conservatively charged until the attempt
 settles: once its own records prove the run is over and bound to it, it counts
@@ -60,7 +60,6 @@ from .beta_policy_screening_failure_scope import (
 )
 from .beta_policy_screening_settlement import settled_cost
 from .beta_policy_screening_known_good_control import CONTROL_FIELD, control_gate, is_control
-from .beta_policy_screening_site_limit import budget_reason, campaign_fields, plan_site_limit, site_limit
 from .decision_evidence_contracts import canonical_digest
 from .job_retry_policy import hard_stop_kind, refusal_retry_delay
 from .policy_execution_evidence import SCRIPTED
@@ -80,8 +79,8 @@ ATTEMPT_DIR_FIELD = "attempt_dir"
 ATTEMPT_POINTER_SCHEMA = "blueprint.beta_policy_screening_attempt_pointer.v1"
 LEDGER_SCHEMA = "blueprint.beta_policy_screening_ledger.v1"
 LEDGER_FILENAME = "screening_ledger.v1.json"
-#: The site allowance ($30 since 2026-11-05) for a campaign that recorded no job ceiling and a plan without
-#: one. A site's limit is the largest figure its campaigns recorded, each counting this when it has none.
+#: The site's screening allowance across its campaigns (raised from $15 on 2026-11-05, owner
+#: approval). Each website job's ceiling still bounds what a job spends in all.
 SITE_LIMIT = Decimal("30")
 CAPACITY_RETRY_SECONDS = 60
 CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
@@ -159,7 +158,6 @@ INFEASIBLE_BLOCKER = "candidate_infeasible_measured_geometry"
 # The plan's own reason: published reasons stay a subset of the plan's.
 WAITLIST_BLOCKER = "site_screening_budget_insufficient"
 BUDGET_EXHAUSTED_BLOCKER = "beta_screening_site_budget_exhausted"
-SITE_EXCEEDED_BLOCKER = "beta_screening_site_budget_exceeded"  # The site is already past its limit: it alone holds.
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _MONEY = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?")
 _BLOCKER = re.compile(r"[a-z][a-z0-9_:.=-]{0,199}")
@@ -260,7 +258,7 @@ def _budget(ledger: Mapping[str, Any], site_id: str, *, campaign_id: str | None 
                     spent += cap if settled is None else settled
                 elif state != "released":
                     raise ScreeningCoordinatorError("beta_screening_reservation_state_invalid")
-    return {"currency": "USD", "limit_usd": money(site_limit(ledger, site_id, SITE_LIMIT)),
+    return {"currency": "USD", "limit_usd": money(SITE_LIMIT),
             "committed_upper_bound_usd": money(reserved + spent),
             "spent_upper_bound_usd": money(spent), "reserved_usd": money(reserved)}
 
@@ -307,7 +305,9 @@ def _ledger(root: Path) -> dict[str, Any]:
     if (ledger.get("schema_version") != LEDGER_SCHEMA or not isinstance(ledger.get("campaigns"), dict)
             or ledger.get("ledger_digest") != canonical_digest(ledger, digest_field="ledger_digest")):
         raise ScreeningCoordinatorError("beta_screening_ledger_invalid")
-    # A site past its limit holds only itself: its reservations refuse by name (``_reserve``), the rest go on.
+    for site_id in {row["site_id"] for row in ledger["campaigns"].values()}:
+        if _amount(_budget(ledger, site_id)["committed_upper_bound_usd"]) > SITE_LIMIT:
+            raise ScreeningCoordinatorError("beta_screening_site_budget_exceeded")
     return ledger
 
 
@@ -355,7 +355,7 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
 
     value = validate_screening_plan(plan)
     campaign_id = value["campaign_id"]
-    if not _ID.fullmatch(campaign_id) or not value.get("site_id") or _amount(value["budget_usd"]) > plan_site_limit(value, SITE_LIMIT):
+    if not _ID.fullmatch(campaign_id) or not value.get("site_id") or _amount(value["budget_usd"]) > SITE_LIMIT:
         raise ScreeningCoordinatorError("beta_screening_campaign_scope_invalid")
     root = _root(queue_root)
     with _lock(root):
@@ -375,7 +375,7 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
         ledger["campaigns"][campaign_id] = {
             "plan_digest": value["plan_digest"], "site_id": value["site_id"],
             "revision": 1, "created_at": timestamp, "updated_at": timestamp,
-            "published_revision": 0, "published_digest": None, **campaign_fields(value),
+            "published_revision": 0, "published_digest": None,
             "candidates": {candidate["candidate_id"]: _initial_state(candidate) for candidate in value["candidates"]},
         }
         _save(root, ledger)
@@ -746,9 +746,9 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
                 # Closed for the site's budget at an older commit, never spent, while the site
                 # still has money: the new plan may fit its quote to what is left. The site
                 # limit still decides every reservation.
-                or row["status"] == "deferred" and row.get("blockers") in ([BUDGET_EXHAUSTED_BLOCKER], [budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
+                or row["status"] == "deferred" and row.get("blockers") == [BUDGET_EXHAUSTED_BLOCKER]
                 and frozen not in (None, implementation_commit) and not _spent(row)
-                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < site_limit(ledger, state["site_id"], SITE_LIMIT)
+                and _amount(_budget(ledger, state["site_id"])["committed_upper_bound_usd"]) < SITE_LIMIT
                 # Its result was made under a harness revision a later one corrected: not counted,
                 # so the candidate runs once more on the deployed harness.
                 or frozen not in (None, implementation_commit) and _result_not_counted(row, candidate, plan)):
@@ -892,7 +892,7 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
 
     value = validate_screening_plan(plan)
     successor = value["campaign_id"]
-    if not _ID.fullmatch(successor) or _amount(value["budget_usd"]) > plan_site_limit(value, SITE_LIMIT):
+    if not _ID.fullmatch(successor) or _amount(value["budget_usd"]) > SITE_LIMIT:
         raise ScreeningCoordinatorError("beta_screening_campaign_scope_invalid")
     root = _root(queue_root)
     with _lock(root):
@@ -928,7 +928,7 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
         ledger["campaigns"][successor] = {
             "plan_digest": value["plan_digest"], "site_id": value["site_id"],
             "revision": 1, "created_at": timestamp, "updated_at": timestamp,
-            "published_revision": 0, "published_digest": None, "supersedes": campaign_id, **campaign_fields(value),
+            "published_revision": 0, "published_digest": None, "supersedes": campaign_id,
             "candidates": {candidate["candidate_id"]: _initial_state(candidate) for candidate in value["candidates"]},
         }
         _save(root, ledger)
@@ -1207,13 +1207,13 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
             blocker = QUOTE_EXPIRED_BLOCKER
         elif cap <= 0:
             blocker = "beta_screening_cost_bound_invalid"
-        elif (_amount(site["committed_upper_bound_usd"]) + cap > site_limit(ledger, plan["site_id"], SITE_LIMIT)
+        elif (_amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
               or _amount(campaign["committed_upper_bound_usd"]) + cap > _amount(plan["budget_usd"])):
             # Another attempt holds the money it needs. That attempt may still
             # release it before spend, so wait for the refill to decide. The
             # known-good control never waits on money: it ends here.
-            row.update(status="deferred" if is_control(candidate) else "waitlisted", blockers=[SITE_EXCEEDED_BLOCKER if _amount(site["committed_upper_bound_usd"]) > site_limit(ledger, plan["site_id"], SITE_LIMIT)
-                       else budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER if is_control(candidate) else WAITLIST_BLOCKER)])
+            row.update(status="deferred" if is_control(candidate) else "waitlisted",
+                       blockers=[BUDGET_EXHAUSTED_BLOCKER if is_control(candidate) else WAITLIST_BLOCKER])
             _changed(state)
             _save(root, ledger)
             return None
@@ -1286,16 +1286,16 @@ def _refill_waitlist(root: Path) -> int:
                     cap = _amount(candidate["max_cost_usd"])
                     if is_control(candidate):
                         # Never funded from the waitlist (a ledger written before it ran last): it ends.
-                        row.update(status="deferred", blockers=[budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
+                        row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
                     elif not _quote_current(candidate):
                         row.update(status="deferred", blockers=[QUOTE_EXPIRED_BLOCKER])
-                    elif site_used + cap <= site_limit(ledger, site_id, SITE_LIMIT) and campaign_used + cap <= _amount(plan["budget_usd"]):
+                    elif site_used + cap <= SITE_LIMIT and campaign_used + cap <= _amount(plan["budget_usd"]):
                         row.update(status="pending", blockers=[])
                         site_used += cap
                         campaign_used += cap
                         in_flight = True
-                    elif not in_flight and row.get("blockers") != [SITE_EXCEEDED_BLOCKER]:  # a held site stays held
-                        row.update(status="deferred", blockers=[budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
+                    elif not in_flight:
+                        row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
                     else:
                         continue
                     touched = True
@@ -1851,7 +1851,7 @@ def _control_may_reserve(root: Path, plan: Mapping[str, Any]) -> bool:
         decision = control_gate(ledger, plan["campaign_id"], plan, plans=plans,
                                 committed=lambda site, campaign_id=None: _amount(
                                     _budget(ledger, site, campaign_id=campaign_id)["committed_upper_bound_usd"]),
-                                site_limit=site_limit(ledger, plan["site_id"], SITE_LIMIT),
+                                site_limit=SITE_LIMIT,
                                 final=lambda: current and _final_without_control(ledger, plan, plans))
         if decision in {"reused", "closed"}:
             _changed(ledger["campaigns"][plan["campaign_id"]])

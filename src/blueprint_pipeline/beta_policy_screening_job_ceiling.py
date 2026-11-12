@@ -1,17 +1,12 @@
 """Size each new screening plan to its website job's one dollar ceiling.
 
 Owner decision 2026-10-30 (WebApp #1168): one dollar ceiling per website job,
-across Atlas, upstream, native construction and screening; the WebApp sets its
-figure (the job's Atlas grant, $25 on every job granted before 2026-11-11; the
-owner moves new jobs to $100). The WebApp refuses preparation spend and scene
-intakes past it, but this queue reserves screening without asking the WebApp,
-so the plan is where screening stops. Since 2026-11-11 (owner: "yes replace
-them - $300 monthly limit, $100 fuse") each new plan's budget is everything the
-ceiling leaves, read once over the existing signed transport: no $15 plan size
-and no $30 site allowance below it. The ceiling is a fuse against a fault
-burning the month in one job, not a ration. Plans already built are never
-resized, and every paid launch reads the ceiling again
-(``require_current_job_ceiling``).
+$40 by default, across Atlas, upstream, native construction and screening. The
+WebApp refuses preparation spend and scene intakes past it, but this queue
+reserves screening without asking the WebApp, so the plan is where screening
+stops: each new plan's budget is the smaller of the $30 site allowance and what
+the ceiling leaves, read once over the existing signed transport. Plans already
+built are never resized.
 
 If the ceiling cannot be read (a WebApp without the summary, a job without its
 retained Atlas configuration, a refusal, the network), planning holds with
@@ -137,11 +132,7 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
         record = job_ceiling_record(summary, local_holds_usd=holds, read_at=read_at)
     except BetaPolicyScreeningPlanError:
         raise ValueError(UNAVAILABLE) from None
-    from .website_job_limits import fuse
-    if not fuse():
-        # nested (shipped): the site's remaining allowance fits a last quote, as before 2026-11-11.
-        options.setdefault("site_remaining_usd", site_screening_remaining(queue_root, site_id=scene["site_id"]))
-    # fuse: no site allowance is passed; the ceiling is the only bound (owner decision 2026-11-11).
+    options.setdefault("site_remaining_usd", site_screening_remaining(queue_root, site_id=scene["site_id"]))
     return build_job_ceiling_screening_plan(catalog, scene, job_ceiling=record, **options)
 
 
@@ -207,21 +198,13 @@ def require_current_job_ceiling(plan: Mapping[str, Any], *, context: Mapping[str
 
 
 def site_screening_remaining(queue_root: str | Path, *, site_id: str) -> str:
-    """What the site's screening limit has left after every commitment, as funding counts it.
-
-    The limit is the site's job ceiling once one of its campaigns recorded it
-    (``beta_policy_screening_site_limit.site_limit``). A read for people; planning no
-    longer passes it to the plan (the ceiling read itself bounds a new plan).
-    """
+    """What the site's screening allowance has left after every commitment, as funding counts it."""
     from .beta_policy_screening_coordinator import SITE_LIMIT, _amount, _budget, _ledger, _lock, _root
-    from .beta_policy_screening_site_limit import site_limit
 
     root = _root(queue_root)
     with _lock(root):
-        ledger = _ledger(root)
-        committed = _amount(_budget(ledger, site_id)["committed_upper_bound_usd"])
-        limit = site_limit(ledger, site_id, SITE_LIMIT)
-    return f"{max(Decimal(0), limit - committed):.2f}"
+        committed = _amount(_budget(_ledger(root), site_id)["committed_upper_bound_usd"])
+    return f"{max(Decimal(0), SITE_LIMIT - committed):.2f}"
 
 
 __all__ = ["EXCEEDED", "UNAVAILABLE", "local_screening_holds", "plan_within_job_ceiling", "read_job_ceiling_summary",

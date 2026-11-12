@@ -10,7 +10,6 @@ import argparse
 from collections.abc import Mapping, Sequence
 import json
 import os
-import sys
 from pathlib import Path
 import re
 from typing import Any
@@ -666,11 +665,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-launches", type=int, default=1)
     parser.add_argument("--max-sources", type=int, default=32)
     args = parser.parse_args(argv)
-    from .website_job_limits import limits_mode
-
-    # The money switch, read once before any job is looked at: missing or invalid, the whole pass stops here
-    # (``WebsiteJobLimitsInvalid``), so no job is marked, held or published for our configuration's fault.
-    limits_mode()
     root = _root(args.queue_root)
     sources = enqueue_prepared_scenes(queue_root=root, packet_queue_root=args.packet_queue_root,
         max_sources=args.max_sources) if args.packet_queue_root else {"status": "source_queue_not_configured"}
@@ -739,19 +733,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def entrypoint(argv: Sequence[str] | None = None) -> int:
-    """``main``; a missing or unreadable money switch stops the whole queue (no limit is ever guessed) with one
-    line naming the file, not a traceback (``website_job_limits``). The non-zero exit fails the unit, whose
-    ``OnFailure=blueprint-unit-failure@%n.service`` pages the operator (``unit_failure_notifier``,
-    ``unit_failed``), once and then hourly while it lasts."""
-    from .website_job_limits import WebsiteJobLimitsInvalid
-
-    try:
-        return main(argv)
-    except WebsiteJobLimitsInvalid as exc:
-        print(f"beta screening stopped: {exc}", file=sys.stderr)
-        return 2
-
-
 if __name__ == "__main__":
-    raise SystemExit(entrypoint())
+    raise SystemExit(main())
