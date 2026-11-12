@@ -75,14 +75,19 @@ def test_the_flag_lands_on_that_robots_result_and_the_robot_is_still_planned() -
         assert g1["grasp_screen"]["status"] == "not_assessed" and "scene_check_flags" not in row_flags(g1, {})
 
 
-def test_a_malformed_record_is_refused_by_the_plan() -> None:
-    from blueprint_pipeline.beta_policy_screening_plan import BetaPolicyScreeningPlanError
+def test_a_malformed_record_is_left_off_a_new_plan_and_refused_in_a_stored_one() -> None:
+    """Planning never stops on a flag-only record (review of R2); a stored plan carrying one is still refused."""
+    from blueprint_pipeline.beta_policy_screening_plan import BetaPolicyScreeningPlanError, validate_screening_plan
     from tests.test_beta_policy_screening_website_rows import website_plans
 
     screens = deepcopy(_screens(CRATE_TASK_SPEC))
     screens["pi05_droid"]["flags"] = ["made_up_code"]
+    plan, _replan = website_plans(load_default_catalog(), capabilities={"candidate_grasp_screen": screens})
+    assert all("grasp_screen" not in row for row in plan["candidates"] if row["candidate_id"] == "pi05_droid")
+    row = next(row for row in plan["candidates"] if "grasp_screen" in row)
+    row["grasp_screen"] = screens["pi05_droid"]
     with pytest.raises(BetaPolicyScreeningPlanError, match="beta_screening_grasp_screen_invalid"):
-        website_plans(load_default_catalog(), capabilities={"candidate_grasp_screen": screens})
+        validate_screening_plan(plan)
 
 
 @pytest.mark.parametrize("dimensions, flags", [
@@ -159,7 +164,7 @@ def test_a_figure_that_is_not_a_number_is_not_assessed_and_planning_goes_on() ->
                                  profile={}, task_spec=TRAY_TASK_SPEC)
     assert record["robot_a"]["status"] == "not_assessed"
     with pytest.raises(ValueError, match="grasp_screen_figure_not_finite"):
-        grasp.grasp_screen([0.3, 0.5, 0.04], [{"model": "m", "full_stroke_m": math.inf}])
+        grasp.grasp_screen([0.3, 0.5, 0.04], [{"model": "m", "full_stroke_m": math.inf, "grip_force_n": None}])
 
 
 def test_a_grasp_record_the_planner_cannot_read_is_left_off_its_row_and_the_plan_is_built() -> None:

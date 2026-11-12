@@ -69,7 +69,7 @@ SUPPORT_GUESSED = "scene_estimate:support_guessed"
 #: Carried as ``scene_estimate:robot_fit_none:<cause>``, the cause that refused the most candidates.
 ROBOT_FIT_NONE = "scene_estimate:robot_fit_none"
 #: The capability verdict abstained (``website_rigid_feasibility``: no enabled arm, no clear stance found,
-#: or the object beyond reach from every stance found): the job is built and tested anyway.
+#: or the object beyond reach from every stance found): the job's simulation is built anyway.
 CAPABILITY_UNASSESSED = "scene_estimate:capability_unassessed"
 #: Below this the residual is inside what an 85 mm hand closing on the placed object still takes:
 #: half its opening plus a centimetre of finger pad, rounded to 5 cm.

@@ -666,11 +666,9 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
         reach = {key: _reach_rank(value) for key, value in reach.items()}
     grasp = capabilities.get("candidate_grasp_screen")
-    if grasp is not None:
-        if not isinstance(grasp, dict) or any(not isinstance(key, str) for key in grasp):
-            raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
-        # A record it cannot read is left off its row (a flag-only check, never a reason to stop planning).
-        grasp = {key: value for key, value in grasp.items() if _grasp_screen_or_none(value) is not None}
+    # A record it cannot read is left off its row (a flag-only check, never a reason to stop planning).
+    grasp = ({key: value for key, value in grasp.items() if isinstance(key, str) and _grasp_screen_or_none(value)}
+             if isinstance(grasp, dict) else None)
     available = capabilities.get("credentials_available", [])
     if not isinstance(available, list) or any(not isinstance(name, str) for name in available):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")

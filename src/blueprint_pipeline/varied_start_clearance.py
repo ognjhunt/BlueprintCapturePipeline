@@ -91,6 +91,8 @@ def _clear_start_parameters(task_spec: Mapping[str, Any], parameters: Mapping[st
     shifted = [name for name in START_PARAMETERS if name in parameters and name in bounds]
     if not shifted or clear(task_spec, parameters):
         return dict(parameters)
+    if not all(math.isfinite(float(value)) for name in shifted for value in bounds[name]):
+        raise ValueError("varied_start_bounds_not_finite")
     for attempt in range(REDRAWS):
         value = dict(parameters)
         for name in shifted:

@@ -42,10 +42,10 @@ except ModuleNotFoundError:  # repository package
         execution_invoked, retained_rollout_counts, rollout_counts, rollout_counts_valid, rollout_total, SCRIPTED, scripted_fields)
 try:  # flat provider-bundle layout
     from policy_episode_lifecycle import (gate_flag_codes, observation_quality_flag_codes,
-                                          observation_quality_flags_valid, visibility_verdict)
+                                          observation_quality_flags_valid)
 except ModuleNotFoundError:  # repository package
     from .policy_episode_lifecycle import (gate_flag_codes, observation_quality_flag_codes,
-                                           observation_quality_flags_valid, visibility_verdict)
+                                           observation_quality_flags_valid)
 
 
 SCHEMA_VERSION = "native_task_arena_policy_canary_session.v1"
@@ -125,13 +125,6 @@ def observation_quality_flags(gate: Any, *, run_kind: Any) -> list[str] | None:
             or gate.get("gate_digest") != canonical_digest(gate, digest_field="gate_digest")):
         return None
     return gate_flag_codes(gate, observation_quality_flag_codes(blockers))
-
-
-def observation_not_visible_faults(gate: Any, *, run_kind: Any) -> list[str]:
-    """Kept for callers: a camera verdict is never a fault any more, so this is always ``[]``."""
-    if run_kind != BETA_RUN_KIND or not isinstance(gate, Mapping):
-        return []
-    return list(visibility_verdict(gate).get("faults") or [])
 
 
 def observation_quality_fields(results: Any) -> dict[str, Any]:
@@ -1070,14 +1063,9 @@ def execute_paired_session(
                     preload_observation_gate, run_kind=inputs["run_kind"]
                 )
                 if observation_flags is None:
-                    stop = PolicyCanarySessionError(
+                    raise PolicyCanarySessionError(
                         "policy_canary_session_observation_integrity_blocked"
                     )
-                    # Typed so the cell's setup failure names the scene fault
-                    # (``session_failure_codes``), e.g. ``scene_task_not_visible:task_object``.
-                    stop.errors = observation_not_visible_faults(
-                        preload_observation_gate, run_kind=inputs["run_kind"])
-                    raise stop
             if family_pending:
                 from blueprint_pipeline.task_family_result_admission import family_site_qualification_valid
                 if not family_site_qualification_valid(inputs["task_success_contract"], preload_observation_gate.get("site_qualification")):

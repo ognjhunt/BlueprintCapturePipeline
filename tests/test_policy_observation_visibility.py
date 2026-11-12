@@ -142,7 +142,7 @@ def test_more_than_half_covered_in_every_policy_camera_is_flagged_never_a_stop(t
     composition[("overview", target)] = (5406, 0)      # a clean review view: recorded, not what the policy sees
     gate = measured_gate(composition)
     verdict = visibility_verdict(gate)
-    assert verdict["outcome"] == NOT_VISIBLE and verdict["faults"] == [] and verdict["stops_the_tries"] is False
+    assert verdict["outcome"] == NOT_VISIBLE and verdict["stops_the_tries"] is False
     assert f"{target}_not_in_view_of_checked_cameras" in verdict["flags"]
     assert f"{target}_not_in_view:external" in verdict["camera_flags"]
     assert f"{target}_not_in_view:external" not in verdict["flags"]

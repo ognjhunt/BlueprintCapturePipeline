@@ -358,8 +358,8 @@ def validate_policy_episode_lifecycle(receipt: Mapping[str, Any]) -> dict[str, A
 # - ``visible_with_caveat``: each is seen enough in at least one policy camera, but one is partly
 #   covered there, or a policy camera does not show it at the start. Tries run and count, and
 #   the record says what was hidden where (only whole-view flags are published).
-# - ``not_visible``: the object or the marker is not seen enough in any policy camera. No try
-#   runs; the reason is a fault in our scene, never a result for the policy.
+# - ``not_visible``: the object or the marker is not seen enough in any checked policy camera.
+#   Tries still run and count, flagged ``<target>_not_in_view_of_checked_cameras``; never a stop.
 #
 # A gate that does not carry the measurements (an older receipt, or a composition capture
 # that failed) is ``unmeasured`` and keeps the earlier handling: its blockers are flags.
@@ -411,8 +411,6 @@ SUPERSEDED_COMPOSITION_REASONS = frozenset({
     "composition_support_background_occlusion_requires_review",
     "composition_support_interior_insufficient",
 })
-#: The typed fault a session stops with when the job is not visible; never a policy result.
-NOT_VISIBLE_FAULT = "scene_task_not_visible"
 
 
 def _count(value: Any) -> int | None:
@@ -520,7 +518,7 @@ def visibility_verdict(gate: Any) -> dict[str, Any]:
                 camera_flags.add(f"{target}_partly_hidden:{role}")
     outcome = NOT_VISIBLE if unseen else VISIBLE_WITH_CAVEAT if flags or camera_flags else VISIBLE
     return {"schema_version": VISIBILITY_VERDICT_SCHEMA_VERSION, "outcome": outcome,
-            "flags": sorted(flags), "camera_flags": sorted(camera_flags), "faults": [],
+            "flags": sorted(flags), "camera_flags": sorted(camera_flags),
             "not_seen_by_the_checked_cameras": sorted(unseen),
             "checked_cameras": sorted({role for target in required for role in measured[target]}
                                       | {role for target in required for role in review[target]}),
@@ -562,7 +560,6 @@ __all__ = [
     "MINIMUM_INTERIOR_PIXELS",
     "MINIMUM_VISIBLE_SHARE",
     "NOT_VISIBLE",
-    "NOT_VISIBLE_FAULT",
     "POLICY_CAMERA_ROLES",
     "UNMEASURED",
     "VISIBILITY_VERDICT_SCHEMA_VERSION",
