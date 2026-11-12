@@ -121,8 +121,9 @@ def test_the_reference_row_never_costs_the_job_a_robot():
         assert [item["status"] for item in learned] == [item["status"] for item in candidate_rows(without)], remaining
         left = Decimal(value["budget_usd"]) - sum(Decimal(item["max_cost_usd"]) for item in learned
                                                    if item["status"] == "selected")
-        # Selected only when what is left covers its $3.00; else waitlisted behind every AI robot row.
-        assert row["status"] == ("selected" if left >= Decimal("3.00") else "waitlisted"), remaining
+        # Selected only when no AI row waits and what is left covers its $3.00; else waitlisted behind them.
+        waiting = any(item["status"] == "waitlisted" for item in learned)
+        assert row["status"] == ("selected" if left >= Decimal("3.00") and not waiting else "waitlisted"), remaining
     # With no AI robot funded it is never paid for.
     assert website_plan(catalog, capabilities, quotes, remaining=3)["candidates"][0]["known_good_control"][
         "unavailable"] == "budget"
@@ -169,8 +170,13 @@ def _reference_ledger(plan, *, earlier, campaign_two=None):
                                                 **earlier}}},
         "campaign-1": {"site_id": plan["site_id"], "plan_digest": plan["plan_digest"],
                        "candidates": {CONTROL: {"status": "pending", "known_good_control": True},
-                                      "candidate-000": {"status": "pending"}}},
+                                      "candidate-000": LAUNCHED_ROBOT}},
         **(campaign_two or {})}}
+
+
+#: An AI row that has launched an attempt: the reference may go only after one has (review 8c).
+LAUNCHED_ROBOT = {"status": "running", "attempt": {"reservation_status": "reserved", "maximum_cost_usd": "4.00",
+                                                   "launch_intent_at": "2026-11-12T00:00:00+00:00"}}
 
 
 INTERRUPTED = {"status": "blocked", "blockers": ["beta_screening_native_result_missing_or_invalid"]}
@@ -225,7 +231,7 @@ def test_two_workers_racing_cannot_both_start_an_attempt(settled):
     plan = with_control(queue_plan(count=1), cost="1.00")
     other = {"campaign-2": {"site_id": plan["site_id"], "plan_digest": plan["plan_digest"],
                             "candidates": {CONTROL: {"status": "pending", "known_good_control": True},
-                                           "candidate-000": {"status": "pending"}}}}
+                                           "candidate-000": LAUNCHED_ROBOT}}}
     ledger = _reference_ledger(plan, earlier={"status": "unavailable", "blockers": ["candidate_disabled"]},
                                campaign_two=other)
     # The gate runs under the ledger lock: the first claims, the second then waits for its result.
@@ -450,12 +456,12 @@ def done(*keys, control_result=None):
     return observations
 
 
-def test_the_reference_row_launches_first(tmp_path, summaries):
+def test_the_reference_row_launches_right_after_the_first_robot_never_ahead_of_one(tmp_path, summaries):
     coordinator.enqueue_screening_campaign(with_control(queue_plan(count=2)), queue_root=tmp_path)
     backend = PerRow({})
     [publication] = run(tmp_path, backend, passes=3)
-    # Before: the learned rows ran and the reference waited for them to end, then for the campaign to be final.
-    assert backend.order == [CONTROL, "candidate-000", "candidate-001"]
+    # Review 8c (1b): it waits until an AI row has launched, then goes at once (not after the last row).
+    assert backend.order == ["candidate-000", CONTROL, "candidate-001"]
     assert _rows(publication)[CONTROL]["setup_quality_flags"] == ["known_good_control_pending"]
     Draft202012Validator(json.loads(PUBLICATION_SCHEMA.read_text())).validate(publication)
 

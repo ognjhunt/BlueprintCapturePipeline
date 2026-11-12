@@ -276,8 +276,6 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         checkpoint_inventory_paths={candidate["candidate_id"]: _bound_path(inventory)} if inventory else {},
         team_robot_model_path=_bound_path(execution["team_robot_model"]) if execution.get("team_robot_model") else None,
         minimum_gpu_memory_gb=execution.get("minimum_gpu_memory_gb"),
-        # A robot that cannot reach both places is tested and flagged, never refused (owner, 2026-11-12).
-        reach_refusal_as_flag=True,
         implementation_commit=execution["implementation_commit"]))
     bundle_path = _stage(root / "bundle_receipt.json", bundle)
     preflight = preflight_sealed_policy_canary_bundle(bundle)
@@ -299,33 +297,10 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         argv += ["--adp-machine-avoidlist", str(execution["machine_avoidlist_path"])]
     prepared = {"schema_version": "beta_policy_screening_prepared.v1", **identity, "run_id": run_id,
                 "attempt_dir": str(root), "argv": argv, "authority": _record(authority_path),
-                "bundle_receipt": _record(bundle_path), **_launch_scene_check(root / "bundle"), "prepared_digest": ""}
+                "bundle_receipt": _record(bundle_path), "prepared_digest": ""}
     prepared["prepared_digest"] = canonical_digest(prepared, digest_field="prepared_digest")
     _write(previous, prepared)
     return prepared
-
-
-#: What the bundle's own checks found at launch about this row's robot, carried to its published scene check.
-LAUNCH_SCENE_CHECK_FIELD = "launch_scene_check_flags"
-LAUNCH_FINDINGS_UNREADABLE = "robot_arm_path_report_unreadable"
-
-
-def _launch_scene_check(bundle_root: Path) -> dict[str, list[str]]:
-    """The bundle's arm-path flags (``reach_refusal_as_flag``): a robot found out of reach only at launch.
-
-    Nothing when the bundle flagged nothing, so a prepared record without a finding is what it always was.
-    """
-    from .robot_arm_path_clearance import PACKET_REPORT_FILENAME, REACH_CANNOT_SPAN_FLAG
-
-    flags: set[str] = set()
-    for path in sorted(bundle_root.rglob(PACKET_REPORT_FILENAME)) if bundle_root.is_dir() else ():
-        try:
-            report = json.loads(path.read_text(encoding="utf-8"))
-            flags |= {code for code in report.get("flags") or [] if code == REACH_CANNOT_SPAN_FLAG}
-        except (OSError, ValueError, AttributeError, TypeError):
-            # Never dropped silently: the row says its launch findings could not be read, and goes on.
-            flags.add(LAUNCH_FINDINGS_UNREADABLE)
-    return {LAUNCH_SCENE_CHECK_FIELD: sorted(flags)} if flags else {}
 
 
 def _validate_prepared(plan: Mapping[str, Any], candidate: Mapping[str, Any], root: Path,

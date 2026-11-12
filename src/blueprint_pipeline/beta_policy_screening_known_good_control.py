@@ -1,38 +1,77 @@
-"""The scripted reference check: one row run FIRST on every website screening campaign (owner, 2026-11-12).
+"""One scripted known-good control row per new website screening campaign (owner approval 2026-11-10).
 
-Beta journey: a site's paid candidate screening. A result must be about the robot, not about our set-up:
-"every candidate failed" has to be told apart from "this simulated set-up cannot succeed". So every
-campaign, a new one and every re-plan, plans one row first: Blueprint's scripted pick/place controller
-(``scripted_robot_baseline``), which reads exact object and arm poses from the simulator, runs ``EPISODES``
-nominal (canonical anchor) tries in its own session, through the same harness and scorer as the candidates.
+Beta journey: a site's paid candidate screening. Before this, nothing showed that a newly built
+scene, its task contract and the evaluation harness could register a success at all, so "every
+candidate failed" could not be told apart from "this simulated set-up cannot succeed". A new
+website campaign now plans one extra row: Blueprint's scripted pick/place controller
+(``scripted_robot_baseline``), which reads exact object and arm poses from the simulator, runs
+``EPISODES`` nominal (canonical anchor) episodes in its own session, through the same harness and
+scorer as the candidates.
 
 What the row is, and is not:
 
-- It is ``reference_only``: never a candidate, never part of the estimate, not Arm Decision Proof evidence,
-  and it does not lift the standing controls-stage pause (``task_evaluation_control_stage_policy``). A pass
-  shows only that the simulated set-up can register a success, never physical performance or safety.
-- It never gates. Whatever its outcome the AI robot rows run (the owner's rule: flagged and keeps going).
-  Its outcome is one typed flag on its own row's ``setup_quality_flags`` (``control_flags``) with its count:
-  ``known_good_control_passed:<k>_of_3`` at ``PASS_AT_SUCCESSES`` (2) or more, ``known_good_control_partly``
-  at ``PARTLY_AT_SUCCESSES`` (1), ``known_good_control_failed`` at 0 of 3 scored, else ``interrupted``. What
-  the site is told changes with it (the WebApp's set-up notice); what runs does not.
-- It runs first and is funded first: the plan takes its cap out of the budget before any AI robot row is
-  funded (``beta_policy_screening_plan.build_job_ceiling_screening_plan``), it is first in plan order, and
-  the coordinator reserves it like any funded row. Its cap is its body's quoted hard cap lowered to
-  ``REFERENCE_CAP_USD`` ($3.00, owner, 2026-11-11): the hard TTL is shortened to fit
-  (``_site_fitted_quote``), never below ``MIN_HARD_TTL_SECONDS``. Its 3 tries and time limits are unchanged.
-- Its body is Blueprint's choice, never the site's fit table: the registered scripted body of the robot
-  under test when it has one (``chosen_by: candidate_robot``), else the registered scripted body of that
-  robot's arm family (``ARM_FAMILY_BODIES``, ``chosen_by: arm_family``), the tested robots in the plan's
-  order. A body not bound to its own station stands at the scene packet's, flagged ``scene_packet_station``.
-- When no row can run, the row says why, per job: ``known_good_control_unavailable:<reason>`` with a
-  reason of ``REASONS`` (``task_kind``, ``backend``, ``embodiment``: no registered scripted body for the
-  tested robots' arm family or it was refused on this scene, ``budget``: its cap does not fit the job).
-- A pass, partly or fail is reused, never paid for twice, for the same site, scene revision, task contract
-  and harness revision (``reuse_key``); while the same check runs in another campaign, this one waits.
+- It is ``reference_only``. It is never a candidate, never part of the estimate (the WebApp's
+  estimate already excludes scripted rows) and its name says it is a check. It is not Arm Decision
+  Proof evidence (that program's "positive control" is a separate thing), it does not lift the
+  standing controls-stage pause (``task_evaluation_control_stage_policy``) and a pass shows only
+  that the simulated set-up can register a success, never physical performance or safety.
+- It never gates. Pass, fail, unavailable or interrupted, the candidates run and are reported as
+  before; the outcome is a typed flag on the control row's own ``setup_quality_flags``
+  (``control_flags``). A failed control alerts the owner once (``alert_failed_controls``).
+- Its cap is its body's quoted hard cap, lowered to ``REFERENCE_CAP_USD`` ($3.00, owner,
+  2026-11-11) when higher. The lowered quote is fitted by the plan's own rule for a smaller amount
+  (``beta_policy_screening_plan._site_fitted_quote``): the row's hard TTL is shortened so it still
+  keeps at least half the headroom the original quote kept above hourly rate x TTL, for startup,
+  transfer, storage and teardown.
+- It runs strictly last and only on money that is left over. At planning it is selected when its
+  cap fits what the selected candidates leave of the plan budget and of the site's remaining
+  allowance; otherwise it is listed ``unavailable`` (``known_good_control_unavailable:budget``).
+  At run time nothing that funds, waitlists, refills, defers or closes a learned candidate counts
+  it while it is unreserved (``beta_policy_screening_coordinator._refill_waitlist``, the job's
+  local holds): every learned row is decided exactly as if the row did not exist. It is reserved
+  only when its campaign, read as if the row did not exist, has ended ``completed`` for good
+  (``beta_policy_screening_coordinator._final_without_control``: ``campaign_status`` of the learned
+  rows, not superseded, and ``_replan_scope`` would plan nothing again by itself or after any
+  deploy, apart from rows closed because the plan budget, the site allowance or the job ceiling could
+  not fund them: those count as final, owner decision 2026-11-11), the job's source is still current (the read every paid attempt makes; an owner's closed
+  run or ended consent is not), and the sibling-harness hold does not apply. Otherwise it closes at
+  once without running or holding money (``known_good_control_interrupted``), so a re-plan and any
+  successor see exactly what they would without it. When the same check is active in another
+  campaign it closes the same way; a finished pass or fail of it is reused. It never waits on money
+  or on another campaign: it waits only while a learned row of its own campaign may still run. Then
+  it goes through the coordinator's ordinary reservation, so the plan budget, the site limit, the
+  job ceiling and the account limit bound it; if its cap does not fit, it ends at once with
+  ``known_good_control_unavailable:budget``. Once reserved its money is real against the site
+  limit, like any row's: the owner approved up to $3.00 per job for it. What this costs: if a later
+  deploy plans the rows closed for money again in a new campaign, the site's remaining allowance is
+  lower by what the row actually spent (at most $3.00). A re-plan and a successor campaign carry no
+  reference row, so a job whose first campaign did not finish cleanly for any other reason gets no
+  check.
+- It is planned only for a rigid pick/place task on the rigid lane, with a registered scripted
+  profile for its body. The body is the robot of a selected candidate when one has a scripted
+  profile (the marker's ``for_candidate_id``). Otherwise it is the body of a model the job's own
+  robot fit table (``website_robot_fit``, passed as the ``robot_fit_rows`` capability) says fits
+  this scene: ``fits`` before ``fits_spec``, ``unknown`` only when neither has a registered body,
+  never ``doesnt_fit``, ties in the table's order. The body only carries the check: the row tests
+  this simulated set-up, never the robot, whichever body it runs on. The website's own picks
+  (``preferred_robot_model_ids``, read with the job's ceiling and passed as the
+  ``preferred_robot_model_ids`` capability) come first, in their order, among the fitting models
+  (``fits`` and ``fits_spec`` together) and among the ``unknown`` ones, never ahead of a fitting
+  model; the marker then says whether the body was a preferred one (``preferred``). A model's
+  body is ``<recipe>_robotiq_2f85_sim``
+  (or its recipe, when that is itself a body). The marker then names the spec-catalog model
+  (``for_model_id``) and no candidate. When that body's run is not bound to its own station on this
+  scene it stands at the scene packet's (another robot's) station; it still runs, and the marker
+  says so with the feasibility check's own station code (``flags``: ``scene_packet_station``).
+  Without a table, or with no registered body for any fitting model, there is no fallback. Otherwise
+  its row says which of ``task_kind``, ``backend`` or ``embodiment`` was missing. Nothing is
+  invented: no placement, no body, no verdict and no result.
+- A pass or a fail is reused, never paid for twice, for the same site, scene revision, task
+  contract and harness revision (``reuse_key``); while another such control is running, this one
+  waits for it.
 
-A version-1 row (planned last, on leftover money, passing at 1 of 3) still validates and reads by its own
-marker; none was ever planned on the host (0 rows in 46 campaigns, 2026-11-12).
+A plan made before this change, a re-plan and a successor campaign carry no control row and run
+exactly as before.
 """
 from __future__ import annotations
 
@@ -47,14 +86,9 @@ from .decision_evidence_contracts import canonical_digest
 from .website_candidate_feasibility import OWN_STATION, PACKET_STATION
 
 CONTROL_FIELD = "known_good_control"
-SCHEMA = "beta_screening_known_good_control.v2"
-SCHEMA_V1 = "beta_screening_known_good_control.v1"
+SCHEMA = "beta_screening_known_good_control.v1"
 EPISODES = 3
-#: Passed at 2 of 3 or better; 1 of 3 is ``PARTLY``; 0 of 3 scored is ``FAILED`` (owner, 2026-11-12).
-PASS_AT_SUCCESSES = 2
-PARTLY_AT_SUCCESSES = 1
-#: A version-1 row passed at 1 of 3 and had no partly.
-PASS_AT_SUCCESSES_V1 = 1
+PASS_AT_SUCCESSES = 1
 #: The scripted reference row's cap (owner approval, 2026-11-11): its quote is lowered to this when
 #: higher, so it fits the $3.00 a typical rigid job leaves after three learned policies at $4.00.
 #: Only this row; no learned-policy cap, plan budget, site limit, job ceiling or account limit.
@@ -71,16 +105,10 @@ RIGID_TASK_KIND = "rigid_pick_place"
 PENDING = "known_good_control_pending"
 PASSED = "known_good_control_passed"
 FAILED = "known_good_control_failed"
-PARTLY = "known_good_control_partly"
 UNAVAILABLE = "known_good_control_unavailable"
 INTERRUPTED = "known_good_control_interrupted"
-REASONS = ("task_kind", "embodiment", "backend", "budget", "reach")
+REASONS = ("task_kind", "embodiment", "backend", "budget")
 REUSED_QUALIFIER = "reused"
-#: The check's whole money per scene revision and task contract, across every attempt (owner, 2026-11-12): a
-#: later attempt is only funded from what the earlier ones left unspent, and a classed result is final.
-CLAIMED_FIELD = "known_good_control_claimed"
-#: The planning capability: what the check may still hold for the scene (``reference_remaining_usd``).
-REMAINING_CAPABILITY = "reference_remaining_usd"
 #: The one blocker a control row that did not run here publishes, whatever the reason: the plan's own
 #: "switched off" code, which a WebApp released before this change already reads as a row that was not
 #: for running (as it read scripted rows before 2026-11-05). The reason is the row's outcome flag.
@@ -91,21 +119,25 @@ KEY_FIELD = "known_good_control_key"
 ALERT_CODE = "beta_screening_known_good_control_failed"
 ALERT_STATE_FILENAME = "known_good_control_alerts.json"
 
-#: The planning capabilities a version-1 row's body was chosen from; read by nothing here any more.
+#: The planning capabilities the fallback body reads (``beta_policy_screening_capabilities``).
 FIT_CAPABILITY = "robot_fit_rows"
 STATION_CAPABILITY = "candidate_station_basis"
+#: A fitting model's verdicts in the order a body is chosen; ``doesnt_fit`` never is.
+FALLBACK_VERDICTS = ("fits", "fits_spec", "unknown")
+SCRIPTED_BODY_SUFFIX = "_robotiq_2f85_sim"
+#: The website's picks for the job, best first (its answer's pick, then its runner-up).
 PREFERENCE_CAPABILITY = "preferred_robot_model_ids"
 PREFERENCE_LIMIT = 3
-#: A tested robot's arm family, as the registered scripted bodies that stand for it, best first. Closed: a
-#: robot not listed has only its own body, when one is registered. The DROID Franka (Panda with a Robotiq
-#: 2F-85) has no scripted body of its own; the Panda body is listed first in case one is registered, then
-#: the FR3 with the same Robotiq 2F-85: same maker, seven joints, same gripper, the nearest, not the same arm.
-ARM_FAMILY_BODIES: Mapping[str, tuple[str, ...]] = {
-    "droid_franka_panda_robotiq_2f85_v1": ("franka_emika_panda_robotiq_2f85_sim", "franka_research_3_robotiq_2f85_sim"),
+#: The spec-catalog models of the registered scripted body nearest a learned candidate's robot, best first,
+#: used ahead of the website's picks and the table's order. Closed: a robot not listed has none.
+#: The DROID Franka (Panda with a Robotiq 2F-85, recipe ``droid_franka_robotiq_2f85``) has no scripted
+#: body; its Panda model is listed first in case one is registered, then the FR3 with the same Robotiq
+#: 2F-85 (``franka_research_3`` -> ``franka_research_3_robotiq_2f85_sim``): same maker, seven joints, same
+#: gripper. Its recipe is a distinct asset from the DROID one; it is the nearest, not the same, arm.
+NEAREST_BODY_MODELS: Mapping[str, tuple[str, ...]] = {
+    "droid_franka_panda_robotiq_2f85_v1": ("franka_emika_panda", "franka_research_3"),
 }
-CHOSEN_BY = ("candidate_robot", "arm_family")
-#: A version-1 row's rules for what it stood for (``validate_control_row``).
-CHOSEN_BY_V1 = ("candidate_robot", "nearest_body", "preferred", "fit_table")
+CHOSEN_BY = ("candidate_robot", "nearest_body", "preferred", "fit_table")
 #: The coordinator's "nothing can fund it" close (``beta_policy_screening_coordinator.BUDGET_EXHAUSTED_BLOCKER``).
 BUDGET_EXHAUSTED_BLOCKER = "beta_screening_site_budget_exhausted"
 #: The learned rows' states in which they may still need money or run: the control waits on these alone.
@@ -116,9 +148,7 @@ PREFERENCE_INVALID = "known_good_control_preference_invalid"
 PACKET_STATION_FLAG = PACKET_STATION
 
 _MARKER = {"schema_version": SCHEMA, "role": "reference_only", "episodes": EPISODES,
-           "pass_at_successes": PASS_AT_SUCCESSES, "partly_at_successes": PARTLY_AT_SUCCESSES}
-_MARKER_V1 = {"schema_version": SCHEMA_V1, "role": "reference_only", "episodes": EPISODES,
-              "pass_at_successes": PASS_AT_SUCCESSES_V1}
+           "pass_at_successes": PASS_AT_SUCCESSES}
 _TERMINAL = frozenset({"completed", "blocked", "unavailable", "deferred"})
 _ACTIVE = frozenset({"preparing", "launching", "running", "reconciliation_required"})
 _SELECTED_FIELDS = frozenset({"candidate_id", "display_name", "configuration_digest", "status", "blockers",
@@ -186,78 +216,90 @@ def preferred_model_ids(value: Any, known: Iterable[str]) -> tuple[list[str], st
     return list(value), None
 
 
-def tested_robot_bodies(catalog: Mapping[str, Any], tested: Iterable[str]) -> list[tuple[Mapping[str, Any], dict[str, Any]]]:
-    """The registered scripted rows that may carry the check, best first, each with what it stands for.
+def _fallback_body(scripted: list[Mapping[str, Any]], fit: Any,
+                   preferred: Any = None) -> tuple[str, Mapping[str, Any], bool] | None:
+    """The one registered scripted row for a model the job's fit table says fits; its model id with it,
+    and whether that model was one the website preferred."""
+    if not isinstance(fit, list):
+        return None
+    bodies: dict[str, Mapping[str, Any]] = {}
+    for row in scripted:
+        bodies.setdefault(row["interface"].get("robot_profile_id"), row)
+    ranked = [entry for entry in fit if isinstance(entry, Mapping)]
+    order = list(preferred) if isinstance(preferred, list) else []
+    # fits and fits_spec both fit on what was checked: one tier, where the website's pick goes first.
+    for tier in (("fits", "fits_spec"), ("unknown",)):
+        rows = sorted((entry for entry in ranked if entry.get("verdict") in tier),
+                      key=lambda entry: FALLBACK_VERDICTS.index(entry["verdict"]))  # stable: table order within
+        rows = ([entry for model in order for entry in rows if entry.get("model_id") == model]
+                + [entry for entry in rows if entry.get("model_id") not in order])
+        for entry in rows:
+            model, recipe = entry.get("model_id"), entry.get("recipe_id")
+            if not isinstance(model, str) or not isinstance(recipe, str) or not recipe:
+                continue
+            for body in dict.fromkeys((recipe if recipe.endswith(SCRIPTED_BODY_SUFFIX) else recipe + SCRIPTED_BODY_SUFFIX,
+                                       recipe)):
+                if body in bodies:
+                    return model, bodies[body], model in order
+    return None
 
-    For each tested candidate in order: its robot's own scripted body, then its arm family's
-    (``ARM_FAMILY_BODIES``). Never the site's fit table.
-    """
-    by_id = {row["candidate_id"]: row for row in catalog["candidates"]}
-    scripted: dict[str, Mapping[str, Any]] = {}
-    for row in catalog["candidates"]:
-        if (row["policy"]["kind"] == "scripted"
-                and (row.get("interface") or {}).get("policy_interface_id") == SCRIPTED_INTERFACE):
-            scripted.setdefault(row["interface"].get("robot_profile_id"), row)
-    bodies: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
-    seen: set[str] = set()
-    for candidate_id in tested:
-        candidate = by_id.get(candidate_id) or {}
-        robot = (candidate.get("interface") or {}).get("robot_profile_id")
-        if not robot or candidate.get("policy", {}).get("kind") == "scripted":
-            continue
-        for profile, rule in ((robot, "candidate_robot"), *((body, "arm_family") for body in ARM_FAMILY_BODIES.get(robot, ()))):
-            row = scripted.get(profile)
-            if row is not None and row["candidate_id"] not in seen:
-                seen.add(row["candidate_id"])
-                bodies.append((row, {"for_candidate_id": candidate_id, "chosen_by": rule}))
-    return bodies
 
-
-def plan_control_row(catalog: Mapping[str, Any], scene: Mapping[str, Any], *, tested: Iterable[str],
+def plan_control_row(plan: Mapping[str, Any], catalog: Mapping[str, Any], scene: Mapping[str, Any], *,
                      capabilities: Mapping[str, Any] | None, cost_quotes: Mapping[str, Any] | None,
-                     budget_usd: Decimal, now: Any) -> dict[str, Any]:
-    """The reference row a campaign's plan puts first, funded from ``budget_usd`` before any candidate."""
+                     site_remaining_usd: str | None, now: Any) -> dict[str, Any]:
+    """The control row a new website campaign's plan appends after every candidate row."""
+    from .beta_policy_screening_plan import (
+        _HOSTED_COST_FIELDS, BetaPolicyScreeningPlanError, _candidate_blockers, _scene, _site_fitted_quote,
+        execution_cost_floor, fitted_headroom_usd, money, validate_cost_quote,
+    )
     from .task_family_policy_execution import FAMILY_BACKEND
 
     if scene.get("evaluation_backend") == FAMILY_BACKEND:
         return _unavailable("backend")
     if scene.get("task_kind") != RIGID_TASK_KIND:
         return _unavailable("task_kind")
-    bodies = tested_robot_bodies(catalog, tested)
-    if not bodies:
-        return _unavailable("embodiment")
-    first = None
-    for match, stands_for in bodies:
-        row = _body_row(match, stands_for, scene, capabilities=capabilities or {}, cost_quotes=cost_quotes,
-                        budget_usd=budget_usd, now=now)
-        if row["status"] == "selected":
-            return row
-        first = first or row
-    return first
-
-
-def _body_row(match: Mapping[str, Any], stands_for: dict[str, Any], scene: Mapping[str, Any], *,
-              capabilities: Mapping[str, Any], cost_quotes: Mapping[str, Any] | None, budget_usd: Decimal,
-              now: Any) -> dict[str, Any]:
-    from .beta_policy_screening_plan import (
-        _HOSTED_COST_FIELDS, BetaPolicyScreeningPlanError, _candidate_blockers, _scene, _site_fitted_quote,
-        execution_cost_floor, fitted_headroom_usd, money, validate_cost_quote,
-    )
-
     scene = _scene(scene)
-    if (capabilities.get(STATION_CAPABILITY) or {}).get(match["candidate_id"]) != OWN_STATION:
-        stands_for = {**stands_for, "flags": [PACKET_STATION_FLAG]}
+    by_id = {row["candidate_id"]: row for row in catalog["candidates"]}
+    planned = {row["candidate_id"] for row in plan["candidates"]}
+    scripted = [row for row in catalog["candidates"] if row["policy"]["kind"] == "scripted"
+                and (row.get("interface") or {}).get("policy_interface_id") == SCRIPTED_INTERFACE
+                and row["candidate_id"] not in planned]
+    capabilities = capabilities or {}
+    match, stands_for, robots = None, {}, []
+    for row in plan["candidates"]:
+        robot = ((by_id.get(row["candidate_id"]) or {}).get("interface") or {}).get("robot_profile_id")
+        if row["status"] != "selected" or not robot:
+            continue
+        robots.append(robot)
+        match = next((item for item in scripted if item["interface"].get("robot_profile_id") == robot), None)
+        if match is not None:
+            stands_for = {"for_candidate_id": row["candidate_id"], "chosen_by": "candidate_robot"}
+            break
+    if match is None:
+        # No selected candidate's robot has a scripted row: a body the site's fit table says fits, the one
+        # nearest the candidates' own robot first, then the website's picks, then the table's order.
+        preference = capabilities.get(PREFERENCE_CAPABILITY)
+        nearest = list(dict.fromkeys(model for robot in robots for model in NEAREST_BODY_MODELS.get(robot, ())))
+        chosen = _fallback_body(scripted, capabilities.get(FIT_CAPABILITY),
+                                nearest + [model for model in preference or [] if model not in nearest]
+                                if isinstance(preference, list) else nearest)
+        if chosen is None:
+            return _unavailable("embodiment")
+        model, match, _ = chosen
+        rule = ("nearest_body" if model in nearest else "preferred"
+                if isinstance(preference, list) and model in preference else "fit_table")
+        stands_for = {"for_model_id": model, "chosen_by": rule}
+        if isinstance(preference, list) and preference:
+            # Only a job the website sent a preference for says whether its pick was followed.
+            stands_for["preferred"] = model in preference
+        if (capabilities.get(STATION_CAPABILITY) or {}).get(match["candidate_id"]) != OWN_STATION:
+            stands_for["flags"] = [PACKET_STATION_FLAG]
     binding = (capabilities.get("candidate_bindings") or {}).get(match["candidate_id"])
     refused = _candidate_blockers(match, scene, binding, set(capabilities.get("credentials_available") or []))
     refused += list((capabilities.get("candidate_blockers") or {}).get(match["candidate_id"]) or [])
     refused += list((capabilities.get("candidate_infeasible") or {}).get(match["candidate_id"]) or [])
     if refused:
         return _unavailable("embodiment", match)
-    # A reference must show the job can be done in this scene: a body measured unable to reach the pick-up and
-    # the put-down from its station is not one (``reach_cannot_span``); not launched, not paid.
-    rank = (capabilities.get("candidate_reach_rank") or {}).get(match["candidate_id"]) or {}
-    if rank.get("basis") == "reach_cannot_span":
-        return _unavailable("reach", match)
     spec = binding["execution_spec"]
     try:
         quote = validate_cost_quote((cost_quotes or {}).get(match["candidate_id"], {}),
@@ -272,17 +314,16 @@ def _body_row(match: Mapping[str, Any], stands_for: dict[str, Any], scene: Mappi
     # rule (``_site_fitted_quote``): the hard TTL is shortened (whole seconds, rounded down) to the longest
     # that keeps half the original headroom inside the cap. Never raised.
     admission = binding["admission_digest"]
-    limit = min(REFERENCE_CAP_USD, money(str(capabilities.get(REMAINING_CAPABILITY, REFERENCE_CAP_USD))))
-    if money(quote["maximum_cost_usd"]) > limit:
+    if money(quote["maximum_cost_usd"]) > REFERENCE_CAP_USD:
         if _HOSTED_COST_FIELDS & set(spec):
             return _unavailable("budget", match)
         original_floor = execution_cost_floor(spec)
-        bound = limit - fitted_headroom_usd(quote, floor=original_floor)
+        bound = REFERENCE_CAP_USD - fitted_headroom_usd(quote, floor=original_floor)
         ttl = min(spec["hard_ttl_seconds"], int(bound * 3600 / money(spec["max_hourly_rate_usd"]))) if bound > 0 else 0
         fitted = None
         if ttl >= MIN_HARD_TTL_SECONDS:
             spec = {**spec, "hard_ttl_seconds": ttl}
-            fitted = _site_fitted_quote(quote, limit, floor=execution_cost_floor(spec),
+            fitted = _site_fitted_quote(quote, REFERENCE_CAP_USD, floor=execution_cost_floor(spec),
                                         original_floor=original_floor, reason="fitted_to_scripted_reference_cap",
                                         suffix="-reference-cap")
         if fitted is None:
@@ -291,8 +332,13 @@ def _body_row(match: Mapping[str, Any], stands_for: dict[str, Any], scene: Mappi
     quote = {**quote, "episode_count": EPISODES, "quote_digest": ""}
     quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
     cap = money(quote["maximum_cost_usd"])
-    # Funded first: its cap comes out of the plan's budget before any candidate row is funded.
-    if cap < execution_cost_floor(spec) or cap > budget_usd:
+    selected = sum((money(row["max_cost_usd"]) for row in plan["candidates"] if row["status"] == "selected"), Decimal(0))
+    left = money(plan["budget_usd"]) - selected
+    if site_remaining_usd is not None:
+        left = min(left, money(site_remaining_usd) - selected)
+    # Planned on what the selected candidates leave; at run time it is reserved only after every learned
+    # row has ended, from what is left then (``control_gate``), so it never takes a candidate's money.
+    if cap < execution_cost_floor(spec) or cap > left:
         return _unavailable("budget", match)
     return {"candidate_id": match["candidate_id"], "display_name": DISPLAY_NAME,
             "configuration_digest": match["configuration_digest"], "status": "selected", "blockers": [],
@@ -300,29 +346,6 @@ def _body_row(match: Mapping[str, Any], stands_for: dict[str, Any], scene: Mappi
             "cost_quote": quote, "max_cost_usd": quote["maximum_cost_usd"], "episode_count": EPISODES,
             "scenario_cells": control_cells(scene), "execution_evidence_kind": SCRIPTED,
             CONTROL_FIELD: {**_MARKER, **stands_for}}
-
-
-def fund_from_leftover(control: dict[str, Any], plan: Mapping[str, Any], *,
-                       waitlist_blockers: list[str]) -> dict[str, Any]:
-    """The reference row funded only from what the plan's AI robot rows leave; it never takes their money.
-
-    ``selected`` when its cap fits what the selected AI rows leave of the budget; ``waitlisted`` (with the
-    plan's own waitlist reason) when it fits the budget but not that; ``unavailable:budget`` when no AI row is
-    selected, so it is never paid for a job whose robots are not tested.
-    """
-    from .beta_policy_screening_plan import money
-
-    if control["status"] != "selected":
-        return control
-    learned = [row for row in plan["candidates"] if not is_control(row)]
-    selected = sum((money(row["max_cost_usd"]) for row in learned if row["status"] == "selected"), Decimal(0))
-    if not any(row["status"] == "selected" for row in learned):
-        return _unavailable("budget", control)
-    # Selected only when every AI row that can be funded is, and its cap still fits what they leave.
-    if (not any(row["status"] == "waitlisted" for row in learned)
-            and money(control["max_cost_usd"]) <= money(plan["budget_usd"]) - selected):
-        return control
-    return {**control, "status": "waitlisted", "blockers": list(waitlist_blockers)}
 
 
 def validate_control_row(row: Mapping[str, Any], plan: Mapping[str, Any]) -> Decimal:
@@ -342,34 +365,25 @@ def validate_control_row(row: Mapping[str, Any], plan: Mapping[str, Any]) -> Dec
             and row.get("display_name") == DISPLAY_NAME and isinstance(row.get("candidate_id"), str)
             and _CANDIDATE_ID.fullmatch(row["candidate_id"]) is not None)
     _digest(row["configuration_digest"], "beta_screening_known_good_control_invalid")
-    base = _marker_base(marker)
-    require(base is not None)
     if row["status"] == "unavailable":
-        require(set(row) == _UNAVAILABLE_FIELDS and set(marker) == {*base, "unavailable"}
+        require(set(row) == _UNAVAILABLE_FIELDS and set(marker) == {*_MARKER, "unavailable"}
+                and all(marker[key] == value for key, value in _MARKER.items())
                 and marker["unavailable"] in REASONS and row["blockers"] == [NOT_RUN_BLOCKER])
         return Decimal(0)
-    stands_for = set(marker) - set(base)
-    from .beta_policy_screening_plan import JOB_CEILING_DEFERRED, WAITLIST_BLOCKER
-    waitlisted = row["status"] == "waitlisted" and base is _MARKER
-    require((row["status"] == "selected" and row["blockers"] == []
-             or waitlisted and row["blockers"] in ([WAITLIST_BLOCKER], [JOB_CEILING_DEFERRED]))
-            and set(row) == _SELECTED_FIELDS)
-    learned = [item for item in plan["candidates"] if not is_control(item)]
-    if base is _MARKER:
-        # A tested candidate of this plan (any status: the row is funded before any is), its own body or
-        # its arm family's, with the station flag when the body stands at the scene packet's station.
-        require(stands_for <= {"for_candidate_id", "chosen_by", "flags"} and {"for_candidate_id", "chosen_by"} <= stands_for
-                and marker["chosen_by"] in CHOSEN_BY and marker.get("flags", [PACKET_STATION_FLAG]) == [PACKET_STATION_FLAG]
-                and any(item["candidate_id"] == marker["for_candidate_id"] for item in learned))
-    elif "for_candidate_id" in stands_for:
+    # What the row stands for: a selected candidate's robot, or (since the fit-table fallback) a
+    # spec-catalog model, with the station flag only then. Never both, never neither.
+    stands_for = set(marker) - set(_MARKER)
+    require(row["status"] == "selected" and set(row) == _SELECTED_FIELDS and row["blockers"] == []
+            and set(_MARKER) <= set(marker) and all(marker[key] == value for key, value in _MARKER.items()))
+    if "for_candidate_id" in stands_for:
         require(stands_for <= {"for_candidate_id", "chosen_by"}
                 and marker.get("chosen_by", "candidate_robot") == "candidate_robot"
                 and isinstance(marker["for_candidate_id"], str)
                 and any(item["candidate_id"] == marker["for_candidate_id"] and item["status"] == "selected"
-                        for item in learned))
+                        for item in plan["candidates"] if not is_control(item)))
     else:
         require("for_model_id" in stands_for and stands_for <= {"for_model_id", "flags", "preferred", "chosen_by"}
-                and marker.get("chosen_by", "fit_table") in CHOSEN_BY_V1[1:]
+                and marker.get("chosen_by", "fit_table") in CHOSEN_BY[1:]
                 and isinstance(marker["for_model_id"], str) and _CANDIDATE_ID.fullmatch(marker["for_model_id"]) is not None
                 and marker.get("flags", [PACKET_STATION_FLAG]) == [PACKET_STATION_FLAG]
                 and type(marker.get("preferred", False)) is bool)
@@ -397,51 +411,41 @@ def validate_control_row(row: Mapping[str, Any], plan: Mapping[str, Any]) -> Dec
     quote = validate_cost_quote(row["cost_quote"], configuration_digest=row["configuration_digest"],
                                 scene_revision_digest=plan["scene_revision_digest"], episode_count=EPISODES)
     require(row["max_cost_usd"] == quote["maximum_cost_usd"] and money(row["max_cost_usd"]) >= execution_cost_floor(spec))
-    # A waitlisted reference row commits nothing until the coordinator funds it from what the rows give back.
-    return Decimal(0) if waitlisted else money(row["max_cost_usd"])
+    return money(row["max_cost_usd"])
 
 
-def _marker_base(marker: Any) -> Mapping[str, Any] | None:
-    """The fixed part of a row's marker, by its version: ``_MARKER`` (first) or ``_MARKER_V1`` (last)."""
-    if not isinstance(marker, Mapping):
-        return None
-    for base in (_MARKER, _MARKER_V1):
-        if set(base) <= set(marker) and all(marker[key] == value for key, value in base.items()):
-            return base
-    return None
+def append_control_row(plan: dict[str, Any], catalog: Mapping[str, Any], scene: Mapping[str, Any],
+                       options: Mapping[str, Any]) -> dict[str, Any]:
+    """A new website campaign's plan with its control row last; any other plan unchanged."""
+    from .beta_policy_screening_plan import money
 
-
-def first_in_plan(row: Mapping[str, Any]) -> bool:
-    """Whether a control row's version puts it first in its plan (version 2) rather than last (version 1)."""
-    return _marker_base(row.get(CONTROL_FIELD)) is _MARKER
+    if options.get("candidate_ids") is not None or any(is_control(row) for row in plan["candidates"]):
+        return plan
+    row = plan_control_row(plan, catalog, scene, capabilities=options.get("capabilities"),
+                           cost_quotes=options.get("cost_quotes"), site_remaining_usd=options.get("site_remaining_usd"),
+                           now=options.get("now"))
+    plan["candidates"].append(row)
+    if row["status"] == "selected":
+        plan["maximum_planned_cost_usd"] = f"{money(plan['maximum_planned_cost_usd']) + money(row['max_cost_usd']):.2f}"
+    return plan
 
 
 def control_outcome(configured: Mapping[str, Any], row: Mapping[str, Any]) -> str:
-    """The control's typed outcome from its plan row and ledger row; ``PENDING`` until the row ends.
-
-    A completed run's outcome carries its count: ``passed:<k>_of_3``, ``partly:1_of_3``, ``failed:0_of_3``.
-    """
+    """The control's typed outcome from its plan row and ledger row; ``PENDING`` until the row ends."""
     if row.get("status") not in _TERMINAL:
         return PENDING
     reused = row.get(REUSED_FIELD)
-    if isinstance(reused, Mapping) and reused.get("outcome") in {PASSED, PARTLY, FAILED}:
+    if isinstance(reused, Mapping) and reused.get("outcome") in {PASSED, FAILED}:
         return f"{reused['outcome']}:{REUSED_QUALIFIER}"
-    marker = configured.get(CONTROL_FIELD) or {}
-    reason = marker.get("unavailable") if isinstance(marker, Mapping) else None
+    reason = (configured.get(CONTROL_FIELD) or {}).get("unavailable")
     if reason in REASONS:
         return f"{UNAVAILABLE}:{reason}"
     if row["status"] == "completed":
         summary = row.get("summary") or {}
-        succeeded, scored = summary.get("episodes_succeeded", 0), summary.get("episodes_scored", 0)
-        count = f"{succeeded}_of_{configured.get('episode_count', EPISODES)}"
-        pass_at = marker.get("pass_at_successes", PASS_AT_SUCCESSES) if isinstance(marker, Mapping) else PASS_AT_SUCCESSES
-        partly_at = marker.get("partly_at_successes") if isinstance(marker, Mapping) else None
-        if succeeded >= pass_at:
-            return f"{PASSED}:{count}"
-        # The rest needs every planned try scored; anything less did not finish.
-        if scored != configured.get("episode_count"):
-            return INTERRUPTED
-        return f"{PARTLY}:{count}" if partly_at is not None and succeeded >= partly_at else f"{FAILED}:{count}"
+        if summary.get("episodes_succeeded", 0) >= PASS_AT_SUCCESSES:
+            return PASSED
+        # A fail is every planned episode scored, none a success; anything less did not finish.
+        return FAILED if summary.get("episodes_scored", 0) == configured.get("episode_count") else INTERRUPTED
     if set(row.get("blockers") or []) & _budget_blockers():
         return f"{UNAVAILABLE}:budget"
     return INTERRUPTED
@@ -453,43 +457,39 @@ def control_flags(configured: Mapping[str, Any], row: Mapping[str, Any]) -> dict
 
 
 def reuse_key(plan: Mapping[str, Any]) -> str:
-    """What makes two controls the same check: site, scene revision and task contract (review 2026-11-12).
+    """What makes two controls the same check: site, scene revision, task contract and harness revision."""
+    from .beta_policy_screening_plan import plan_harness_revision
 
-    Not the harness revision: a re-plan or a deploy reuses a finished count rather than pay for the same scene.
-    """
     return canonical_digest({"schema_version": SCHEMA, "site_id": plan["site_id"],
                              "scene_revision_digest": plan["scene_revision_digest"],
-                             "task_success_contract_digest": plan["task_success_contract_digest"]})
+                             "task_success_contract_digest": plan["task_success_contract_digest"],
+                             "screening_harness_revision": plan_harness_revision(plan)})
 
 
 def control_gate(ledger: Mapping[str, Any], campaign_id: str, plan: Mapping[str, Any], *,
-                 plans: Callable[[str, str], Mapping[str, Any]]) -> str:
-    """Whether a pending control may go to the ordinary reservation now: ``proceed``, ``wait`` or ``reused``.
+                 plans: Callable[[str, str], Mapping[str, Any]], committed: Callable[..., Decimal],
+                 site_limit: Decimal, final: Callable[[], bool]) -> str:
+    """Whether a pending control may be reserved now: ``proceed``, ``wait``, ``reused`` or ``closed``.
 
-    Called under the ledger lock; may mark the ledger row (its key, a reused result) in place. A finished
-    pass, partly or fail of the same check (``reuse_key``) is reused, never paid for twice; while the same
-    check runs in another campaign, this one waits. Otherwise it proceeds: it is funded like any row, and
-    the reservation's own money rules end it for budget. A version-1 row also waits while a learned row of
-    its own campaign may still need money or run (it was planned to run last).
+    Called under the ledger lock; may mark the ledger row (its key, a reused result, or its close) in place.
+    ``committed(site_id, campaign_id=None)`` is what funding already counts. ``final()``: whether the
+    campaign, as if the row did not exist, has ended ``completed`` for good, with nothing a re-plan or a
+    successor would take up (``beta_policy_screening_coordinator._final_without_control``).
+
+    It waits only while a learned row of its own campaign may still need money or run. Then, once, it
+    reuses a finished pass or fail of the same check, or is closed without running (as not run:
+    ``known_good_control_interrupted``) when the same check is active in another campaign or the campaign
+    without it did not end ``completed`` for good, or closes for budget when its cap does not fit, or
+    proceeds to the ordinary reservation. It never waits on money or on another campaign.
     """
+    from .beta_policy_screening_plan import money
+
     state = ledger["campaigns"][campaign_id]
     configured = next(row for row in plan["candidates"] if is_control(row))
     row = state["candidates"][configured["candidate_id"]]
-    learned = [state["candidates"][item["candidate_id"]] for item in plan["candidates"] if not is_control(item)]
-    if not first_in_plan(configured) and any(item["status"] in _LEARNED_OPEN for item in learned):
+    if any(state["candidates"][item["candidate_id"]]["status"] in _LEARNED_OPEN
+           for item in plan["candidates"] if not is_control(item)):
         return "wait"
-    if first_in_plan(configured):
-        # Never ahead of a robot: it launches only after an AI row has launched an attempt, and never while an
-        # AI row still waits for money; if no AI row ever launches it ends without running or paying.
-        launched = any("launch_intent_at" in attempt for item in learned
-                       for attempt in [*(item.get("attempt_history") or []), *([item["attempt"]] if item.get("attempt") else [])])
-        waiting = any(item["status"] == "waitlisted" for item in learned)
-        if not launched or waiting:
-            if any(item["status"] in _LEARNED_OPEN for item in learned):
-                return "wait"
-            from .beta_policy_screening_site_limit import budget_reason
-            row.update(status="deferred", blockers=[budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
-            return "closed"
     key = row.setdefault(KEY_FIELD, reuse_key(plan))
     for other_id, other in sorted(ledger["campaigns"].items()):
         if other["site_id"] != state["site_id"]:
@@ -497,63 +497,29 @@ def control_gate(ledger: Mapping[str, Any], campaign_id: str, plan: Mapping[str,
         for other_key, other_row in other["candidates"].items():
             if other_id == campaign_id or not is_control(other_row) or other_row.get(KEY_FIELD) != key:
                 continue
-            if other_row["status"] in _ACTIVE or other_row["status"] == "pending" and other_row.get(CLAIMED_FIELD):
-                # The same check runs, or was let through to its reservation, elsewhere: two workers never both
-                # start an attempt (this gate runs under the ledger lock and claims before it returns).
-                return "wait"
+            if other_row["status"] in _ACTIVE:
+                # The same check runs elsewhere: this one is not paid for twice, and never waits for it.
+                row.update(status="unavailable", blockers=[NOT_RUN_BLOCKER])
+                return "closed"
             other_plan = plans(other_id, other["plan_digest"])
             other_configured = next((item for item in other_plan["candidates"] if item["candidate_id"] == other_key), None)
             outcome = control_outcome(other_configured or {}, other_row).split(":")[0]
-            if outcome in {PASSED, PARTLY, FAILED}:
+            if outcome in {PASSED, FAILED}:
                 row.update(status="unavailable", blockers=[REUSED_BLOCKER])
                 row[REUSED_FIELD] = {"campaign_id": other_id, "outcome": outcome}
                 return "reused"
-    # No classed result yet: an attempt is funded only from what the earlier ones left of the $3.00.
-    from .beta_policy_screening_plan import money
-
-    left = REFERENCE_CAP_USD - reference_spent(ledger, key, site_id=state["site_id"])
-    if money(configured["max_cost_usd"]) > left:
-        from .beta_policy_screening_site_limit import budget_reason
-        row.update(status="deferred", blockers=[budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
+    if not final():
+        # Something of the campaign may still be retried, held for a deploy or planned again: the row never
+        # runs or holds money beside it, so the re-plan and any successor see exactly what they would without it.
+        row.update(status="unavailable", blockers=[NOT_RUN_BLOCKER])
         return "closed"
-    row[CLAIMED_FIELD] = True
-    return "proceed"
-
-
-def reference_spent(ledger: Mapping[str, Any], key: str, *, site_id: str) -> Decimal:
-    """What the check has spent for ``key`` across every attempt: settled cost where settled, else the reservation."""
-    from .beta_policy_screening_plan import money
-    from .beta_policy_screening_settlement import settled_cost
-
-    spent = Decimal(0)
-    for state in ledger["campaigns"].values():
-        if state.get("site_id") != site_id:
-            continue
-        for row in state["candidates"].values():
-            if not is_control(row) or row.get(KEY_FIELD) != key:
-                continue
-            for attempt in [*(row.get("attempt_history") or []), *([row["attempt"]] if row.get("attempt") else [])]:
-                status = attempt.get("reservation_status")
-                if status == "released" and not attempt.get("provider_allocation_observed"):
-                    continue
-                settled = settled_cost(attempt) if status == "committed" else None
-                spent += money(attempt["maximum_cost_usd"]) if settled is None else settled
-    return spent
-
-
-def reference_remaining_usd(queue_root: str | Path, scene: Mapping[str, Any]) -> Decimal:
-    """What a new plan's reference row may still hold for this scene revision and task contract (at planning)."""
-    from .beta_policy_screening_coordinator import _ledger, _lock, _root
-
-    root = _root(queue_root)
-    try:
-        with _lock(root):
-            ledger = _ledger(root)
-    except Exception:  # noqa: BLE001 - no queue yet: nothing spent
-        return REFERENCE_CAP_USD
-    key = reuse_key({"site_id": scene["site_id"], "scene_revision_digest": scene["scene_revision_digest"],
-                     "task_success_contract_digest": scene["task_success_contract_digest"]})
-    return max(Decimal(0), REFERENCE_CAP_USD - reference_spent(ledger, key, site_id=scene["site_id"]))
+    cap = money(configured["max_cost_usd"])
+    if (committed(state["site_id"]) + cap <= site_limit
+            and committed(state["site_id"], campaign_id=campaign_id) + cap <= money(plan["budget_usd"])):
+        return "proceed"
+    from .beta_policy_screening_site_limit import budget_reason
+    row.update(status="deferred", blockers=[budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
+    return "closed"
 
 
 def failed_controls(campaigns: Iterable[tuple[str, Mapping[str, Any], Mapping[str, Any]]]) -> list[str]:
@@ -561,8 +527,7 @@ def failed_controls(campaigns: Iterable[tuple[str, Mapping[str, Any], Mapping[st
     failed = []
     for campaign_id, state, plan in campaigns:
         for configured in plan["candidates"]:
-            outcome = control_outcome(configured, state["candidates"][configured["candidate_id"]]) if is_control(configured) else ""
-            if outcome.split(":")[0] == FAILED and not outcome.endswith(":" + REUSED_QUALIFIER):
+            if is_control(configured) and control_outcome(configured, state["candidates"][configured["candidate_id"]]) == FAILED:
                 failed.append(campaign_id)
     return sorted(failed)
 
@@ -604,10 +569,8 @@ def alert_failed_controls(root: Path, failed: Iterable[str], *, webhook_url: str
     return record
 
 
-__all__ = ["ALERT_CODE", "ARM_FAMILY_BODIES", "BUDGET_EXHAUSTED_BLOCKER", "CHOSEN_BY", "CONTROL_FIELD", "DISPLAY_NAME",
-           "EPISODES", "FAILED", "FIT_CAPABILITY", "INTERRUPTED", "PACKET_STATION_FLAG", "PARTLY", "PARTLY_AT_SUCCESSES",
-           "PASSED", "PASS_AT_SUCCESSES", "PENDING", "PREFERENCE_CAPABILITY", "PREFERENCE_INVALID", "REASONS",
-           "REFERENCE_CAP_USD", "REUSED_BLOCKER", "STATION_CAPABILITY", "UNAVAILABLE", "alert_failed_controls",
-           "control_cells", "control_flags", "control_gate", "control_outcome", "failed_controls", "first_in_plan",
-           "is_control", "plan_control_row", "preferred_model_ids", "reuse_key", "tested_robot_bodies",
-           "validate_control_row"]
+__all__ = ["ALERT_CODE", "CONTROL_FIELD", "DISPLAY_NAME", "EPISODES", "FAILED", "FIT_CAPABILITY", "INTERRUPTED",
+           "PACKET_STATION_FLAG", "PASSED", "PREFERENCE_CAPABILITY", "PREFERENCE_INVALID", "STATION_CAPABILITY",
+           "PASS_AT_SUCCESSES", "PENDING", "REFERENCE_CAP_USD", "REASONS", "REUSED_BLOCKER", "UNAVAILABLE", "alert_failed_controls",
+           "append_control_row", "control_cells", "control_flags", "control_gate", "control_outcome",
+           "failed_controls", "is_control", "BUDGET_EXHAUSTED_BLOCKER", "NEAREST_BODY_MODELS", "CHOSEN_BY", "plan_control_row", "preferred_model_ids", "reuse_key", "validate_control_row"]

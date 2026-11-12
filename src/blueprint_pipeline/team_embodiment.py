@@ -635,13 +635,8 @@ def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mappin
                             structure: Mapping[str, Any], scene_plan: Mapping[str, Any],
                             stance: Mapping[str, Any] | None = None,
                             station: Mapping[str, Any] | None = None,
-                            station_reached_by_own_arm: bool = False,
-                            reach_refusal_as_flag: bool = False) -> dict[str, Any]:
+                            station_reached_by_own_arm: bool = False) -> dict[str, Any]:
     """The sealed binding the execution spec carries, or raise with every reason (no I/O).
-
-    ``reach_refusal_as_flag`` (the website screening only, owner 2026-11-12): a station out of reach is bound
-    and tested, flagged on the robot's result (``website_candidate_feasibility.reach_rank``). Unset, it is
-    refused as it always was.
 
     A free base carries its floor ``stance`` (``team_embodiment_stance.free_base_stance``). A fixed base
     may carry its own ``station`` (the one chosen for this body when the scene was compiled,
@@ -664,7 +659,7 @@ def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mappin
     if station_reached_by_own_arm and own is None:
         raise TeamEmbodimentError(["team_embodiment_own_station_invalid"])
     reach = station_reach_blockers(scene_plan, manifest)
-    if station_reached_by_own_arm or reach_refusal_as_flag:
+    if station_reached_by_own_arm:
         reach = [code for code in reach if code != "team_embodiment_station_out_of_reach"]
     blockers = [*model_structure_blockers(manifest, structure), *reach]
     if free and not (isinstance(stance, Mapping) and _vector(stance.get("position_world_m"), 3)

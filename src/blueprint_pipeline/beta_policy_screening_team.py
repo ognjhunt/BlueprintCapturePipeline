@@ -55,8 +55,7 @@ def build_registered_team_spec(*, candidate_id: str, registration: Mapping[str, 
                                prompt: str, scene_revision_digest: str,
                                station: Mapping[str, Any] | None = None,
                                stance: Mapping[str, Any] | None = None,
-                               station_reached_by_own_arm: bool = False,
-                               reach_refusal_as_flag: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+                               station_reached_by_own_arm: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     """Materialize a per-task spec from sealed, reusable operator inputs.
 
     ``robot_policy`` contains ``manifest`` and ``model`` artifact references,
@@ -83,8 +82,7 @@ def build_registered_team_spec(*, candidate_id: str, registration: Mapping[str, 
         raise ValueError("beta_screening_team_free_base_stance_registration_required")
     binding = team_embodiment_binding(manifest, model_record=record, structure=read_model_structure(model_path),
                                       scene_plan=scene_plan, stance=stance, station=station,
-                                      station_reached_by_own_arm=bool(station is not None and station_reached_by_own_arm),
-                                      reach_refusal_as_flag=reach_refusal_as_flag)
+                                      station_reached_by_own_arm=bool(station is not None and station_reached_by_own_arm))
     native = apply_team_embodiment(scene_plan, binding)
     policy = dict(registration["policy_spec"])
     interface = policy.get("policy_interface_id", "blueprint_policy_https.v1")

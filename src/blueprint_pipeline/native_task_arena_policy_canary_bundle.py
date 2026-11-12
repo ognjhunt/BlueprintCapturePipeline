@@ -443,12 +443,8 @@ def build_policy_canary_session_bundle(
     implementation_commit: str,
     hotfix_overlay_path: str | Path | None = None,
     generated_at: str | None = None,
-    reach_refusal_as_flag: bool = False,
 ) -> dict[str, Any]:
-    """Package both frozen policy servers and the warm 20-episode worker.
-
-    ``reach_refusal_as_flag``: the website screening's rule (``native_task_arena_bundle``).
-    """
+    """Package both frozen policy servers and the warm 20-episode worker."""
 
     inputs = validate_runtime_input_manifest(_read(runtime_input_manifest_path))
     authority = validate_session_authority(_read(session_authority_path))
@@ -638,7 +634,6 @@ def build_policy_canary_session_bundle(
         # The pre-GPU checks measure the robot that runs, not the packet's.
         team_embodiment=team_bindings[0] if team_bindings else None,
         team_robot_model=team_robot_model_path if team_bindings else None,
-        reach_refusal_as_flag=reach_refusal_as_flag,
         worker_source=package / "native_task_arena_policy_canary_worker.py",
         runtime_module_sources=sorted(set(runtime_modules)),
         implementation_commit=implementation_commit,
