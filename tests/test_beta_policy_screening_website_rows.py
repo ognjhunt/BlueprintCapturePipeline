@@ -93,7 +93,7 @@ def test_the_rows_a_website_campaign_leaves_out_are_the_templates_and_scripted_b
             "openwam_alpha_franka", "molmoact2_bimanual_yam", "dream1_i2rt_yam_bimanual"} <= planned
     # The catalog is untouched: same digest in both plans, every id still readable.
     assert fresh["catalog_digest"] == everything["catalog_digest"] == catalog["catalog_digest"]
-    assert len(candidate_rows(everything)) == 136
+    assert len(everything["candidates"]) == 136
 
 
 @pytest.mark.parametrize("host", [False, True])
@@ -111,7 +111,7 @@ def test_leaving_the_rows_out_changes_no_money(host, remaining, site_remaining):
                   "scenario_cells", "screening_harness_revision"):
         assert fresh[field] == everything[field], field
     # Every planned row is the pre-change plan's row, byte for byte, in the same order.
-    assert candidate_rows(fresh) == [row for row in candidate_rows(everything) if row["candidate_id"] not in left_out]
+    assert candidate_rows(fresh) == [row for row in everything["candidates"] if row["candidate_id"] not in left_out]
     # Every left-out row was listed there without a quote, a reservation or a cap.
     dropped = [row for row in everything["candidates"] if row["candidate_id"] in left_out]
     assert len(dropped) == 82
@@ -201,8 +201,7 @@ def test_a_catalog_with_only_left_out_rows_still_plans_and_publishes(tmp_path):
     rows = [row for row in catalog["candidates"] if website_never_planned(row)]
     only = seal_catalog({**catalog, "candidates": rows})
     fresh, everything = website_plans(only)
-    assert ({**fresh, "candidates": candidate_rows(fresh), "plan_digest": ""}
-            == {**everything, "candidates": candidate_rows(everything), "plan_digest": ""})
+    assert {**fresh, "candidates": candidate_rows(fresh), "plan_digest": ""} == {**everything, "plan_digest": ""}
     assert len(candidate_rows(fresh)) == 82
     coordinator.enqueue_screening_campaign(fresh, queue_root=tmp_path)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
@@ -240,7 +239,7 @@ def test_a_campaign_planned_before_the_change_keeps_its_rows_through_the_deploy_
     root = world["screening_queue"]
     with monkeypatch.context() as before:
         before.setattr(planner, "website_never_planned", lambda candidate: False)
-        before.setattr(planner, "plan_control_row", lambda *_args, **_kwargs: None)
+        before.setattr(planner, "append_control_row", lambda value, *_args: value)
         first = _adopt(world)["campaign_id"]
     plan_path = root / "plans" / f"{first}.json"
     plan_bytes = plan_path.read_bytes()
@@ -265,8 +264,7 @@ def test_a_campaign_planned_before_the_change_keeps_its_rows_through_the_deploy_
     unspent = [row["candidate_id"] for row in old["candidates"]
                if not coordinator._spent(ledger["campaigns"][first]["candidates"][row["candidate_id"]])]
     # The re-plan lists exactly its predecessor's unspent rows, the left-out kinds included.
-    # (with the scripted reference check first, planned on every campaign since 2026-11-12)
-    assert sorted(row["candidate_id"] for row in candidate_rows(successor)) == sorted(unspent)
+    assert sorted(row["candidate_id"] for row in successor["candidates"]) == sorted(unspent)
     assert left_out <= {row["candidate_id"] for row in successor["candidates"]}
     assert all(row["status"] == "unavailable" for row in successor["candidates"] if row["candidate_id"] in left_out)
     # The predecessor's frozen plan is untouched and the site's money carries over unchanged.
@@ -291,4 +289,4 @@ def test_a_new_campaign_and_its_replan_list_only_rows_that_can_run(tmp_path, mon
     successor = json.loads((root / "plans" / f"{replanned['campaign_id']}.json").read_text())
     assert replanned["superseded_campaign_id"] == first
     assert not left_out & {row["candidate_id"] for row in successor["candidates"]}
-    assert len(candidate_rows(successor)) == 53  # The one that spent is never planned again.
+    assert len(successor["candidates"]) == 53  # The one that spent is never planned again.

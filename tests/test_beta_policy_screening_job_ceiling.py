@@ -315,7 +315,7 @@ def test_a_website_plan_never_funds_a_scripted_baseline():
                                              candidate_ids=sorted(row["candidate_id"] for row in catalog["candidates"]))
     rows = {row["candidate_id"]: row for row in value["candidates"]}
     # Every row the new campaign plans is the re-plan's row, byte for byte, and the money is the same.
-    assert candidate_rows(fresh) == [row for row in candidate_rows(value) if row["candidate_id"] not in scripted]
+    assert candidate_rows(fresh) == [row for row in value["candidates"] if row["candidate_id"] not in scripted]
     assert (fresh["budget_usd"], fresh["maximum_planned_cost_usd"]) == (value["budget_usd"], value["maximum_planned_cost_usd"])
     for key in scripted:
         assert rows[key] == {"candidate_id": key, "display_name": rows[key]["display_name"],
@@ -323,8 +323,7 @@ def test_a_website_plan_never_funds_a_scripted_baseline():
                              "execution_evidence_kind": "scripted_simulator_state_baseline",
                              "status": "unavailable", "blockers": ["candidate_disabled"]}
     # The site's money goes only to the learned policies.
-    learned = {row["candidate_id"] for row in candidate_rows(value)}
-    assert {rows[key]["status"] for key in learned - set(scripted)} == {"selected"}
+    assert {rows[key]["status"] for key in set(rows) - set(scripted)} == {"selected"}
     assert value["maximum_planned_cost_usd"] == "8.00"
     schema = json.loads((Path(__file__).resolve().parents[1]
                          / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())

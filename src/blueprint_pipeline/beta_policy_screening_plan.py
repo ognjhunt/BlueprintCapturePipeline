@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .beta_policy_candidate_catalog import CANDIDATE_ID_PATTERN, DIGEST_PATTERN, ID_PATTERN, validate_catalog
-from .beta_policy_screening_known_good_control import CONTROL_FIELD, first_in_plan, plan_control_row, validate_control_row
+from .beta_policy_screening_known_good_control import CONTROL_FIELD, append_control_row, validate_control_row
 from .decision_evidence_contracts import canonical_digest
 from .team_evaluation_plan import scored_cells
 from .website_candidate_feasibility import REACH_RANK_FIELDS, REACH_TIERS, reach_rank
@@ -713,11 +713,9 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             tier = (REACH_TIERS["reach_unmeasured"] if key in infeasible
                     else (reach.get(key) or reach_rank(None))["tier"])
             flagged = tier == REACH_TIERS["own_arm_solve_flagged"]
-            # A robot measured unable to reach both places is tested too, funded after every one that can.
-            unreachable = tier == REACH_TIERS["reach_cannot_span"]
             if intake_ranking:
-                return (unreachable, flagged)  # The job's own ranking stands; only these bodies move back.
-            return (unreachable, flagged, by_id[key]["policy"]["kind"] == "scripted",
+                return (flagged,)  # The job's own ranking stands; only a flagged body moves back.
+            return (flagged, by_id[key]["policy"]["kind"] == "scripted",
                     tier == REACH_TIERS["reach_unmeasured"])
 
         order.sort(key=reach_order)  # Stable: the default order holds within each group.
@@ -926,8 +924,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(row, dict) or not {"candidate_id", "display_name", "configuration_digest", "status", "blockers"} <= set(row):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
         if CONTROL_FIELD in row:
-            # The campaign's one scripted reference check: first (owner, 2026-11-12), or last in a version-1 plan.
-            if row is not (rows[0] if first_in_plan(row) else rows[-1]):
+            # The campaign's one known-good control, after every candidate row (owner approval 2026-11-10).
+            if row is not rows[-1]:
                 raise BetaPolicyScreeningPlanError("beta_screening_known_good_control_invalid")
             candidates.append(row["candidate_id"])
             committed += validate_control_row(row, plan)
@@ -1070,17 +1068,6 @@ def _job_ceiling_available(record: Any) -> Decimal:
     return available
 
 
-def _tested_ids(catalog: Mapping[str, Any], options: Mapping[str, Any]) -> list[str]:
-    """The AI robots this campaign plans, in its order: a re-plan's named rows, else the job's ranking first."""
-    rows = {row["candidate_id"]: row for row in catalog["candidates"]}
-    named = options.get("candidate_ids")
-    if named is not None:
-        return [key for key in named if key in rows]
-    plannable = [key for key in sorted(rows) if not website_never_planned(rows[key])]
-    ranked = [key for key in dict.fromkeys(options.get("priority") or ()) if key in plannable]
-    return ranked + [key for key in plannable if key not in ranked]
-
-
 def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *,
                                      job_ceiling: Mapping[str, Any], budget_usd: str | None = None,
                                      **options: Any) -> dict[str, Any]:
@@ -1100,13 +1087,6 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
     With less left than any quote, every candidate is deferred and the plan still publishes, so
     the job sees why nothing ran. The $4 cap per AI robot test and the $3 scripted reference
     check are guards on a single run and stay as they are.
-
-    The scripted reference check is the plan's first row on every campaign, a re-plan too, and never
-    costs the job a robot (review 2026-11-12): the AI robot rows are funded exactly as without it, and the
-    reference row only from what they leave (``known_good_control.fund_from_leftover``): selected when its
-    cap fits that, waitlisted behind every AI robot row when it fits the budget but not what is left (the
-    coordinator funds it from what the rows give back as they settle), and ``unavailable:budget`` when no
-    AI robot row is funded (``beta_policy_screening_known_good_control``).
     """
     from .website_job_limits import fuse
 
@@ -1117,9 +1097,6 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
         raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_budget_not_taken")
     requested = available if unrationed else money(budget_usd or str(CAMPAIGN_BUDGET_USD))
     budget = min(requested, available)
-    control = plan_control_row(catalog, scene, tested=_tested_ids(catalog, options),
-                               capabilities=options.get("capabilities"), cost_quotes=options.get("cost_quotes"),
-                               budget_usd=budget, now=options.get("now") or dt.datetime.now(dt.timezone.utc))
     plan = build_screening_plan(catalog, scene, budget_usd=f"{budget:.2f}", website=True,
                                 job_ceiling=job_ceiling, **options)
     for row in plan["candidates"] if budget < requested or unrationed else ():
@@ -1132,10 +1109,8 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
             # Still fundable within the ceiling-sized budget from money a
             # selected candidate releases; the ceiling is what holds it back.
             row["blockers"] = [JOB_CEILING_DEFERRED]
-    if control:  # always, but for a test that rebuilds a plan made before the row existed
-        from .beta_policy_screening_known_good_control import fund_from_leftover
-        waitlist = [JOB_CEILING_DEFERRED] if budget < requested or unrationed else [WAITLIST_BLOCKER]
-        plan["candidates"].insert(0, fund_from_leftover(control, plan, waitlist_blockers=waitlist))
+    # A new website campaign's known-good control, planned after every candidate and never ahead of one.
+    append_control_row(plan, catalog, scene, {"now": dt.datetime.now(dt.timezone.utc), **options})
     planned = sum((money(row["max_cost_usd"]) for row in plan["candidates"] if row["status"] == "selected"), Decimal(0))
     plan["maximum_planned_cost_usd"] = f"{planned:.2f}"
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")

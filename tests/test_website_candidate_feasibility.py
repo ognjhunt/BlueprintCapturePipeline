@@ -82,10 +82,7 @@ def registered(tmp_path, monkeypatch, *, count=3, short=(1,), priority=()):
     return plan, planning, profile, catalog
 
 
-def test_a_body_measured_out_of_reach_is_still_planned_last_and_flagged_about_the_robot(tmp_path, monkeypatch):
-    """Owner 2026-11-12 (stage 8 2c): before, ``team_policy_01`` was listed infeasible and never tested."""
-    from blueprint_pipeline.website_candidate_feasibility import REACH_CANNOT_SPAN_FLAG, scene_check
-
+def test_infeasible_comes_only_from_measured_station_reach_and_stays_listed(tmp_path, monkeypatch):
     measured = []
     original = team_embodiment.station_reach_blockers
 
@@ -96,15 +93,9 @@ def test_a_body_measured_out_of_reach_is_still_planned_last_and_flagged_about_th
     monkeypatch.setattr(team_embodiment, "station_reach_blockers", spy)
     plan, planning, _, _ = registered(tmp_path, monkeypatch)
     rows = {row["candidate_id"]: row for row in plan["candidates"]}
-    assert rows["team_policy_01"]["status"] in {"selected", "waitlisted"} and rows["team_policy_01"]["blockers"] in (
-        [], ["site_screening_budget_insufficient"])
-    assert rows["team_policy_01"]["reach_rank"]["basis"] == "reach_cannot_span"
-    assert rows["team_policy_01"]["reach_rank"]["reasons"] == ["team_embodiment_station_out_of_reach"]
-    assert scene_check(rows["team_policy_01"]) == ("flagged", [REACH_CANNOT_SPAN_FLAG])
+    assert rows["team_policy_01"]["status"] == "infeasible"
+    assert rows["team_policy_01"]["blockers"] == ["team_embodiment_station_out_of_reach"]
     assert rows["team_policy_00"]["status"] == rows["team_policy_02"]["status"] == "selected"
-    # Funded after both bodies that can reach.
-    order = [row["candidate_id"] for row in plan["candidates"]]
-    assert order.index("team_policy_01") > max(order.index("team_policy_00"), order.index("team_policy_02"))
     feasibility = planning["candidate_feasibility"]
     scene_digest = planning["scene"]["native_scene_plan"]["plan_digest"]
     assert feasibility["scene_plan_digest"] == scene_digest
@@ -114,7 +105,7 @@ def test_a_body_measured_out_of_reach_is_still_planned_last_and_flagged_about_th
     assert (scene_digest, SHORT_REACH_M) in measured and (scene_digest, 3.0) in measured
     retained = list((tmp_path / "team-inputs").glob("*.candidate_feasibility.json"))
     assert [json.loads(path.read_text()) for path in retained] == [feasibility]
-    assert "team_policy_01" in planning["cost_quotes"]  # quoted and planned like any robot
+    assert "team_policy_01" not in planning["cost_quotes"]
     assert validate_screening_plan(plan) == plan
 
 
@@ -182,8 +173,7 @@ def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_
     # The short arm cannot reach from its own best station either: infeasible, by name, in both records.
     assert rows["short_arm"]["own_station"]["status"] == "infeasible"
     assert rows["short_arm"]["status"] == "infeasible"
-    # Out of reach is a judgement, not an inability: nothing is held out of the plan for it (owner, 2026-11-12).
-    assert infeasible_blockers(feasibility) == {}
+    assert infeasible_blockers(feasibility) == {"short_arm": ["team_embodiment_station_out_of_reach"]}
     # A free base has its own floor station but declares no reach; a body without a manifest is not modelled.
     assert rows["rover"]["status"] == "unassessed"
     assert rows["rover"]["blockers"] == ["embodiment_free_base_reach_not_modeled"]
@@ -439,28 +429,25 @@ def reach_group(row, *, intake_ranking=False):
     scripted and passed before unmeasured."""
     tier = (row.get("reach_rank") or {}).get("tier", 2)
     if intake_ranking:
-        return (tier == 4, tier == 3)
-    return tier == 4, tier == 3, row.get("execution_evidence_kind") == "scripted_simulator_state_baseline", tier == 2
+        return (tier == 3,)
+    return tier == 3, row.get("execution_evidence_kind") == "scripted_simulator_state_baseline", tier == 2
 
 
 def test_capture_447_funds_the_bodies_whose_own_arm_reached_the_task_and_flagged_ones_last():
     before, after = capture_447(ranked=False), capture_447()
     selected = [row["candidate_id"] for row in before["candidates"] if row["status"] == "selected"]
-    # Without reach ranks the default order funds the learned policies first (no longer held out as infeasible).
-    assert selected == list(DEFAULT_PRIORITY[:3])
-    # Every learned policy is measured out of reach: still planned (owner, 2026-11-12), funded after every body
-    # that can reach. The passed scripted bodies come first, GoFa 5/0.95 and Diana 7 next, the learned last.
+    # The lookahead's order: GoFa 12/1.27, GoFa 5/0.95, Diana 7 at $4 each.
+    assert selected == [GOFA_12, GOFA_5, DIANA]
+    # Every learned policy is infeasible; the passed scripted bodies come first, GoFa 5/0.95 and Diana 7 last.
     order = [row["candidate_id"] for row in after["candidates"]]
-    assert order == [*sorted(PASSED), *sorted(UNMEASURED), *sorted(FLAGGED), *DEFAULT_PRIORITY]
-    assert not any(row["status"] == "infeasible" for row in after["candidates"])
-    assert all(row["reach_rank"]["basis"] == "reach_cannot_span" for row in after["candidates"]
-               if row["candidate_id"] in LEARNED)
+    assert order == [*DEFAULT_PRIORITY, *sorted(PASSED), *sorted(UNMEASURED), *sorted(FLAGGED)]
+    assert {row["candidate_id"] for row in after["candidates"] if row["status"] == "infeasible"} == set(LEARNED)
     assert [row["candidate_id"] for row in after["candidates"] if row["status"] == "selected"] == sorted(PASSED)[:3]
     assert after["maximum_planned_cost_usd"] == before["maximum_planned_cost_usd"] == "12.00"
     shown = {row["candidate_id"]: row for row in after["candidates"]}
     assert all(shown[key]["status"] == "waitlisted" for key in FLAGGED)
-    tiers = [row["reach_rank"]["tier"] for row in after["candidates"]]
-    assert tiers == sorted(tiers) and set(tiers) == {1, 2, 3, 4}
+    tiers = [row["reach_rank"]["tier"] for row in after["candidates"] if row["status"] != "infeasible"]
+    assert tiers == sorted(tiers) and set(tiers) == {1, 2, 3}
     # Each row says why it sits where it does, with the evidence that placed it there.
     assert shown[GOFA_5]["reach_rank"] == {
         "tier": 3, "basis": "own_arm_solve_flagged", "feasibility_status": "feasible",
@@ -471,6 +458,7 @@ def test_capture_447_funds_the_bodies_whose_own_arm_reached_the_task_and_flagged
         "own_arm_solve_passed", "passed")
     assert shown[GOFA_12]["reach_rank"]["basis"] == "reach_unmeasured"
     assert shown[GOFA_12]["reach_rank"]["reasons"] == ["embodiment_reach_manifest_not_registered"]
+    assert all("reach_rank" not in shown[key] for key in LEARNED)
     assert validate_screening_plan(after) == after
     schema = json.loads((Path(__file__).resolve().parents[1]
                          / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
@@ -533,9 +521,8 @@ def test_ranking_by_reach_makes_nothing_infeasible_or_unfunded_that_was_not():
             # Only which runnable rows the budget reaches changes; refusals and reasons stay the plan's own.
             assert row["status"] == status[row["candidate_id"]] or {
                 row["status"], status[row["candidate_id"]]} == {"selected", "waitlisted"}
-            assert "reach_rank" in row
-        # A measured reach refusal is planned and flagged now, never infeasible (owner, 2026-11-12).
-        assert [row["candidate_id"] for row in after["candidates"] if row["status"] == "infeasible"] == []
+            assert ("reach_rank" in row) is (row["status"] != "infeasible")
+        assert [row["candidate_id"] for row in after["candidates"] if row["status"] == "infeasible"] == ["pi05_droid"]
         assert sum(row["status"] == "selected" for row in after["candidates"]) == sum(
             row["status"] == "selected" for row in before["candidates"])
     # A job ceiling that defers the waitlist keeps each row's rank, and so does a deferral for no money left.
@@ -544,9 +531,8 @@ def test_ranking_by_reach_makes_nothing_infeasible_or_unfunded_that_was_not():
     # A website job's re-plan that names its scripted baselines lists them switched off (owner
     # 2026-11-04), rank kept; a new website campaign leaves them out (owner 2026-11-05), the rest unchanged.
     every = sorted(row["candidate_id"] for row in capture_447(learned=learned)["candidates"])
-    # No row is infeasible for reach any more (owner, 2026-11-12): planned last and flagged.
-    for remaining, statuses in ((5, {"selected", "waitlisted", "unavailable"}),
-                                (0, {"deferred", "unavailable"})):
+    for remaining, statuses in ((5, {"selected", "waitlisted", "infeasible", "unavailable"}),
+                                (0, {"deferred", "infeasible", "unavailable"})):
         record = job_ceiling_record(ceiling_summary(remaining), local_holds_usd=Decimal(0), read_at=READ_AT)
         bounded = capture_447(learned=learned, ceiling=record, candidate_ids=every)
         fresh = capture_447(learned=learned, ceiling=record)
@@ -559,7 +545,7 @@ def test_ranking_by_reach_makes_nothing_infeasible_or_unfunded_that_was_not():
         assert {row["candidate_id"] for row in bounded["candidates"] if row["status"] == "unavailable"} == {
             row["candidate_id"] for row in bounded["candidates"]
             if row.get("execution_evidence_kind") == "scripted_simulator_state_baseline"}
-        assert [row.get("reach_rank") for row in candidate_rows(bounded)] == [
+        assert [row.get("reach_rank") for row in bounded["candidates"]] == [
             row.get("reach_rank") for row in capture_447(learned=learned)["candidates"]]
         assert validate_screening_plan(bounded) == bounded
 

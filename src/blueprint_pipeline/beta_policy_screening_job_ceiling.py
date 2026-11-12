@@ -95,8 +95,9 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
         for campaign_id, state in ledger["campaigns"].items():
             # Waitlisted rows count too: money a selected row releases before
             # spend can fund them, up to what the plan's budget still allows.
-            # The scripted reference check counts like any row: it is funded first (owner, 2026-11-12).
-            unfunded = {key for key, row in state["candidates"].items() if row["status"] in {"pending", "waitlisted"}}
+            # An unreserved known-good control is not held here: it runs only on money left over.
+            unfunded = {key for key, row in state["candidates"].items()
+                        if row["status"] in {"pending", "waitlisted"} and not row.get("known_good_control")}
             if state["site_id"] != site_id or not unfunded or campaign_id == superseding:
                 continue
             plan = _plan(root, campaign_id, state["plan_digest"])
@@ -124,12 +125,8 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
     read_at = dt.datetime.now(dt.timezone.utc).isoformat()
     preferred = _preferred_robot_model_ids(extras.get(PREFERENCE_FIELD), options.get("capabilities"))
     if preferred:
-        # Read beside the ceiling; the reference check's body no longer depends on it (owner, 2026-11-12).
+        # Orders only the known-good control's body; outside every digest (``robot_fit_rows`` too).
         options["capabilities"] = {**(options.get("capabilities") or {}), PREFERENCE_FIELD: preferred}
-    # The reference check's $3.00 is a total per scene revision and task contract (owner, 2026-11-12).
-    from .beta_policy_screening_known_good_control import REMAINING_CAPABILITY, reference_remaining_usd
-    options["capabilities"] = {**(options.get("capabilities") or {}),
-                               REMAINING_CAPABILITY: f"{reference_remaining_usd(queue_root, scene):.2f}"}
     # Without the WebApp's screening figure, count every local reservation again: less, never more.
     published = summary.get("screening_cost_usd")
     published = (Decimal(str(published)) if isinstance(published, (int, float)) and not isinstance(published, bool)

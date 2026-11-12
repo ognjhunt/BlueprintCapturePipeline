@@ -258,11 +258,6 @@ CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED: dict[str, str] = {
     "deployment_embodiment_preparation_bundle.materialize": "test-injected callable; CLI uses the pinned public-source materializer",
     "deployment_embodiment_preparation_bundle.wheel_get": "test-injected callable; CLI uses the protected HTTP client and SHA-pinned wheels",
     "ctrl_world_provider_bundle.generated_at": "receipt timestamp defaults to now",
-    "native_task_arena_policy_canary_bundle.reach_refusal_as_flag": (
-        "set only by the website screening launch, which calls the builder directly "
-        "(beta_policy_screening_launch.prepare_candidate); no deployed unit or script runs this command line, "
-        "and off by default a reach refusal stays a refusal there"
-    ),
     "oscar_wam_provider_bundle.generated_at": "receipt timestamp defaults to now",
     "public_scene_simready_isaac_bundle.generated_at": "receipt timestamp defaults to now",
     "task_evaluation_scene_configuration_bundle.stat_only_toolchain_host_validation": (

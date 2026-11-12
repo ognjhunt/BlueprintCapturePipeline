@@ -911,8 +911,7 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
                               plans=lambda earlier, digest: _plan(root, earlier, digest))
         if (scope is None or successor in ledger["campaigns"] or value["site_id"] != old["site_id"]
                 or value["source"] != previous["source"]
-                # The scripted reference check is planned on every campaign, a re-plan too (owner, 2026-11-12).
-                or not {row["candidate_id"] for row in value["candidates"] if not is_control(row)} <= set(scope)):
+                or not {row["candidate_id"] for row in value["candidates"]} <= set(scope)):
             raise ScreeningCoordinatorError("beta_screening_replan_not_admitted")
         path = root / "plans" / f"{successor}.json"
         if path.exists():
@@ -1256,12 +1255,14 @@ def _refill_waitlist(root: Path) -> int:
             return plans[campaign_id]
 
         def pending_caps(campaign_id: str) -> Decimal:
-            # A pending scripted reference check is funded first, like any pending row (owner, 2026-11-12).
+            # A pending known-good control is neither used money nor in flight here: it is reserved only
+            # after every learned row of its campaign has ended, from what is left then.
             rows = campaigns[campaign_id]["candidates"]
-            if not any(row["status"] == "pending" for row in rows.values()):
+            if not any(row["status"] == "pending" and not is_control(row) for row in rows.values()):
                 return Decimal(0)
             return sum((_amount(candidate["max_cost_usd"]) for candidate in plan_for(campaign_id)["candidates"]
-                        if rows[candidate["candidate_id"]]["status"] == "pending"), Decimal(0))
+                        if rows[candidate["candidate_id"]]["status"] == "pending" and not is_control(candidate)),
+                       Decimal(0))
 
         for site_id in sites:
             ids = sorted((key for key, state in campaigns.items() if state["site_id"] == site_id),
@@ -1283,13 +1284,8 @@ def _refill_waitlist(root: Path) -> int:
                     if row["status"] != "waitlisted":
                         continue
                     cap = _amount(candidate["max_cost_usd"])
-                    learned = [value for key, value in state["candidates"].items() if not is_control(value)]
-                    if is_control(candidate) and (any(value["status"] == "waitlisted" for value in learned)
-                                                  or not any("attempt" in value for value in learned)):
-                        # The reference check never takes money an AI robot row would get, and is never paid for
-                        # a job whose robots are not tested: it waits behind them, then ends for budget.
-                        if any(value["status"] == "waitlisted" for value in learned) or in_flight:
-                            continue
+                    if is_control(candidate):
+                        # Never funded from the waitlist (a ledger written before it ran last): it ends.
                         row.update(status="deferred", blockers=[budget_reason(plan, BUDGET_EXHAUSTED_BLOCKER)])
                     elif not _quote_current(candidate):
                         row.update(status="deferred", blockers=[QUOTE_EXPIRED_BLOCKER])
@@ -1770,27 +1766,13 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
             if not isinstance(capacity, Mapping) or type(capacity.get("capacity_available")) is not bool:
                 raise ValueError("beta_screening_capacity_preflight_invalid")
             if capacity["capacity_available"] is False:
-                from .beta_screening_disk_admission import WAIT_SINCE_FIELD, WORK_DISK_WAIT_BLOCKER
-                if capacity.get("blockers") not in (["vast_paid_launch_lock_busy"],
-                                                    ["vast_release_deployment_in_progress"], [WORK_DISK_WAIT_BLOCKER]):
-                    raise ValueError("beta_screening_capacity_preflight_invalid")
-                disk = capacity["blockers"] == [WORK_DISK_WAIT_BLOCKER]
+                from .beta_screening_disk_admission import capacity_wait_is_disk, disk_wait_ended
+                disk = capacity_wait_is_disk(capacity.get("blockers"))  # raises for any other blocker
 
                 def waiting(item):
-                    # In line, as for a busy launch lock; a disk wait keeps when it began (one alert, worker).
-                    from .beta_screening_disk_admission import CANNOT_LAND_BLOCKER, WAIT_LIMIT_SECONDS
                     item["attempt"].update(prepared=dict(prepared), retry_not_before=_retry_after_capacity())
-                    if disk:
-                        item["attempt"].setdefault(WAIT_SINCE_FIELD, _now())
-                        waited = _seconds_since(item["attempt"][WAIT_SINCE_FIELD])
-                        if waited is not None and waited >= WAIT_LIMIT_SECONDS:
-                            # Bounded: the output cannot land on this disk; held by name, its money released.
-                            item["attempt"]["reservation_status"] = "released"
-                            item.update(status="blocked", blockers=[CANNOT_LAND_BLOCKER])
-                            return
-                    # A lock-busy poll during a disk wait keeps when the wait began: it is cleared only when the
-                    # output can land (``launching``) or the row is held, so the bound and its one alert hold.
-                    item.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
+                    if not (disk and disk_wait_ended(item, _now(), _seconds_since)):  # held: its money released
+                        item.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
                 _update(root, plan["campaign_id"], candidate["candidate_id"], waiting)
                 return False
         except Exception as exc:  # noqa: BLE001 - this boundary is read-only and strictly pre-intent
@@ -1820,16 +1802,57 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
     return True
 
 
-#: Stands for any commit later than every frozen one: ``open_job_testing_final`` asks what a deploy would re-plan.
+#: Stands for any commit later than every frozen one: ``_final_without_control`` asks what a deploy would re-plan.
 _ANY_LATER_COMMIT = "known-good-control:any-later-commit"
 
 
+def _final_without_control(ledger: Mapping[str, Any], plan: Mapping[str, Any],
+                           plans: Callable[[str, str], Mapping[str, Any]]) -> bool:
+    """Whether the campaign without its known-good control ended ``completed`` for good: ``campaign_status`` of
+    its learned rows, not superseded, and ``_replan_scope`` would plan nothing again by itself or after any deploy."""
+    from .beta_policy_screening_known_good_control import _budget_blockers
+
+    state = ledger["campaigns"][plan["campaign_id"]]
+    rows = {key: row for key, row in state["candidates"].items() if not is_control(row)}
+    if state.get("superseded_by") or campaign_status(rows) != "completed":
+        return False
+    # A row closed for plan, site or ceiling money is final (owner, 2026-11-11); an account limit is held for a deploy.
+    money = _budget_blockers() - {ACCOUNT_LIMIT_REACHED_BLOCKER}
+    rows = {key: row for key, row in rows.items() if row["status"] in ACTIVE_STATUSES | QUEUED_STATUSES
+            or not row.get("blockers") or not set(row["blockers"]) <= money}
+    shadow = {**ledger, "campaigns": {**ledger["campaigns"], plan["campaign_id"]: {**state, "candidates": rows}}}
+    learned = {**plan, "candidates": [row for row in plan["candidates"] if row["candidate_id"] in rows]}
+    return _replan_scope(shadow, learned, _ANY_LATER_COMMIT, plans=plans) is None
+
+
+def _source_still_current(plan: Mapping[str, Any]) -> bool:
+    """The job's task, consent and rights as every paid attempt reads them (``require_current_source``)."""
+    from .beta_policy_screening_worker import require_current_source
+
+    try:
+        require_current_source(plan["source"], site_id=plan["site_id"])
+    except Exception:  # noqa: BLE001 - not current now: the row closes rather than reserve beside it
+        return False
+    return True
+
+
 def _control_may_reserve(root: Path, plan: Mapping[str, Any]) -> bool:
-    """Whether the pending scripted reference check goes to the ordinary reservation now (``control_gate``)."""
+    """Whether the pending known-good control may reserve now (``control_gate``); the job's source is read
+    outside the lock once every learned row has ended, so it never reserves after an owner closure."""
+    with _lock(root):
+        rows = _ledger(root)["campaigns"][plan["campaign_id"]]["candidates"]
+        ended = all(rows[item["candidate_id"]]["status"] not in ACTIVE_STATUSES | QUEUED_STATUSES
+                    for item in plan["candidates"] if not is_control(item))
+    current = ended and _source_still_current(plan)
     with _lock(root):
         ledger = _ledger(root)
         before = json.dumps(ledger, sort_keys=True)
-        decision = control_gate(ledger, plan["campaign_id"], plan, plans=lambda key, digest: _plan(root, key, digest))
+        plans = lambda key, digest: _plan(root, key, digest)  # noqa: E731
+        decision = control_gate(ledger, plan["campaign_id"], plan, plans=plans,
+                                committed=lambda site, campaign_id=None: _amount(
+                                    _budget(ledger, site, campaign_id=campaign_id)["committed_upper_bound_usd"]),
+                                site_limit=site_limit(ledger, plan["site_id"], SITE_LIMIT),
+                                final=lambda: current and _final_without_control(ledger, plan, plans))
         if decision in {"reused", "closed"}:
             _changed(ledger["campaigns"][plan["campaign_id"]])
         if json.dumps(ledger, sort_keys=True) != before:
@@ -1880,8 +1903,9 @@ def process_screening_queue(
                 plan = _plan(root, campaign_id, state["plan_digest"])
                 # Reconcile allocated/uncertain work before reserving another
                 # candidate; new work follows the plan's (ranked) priority order.
-                # The scripted reference check is the plan's first row (a version-1 plan's last).
-                position = {row["candidate_id"]: index for index, row in enumerate(plan["candidates"])}
+                # The known-good control goes last: it is reserved only once every learned row has ended.
+                position = {row["candidate_id"]: len(plan["candidates"]) if is_control(row) else index
+                            for index, row in enumerate(plan["candidates"])}
                 waits = _scarce_retry_waits(ledger, state, plan)
                 ordered = sorted(plan["candidates"], key=lambda value: (
                     state["candidates"][value["candidate_id"]]["status"] not in ACTIVE_STATUSES,

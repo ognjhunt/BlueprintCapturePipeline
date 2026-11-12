@@ -132,6 +132,39 @@ def work_disk_admission(attempt_dir: str | Path, *, streamed: bool = True, reser
                                                    "available_bytes_before_admission")}}
 
 
+#: The waits a capacity preflight may report (``beta_policy_screening_launch.preflight_candidate_capacity``).
+LOCK_WAITS = (["vast_paid_launch_lock_busy"], ["vast_release_deployment_in_progress"])
+
+
+def capacity_wait_is_disk(blockers: Any) -> bool:
+    """Whether a refused capacity preflight waits for the work disk; a busy launch lock or deploy is False.
+
+    Anything else is not a wait the coordinator knows: ``ValueError("beta_screening_capacity_preflight_invalid")``.
+    """
+    if blockers == [WORK_DISK_WAIT_BLOCKER]:
+        return True
+    if blockers not in LOCK_WAITS:
+        raise ValueError("beta_screening_capacity_preflight_invalid")
+    return False
+
+
+def disk_wait_ended(item: dict[str, Any], now: str, seconds_since: Callable[[Any], float | None]) -> bool:
+    """Record a coordinator row's disk wait (under the ledger lock); True once it is held for good.
+
+    The wait keeps when it began (``WAIT_SINCE_FIELD``, one alert, ``alert_disk_waits``): a lock-busy poll
+    during it never resets it, and only ``launching`` (the output can land) clears it. Past
+    ``WAIT_LIMIT_SECONDS`` the output cannot land on this disk: the row is held by name
+    (``CANNOT_LAND_BLOCKER``) and its reservation released.
+    """
+    item["attempt"].setdefault(WAIT_SINCE_FIELD, now)
+    waited = seconds_since(item["attempt"][WAIT_SINCE_FIELD])
+    if waited is None or waited < WAIT_LIMIT_SECONDS:
+        return False
+    item["attempt"]["reservation_status"] = "released"
+    item.update(status="blocked", blockers=[CANNOT_LAND_BLOCKER])
+    return True
+
+
 def alert_disk_waits(queue_root: str | Path, *, webhook_url: str,
                      poster: Callable[[str, Mapping[str, Any]], None] | None = None) -> dict[str, Any]:
     """One alert while any row waits for disk: how many, and since when. Cleared once none waits.
@@ -206,6 +239,6 @@ def _alert_cannot_land(root: Path, ledger: Mapping[str, Any], *, webhook_url: st
     return {"rows": rows, "posted_now": new, "last_error": None}
 
 
-__all__ = ["ALERT_CODE", "CANNOT_LAND_BLOCKER", "WAIT_LIMIT_SECONDS", "DEFAULT_LANDING_HOLD_BYTES", "LANDING_HOLD_ENV", "ROLE", "WAIT_SINCE_FIELD",
+__all__ = ["ALERT_CODE", "LOCK_WAITS", "capacity_wait_is_disk", "disk_wait_ended", "CANNOT_LAND_BLOCKER", "WAIT_LIMIT_SECONDS", "DEFAULT_LANDING_HOLD_BYTES", "LANDING_HOLD_ENV", "ROLE", "WAIT_SINCE_FIELD",
            "WORK_DISK_WAIT_BLOCKER", "alert_disk_waits", "enclosing", "landing_hold_bytes", "reserve_landing_hold",
            "work_disk_admission"]

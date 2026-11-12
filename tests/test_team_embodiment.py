@@ -1034,14 +1034,3 @@ def test_a_station_the_bodys_own_arm_reached_from_is_bound_whatever_its_declared
     # Only the declared-reach veto is lifted, and only for an own station.
     with pytest.raises(TeamEmbodimentError, match="team_embodiment_own_station_invalid"):
         team_embodiment_binding(declared, scene_plan=plan, station_reached_by_own_arm=True, **inputs)
-
-
-def test_only_the_website_screening_binds_a_station_out_of_reach(tmp_path) -> None:
-    """Owner 2026-11-12: website rows (``reach_refusal_as_flag``) are tested and flagged; everywhere else refused."""
-    model = write_robot_usd(tmp_path / "acme_arm.usda")
-    declared = validate_embodiment_manifest(manifest(model, reach_m=0.2))
-    inputs = {"model_record": verify_model_file(declared, model), "structure": read_model_structure(model)}
-    plan = station_plan()
-    with pytest.raises(TeamEmbodimentError, match="team_embodiment_station_out_of_reach"):
-        team_embodiment_binding(declared, scene_plan=plan, **inputs)
-    assert team_embodiment_binding(declared, scene_plan=plan, reach_refusal_as_flag=True, **inputs)
