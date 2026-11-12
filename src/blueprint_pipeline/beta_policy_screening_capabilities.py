@@ -237,11 +237,10 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         planned = _read(Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json")
         goal = ((((planned.get("task_spec") or {}).get("interaction_affordance") or {}).get("support_alignment") or {})
                 .get("goal_support") or {})
-        moved = goal.get("window_aligned_to_goal_rest")
-        if isinstance(moved, dict) and isinstance(moved.get("distance_m"), (int, float)):
-            from .task_evaluation_rigid_relocation_native_adapter import HEIGHT_ADJUSTED_FLAG
-            millimetres = int(round(abs(float(moved["distance_m"])) * 1000))
-            estimate_flags = sorted(set(estimate_flags) | {f"{HEIGHT_ADJUSTED_FLAG}:{millimetres}mm"})
+        from .task_evaluation_rigid_relocation_native_adapter import height_adjusted_flag
+        flag = height_adjusted_flag(goal.get("window_aligned_to_goal_rest"))
+        if flag:
+            estimate_flags = sorted(set(estimate_flags) | {flag})
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     if estimate_flags:

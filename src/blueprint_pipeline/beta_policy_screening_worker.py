@@ -10,6 +10,7 @@ import argparse
 from collections.abc import Mapping, Sequence
 import json
 import os
+import sys
 from pathlib import Path
 import re
 from typing import Any
@@ -733,5 +734,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def entrypoint(argv: Sequence[str] | None = None) -> int:
+    """``main``; a missing or unreadable money switch stops the whole queue (no limit is ever guessed) with one
+    line naming the file, not a traceback (``website_job_limits``)."""
+    from .website_job_limits import WebsiteJobLimitsInvalid
+
+    try:
+        return main(argv)
+    except WebsiteJobLimitsInvalid as exc:
+        print(f"beta screening stopped: {exc}", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(entrypoint())

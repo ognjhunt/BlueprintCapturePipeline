@@ -118,3 +118,39 @@ def test_a_failing_grasp_screen_never_stops_planning(monkeypatch) -> None:
     assert screens["pi05_droid"] == {"schema_version": grasp.SCHEMA_VERSION, "status": "not_assessed",
                                      "reason": "grasp_screen_failed:OSError", "flags": []}
     assert grasp.validate_grasp_screen(screens["pi05_droid"])["flags"] == []
+
+
+@pytest.mark.parametrize("mode", ["nested", "fuse"])
+def test_every_plan_the_planner_builds_with_grasp_records_validates_against_the_plan_schema(tmp_path, monkeypatch, mode):
+    """Review 8d (3): the published plan schema accepts each record exactly as the code writes it."""
+    import json
+    from pathlib import Path
+
+    from jsonschema import Draft202012Validator
+
+    from blueprint_pipeline import website_job_limits
+    from tests.test_beta_policy_screening_website_rows import website_plans
+
+    config = tmp_path / "website_job_limits.v1.json"
+    config.write_text(json.dumps({"schema_version": website_job_limits.SCHEMA, "mode": mode}), encoding="utf-8")
+    monkeypatch.setenv(website_job_limits.CONFIG_ENV, str(config))
+    schema = json.loads((Path(__file__).resolve().parents[1]
+                         / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
+    validator = Draft202012Validator(schema)
+    catalog = load_default_catalog()
+    failing = _screens(TRAY_TASK_SPEC)
+    failing[next(iter(failing))] = grasp.not_assessed(RuntimeError("x"))
+    records = [_screens(TRAY_TASK_SPEC), _screens(CRATE_TASK_SPEC), failing,
+               _screens(CRATE_TASK_SPEC, {"screening_candidates": {}}), None]
+    built = 0
+    for screens in records:
+        for remaining in (0, 5, 15, 40):
+            capabilities = {"candidate_grasp_screen": screens} if screens else {}
+            for plan in website_plans(catalog, remaining=remaining, capabilities=capabilities):
+                errors = sorted(error.message[:200] for error in validator.iter_errors(plan))
+                assert errors == [], (remaining, errors[:3])
+                built += 1
+                if screens:
+                    assert any("grasp_screen" in row for row in plan["candidates"])
+    assert built == 40
+    assert {row["status"] for row in failing.values()} == {"assessed", "not_assessed"}

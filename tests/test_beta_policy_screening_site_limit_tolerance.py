@@ -114,7 +114,8 @@ def test_the_basis_the_site_limit_reads_is_the_plans_own():
 def test_the_switch_ships_nested_and_refuses_an_unknown_mode(tmp_path, monkeypatch):
     from blueprint_pipeline import website_job_limits
 
-    monkeypatch.delenv(website_job_limits.CONFIG_ENV, raising=False)
+    # The committed file a release installs (``INSTALLED_CONFIG_PATH`` on the host).
+    monkeypatch.setenv(website_job_limits.CONFIG_ENV, str(website_job_limits.SHIPPED_CONFIG_PATH))
     assert website_job_limits.limits_mode() == "nested" and website_job_limits.fuse() is False
     shipped = json.loads(website_job_limits.SHIPPED_CONFIG_PATH.read_text())
     assert shipped["mode"] == "nested" and shipped["schema_version"] == website_job_limits.SCHEMA
@@ -135,6 +136,48 @@ def test_door_status_says_which_mode_the_release_runs(monkeypatch):
     from blueprint_pipeline import account_monthly_spend
     from blueprint_pipeline.account_monthly_spend_report import _website_job_limits_mode
 
-    monkeypatch.delenv("BLUEPRINT_WEBSITE_JOB_LIMITS_CONFIG", raising=False)
+    from blueprint_pipeline import website_job_limits
+
+    monkeypatch.setenv(website_job_limits.CONFIG_ENV, str(website_job_limits.SHIPPED_CONFIG_PATH))
     assert _website_job_limits_mode() == "nested"
     assert account_monthly_spend.summary({"website_job_limits_mode": "nested"})["website_job_limits_mode"] == "nested"
+
+
+def test_the_money_switch_is_found_exactly_as_the_account_limit_is_and_a_release_carries_it(monkeypatch):
+    """Review 8d (5): the installed release's ``config/``, unless the variable names a file; never the checkout."""
+    import subprocess
+    from pathlib import Path
+
+    from blueprint_pipeline import account_monthly_spend as account
+    from blueprint_pipeline import website_job_limits
+
+    repo = Path(__file__).resolve().parents[1]
+    assert website_job_limits.INSTALLED_CONFIG_PATH.parent == account.INSTALLED_CONFIG_PATH.parent
+    assert website_job_limits.SHIPPED_CONFIG_PATH == repo / "config" / website_job_limits.CONFIG_FILENAME
+    monkeypatch.delenv(website_job_limits.CONFIG_ENV, raising=False)
+    assert website_job_limits.config_path() == website_job_limits.INSTALLED_CONFIG_PATH
+    assert account.config_path({}) == account.INSTALLED_CONFIG_PATH
+    monkeypatch.setenv(website_job_limits.CONFIG_ENV, "/elsewhere/limits.json")
+    assert website_job_limits.config_path() == Path("/elsewhere/limits.json")
+    # A release is the promoted source tree: the file is committed, and the screening unit runs that tree.
+    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "config/" + website_job_limits.CONFIG_FILENAME],
+                             cwd=repo, capture_output=True, text=True)
+    assert tracked.returncode == 0
+    unit = (repo / "deploy/systemd/blueprint-beta-policy-screening.service").read_text()
+    assert f"BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO={website_job_limits.INSTALLED_CONFIG_PATH.parents[1]}\n" in unit
+
+
+@pytest.mark.parametrize("content", [None, "{not json", '{"schema_version": "blueprint.website_job_limits.v1", "mode": "x"}'])
+def test_a_missing_or_unreadable_money_switch_stops_the_queue_with_one_line_naming_the_file(
+        tmp_path, monkeypatch, capsys, content):
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline import website_job_limits
+
+    path = tmp_path / "website_job_limits.v1.json"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    monkeypatch.setenv(website_job_limits.CONFIG_ENV, str(path))
+    monkeypatch.setattr(worker, "main", lambda argv=None: website_job_limits.fuse() and 0)
+    assert worker.entrypoint([]) == 2
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and str(path) in err and err.startswith("beta screening stopped: website_job_limits_")

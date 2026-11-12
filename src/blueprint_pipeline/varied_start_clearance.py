@@ -121,10 +121,12 @@ def shrink_area_off_start(task_spec: dict[str, Any]) -> tuple[dict[str, Any], di
             break
     if not clear(candidate, {}) and all(trial[axis] >= half[axis] for axis in range(2)):
         candidate = task_spec  # nothing could be taken off: the sealed area stands exactly as it was
-    # A box that clears is kept whatever step found it (the first is the box about the target itself).
-    record = {"area_shrunk_off_start": True, "half_width_m_before": half, "half_width_m": trial,
+    # A box that clears is kept whatever step found it (the first is the box about the target itself). The
+    # record says what happened: shrunk, or left exactly as sealed because nothing could be taken off.
+    shrunk = candidate is not task_spec
+    record = {"area_shrunk_off_start": shrunk, "half_width_m_before": half, "half_width_m": trial if shrunk else half,
               "start_clearance_m": start_clearance_m(candidate, {}), "start_clear": clear(candidate, {}),
-              "flag": DESTINATION_NEAR_START}
+              "flag": DESTINATION_NEAR_START, **({} if shrunk else {"reason": "area_already_at_minimum"})}
     return candidate, record
 
 

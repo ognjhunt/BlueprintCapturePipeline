@@ -74,6 +74,14 @@ def _isolated_control_plane_state(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _website_job_limits_from_this_tree(monkeypatch):
+    """The money switch is read from the installed release (``/opt/blueprint/...``) on the host, as the
+    account limit is; tests read this tree's committed file. A test of another mode or a missing file sets
+    or deletes ``BLUEPRINT_WEBSITE_JOB_LIMITS_CONFIG`` itself."""
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_JOB_LIMITS_CONFIG", str(REPO_ROOT / "config" / "website_job_limits.v1.json"))
+
+
+@pytest.fixture(autouse=True)
 def _website_object_spec_agent_off(monkeypatch):
     """The spec research agent is on by default in production (2026-09-27); never
     let a test reach the web or the WebApp by default. A test that exercises

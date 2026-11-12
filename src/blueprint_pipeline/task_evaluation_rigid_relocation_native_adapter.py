@@ -400,6 +400,24 @@ def _goal_support_reading(support_surface: Callable[..., float | None], *, task_
 #: misread, so the window stays as sealed and the gap is flagged as before.
 MAX_WINDOW_MOVE_M = 0.025
 HEIGHT_ADJUSTED_FLAG = "scene_estimate:success_height_adjusted"
+#: How far inside the moved window the rest lands, so a placement a millimetre off still scores: 5 mm, or a
+#: quarter of the window's height when the window is thinner than 20 mm.
+WINDOW_MARGIN_M = 0.005
+
+
+def window_margin(low: float, high: float) -> float:
+    return WINDOW_MARGIN_M if high - low >= 4 * WINDOW_MARGIN_M else (high - low) / 4
+
+
+def height_adjusted_flag(moved: Any) -> str | None:
+    """``scene_estimate:success_height_adjusted:<mm>mm`` for a recorded move, from the figure that decided it.
+
+    Always 1 to 25 mm; a record without that figure (or outside it) is not published as a move.
+    """
+    millimetres = moved.get("distance_mm") if isinstance(moved, Mapping) else None
+    if type(millimetres) is not int or not 1 <= millimetres <= round(MAX_WINDOW_MOVE_M * 1000):
+        return None
+    return f"{HEIGHT_ADJUSTED_FLAG}:{millimetres}mm"
 
 
 def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> dict[str, Any]:
@@ -410,9 +428,11 @@ def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> 
     (``own_support_rest_scoring_z_m``: the first collider surface within ``MAX_WINDOW_MOVE_M`` of the
     registered support top at the goal). With none in that band, or when the sealed window already holds it,
     nothing moves and the spec is exactly what is sealed. Otherwise the window (the goal height, its box and
-    its support interval) moves by the smallest amount that holds it, only when that is at most
-    ``MAX_WINDOW_MOVE_M`` (with a rounding tolerance; exactly 2.5 cm moves) and at least 1 mm when rounded;
-    the reading records it (``window_aligned_to_goal_rest``, for ``scene_estimate:success_height_adjusted``).
+    its support interval) moves by the smallest amount that puts the rest inside it by ``window_margin``,
+    only when that whole move is at most ``MAX_WINDOW_MOVE_M`` (with a rounding tolerance; exactly 2.5 cm
+    moves) and it is at least 1 mm rounded to whole millimetres; otherwise nothing moves. The reading records
+    it (``window_aligned_to_goal_rest``) with that same rounded figure (``distance_mm``, 1 to 25), which is the
+    one ``scene_estimate:success_height_adjusted:<mm>mm`` publishes.
     ``within_success_window`` stays the collider's verdict against the ORIGINAL window, so
     ``goal_rest_outside_sealed_success_window`` is raised exactly as before.
     """
@@ -424,11 +444,13 @@ def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> 
     rest = float(rest)
     if low <= rest <= high:
         return task_spec
-    move = rest - low if rest < low else rest - high
+    margin = window_margin(low, high)
+    move = rest - margin - low if rest < low else rest + margin - high
     if abs(move) > MAX_WINDOW_MOVE_M + 1e-9:
         reading["window_move_refused_m"] = round(move, 4)  # left as sealed; the existing flag stands
         return task_spec
-    if round(abs(move) * 1000) < 1:
+    millimetres = round(abs(move) * 1000)
+    if millimetres < 1:
         return task_spec  # rounds to no move: none, and no flag
     spec = dict(task_spec)
     target = list(spec["target_position_world_m"])
@@ -438,7 +460,8 @@ def _window_on_goal_rest(task_spec: dict[str, Any], reading: dict[str, Any]) -> 
     spec["destination_position_bounds_world_m"] = bounds
     if spec.get("support_height_interval_m") is not None:
         spec["support_height_interval_m"] = [float(value) + move for value in spec["support_height_interval_m"]]
-    reading.update(window_aligned_to_goal_rest={"distance_m": round(move, 4), "basis": "destination_own_support_collider"},
+    reading.update(window_aligned_to_goal_rest={"distance_m": round(move, 4), "distance_mm": millimetres,
+                                                "margin_m": margin, "basis": "destination_own_support_collider"},
                    sealed_window_before_m=list(window), moved_window_scoring_z_m=[low + move, high + move])
     return spec
 

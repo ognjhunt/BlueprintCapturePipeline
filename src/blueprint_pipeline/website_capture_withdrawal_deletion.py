@@ -154,15 +154,16 @@ POLICY_COPY_CLASSES = {
         "covered": (),
         "not_covered": "the repo-root robot_eval_jobs/ cache is not scanned; the policy deletes it after 30 days"},
 }
-POINTER_SUFFIXES = (".offloaded.v1.json", ".residue.v1.json", ".residue-restore.v1.json", ".restore.v1.json")
+POINTER_SUFFIXES = (".offloaded.v1.json", ".residue.v1.json", ".residue-restore.v1.json")
+#: A run's own working records that name no copy anywhere: removed with the run, never read, so a torn or
+#: unreadable one can never stop a withdrawal (``scene_run_restore``'s attempt record).
+RUN_RECORD_SUFFIXES = (".restore.v1.json",)
 # Each sidecar's writer seals it: (schemas, digest field, the field naming its run).
 _POINTER_SEALS = {
     ".offloaded.v1.json": ({"control_plane_evidence_offload_pointer.v1"}, "pointer_digest", "directory"),
     ".residue.v1.json": ({"control_plane_result_residue_pointer.v1"}, "pointer_digest", "run"),
     ".residue-restore.v1.json": ({"control_plane_result_residue_restore_receipt.v1",
                                   "control_plane_evidence_restore_receipt.v1"}, "receipt_digest", "run"),
-    # A scene run's restore record (``scene_run_restore``): attempt counts and times, deleted with the run.
-    ".restore.v1.json": ({"scene_run_restore_state.v1"}, "state_digest", "run"),
 }
 REGISTRATION_SCHEMA = "website_scene_source_registration.v1"
 _SCANNED_SUFFIXES = (".json", ".jsonl")
@@ -381,8 +382,11 @@ class _Units:
             for child in children:
                 name = child.name
                 pointer = next((suffix for suffix in POINTER_SUFFIXES if name.endswith(suffix)), None)
+                record = next((suffix for suffix in RUN_RECORD_SUFFIXES if name.endswith(suffix)), None)
                 if name.startswith("."):
                     dots.append(child)
+                elif record is not None and pointer is None:
+                    self._unit(root, name[: -len(record)])["leftovers"].append(child)
                 elif pointer is not None:
                     self._unit(root, name[: -len(pointer)])["pointers"].append(child)
                 elif child.is_symlink() or not child.is_dir():
@@ -424,8 +428,6 @@ def _scan_unit(unit: dict[str, Any], scan: _Scan, *, object_store: Any, scan_arc
     if not scan_archives or scan.other_sites or scan.named & seeds:
         return "offloaded_pointer"  # the local record already decides, or the archive may not be read
     for pointer in pointers:
-        if pointer.get("schema_version") == "scene_run_restore_state.v1":
-            continue  # a restore's own record names no archive; it is deleted with the run
         uri = _pointer_uri(pointer)
         _require(uri and object_store is not None, "offloaded_archive_unreachable")
         try:

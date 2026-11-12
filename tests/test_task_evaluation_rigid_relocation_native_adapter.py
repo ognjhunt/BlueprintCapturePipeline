@@ -959,15 +959,74 @@ def test_an_unrelated_taller_collider_or_the_floor_is_never_taken_as_the_destina
     assert "own_support_collider_top_z_m" not in reading and out is spec
 
 
-@pytest.mark.parametrize("excess_cm, moves", [(2.4, True), (2.5, True), (2.6, False), (10.0, False)])
-def test_the_window_moves_the_least_it_must_and_never_more_than_two_and_a_half_centimetres(excess_cm, moves):
+@pytest.mark.parametrize("excess_cm, moves", [(0.3, True), (1.5, True), (2.0, True), (2.1, False), (10.0, False)])
+def test_the_window_moves_the_least_that_puts_the_rest_5_mm_inside_and_never_more_than_two_and_a_half_cm(
+        excess_cm, moves):
+    """Review 8d (4a): the rest lands 5 mm inside the moved window, so a placement 1 mm lower still scores; the
+    whole move (gap plus margin) is at most 2.5 cm, or nothing moves."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import height_adjusted_flag
+
     surface = 0.81 + excess_cm / 100  # the own support's rest lies that far above the sealed window's top
     spec, reading, out = _goal(surface, surface)
     if not moves:
         assert out is spec and "window_aligned_to_goal_rest" not in reading
         return
-    distance = reading["window_aligned_to_goal_rest"]["distance_m"]
-    assert abs(distance - excess_cm / 100) < 1e-9
-    assert out["destination_position_bounds_world_m"]["maximum"][2] == pytest.approx(surface)
+    moved = reading["window_aligned_to_goal_rest"]
+    assert moved["distance_m"] == pytest.approx(excess_cm / 100 + 0.005) and moved["margin_m"] == 0.005
+    low, high = reading["moved_window_scoring_z_m"]
+    assert out["destination_position_bounds_world_m"]["maximum"][2] == pytest.approx(surface + 0.005)
+    for placement in (surface, surface - 0.001, surface + 0.001, surface - 0.0049):
+        assert low <= placement <= high
+    assert height_adjusted_flag(moved) == f"scene_estimate:success_height_adjusted:{round(excess_cm * 10) + 5}mm"
     # The collider's verdict is against the ORIGINAL window: the existing flag is still raised.
     assert reading["within_success_window"] is False
+
+
+def test_a_rest_below_the_window_moves_it_down_with_the_same_margin():
+    spec, reading, out = _goal(0.785, 0.785)  # rest 5 mm under the sealed window's bottom
+    low, high = reading["moved_window_scoring_z_m"]
+    assert reading["window_aligned_to_goal_rest"]["distance_m"] == pytest.approx(-0.010)
+    assert (low, high) == (pytest.approx(0.780), pytest.approx(0.800)) and low < 0.785 - 0.001
+
+
+def _thin_goal(width_m, above_m):
+    """A window ``width_m`` high whose rest lies ``above_m`` over its top."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
+        _goal_support_reading, _window_on_goal_rest,
+    )
+
+    low, high = 0.80, 0.80 + width_m
+    spec = {"target_position_world_m": [0.1, 0.2, low], "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "subject_collision_bounds_scoring_frame_m": {"minimum": [-0.05, -0.05, 0.0], "maximum": [0.05, 0.05, 0.1]},
+            "destination_position_bounds_world_m": {"minimum": [0.05, 0.15, low], "maximum": [0.15, 0.25, high]},
+            "support_height_interval_m": [low, high]}
+    rest = high + above_m
+    reading = _goal_support_reading(_surfaces(rest), task_spec=spec, collision=None, center=[0, 0, 0],
+                                    support_top=rest, below_m=0.08)
+    return spec, reading, _window_on_goal_rest(spec, reading)
+
+
+def test_a_window_thinner_than_20_mm_keeps_a_quarter_of_its_height_as_margin():
+    spec, reading, out = _thin_goal(0.008, 0.003)
+    moved = reading["window_aligned_to_goal_rest"]
+    assert moved["margin_m"] == pytest.approx(0.002) and moved["distance_m"] == pytest.approx(0.005)
+    low, high = reading["moved_window_scoring_z_m"]
+    assert high - 0.002 == pytest.approx(0.811) == low + 0.006  # the rest, a quarter of 8 mm under the top
+
+
+@pytest.mark.parametrize("width_m, above_m, flag", [
+    (0.0016, 0.00005, None),   # 0.45 mm in all rounds to 0: no move and no flag (was ``:0mm``)
+    (0.0016, 0.00012, "1mm"),  # 0.52 mm rounds to 1
+    (0.020, 0.0198, "25mm"),   # 24.8 mm rounds to 25: the most
+    (0.020, 0.0202, None),     # 25.2 mm: over the bound, no move
+])
+def test_the_flag_comes_from_the_same_rounded_figure_that_decides_the_move(width_m, above_m, flag):
+    """Review 8d (4b): a 0.51 mm move never publishes ``0mm``; the flag is always 1 to 25."""
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import HEIGHT_ADJUSTED_FLAG, height_adjusted_flag
+
+    spec, reading, out = _thin_goal(width_m, above_m)
+    if flag is None:
+        assert out is spec and "window_aligned_to_goal_rest" not in reading
+        return
+    assert height_adjusted_flag(reading["window_aligned_to_goal_rest"]) == f"{HEIGHT_ADJUSTED_FLAG}:{flag}"
+    assert height_adjusted_flag({"distance_m": 0.0005}) is None  # no decided figure: never published as a move

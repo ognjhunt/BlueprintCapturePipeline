@@ -658,3 +658,40 @@ def test_a_withdrawal_also_deletes_a_scene_runs_restore_record(world, tmp_path):
     plan = _plan(world, cloud_storage=gcs)
     _apply(world, plan, cloud_storage=gcs)
     assert not run.exists() and not record.exists()
+
+
+@pytest.mark.parametrize("content", ['{"attempts": 1, "status": "ref', "", "\x00\xff not json"])
+def test_a_torn_or_unreadable_restore_record_and_the_restore_lock_never_stop_a_withdrawal(world, content):
+    """Review 8d (2), privacy: the run's own restore leftovers (record, lock, temporary) go with it, unread."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    run = world["construction"]
+    record = run.parent / (run.name + restore.STATE_SUFFIX)
+    record.write_bytes(content.encode("utf-8", "surrogateescape"))  # what a crash in a plain write leaves
+    lock = run.parent / f".{run.name}.restore.lock"
+    lock.write_bytes(b"")
+    temporary = run.parent / f".{run.name}.restore-state.tmp"
+    temporary.write_text('{"half', encoding="utf-8")
+    gcs = FakeGcs()
+    plan = _plan(world, cloud_storage=gcs)
+    assert not plan["unresolved"]
+    _apply(world, plan, cloud_storage=gcs)
+    assert not any(path.exists() for path in (run, record, lock, temporary))
+
+
+def test_the_restore_record_is_written_whole_or_not_at_all(tmp_path, monkeypatch):
+    """A crash mid-write leaves the previous record, never a torn one, and no temporary beside it."""
+    from blueprint_pipeline import scene_run_restore as restore
+
+    run = tmp_path / "launch-1"
+    restore._write_state(run, {"attempts": 1, "status": "refused"})
+    record = run.parent / (run.name + restore.STATE_SUFFIX)
+    before = record.read_bytes()
+
+    def crash(*_args, **_kwargs):
+        raise OSError("disk went away mid-write")
+
+    monkeypatch.setattr(restore.os, "fsync", crash)
+    restore._write_state(run, {"attempts": 2, "status": "refused"})
+    assert record.read_bytes() == before and json.loads(before)["attempts"] == 1
+    assert sorted(path.name for path in tmp_path.iterdir()) == [record.name]

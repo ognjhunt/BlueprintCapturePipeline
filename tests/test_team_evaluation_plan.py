@@ -120,6 +120,9 @@ def test_the_area_guard_never_grows_an_area_smaller_than_the_disc():
     out, record = shrink_area_off_start(spec)
     assert out["destination_position_bounds_world_m"] == spec["destination_position_bounds_world_m"]
     assert record["start_clear"] is False and record["flag"] == "scene_estimate:destination_near_start"
+    # Review 8d (5): the record says the area was left as sealed, not that it was shrunk.
+    assert record["area_shrunk_off_start"] is False and record["reason"] == "area_already_at_minimum"
+    assert record["half_width_m"] == record["half_width_m_before"]
 
 
 def test_the_area_guard_property_over_random_areas():
@@ -140,6 +143,8 @@ def test_the_area_guard_property_over_random_areas():
                 "destination_position_bounds_world_m": {"minimum": [*lo, 0.79], "maximum": [*hi, 0.81]}}
         out, record = v.shrink_area_off_start(spec)
         box = out["destination_position_bounds_world_m"]
+        # The record says what happened to this area, every time.
+        assert record is None or record["area_shrunk_off_start"] is (out is not spec)
         assert all(box["minimum"][a] <= box["maximum"][a] for a in range(3))
         assert all(box["minimum"][a] >= lo[a] - 1e-12 and box["maximum"][a] <= hi[a] + 1e-12 for a in range(2))
         inside = lo[0] <= tx <= hi[0] and lo[1] <= ty <= hi[1]

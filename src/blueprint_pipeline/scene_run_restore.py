@@ -205,10 +205,23 @@ def _write_state(run: Path, record: Mapping[str, Any]) -> None:
 
     sealed = {**record, "schema_version": STATE_SCHEMA, "run": run.name, "state_digest": ""}
     sealed["state_digest"] = canonical_digest(sealed, digest_field="state_digest")
+    # Atomic: a temporary in the same folder, flushed to disk, then renamed over the record, so a crash leaves
+    # the old record or the new one, never a torn one (the withdrawal removes either with the run).
+    path = _state_path(run)
+    temporary = path.parent / f".{run.name}.restore-state.tmp"
     try:
-        _state_path(run).write_text(json.dumps(sealed, sort_keys=True) + "\n", encoding="utf-8")
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps(sealed, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except OSError:
-        pass
+        temporary.unlink(missing_ok=True)
 
 
 __all__ = ["BUSY", "GAVE_UP", "MAX_ATTEMPTS", "RESTORED", "RETRY_SECONDS", "WITHDRAWN", "deletion_lock",
