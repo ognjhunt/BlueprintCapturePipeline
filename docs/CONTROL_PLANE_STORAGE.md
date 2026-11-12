@@ -1138,7 +1138,10 @@ and lists each path with what was recorded about it at approval time:
 - `task_evaluation_inputs_subfolder`: a direct child directory of a parent in
   `SUBFOLDER_PARENTS`: any child of `sam31-preparations`, any child of
   `configured-controls`, and under `stage-replays` only `claude-provision-trial`.
-  On 2026-11-12 the owner approved exactly three folders:
+  The allow-list holds that child by the SHA-256 digest of its name, never the
+  name itself, because the module is released code that the released-code check
+  reads (on 2026-11-12 the name in it refused the child as
+  `named_by_released_code`). On 2026-11-12 the owner approved exactly three folders:
   `task-evaluation-inputs/sam31-preparations`,
   `task-evaluation-inputs/stage-replays/claude-provision-trial` and
   `task-evaluation-inputs/configured-controls` (the last only if the first two
