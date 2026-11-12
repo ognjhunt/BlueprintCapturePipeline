@@ -977,3 +977,48 @@ def test_an_open_process_or_a_pin_still_holds_a_privacy_deletion(tmp_path, host)
                       paths=[scene], ttl_seconds=30 * DAY, now=lambda: now)
     row = host.plan(manifest, at=now + 8 * DAY)["entries"][0]
     assert row["status"] == "skipped" and "pinned" in row["reasons"]
+
+
+def test_the_tolerant_queue_reader_keeps_the_strict_limits_and_lists_what_it_skips(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_scene_workspace_queue as queue
+
+    pending = tmp_path / "queue" / "pending"
+    pending.mkdir(parents=True)
+    good = pending / "a-good.json"
+    good.write_text('{"scene_id": "scene-good"}')
+    large = pending / "b-large.json"
+    large.write_text("x" * 64)
+    changing = pending / "c-changing.json"
+    changing.write_text('{"scene_id": "scene-changing"}')
+    real_read = queue.os.read
+
+    def read(fd, count):
+        data = real_read(fd, count)
+        if os.fstat(fd).st_ino == changing.stat().st_ino and data:
+            os.utime(changing, ns=(1, 1))  # rewritten while it was read
+        return data
+
+    monkeypatch.setattr(queue.os, "read", read)
+    text, unreadable = queue.tolerant_queue_reference_text([tmp_path / "queue"], max_file_bytes=40)
+    assert "scene-good" in text and "scene-changing" not in text
+    assert unreadable == [str(large), str(changing)]
+
+    monkeypatch.setattr(queue.os, "read", real_read)
+    monkeypatch.setattr(queue, "MAX_QUEUE_ENTRIES", 1)
+    assert queue.tolerant_queue_reference_text([tmp_path / "queue"])[1] == [str(large), str(changing)]
+    monkeypatch.setattr(queue, "MAX_QUEUE_ENTRIES", 10)
+    monkeypatch.setattr(queue, "MAX_QUEUE_TOTAL_BYTES", 30)
+    text, unreadable = queue.tolerant_queue_reference_text([tmp_path / "queue"])
+    assert "scene-good" in text and unreadable == [str(large), str(changing)]
+
+
+def test_references_record_an_unreadable_queue_file_for_a_privacy_path(host):
+    bad = host.control / "queue" / "pending" / "row.json"
+    bad.write_bytes(b"\xff not utf-8")
+    references = host.settings.references(APPROVED_EPOCH)
+    path = host.handoffs / "bucket" / "scenes" / "scene-1"
+
+    assert references.reasons(path) == ["queue_inventory_unreadable"]
+    unreadable: list = []
+    assert references.reasons(path, unreadable) == []
+    assert unreadable == [{"path": str(bad), "code": "queue_inventory_unreadable"}]

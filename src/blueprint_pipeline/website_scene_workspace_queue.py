@@ -79,11 +79,14 @@ def tolerant_queue_reference_text(roots: Sequence[Path], *,
     """Each queue file read on its own: the text of those that could be read, and the paths of the rest.
 
     Only for a deletion privacy requires, where one unrelated malformed queue file must not keep a
-    site's data; every other caller uses the fail-closed ``queue_reference_text``.
+    site's data; every other caller uses the fail-closed ``queue_reference_text``. The same limits
+    hold: a file over the size limit, past the entry or total limit, or changed while read is listed.
     """
 
     chunks: list[str] = []
     unreadable: list[str] = []
+    total = 0
+    entries = 0
     for root in roots:
         for state in ("pending", "processing"):
             directory = Path(root) / state
@@ -101,19 +104,49 @@ def tolerant_queue_reference_text(roots: Sequence[Path], *,
                 if not name.endswith(".json"):
                     continue
                 path = directory / name
+                entries += 1
+                if entries > MAX_QUEUE_ENTRIES:
+                    unreadable.append(str(path))
+                    continue
                 try:
-                    file_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                    try:
-                        info = os.fstat(file_fd)
-                        if not stat.S_ISREG(info.st_mode) or info.st_size > max_file_bytes:
-                            unreadable.append(str(path))
-                            continue
-                        with os.fdopen(os.dup(file_fd), "rb") as stream:
-                            chunks.append(stream.read(max_file_bytes + 1).decode("utf-8"))
-                    finally:
-                        os.close(file_fd)
+                    data = _read_unchanged(path, max_file_bytes)
                 except FileNotFoundError:
                     continue  # taken by its consumer since the listing
-                except (OSError, UnicodeDecodeError):
+                except (OSError, QueueInventoryUnavailable):
                     unreadable.append(str(path))
+                    continue
+                if total + len(data) > MAX_QUEUE_TOTAL_BYTES:
+                    unreadable.append(str(path))
+                    continue
+                try:
+                    chunks.append(data.decode("utf-8"))
+                except UnicodeDecodeError:
+                    unreadable.append(str(path))
+                    continue
+                total += len(data)
     return "\n".join(chunks), unreadable
+
+
+def _read_unchanged(path: Path, max_file_bytes: int) -> bytes:
+    """A regular queue file's bytes, refused when too large or changed while it was read."""
+
+    file_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(file_fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > max_file_bytes:
+            raise QueueInventoryUnavailable("queue_inventory_unreadable")
+        parts: list[bytes] = []
+        read_bytes = 0
+        while read_bytes < info.st_size:
+            chunk = os.read(file_fd, min(1 << 20, info.st_size - read_bytes))
+            if not chunk:
+                raise QueueInventoryUnavailable("queue_inventory_unreadable")
+            parts.append(chunk)
+            read_bytes += len(chunk)
+        after = os.fstat(file_fd)
+        if (os.read(file_fd, 1) or after.st_size != info.st_size or after.st_mtime_ns != info.st_mtime_ns
+                or after.st_ctime_ns != info.st_ctime_ns):
+            raise QueueInventoryUnavailable("queue_inventory_unreadable")
+        return b"".join(parts)
+    finally:
+        os.close(file_fd)
