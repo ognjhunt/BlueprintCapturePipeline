@@ -1,11 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://tryblueprint.io/contracts/website-task-target-choice.v1.schema.json",
-  "title": "The one optional in-job question 'we picked this object; is it the one the robot should move?' and the site's answer",
-  "description": "question is the website_preparation_status.v4 'question' field: preparation already continued with guessed_candidate_id, its best supported guess, and the site may confirm it, pick another candidate (which reruns the same job from retained work), or say none of these (the same-job walkthrough update). It is optional and never makes the job wait. answer is what the WebApp returns to the Pipeline's signed task-target-choice control read. Candidates are opaque ids and position labels derived from segmentation masks; no image or pixel data crosses this boundary. answer_digest is the RFC 8785 cross-runtime digest of the answer without answer_digest.",
+  "title": "The one optional in-job question (the object the robot moves, or the place it is moved to) and the site's answer",
+  "description": "question is the website_preparation_status.v4 'question' field. Kind task_target_choice: preparation already continued with guessed_candidate_id, its best supported guess of the object to move, and the site may confirm it, pick another candidate (which reruns the same job from retained work), or say none of these (the same-job walkthrough update). Its candidates are opaque ids (c...) and position labels derived from segmentation masks. Kind task_destination_choice (website_destination_choice.public_place_question): 'We will test moving the {object} from here to here.', with 2 to 4 places (ids p...) in the order of the picture's letters A to D, the first being the place in use; the site may confirm it or pick another, which reruns the same job from retained work. Every question is optional and never makes the job wait. No question carries image or pixel data. The place question names one picture by digest (picture.png_sha256): a frame of the site's own video with the object's start and every offered place drawn, fetched separately for each request through the Pipeline's signed read (/api/live-pipeline/website-destination-pictures/{capture_id}/destination.place.png), with the job's rights checked on both sides, refused after withdrawal, closure or the end of the job and for any picture but the current question's; the website never stores it. answer is what the WebApp returns to the Pipeline's signed task-target-choice control read. answer_digest is the RFC 8785 cross-runtime digest of the answer without answer_digest.",
   "oneOf": [
     {
       "$ref": "#/$defs/question"
+    },
+    {
+      "$ref": "#/$defs/placeQuestion"
     },
     {
       "$ref": "#/$defs/answer"
@@ -151,7 +154,7 @@
           "$ref": "#/$defs/digest"
         },
         "guessed_candidate_id": {
-          "$ref": "#/$defs/candidateId"
+          "$ref": "#/$defs/anyCandidateId"
         },
         "choice": {
           "oneOf": [
@@ -167,7 +170,7 @@
                   "const": "confirm_guess"
                 },
                 "candidate_id": {
-                  "$ref": "#/$defs/candidateId"
+                  "$ref": "#/$defs/anyCandidateId"
                 }
               }
             },
@@ -183,7 +186,7 @@
                   "const": "other_candidate"
                 },
                 "candidate_id": {
-                  "$ref": "#/$defs/candidateId"
+                  "$ref": "#/$defs/anyCandidateId"
                 }
               }
             },
@@ -207,6 +210,112 @@
         },
         "answer_digest": {
           "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "placeId": {
+      "type": "string",
+      "pattern": "^p[0-9a-f]{16}$"
+    },
+    "anyCandidateId": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/candidateId"
+        },
+        {
+          "$ref": "#/$defs/placeId"
+        }
+      ]
+    },
+    "placeQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "question_digest",
+        "target_id",
+        "semantic_label",
+        "sentence",
+        "candidate_set_digest",
+        "guessed_candidate_id",
+        "candidates",
+        "picture"
+      ],
+      "properties": {
+        "kind": {
+          "const": "task_destination_choice"
+        },
+        "question_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "target_id": {
+          "const": "destination.place"
+        },
+        "semantic_label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "sentence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "candidate_set_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "guessed_candidate_id": {
+          "$ref": "#/$defs/placeId"
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "candidate_id",
+              "label",
+              "reference_time_ms"
+            ],
+            "properties": {
+              "candidate_id": {
+                "$ref": "#/$defs/placeId"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "reference_time_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 86400000
+              }
+            }
+          }
+        },
+        "picture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "png_sha256",
+            "frame_id"
+          ],
+          "properties": {
+            "png_sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "frame_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
         }
       }
     }

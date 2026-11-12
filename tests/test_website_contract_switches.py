@@ -183,3 +183,17 @@ def test_the_picture_route_is_the_one_the_website_reads(tmp_path, monkeypatch):
     assert served.status_code == 200 and served.headers["content-type"] == "image/png"
     assert served.content == (folder / "destination.place.png").read_bytes()
     assert client.get(path, params=query).status_code == 403  # unsigned
+
+
+def test_the_shared_contract_describes_the_place_question_and_its_picture(tmp_path, monkeypatch):
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/schemas/website_task_target_choice.v1.schema.json").read_text())
+    from tests.test_website_destination_choice import test_the_picture_outlines_the_start_and_draws_the_area_clipped_to_the_surface as draw
+    draw(tmp_path)
+    monkeypatch.setenv(outcome.PLACE_QUESTION_ENV, "true")
+    public = choice.public_question(tmp_path / "scenes/site-x/captures/walkthrough-x")
+    jsonschema.validate(public, schema)
+    without_picture = {key: value for key, value in public.items() if key != "picture"}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(without_picture, schema)  # a place question always names its picture
+    assert "no image or pixel data" not in schema["description"] and "never stores it" in schema["description"]
