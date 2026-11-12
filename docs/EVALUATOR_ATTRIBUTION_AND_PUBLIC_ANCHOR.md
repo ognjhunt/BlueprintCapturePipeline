@@ -83,29 +83,7 @@ Changes:
   documented as a structural floor that carries no statistical meaning.
 - The report states how many seeds the observed separation would actually need.
 
-## 5. A world-model-free control arm
-
-Every published evaluator result Blueprint tracks ablates its method against
-other configurations of itself. None report what a ranker with **no world
-model** achieves on the same cohort — so the headline number is causally
-unattributed.
-
-`blueprint_pipeline.control_ranker` supplies the control arm. Baselines read
-only what exists before any generation: action-chunk jerk, gripper toggle rate,
-episode timeout rate, a first-frame-only prior, plus `constant` and
-`seeded_pseudo_random` null controls reported separately.
-
-The report's `attribution` block gives the evaluator's marginal contribution
-over the best world-model-free baseline, with a **paired** bootstrap over
-policies — resampling the cohort once per replicate and recomputing both arms on
-the same resample — rather than subtracting two independently-wide point
-estimates.
-
-A baseline that ranks well is not an evaluator. These proxies read commanded
-actions, not consequences. They exist to price the evaluator, and the claim
-boundary says so.
-
-## 6. Graded task-progress scores now have a producer
+## 5. Graded task-progress scores now have a producer
 
 Blueprint already carried the whole consumer side of graded progress scoring —
 rubric validation, five aggregation strategies, the aggregation ablation, the
@@ -130,7 +108,7 @@ cannot separate "the policy failed" from "the world model fell apart".
 
 The binary judges' frame budgets were raised from 5–6 to 16 for the same reason.
 
-## 7. The public anchor: breaking the chicken-and-egg
+## 6. The public anchor: breaking the chicken-and-egg
 
 Rank fidelity is gated on accepted real-world anchors, and `robot_eval_calibration`
 rejects any real-world outcome that does not join to a prediction Blueprint
@@ -176,7 +154,6 @@ world-model quality independent of the harness — and pins
 ## Commands
 
 ```bash
-python -m blueprint_pipeline.control_ranker --input request.json --output report.json
 python -m blueprint_pipeline.roboworld_progress_judge check-sampling --duration-seconds 25 --sampled-frames 60
 python -m blueprint_pipeline.roboworld_progress_judge request --input plan.json --output request.json
 python -m blueprint_pipeline.roboworld_progress_judge score --input judge-output.json --output scores.json

@@ -1,4 +1,4 @@
-# Execution cost, GPU policy, and architecture/reachability gates
+# Execution cost, GPU policy, and architecture gates
 
 This document covers a second group of changes, following
 `EVALUATOR_ATTRIBUTION_AND_PUBLIC_ANCHOR.md`. They share a theme: constraints
@@ -153,51 +153,14 @@ The RoboWorld admission checklist conflated two things behind one
 The second is blocked only by contract text. Blueprint already pins
 `Wan-AI/Wan2.1-T2V-1.3B` (Apache-2.0, immutable revision) and uses only its VAE.
 
-`blueprint_pipeline.world_model_architecture_adoption` separates the tracks.
 Separating them makes claims **stricter**, not looser: a model built on track 2
 is Blueprint-authored, may not use the upstream project's name or reported
 metrics, may not use upstream weights or code, and must pass ordinary evaluator
 qualification. Authorisation is *to build*, and confers no evaluator standing.
 
-It also records `backend_selection_principle()`: order backends by measured
-fidelity, throughput, licence and abstention — not parameter scale. The
-catalogue's scale ladder is unsupported by the repository's own recorded
-evidence, where the published correlations run inversely to model size.
-
-## 7. Gate reachability
-
-"38 blockers" mixes at least four situations: satisfiable now, awaiting
-execution, awaiting upstream release, and **unreachable by construction** — a
-defect wearing a status's clothes.
-
-`blueprint_pipeline.gate_reachability_audit` classifies gates by **probing**
-rather than asserting: it calls the real validators and scans the real source,
-so a repaired gate stops being reported as dead without editing the audit.
-
-Current findings, all reproducible via `python -m blueprint_pipeline.gate_reachability_audit`:
-
-- `validate_external_study` returns `external_proof_required` for every input,
-  and the string `"validated"` does not appear anywhere in that module. So
-  `sc3_eval_protocol`'s `public_rank_fidelity_claim_eligible`, `claim_ready`,
-  and `eligible_preregistered_external_rank_fidelity` — whose conjunction
-  requires that status — are **unreachable by construction**.
-- `benchmark_uncertainty.public_rank_fidelity_claim_eligible` and
-  `oscar_cosmos_wam_evaluator.full_closed_loop_episode_proven` are emitted as
-  literal `False` (the latter at six distinct sites), so no caller can influence
-  them.
-- The two OOD axis vocabularies disagree (8 frozen SC3 axes versus 5
-  decision-grade axes; `appearance` and `viewpoint` appear in neither direction).
-  They bind *different* artifacts, so this is reported as `divergent_registry`
-  rather than unreachable — the honest label.
-
-`classify_blockers()` splits a blocker list into what waiting could clear and
-what it never will.
-
 ## Commands
 
 ```bash
-python -m blueprint_pipeline.gate_reachability_audit --fail-on-unreachable
-python -m blueprint_pipeline.world_model_architecture_adoption --input proposal.json --output plan.json
 python -m blueprint_pipeline.oscar_isaac_closed_loop_eval --oscar-resident-worker ...
 python -m blueprint_pipeline.vast_provider_adapter --gpu-selection-policy generation ...
 ```
