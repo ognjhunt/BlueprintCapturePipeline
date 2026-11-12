@@ -543,3 +543,78 @@ def test_a_version_one_plan_with_its_row_last_still_validates():
     value["maximum_planned_cost_usd"] = f"{sum(Decimal(item['max_cost_usd']) for item in value['candidates']):.2f}"
     value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
     assert validate_screening_plan(value) == value and not control.first_in_plan(row)
+
+
+def test_at_planning_the_ai_rows_are_exactly_as_without_the_reference_over_the_whole_grid():
+    """Review 8c (1a): $0 to $30 in 50-cent steps, 1 to 5 AI rows; never selected while an AI row waits."""
+    for count in range(1, 6):
+        catalog, capabilities, quotes = catalog_with_scripted(count, maximum="4.00", scripted_maximum="4.00")
+        capabilities = rerated(capabilities, CONTROL, rate="0.80", ttl=14_400)
+        learned_only = seal_catalog({**catalog, "candidates": [row for row in catalog["candidates"]
+                                                               if row["policy"]["kind"] != "scripted"]})
+        for cents in range(0, 3001, 50):
+            remaining = cents / 100
+            value = website_plan(catalog, capabilities, quotes, remaining=remaining)
+            without = website_plan(learned_only, capabilities, quotes, remaining=remaining)
+            row, *learned = value["candidates"]
+            assert [(item["candidate_id"], item["status"]) for item in learned] == [
+                (item["candidate_id"], item["status"]) for item in candidate_rows(without)], (count, remaining)
+            if row["status"] == "selected":
+                assert not any(item["status"] == "waitlisted" for item in learned), (count, remaining)
+                assert any(item["status"] == "selected" for item in learned), (count, remaining)
+
+
+def _grid_plan(count, budget, reference):
+    """The planner's shape for ``count`` $4 robots in ``budget``, with the reference row as the planner funds it."""
+    from blueprint_pipeline.beta_policy_screening_plan import JOB_CEILING_DEFERRED  # noqa: F401
+
+    value = deepcopy(queue_plan(count=count, cost="1.00"))  # validated at $15; re-sealed at $4 below
+    for item in value["candidates"]:
+        item["max_cost_usd"] = "4.00"
+        item["cost_quote"].update(maximum_cost_usd="4.00", quote_digest="")
+        item["cost_quote"]["quote_digest"] = canonical_digest(item["cost_quote"], digest_field="quote_digest")
+    left = Decimal(budget)
+    for item in value["candidates"]:
+        if Decimal("4.00") <= left:
+            left -= Decimal("4.00")
+        elif Decimal("4.00") <= Decimal(budget):
+            item.update(status="waitlisted", blockers=["site_screening_budget_insufficient"])
+        else:
+            for key in ("admission_digest", "execution_spec", "cost_quote", "max_cost_usd", "episode_count",
+                        "scenario_cells"):
+                item.pop(key)
+            item.update(status="deferred", blockers=["site_screening_budget_insufficient"])
+    value["budget_usd"] = f"{Decimal(budget):.2f}"
+    if reference:
+        row = deepcopy(with_control(queue_plan(count=1))["candidates"][0])  # for candidate-000, $3.00
+        for field in ("scene_revision_digest",):
+            row["cost_quote"][field] = value[field]
+        row["cost_quote"]["quote_digest"] = canonical_digest(row["cost_quote"], digest_field="quote_digest")
+        value["candidates"].insert(0, control.fund_from_leftover(row, value,
+                                                                 waitlist_blockers=["site_screening_budget_insufficient"]))
+    value["maximum_planned_cost_usd"] = f"{sum(Decimal(r['max_cost_usd']) for r in value['candidates'] if r['status'] == 'selected'):.2f}"
+    value["plan_digest"] = canonical_digest(value, digest_field="plan_digest")
+    return validate_screening_plan(value)
+
+
+@pytest.mark.parametrize("fraction", ["0", "0.25", "1"])
+def test_with_settlements_the_ai_rows_launched_are_exactly_as_without_the_reference(tmp_path, summaries, monkeypatch,
+                                                                                      fraction):
+    """Review 8c (1): funded and launched AI rows identical with and without; no reference without a robot."""
+    monkeypatch.setattr(coordinator, "settled_cost", lambda attempt: (
+        Decimal(attempt["maximum_cost_usd"]) * Decimal(fraction) if attempt.get("reservation_status") == "committed"
+        else None))
+    for count in range(1, 6):
+        for budget in ("3", "4", "6.5", "7", "8", "10.5", "11", "12", "15"):
+            launched = {}
+            for reference in (False, True):
+                root = tmp_path / f"{fraction}-{count}-{budget}-{reference}"
+                coordinator.enqueue_screening_campaign(_grid_plan(count, budget, reference), queue_root=root)
+                backend = PerRow(done(*(f"candidate-{index:03}" for index in range(count)),
+                                      control_result=closed(_summary(3, 2, scripted=True, planned=3))))
+                run(root, backend, passes=3 * count + 6, max_launches=2)
+                launched[reference] = backend.order
+            ai = [key for key in launched[True] if key != CONTROL]
+            assert sorted(ai) == sorted(launched[False]), (fraction, count, budget, launched)
+            if CONTROL in launched[True]:
+                assert ai and launched[True].index(CONTROL) > 0, (fraction, count, budget, launched)

@@ -93,6 +93,34 @@ def deletion_lock(packet_queue_root: str | Path | None) -> Iterator[bool]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def _restorer_lock(run: Path):
+    return run.parent / f".{run.name}.restore.lock"
+
+
+def clean_stale_staging(run_root: str | Path) -> bool:
+    """Remove a crashed restore's staging folder when no restorer holds this run's lock; never raises.
+
+    Run on every pass, whether or not the job is still open. Returns whether anything was removed.
+    """
+    import fcntl
+    import shutil
+
+    run = Path(run_root)
+    staging = run.parent / f".{run.name}.restoring"
+    if not staging.exists() or staging.is_symlink():
+        return False
+    try:
+        with _restorer_lock(run).open("a+b") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False  # a restorer is working on it now
+            shutil.rmtree(staging, ignore_errors=True)
+            return True
+    except OSError:
+        return False
+
+
 def restore_open_job_run(run_root: str | Path, *, window_open: bool,
                          still_current: Callable[[], bool] = lambda: True,
                          packet_queue_root: str | Path | None = None,
@@ -110,9 +138,11 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
     Returns ``{"status": ...}``: ``on_disk``, ``window_closed``, ``WITHDRAWN``, ``BUSY``, ``restored``,
     ``waiting_retry``, ``refused`` (this try failed: disk, transfer or digest), or ``GAVE_UP``.
     """
+    import fcntl
     import shutil
 
     run = Path(run_root)
+    clean_stale_staging(run)
     pointer = offload_pointer(run)
     if pointer is None:
         return {"status": "on_disk" if run.is_dir() else "no_pointer"}
@@ -131,6 +161,12 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
     attempt = int(state.get("attempts") or 0) + 1
     record: dict[str, Any] = {"attempts": attempt, "last_attempt_epoch": moment}
     staging = run.parent / f".{run.name}.restoring"
+    lock = _restorer_lock(run).open("a+b")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        return {**state, "status": BUSY}  # another restorer runs now
     try:
         shutil.rmtree(staging, ignore_errors=True)
         hold = (reserve or reserve_control_plane_disk)(
@@ -158,6 +194,8 @@ def restore_open_job_run(run_root: str | Path, *, window_open: bool,
                       retry_not_before=moment + RETRY_SECONDS)
         if attempt >= MAX_ATTEMPTS:
             record["status"] = GAVE_UP
+    finally:
+        lock.close()
     _write_state(run, record)
     return record
 

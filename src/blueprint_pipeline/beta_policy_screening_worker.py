@@ -249,6 +249,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     # open job's run is brought back by itself first (``scene_run_restore``).
                     kept = None
                     if in_cold_storage(Path(request["source_launch_root"])):
+                        from .scene_run_restore import clean_stale_staging
+                        clean_stale_staging(Path(request["source_launch_root"]))  # open or not: no crashed leftovers
                         if job_window_closed(context):
                             raise ValueError(WINDOW_CLOSED)
                         # What its pointer kept is enough for a re-plan; only without it is the run restored.

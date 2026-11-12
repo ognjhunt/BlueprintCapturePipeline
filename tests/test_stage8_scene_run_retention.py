@@ -632,3 +632,18 @@ def test_at_the_floor_a_job_with_pending_or_waitlisted_rows_keeps_its_run(world,
         world["ledger"](state)
         _under_floor(monkeypatch, deficit=10**12)
         assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
+
+
+def test_a_crashed_restores_staging_is_cleaned_unless_a_restorer_holds_the_run(world):
+    """Review 8c (7): staging left by a crash is removed on the next pass, open job or not."""
+    import fcntl
+
+    from blueprint_pipeline import scene_run_restore as restore
+
+    _offloaded(world)
+    staging = world["run"].parent / f".{world['run'].name}.restoring"
+    (staging / "allocator").mkdir(parents=True)
+    with restore._restorer_lock(world["run"]).open("a+b") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)  # a restorer at work
+        assert restore.clean_stale_staging(world["run"]) is False and staging.exists()
+    assert restore.clean_stale_staging(world["run"]) is True and not staging.exists()
