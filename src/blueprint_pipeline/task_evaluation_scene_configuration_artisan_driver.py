@@ -95,7 +95,37 @@ def private_blender(package, runtime):
                 except OSError:
                     shutil.copy2(Path(directory) / name, target / name)
         staging.rename(tree)
+    for startup in sorted(tree.glob("*/scripts/startup")):
+        _install_no_bytecode_startup(startup)
     return tree / "blender"
+
+
+#: A module in the private Blender's ``scripts/startup``. Blender imports its
+#: startup modules before it runs any ``--python`` script, and its embedded
+#: Python ignores ``PYTHONDONTWRITEBYTECODE``. Upstream review renders
+#: (``sdk/runtime/render.py`` at the pinned revision) start
+#: ``blender --background --factory-startup --python <artisan_source>/sdk/runtime/_render_server.py``
+#: from the controller, outside the sandbox; that script puts its own directory,
+#: inside the sealed toolchain, first on ``sys.path`` and imports its siblings
+#: (``_render_driver``, ``_render_protocol``, ``_render_lighting``,
+#: ``_render_device``, ``_blender_materials``). As container root their
+#: bytecode would create ``sdk/runtime/__pycache__`` in the sealed tree.
+NO_BYTECODE_STARTUP_MODULE = "blueprint_no_bytecode.py"
+NO_BYTECODE_STARTUP_SOURCE = (
+    "import sys\n\nsys.dont_write_bytecode = True\n\n\n"
+    "def register():\n    pass\n\n\ndef unregister():\n    pass\n"
+)
+
+
+def _install_no_bytecode_startup(startup):
+    target = Path(startup) / NO_BYTECODE_STARTUP_MODULE
+    if not target.is_symlink() and target.is_file() and target.read_text() == NO_BYTECODE_STARTUP_SOURCE:
+        return
+    # The private tree's files are hard links to sealed inodes, so never write
+    # through an existing name: write a new inode and swap it in.
+    staging = target.with_name(f".{target.name}.{os.getpid()}")
+    staging.write_text(NO_BYTECODE_STARTUP_SOURCE)
+    os.replace(staging, target)
 
 
 def _component_result(stage_input, request, paths):

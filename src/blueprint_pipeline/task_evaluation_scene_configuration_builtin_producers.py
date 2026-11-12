@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess  # nosec B404 - executable is full-byte toolchain-bound
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -21,7 +22,7 @@ from typing import Any
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .immutable_file_digest import sha256_file
-from .immutable_tree_walk import walk_tree
+from .immutable_tree_walk import path_order, walk_tree
 from .task_evaluation_scene_configuration_component_package import (
     TaskEvaluationSceneConfigurationComponentPackageError,
     validate_scene_configuration_component_package,
@@ -155,14 +156,23 @@ def _read_toolchain_manifest(
     *, root: Path, expected_source_commit: str
 ) -> tuple[dict[str, Any], Path]:
     """The sealed manifest of a read-only published toolchain, bytes unread."""
-    if root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o222:
+    if root.is_symlink() or not root.is_dir():
         raise TaskEvaluationSceneConfigurationStageProducerError(
             "scene_configuration_toolchain_root_invalid"
+        )
+    if root.stat().st_mode & 0o222:
+        raise TaskEvaluationSceneConfigurationStageProducerError(
+            "scene_configuration_toolchain_root_invalid:not_read_only"
         )
     manifest_path = root / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
     manifest = _read(
         manifest_path, code="scene_configuration_toolchain_manifest_invalid"
     )
+    _check_toolchain_manifest(manifest, expected_source_commit=expected_source_commit)
+    return manifest, manifest_path
+
+
+def _check_toolchain_manifest(manifest: Mapping[str, Any], *, expected_source_commit: str) -> None:
     stages = manifest.get("stages")
     files = manifest.get("files")
     if (
@@ -180,22 +190,15 @@ def _read_toolchain_manifest(
         raise TaskEvaluationSceneConfigurationStageProducerError(
             "scene_configuration_toolchain_manifest_invalid"
         )
-    return manifest, manifest_path
 
 
-def _validate_toolchain(
-    *, root: Path, expected_source_commit: str, verify_bytes: bool = True
-) -> tuple[dict[str, Any], dict[str, Path]]:
-    manifest, manifest_path = _read_toolchain_manifest(
-        root=root, expected_source_commit=expected_source_commit
-    )
-    stages = manifest["stages"]
-    files = manifest["files"]
+def _toolchain_inventory(files: Sequence[Any]) -> dict[str, tuple[str, int, bool]]:
+    """The manifest's file rows as relative path -> (sha256, size, executable)."""
     inventory: dict[str, tuple[str, int, bool]] = {}
-    for row in files:
+    for index, row in enumerate(files):
         if not isinstance(row, Mapping):
             raise TaskEvaluationSceneConfigurationStageProducerError(
-                "scene_configuration_toolchain_inventory_invalid"
+                f"scene_configuration_toolchain_inventory_invalid:row={index}"
             )
         relative = str(row.get("relative_path") or "")
         digest = str(row.get("sha256") or "")
@@ -215,22 +218,36 @@ def _validate_toolchain(
             or not isinstance(executable, bool)
         ):
             raise TaskEvaluationSceneConfigurationStageProducerError(
-                "scene_configuration_toolchain_inventory_invalid"
+                f"scene_configuration_toolchain_inventory_invalid:row={index}"
             )
         inventory[relative] = (digest, size, executable)
+    return inventory
+
+
+def _validate_toolchain(
+    *, root: Path, expected_source_commit: str, verify_bytes: bool = True
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    manifest, manifest_path = _read_toolchain_manifest(
+        root=root, expected_source_commit=expected_source_commit
+    )
+    stages = manifest["stages"]
+    inventory = _toolchain_inventory(manifest["files"])
+    # Every refusal names the entry it refused. These are paths inside our own
+    # sealed toolchain, never site data, and a run that stops here must say
+    # what changed: the machine is usually gone by the time anyone looks.
     observed: set[str] = set()
     for relative, entry in walk_tree(root):
         if relative == manifest_path.name:
             continue
         if entry.is_symlink():
             raise TaskEvaluationSceneConfigurationStageProducerError(
-                "scene_configuration_toolchain_symlink_forbidden"
+                f"scene_configuration_toolchain_symlink_forbidden:{relative}"
             )
         info = entry.stat(follow_symlinks=False)
         if entry.is_dir(follow_symlinks=False):
             if info.st_mode & 0o222:
                 raise TaskEvaluationSceneConfigurationStageProducerError(
-                    "scene_configuration_toolchain_not_read_only"
+                    f"scene_configuration_toolchain_not_read_only:{relative}"
                 )
             continue
         if not entry.is_file(follow_symlinks=False):
@@ -251,8 +268,10 @@ def _validate_toolchain(
             )
         observed.add(relative)
     if observed != set(inventory):
+        missing = sorted(set(inventory) - observed, key=path_order)
         raise TaskEvaluationSceneConfigurationStageProducerError(
-            "scene_configuration_toolchain_inventory_incomplete"
+            f"scene_configuration_toolchain_inventory_incomplete:{missing[0]}:"
+            f"missing_count={len(missing)}"
         )
     entrypoints: dict[str, Path] = {}
     expected_ids = {identity.adapter_id for identity in ADMITTED_PRODUCER_IDENTITIES}
@@ -320,6 +339,347 @@ def _validate_toolchain(
                 f"scene_configuration_toolchain_stage_invalid:{adapter_id}"
             )
     return manifest, entrypoints
+
+
+#: The provider bundle manifest the bundle builder writes beside the toolchain
+#: it ships (``provider_runtime/<this>`` next to ``provider_runtime/toolchain``).
+_PROVIDER_BUNDLE_MANIFEST = "task_evaluation_scene_configuration_provider_bundle.v1.json"
+TOOLCHAIN_RESTORATION_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_toolchain_restoration.v1"
+)
+_RESTORATION_LIST_LIMIT = 32
+
+
+def _loaded_runtime_root() -> Path:
+    """The directory this ``blueprint_pipeline`` package was imported from."""
+    return Path(__file__).resolve().parent.parent
+
+
+def is_run_toolchain_copy(root: str | Path) -> bool:
+    """Whether ``root`` is the toolchain unpacked into this run's own bundle.
+
+    A run (the GPU container, or the control plane's CPU prestage) unpacks its
+    bundle to ``provider_runtime/``: the toolchain at ``provider_runtime/toolchain``,
+    the bundle manifest beside it, and this package imported from
+    ``provider_runtime/blueprint_pipeline``. A published toolchain on the control
+    plane has none of that: it lives under ``system-runtimes/scene-configuration/``
+    and the deployed code is imported from the release checkout. All must hold,
+    so restoration can never reach a published toolchain.
+
+    The root itself must not be a link, but an ancestor may be (``/workspace``
+    on a provider image): the parent is compared with the import location by
+    real path on both sides, since the entrypoint passes the unresolved path.
+    """
+    path = Path(root)
+    if not path.is_absolute() or ".." in path.parts or path.name != "toolchain":
+        return False
+    try:
+        info = path.lstat()
+        bundle = (path.parent / _PROVIDER_BUNDLE_MANIFEST).lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(info.st_mode)
+        and stat.S_ISREG(bundle.st_mode)
+        and Path(os.path.realpath(path.parent)) == Path(os.path.realpath(_loaded_runtime_root()))
+    )
+
+
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_at(name: str, directory: int, info: os.stat_result, *, flags: int) -> int | None:
+    """``name`` under the ``directory`` handle, if it is still the entry ``info`` saw.
+
+    Opened without following a link, relative to a handle we already hold, so
+    no path string is resolved again and a name swapped meanwhile is refused.
+    """
+    try:
+        descriptor = os.open(name, flags, dir_fd=directory)
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def _entries(directory: int) -> list[tuple[str, os.stat_result]]:
+    # scandir on a handle stats each name relative to it (no link followed).
+    with os.scandir(directory) as listing:
+        return [(entry.name, entry.stat(follow_symlinks=False)) for entry in listing]
+
+
+def _mount_points_under(root: Path) -> frozenset[str] | None:
+    """Mount points below ``root``, relative to it, from this process's mount table.
+
+    A bind mount of the same filesystem keeps its ``st_dev``, so the device
+    alone does not show it. Paths here are only compared, never acted on. The
+    table is read as bytes (a mount path need not be UTF-8); ``None`` means it
+    could not be read or parsed, and then no directory is removed at all.
+    """
+    try:
+        table = Path("/proc/self/mountinfo").read_bytes()
+        base = os.fsencode(os.path.realpath(root))
+        points = set()
+        for line in table.splitlines():
+            fields = line.split(b" ")
+            if len(fields) < 5:
+                continue
+            point = re.sub(rb"\\([0-7]{3})", lambda match: bytes([int(match.group(1), 8) & 0xFF]), fields[4])
+            if point.startswith(base + b"/"):
+                points.add(os.fsdecode(point[len(base) + 1:]))
+        return frozenset(points)
+    except Exception:  # noqa: BLE001 - any failure means the table is not known
+        return None
+
+
+class _Removal:
+    """Remove one foreign directory's contents and then the directory, iteratively.
+
+    Every step is relative to a handle; a name on another filesystem or one
+    swapped meanwhile stops the removal of that directory (it is left for the
+    full check), never followed.
+    """
+
+    def __init__(self, *, device: int, mounts: frozenset[str]) -> None:
+        self.device = device
+        self.mounts = mounts
+        self.count = 0
+
+    def remove(self, parent: int, name: str, info: os.stat_result, relative: str) -> str | None:
+        top = _open_at(name, parent, info, flags=_DIRECTORY_FLAGS)
+        if top is None:
+            return "entry_changed"
+        stack: list[tuple[int, str | None, int | None, list[tuple[str, os.stat_result]], str]] = []
+        stack.append((top, name, parent, [], relative))
+        try:
+            # Opened for its owner whoever we are: root without the override of
+            # file modes is no better off than the owner (see the main loop).
+            os.fchmod(top, 0o700)
+            stack[-1][3].extend(_entries(top))
+            while stack:
+                handle, own_name, own_parent, pending, own_relative = stack[-1]
+                if not pending:
+                    stack.pop()
+                    os.close(handle)
+                    if own_parent is not None and own_name is not None:
+                        os.rmdir(own_name, dir_fd=own_parent)
+                    continue
+                child, child_info = pending.pop()
+                child_relative = own_relative + "/" + child
+                if child_info.st_dev != self.device or child_relative in self.mounts:
+                    return "other_filesystem"
+                self.count += 1
+                if stat.S_ISDIR(child_info.st_mode):
+                    opened = _open_at(child, handle, child_info, flags=_DIRECTORY_FLAGS)
+                    if opened is None:
+                        return "entry_changed"
+                    stack.append((opened, child, handle, [], child_relative))
+                    os.fchmod(opened, 0o700)
+                    stack[-1][3].extend(_entries(opened))
+                else:
+                    # Removes the name itself; a link's target is never touched.
+                    os.unlink(child, dir_fd=handle)
+            return None
+        finally:
+            for handle, _name, _parent, _pending, _relative in stack:
+                os.close(handle)
+
+
+def restore_run_toolchain_copy(
+    *, root: str | Path, expected_source_commit: str, expected_toolchain_digest: str
+) -> dict[str, Any]:
+    """Return this run's own toolchain copy to its sealed inventory.
+
+    A process the run itself started as container root can create entries in
+    the copy (root ignores read-only modes), and the stage-start check would
+    then end the job over a tree whose sealed files are untouched. This removes
+    every entry that is neither an inventory file, an ancestor directory of one,
+    nor the manifest, and clears write bits that the root, a directory or an
+    inventory file gained. It never writes an inventory file's bytes and never
+    acts outside ``root``: the root is opened once without following a link and
+    every later step is relative to a directory handle. An entry on another
+    filesystem, a sealed file with more than one link, or a name that changed
+    while we looked is left alone and recorded. The caller then runs the full
+    byte check, which still refuses any changed, resized or missing sealed file.
+
+    Only the run's unpacked copy is accepted (``is_run_toolchain_copy``), and only
+    when its manifest is the one the stage input is bound to; otherwise nothing
+    is changed. Returns a bounded record of what was removed, restored and left.
+    """
+
+    root = Path(root)
+    if not is_run_toolchain_copy(root):
+        raise TaskEvaluationSceneConfigurationStageProducerError(
+            "scene_configuration_toolchain_restore_not_run_copy"
+        )
+    seen = root.lstat()
+    try:
+        root_handle = os.open(root, _DIRECTORY_FLAGS)
+    except OSError as exc:
+        raise TaskEvaluationSceneConfigurationStageProducerError(
+            "scene_configuration_toolchain_restore_not_run_copy"
+        ) from exc
+    try:
+        return _restore_from_handle(root_handle, seen, mounts=_mount_points_under(root),
+                                    expected_source_commit=expected_source_commit,
+                                    expected_toolchain_digest=expected_toolchain_digest)
+    finally:
+        os.close(root_handle)
+
+
+def _restore_from_handle(
+    root_handle: int, seen: os.stat_result, *, mounts: frozenset[str] | None, expected_source_commit: str,
+    expected_toolchain_digest: str,
+) -> dict[str, Any]:
+    root_info = os.fstat(root_handle)
+    if (root_info.st_dev, root_info.st_ino) != (seen.st_dev, seen.st_ino):
+        raise TaskEvaluationSceneConfigurationStageProducerError(
+            "scene_configuration_toolchain_restore_entry_changed:."
+        )
+    manifest_name = f"{TOOLCHAIN_SCHEMA_VERSION}.json"
+    try:
+        descriptor = os.open(manifest_name, _FILE_FLAGS, dir_fd=root_handle)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("manifest is not a regular file")
+            manifest = json.loads(stream.read().decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationSceneConfigurationStageProducerError(
+            "scene_configuration_toolchain_manifest_invalid"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise TaskEvaluationSceneConfigurationStageProducerError(
+            "scene_configuration_toolchain_manifest_invalid"
+        )
+    _check_toolchain_manifest(manifest, expected_source_commit=expected_source_commit)
+    record: dict[str, Any] = {
+        "schema_version": TOOLCHAIN_RESTORATION_SCHEMA_VERSION,
+        "status": "unchanged",
+        "toolchain_digest": manifest["toolchain_digest"],
+        "removed": [],
+        "removed_count": 0,
+        "removed_entry_count": 0,
+        "modes_restored": [],
+        "modes_restored_count": 0,
+        "left": [],
+        "left_count": 0,
+    }
+    if manifest["toolchain_digest"] != expected_toolchain_digest:
+        record["status"] = "skipped_manifest_not_bound_to_stage_input"
+        return record
+    inventory = _toolchain_inventory(manifest["files"])
+    keep = {manifest_name, *inventory}
+    for relative in inventory:
+        parts = relative.split("/")
+        keep.update("/".join(parts[:index]) for index in range(1, len(parts)))
+    device = root_info.st_dev
+
+    def note(field: str, row: dict[str, Any]) -> None:
+        record[f"{field}_count"] += 1
+        if len(record[field]) < _RESTORATION_LIST_LIMIT:
+            record[field].append(row)
+
+    def restored(relative: str, kind: str, mode: int) -> None:
+        note("modes_restored", {"relative_path": relative, "kind": kind,
+                                "before_mode": oct(mode), "after_mode": oct(mode & ~0o222)})
+
+    # One frame per kept directory on the current path: its handle, relative
+    # name, mode as found, whether we opened it for writing, and its entries.
+    frames: list[dict[str, Any]] = [{
+        "handle": root_handle, "relative": ".", "prefix": "",
+        "mode": stat.S_IMODE(root_info.st_mode), "opened": False, "entries": _entries(root_handle)}]
+    try:
+        while frames:
+            frame = frames[-1]
+            if not frame["entries"]:
+                frames.pop()
+                mode = frame["mode"]
+                if mode & 0o222:
+                    os.fchmod(frame["handle"], mode & ~0o222)
+                    restored(frame["relative"], "directory", mode)
+                elif frame["opened"]:
+                    os.fchmod(frame["handle"], mode)
+                if frame["handle"] != root_handle:
+                    os.close(frame["handle"])
+                continue
+            name, info = frame["entries"].pop()
+            relative = frame["prefix"] + name
+            if info.st_dev != device or relative in (mounts or ()):
+                # A mount inside the tree: never act on another filesystem.
+                note("left", {"relative_path": relative, "reason": "other_filesystem"})
+                continue
+            if relative in keep:
+                # A kept name of the wrong kind (a link, a file where a directory
+                # belongs) is left for the full check to refuse by name.
+                if stat.S_ISDIR(info.st_mode):
+                    handle = _open_at(name, frame["handle"], info, flags=_DIRECTORY_FLAGS)
+                    if handle is None:
+                        note("left", {"relative_path": relative, "reason": "entry_changed"})
+                        continue
+                    # Held by the frame before listing, so a failed listing closes it too.
+                    frames.append({"handle": handle, "relative": relative, "prefix": relative + "/",
+                                   "mode": stat.S_IMODE(info.st_mode), "opened": False, "entries": []})
+                    frames[-1]["entries"] = _entries(handle)
+                elif stat.S_ISREG(info.st_mode) and relative in inventory and info.st_mode & 0o222:
+                    if info.st_nlink > 1:
+                        # A mode change would reach every other name of this inode.
+                        note("left", {"relative_path": relative, "reason": "hard_linked"})
+                        continue
+                    handle = _open_at(name, frame["handle"], info, flags=_FILE_FLAGS)
+                    if handle is None:
+                        note("left", {"relative_path": relative, "reason": "entry_changed"})
+                        continue
+                    try:
+                        os.fchmod(handle, stat.S_IMODE(info.st_mode) & ~0o222)
+                    finally:
+                        os.close(handle)
+                    restored(relative, "file", stat.S_IMODE(info.st_mode))
+                continue
+            kind = ("symlink" if stat.S_ISLNK(info.st_mode) else
+                    "directory" if stat.S_ISDIR(info.st_mode) else
+                    "file" if stat.S_ISREG(info.st_mode) else "other")
+            if kind == "directory" and mounts is None:
+                # Without the mount table a same-filesystem bind mount below this
+                # directory cannot be seen, so no directory is removed.
+                note("left", {"relative_path": relative, "reason": "mount_table_unavailable"})
+                continue
+            if not frame["opened"] and not frame["mode"] & 0o200:
+                # Removing a name needs write access to the parent. Open it for
+                # its owner, whatever our user id: a user id of 0 is not proof of
+                # the override of file modes (a container can drop it), and the
+                # host prestage runs as the service user. It is sealed again when
+                # the directory is done.
+                os.fchmod(frame["handle"], frame["mode"] | 0o700)
+                frame["opened"] = True
+            contained = 0
+            if kind == "directory":
+                removal = _Removal(device=device, mounts=mounts or frozenset())
+                reason = removal.remove(frame["handle"], name, info, relative)
+                if reason is not None:
+                    note("left", {"relative_path": relative, "reason": reason})
+                    continue
+                contained = removal.count
+            else:
+                os.unlink(name, dir_fd=frame["handle"])
+            record["removed_entry_count"] += 1 + contained
+            note("removed", {"relative_path": relative, "kind": kind, "contained_entries": contained})
+    finally:
+        for frame in frames:
+            if frame["handle"] != root_handle:
+                os.close(frame["handle"])
+    if record["removed_count"] or record["modes_restored_count"]:
+        record["status"] = "restored"
+    elif record["left_count"]:
+        record["status"] = "left_for_full_check"
+    return record
 
 
 def read_scene_configuration_toolchain_manifest(
@@ -604,6 +964,9 @@ def builtin_scene_configuration_stage_producer_registry(
 __all__ = [
     "TOOLCHAIN_ROOT_ENV",
     "TOOLCHAIN_SCHEMA_VERSION",
+    "TOOLCHAIN_RESTORATION_SCHEMA_VERSION",
     "builtin_scene_configuration_stage_producer_registry",
+    "is_run_toolchain_copy",
+    "restore_run_toolchain_copy",
     "validate_scene_configuration_toolchain",
 ]

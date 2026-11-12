@@ -58,8 +58,12 @@ def _which(which: Optional[Which]) -> Which:
     return which or shutil.which
 
 
-def audio_free_remux_command(ffmpeg: str, source: Path, destination: Path) -> List[str]:
-    """The exact ffmpeg command that copies the first video stream and nothing else."""
+def audio_free_remux_command(ffmpeg: str, source: Path, destination: Path, *, strip_metadata: bool = False) -> List[str]:
+    """The exact ffmpeg command that copies the first video stream and nothing else.
+
+    ``strip_metadata`` also drops the source's container and stream tags and chapters (a phone's recorded place
+    and time among them), for a copy that leaves Blueprint.
+    """
 
     return [
         ffmpeg,
@@ -75,6 +79,7 @@ def audio_free_remux_command(ffmpeg: str, source: Path, destination: Path) -> Li
         "-an",
         "-sn",
         "-dn",
+        *(["-map_metadata", "-1", "-map_chapters", "-1", "-map_metadata:s:v", "-1"] if strip_metadata else []),
         str(destination),
     ]
 
@@ -234,6 +239,7 @@ def write_audio_free_video(
     runner: Optional[Runner] = None,
     which: Optional[Which] = None,
     timeout_seconds: int = 600,
+    strip_metadata: bool = False,
 ) -> Dict[str, Any]:
     """Write a video-only copy of ``source`` to ``destination`` and return its receipt.
 
@@ -248,7 +254,7 @@ def write_audio_free_video(
         destination.unlink(missing_ok=True)
         return receipt
     ensure_dir(destination.parent)
-    command = audio_free_remux_command(ffmpeg, source, destination)
+    command = audio_free_remux_command(ffmpeg, source, destination, strip_metadata=strip_metadata)
     try:
         proc = _runner(runner)(
             command,

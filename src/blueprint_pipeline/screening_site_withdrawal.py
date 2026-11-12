@@ -7,7 +7,7 @@ the site is withdrawn.
 
 A site is withdrawn when ``<root>/scenes/<site>/website_withdrawal/tombstone.json``
 or ``<root>/<bucket>/scenes/<site>/website_withdrawal/tombstone.json`` exists
-under a configured site root: the file the intake writes on withdrawal
+under a configured site root (a hidden folder is never a bucket, ``site_roots.is_bucket``): the file the intake writes on withdrawal
 (``website_capture_withdrawal.acknowledge_withdrawal``) and the one automatic
 withdrawal deletion looks for (``website_capture_withdrawal_automatic``). Its
 presence is enough: a privacy stop never waits for the tombstone to validate.
@@ -27,6 +27,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .site_roots import is_bucket
+
 SITE_ROOTS_ENV = "BLUEPRINT_WEBSITE_WITHDRAWAL_SITE_ROOTS"
 WITHDRAWN_BLOCKER = "beta_screening_site_consent_withdrawn"
 _SITE = re.compile(r"site-[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
@@ -38,9 +40,13 @@ def configured_site_roots(environ: Mapping[str, str] | None = None) -> list[Path
     return [Path(item) for item in str(env.get(SITE_ROOTS_ENV) or "").split(":") if item.strip()]
 
 
-def _tombstone(site_dir: Path) -> bool:
+def _tombstone(site_dir: Path) -> bool | None:
+    """Whether the site's tombstone is there; None when the place cannot be read (never "not there")."""
     path = site_dir / _TOMBSTONE
-    return path.is_file() and not path.is_symlink()
+    try:
+        return path.is_file() and not path.is_symlink()
+    except OSError:
+        return None
 
 
 def site_withdrawal_state(site_id: str, *, environ: Mapping[str, str] | None = None) -> str:
@@ -60,17 +66,21 @@ def site_withdrawal_state(site_id: str, *, environ: Mapping[str, str] | None = N
         if root.is_symlink() or not root.is_dir():
             unknown = True
             continue
-        if _tombstone(root / "scenes" / site_id):
+        at_root = _tombstone(root / "scenes" / site_id)
+        if at_root:
             return "withdrawn"
+        unknown = unknown or at_root is None
         try:
             with os.scandir(root) as entries:
                 buckets = [Path(entry.path) for entry in entries
-                           if entry.name != "scenes" and entry.is_dir(follow_symlinks=False)]
+                           if is_bucket(entry.name) and entry.is_dir(follow_symlinks=False)]
         except OSError:
             unknown = True
             continue
-        if any(_tombstone(bucket / "scenes" / site_id) for bucket in buckets):
+        found = [_tombstone(bucket / "scenes" / site_id) for bucket in buckets]
+        if any(found):
             return "withdrawn"
+        unknown = unknown or None in found
     return "unknown" if unknown else "not_withdrawn"
 
 

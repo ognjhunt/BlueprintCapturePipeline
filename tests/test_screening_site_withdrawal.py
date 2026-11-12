@@ -76,3 +76,70 @@ def test_state_reads_only_configured_roots(tmp_path, monkeypatch):
     _withdraw(roots, site="site-job-2")
     assert withdrawal.site_withdrawal_state("site-job-2") == "withdrawn"
     assert withdrawal.site_withdrawal_state("site-job-1") == "not_withdrawn"
+
+
+def test_a_hidden_folder_is_never_a_bucket(tmp_path, monkeypatch):
+    # The storage clean-up's root-only `.scene-workspace-inventory` sits beside the buckets; the screening unit runs
+    # as `blueprint`, and a look inside it raised PermissionError. The deletion scan already skips hidden folders.
+    import pathlib
+    roots = _roots(monkeypatch, tmp_path)
+    _withdraw(roots, site="site-job-2", bucket=".website_preparation_pending")
+    hidden = roots / ".scene-workspace-inventory"
+    hidden.mkdir()
+    real_stat = pathlib.Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self.is_relative_to(hidden):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_stat(self, *args, **kwargs)
+    monkeypatch.setattr(pathlib.Path, "stat", stat)
+    assert withdrawal.site_withdrawal_state("site-job-1") == "not_withdrawn"
+    assert withdrawal.site_withdrawal_state("site-job-2") == "not_withdrawn"
+    _withdraw(roots, site="site-job-2", bucket="blueprint-8c1ca.appspot.com")
+    assert withdrawal.site_withdrawal_state("site-job-2") == "withdrawn"
+
+
+def _unreadable(monkeypatch, folder):
+    """Every look inside ``folder`` raises PermissionError, as a folder the screening user may not search does."""
+    import pathlib
+    real_stat = pathlib.Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self.is_relative_to(folder):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_stat(self, *args, **kwargs)
+    monkeypatch.setattr(pathlib.Path, "stat", stat)
+
+
+def test_a_bucket_that_cannot_be_read_is_unknown_never_not_withdrawn(tmp_path, monkeypatch):
+    roots = _roots(monkeypatch, tmp_path)
+    (roots / "_pipeline_failures").mkdir()
+    _unreadable(monkeypatch, roots / "_pipeline_failures")
+    assert withdrawal.site_withdrawal_state("site-job-1") == "unknown"
+    _withdraw(roots, site="site-job-1", bucket="blueprint-8c1ca.appspot.com")
+    assert withdrawal.site_withdrawal_state("site-job-1") == "withdrawn"
+
+
+def test_an_unreadable_withdrawal_state_launches_nothing_for_a_reserved_row(tmp_path, monkeypatch):
+    roots = _roots(monkeypatch, tmp_path)
+    queue = tmp_path / "queue"
+    coordinator.enqueue_screening_campaign(plan(), queue_root=queue)
+    busy = {"value": True}
+
+    class Busy(Backend):
+        def preflight_candidate_capacity(self, **kwargs):
+            return ({"capacity_available": False, "blockers": ["vast_paid_launch_lock_busy"]} if busy["value"]
+                    else {"capacity_available": True, "blockers": []})
+
+    backend = Busy()
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    assert publication(queue)["budget"]["reserved_usd"] == "4"
+    busy["value"] = False
+    monkeypatch.setattr(coordinator, "_capacity_retry_ready", lambda attempt: True)  # only the withdrawal read holds it
+    (roots / "_pipeline_failures").mkdir()
+    with monkeypatch.context() as patch:
+        _unreadable(patch, roots / "_pipeline_failures")
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    assert backend.launches == 0 and publication(queue)["budget"]["reserved_usd"] == "4"
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
+    assert backend.launches == 1

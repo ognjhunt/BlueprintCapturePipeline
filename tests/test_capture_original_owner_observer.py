@@ -97,11 +97,13 @@ def validate_original(value):
 def test_recording_rights_statement_versions_are_a_closed_set():
     from blueprint_pipeline.capture_original_owner_observer import RECORDING_RIGHTS_STATEMENT_VERSIONS
 
-    # WebApp `client/src/lib/recordingRightsStatement.ts` names the same three.
-    assert RECORDING_RIGHTS_STATEMENT_VERSIONS == frozenset({"2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3"})
+    # WebApp `client/src/lib/recordingRightsStatement.ts` names the first three; v4 (2026-11-12) is the statement that
+    # shares a job with approved deployment companies, accepted here before the website records it.
+    assert RECORDING_RIGHTS_STATEMENT_VERSIONS == frozenset({"2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3",
+                                                             "2026-11-12.v4"})
 
 
-@pytest.mark.parametrize("version", ["2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3"])
+@pytest.mark.parametrize("version", ["2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3", "2026-11-12.v4"])
 def test_owner_observation_admits_each_recording_statement_a_site_can_attest(version):
     # v1 and v2 records stay valid; v3 is the short sentence on the start form.
     value = attested_under(version)
@@ -109,7 +111,7 @@ def test_owner_observation_admits_each_recording_statement_a_site_can_attest(ver
 
 
 @pytest.mark.parametrize("version", [
-    "2026-11-02.v3", "2026-11-11.v4", "2026-11-11.V3", "2026-09-18.v2", "2026-11-02.V2", " 2026-11-02.v2",
+    "2026-11-02.v3", "2026-11-11.v4", "2026-11-11.V3", "2026-11-12.V4", "2026-11-12.v5", "2026-09-18.v2", "2026-11-02.V2", " 2026-11-02.v2",
     "2026-11-02.v2 ", "",
     None, 2, ["2026-11-02.v2"], {"version": "2026-11-02.v2"},
 ])
@@ -122,7 +124,7 @@ def test_owner_observation_refuses_a_recording_statement_outside_the_closed_set(
 
 @pytest.mark.parametrize("attested,rights", [
     ("2026-09-18.v1", "2026-11-02.v2"), ("2026-11-02.v2", "2026-09-18.v1"), ("2026-11-02.v2", None),
-    ("2026-11-11.v3", "2026-11-02.v2"), ("2026-11-11.v3", None),
+    ("2026-11-11.v3", "2026-11-02.v2"), ("2026-11-11.v3", None), ("2026-11-12.v4", "2026-11-11.v3"),
 ])
 def test_owner_observation_refuses_rights_recorded_under_another_statement(attested, rights):
     from blueprint_pipeline.capture_original_owner_observer import CaptureOwnerObservationError

@@ -128,6 +128,10 @@ SPENT_ALLOWANCES = [
     ("blocked", "preparation", ["scene_intake_spend_cap_exhausted"], "spend_cap_reached"),
     ("blocked", "preparation", ["scene_intake_attempt_spend_exceeds_authorized_limit"], "spend_cap_reached"),
     ("blocked", "preparation", ["scene_intake_attempt_cap_exhausted"], "attempt_cap_reached"),
+    # The reference job, 2026-11-12 13:40Z: $18 of its $20 still held by the failed
+    # attempt, so the next attempt's budget did not fit. The site was told
+    # Blueprint had a fault while the job waited for a spend decision.
+    ("blocked", "preparation", ["website_native_construction_budget_exceeds_authority"], "spend_cap_reached"),
     ("blocked", "preparation", ["beta_screening_job_ceiling_exceeded"], "job_ceiling_reached"),
     ("blocked", "preparation", ["website_job_ceiling_insufficient"], "job_ceiling_reached"),
     ("blocked", "preparation", ["website_scene_preparation_budget_exhausted"], "job_ceiling_reached"),

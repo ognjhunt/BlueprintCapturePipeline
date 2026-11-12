@@ -11,7 +11,8 @@ shortfall, provided that
   extension issued since the report was written covers the shortfall;
 - the job has paid attempts left (the caller asks only after its attempt
   checks passed);
-- the new ceiling stays within the schema bound every scene ceiling has.
+- the new ceiling stays within the schema bound every scene ceiling has,
+  and within ``AUTOMATIC_EXTENSION_JOB_LIMIT_USD`` ($100) for the job.
 
 Anything else, a stale or unreadable account report included, issues
 nothing: the job waits exactly as before and its next timed re-ask asks
@@ -43,6 +44,14 @@ GRANT_FIELD = "automatic_budget_extension"
 REASON = "reservation_exceeds_ceiling"
 #: The bound every scene ceiling already has (``_limits`` in the owner's chain); not a new figure.
 SCHEMA_CEILING_USD = Decimal(1000)
+#: The most an automatic extension may raise one job's scene ceiling to (2026-11-12). It mirrors the
+#: website's per-job safety limit, ``WEBSITE_JOB_SAFETY_LIMIT_USD`` in Blueprint-WebApp
+#: ``server/utils/websiteJobCeiling.ts``: a flagged grant passes the job's stored ceiling, never that
+#: limit (``websiteSceneSponsorship.ts``, preparation reservations). The WebApp checks it only at its
+#: own reservations, never on this path, so without this bound one job could reach 16 paid attempts
+#: of about $18. Past it the job waits for the owner's decision (``spend_cap_exhausted``). An owner
+#: grant (``extend-scene-execution-budget``, the owner's own chain) is not bound by it.
+AUTOMATIC_EXTENSION_JOB_LIMIT_USD = Decimal(100)
 _MICRO = Decimal("0.000001")
 _FIELDS = frozenset({
     "schema_version", "issuer_channel", "intent_id", "intent_digest", "grant_authority_digest", "sequence",
@@ -120,13 +129,15 @@ def granted_authority(request: Mapping[str, Any], queue_root: str | Path, now: f
     """The job's retained signed grant when it allows automatic extension, else ``None``.
 
     Read from the grant the job was prepared under (retained on this host and
-    bound by its digest). Only a website scene-preparation intent has one.
+    bound by its digest). Only a website scene-preparation intent has one;
+    whether its site confirmed its task or not (owner, 2026-11-12: every job
+    extends its own budget inside the account's monthly limit).
     """
     if (request.get("execution") or {}).get("purpose") != "scene_preparation":
         return None
-    from .website_preparation_authority import _retained_sources
+    from .website_preparation_authority import retained_extension_grant
     try:
-        _context, authority, _valid_until = _retained_sources(request=request, queue_root=queue_root, now=now)
+        authority = retained_extension_grant(request=request, queue_root=queue_root, now=now)
     except (OSError, ValueError, KeyError, TypeError):
         return None
     return dict(authority) if authority.get(GRANT_FIELD) is True else None
@@ -195,7 +206,8 @@ def extend_for_shortfall(*, root: Path, directory: Path, intent: Mapping[str, An
     from .task_evaluation_scene_intent_storage import write_exclusive
     ceiling = _usd(budget["max_total_spend_usd"])
     shortfall = (required_usd - ceiling).quantize(_MICRO, rounding=ROUND_CEILING)
-    if shortfall <= 0 or ceiling + shortfall > SCHEMA_CEILING_USD:
+    if (shortfall <= 0 or ceiling + shortfall > SCHEMA_CEILING_USD
+            or ceiling + shortfall > AUTOMATIC_EXTENSION_JOB_LIMIT_USD):
         return None
     grant = granted_authority(intent["request"], root, now)
     if grant is None:
@@ -222,6 +234,7 @@ def extend_for_shortfall(*, root: Path, directory: Path, intent: Mapping[str, An
 
 
 __all__ = [
+    "AUTOMATIC_EXTENSION_JOB_LIMIT_USD",
     "CHANNEL",
     "DIRECTORY",
     "GRANT_FIELD",

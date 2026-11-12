@@ -336,6 +336,43 @@ def test_root_stage_runs_a_private_blender_and_leaves_the_sealed_tree_untouched(
         assert any(name.endswith("bridge_context.v1.json") for name in archive.namelist())
 
 
+def test_private_blender_turns_off_bytecode_before_any_review_render_script(stage_fixture, monkeypatch):
+    """Review renders import siblings of a script that sits in the sealed toolchain.
+
+    Upstream ``sdk/runtime/render.py`` (pinned revision) starts the private
+    Blender with ``--python <artisan_source>/sdk/runtime/_render_server.py``
+    from the controller, outside the sandbox; the script puts its own sealed
+    directory first on ``sys.path`` and imports ``_render_driver`` and friends.
+    Blender ignores PYTHONDONTWRITEBYTECODE, so the private tree carries a
+    startup module that turns bytecode off, and the sealed tree never sees it.
+    """
+    monkeypatch.setattr(driver, "_bypasses_read_only_modes", lambda: True)
+    fixture = stage_fixture
+    sealed = _sealed_blender(fixture.package)
+    before = sorted(str(p.relative_to(sealed)) for p in sealed.rglob("*"))
+    runtime = fixture.output / "artisan_runtime"
+    runtime.mkdir()
+    tree = driver.private_blender(fixture.package, runtime).parent
+    startup = tree / "5.0/scripts/startup" / driver.NO_BYTECODE_STARTUP_MODULE
+    assert startup.read_text() == driver.NO_BYTECODE_STARTUP_SOURCE
+    import subprocess
+    import sys
+    probe = subprocess.run([sys.executable, "-I", "-c",
+                            "import runpy, sys; m = runpy.run_path(sys.argv[1]); m['register'](); m['unregister'](); "
+                            "print(sys.dont_write_bytecode)", str(startup)],
+                           capture_output=True, text=True, check=True)
+    assert probe.stdout.strip() == "True"
+    assert sorted(str(p.relative_to(sealed)) for p in sealed.rglob("*")) == before
+    # A resumed stage reuses the tree and never writes through a linked name.
+    linked = tree / "5.0/scripts/startup/bl_ui.py"
+    assert linked.stat().st_ino == (sealed / "5.0/scripts/startup/bl_ui.py").stat().st_ino
+    startup.unlink()
+    os.link(sealed / "5.0/scripts/startup/bl_ui.py", startup)
+    driver.private_blender(fixture.package, runtime)
+    assert startup.read_text() == driver.NO_BYTECODE_STARTUP_SOURCE
+    assert (sealed / "5.0/scripts/startup/bl_ui.py").read_text() == "x = 1\n"
+
+
 def test_unprivileged_stage_runs_the_sealed_blender(stage_fixture, monkeypatch):
     """Where read-only modes hold (the control-plane prestage), nothing is linked."""
     monkeypatch.setattr(driver, "_bypasses_read_only_modes", lambda: False)

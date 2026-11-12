@@ -42,8 +42,10 @@ _SOURCE_KEYS = (
 # under v1 and v2 stay valid; v3 is the short sentence shown on the start form
 # from the WebApp release that turns it on ("By sending, you agree to our Terms
 # and Privacy Policy and confirm you're allowed to film and share this site.").
-# Any other version is refused.
-RECORDING_RIGHTS_STATEMENT_VERSIONS = frozenset({"2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3"})
+# v4 (2026-11-12) is the short statement under which a job is shared in full
+# with approved deployment companies (`job_packet_export`). Any other version
+# is refused.
+RECORDING_RIGHTS_STATEMENT_VERSIONS = frozenset({"2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3", "2026-11-12.v4"})
 
 
 OWNER_OBSERVATION_REASON_CODES = frozenset({
