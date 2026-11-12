@@ -6,10 +6,9 @@
   removal plan, source frames and task masks; the capture's Atlas job erases the
   task objects and people from its own views (`docs/website-atlas-scene-source.md`).
 - **Date:** 2026-09-17 (dated snapshot; see `docs/DOCTRINE_PRECEDENCE.md`).
-- **Program:** `arm-decision-proof-v1`. **Backlog item (proposed):** `ADP-009B`
-  (synthetic removal → inpainting → replacement), as the **own-capture,
+- **Scope:** synthetic removal → inpainting → replacement, as the **own-capture,
   pre-reconstruction analog** of the public-splat edit path. **Field consumer:**
-  `ADP-021` fresh-capture (registered clean-background + object-present).
+  fresh capture (registered clean-background + object-present).
 - **Claim ceiling:** `development_only`. This stage conditions a reconstruction
   *input*; it never produces metric, collision, hidden-surface, or physical
   authority.
@@ -179,7 +178,7 @@ truth; `raw_retained` stays true). New artifacts live under
 | `frames/{frame_id}.png` | — | cleaned frames (discrete-frame seam, if used) |
 | `removal_plan.json` | `clean_plate_removal_plan.v1` | §4 analysis output |
 | `removal_manifest.json` | `clean_plate_removal_manifest.v1` | what was removed, from which frames, `mask_track_ref`, per-target observed-vs-generated fill provenance, `observed_bounds_world_m`, and a **compose-back link slot** (`replacement_asset_id` + `pose_world`) filled later by the Astra rebuild |
-| `clean_plate_stage_manifest.json` | `clean_plate_stage_manifest.v1` | receipt: `status`, `mode` (`noop`\|`objects_removed`\|`blocked`\|`failed_closed`), consumed `privacy_processing_manifest` digest, before/after pointers, `program_id`/`adp_item`/`day_gate`/`claim_ceiling` + boundary booleans `False` |
+| `clean_plate_stage_manifest.json` | `clean_plate_stage_manifest.v1` | receipt: `status`, `mode` (`noop`\|`objects_removed`\|`blocked`\|`failed_closed`), consumed `privacy_processing_manifest` digest, before/after pointers, `program_id`/`claim_ceiling` + boundary booleans `False` |
 | `current.json` | — | immutable "current pointer" (repo stage convention) |
 
 The `removal_manifest` is the bridge to the existing rebuild/compose-back chain:
@@ -199,7 +198,7 @@ The `removal_manifest` is the bridge to the existing rebuild/compose-back chain:
    lands with a hermetic test + fail-closed gate): schema validity, the
    fail-closed gate (`BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS`), the privacy
    deferral/verify, the **keep-originals invariant**, and a deterministic
-   validator rejecting any `claim_ceiling` elevation or `program_id`/`adp_item`
+   validator rejecting any `claim_ceiling` elevation or `program_id`
    mismatch (mirroring `public_scene_task_selection.py`).
 3. **Flag default OFF**; the §7.1 comparison is the gate to change it.
 
@@ -223,15 +222,11 @@ The `removal_manifest` is the bridge to the existing rebuild/compose-back chain:
 
 ## 9. Open decisions for the owner (confirm before building §5)
 
-1. **Build now vs. sequence after ADP-009D.** Backlog says fresh-capture feature
-   work "stays at zero" until after the Franka rehearsal. This stage is
-   `development_only` and can be built now as an ADP-009B-aligned seam, or held as
-   design-only. Owner's call.
-2. **Backlog tag.** Proposed `ADP-009B` (+ `ADP-021` as field consumer). Confirm
-   or retag.
-3. **Seam.** Recommend the **WorldLabs/Atlas video seam** (primary) with a
+1. **Build now or hold.** This stage is `development_only` and can be built
+   now, or held as design-only. Owner's call.
+2. **Seam.** Recommend the **WorldLabs/Atlas video seam** (primary) with a
    provider-agnostic core; discrete-frame seam deferred. Confirm.
-4. **Phased build.** Recommend: build the **contract + scaffold first** (Gemini
+3. **Phased build.** Recommend: build the **contract + scaffold first** (Gemini
    analysis → removal plan, SAM 3.1 masks, artifact layout, wiring, flag
    default-off, hermetic test) and **defer the view-consistent fill machinery
    (§5)** until the design is confirmed and the one-capture comparison is set up —

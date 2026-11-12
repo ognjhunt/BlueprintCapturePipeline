@@ -1,6 +1,6 @@
 # Provision SAM preparation services
 
-ADP-009D/day-28 production source preparation uses two services: the launch
+Production source preparation uses two services: the launch
 preparation worker validates the scene-bound SAM profile before queueing child
 phases; the SAM execution worker reopens that same profile while running them.
 A profile configured only on the execution service cannot start a fresh scene.

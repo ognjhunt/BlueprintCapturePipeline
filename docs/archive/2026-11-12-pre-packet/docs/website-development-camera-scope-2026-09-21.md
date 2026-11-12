@@ -1,6 +1,6 @@
 # Website development-surface camera scope
 
-ADP-009D / day-21. The website-origin native attempt on `1ef00878` rendered the
+The website-origin native attempt on `1ef00878` rendered the
 owner-authorized plain development surface. External and overview frames showed
 the object but failed the captured-site dominant-background-color check. The
 worker unconditionally requested captured-site appearance even though the sealed

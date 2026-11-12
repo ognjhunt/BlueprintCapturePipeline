@@ -7,10 +7,10 @@ contradictions. This document is the resolution order for agents (Claude,
 Codex, or other) and human engineers when documents disagree. It governs how
 to *read* conflicts; it is not a license to ignore doctrine.
 
-## Active Programs
+## Active Program
 
 The owner direction of 2026-11-12 makes the free beta's job packet the
-product, alongside Arm Decision Proof v1; it replaces every earlier frame. The
+product; it replaces every earlier frame. The
 shared block of `../PLATFORM_CONTEXT.md` states it. The Pipeline is the packet
 factory (the simulation of the site, the success rule and the early trial);
 WebApp owns the site side (the job page, the first look, the site's
@@ -18,37 +18,24 @@ permissions and the responses of deployment companies). `doctrine/` is the
 canonical source synchronized across all three repos. The historical
 identifier `free-beta-evaluated-pilot` remains readable.
 
-For Arm Decision Proof,
-[`arm_decision_proof_v1/north_star_contract.json`](arm_decision_proof_v1/north_star_contract.json)
-is the frozen scope and acceptance contract and
-[`arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-is its active backlog. Its `status` value `sole_active_program` predates the
-2026-10-14 and 2026-10-21 decisions and is a historical label. They govern what
-Arm Decision Proof work may be started; they do not override raw artifact truth,
-code/schema reality, rights, safety, spend, or physical-evidence gates.
-
 The owner decision of 2026-10-05
 (`gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`)
-sets how to read them. Prospecting, screening, outreach, and partner discovery
-are open across robot forms and task families. The contract's `scope` is the
-current default build target, not a ban on other forms, and its `non_goals`
-bound this track's build-out. Where older freeze or sequencing wording, including in the shared
-blocks of `PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`, and
-`VISION.md`, names a robot form or task family, it limits build-out, not
-discovery. Building evaluation support for another form or task family does
-not wait for a completed proof. The explicit 2026-10-27 owner request
-authorizes beta task-coverage implementation, including deformables and
-humanoids; do not reapply an older focus-decision or program-freeze requirement
-to that work. `AGENTS.md` holds the current rule text. ADP's proof scope remains.
-Under the 2026-11-12 direction, hardening the automatic test for any kind of
+opens prospecting, screening, outreach, and partner discovery across robot
+forms and task families. Where older freeze or sequencing wording, including in
+the shared blocks of `PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`,
+and `VISION.md`, names a robot form or task family, it limits build-out, not
+discovery. The explicit 2026-10-27 owner request authorizes beta task-coverage
+implementation, including deformables and humanoids; do not reapply an older
+focus-decision or program-freeze requirement to that work. The early trial
+covers every kind of robot body: arms, mobile manipulators, wheeled humanoids
+and humanoids. `AGENTS.md` holds the current rule text. Under the 2026-11-12 direction, hardening the automatic test for any kind of
 job, for several objects or for unattended scale, and standing re-tests of
 every robot on every open job, are paused: start no new work on them.
 
 Other documents remain useful as stable dependency contracts, compatibility
 instructions, or historical evidence. Their existence does not make their lane
-active. An agent must name the job-packet step, or the Arm Decision Proof item
-and gate, that a legacy document directly unblocks before using it as
-implementation direction.
+active. An agent must name the job-packet step that a legacy document directly
+unblocks before using it as implementation direction.
 
 ## For "what exists / what is true right now"
 
@@ -63,7 +50,7 @@ Highest authority first:
 4. The shared doctrine blocks in
    [`../PLATFORM_CONTEXT.md`](../PLATFORM_CONTEXT.md) and
    [`../WORLD_MODEL_STRATEGY_CONTEXT.md`](../WORLD_MODEL_STRATEGY_CONTEXT.md).
-5. [`../VISION.md`](../VISION.md) — the bounded proof horizon and explicitly
+5. [`../VISION.md`](../VISION.md) — the current horizon and explicitly
    conditional future. It never overrides the two documents above.
 
 If a lower layer claims a capability the higher layer does not support, the
@@ -75,8 +62,6 @@ lane is live loses to code that gates the lane off.
 Highest authority first:
 
 1. Current explicit owner direction and the shared active-program doctrine.
-   For Arm Decision Proof work, its frozen north-star contract and backlog
-   still govern the scientific proof; the job packet does not widen it.
 2. The shared block of [`../PLATFORM_CONTEXT.md`](../PLATFORM_CONTEXT.md).
 3. The strategy and build priorities in
    [`../WORLD_MODEL_STRATEGY_CONTEXT.md`](../WORLD_MODEL_STRATEGY_CONTEXT.md).

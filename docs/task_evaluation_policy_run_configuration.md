@@ -4,8 +4,8 @@ This contract is the no-spend bridge from an authenticated configured-scene
 offering to the existing Task Evaluation preparation, activation, and terminal
 delivery paths. It does not allocate a provider or execute an episode.
 
-The Arm Decision Proof scope is the day-21 learned-policy execution/evidence
-gate: one Franka Panda + Robotiq 2F-85 embodiment and exactly the ordered frozen
+The learned-policy execution/evidence gate of this contract binds one Franka
+Panda + Robotiq 2F-85 embodiment and exactly the ordered frozen
 pair `pi05_droid`, `groot_n17_droid`. A different embodiment, candidate, order,
 cell, seed, or policy-specific scenario change fails closed.
 

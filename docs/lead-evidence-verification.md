@@ -1,8 +1,7 @@
 # Lead evidence verification
 
 Owner-requested scope, 2026-10-03: reusable Sites-First Research verification.
-This supports the ADP-010 partner-discovery boundary ahead of the day-14 protocol
-freeze; it does not satisfy partner admission, task-owner truth or rights.
+This supports the partner-discovery boundary; it does not satisfy partner admission, task-owner truth or rights.
 Observed gap: QA's blanket `source_support_verified` and accepted-key list could
 promote a plausible site with no recorded human-workflow assessment. The smallest
 reversible repair adds an auditable source-assessment gate to the existing QA and

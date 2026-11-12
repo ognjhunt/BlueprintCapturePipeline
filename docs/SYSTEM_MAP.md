@@ -2,9 +2,7 @@
 
 What connects to what in the free beta, end to end, as of 2026-11-05. This page
 describes the current state only. Read it to find the unit, module, store and
-service at each step, then follow the links for detail. Arm Decision Proof v1
-(`docs/arm_decision_proof_v1/`) has its own protocol and is not described here,
-except where beta code shares its paths.
+service at each step, then follow the links for detail.
 
 Evidence for every claim here, and what was not checked, is in
 [`audits/2026-11-simplification-audit.md`](audits/2026-11-simplification-audit.md).
@@ -83,7 +81,7 @@ The bounded estimate or "held" is decided in step 12 (`beta_policy_screening_res
 | Provider output resume | door `provider-output-resume` | `provider_output_promotion` | canary dispatch root, B2 | promotes a staged provider archive before anything deletes it |
 | Embodiment preparation | door `public-embodiment-preparation` → `blueprint-embodiment-preparation.{path,timer}` | `deployment_embodiment_preparation_controller` | `pcp/embodiment-preparation/`, `/var/lib/blueprint/robot-models/batches/` | one sealed, funded grant per batch **[MONEY]** |
 | Agent runs (paused) | `blueprint-agent-run-dispatcher.timer` (founder stop since 2026-10-02, explicit release only) → `pcp/robot-eval-job-requests` (its consumer, the legacy `blueprint-pipeline-control-plane` loop, was retired on 2026-11-06, P-RT-06; resuming agent runs needs a new consumer) and `blueprint-team-evaluation-runner.path` | `agent_run_executor`; `team_candidate_quick10_launch` | `pcp/robot-eval-job-requests`, `pcp/team-evaluations` | do not release the hold without the founder |
-| ADP agent execution | `blueprint-agent-execution.service` (continuous), `blueprint-agent-stage-replay.{path,timer}` | `agent_execution.production`, `agent_execution.stage_recovery` | `pcp/agent-execution/`, `tei/stage-replays/` | Arm Decision Proof assessment pilot; WebApp `/api/internal/pipeline` agent-execution routes |
+| Agent execution | `blueprint-agent-execution.service` (continuous), `blueprint-agent-stage-replay.{path,timer}` | `agent_execution.production`, `agent_execution.stage_recovery` | `pcp/agent-execution/`, `tei/stage-replays/` | Assessment pilot; WebApp `/api/internal/pipeline` agent-execution routes |
 
 Lanes that are installed but switched off on purpose (configured controls, launch supervisor, terminal resource release, the Cloud Run team-scene lane, native G1 campaigns, SAM-3.1 execution) are listed with their reasons in the audit's "Dormant on purpose" table.
 

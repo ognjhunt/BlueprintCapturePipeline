@@ -250,7 +250,7 @@ admission. Status/retry never advance the job or alter timer holds. Native resum
 options, paths, commands, profiles and spending overrides are refused. Both run
 as `blueprint`; retry can write only the selected capture's `pipeline/atlas`
 directory and the door's result directory. This recovery supports the beta scene
-journey and the ADP-009D development rehearsal without raising evidence claims.
+journey without raising evidence claims.
 
 The same `--atlas-retry` reopens a `ready` job in two cases only. The first is
 its untried gap-preserving form (`job.gap_preserving_upgrade` in the status).

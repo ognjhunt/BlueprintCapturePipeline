@@ -44,12 +44,11 @@ artifact-store helpers), systemd units, bash (`deploy/host`), Terraform (`deploy
   in flight"); body says why; end every message with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Do not push; the controller
   pushes and opens PRs.
-- **Backlog item (AGENTS.md "before accepting work"):** ADP-009D, day-28 gate. The two-candidate
-  Franka rehearsal and every website scene run need a control plane that admits the whole chain,
+- **Backlog item (AGENTS.md "before accepting work"):** every website scene run needs a control plane that admits the whole chain,
   deploys fixes and tears down. On 2026-09-26 disk exhaustion blocked a paid website scene
   (`scene_whole_chain_capacity_insufficient`) and a deploy (`deploy_disk_budget_exceeded`).
   `docs/runbooks/task-evaluation-release-retention.md` already names release retention
-  "the ADP-009D day-28 disk-safety policy". Each PR description restates: the item, the
+  the disk-safety policy. Each PR description restates: the item, the
   observed completion artifact, why existing infrastructure is insufficient, and why the change
   is the smallest reversible one.
 

@@ -1,6 +1,6 @@
 # Resume the original runtime installation before refreshing it
 
-ADP-081 day-42 prerequisite: release the immutable usage recovery fix (#2597).
+Release the immutable usage recovery fix (#2597).
 This is protected installation recovery, not completion of the economics gate.
 
 Observed: after dependency extraction completed, initial runtime copying began

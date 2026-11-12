@@ -665,7 +665,7 @@ CRM write or send.
 ## Site universe backlog slice
 
 `site-universe-backlog.py` pins one reviewed site universe export as optional
-prioritization for the daily run (ADP-010 partner discovery). It is off until the
+prioritization for the daily run (partner discovery). It is off until the
 owner pins an export; with `control.site_universe` absent or `enabled=false` the
 create payload, metadata, instructions and row are byte-identical to a release
 without this feature. The pin comes from the control read the run start already
@@ -743,7 +743,7 @@ write or send.
 ## Outreach-ready hypothesis direction
 
 `outreach-ready-direction.py` is the only switch for outreach-ready hypotheses in
-daily QA (ADP-010 partner discovery; owner decision 2026-10-05; design v1.1, rule v1.2). Without
+daily QA (partner discovery; owner decision 2026-10-05; design v1.1, rule v1.2). Without
 an enabled `daily_qa` direction every run is in shadow mode: the row, create payload,
 packet, QA input, review, publication payloads and status output are byte-identical
 to a release without the feature. After publication completes, the tier is recorded
@@ -814,7 +814,7 @@ store. No provider, model, session, CRM write or send.
 
 ## Per-site research line (site screen)
 
-`site-screen.py` runs the per-site research line for ADP-010 partner discovery. The
+`site-screen.py` runs the per-site research line for partner discovery. The
 owner approved it on 2026-10-05 after a successful 50-site pilot. Each site gets one
 Parallel Task run (processor `core`, $0.025 per completed run; failed runs are not
 billed). The run fills the `blueprint.site-screen.v3` form, with a URL and an exact

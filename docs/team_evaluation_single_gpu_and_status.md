@@ -1,8 +1,7 @@
 # One GPU per team evaluation and bounded release status
 
 This repairs free-beta journey L5 (an invited team's scored Task Evaluation
-Run). It also exercises the runtime/teardown precursor of ADP-009D's day-28
-rehearsal; authored fixtures do not qualify that gate or physical performance.
+Run). Authored fixtures do not qualify physical performance.
 
 The previous controller made eight separate 25-cell GPU sessions. Two setup
 failures and two partial batches made the retained internal diagnostic use
@@ -82,7 +81,7 @@ Verification protects these claims:
   unavailable source identity and busy-disk failure behavior.
 
 These hermetic tests make no new GPU execution, customer performance, physical
-safety or ADP qualification claim. Promotion additionally requires exact-source
+safety or qualification claim. Promotion additionally requires exact-source
 CI/signing, reviewed merge, canonical deployment, live version readback and
 preserved operational holds.
 

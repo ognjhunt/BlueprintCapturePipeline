@@ -1,6 +1,6 @@
 # Website source frames
 
-ADP-009B / public day 14; beta journey step: concurrent scene preparation.
+Beta journey step: concurrent scene preparation.
 `website_scene_geometry` decodes a website capture's source video on the CPU
 into the frames that SAM tracking, image editing and Atlas posing read. It
 needs no model weights and no GPU, and never claims measured scale or physical

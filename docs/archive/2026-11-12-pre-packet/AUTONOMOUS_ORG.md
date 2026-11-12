@@ -26,8 +26,6 @@ If this file drifts from those, update this file immediately rather than inventi
 Blueprint remains:
 
 - capture-first
-- solely focused on Arm Decision Proof v1: one prospective two-candidate
-  fixed-arm Task Evaluation Run on a new partner workcell, physically adjudicated
 - world-model backends remain replaceable support infrastructure
 - exact-site package and hosted-access focused
 - rights-safe, privacy-safe, provenance-safe
@@ -35,11 +33,7 @@ Blueprint remains:
 
 Do not reframe the company as qualification-first, model-checkpoint-first, or generic marketplace-first.
 
-All listed roles are capabilities, not parallel mandates. Until Arm Decision
-Proof v1 is adjudicated, every active routine or issue must directly unblock its
-day-7, day-14, day-28, day-35, or day-42 gate. Growth, city launch, humanoid,
-world-model, marketplace, post-training, and unrelated product routines are
-paused even if their role definitions remain for compatibility.
+All listed roles are capabilities, not parallel mandates.
 
 ## Current Org Reality
 
@@ -140,10 +134,6 @@ For the exact current task and routine inventory, read (in the
 
 When autonomous-org work touches `BlueprintCapturePipeline`, keep these constraints explicit:
 
-- optimize only for the Arm Decision Proof critical path, using existing
-  captures/scenes to complete downstream seams before partner capture arrives
-- require every issue to name its ADP backlog item, gate, observed blocker, and
-  completion artifact; reject general platform improvement work
 - keep geometry, simulator, world-model/provider, and physical-evidence choices
   swappable behind stable request, plan, result, and leaf-run contracts
 - preserve rights, privacy, and provenance metadata as first-class truth

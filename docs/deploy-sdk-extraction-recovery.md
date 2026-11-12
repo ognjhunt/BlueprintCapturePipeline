@@ -1,6 +1,6 @@
 # Bound repeated wheel parsing during deployment
 
-ADP-081, day-42 prerequisite: complete the reviewed immutable usage replay
+Complete the reviewed immutable usage replay
 release (#2597). This is installation recovery, not economics-gate completion.
 
 After #2598, the host fetched the existing pinned dependency and produced its

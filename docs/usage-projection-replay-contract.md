@@ -1,7 +1,7 @@
 # Recover immutable placement usage delivery
 
-Scope: ADP-081, partner-proof day-42 economics evidence; this is a prerequisite
-repair, not completion of that gate. The configured-controls placement path
+Scope: economics evidence; this is a prerequisite repair, not completion of
+that gate. The configured-controls placement path
 already checkpoints inference and projects usage into WebApp `agentRuns`.
 Estimates remain estimates, separate from official billing and spend authority.
 

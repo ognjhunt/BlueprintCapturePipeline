@@ -2,8 +2,8 @@
 
 Owner direction, October 12, 2026: replace custom Astra CAD/Blender authoring
 for **new** rigid and articulated objects with official ARTISAN, and make the
-authoring budget centrally editable. This is the ADP-009 construction dependency
-for the day-14 scene rehearsal and day-21 diagnostic. It does not replace capture
+authoring budget centrally editable. This is a construction dependency
+for the scene rehearsal and diagnostic. It does not replace capture
 reconstruction, appearance removal, scene registration, or native evaluation.
 
 This implementation is awaiting runtime rehearsal and production activation.

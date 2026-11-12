@@ -2,7 +2,6 @@
 
 ## Scope and gate
 
-- Active program: ADP-009D, day-14 production-promotion validation.
 - Existing backlog contract: PIPE-05 risk-based test lanes.
 - Completion artifact: a full-lane workflow that keeps exact node-ID and
   zero-skip evidence while emitting actionable duration/parametrization data.

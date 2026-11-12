@@ -1,6 +1,6 @@
 # Atlas scene automation
 
-This is the ADP-040 / Day 28 development-only capture preparation adapter. It
+This is the development-only capture preparation adapter. It
 extends the existing source-video planner and canonical paid-resource allocator;
 it does not create a separate agent service or replace original capture evidence.
 

@@ -1,6 +1,6 @@
 # Re-examine retained Atlas source before requesting recapture
 
-ADP-040 / Day 28 dependency: make the existing source-review and recovery seam
+Make the existing source-review and recovery seam
 replayable for a website capture. The observed completion artifact is a
 source-bound higher-detail planner receipt plus a resumed original job, with
 its previous review, spending records and original expiry retained. This is a

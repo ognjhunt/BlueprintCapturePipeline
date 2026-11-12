@@ -1,6 +1,6 @@
 # Control-plane concurrency acceptance: reviewed TDD plan
 
-ADP-009D / day 28. Observed blocker: Plan 13c has no joined scene-chain
+Observed blocker: Plan 13c has no joined scene-chain
 load artifact. Completion artifact: an immutable JSON report and a summary
 in `docs/BETA_CAPACITY_COST_STORAGE_MODEL_2026-07-08.md`, bound to the source
 commit, fixture digests, host, measured concurrency, and all stage outcomes.

@@ -8,7 +8,7 @@ This state closes the local discovery/fix/evidence slice only. It does not autho
 
 Issue/run id: `2026-10-07-site-first-reliability`, local branch `reliability/crossrepo-handoff`; no Paperclip issue id supplied. Budget/timeout: zero model/GPU/provider spend; selected impact command capped at 120 seconds. Stage reached: source reproduction, fix, offline focused tests, CI-impact selection and baseline comparison. Owner: root campaign coordinator for integration/release; this branch is the independent crossrepo slice. No remote projection is required for this local result.
 
-ADP scope: ADP-010 partner day-7 site intake continuity and existing ADP-009/day-14 immutable capture compatibility. The observed blocker is false required-stage completion, not missing reconstruction capability. The smallest change reuses current result classification, lease, stage-ledger, and commit boundaries.
+Scope: site intake continuity and existing immutable capture compatibility. The observed blocker is false required-stage completion, not missing reconstruction capability. The smallest change reuses current result classification, lease, stage-ledger, and commit boundaries.
 
 ## Pinned inputs and actual path
 

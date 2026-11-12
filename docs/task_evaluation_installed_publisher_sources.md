@@ -2,7 +2,7 @@
 
 The production preparation worker can consume exact publisher bytes already
 installed on its host without uploading them or downloading them again. This is
-an ADP-009 scene-construction input binding, not a geometry or policy qualification.
+a scene-construction input binding, not a geometry or policy qualification.
 
 The operator-owned service environment may set
 `BLUEPRINT_TASK_EVALUATION_INSTALLED_SOURCE_BINDINGS_JSON` to a JSON list:

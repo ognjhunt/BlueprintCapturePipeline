@@ -2,7 +2,7 @@
 
 This change addresses the uploaded 23-row audit. This is a source implementation and verification record, not a claim that all 23 production outcomes are complete. Several audit rows explicitly describe already-existing automation or require live, physical, billing or access evidence.
 
-Program: Arm Decision Proof v1. These changes support day-14 immutable capture and the audit's ADP-081 day-42 accounting/reliability prerequisites. The user explicitly requested all audit findings, including the narrowly scoped supplementary-capture and owner-clarification work. Existing qualification, consent, paid-resource and founder-hold boundaries remain authoritative.
+These changes support immutable capture and the audit's accounting and reliability prerequisites. The user explicitly requested all audit findings, including the narrowly scoped supplementary-capture and owner-clarification work. Existing qualification, consent, paid-resource and founder-hold boundaries remain authoritative.
 
 ## Finding-by-finding status
 

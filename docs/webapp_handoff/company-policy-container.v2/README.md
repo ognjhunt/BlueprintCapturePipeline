@@ -1,7 +1,7 @@
 # Company Policy Container Contract v2
 
 This handoff freezes the smallest company-facing policy interface for the
-Arm Decision Proof partner adapter (ADP-011 and ADP-050). It is not launch
+partner adapter. It is not launch
 authority and it does not make Blueprint a general container hosting platform.
 
 The company supplies an OCI image reference pinned by SHA-256 plus declared

@@ -1,7 +1,6 @@
 # CAD execution in provider containers
 
-This is the ADP-009B replacement-creation boundary needed for ADP-009D's day-14
-policy rehearsal and day-21 sealed results. Instance 51019374 failed its early
+This is the replacement-creation boundary. Instance 51019374 failed its early
 CAD preflight because ordinary container root lacks the namespace privileges
 required by the original bubblewrap path. Training had not started.
 

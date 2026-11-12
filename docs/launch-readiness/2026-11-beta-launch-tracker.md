@@ -678,8 +678,8 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - the model-terms review receipt (`beta_policy_screening_g1.py:219`, `native_g1_beta_authority.py:38-43, 80`);
   - the authorization basis string (`native_g1_beta_authority.py:60`);
   - the tokenizer fallback folder (`native_g1_beta_tokenizer.py:19`).
-- The ADP team campaigns have 11 dispatch records under `/mnt/blueprint-work/pipeline-control-plane/native-g1-team-campaign-work/`. None completed. Besides the blockers already listed they include `vast_cuda_runtime_host_image_incompatible` and `vast_paid_launch_lock_busy`.
-- `g1_provider_manipulation_pair_blocked` comes from the ADP pair runner (`native_g1_provider_runtime.py:450`): a pair fails unless both of its candidates complete. It cannot occur on the beta path:
+- The native G1 team campaigns have 11 dispatch records under `/mnt/blueprint-work/pipeline-control-plane/native-g1-team-campaign-work/`. None completed. Besides the blockers already listed they include `vast_cuda_runtime_host_image_incompatible` and `vast_paid_launch_lock_busy`.
+- `g1_provider_manipulation_pair_blocked` comes from the G1 pair runner (`native_g1_provider_runtime.py:450`): a pair fails unless both of its candidates complete. It cannot occur on the beta path:
   - the beta runtime never imports that runner (`native_g1_beta_bundle.py:23, 54, 60`);
   - the beta lane skips the policy-query checks (`adp_isaac_lab_arena_vast.py:1169`).
 
@@ -688,7 +688,7 @@ This session owns the G1 rows (branch `claude/modest-hopper-102z18` in both repo
   - one RTX A6000 at $0.5485/h, live 4,988 s (83 min);
   - Vast's posted charge was $0.903: GPU $0.675, disk $0.097, bandwidth $0.131;
   - provider zero was confirmed;
-  - its limits were the ADP lane's: $5 cap, $1.25/h, 4 h.
+  - its limits were that lane's: $5 cap, $1.25/h, 4 h.
 - **Setup:** about 12 min, from instance start at 23:17:24Z to the first worker at 23:29:05Z. It downloaded all four checkpoints (about 20.8 GB), 4.4 GB of runtime dependencies and the 339 MB bundle.
 - **DP cell:**
   - the worker started at 23:29:05Z and reached its episode about 6.8 min later (cold Kit);

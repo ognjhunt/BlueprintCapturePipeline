@@ -28,7 +28,7 @@ scientific digest. This preserves Python float serialization without rewriting
 evidence identities. Legacy publications remain readable; canary v4 stays on its
 existing RFC 8785 transport. The published legacy eight-family Quick protocol
 retains its separately named object-cousin variation; it is not translated into
-the exact-workcell primary matrix or the ADP 100-cell proof protocol.
+the exact-workcell primary matrix.
 
 The existing signed task-discovery publication and task-decision response also
 carry original canonical bodies for discovery, individual candidates, decision,

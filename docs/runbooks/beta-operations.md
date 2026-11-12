@@ -13,8 +13,8 @@ Before you act:
 
 - Run `door status`. Read `active_release`, `deploys`, `door_requests`,
   `deploy_activation_hold`, `holds`, `failed_units` and `capacity`.
-- Ask the owner before you spend money, delete retained data or contact an
-  outside company ([`../../AGENTS.md`](../../AGENTS.md)).
+- Ask the owner before you spend money or delete retained data. Contacting a company that Blueprint has not approved is outreach and needs the owner's word first.
+  ([`../../AGENTS.md`](../../AGENTS.md)).
 - Owners and escalation:
   [`beta-ops-incident-response.md`](beta-ops-incident-response.md#owners-and-escalation).
 

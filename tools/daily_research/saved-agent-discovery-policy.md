@@ -189,8 +189,7 @@ live knowledge-proposal evidence. Validate existing strings, dates and enums
 without another research turn, fabricated evidence or terminal-artifact edits.
 
 This prospective instruction refinement is proposal
-BP-RESEARCH-IMPROVE-20261004-DISCOVERY-OUTPUT, supporting ADP-010 partner selection
-at the partner-phase day-7 gate. The original terminal run, coverage, findings and
+BP-RESEARCH-IMPROVE-20261004-DISCOVERY-OUTPUT, supporting partner selection. The original terminal run, coverage, findings and
 two output-repair turns are retained at
 `gs://blueprint-8c1ca.appspot.com/operations/research/improvements/2026-10-04/BP-RESEARCH-IMPROVE-20261004-DISCOVERY-OUTPUT/ec940eb5e1950693c99227678ec88abe28d4ecea5ba4a3135dffb2483b20a32e/proposal-and-original-evidence.json`
 (generation 1791122498870579; SHA-256 ec940eb5e1950693c99227678ec88abe28d4ecea5ba4a3135dffb2483b20a32e).

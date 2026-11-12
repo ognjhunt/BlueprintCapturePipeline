@@ -1,6 +1,6 @@
 # Website native startup ownership — 2026-09-21
 
-ADP-009D/day-21 blocker: the controller-origin development construction for
+Blocker: the controller-origin development construction for
 `team-eval-5aea93d1-ab8a-4fe5-995a-48a0a22f90bb` never reached Isaac. The spend
 guard journal at 18:17:04 UTC records deleting Vast instance `51947666` after
 8m31s as `unbooted_dud_past_boot_ttl`, although its independent watchdog was

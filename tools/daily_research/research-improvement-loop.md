@@ -12,7 +12,7 @@ provider session. Scheduling such a follow-up does not make it the business
 runtime or permit a second release owner.
 
 Scope is the owner's existing eight workstreams, with AWS skipped. Research
-discovery supports [ADP-010 partner selection, partner-phase day 7](../../docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md);
+discovery supports partner selection;
 findings do not constitute partner admission or physical proof. Recurring changes
 stay limited to research strategy, output presentation, source/date handling,
 exact facility/task deduplication and ordinary-error recovery. Do not widen the

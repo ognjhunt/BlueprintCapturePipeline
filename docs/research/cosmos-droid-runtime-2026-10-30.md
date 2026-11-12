@@ -42,4 +42,4 @@ Each candidate's sealed runtime binds the snapshot inventory, source ZIP/manifes
 
 The composed compiler/planner/bundle regression prepares Pi, GR00T, Edge, Nano and MolmoAct2 DROID at $3 maximum per candidate ($15 total fixture reservation), with the actual third camera and independent manifests. At a smaller site budget, the ordinary planner retains a deferred reason for each candidate that does not fit. A historical two-camera scene keeps the other candidates and reports the missing actual third view for both Cosmos policies.
 
-This followup depends on the shared `local_policy_provisioning.py` helper from the Molmo runtime integration, including standalone interpreter isolation fix `2a9b4dbaa`. It does not modify the PiPER or Molmo dependency locks and does not widen historical ADP pair authorization.
+This followup depends on the shared `local_policy_provisioning.py` helper from the Molmo runtime integration, including standalone interpreter isolation fix `2a9b4dbaa`. It does not modify the PiPER or Molmo dependency locks.

@@ -1,6 +1,6 @@
 # Selected handoff recovery before a processing claim
 
-ADP-081/day42: recover one immutable capture delivery while preserving its
+Recover one immutable capture delivery while preserving its
 processing history, admission and accounting boundaries.
 
 The operator door's `selected-handoff` request can name a retained failed

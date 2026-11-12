@@ -1,6 +1,6 @@
 # Selected evaluation CPU compilation replay
 
-ADP-009D / day-21: replaying the real website-selected evaluation before deployment exposed `rigid_relocation_surface_target_binding_mismatch`. The retained scene/definition/success records use a Python-owned target digest with `stable_seconds: 1.0`; website transport deliberately uses a cross-runtime digest and represents it as `1`. Every physical and scoring field is the same.
+Replaying the real website-selected evaluation before deployment exposed `rigid_relocation_surface_target_binding_mismatch`. The retained scene/definition/success records use a Python-owned target digest with `stable_seconds: 1.0`; website transport deliberately uses a cross-runtime digest and represents it as `1`. Every physical and scoring field is the same.
 
 The adapter now validates each original target seal, normalizes only for comparison through the existing cross-runtime target helper, and retains the native target in compiled evidence. Changed geometry/scoring or an invalid digest still refuses compilation. No source artifact is rewritten.
 

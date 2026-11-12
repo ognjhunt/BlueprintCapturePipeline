@@ -47,7 +47,7 @@ Two ways back, both CPU only:
   `python -m blueprint_pipeline.native_task_runtime_source_packet --runtime-profile unitree_g1 --output-dir <dir> --isaaclab-repo <IsaacLab at ffff603e> --arena-repo <Arena at its pinned commit> --dependency-wheel-dir <the 81 wheels>`.
   The digest changes, so the new receipt must be pinned.
 
-Then stop reading the historical ADP registry. Add a controller-owned manifest,
+Then stop reading the historical registry. Add a controller-owned manifest,
 `config/native_g1_shared_inputs.v1.json`, that pins:
 
 - the publisher source receipt (`4170b783…`, HumanoidArena `68479287…`);

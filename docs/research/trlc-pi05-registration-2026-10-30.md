@@ -79,8 +79,8 @@ are verified by the installed profile and preserved in cloud runtime staging.
 Rights are scoped to the current user-authorized internal simulation and the
 public terms, including use restrictions, applicable law and notice conditions.
 They assert no new human review, reused G1 task authority, vendor authorization,
-model redistribution, public model service, official ranking, self-grading,
-ADP evidence or physical validation. Operators must preserve the applicable
+model redistribution, public model service, official ranking, self-grading
+or physical validation. Operators must preserve the applicable
 conditions; this integration does not grant permissions beyond them.
 
 ## Mechanical and inference boundary

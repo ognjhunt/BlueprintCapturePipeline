@@ -11,7 +11,7 @@ were not performed. Research and communications budgets are not available here.
 ## Scope and current baseline
 
 This is the user's explicitly authorized, bounded evaluator comparison. It
-supports ADP-009D's Day-28 sealed episode evidence seam, remains optional to the
+supports the sealed episode evidence seam, remains optional to the
 gate, and overrides the repository's general pause on evaluator research only
 for this shadow work. Completion evidence is the pinned manifest, retained-media
 inventory, offline request plan, deterministic replay/import harness, focused
@@ -20,10 +20,10 @@ optional episode interpreter but no paired Argus importer or independent-label
 comparison. The smallest reversible change is this isolated module and packet;
 no production evaluator or incident/deploy path is modified.
 
-The baseline is explicitly **the current repository's ADP deterministic grader**
+The baseline is explicitly **the current repository's deterministic grader**
 at `35f5c9ad` (the full SHA and eight source hashes are in the manifest), using
 `adp_task_scoring.score_task_episode_from_spec`. It dispatches to the original
-ADP-009D rigid grader, task-neutral rigid scorer, or articulated scorer according
+rigid grader, task-neutral rigid scorer, or articulated scorer according
 to the retained task spec. `scored` plus `task_succeeded` maps to success/failure;
 `undetermined` maps to unclear. Every imported episode must replay to the exact
 retained score JSON. There is no copied replacement scoring implementation.
@@ -43,7 +43,7 @@ Historical retained result metadata was queried through the existing operator
 door, using GET only; no live deployment configuration was queried. If “current grader” means a
 different deployed learned judge, its exact retained outputs, configuration,
 prompt/model identity and source pin are required; this harness refuses an
-unsupported baseline kind instead of silently substituting the ADP baseline.
+unsupported baseline kind instead of silently substituting the baseline.
 
 ## Available evidence and rights
 
@@ -55,12 +55,12 @@ availability, not a claim that historical remote episodes were deleted.
 | Retained item | Count | Evidence quality and admission |
 | --- | ---: | --- |
 | Eligible recorded robot episodes | 0 | Success 0; failure 0; ambiguous 0; supported subtle failures/occlusion/undo 0 |
-| ADP episode indexes | 3 | Each says episode_count 0 and episode_media_exists false; second scene and both third-scene tasks abstained before episodes |
+| Episode indexes | 3 | Each says episode_count 0 and episode_media_exists false; second scene and both third-scene tasks abstained before episodes |
 | Generative video entries | 14 | 12 unique byte digests, including duplicate extracted/archived Cosmos canary footage; not simulator-state or physical task truth |
 | Placeholder video files | 2 | 59-byte and 23-byte fixture text, not playable episodes |
 | Archived capture fixture clips | 2 | App Clip recorded-capture contract fixtures, 53,699 and 53,695 bytes; no robot-task episode, current grade or independent outcome review |
 
-Historical `OVERNIGHT_RESULTS_2026-08-08.md` describes three π0.5 episodes in
+An earlier overnight results note (2026-08-08, in git history) describes three π0.5 episodes in
 v65 (`moved`, `grasped`, `moved`, none placed) and three GR00T episodes each in
 v82/v84. These are narrative pointers here, not nine admitted episode bundles;
 v65 also cannot be paired directly with later camera-corrected runs. Those

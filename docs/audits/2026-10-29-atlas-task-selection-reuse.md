@@ -1,6 +1,6 @@
 # Reuse the capture's own Atlas task selection
 
-ADP-040 / Day 28 dependency and beta journey blocker: a retained uncertain
+Beta journey blocker: a retained uncertain
 object analysis must not require the customer to identify the object again
 after the same capture's Atlas review has selected a supported observed
 instance. The completion artifact is continued original preparation, adopted

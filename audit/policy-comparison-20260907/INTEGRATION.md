@@ -8,7 +8,7 @@ Final observed remote main: `da3ff3ba25e411dffc64358655598ba7e5470b15` (#1764). 
 
 The implementation is committed locally and unpushed. This audit owns no live runtime, deployment, provider, model, notification, queue or lock. The execution owner retains those responsibilities. Do not treat this handoff as launch or deployment authorization.
 
-Review `AUDIT.md` for seven reproduced findings, the complete parity/invariant matrix and remaining runtime boundaries. The patch changes existing session/worker/episode/scorer/media/rescore seams. It introduces no new policies, evaluation campaign, thresholds, schemas, runtime selection, published profiles or physical claims.
+The first audit report (in git history) records seven reproduced findings, the complete parity/invariant matrix and remaining runtime boundaries. The patch changes existing session/worker/episode/scorer/media/rescore seams. It introduces no new policies, evaluation campaign, thresholds, schemas, runtime selection, published profiles or physical claims.
 
 Reviewable behavior changes:
 

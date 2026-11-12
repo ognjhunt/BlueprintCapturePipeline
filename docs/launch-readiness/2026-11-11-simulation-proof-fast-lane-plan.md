@@ -226,9 +226,9 @@ Read through the operator door, read-only.
   policies (the RoboArena network). Run the lane on a comparable tabletop task
   and compare its ranking with the public one. One study did this and matched
   all six pairs of four policies (arXiv 2604.09860).
-- **Then paired trials.** Arm Decision Proof exists to compare a sealed
-  simulated decision with physical trials. One DROID arm and one task would
-  give Blueprint its own number. It has no partner yet.
+- **Then paired trials.** Compare a sealed simulated decision with physical
+  trials. One DROID arm and one task would give Blueprint its own number. There
+  is no partner yet.
 - **Always, a running record.** Every result states the published accuracy,
   its conditions, and which of them held for that job. No page claims more.
 

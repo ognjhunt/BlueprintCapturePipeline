@@ -1,6 +1,6 @@
 # Policy comparison implementation completion
 
-The follow-up implements the remaining actionable producer gaps from `AUDIT.md` and `INTEGRATION.md`. All changes are local. **No merge, push, deployment, model download, hosted inference, real policy query, provider allocation, queue/lock mutation, notification or physical trial occurred.**
+The follow-up implements the remaining actionable producer gaps from the first audit report (in git history) and `INTEGRATION.md`. All changes are local. **No merge, push, deployment, model download, hosted inference, real policy query, provider allocation, queue/lock mutation, notification or physical trial occurred.**
 
 Implementation commit: `c38a0bc9b9ba339f2bb11f0fed5b420b36174ed1`.
 Worktree: `/private/tmp/bcp-policy-comparison-audit-20260907-e524`.

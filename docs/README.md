@@ -1,25 +1,16 @@
 # Documentation Authority
 
-## Active Programs
+## Active Program
 
-Two programs are active (see the shared block of `../PLATFORM_CONTEXT.md`):
-the free beta's job packet (owner direction 2026-11-12), whose site side lives
-in `Blueprint-WebApp`, and the evidence program
-[`Arm Decision Proof v1`](arm_decision_proof_v1/README.md). The documents below
-are Arm Decision Proof's.
+One program is active (see the shared block of `../PLATFORM_CONTEXT.md`): the
+free beta's job packet (owner direction 2026-11-12), whose site side lives in
+`Blueprint-WebApp`.
 
 Active execution documents are limited to:
 
-1. [`arm_decision_proof_v1/north_star_contract.json`](arm_decision_proof_v1/north_star_contract.json)
-2. [`arm_decision_proof_v1/README.md`](arm_decision_proof_v1/README.md)
-3. [`arm_decision_proof_v1/PARTNER_SELECTION_PACKET.md`](arm_decision_proof_v1/PARTNER_SELECTION_PACKET.md)
-4. [`arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-5. [`arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`](arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md)
-6. [`arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-008 decision
-7. [`arm_decision_proof_v1/MASTER_GOAL_PROMPT.md`](arm_decision_proof_v1/MASTER_GOAL_PROMPT.md)
-8. [`architecture/source-of-truth-map.md`](architecture/source-of-truth-map.md)
-9. [`architecture/ai-onboarding-map.md`](architecture/ai-onboarding-map.md)
-10. [`DOCTRINE_PRECEDENCE.md`](DOCTRINE_PRECEDENCE.md)
+1. [`architecture/source-of-truth-map.md`](architecture/source-of-truth-map.md)
+2. [`architecture/ai-onboarding-map.md`](architecture/ai-onboarding-map.md)
+3. [`DOCTRINE_PRECEDENCE.md`](DOCTRINE_PRECEDENCE.md)
 
 Root `AGENTS.md`, `PLATFORM_CONTEXT.md`, and
 `WORLD_MODEL_STRATEGY_CONTEXT.md` remain binding.
@@ -28,7 +19,7 @@ Root `AGENTS.md`, `PLATFORM_CONTEXT.md`, and
 
 Every other file under `docs/` is one of:
 
-- a stable contract or runbook used by an active Arm Decision Proof dependency;
+- a stable contract or runbook used by an active job-packet dependency;
 - a compatibility document required to keep existing readers and operations
   working;
 - a dated evidence snapshot;
@@ -36,10 +27,10 @@ Every other file under `docs/` is one of:
 
 Those files are not independent roadmap authority. Their existence does not
 authorize work. An agent may use one only after recording which job-packet
-step, or which Arm Decision Proof backlog item and gate, it directly unblocks.
+step it directly unblocks.
 Documents describing Blueprint before 2026-11-12 are in
 [`archive/2026-11-12-pre-packet/`](archive/2026-11-12-pre-packet/README.md).
 
 Do not delete schemas, evidence snapshots, readers, or safety/paid-resource
 runbooks merely to make the tree look focused. De-promotion is enforced by the
-active-document list and the sole-focus test; compatibility remains readable.
+active-document list; compatibility remains readable.

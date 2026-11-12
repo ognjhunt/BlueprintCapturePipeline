@@ -11,11 +11,6 @@
 > any kind of job, several objects or unattended scale is paused. See
 > [`PLATFORM_CONTEXT.md`](PLATFORM_CONTEXT.md) and [`AGENTS.md`](AGENTS.md).
 
-> Arm Decision Proof v1 is a separate evidence program with its own protocol
-> in [`docs/arm_decision_proof_v1/`](docs/arm_decision_proof_v1/README.md). Its
-> current appearance path (owner direction 2026-08-13) is **artifixer3D+ with
-> gpt-image-2**; see [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
-
 Beta task coverage is open across task families and robot forms (owner
 direction 2026-10-27); execution still needs the actual assets, reset,
 independent state measurements and a compatible runtime. Spend stays inside
@@ -25,31 +20,6 @@ For capture-derived evaluations, the
 [supervised beta runbook](docs/runbooks/first-site-team-beta.md) covers exact
 runtime delivery, simulation qualification, results and recovery. It is a
 conditional evidence route rather than a required stage for every job.
-
-## Evidence Program: Arm Decision Proof v1
-
-The evidence program's build objective is to produce one prospectively
-physically validated, site-specific fixed-arm decision.
-
-> Qualify the reusable service on exact public datasets first—including one
-> metric 3DGS/collision object removal, released-code inpainting, and exact
-> SimReady USD replacement—then take one fresh capture of one previously unseen
-> fixed-arm workcell, make a prospective decision between exactly two frozen
-> candidates or abstain, and adjudicate it with held-out physical trials.
-
-North-star metric:
-`prospectively_physically_validated_new_site_task_decisions`, current `0`, target
-`1`.
-
-Start here:
-
-1. [`docs/arm_decision_proof_v1/north_star_contract.json`](docs/arm_decision_proof_v1/north_star_contract.json)
-2. [`docs/arm_decision_proof_v1/README.md`](docs/arm_decision_proof_v1/README.md)
-3. [`docs/arm_decision_proof_v1/PARTNER_SELECTION_PACKET.md`](docs/arm_decision_proof_v1/PARTNER_SELECTION_PACKET.md)
-4. [`docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-5. [`docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`](docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md)
-6. [`docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-008 decision
-7. [`docs/arm_decision_proof_v1/MASTER_GOAL_PROMPT.md`](docs/arm_decision_proof_v1/MASTER_GOAL_PROMPT.md)
 
 [`docs/README.md`](docs/README.md) defines documentation authority. Other docs
 remain stable contracts, compatibility material, or historical evidence; they
@@ -64,8 +34,7 @@ robot configuration cannot establish that no robot team can do the job.
 Missing capability evidence remains unresolved; missing simulator support keeps
 the accepted job in evaluation preparation and demand discovery. Exact runtime
 compatibility, independent scoring, rights and spending controls still apply
-before execution. This serves the beta job-to-evidence journey and ADP-010's
-day-7 demand discovery; it does not widen ADP's frozen proof protocol.
+before execution. This serves the beta job-to-evidence journey.
 
 This uses the existing WebApp Site assessment agent, which combines video
 observations with Firestore `robotTeams` capability/provenance records and
@@ -132,61 +101,11 @@ not itself start evaluation or authorize spending.
 | Physical Outcome Join | Exact link from the sealed result to authoritative held-out physical outcomes |
 | SiteBench | Optional name for the bounded case study, not a second product |
 
-The first envelope is one partner, one site, one fixed arm, one bounded
-rigid-object pick-and-place task, and two genuine frozen candidates. It is the
-current ADP build target. Beta task coverage across other robot forms and task
-families is authorized by the 2026-10-27 owner direction above. General-ranking
-campaigns, universal runtime support, general
-ranking, provider bakeoffs, world-model expansion, post-training products, and
+Beta task coverage across task families and robot forms (arms, mobile
+manipulators, wheeled humanoids and humanoids) is authorized by the 2026-10-27
+owner direction above. General-ranking campaigns, universal runtime support,
+provider bakeoffs, world-model expansion, post-training products, and
 multi-site generalization stay frozen.
-
-## Public Datasets, Inpainting, And SimReady Replacement
-
-ADP-008's SIMPLER decision-harness replay is observed complete. The immediate
-engineering objective is **ADP-009 public-scene qualification**, not new capture
-technology: smoke exact Inpaint360GS on unchanged author data, then run an
-InFusion primary adapter and AuraFusion360 quality challenger on one exact
-rights-admitted InteriorGS/SAGE-3D pair; generate frozen object-present
-render-derived method inputs where original cameras are unavailable, while
-withholding external validation geometry and clean-background truth and
-preserving the published metric frame;
-remove one source object from appearance and collision; insert one exact
-SimReady USD; compare manual authoring with NVIDIA USD Content Agents; then
-transfer the frozen contracts to one targeted ScanNet++ scene after access.
-
-Use existing assets now to exercise every downstream seam that does not require
-new physical truth. Waiting for the partner capture would unnecessarily
-serialize the valuable work.
-
-The bounded development corpus is:
-
-- `tests/fixtures/decision_evidence_rigid_object_v1/vertical_slice.json`;
-- `tests/fixtures/new_site_loading_bay_v1`;
-- `tests/fixtures/kitchen_task_min` only for existing USD/runtime plumbing.
-- one exact rights-admitted InteriorGS scene and its matching SAGE-3D collision
-  companion; an authored scene is a separate physics control, not a substitute;
-- one targeted access-admitted ScanNet++ scene;
-- exact Inpaint360GS, InFusion, and AuraFusion360 revisions, weights,
-  dependencies, licenses, and author-data smokes;
-- one exact replacement SimReady USD;
-- one manual authoring control and one pinned NVIDIA USD Content Agents
-  candidate after deterministic geometry exists.
-
-GOR-IS may be added only as a separately admitted glossy/shadow ablation. A
-paper-only method cannot enter the critical path. This is a claim-complete
-ladder, not a provider or reconstruction bakeoff.
-
-All reused assets remain `development_only`. They cannot qualify partner
-capture, task-owner truth, registration, task-specific dynamics, policy-domain
-match, sim-to-real decision fidelity, or customer value. Fixture success is a
-software result, not the proof.
-
-Until the one-command ADP-009 rehearsal passes, new capture feature development
-is frozen unless a gate identifies a specific missing measurement. Partner
-discovery and protocol/rights work continue as a small parallel human lane. The
-next construction phase uses the existing Raw V3.2 path for one fresh workcell
-with clean-background and object-present observations; physical holdout remains
-required for the prospective north-star claim.
 
 ## Architecture To Reuse
 
@@ -214,8 +133,7 @@ Do not create fake candidates to satisfy them.
   contracts, adapters, runtime, decisions, and evidence joins
 - `tests/` — deterministic contract and fixture coverage
 - `tests/fixtures/` — development-only inputs; never physical qualification
-- `docs/arm_decision_proof_v1/` — the evidence program (active alongside the free beta)
-- `docs/schemas/` — versioned schemas, including the north-star focus lock
+- `docs/schemas/` — versioned schemas
 - `docs/` — stable dependency docs, compatibility material, and historical evidence
 - `doctrine/` — canonical shared doctrine synced to Capture and WebApp
 - `scripts/` — setup, verification, retention, and authorized runtime helpers
@@ -224,7 +142,6 @@ Do not create fake candidates to satisfy them.
 
 ```bash
 python -m pip install -e .[dev]
-python -m pytest -q tests/test_arm_decision_proof_focus.py
 python3 scripts/verify_shared_doctrine.py
 python -m blueprint_pipeline.impacted_test_selection
 ```
@@ -234,8 +151,7 @@ lane and full suite are integration/promotion tools, not default build-loop
 commands. See [`AGENTS.md`](AGENTS.md).
 
 Paid CPU, model-volume, GPU, and provider reconstruction paths remain behind the
-canonical allocator and do not become authorized merely because this program is
-active:
+canonical allocator:
 
 ```bash
 python -m blueprint_pipeline.paid_resource_allocator cpu-build <arguments>
@@ -248,8 +164,7 @@ python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <ar
 
 Before accepting work, answer:
 
-1. Which job-packet step and observed blocker, or Arm Decision Proof backlog
-   item and day gate, does it unblock?
+1. Which job-packet step and observed blocker does it unblock?
 2. What observed artifact proves the blocker is removed?
 3. Why is existing infrastructure insufficient?
 4. What is the smallest reversible change?

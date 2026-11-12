@@ -1,6 +1,6 @@
 # Recover the reviewed usage fix deployment
 
-ADP-081, partner-proof day-42 prerequisite: release the reviewed immutable usage
+Release the reviewed immutable usage
 replay repair (#2597). This does not complete the economics gate.
 
 Two guarded deployments of merged b0ce12c74251f63db5f50ff55100597814656c9b

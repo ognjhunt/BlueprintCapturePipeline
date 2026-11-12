@@ -1,6 +1,6 @@
 # Production scene-construction submission assembly
 
-This is the ADP-009D public-scene Day-28 rehearsal input boundary. The observed
+This is the public-scene rehearsal input boundary. The observed
 completion artifact is a digest-bound, validated construction request and its
 publication/readback receipt, followed by an authenticated Website preparation
 receipt. None of those artifacts claims that native controls or policy episodes

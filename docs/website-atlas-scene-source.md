@@ -29,7 +29,7 @@ the wider scene, without inventing a task object. This uses the same preserved
 environment reconstruction and source handoff. Every observed object stays in
 place; removal, inpainting and transient-containing selected inputs are refused.
 An unobserved manipulated object is still uncertain, not a task without a subject.
-This enables beta scene preparation (ADP-040/050, day 28 dependency rehearsal);
+This enables beta scene preparation;
 it provides no navigation policy, metric registration, native physics admission
 or successful episode evidence.
 

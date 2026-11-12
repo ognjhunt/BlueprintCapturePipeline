@@ -5,8 +5,8 @@ October 12, 2026 owner direction replaces this backend for new requests with
 explicit historical route retained for replay/adoption. Production activation
 of the migration remains on hold until the approved Astra dishwasher submission.
 
-This is the ADP-009 development-only construction dependency for the day-14
-scene rehearsal and day-21 two-policy diagnostic. Completion evidence is a
+This is a development-only construction dependency for the scene rehearsal
+and two-policy diagnostic. Completion evidence is a
 retained authoring program, exact-dimension mesh and USDZ, source comparison
 images, independently reviewed physical estimates, and native scene readback.
 Authored assets do not establish physical truth or native qualification.

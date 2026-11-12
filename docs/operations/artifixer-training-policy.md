@@ -1,7 +1,6 @@
 # Production ArtiFixer training policy
 
-This is the ADP-009B appearance repair needed for ADP-009D's day-14 two-policy
-rehearsal and day-21 sealed results. It remains development-only evidence.
+This is an appearance repair. It remains development-only evidence.
 
 New autonomous scene configurations use `artifixer_training_policy` set to
 `corrected_only_local_appearance`. Omitted/null values also resolve to this

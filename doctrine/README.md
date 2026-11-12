@@ -6,9 +6,9 @@ This directory is the **one editable place** for doctrine shared across
 in use; the repository is kept for its `extractFrames` upload hand-off (see
 "How Capture Works" in `platform-context.md`).
 
-The shared doctrine names two active programs across all three repos: the free
-beta's job packet (owner direction 2026-11-12) and Arm Decision Proof v1.
-Earlier frames are recoverable from git history but are not active doctrine.
+The shared doctrine names one active program across all three repos: the free
+beta's job packet (owner direction 2026-11-12). Earlier frames are recoverable
+from git history but are not active doctrine.
 
 Edit here. Never edit a shared block in a repo's `PLATFORM_CONTEXT.md`,
 `VISION.md`, or `WORLD_MODEL_STRATEGY_CONTEXT.md` directly — those regions are

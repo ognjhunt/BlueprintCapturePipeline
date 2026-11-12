@@ -2,12 +2,11 @@
 
 This is the supervised external-team route, not a required onboarding checklist
 for every beta job. Blueprint also operates accessible licensed policies itself.
-The free beta and Arm Decision Proof v1 are both active. A site-specific
+A site-specific
 recommendation requires its own qualified, independently scored simulation
 evidence against the site's pass mark; a technology team need not operate that
 run. Blueprint's per-site candidate run is the job's evaluation and returns
-bounded simulation estimates. Development captures retain their own provenance;
-physical validation belongs to Arm Decision Proof.
+bounded simulation estimates. Development captures retain their own provenance.
 
 ## Select the first task and its evidence
 

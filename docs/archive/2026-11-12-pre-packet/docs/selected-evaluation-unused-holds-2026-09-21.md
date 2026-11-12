@@ -1,6 +1,6 @@
 # Superseded evaluation holds
 
-ADP-009D / day-21: the browser-selected evaluation retained five sets of per-release construction, controls and placement reservations ($17.30 of its $20 cap). The next policy stage needs a $4 reservation. Older sets could remain unused, but selected evaluations skipped the existing unmaterialized-adoption retirement path.
+The browser-selected evaluation retained five sets of per-release construction, controls and placement reservations ($17.30 of its $20 cap). The next policy stage needs a $4 reservation. Older sets could remain unused, but selected evaluations skipped the existing unmaterialized-adoption retirement path.
 
 The selected-evaluation controller now reconciles those old holds before progressing the installed current intent. It binds cancellation to immutable old/current adoption intents, the same evaluation authority, scene and owner, and the actual scoped binding directory. CPU artifacts remain untouched. Any old inference reservation, agent output, checkpoint, final result or ambiguous symlink preserves the whole hold. The current release is excluded. Budget readers and execution admission validate the cancellation, so released authority cannot be spent later.
 

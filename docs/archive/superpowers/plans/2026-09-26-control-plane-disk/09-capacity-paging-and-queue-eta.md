@@ -34,8 +34,8 @@
   - PR 2's `capacity/summary.json` is door- and service-readable (0644).
   - PR 5 writes `release-retention/latest-deploy-retirement.json`.
   - PR 8 writes break-glass notes in `cleanup-receipts/`.
-- **G1 is out of scope.** G1 team intake has the same 503 but is humanoid work outside the ADP focus
-  (`AGENTS.md`); leave it unchanged.
+- **G1 is out of scope.** G1 team intake has the same 503 but is outside this plan; leave it
+  unchanged.
 
 ## Design
 

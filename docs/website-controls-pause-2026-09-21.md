@@ -1,6 +1,6 @@
 # Controls paused by platform owner — 2026-09-21
 
-ADP-009D, day-21 development policy execution. The owner explicitly requested:
+Development policy execution. The owner explicitly requested:
 “Skip/pause the controls stage for all future runs.” This supersedes the older
 per-scene opt-in requirement for current development runs.
 

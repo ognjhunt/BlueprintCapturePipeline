@@ -2,8 +2,7 @@
 
 Public, sanitized record. Private run evidence (row blobs, QA artifacts, CRM rows, owner
 directions, contact research) stays in company storage; this file cites only code, counts,
-hashes and company-storage locations. Supports ADP-010 partner discovery (partner-phase
-day-7 gate). Observed 2026-10-04 13:33Z onward (08:33 America/Chicago).
+hashes and company-storage locations. Supports partner discovery. Observed 2026-10-04 13:33Z onward (08:33 America/Chicago).
 
 Status vocabulary: implemented · locally tested · independently reviewed · CI passed ·
 merged · deployed · live readback verified · business workflow proven.

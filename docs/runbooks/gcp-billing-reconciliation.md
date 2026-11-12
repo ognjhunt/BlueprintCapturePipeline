@@ -1,7 +1,7 @@
 # GCP billing reconciliation
 
-This repairs the observed GCP accounting blocker for ADP-009D's Day-35 runtime
-comparison and the beta service's shared paid-resource admission. The existing
+This repairs the observed GCP accounting blocker for the beta service's shared
+paid-resource admission. The existing
 reconciler had no GCP collector, and project inventory left every stopped VM's
 retained attachments unpriced. The change adds a bounded report reader and
 read-only attachment pricing to those existing paths.

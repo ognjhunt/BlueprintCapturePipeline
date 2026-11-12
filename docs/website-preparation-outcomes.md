@@ -1,7 +1,6 @@
 # Website preparation outcome handoff
 
-ADP-009D/day-28 typed-abstention and delivery precursor, also serving beta
-journey L3/L6. The fresh office-video run is development-only; this change
+Typed-abstention and delivery precursor, serving beta journey L3/L6. The fresh office-video run is development-only; this change
 does not complete sealed public-scene qualification or physical trials.
 
 The existing signed `website-preparation-status` route negotiates v3 when the

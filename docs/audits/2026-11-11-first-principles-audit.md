@@ -71,7 +71,7 @@ For the site, an answer is worth having only if all five of these hold.
 |---|---|---|
 | 1. Easy to ask | Mostly yes | One form, no account, a private link (`SiteCaptureStart.tsx`, `captureUploadToken.ts:59`). It asks for a typed task, a tick box and a country besides email and video (`SiteCaptureStart.tsx:836-866`). |
 | 2. Options it can get | No | 12 of 136 catalog rows can run (`config/beta_policy_candidates.v1.json`). 8 are public checkpoints on the DROID Franka arm with no deployment record; 4 are on the Unitree G1 and have no valid score. |
-| 3. Predictive | No | No calibration, validation set or known-answer check on the beta path. Arm Decision Proof: north-star metric 0 of 1, no admitted partner (`north_star_contract.json`, `CURRENT_STATE.md`). |
+| 3. Predictive | No | No calibration, validation set or known-answer check on the beta path. |
 | 4. Decisive | Partly | A "Chosen in simulation" sentence exists when something succeeds (`website_candidate_selection.py`). The only real result was all zeros and was still headed "Your simulation estimate is ready" (`betaPolicyScreeningContract.ts:421`). The next step shown is "Nothing is needed from you." |
 | 5. Simple to run | No | 14 stages, about 15 outside services, at least $51.7 on the one finished job, about 7 days, about 8 deploys (`docs/SYSTEM_MAP.md`; tracker lines 423-448; goal brief line 120). |
 
@@ -315,8 +315,7 @@ not.
 If simulation stays as a second tier, the simple form of it is one lane (a
 fixed arm, tabletop pick and place), built on the published framework whose
 ranking has been checked against real trials, with a known-answer run in every
-scene, and with paired real trials to earn the word "likely". That is the work
-Arm Decision Proof was created for; it has no partner yet.
+scene, and with paired real trials to earn the word "likely".
 
 ## Keep, freeze, cut
 
@@ -346,9 +345,7 @@ Arm Decision Proof was created for; it has no partner yet.
    whether a scene finding such as "beyond reach" leads the page.
 4. **Default sharing.** Whether a site's job becomes a partner-visible card
    without an explicit choice.
-5. **Validation.** Whether Arm Decision Proof stays a separate frozen program
-   or becomes the paired-trial check for the one simulation lane.
-6. **First outside sites.** Whether to put 3–5 real sites through the simple
+5. **First outside sites.** Whether to put 3–5 real sites through the simple
    answer before more pipeline work. Their reaction is the largest unknown,
    and no engineering answers it.
 

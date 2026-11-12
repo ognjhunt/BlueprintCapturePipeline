@@ -38,7 +38,7 @@ Two independent controls must permit creation:
 `BLUEPRINT_DAILY_RESEARCH_PACKAGE_BUILD=true` installs the research-only package
 during the existing worker build. The web service has no Python build requirement.
 Keep all existing ops flags false, autonomous outbound false, launch-only true,
-launch-forward true, candidate-outbox true, and ADP engineering unset. Do not add
+launch-forward true and candidate-outbox true. Do not add
 local env bootstrap files or change paid-execution authority.
 
 The Python clock schedules 07:00 America/Chicago using zoneinfo, including DST.
@@ -123,7 +123,7 @@ row that is still in its research phase.
 
 ## Site universe slice
 
-Optional, owner-pinned prioritization for ADP-010 partner discovery; off by default.
+Optional, owner-pinned prioritization for partner discovery; off by default.
 `control.site_universe` is top-level like `paid_expansion`: config keys stay
 allowlisted and older packages ignore it. An older release's `configure` keeps only
 what its input holds, so an input without the key turns the slice off. The disk
@@ -177,7 +177,7 @@ owner commands are in [operators/README.md](operators/README.md#site-universe-ba
 
 ## Outreach-ready tier
 
-ADP-010 partner discovery, owner decision 2026-10-05 and design v1.1; shadow mode by
+Partner discovery, owner decision 2026-10-05 and design v1.1; shadow mode by
 default. `verification.outreach_tier(gates, now)` and `quote_level()` are the one rule
 (`blueprint.outreach-ready-rule.v1.2`) over the existing lead-verification gates. v1.2
 is v1.1 with the question's wording fixed (below); the gates and blocks are unchanged.

@@ -1,7 +1,7 @@
 # Beta task-family evaluation
 
 The 2026-10-27 owner request authorizes removing the two-profile implementation
-limit. ADP's frozen physical proof remains separate. A family name never proves
+limit. A family name never proves
 that robots cannot perform a job, and registering a scorer does not supply
 missing simulator physics.
 

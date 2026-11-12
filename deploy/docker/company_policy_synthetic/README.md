@@ -1,6 +1,6 @@
 # Blueprint synthetic company-policy rehearsal
 
-ADP-011, Day 7 partner admission; no-spend precursor to ADP-050, Day 28 company-policy execution. This fixture exercises protocol and confidentiality boundaries with zero pixels and zero state only. It refuses every non-synthetic observation. It is not partner, robot performance, physical outcome, paid launch, or production fulfillment proof.
+A no-spend rehearsal of company-policy execution. This fixture exercises protocol and confidentiality boundaries with zero pixels and zero state only. It refuses every non-synthetic observation. It is not partner, robot performance, physical outcome, paid launch, or production fulfillment proof.
 
 Build from the repository root using the Dockerfile in this directory. The 2026-09-28 proof image is private at `us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/company-policy-synthetic@sha256:909e782a917bf2a959bf9eb0ee0bf6da7463d156c27cb589a60626a18495ded4` (Linux ARM64).
 

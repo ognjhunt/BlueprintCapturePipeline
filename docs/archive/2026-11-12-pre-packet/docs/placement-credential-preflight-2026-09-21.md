@@ -1,6 +1,6 @@
 # Placement credential preflight and key renewal
 
-ADP-009D / day-21. The website-origin selected evaluation reached deterministic CPU placement but refused before inference with `configured_controls_openai_authority_invalid`: the sealed intent referenced the older visual-review API key while the service used its renewed replacement. No model reservation was written.
+The website-origin selected evaluation reached deterministic CPU placement but refused before inference with `configured_controls_openai_authority_invalid`: the sealed intent referenced the older visual-review API key while the service used its renewed replacement. No model reservation was written.
 
 The placement environment check now runs before geometry. The saved-input CPU rehearsal also validates credentials up front and constructs the actual cost gate before stopping; it never calls reserve or starts inference. This closes the previous rehearsal blind spot where replacing the entire gate builder skipped its deterministic checks.
 

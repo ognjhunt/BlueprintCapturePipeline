@@ -62,8 +62,8 @@ Responsible Use Guidelines reference remain recorded. The profile verifies:
 
 The scoped rights record binds the exact inference-file identity, that evidence
 and the user's request. It makes no private vendor authorization, deployment
-company relationship, physical validation, official ranking, self-grading or
-ADP claim. Registration alone does not assert downloaded weights, successful
+company relationship, physical validation, official ranking or self-grading
+claim. Registration alone does not assert downloaded weights, successful
 native inference or a compatible authorized task. Ordinary screening retains
 its rights and per-task budget checks and individual candidate outcomes.
 

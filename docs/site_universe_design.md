@@ -1,7 +1,7 @@
 # Site universe: design v1
 
 Status: proposed. The owner approved the direction on 2026-10-04.
-Supports ADP-010 partner discovery (partner-phase day-7 gate).
+Supports partner discovery.
 
 ## Problem
 
@@ -84,7 +84,7 @@ Records with the same normalized address key merge. Records within 75 m with sim
 
 ## Ranking v1
 
-Status: built on 2026-10-04 for ADP-010 partner discovery. The goal is one design partner: a site plus a robot team, with a rigid-object task for a fixed arm first. Mobile manipulation and the other active capabilities are also ranked.
+Status: built on 2026-10-04 for partner discovery. The goal is one design partner: a site plus a robot team. Every kind of robot body is ranked: arms, mobile manipulators, wheeled humanoids and humanoids.
 
 ```bash
 python -m tools.site_universe rank --snapshot <dir> --out <dir> \

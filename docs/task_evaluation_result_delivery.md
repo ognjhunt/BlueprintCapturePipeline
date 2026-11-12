@@ -37,13 +37,13 @@ the sealed registry. Each request is re-hashed by Pipeline, then streamed throug
 an authenticated WebApp proxy. Email, Google Drive, and ad hoc shared links are
 not systems of record.
 
-The current ADP rehearsal is `development_only`. Its videos are derived review
+The current rehearsal is `development_only`. Its videos are derived review
 evidence, simulator results are not physical success, and successful execution
 does not establish policy superiority, deployment approval, or safety.
 
 ## Private result artifact offload
 
-ADP-009D's day-28 replay gate requires retained lossless policy inputs and derived
+Replay requires retained lossless policy inputs and derived
 review media to remain readable after the control-plane hot window. The existing
 storage GC now offloads registered bulk result payloads through the dedicated
 artifact-store credentials (Backblaze B2 on the control plane). It keeps the
@@ -88,7 +88,7 @@ validity, qualification, or physical-evidence claims.
 
 ## Operator diagnostic run delivery
 
-ADP-009D, day-28 public-scene rehearsal: an operator-authorized run may have a
+Public-scene rehearsal: an operator-authorized run may have a
 new task contract while retaining an earlier offering only as scene provenance.
 The Website registers its immutable run, owner, task, policies, and input
 digests without forwarding another launch. Its v4 publication carries both

@@ -8,7 +8,7 @@ intent/attempt/release references. It never queues a run or grants paid authorit
 The beta path accepts pouring, wiping, insertion, stacking, button presses,
 cloth folding and ordered combinations. A task family is not a robot capability
 finding. Missing engine, asset, policy or authority evidence remains an explicit
-preparation gap. Arm Decision Proof's frozen pair and claim rules are unchanged.
+preparation gap.
 
 `family_native_prepared` completes only capture-backed CPU preparation. Its typed
 result binds the task, native contract, runtime selection and scene revision,
