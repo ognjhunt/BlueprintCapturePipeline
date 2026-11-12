@@ -71,9 +71,9 @@ video: interested, not a fit, or would need something. Connecting a company's
 own software to Blueprint's simulation, so that Blueprint scores it, comes
 later. The reconstruction and its estimates are treated as accurate enough for
 this; a site is not asked to confirm measurements. When several companies are
-interested the site decides: up to three introductions per job, in the order
-the companies answered. After an introduction both sides are asked, at 14, 45
-and 90 days, what happened; the answer is recorded on the job.
+interested the site decides which of them to meet; there is no limit on how
+many. After an introduction both sides are asked, at 14, 45 and 90 days, what
+happened; the answer is recorded on the job.
 
 Blueprint's own trial of openly available robot software stays as supporting
 evidence inside the packet. It is labelled **an early trial of openly
@@ -92,9 +92,9 @@ share setting and no pause. A job under an older statement is not shown to any
 company until its site accepts the current one.
 
 A site's name, street address and contact details are never shared without
-asking the site first. The site asks for an introduction with one press, at
-most three per job; Blueprint then gives each side the other's name and contact
-details by email. Nothing else shares them.
+asking the site first. The site asks for an introduction with one press for
+each company it wants to meet; Blueprint then gives each side the other's name
+and contact details by email. Nothing else shares them.
 
 A withdrawal removes the job from every company's view at once. A copy a
 company already saved cannot be taken back; the company is asked to delete it.
