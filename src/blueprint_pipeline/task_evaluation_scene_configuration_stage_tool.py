@@ -32,6 +32,8 @@ from .task_evaluation_scene_configuration_builtin_producers import (
     _validate_toolchain,
     envelope_declares_supplemental_destination,
     expected_stage_artifact_roles,
+    is_run_toolchain_copy,
+    restore_run_toolchain_copy,
 )
 from .task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
@@ -320,6 +322,46 @@ def component_timeout_seconds(adapter_id: str) -> int:
         ) from exc
 
 
+#: The start of the single stderr line (kept in the stage's ``stage_producer.log``)
+#: that says this tool put the run's toolchain copy back to its sealed inventory,
+#: skipped that, or could not do it.
+TOOLCHAIN_RESTORED_MARKER = "TOOLCHAIN_RESTORED"
+TOOLCHAIN_RESTORE_SKIPPED_MARKER = "TOOLCHAIN_RESTORE_SKIPPED"
+TOOLCHAIN_RESTORE_FAILED_MARKER = "TOOLCHAIN_RESTORE_FAILED"
+
+
+def _restore_run_toolchain(toolchain_root: Path, production_input: Mapping[str, Any]) -> None:
+    """Undo what this run's own processes left in its toolchain copy, and say so.
+
+    A stage-3 process running as container root can create entries in the
+    run's unpacked toolchain, and the full check below would then end a paid
+    job over sealed files nobody changed. Only the run's own copy is touched
+    (``is_run_toolchain_copy``). Whatever happens here, the full byte check
+    that follows still decides: a changed, resized or missing sealed file is
+    refused by name. The line goes to stderr, which the stage producer
+    retains as ``stage_producer.log`` on success and failure alike.
+    """
+
+    if not is_run_toolchain_copy(toolchain_root):
+        return
+    try:
+        record = restore_run_toolchain_copy(
+            root=toolchain_root,
+            expected_source_commit=str(production_input["source_commit"]),
+            expected_toolchain_digest=str(production_input["toolchain_digest"]),
+        )
+    except (OSError, TaskEvaluationSceneConfigurationStageProducerError) as exc:
+        detail = redacted_failure_text(f"{type(exc).__name__}:{exc}")[:1000]
+        print(f"{TOOLCHAIN_RESTORE_FAILED_MARKER} " + canonical_json({"error": detail}),
+              file=sys.stderr, flush=True)
+        return
+    if record["status"] == "restored":
+        print(f"{TOOLCHAIN_RESTORED_MARKER} " + canonical_json(record), file=sys.stderr, flush=True)
+    elif record["status"] != "unchanged":
+        print(f"{TOOLCHAIN_RESTORE_SKIPPED_MARKER} " + canonical_json(record),
+              file=sys.stderr, flush=True)
+
+
 def execute_stage_tool(
     *,
     adapter_id: str,
@@ -357,6 +399,7 @@ def execute_stage_tool(
         )
     )
     toolchain_root = _required_path(values, TOOLCHAIN_ROOT_ENV)
+    _restore_run_toolchain(toolchain_root, production_input)
     manifest, _entrypoints = _validate_toolchain(
         root=toolchain_root,
         expected_source_commit=str(production_input["source_commit"]),

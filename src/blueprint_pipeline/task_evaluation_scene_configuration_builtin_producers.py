@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess  # nosec B404 - executable is full-byte toolchain-bound
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -21,7 +22,7 @@ from typing import Any
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .immutable_file_digest import sha256_file
-from .immutable_tree_walk import walk_tree
+from .immutable_tree_walk import path_order, walk_tree
 from .task_evaluation_scene_configuration_component_package import (
     TaskEvaluationSceneConfigurationComponentPackageError,
     validate_scene_configuration_component_package,
@@ -152,12 +153,16 @@ def _relative_file(root: Path, value: Any, *, code: str) -> Path:
 
 
 def _read_toolchain_manifest(
-    *, root: Path, expected_source_commit: str
+    *, root: Path, expected_source_commit: str, require_read_only_root: bool = True
 ) -> tuple[dict[str, Any], Path]:
     """The sealed manifest of a read-only published toolchain, bytes unread."""
-    if root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o222:
+    if root.is_symlink() or not root.is_dir():
         raise TaskEvaluationSceneConfigurationStageProducerError(
             "scene_configuration_toolchain_root_invalid"
+        )
+    if require_read_only_root and root.stat().st_mode & 0o222:
+        raise TaskEvaluationSceneConfigurationStageProducerError(
+            "scene_configuration_toolchain_root_invalid:not_read_only"
         )
     manifest_path = root / f"{TOOLCHAIN_SCHEMA_VERSION}.json"
     manifest = _read(
@@ -183,19 +188,13 @@ def _read_toolchain_manifest(
     return manifest, manifest_path
 
 
-def _validate_toolchain(
-    *, root: Path, expected_source_commit: str, verify_bytes: bool = True
-) -> tuple[dict[str, Any], dict[str, Path]]:
-    manifest, manifest_path = _read_toolchain_manifest(
-        root=root, expected_source_commit=expected_source_commit
-    )
-    stages = manifest["stages"]
-    files = manifest["files"]
+def _toolchain_inventory(files: Sequence[Any]) -> dict[str, tuple[str, int, bool]]:
+    """The manifest's file rows as relative path -> (sha256, size, executable)."""
     inventory: dict[str, tuple[str, int, bool]] = {}
-    for row in files:
+    for index, row in enumerate(files):
         if not isinstance(row, Mapping):
             raise TaskEvaluationSceneConfigurationStageProducerError(
-                "scene_configuration_toolchain_inventory_invalid"
+                f"scene_configuration_toolchain_inventory_invalid:row={index}"
             )
         relative = str(row.get("relative_path") or "")
         digest = str(row.get("sha256") or "")
@@ -215,22 +214,36 @@ def _validate_toolchain(
             or not isinstance(executable, bool)
         ):
             raise TaskEvaluationSceneConfigurationStageProducerError(
-                "scene_configuration_toolchain_inventory_invalid"
+                f"scene_configuration_toolchain_inventory_invalid:row={index}"
             )
         inventory[relative] = (digest, size, executable)
+    return inventory
+
+
+def _validate_toolchain(
+    *, root: Path, expected_source_commit: str, verify_bytes: bool = True
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    manifest, manifest_path = _read_toolchain_manifest(
+        root=root, expected_source_commit=expected_source_commit
+    )
+    stages = manifest["stages"]
+    inventory = _toolchain_inventory(manifest["files"])
+    # Every refusal names the entry it refused. These are paths inside our own
+    # sealed toolchain, never site data, and a run that stops here must say
+    # what changed: the machine is usually gone by the time anyone looks.
     observed: set[str] = set()
     for relative, entry in walk_tree(root):
         if relative == manifest_path.name:
             continue
         if entry.is_symlink():
             raise TaskEvaluationSceneConfigurationStageProducerError(
-                "scene_configuration_toolchain_symlink_forbidden"
+                f"scene_configuration_toolchain_symlink_forbidden:{relative}"
             )
         info = entry.stat(follow_symlinks=False)
         if entry.is_dir(follow_symlinks=False):
             if info.st_mode & 0o222:
                 raise TaskEvaluationSceneConfigurationStageProducerError(
-                    "scene_configuration_toolchain_not_read_only"
+                    f"scene_configuration_toolchain_not_read_only:{relative}"
                 )
             continue
         if not entry.is_file(follow_symlinks=False):
@@ -251,8 +264,10 @@ def _validate_toolchain(
             )
         observed.add(relative)
     if observed != set(inventory):
+        missing = sorted(set(inventory) - observed, key=path_order)
         raise TaskEvaluationSceneConfigurationStageProducerError(
-            "scene_configuration_toolchain_inventory_incomplete"
+            f"scene_configuration_toolchain_inventory_incomplete:{missing[0]}:"
+            f"missing_count={len(missing)}"
         )
     entrypoints: dict[str, Path] = {}
     expected_ids = {identity.adapter_id for identity in ADMITTED_PRODUCER_IDENTITIES}
@@ -320,6 +335,207 @@ def _validate_toolchain(
                 f"scene_configuration_toolchain_stage_invalid:{adapter_id}"
             )
     return manifest, entrypoints
+
+
+#: The provider bundle manifest the bundle builder writes beside the toolchain
+#: it ships (``provider_runtime/<this>`` next to ``provider_runtime/toolchain``).
+_PROVIDER_BUNDLE_MANIFEST = "task_evaluation_scene_configuration_provider_bundle.v1.json"
+TOOLCHAIN_RESTORATION_SCHEMA_VERSION = (
+    "task_evaluation_scene_configuration_toolchain_restoration.v1"
+)
+_RESTORATION_LIST_LIMIT = 32
+
+
+def _loaded_runtime_root() -> Path:
+    """The directory this ``blueprint_pipeline`` package was imported from."""
+    return Path(__file__).resolve().parent.parent
+
+
+def is_run_toolchain_copy(root: str | Path) -> bool:
+    """Whether ``root`` is the toolchain unpacked into this run's own bundle.
+
+    A run (the GPU container, or the control plane's CPU prestage) unpacks its
+    bundle to ``provider_runtime/``: the toolchain at ``provider_runtime/toolchain``,
+    the bundle manifest beside it, and this package imported from
+    ``provider_runtime/blueprint_pipeline``. A published toolchain on the control
+    plane has none of that: it lives under ``system-runtimes/scene-configuration/``
+    and the deployed code is imported from the release checkout. All must hold,
+    so restoration can never reach a published toolchain.
+    """
+    path = Path(root)
+    try:
+        info = path.lstat()
+        bundle = (path.parent / _PROVIDER_BUNDLE_MANIFEST).lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(info.st_mode)
+        and stat.S_ISREG(bundle.st_mode)
+        and path.is_absolute()
+        and path.name == "toolchain"
+        and Path(os.path.realpath(path)) == path
+        and path.parent == _loaded_runtime_root()
+    )
+
+
+def _inside(root: Path, path: Path) -> bool:
+    """``path``'s real parent is ``root`` or below it: no link was followed."""
+    parent = Path(os.path.realpath(path.parent))
+    return parent == root or parent.is_relative_to(root)
+
+
+def _chmod_nofollow(path: Path, mode: int, *, directory: bool) -> None:
+    # A descriptor opened without following links is the entry we checked,
+    # even if a name in the tree were swapped for a link meanwhile.
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    flags |= os.O_DIRECTORY if directory else os.O_NONBLOCK
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+            raise TaskEvaluationSceneConfigurationStageProducerError(
+                "scene_configuration_toolchain_restore_entry_changed"
+            )
+        os.fchmod(descriptor, mode)
+    finally:
+        os.close(descriptor)
+
+
+def restore_run_toolchain_copy(
+    *, root: str | Path, expected_source_commit: str, expected_toolchain_digest: str
+) -> dict[str, Any]:
+    """Return this run's own toolchain copy to its sealed inventory.
+
+    A process the run itself started as container root can create entries in
+    the copy (root ignores read-only modes), and the stage-start check would
+    then end the job over a tree whose sealed files are untouched. This removes
+    every entry that is neither an inventory file, an ancestor directory of one,
+    nor the manifest, and clears write bits that the root, a directory or an
+    inventory file gained. It never writes an inventory file's bytes and never
+    acts outside ``root``. The caller then runs the full byte check, which still
+    refuses any changed, resized or missing inventory file.
+
+    Only the run's unpacked copy is accepted (``is_run_toolchain_copy``), and only
+    when its manifest is the one the stage input is bound to; otherwise nothing
+    is changed. Returns a bounded record of what was removed and restored.
+    """
+
+    root = Path(root)
+    if not is_run_toolchain_copy(root):
+        raise TaskEvaluationSceneConfigurationStageProducerError(
+            "scene_configuration_toolchain_restore_not_run_copy"
+        )
+    manifest, manifest_path = _read_toolchain_manifest(
+        root=root,
+        expected_source_commit=expected_source_commit,
+        require_read_only_root=False,
+    )
+    record: dict[str, Any] = {
+        "schema_version": TOOLCHAIN_RESTORATION_SCHEMA_VERSION,
+        "status": "unchanged",
+        "toolchain_digest": manifest["toolchain_digest"],
+        "removed": [],
+        "removed_count": 0,
+        "removed_entry_count": 0,
+        "modes_restored": [],
+        "modes_restored_count": 0,
+    }
+    if manifest["toolchain_digest"] != expected_toolchain_digest:
+        record["status"] = "skipped_manifest_not_bound_to_stage_input"
+        return record
+    inventory = _toolchain_inventory(manifest["files"])
+    keep = {manifest_path.name, *inventory}
+    for relative in inventory:
+        parts = relative.split("/")
+        keep.update("/".join(parts[:index]) for index in range(1, len(parts)))
+
+    drift: list[tuple[str, str, int]] = []
+    root_mode = stat.S_IMODE(root.lstat().st_mode)
+    if root_mode & 0o222:
+        drift.append((".", "directory", root_mode))
+    foreign: list[tuple[str, str]] = []
+    removed_directories: list[str] = []
+    for relative, entry in list(walk_tree(root)):
+        if any(relative.startswith(prefix + "/") for prefix in removed_directories):
+            continue
+        info = entry.stat(follow_symlinks=False)
+        if relative in keep:
+            # A kept name of the wrong kind (a link, a file where a directory
+            # belongs) is left for the full check to refuse by name.
+            if stat.S_ISDIR(info.st_mode) and info.st_mode & 0o222:
+                drift.append((relative, "directory", stat.S_IMODE(info.st_mode)))
+            elif (stat.S_ISREG(info.st_mode) and relative in inventory
+                  and info.st_mode & 0o222):
+                drift.append((relative, "file", stat.S_IMODE(info.st_mode)))
+            continue
+        kind = ("symlink" if stat.S_ISLNK(info.st_mode) else
+                "directory" if stat.S_ISDIR(info.st_mode) else
+                "file" if stat.S_ISREG(info.st_mode) else "other")
+        foreign.append((relative, kind))
+        if kind == "directory":
+            removed_directories.append(relative)
+
+    opened: dict[Path, int] = {}
+
+    def writable(directory: Path) -> None:
+        # Root needs nothing here; an unprivileged owner must open the parent
+        # for writing to remove an entry, and its seal is put back below.
+        if os.access(directory, os.W_OK | os.X_OK) or directory in opened:
+            return
+        mode = stat.S_IMODE(directory.lstat().st_mode)
+        opened[directory] = mode
+        _chmod_nofollow(directory, mode | 0o700, directory=True)
+
+    for relative, kind in foreign:
+        path = root / relative
+        if not _inside(root, path):
+            raise TaskEvaluationSceneConfigurationStageProducerError(
+                f"scene_configuration_toolchain_restore_outside_root:{relative}"
+            )
+        info = path.lstat()
+        contained = 0
+        writable(path.parent)
+        if kind == "directory":
+            if not stat.S_ISDIR(info.st_mode):
+                raise TaskEvaluationSceneConfigurationStageProducerError(
+                    f"scene_configuration_toolchain_restore_entry_changed:{relative}"
+                )
+            for directory, names, files in os.walk(path, followlinks=False):
+                contained += len(names) + len(files)
+                _chmod_nofollow(Path(directory), 0o700, directory=True)
+            # rmtree never follows a link inside the tree it removes.
+            shutil.rmtree(path)
+        else:
+            # Unlinking a symlink removes the link itself, never its target.
+            os.unlink(path)
+        record["removed_count"] += 1
+        record["removed_entry_count"] += 1 + contained
+        if len(record["removed"]) < _RESTORATION_LIST_LIMIT:
+            record["removed"].append(
+                {"relative_path": relative, "kind": kind, "contained_entries": contained}
+            )
+
+    restored = {relative for relative, _kind, _mode in drift}
+    for relative, kind, mode in drift:
+        path = root if relative == "." else root / relative
+        if relative != "." and not _inside(root, path):
+            raise TaskEvaluationSceneConfigurationStageProducerError(
+                f"scene_configuration_toolchain_restore_outside_root:{relative}"
+            )
+        _chmod_nofollow(path, mode & ~0o222, directory=kind == "directory")
+        record["modes_restored_count"] += 1
+        if len(record["modes_restored"]) < _RESTORATION_LIST_LIMIT:
+            record["modes_restored"].append(
+                {"relative_path": relative, "kind": kind,
+                 "before_mode": oct(mode), "after_mode": oct(mode & ~0o222)}
+            )
+    for directory, mode in opened.items():
+        relative = "." if directory == root else directory.relative_to(root).as_posix()
+        if relative not in restored:
+            _chmod_nofollow(directory, mode & ~0o222, directory=True)
+    if record["removed_count"] or record["modes_restored_count"]:
+        record["status"] = "restored"
+    return record
 
 
 def read_scene_configuration_toolchain_manifest(
@@ -604,6 +820,9 @@ def builtin_scene_configuration_stage_producer_registry(
 __all__ = [
     "TOOLCHAIN_ROOT_ENV",
     "TOOLCHAIN_SCHEMA_VERSION",
+    "TOOLCHAIN_RESTORATION_SCHEMA_VERSION",
     "builtin_scene_configuration_stage_producer_registry",
+    "is_run_toolchain_copy",
+    "restore_run_toolchain_copy",
     "validate_scene_configuration_toolchain",
 ]

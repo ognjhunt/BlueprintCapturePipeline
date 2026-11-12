@@ -96,6 +96,10 @@ BLOCKER_REASONS: dict[str, str] = {
     "scene_intake_spend_cap_exhausted": "spend_cap_reached",
     "scene_intake_attempt_spend_exceeds_authorized_limit": "spend_cap_reached",
     "scene_intake_attempt_cap_exhausted": "attempt_cap_reached",
+    # website_native_submission, sizing the next attempt: the scene's cap less
+    # what earlier attempts still hold leaves no room for it, and the grant does
+    # not extend by itself (all three raise sites are this money check).
+    "website_native_construction_budget_exceeds_authority": "spend_cap_reached",
     # The website job's dollar ceiling (WebApp #1168): the screening plan and the
     # WebApp's 409 refusal of preparation spend past it.
     "beta_screening_job_ceiling_exceeded": "job_ceiling_reached",

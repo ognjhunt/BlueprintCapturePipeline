@@ -28,9 +28,11 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _environment(tmp_path: Path, *, adapter_id: str) -> tuple[dict[str, str], Path]:
+def _environment(
+    tmp_path: Path, *, adapter_id: str, toolchain: Path | None = None
+) -> tuple[dict[str, str], Path]:
     commit = "a" * 40
-    toolchain = tmp_path / "toolchain"
+    toolchain = toolchain or tmp_path / "toolchain"
     publication = build_published_scene_configuration_toolchain(
         source_commit=commit,
         output_root=toolchain,
@@ -286,3 +288,108 @@ def test_component_failure_output_is_bounded_and_says_what_it_dropped(
     assert "FINAL CAUSE" in captured
     assert "earlier bytes dropped" in captured
     assert len(captured) < _COMPONENT_FAILURE_STREAM_TAIL_BYTES * 2
+
+
+def _artifixer_component(command, *, env, **_kwargs):
+    adapter_id = "artifixer3d_observed_object_removal"
+    output = Path(env["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    artifacts = []
+    for role in ("configured_appearance_without_source_object", "appearance_removal_receipt",
+                 "appearance_visual_review_receipt", "configured_task_thumbnail",
+                 "provider_render_reference_manifest"):
+        path = output / f"{role}.bin"
+        path.write_bytes(role.encode())
+        artifacts.append({"role": role, "path": str(path), "digest": _sha256(path),
+                          "size_bytes": path.stat().st_size})
+    component = {"schema_version": COMPONENT_RESULT_SCHEMA_VERSION, "status": "completed",
+                 "adapter_id": adapter_id, "stage_id": "stage-1", "provider_mutations_performed": 0,
+                 "nested_paid_execution_requested": False, "artifacts": artifacts, "result_digest": ""}
+    component["result_digest"] = canonical_digest(component, digest_field="result_digest")
+    Path(env["BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"]).write_text(json.dumps(component))
+    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+
+def _run_copy_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adapter_id: str):
+    from blueprint_pipeline import task_evaluation_scene_configuration_builtin_producers as producers
+
+    runtime = tmp_path / "provider_runtime"
+    runtime.mkdir()
+    environment, result = _environment(tmp_path, adapter_id=adapter_id, toolchain=runtime / "toolchain")
+    (runtime / producers._PROVIDER_BUNDLE_MANIFEST).write_text("{}\n")
+    monkeypatch.setattr(producers, "_loaded_runtime_root", lambda: runtime.resolve())
+    return environment, result, (runtime / "toolchain").resolve()
+
+
+def _flag(captured: str, marker: str) -> dict:
+    [line] = [row for row in captured.splitlines() if row.startswith(marker + " ")]
+    return json.loads(line[len(marker) + 1:])
+
+
+def test_stage_start_restores_the_runs_own_copy_flags_it_and_keeps_going(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reference job, 2026-11-12: stage 5 died on ``scene_configuration_toolchain_not_read_only``.
+
+    Something the run itself started during stage 3 left a directory in its
+    own toolchain copy; the stage-start check ended a paid job over sealed
+    files nobody changed, and did not say which directory. The copy is put
+    back to its sealed inventory, the stage runs, and the log says what went.
+    """
+
+    adapter_id = "artifixer3d_observed_object_removal"
+    environment, result_path, toolchain = _run_copy_environment(tmp_path, monkeypatch, adapter_id)
+    cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
+    cache.mkdir()
+    (cache / "run.cpython-311.pyc").write_bytes(b"bytecode")
+
+    result = execute_stage_tool(adapter_id=adapter_id, environment=environment, runner=_artifixer_component)
+
+    assert result["status"] == "completed" and result_path.is_file()
+    assert not cache.exists()
+    flag = _flag(capsys.readouterr().err, "TOOLCHAIN_RESTORED")
+    assert flag["schema_version"] == "task_evaluation_scene_configuration_toolchain_restoration.v1"
+    assert flag["toolchain_digest"] == result["toolchain_digest"]
+    assert flag["removed"] == [{"relative_path": f"components/{adapter_id}/package/__pycache__",
+                                "kind": "directory", "contained_entries": 1}]
+
+
+def test_stage_start_still_refuses_a_changed_sealed_file_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
+        TaskEvaluationSceneConfigurationStageProducerError,
+    )
+
+    adapter_id = "artifixer3d_observed_object_removal"
+    environment, _result, toolchain = _run_copy_environment(tmp_path, monkeypatch, adapter_id)
+    sealed = toolchain / "components" / adapter_id / "package" / "run"
+    sealed.write_bytes(b"#!/bin/sh\nexit 0\n")
+    observed = []
+
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_file_invalid:components/{adapter_id}/package/run$"):
+        execute_stage_tool(adapter_id=adapter_id, environment=environment,
+                           runner=lambda *args, **kwargs: observed.append(args))
+    assert observed == []
+    assert sealed.read_bytes() == b"#!/bin/sh\nexit 0\n"
+    assert "TOOLCHAIN_RESTORED" not in capsys.readouterr().err
+
+
+def test_stage_start_outside_a_run_copy_refuses_by_name_and_deletes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_producers import (
+        TaskEvaluationSceneConfigurationStageProducerError,
+    )
+
+    adapter_id = "artifixer3d_observed_object_removal"
+    environment, _result = _environment(tmp_path, adapter_id=adapter_id)
+    toolchain = Path(environment[TOOLCHAIN_ROOT_ENV])
+    cache = toolchain / "components" / adapter_id / "package" / "__pycache__"
+    cache.mkdir()
+
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_not_read_only:components/{adapter_id}/package/__pycache__$"):
+        execute_stage_tool(adapter_id=adapter_id, environment=environment, runner=_artifixer_component)
+    assert cache.is_dir()
+    assert "TOOLCHAIN_RESTORE" not in capsys.readouterr().err
