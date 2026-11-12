@@ -830,8 +830,15 @@ def test_an_entry_on_another_filesystem_is_left_alone(tmp_path, monkeypatch):
 
 
 def test_a_real_mount_inside_the_tree_is_left_alone(tmp_path, monkeypatch):
-    """Review probe P12. Needs mount rights; skipped where the machine has none."""
-    import subprocess
+    """Review probe P12, with a real bind mount.
+
+    Only the mount and the unmount need root. On the disposable CI runner
+    (``BLUEPRINT_DISPOSABLE_LINUX_TEST=1``, as in ``test_registered_feature_linux``)
+    they run through ``sudo -n`` and a failure there fails the test; only a
+    developer machine without mount rights and without that opt-in skips. The
+    restore always runs as the test's own user.
+    """
+    import sys
 
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
     source = tmp_path / "mounted-source"
@@ -840,17 +847,27 @@ def test_a_real_mount_inside_the_tree_is_left_alone(tmp_path, monkeypatch):
     mounted = root / "stages" / "mnt"
     with _unsealed(root / "stages"):
         mounted.mkdir()
+    prefix: list[str] = []
     bound = subprocess.run(["mount", "--bind", str(source), str(mounted)], capture_output=True, text=True)
     if bound.returncode != 0:
-        pytest.skip("no mount rights here: " + bound.stderr.strip()[:200])
+        if sys.platform != "linux" or os.environ.get("BLUEPRINT_DISPOSABLE_LINUX_TEST") != "1":
+            pytest.skip("no mount rights here and no disposable Linux runner opt-in "
+                        "(BLUEPRINT_DISPOSABLE_LINUX_TEST=1): " + bound.stderr.strip()[:200])
+        prefix = ["sudo", "-n"]
+        bound = subprocess.run([*prefix, "mount", "--bind", str(source), str(mounted)],
+                               capture_output=True, text=True, timeout=60)
+        assert bound.returncode == 0, "sudo -n mount --bind failed on the disposable runner: " + (
+            bound.stdout + bound.stderr)
     try:
         record = _restore(module, root, commit, digest)
         assert (source / "data.txt").read_text() == "other filesystem"
-        # A bind mount keeps the device number; the mount table still names it.
+        # A bind mount keeps the device number; the mount table still names it,
+        # whoever made the mount.
         assert record["left"] == [{"relative_path": "stages/mnt", "reason": "other_filesystem"}]
         assert record["removed"] == []
     finally:
-        subprocess.run(["umount", str(mounted)], capture_output=True)
+        unmounted = subprocess.run([*prefix, "umount", str(mounted)], capture_output=True, text=True, timeout=60)
+        assert unmounted.returncode == 0, unmounted.stdout + unmounted.stderr
 
 
 def test_a_very_deep_planted_tree_is_removed_without_recursion(tmp_path, monkeypatch):
