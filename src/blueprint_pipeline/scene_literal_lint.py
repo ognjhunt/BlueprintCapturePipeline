@@ -1,4 +1,4 @@
-"""Prevent historical scene literals from leaking into reusable ADP modules.
+"""Prevent historical scene literals from leaking into reusable modules.
 
 The scan skips docstrings and only docstrings. A module that *names* the first
 scene while explaining why anchoring on it was a mistake is documenting the
@@ -24,7 +24,6 @@ HISTORICAL_FIRST_FIXTURE_IMPLEMENTATIONS = frozenset(
     {
         "adp009d_isaac_runtime.py",
         "adp009d_native_microcheck_bundle.py",
-        "adp009d_sage_franka_placement.py",
         "adp009d_840313_runtime_bundle.py",
         "adp009d_live_readiness.py",
         "adp_content_agents_bundle_preflight.py",

@@ -1667,7 +1667,7 @@ def test_the_paid_resource_inventory_and_reachability_ledger_name_the_lane() -> 
     assert spec.loader is not None
     spec.loader.exec_module(verifier)
     assert relative in verifier.APPROVED_ADMISSION_ISSUERS and relative in verifier.APPROVED_LANE_ADMISSION_BUILDERS
-    ledger = (root / "docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md").read_text()
+    ledger = (root / "docs/LIVE_LANE_REACHABILITY.md").read_text()
     assert f"`{PROBE_KIND}` — `not_a_website_lane`, automatic under the capture's grant" in ledger
 
 

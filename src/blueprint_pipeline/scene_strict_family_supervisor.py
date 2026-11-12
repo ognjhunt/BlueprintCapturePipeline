@@ -120,7 +120,6 @@ def _default_reachability_path() -> Path:
     return (
         _repository_root()
         / "docs"
-        / "arm_decision_proof_v1"
         / "LIVE_LANE_REACHABILITY.md"
     )
 

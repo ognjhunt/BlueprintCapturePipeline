@@ -21,7 +21,7 @@ from blueprint_pipeline.task_evaluation_live_profile import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIVE_REACHABILITY = (
-    REPO_ROOT / "docs" / "arm_decision_proof_v1" / "LIVE_LANE_REACHABILITY.md"
+    REPO_ROOT / "docs" / "LIVE_LANE_REACHABILITY.md"
 )
 
 

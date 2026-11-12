@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
 ALLOCATOR = REPO_ROOT / "src" / "blueprint_pipeline" / "paid_resource_allocator.py"
 REACHABILITY_DOC = (
-    REPO_ROOT / "docs" / "arm_decision_proof_v1" / "LIVE_LANE_REACHABILITY.md"
+    REPO_ROOT / "docs" / "LIVE_LANE_REACHABILITY.md"
 )
 
 #: Probe kinds with no live profile builder, and why. Reasons are load-bearing:

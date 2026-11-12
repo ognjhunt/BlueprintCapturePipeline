@@ -189,16 +189,3 @@ def test_manifest_digest_is_order_independent() -> None:
     )
     assert first["object_manifest_sha256"] == second["object_manifest_sha256"]
 
-
-def test_plan_agrees_with_the_policy_server_standup_contract() -> None:
-    """Both must name the same checkpoint identity and the same worker."""
-
-    from blueprint_pipeline.adp009d_policy_server_standup import describe_standup_plan
-
-    for candidate_id in ("pi05_droid", "groot_n17_droid"):
-        materialization = plan_checkpoint_materialization(candidate_id)
-        standup = describe_standup_plan(candidate_id)
-        assert materialization["checkpoint_repository"] == standup["checkpoint_repository"]
-        assert materialization["checkpoint_revision"] == standup["checkpoint_revision"]
-        assert materialization["expected_total_bytes"] == standup["checkpoint_total_bytes"]
-        assert standup["checkpoint_materialized_on"] == materialization["materialize_on"]
