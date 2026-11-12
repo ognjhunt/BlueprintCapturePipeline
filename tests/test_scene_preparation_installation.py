@@ -338,3 +338,47 @@ def test_unscoped_installation_preserves_historical_pauses_across_redeploys(tmp_
     with pytest.raises(ValueError, match="paused_intents_invalid"):
         installation.install_scene_preparation(bootstrap_path=path)
     assert json.loads(Path(receipt["config"]["path"]).read_text()) == config
+
+
+def test_service_names_an_intent_whose_retained_source_is_unreadable_and_still_runs_the_worker(tmp_path, monkeypatch):
+    """One intent's missing retained file is a named row in the status file, not a failed tick."""
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline import task_evaluation_launch_preparation_worker as lw
+    from blueprint_pipeline.task_evaluation_scene_preparation_service import preparation_service_status
+    old_config_path, _iid, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
+    old = json.loads(old_config_path.read_text())
+    machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
+    receipt = _install_bootstrap(tmp_path, machinery, old["capture_store_root"], False, tmp_path / "unarmed")
+    rows = [{"intent_id": "scene-cleared-development-folder", "status": "blocked"}]
+    monkeypatch.setattr(engine, "process_scene_intents",
+                        lambda *, config_path, now=None: {"results": rows, "source_commit": "a" * 40})
+    worker_calls = []
+    monkeypatch.setattr(lw, "process_launch_preparation_queue",
+                        lambda **kwargs: worker_calls.append(kwargs) or {"status": "idle"})
+    result = run_preparation_service(config_path=receipt["config"]["path"])
+    assert len(worker_calls) == 1
+    assert result["installed_source_holds"] == [{
+        "intent_id": "scene-cleared-development-folder", "status": "held",
+        "blockers": ["installed_source_intent_unreadable"],
+        "blocker_detail": ["scene_intake_record_unreadable"]}]
+    assert preparation_service_status(receipt["config"]["path"])["installed_source_holds"] == result["installed_source_holds"]
+
+
+def test_a_tick_that_cannot_run_still_writes_its_blocked_status(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline.task_evaluation_scene_preparation_service import preparation_service_status
+    old_config_path, _iid, _intents, _now = _config(tmp_path, monkeypatch, source_kind="mesh", real_destination=True)
+    old = json.loads(old_config_path.read_text())
+    machinery = json.loads(Path(old["completed_source_machinery_path"]).read_text())
+    receipt = _install_bootstrap(tmp_path, machinery, old["capture_store_root"], False, tmp_path / "unarmed")
+
+    def missing_receipt(**_):
+        raise ValueError("scene_progression_current_deployment_receipt_missing")
+
+    monkeypatch.setattr(engine, "process_scene_intents", missing_receipt)
+    with pytest.raises(ValueError, match="current_deployment_receipt_missing"):
+        run_preparation_service(config_path=receipt["config"]["path"])
+    status = preparation_service_status(receipt["config"]["path"])
+    assert status["status"] == "blocked"
+    assert status["blockers"] == ["scene_progression_current_deployment_receipt_missing"]
+    assert status["provider_allocation_performed"] is False

@@ -61,16 +61,73 @@ def resolve_robot_catalog(value: Mapping[str, Any], *, source_commit: str) -> di
     _require(value.get("schema_version") == CONTENT_CATALOG_SCHEMA
              and isinstance(value.get("bindings"), dict)
              and intake._COMMIT.fullmatch(source_commit) is not None, "content_catalog_invalid")
-    bindings = {}
-    for name, row in value["bindings"].items():
-        _require(intake._identifier(name) and isinstance(row, dict)
-                 and "expected_production_commit" not in row, "content_catalog_binding_invalid")
-        _asset(row["robot_asset_usd"])
-        _asset(row["embodiment_camera_template"])
-        _require(payload_digest(Path(row["runtime_source_payload_dir"])) == row["runtime_digest"], "runtime_digest_mismatch")
-        bindings[name] = {**row, "expected_production_commit": source_commit}
+    bindings = {name: _resolve_binding(name, row, source_commit) for name, row in value["bindings"].items()}
     return _seal({"schema_version": CATALOG_SCHEMA, "bindings": bindings,
                   "source_content_catalog_digest": value["catalog_digest"]}, "catalog_digest")
+
+
+def _resolve_binding(name: Any, row: Any, source_commit: str) -> dict[str, Any]:
+    _require(intake._identifier(name) and isinstance(row, dict)
+             and "expected_production_commit" not in row, "content_catalog_binding_invalid")
+    _asset(row["robot_asset_usd"])
+    _asset(row["embodiment_camera_template"])
+    _require(payload_digest(Path(row["runtime_source_payload_dir"])) == row["runtime_digest"], "runtime_digest_mismatch")
+    return {**row, "expected_production_commit": source_commit}
+
+
+def resolve_usable_robot_catalog(value: Mapping[str, Any], *,
+                                 source_commit: str) -> tuple[dict[str, Any], dict[str, str]]:
+    """Resolve the catalog, leaving out each binding whose retained bytes fail.
+
+    The catalog itself must still be sealed and well formed. A binding whose
+    robot USD, camera template or runtime payload is missing or changed is not
+    in the returned catalog and is named, with its code, in the second value;
+    only the scenes that need it are held. Every other binding stays usable.
+    """
+    _require(value.get("catalog_digest") == canonical_digest(value, digest_field="catalog_digest"), "catalog_invalid")
+    if value.get("schema_version") == CATALOG_SCHEMA:
+        return dict(value), {}
+    _require(value.get("schema_version") == CONTENT_CATALOG_SCHEMA
+             and isinstance(value.get("bindings"), dict)
+             and intake._COMMIT.fullmatch(source_commit) is not None, "content_catalog_invalid")
+    bindings: dict[str, Any] = {}
+    unusable: dict[str, str] = {}
+    for name, row in value["bindings"].items():
+        try:
+            bindings[name] = _resolve_binding(name, row, source_commit)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            code = str(exc) if isinstance(exc, ValueError) else "controls_autoprovision_asset_invalid"
+            unusable[str(name)] = code
+    return _seal({"schema_version": CATALOG_SCHEMA, "bindings": bindings,
+                  "source_content_catalog_digest": value["catalog_digest"]}, "catalog_digest"), unusable
+
+
+#: A scene whose robot binding has missing or changed retained bytes.
+ROBOT_BINDING_UNAVAILABLE = "controls_autoprovision_robot_binding_unavailable"
+
+
+def _needed_binding_id(directory: Path, intent: Mapping[str, Any]) -> str | None:
+    """The binding this scene would use: the owner's explicit choice, else its assignment."""
+    explicit = intent["request"]["task"].get("robot_binding_id")
+    if explicit is not None:
+        return str(explicit)
+    from .task_evaluation_scene_robot_assignment import FILENAME
+    path = directory / FILENAME
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        value = _json(path).get("robot_binding_id")
+    except (ValueError, OSError, TypeError, AttributeError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _owner_authority_live(directory: Path, intent: Mapping[str, Any]) -> bool:
+    try:
+        return (not (directory / "revoked.json").exists()
+                and time.time() < intake.effective_execution_expiry(directory, intent))
+    except (ValueError, OSError, KeyError, TypeError):
+        return False
 
 
 def build_preparation_link(**fields: Any) -> dict[str, Any]:
@@ -477,6 +534,7 @@ def scene_preparation_queue_root(preparation_queue_root: Path, intent_id: str) -
 def process_config(config_path: str | Path, *, expected_production_commit: str) -> list[dict[str, Any]]:
     config = _json(Path(config_path))
     catalog = None
+    unusable: dict[str, str] = {}
     scene_root = Path(config["scene_root"])
     owned_queue_root = Path(config["preparation_queue_root"])
     rows = []
@@ -499,8 +557,22 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
                              'intent_digest': intent['intent_digest']})
                 continue
             if catalog is None:
-                catalog = resolve_robot_catalog(_sealed(Path(config['robot_catalog_path']), 'catalog_digest'),
-                                                source_commit=expected_production_commit)
+                catalog, unusable = resolve_usable_robot_catalog(
+                    _sealed(Path(config['robot_catalog_path']), 'catalog_digest'),
+                    source_commit=expected_production_commit)
+            needed = _needed_binding_id(intent_path.parent, intent)
+            if needed in unusable and _owner_authority_live(intent_path.parent, intent):
+                # Only this scene is held, by name. Its owner authority is live,
+                # so this is no owner refusal and needs no global stop; a scene
+                # whose authority has ended still takes the path below.
+                row = {"status": "controls_autoprovision_refused", "intent_id": intent_id,
+                       "blocker": ROBOT_BINDING_UNAVAILABLE, "robot_binding_id": needed,
+                       "robot_binding_blocker": unusable[needed]}
+                key = _configured_scene_key(intent_path, preparation_queue_root)
+                if key is not None:
+                    row["blocked_scene_key"] = key
+                rows.append(row)
+                continue
             selected_evaluation = intent['request']['task'].get('evaluation_source') is not None
             if selected_evaluation:
                 scene_config = config  # Source preparation belongs to its original owner queue.
@@ -635,7 +707,8 @@ def progression_owner_scope(expected_production_commit: str) -> ProgressionOwner
             rows.append({"status": "controls_autoprovision_refused", "blocker": str(exc)})
     keys = {tuple(row["blocked_scene_key"]) for row in rows if row.get("blocked_scene_key")}
     unresolved = any(row.get("scope_unresolved") or
-        (row["status"] == "controls_autoprovision_refused" and not row.get("blocked_scene_key")) for row in rows)
+        (row["status"] == "controls_autoprovision_refused" and not row.get("blocked_scene_key")
+         and row.get("blocker") != ROBOT_BINDING_UNAVAILABLE) for row in rows)
     website = {str(row["intent_digest"]) for row in rows
                if row.get("status") == "scene_preparation_only" and row.get("intent_digest")}
     return ProgressionOwnerScope(rows, keys, unresolved,

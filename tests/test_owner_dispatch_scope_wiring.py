@@ -68,9 +68,10 @@ def test_deploy_materializes_controls_autoprovision_gated_on_bootstrap_after_reg
     # The config must be materialized AFTER the autostart registry (so its
     # group-writable permission wins) and gated on the operator bootstrap so a
     # missing bootstrap leaves the legacy lane rather than a broken config env.
-    assert src.index("_install_configured_controls_autostart_registry(") < src.index(
-        "install_controls_autoprovision(\n                bootstrap_path=controls_autoprovision_bootstrap"
+    assert src.index("_install_configured_controls_autostart_registry(\n") < src.index(
+        "_install_controls_autoprovision_lane(\n                bootstrap=controls_autoprovision_bootstrap"
     )
+    assert "install_controls_autoprovision(bootstrap_path=bootstrap)" in src
     assert 'controls_autoprovision_bootstrap.exists()' in src
 
 

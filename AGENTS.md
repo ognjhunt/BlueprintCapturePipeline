@@ -41,11 +41,10 @@ Fail closed only for:
   not otherwise screened or blurred.
 - **Rights:** capture permissions, revocation, and dataset or model licenses.
 - **Money:** the account-wide monthly limit (USD 200, owner decision
-  2026-11-07; USD 300 decided 2026-11-11, with the switch below), each website
-  job's one fuse (its dollar ceiling),
-  the Google Cloud monthly ceiling (USD 100), and the paid-resource allocator
-  below. Never start paid compute or provider calls outside it. All ceilings:
-  "Spend limits" below.
+  2026-11-07), the per-site budget for screening candidates, the Google Cloud
+  monthly ceiling (USD 100), and the paid-resource allocator below. Never
+  start paid compute or provider calls outside it. All ceilings: "Spend limits"
+  below.
 
 Everything else keeps going. If an input is missing, ambiguous or unverified,
 flag it, make the best supported guess, and continue the same job. Fixing a
@@ -64,13 +63,8 @@ deleting retained data.
 
 ## Spend limits
 
-The money ceilings found in code and config on 2026-11-02, updated for the
-owner's 2026-11-11 decision ("yes replace them - $300 monthly limit, $100
-fuse"): the monthly limit is the one true stop, each job has one fuse, a new
-job starts only when the month has room for it, and testing is not rationed
-below the fuse. One switch decides which model runs: `mode` in `config/website_job_limits.v1.json`, read by `website_job_limits.limits_mode()` and shown in `door status` (`spend_guard.account_monthly_spend.website_job_limits_mode`). It ships `"nested"`: every amount as before 2026-11-11. `"fuse"` turns on the model below. It is changed like any committed config: a reviewed pull request and a normal release; switching back is the same one-line change. An unknown value refuses loudly wherever the mode is read. Rows marked *at `fuse`* apply only then; the
-monthly limit is raised to $300 by its own config change at the same time. Code values were read in the files named; paths without a repo
-name are in this repo.
+The money ceilings found in code and config on 2026-11-02. Code values were
+read in the files named; paths without a repo name are in this repo.
 "Unverified" means that the value lives in Render or on the host, not in a
 repo. The measured cost model is
 [`docs/launch-readiness/2026-11-cost-model.md`](docs/launch-readiness/2026-11-cost-model.md)
@@ -80,11 +74,10 @@ decision for the owner.
 
 | Limit | Value | Set in | Status |
 |---|---|---|---|
-| Account, all providers, per UTC month | $200; alerts at $100 (warn), $160 and $200 (page). $300 (alerts $150/$240/$300) decided 2026-11-11, set by a later change to the same file together with `fuse`. At the limit, new paid admissions are refused with `account_monthly_spend_limit_reached`. Counts reconciled provider month-to-date plus held reservations. | `monthly_limit_usd` in `config/account_monthly_spend_limit.v1.json`, installed by the deploy (the release's own file; `BLUEPRINT_ACCOUNT_MONTHLY_SPEND_LIMIT_CONFIG` could name another file, and no repo file sets it; host env file unverified). Read by `src/blueprint_pipeline/account_monthly_spend.py` at `paid_resource_admission`. If the file is missing on the control plane, new paid admissions are refused with `account_monthly_spend_limit_not_configured` and the capacity tick pages. Design and stage-2 plan: [`docs/architecture/metered-spend.md`](docs/architecture/metered-spend.md). | committed config (owner decision 2026-11-07, "Meter + monthly cap"); every limit below still applies |
-| Start of a website job's paid work (*at `fuse`*) | starts only if limit − counted − Σ over started, unfinished jobs of max(0, $70 − that job's spend since it started, across months) ≥ $70; a job's reserve ends at its end with nothing paid open, its grant's expiry, or 14 days after its start with no grant. Otherwise it waits (`account_monthly_spend_job_start_wait`, reported `capacity_delayed`; one warn `account_spend_jobs_waiting_for_room` with the count and the oldest) and starts by itself when room appears; a grant that runs out while it waits ends `website_job_held_for_monthly_room_expired`. $70 (`TYPICAL_JOB_USD`) is an estimate from the one job that went all the way, not a cap. A started job is never stopped by it | `src/blueprint_pipeline/website_job_start_room.py`, called by the listener before `run_e2e` | code (owner decision 2026-11-11) |
-| Beta screening, per website job | at `nested` (shipped): $15 per plan, $30 per site, as before; a site past its limit holds only itself. *At `fuse`*: no plan size and no site allowance (owner 2026-11-11): a plan funds every early-trial candidate that can run, in plan order, while the job's ceiling has room after the build. The coordinator's site limit is the largest job ceiling any of the site's campaigns recorded; a campaign that recorded none (enqueued before 2026-11-11, or a plan without a job ceiling) counts at $30, so a $25 job with an older campaign has a $30 site limit (its ceiling still binds plans and launches). A site past its limit holds only itself (`beta_screening_site_budget_exceeded`). WebApp `SCREENING_SITE_LIMIT_USD` is $30 on `main`; the website side is changing to accept figures above it (counted in full, with an alert) | `build_job_ceiling_screening_plan` in `src/blueprint_pipeline/beta_policy_screening_plan.py`; `src/blueprint_pipeline/beta_policy_screening_site_limit.py`; WebApp `server/utils/betaPolicyScreeningContract.ts` | code |
+| Account, all providers, per UTC month | $200; alerts at $100 (warn), $160 and $200 (page). At the limit, new paid admissions are refused with `account_monthly_spend_limit_reached`. Counts reconciled provider month-to-date plus held reservations. | `monthly_limit_usd` in `config/account_monthly_spend_limit.v1.json`, installed by the deploy. Read by `src/blueprint_pipeline/account_monthly_spend.py` at `paid_resource_admission`. If the file is missing on the control plane, new paid admissions are refused with `account_monthly_spend_limit_not_configured` and the capacity tick pages. Design and stage-2 plan: [`docs/architecture/metered-spend.md`](docs/architecture/metered-spend.md). | committed config (owner decision 2026-11-07, "Meter + monthly cap"); stage 1, additive: every limit below still applies |
+| Beta screening, per site | $30 | `SITE_LIMIT` in `src/blueprint_pipeline/beta_policy_screening_coordinator.py`; `SITE_BUDGET_USD` in `beta_policy_screening_plan.py`; WebApp `SCREENING_SITE_LIMIT_USD` in `server/utils/betaPolicyScreeningContract.ts` | code |
 | Beta screening, per candidate | $4.00 default | `DEFAULT_CANDIDATE_CAP_USD` in `src/blueprint_pipeline/beta_policy_screening_capabilities.py`; a catalog profile can set `screening_candidate_cap_usd` | code default |
-| Website job, all ledgers (Atlas, upstream, scene, screening): the job's fuse | $25 on every job granted before 2026-11-11 (its Atlas grant figure); $100 for new jobs once the owner changes the Render grant policy (owner 2026-11-11). Its purpose is to stop a fault from burning the month in one job; reaching it needs a person to look | WebApp `websiteJobCeiling` in `server/utils/websiteJobCeiling.ts`: an Atlas authorization row, a stored grant or the grant policy sets the figure; `WEBSITE_JOB_CEILING_DEFAULT_USD` ($40) is only the fallback | grant policy on Render; per-job figures read from host grant copies |
+| Website job, all ledgers (Atlas, upstream, scene, screening) | $40 default | WebApp `WEBSITE_JOB_CEILING_DEFAULT_USD` in `server/utils/websiteJobCeiling.ts`. An Atlas authorization row, a stored grant or the grant policy sets the figure first. | code default; per-job figures unverified |
 | Atlas automatic grant, per capture | at most $100 and 32 requests (schema) | Render `BLUEPRINT_WEBSITE_ATLAS_GRANT_POLICY_JSON`; schema in WebApp `server/utils/websiteAtlasAuthorization.ts` | unverified (per-job allowances in B-03 §5) |
 | Atlas owner row, per capture | at most $1,000 and 1,000 requests (schema) | Render `BLUEPRINT_WEBSITE_ATLAS_AUTHORIZATIONS_JSON`; same file | unverified (tracker D-02: capture-447 row $70, raise to $110 asked) |
 | Atlas review, per review | at most $5 (schema) | Render `BLUEPRINT_WEBSITE_ATLAS_RUNTIME_POLICY_JSON` (`maximum_review_cost_usd`); same file | unverified (B-03 read $4 and $1) |
