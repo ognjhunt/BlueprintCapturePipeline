@@ -1,5 +1,13 @@
 {
   "schema_version": "blueprint_owned_captures.v1",
   "purpose": "Captures whose video belongs to Blueprint itself, so a job packet may be made from them with the owner's recorded approval (src/blueprint_pipeline/job_packet_export.py). A capture id is added only in a reviewed change, with the evidence of ownership.",
-  "captures": []
+  "captures": [
+    {
+      "capture_id": "walkthrough-capture-39ecdc97-1b37-4e7c-8db5-d6208f7f62c5",
+      "approved_by": "owner",
+      "approved_on": "2026-11-12",
+      "evidence": "Asked: 'May I list the reference job as Blueprint's own capture so its video can be shown to companies and serve as today's end-to-end test job?' Answered: 'yes'. The video's recorded sha256 begins 9fe4715c4333 and matches the owner's own walkthrough clip, confirmed theirs on 2026-11-11.",
+      "video_sha256_prefix": "9fe4715c4333"
+    }
+  ]
 }

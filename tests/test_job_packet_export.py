@@ -68,14 +68,28 @@ def _host(relative: str) -> str:
     return f"{HOST}/{CAPTURE_REL}/{relative}"
 
 
+#: What a phone records in its video file: where and when it was filmed, on what, and any title or comment.
+VIDEO_DETAILS = {"location": "+37.7749-122.4194/", "location-eng": "+37.7749-122.4194/",
+                 "com.apple.quicktime.location.ISO6709": "+37.7749-122.4194+010.000/",
+                 "com.apple.quicktime.make": "PLANTMAKE", "com.apple.quicktime.model": "PLANTMODEL",
+                 "title": "PLANTTITLE", "comment": "PLANTCOMMENT", "creation_time": "2026-11-10T10:00:00Z"}
+
+
+def _clip(path: Path, *, sound: bool = True, details: dict | None = None, stream_tags: bool = True) -> Path:
+    tags = [item for key, value in (VIDEO_DETAILS if details is None else details).items()
+            for item in ("-metadata", f"{key}={value}")]
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=5:duration=1",
+                    *(["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac", "-shortest"] if sound else []),
+                    "-c:v", "mpeg4", "-movflags", "use_metadata_tags", *tags,
+                    *(["-metadata:s:v", "handler_name=PLANTHANDLER", "-metadata:s:v",
+                       "creation_time=2026-11-10T10:00:00Z"] if stream_tags else []), str(path)], check=True)
+    return path
+
+
 @pytest.fixture(scope="session")
 def clip_with_sound(tmp_path_factory) -> bytes:
-    """A one-second mp4 with a video and an audio stream."""
-    path = tmp_path_factory.mktemp("clip") / "clip.mp4"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=5:duration=1",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:v", "mpeg4", "-c:a", "aac", "-shortest",
-                    str(path)], check=True)
-    return path.read_bytes()
+    """A one-second mp4 with a video and an audio stream, carrying every detail a phone records."""
+    return _clip(tmp_path_factory.mktemp("clip") / "clip.mp4").read_bytes()
 
 
 def _streams(path: Path, kind: str) -> list[str]:
@@ -166,7 +180,7 @@ def _seal_first_look(capture: Path, *, rows=None, table_change=None) -> None:
                             "counts": {"fits": 0, "fits_spec": 1, "doesnt_fit": 1, "unknown": 0}}}, "digest"))
 
 
-def _identity_files(capture: Path) -> None:
+def _identity_files(capture: Path, clip: bytes) -> None:
     """The capture's records as the host holds them, with every name, contact, location, token, link and path planted."""
     _write(capture / "capture_descriptor.json", {
         "schema_version": "v1", "scene_id": SITE, "capture_id": CAPTURE, "site_submission_id": "req-1",
@@ -184,8 +198,11 @@ def _identity_files(capture: Path) -> None:
     _write(capture / "raw" / "capture_upload_complete.json", {
         "scene_id": SITE, "capture_id": CAPTURE, "raw_prefix": f"{CAPTURE_REL}/raw", "video_uri": f"{CAPTURE_REL}/{VIDEO}",
         "producer_delivery": {"object_name": f"{STORAGE}/delivery.json", "delivery_key": TOKEN}})
-    _write(capture / "pipeline_staging_manifest.json", {"bucket": "PLANTBUCKET", "prefix": f"{CAPTURE_REL}/raw",
-                                                        "objects": [{"name": f"{STORAGE}/{VIDEO}", "sha256": "sha256:0"}]})
+    _write(capture / "pipeline_staging_manifest.json", {
+        "bucket": "PLANTBUCKET", "prefix": f"{CAPTURE_REL}/raw", "delivery_key": TOKEN + "STAGING",
+        "raw_video": {"object_name": f"{CAPTURE_REL}/{VIDEO}", "size_bytes": len(clip)},
+        "objects": [{"name": f"{CAPTURE_REL}/raw/manifest.json", "sha256": "sha256:" + "0" * 64},
+                    {"name": f"{CAPTURE_REL}/{VIDEO}", "sha256": "sha256:" + hashlib.sha256(clip).hexdigest()}]})
     _write(capture / "pipeline_handoff.json", {"bucket": "PLANTBUCKET", "raw_prefix_uri": f"gs://{STORAGE}/raw"})
 
 
@@ -202,7 +219,7 @@ def _job(tmp_path: Path, clip: bytes, *, trial: str = "zero", simulation: bool =
                                                "site_submission_id": "req-1", "request_id": "req-1",
                                                "video_uri": f"{CAPTURE_REL}/{VIDEO}", "device_model": "browser_self_capture",
                                                "capture_rights": _rights(CURRENT)})
-    _identity_files(capture)
+    _identity_files(capture, clip)
     _pull_record(root, [""], _absent())
     prep = capture / PREP
     _write(prep / "preparation.json", {
@@ -297,9 +314,9 @@ def _out(tmp_path: Path, name: str = "out") -> Path:
     return path
 
 
-def _owned_list(tmp_path: Path, ids: list[str]) -> Path:
+def _owned_list(tmp_path: Path, ids: list[str], **fields) -> Path:
     return _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1",
-                                            "captures": [{"capture_id": item} for item in ids]})
+                                            "captures": [{"capture_id": item, **fields} for item in ids]})
 
 
 def _owned() -> OwnedCaptureApproval:
@@ -403,7 +420,7 @@ def test_the_packet_holds_the_whole_job(tmp_path, job, clip_with_sound) -> None:
     assert on_disk_manifest["permission_basis"] == {"rule": "site_sharing_permission", "statement_version": CURRENT}
     assert on_disk_manifest["first_look_source"] == "pipeline_robot_fit_table"
     readme = (folder / "README.md").read_text()
-    assert "Isaac Sim 6.0.1" in readme and "Z_up_estimated_meters" in readme and "sound removed" in readme
+    assert "Isaac Sim 6.0.1" in readme and "Z_up_estimated_meters" in readme and "without its sound or its recorded details" in readme
     # The operator record sits beside the folder, never inside it, and ties the packet to the job.
     record = json.loads(Path(manifest["operator_record"]).read_text())
     assert Path(manifest["operator_record"]).parent == out
@@ -573,8 +590,52 @@ def test_a_job_under_any_older_statement_is_refused_until_the_site_accepts_the_c
     assert "capture_rights.statement_version" in str(refusal)
 
 
-def test_committed_owned_capture_list_is_empty() -> None:
-    assert packet.owned_capture_ids() == set()
+REFERENCE = "walkthrough-capture-39ecdc97-1b37-4e7c-8db5-d6208f7f62c5"
+
+
+def test_the_committed_allow_list_holds_only_the_reference_capture_and_its_video() -> None:
+    # The owner's approval, 2026-11-12: the reference job is Blueprint's own capture. Nothing else is listed.
+    rows = packet.owned_captures()
+    assert set(rows) == {REFERENCE} and rows[REFERENCE]["video_sha256_prefix"] == "9fe4715c4333"
+    assert rows[REFERENCE]["approved_by"] == "owner" and rows[REFERENCE]["approved_on"] == "2026-11-12"
+
+
+@pytest.mark.parametrize("row", [
+    {"capture_id": CAPTURE, "note": "x"}, {"capture_id": CAPTURE, "video_sha256_prefix": "9FE4715C4333"},
+    {"capture_id": CAPTURE, "video_sha256_prefix": "9fe4"}, {"capture_id": CAPTURE, "approved_on": "yesterday"},
+    {"capture_id": CAPTURE, "evidence": " "}, {"capture_id": CAPTURE, "approved_by": 7},
+])
+def test_an_allow_list_row_with_an_unknown_key_or_a_wrong_value_is_refused(tmp_path, job, row) -> None:
+    path = _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "captures": [row]})
+    assert _refused(job(statement=OLDER), tmp_path, owned=_owned(), owned_list=path, now=NOW) == \
+        "job_packet_owned_capture_list_invalid"
+
+
+def test_a_repeated_capture_on_the_allow_list_is_refused(tmp_path, job) -> None:
+    path = _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1",
+                                            "captures": [{"capture_id": CAPTURE}, {"capture_id": CAPTURE}]})
+    assert _refused(job(statement=OLDER), tmp_path, owned=_owned(), owned_list=path, now=NOW) == \
+        "job_packet_owned_capture_list_invalid"
+
+
+def test_an_allow_list_entry_covers_only_the_video_it_names(tmp_path, job, clip_with_sound) -> None:
+    prefix = hashlib.sha256(clip_with_sound).hexdigest()[:12]
+    manifest = build_job_packet(job(statement=OLDER), output_root=_out(tmp_path), owned=_owned(), now=NOW,
+                                owned_list=_owned_list(tmp_path, [CAPTURE], video_sha256_prefix=prefix))
+    assert json.loads(Path(manifest["operator_record"]).read_text())["permission_basis"]["video_sha256"].startswith(prefix)
+    other = _owned_list(tmp_path, [CAPTURE], video_sha256_prefix="0" * 12)
+    assert _refused(job(root=tmp_path / "b", statement=OLDER), tmp_path / "b", owned=_owned(), now=NOW,
+                    owned_list=other) == "job_packet_owned_capture_video_mismatch"
+    # A different video uploaded later under the same capture id: the recorded digest no longer names the file.
+    inputs = job(root=tmp_path / "c", statement=OLDER)
+    _clip(inputs.capture_dir / VIDEO, details={"title": "another clip"})
+    assert _refused(inputs, tmp_path / "c", owned=_owned(), now=NOW, owned_list=_owned_list(
+        tmp_path / "c", [CAPTURE], video_sha256_prefix=prefix)) == "job_packet_owned_capture_video_mismatch"
+    # No recorded digest: the entry cannot be checked, so it covers nothing.
+    inputs = job(root=tmp_path / "d", statement=OLDER)
+    _gone(inputs, "pipeline_staging_manifest.json")
+    assert _refused(inputs, tmp_path / "d", owned=_owned(), now=NOW, owned_list=_owned_list(
+        tmp_path / "d", [CAPTURE], video_sha256_prefix=prefix)) == "job_packet_owned_capture_video_not_recorded"
 
 
 @pytest.mark.parametrize(("ids", "approval", "code"), [
@@ -1165,3 +1226,151 @@ def test_the_real_publication_loses_no_row_and_keeps_scripted_apart() -> None:
     text = "\n".join(packet.trial_lines(_real_publication()))
     assert "left out" not in text and "π0.5 DROID" in text.split(packet.SCRIPTED_CHECK_TITLE)[0]
     assert "kinova_gen3" in text.split(packet.SCRIPTED_CHECK_TITLE)[1]
+
+
+# --- the video carries nothing the phone recorded ----------------------------------------------------------
+
+def _tags(path: Path) -> dict:
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:stream_tags:format_tags",
+                          "-of", "json", str(path)], capture_output=True, text=True, check=True).stdout
+    probe = json.loads(out)
+    return {"format": probe.get("format", {}).get("tags", {}), "streams": [row.get("tags", {}) for row in probe["streams"]],
+            "kinds": [row["codec_type"] for row in probe["streams"]]}
+
+
+def test_the_video_goes_in_without_where_and_when_it_was_filmed(tmp_path, job) -> None:
+    inputs = job()
+    source = _tags(inputs.capture_dir / VIDEO)
+    assert {"location-eng", "com.apple.quicktime.location.ISO6709", "title", "comment"} <= set(source["format"])
+    copied = Path(build_job_packet(inputs, output_root=_out(tmp_path))["packet_dir"]) / "files/video/video.mp4"
+    after = _tags(copied)
+    assert after["kinds"] == ["video"]
+    assert set(after["format"]) | set(after["streams"][0]) <= packet.MUXER_TAGS
+    data = copied.read_bytes()
+    for value in ("+37.7749", "PLANT", "2026-11-10"):
+        assert value.encode() not in data
+
+
+@pytest.mark.parametrize("key", sorted(VIDEO_DETAILS))
+def test_a_strip_that_leaves_any_recorded_detail_is_refused(tmp_path, job, monkeypatch, key) -> None:
+    import blueprint_pipeline.capture_audio_minimization as audio
+
+    def leaves_one(source, destination, **kwargs):
+        _clip(destination, sound=False, details={key: VIDEO_DETAILS[key]}, stream_tags=False)
+        return {"audio_removed": True, "evidence": "ffprobe_output_has_no_audio_stream", "output_audio_stream_count": 0}
+    monkeypatch.setattr(audio, "write_audio_free_video", leaves_one)
+    refusal = _refusal(job(), tmp_path)
+    assert refusal.code == "job_packet_video_details_not_removed" and VIDEO_DETAILS[key] not in str(refusal)
+
+
+def test_a_copy_with_a_second_stream_is_refused(tmp_path, job, monkeypatch) -> None:
+    import blueprint_pipeline.capture_audio_minimization as audio
+
+    def two_videos(source, destination, **kwargs):
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=5:duration=1",
+                        "-f", "lavfi", "-i", "testsrc=size=32x24:rate=5:duration=1", "-map", "0", "-map", "1",
+                        "-c:v", "mpeg4", "-map_metadata", "-1", str(destination)], check=True)
+        return {"audio_removed": True, "evidence": "ffprobe_output_has_no_audio_stream", "output_audio_stream_count": 0}
+    monkeypatch.setattr(audio, "write_audio_free_video", two_videos)
+    assert _refused(job(), tmp_path) == "job_packet_video_details_not_removed"
+
+
+def test_other_callers_keep_todays_command() -> None:
+    from blueprint_pipeline.capture_audio_minimization import audio_free_remux_command
+    assert "-map_metadata" not in audio_free_remux_command("ffmpeg", Path("a"), Path("b"))
+    assert audio_free_remux_command("ffmpeg", Path("a"), Path("b"), strip_metadata=True)[-7:-1] == [
+        "-map_metadata", "-1", "-map_chapters", "-1", "-map_metadata:s:v", "-1"]
+
+
+# --- every file copied into the packet is read for ids, keys, paths and links ------------------------------
+
+def _zip(path: Path, member: str, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(member, data)
+
+
+def _bundle(inputs: JobInputs, data: bytes) -> None:
+    with zipfile.ZipFile(inputs.configured_scene_dir / "configured_scene_bundle.v1.zip", "w") as bundle:
+        bundle.writestr("appearance.usdc", data)
+
+
+PLANTED_FILES = {
+    "usda_host_path": (lambda inputs: _write(inputs.team_scene_dir / "native-task-packet" / "layer.usda",
+                                             f'#usda 1.0\n(subLayers = [@/var/lib/blueprint/x/{CAPTURE_REL}/a.usdc@])\n'),
+                       "files/simulation/team-scene/native-task-packet/layer.usda", "a job id"),
+    "usda_token": (lambda inputs: _write(inputs.team_scene_dir / "native-task-packet" / "layer.usda",
+                                         f'#usda 1.0\n(doc = "{TOKEN}STAGING")\n'),
+                   "files/simulation/team-scene/native-task-packet/layer.usda", "a delivery key"),
+    "usdz_member": (lambda inputs: _zip(inputs.configured_scene_dir / "replacement_asset.usdz", "asset.usda",
+                                        f'#usda 1.0\n(doc = "gs://{STORAGE}/a")\n'.encode()),
+                    "files/object/replacement_asset.usdz", "a storage link inside a zip member"),
+    "bundle_member": (lambda inputs: _bundle(inputs, f"owned by {USER}".encode()),
+                      "files/simulation/configured-scene/appearance.usdc", "an owner or organisation id"),
+    "clip_bytes": (lambda inputs: _write(inputs.review_videos_dir / "cell_runs" / "01" / f"{CAPTURE}-camera.mp4",
+                                         b"\x00moov req-1 site-req-1"), "files/early-trial/clips/clip-01.mp4", "a job id"),
+    "reconstruction_link": (lambda inputs: _write(inputs.capture_dir / SPLAT, f"ply\ncomment {LINK}\n".encode()),
+                            "files/reconstruction/atlas_depth_splat_levelled.ply", "a web link"),
+    "pull_root_path": (lambda inputs: _write(inputs.capture_dir / COLLISION, str(inputs.pull_root.absolute()).encode()),
+                       "files/reconstruction/collider_conditioned.glb", "the pull root's path"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(PLANTED_FILES))
+def test_a_copied_file_that_names_the_site_or_a_path_is_refused_by_file_and_kind(tmp_path, job, case) -> None:
+    plant, relative, kind = PLANTED_FILES[case]
+    inputs = job()
+    plant(inputs)
+    refusal = _refusal(inputs, tmp_path)
+    assert refusal.code == "job_packet_file_names_the_site" and str(refusal).endswith(f"{relative} holds {kind}")
+    for value in (CAPTURE, TOKEN, STORAGE, USER, LINK, "/var/lib/blueprint", str(inputs.pull_root)):
+        assert value not in str(refusal)
+
+
+def test_a_clip_sidecar_and_a_namespace_link_are_fine(tmp_path, job) -> None:
+    inputs = job()
+    _write(inputs.review_videos_dir / "cell_runs" / "01" / f"{CAPTURE}-camera.json", {"source": f"gs://{STORAGE}"})
+    _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", '#usda 1.0\n(doc = "http://www.w3.org/2000/svg")\n')
+    folder = Path(build_job_packet(inputs, output_root=_out(tmp_path))["packet_dir"])
+    assert STORAGE.encode() not in _all_bytes(folder)
+
+
+# --- contact details the site typed are removed from its words -------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "jane.doe@bakery.example.co.uk", "OPS@example.org", "https://bakery.example/menu?x=1",
+    "http://10.0.0.1:8080/x", "www.bakery-example.com", "+44 20 7946 0958", "020 7946 0958", "(555) 014-2999",
+    "555-014-2999", "555.014.2999", "06 12 34 56 78", "5550142999", "0049 30 1234567", "+1-555-014-2999",
+])
+def test_a_contact_detail_is_removed(text) -> None:
+    redacted, found = packet.redact_contacts(f"Call or write: {text}, thanks.")
+    assert found and redacted == "Call or write: [removed], thanks."
+
+
+@pytest.mark.parametrize("text", [
+    "The tray weighs about 2 kg and is 30 x 40 cm.", "Move 12 trays 4 times a day, 10:30 to 14:00.",
+    "between 1000-2000 boxes a week", "12 500 000 units a year", "pi is 3.1415926", "since 2026-11-12",
+    "0.4-1.8 kg", "a 1,200,000 item store", "shelf 2 of 3, 150 cm high, 45 s per cycle", "90 % of the time",
+])
+def test_ordinary_numbers_stay(text) -> None:
+    assert packet.redact_contacts(text) == (text, False)
+
+
+def test_contact_details_in_the_sites_words_never_reach_the_sheet(tmp_path, job) -> None:
+    inputs = job()
+
+    def plant(value):
+        value["description"] = f"{SENTENCE}. Questions: {EMAIL} or {PHONE}."
+        value["operator_answers"] = {"who to call": f"Jane on {PHONE}", f"site {LINK}": "yes"}
+        value["success_criteria"]["successDefinition"] = f"Tray on the shelf (photo at {LINK})"
+        value["operator_task_details"]["item_make_model"] = f"house tray, order line {PHONE}"
+    _edit(_context_path(inputs), plant)
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
+    for value in (EMAIL, PHONE, LINK, "555 0142"):
+        assert value not in sheet
+    assert f"> {SENTENCE}. Questions: [removed] or [removed]." in sheet and "Jane on [removed]" in sheet
+    assert "Contact details the site typed into its description or answers were removed." in sheet.split("\n")[6]
+
+
+def test_nothing_is_said_about_contact_details_when_none_were_typed(tmp_path, job) -> None:
+    assert "Contact details" not in _sheet(build_job_packet(job(), output_root=_out(tmp_path)))

@@ -160,6 +160,70 @@ class OwnedCaptureApproval:
     approved_on: str = ""
 
 
+# --- contact details in the site's own words ------------------------------------------------------------
+
+REMOVED = "[removed]"
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+_LINK = re.compile(r"(?i)\b(?:https?://|www\.)[^\s<>\"']*[^\s<>\"'.,;:!?)]")
+_NUMBER_RUN = re.compile(r"(?<![\w.,])(?:\+|00)?\(?\d[\d().\- ]*\d\)?(?![\w])")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _phone(run: str) -> bool:
+    """A run of digits and separators that is a phone number: at least 7 digits, not a decimal, date, range or
+    thousands-grouped count."""
+    run = run.strip()
+    digits = sum(ch.isdigit() for ch in run)
+    if digits < 7 or _ISO_DATE.fullmatch(run):
+        return False
+    if run.startswith(("+", "00", "(")):
+        return True
+    if "." in run and run.count(".") < 2:
+        return False  # a decimal, such as 3.1415926
+    groups = re.split(r"[().\- ]+", run.strip("()"))
+    if len(groups) > 1 and all(len(group) == 3 for group in groups[1:]) and len(groups[0]) <= 3 and " " in run:
+        return False  # thousands grouped by spaces, such as 12 500 000
+    if (len(groups) == 2 and "-" in run and len(groups[0]) == len(groups[1]) <= 4
+            and int(groups[0]) < int(groups[1])):
+        return False  # a range, such as 1000-2000
+    return True
+
+
+def redact_contacts(text: str) -> tuple[str, bool]:
+    """The text with every email address, web link and phone number replaced by ``[removed]``, and whether any was."""
+    found = False
+
+    def removed(_match: re.Match[str]) -> str:
+        nonlocal found
+        found = True
+        return REMOVED
+
+    text = _EMAIL.sub(removed, _LINK.sub(removed, text))
+
+    def phone(match: re.Match[str]) -> str:
+        nonlocal found
+        if not _phone(match.group(0)):
+            return match.group(0)
+        found = True
+        tail = match.group(0)[len(match.group(0).rstrip()):]
+        return REMOVED + tail
+    return _NUMBER_RUN.sub(phone, text), found
+
+
+def _redacted(value: Any, removed: list[bool]) -> Any:
+    """Every text inside ``value`` passed through ``redact_contacts``; ``removed`` records whether anything was."""
+    if isinstance(value, str):
+        text, found = redact_contacts(value)
+        removed.append(found)
+        return text
+    if isinstance(value, Mapping):
+        return {_redacted(key, removed) if isinstance(key, str) else key: _redacted(item, removed)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redacted(item, removed) for item in value]
+    return value
+
+
 # --- reading inputs: regular files only, never outside the directory named -----------------------------
 
 def _inside(root: Path, path: Path) -> Path:
@@ -471,25 +535,53 @@ def check_job_state(capture_dir: Path, context: Mapping[str, Any], *, pull_root:
     return pull
 
 
-def owned_capture_ids(path: Path | None = None) -> set[str]:
+#: The keys an allow-list row may carry. Only ``capture_id`` is required.
+OWNED_CAPTURE_KEYS = frozenset({"capture_id", "approved_by", "approved_on", "evidence", "video_sha256_prefix"})
+
+
+def owned_captures(path: Path | None = None) -> dict[str, Mapping[str, Any]]:
+    """The allow-list's rows by capture id, each checked: known keys only, text where text is expected, a real date,
+    and a video fingerprint prefix of 12 to 64 lowercase hex digits."""
     try:
         value = json.loads((path or OWNED_CAPTURES_PATH).read_text(encoding="utf-8"), object_pairs_hook=_unique_pairs)
         if value.get("schema_version") != OWNED_CAPTURES_SCHEMA or not isinstance(value.get("captures"), list):
             raise ValueError("schema")
-        ids = []
+        rows: dict[str, Mapping[str, Any]] = {}
         for row in value["captures"]:
-            if not isinstance(row, Mapping) or not isinstance(row.get("capture_id"), str):
+            if (not isinstance(row, Mapping) or not isinstance(row.get("capture_id"), str)
+                    or not set(row) <= OWNED_CAPTURE_KEYS or row["capture_id"] in rows):
                 raise ValueError("row")
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", row["capture_id"]):
                 raise ValueError("id")
-            ids.append(row["capture_id"])
+            if any(key in row and (not isinstance(row[key], str) or not row[key].strip())
+                   for key in ("approved_by", "approved_on", "evidence")):
+                raise ValueError("text")
+            if "approved_on" in row:
+                date.fromisoformat(row["approved_on"])
+            if "video_sha256_prefix" in row and not (isinstance(row["video_sha256_prefix"], str)
+                                                     and re.fullmatch(r"[0-9a-f]{12,64}", row["video_sha256_prefix"])):
+                raise ValueError("prefix")
+            rows[row["capture_id"]] = row
     except (OSError, UnicodeError, ValueError, TypeError, AttributeError) as exc:
         raise JobPacketRefused("job_packet_owned_capture_list_invalid", str(path or OWNED_CAPTURES_PATH)) from exc
-    return set(ids)
+    return rows
+
+
+def recorded_video_sha256(capture_dir: Path, pull: PullRecord) -> str | None:
+    """The sha256 the staging manifest recorded for the capture's raw video when it was staged, or None."""
+    if not pull.in_capture("pipeline_staging_manifest.json"):
+        return None
+    staging = _read_json(capture_dir, capture_dir / "pipeline_staging_manifest.json")
+    name = _mapping(staging.get("raw_video")).get("object_name")
+    digests = [row.get("sha256") for row in staging.get("objects") or [] if isinstance(row, Mapping)
+               and isinstance(name, str) and row.get("name") == name]
+    digest = digests[0] if len(digests) == 1 else None
+    return digest.removeprefix("sha256:") if isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) else None
 
 
 def permission_basis(context: Mapping[str, Any], *, owned: OwnedCaptureApproval | None,
-                     owned_list: Path | None = None, now: datetime | None = None) -> dict[str, Any]:
+                     owned_list: Path | None = None, now: datetime | None = None,
+                     video_sha256: str | None = None) -> dict[str, Any]:
     """Which rule allows this job to be shared, or a refusal."""
     version = _mapping(context.get("capture_rights")).get("statement_version")
     if isinstance(version, str) and version in SHARING_PERMISSION_STATEMENT_VERSIONS:
@@ -512,11 +604,21 @@ def permission_basis(context: Mapping[str, Any], *, owned: OwnedCaptureApproval 
     if owned.capture_id != context.get("capture_id"):
         raise JobPacketRefused("job_packet_owned_capture_id_mismatch", f"--capture-id against {TASK_CONTEXT} capture_id")
     path = owned_list or OWNED_CAPTURES_PATH
-    if owned.capture_id not in owned_capture_ids(path):
+    row = owned_captures(path).get(owned.capture_id)
+    if row is None:
         raise JobPacketRefused("job_packet_capture_not_blueprint_owned", f"the capture id is not on {path.name}")
+    # An entry names one video: a different video uploaded later under the same capture id is not covered.
+    prefix = row.get("video_sha256_prefix")
+    if prefix is not None and video_sha256 is None:
+        raise JobPacketRefused("job_packet_owned_capture_video_not_recorded",
+                               "pipeline_staging_manifest.json records no sha256 for the capture's raw video")
+    if prefix is not None and not video_sha256.startswith(prefix):
+        raise JobPacketRefused("job_packet_owned_capture_video_mismatch",
+                               f"the video recorded in pipeline_staging_manifest.json is not the one {path.name} names")
     return {"rule": "blueprint_owned_capture", "capture_id": owned.capture_id,
             "approved_by": owned.approved_by.strip(), "approved_on": approved_on.isoformat(),
-            "approval_evidence": owned.approval_evidence.strip(), "allow_list_sha256": _sha256(path)}
+            "approval_evidence": owned.approval_evidence.strip(), "allow_list_sha256": _sha256(path),
+            **({"video_sha256": video_sha256} if prefix is not None else {})}
 
 
 # --- what the records say -----------------------------------------------------------------------------
@@ -987,15 +1089,115 @@ def _require_sound_tools() -> None:
                                "ffmpeg and ffprobe are needed to remove the video's sound; install them and run again")
 
 
-def _copy_without_sound(source: Path, target: Path) -> dict[str, Any]:
-    """The video stream copied as it is, with no sound; refused unless ffprobe counts no audio stream in the copy."""
+#: The only tags the copy may carry: what ffmpeg's mov/mp4 muxer writes itself once every source tag is dropped
+#: (checked with ffmpeg 6.1 on .mov and .mp4). None of them comes from the source file or says where or when it was
+#: filmed. ``language`` is allowed only as ``und`` (undetermined), the muxer's own value.
+MUXER_TAGS = frozenset({"major_brand", "minor_version", "compatible_brands", "encoder", "handler_name", "vendor_id",
+                        "language"})
+
+
+def _video_details_left(path: Path) -> str | None:
+    """What ffprobe still finds in the copy beyond one video stream and the muxer's own tags, or None."""
+    try:
+        result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:stream_tags:format_tags",
+                                 "-show_chapters", "-of", "json", str(path)], capture_output=True, text=True,
+                                check=False, timeout=120)
+        probe = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        probe = None
+    if not isinstance(probe, Mapping):
+        return "ffprobe could not read the copy"
+    streams = probe.get("streams") if isinstance(probe.get("streams"), list) else []
+    if [_mapping(stream).get("codec_type") for stream in streams] != ["video"]:
+        return "the copy does not hold exactly one video stream and nothing else"
+    if probe.get("chapters"):
+        return "chapters survived"
+    for where, tags in (("format", _mapping(probe.get("format")).get("tags")), ("stream", _mapping(streams[0]).get("tags"))):
+        for key, value in _mapping(tags).items():
+            if key not in MUXER_TAGS or (key == "language" and value != "und"):
+                return f"a {where} tag {key!r} survived"
+    return None
+
+
+def _copy_video(source: Path, target: Path) -> dict[str, Any]:
+    """The one video stream copied as it is, without sound, tags or chapters; refused unless ffprobe shows that."""
     from .capture_audio_minimization import write_audio_free_video
-    receipt = write_audio_free_video(source, target)
+    receipt = write_audio_free_video(source, target, strip_metadata=True)
     if receipt.get("evidence") != "ffprobe_output_has_no_audio_stream" or receipt.get("output_audio_stream_count") != 0:
         target.unlink(missing_ok=True)
         raise JobPacketRefused("job_packet_video_sound_not_removed",
                                f"{source.name}: {receipt.get('reason') or receipt.get('evidence')}; the video was not copied")
+    left = _video_details_left(target)
+    if left:
+        target.unlink(missing_ok=True)
+        raise JobPacketRefused("job_packet_video_details_not_removed", f"{source.name}: {left}; the video was not copied")
     return receipt
+
+
+#: Links a packet file may carry: XML namespace identifiers (an SVG or XML header names them); they point at no
+#: site, person or Blueprint storage.
+ALLOWED_LINK_PREFIXES = (b"http://www.w3.org/",)
+_ANY_LINK = re.compile(rb"https?://")
+_SCAN_CHUNK = 8 << 20
+
+
+def _secrets(capture_dir: Path, context: Mapping[str, Any], pull: PullRecord) -> list[tuple[bytes, str]]:
+    """What must never be in a packet file, each with the kind of thing it is (the kind is printed, never the value)."""
+    def record(relative: str) -> Mapping[str, Any]:
+        path = capture_dir / relative
+        return _mapping(_read_json(capture_dir, path)) if os.path.lexists(path) else {}
+
+    raw, descriptor = record("raw/manifest.json"), record("capture_descriptor.json")
+    upload, staging, ledger = (record("raw/capture_upload_complete.json"), record("pipeline_staging_manifest.json"),
+                               record("pipeline_job_ledger.json"))
+    authority = _mapping(_mapping(descriptor.get("metadata")).get("website_scene_execution_authority"))
+    owner = _mapping(_mapping(_mapping(record(f"{PREPARATION}/preparation.json")).get("intake_request")).get("owner"))
+    found = [(value, "a job id") for value in (context.get("request_id"), context.get("scene_id"), context.get("capture_id"),
+                                               raw.get("site_submission_id"), descriptor.get("site_submission_id"))]
+    found += [(value, "an owner or organisation id") for value in (
+        *_mapping(authority.get("owner")).values(), _mapping(authority.get("consent")).get("accepted_by"), *owner.values())]
+    found += [(value, "a delivery key") for value in (
+        _mapping(upload.get("producer_delivery")).get("delivery_key"), staging.get("delivery_key"),
+        ledger.get("producer_delivery_key"))]
+    found += [(value, "the pull root's path") for value in {str(pull.root.absolute()), str(pull.root.resolve())}]
+    found += [("gs://", "a storage link"), ("/var/lib/blueprint", "a host path")]
+    return [(value.encode(), kind) for value, kind in found if isinstance(value, str) and len(value) >= 4]
+
+
+def _match(stream, secrets: list[tuple[bytes, str]]) -> str | None:
+    """The kind of the first secret or outside link in ``stream``, read in chunks that overlap, or None."""
+    overlap, tail = max(len(value) for value, _ in secrets) + 4096, b""
+    for chunk in iter(lambda: stream.read(_SCAN_CHUNK), b""):
+        window = tail + chunk
+        for value, kind in secrets:
+            if value in window:
+                return kind
+        for link in _ANY_LINK.finditer(window):
+            if not window.startswith(ALLOWED_LINK_PREFIXES, link.start()):
+                return "a web link"
+        tail = window[-overlap:]
+    return None
+
+
+def _scan_packet(packet: Path, secrets: list[tuple[bytes, str]]) -> None:
+    """Refuse when any file written into the packet, or any member of a zip there, holds an id, key, path or link."""
+    for path in sorted(item for item in packet.rglob("*") if item.is_file()):
+        relative = path.relative_to(packet).as_posix()
+        with path.open("rb") as stream:
+            kind = _match(stream, secrets)
+        if kind is None and zipfile.is_zipfile(path):
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    for info in archive.infolist():
+                        with archive.open(info) as member:
+                            kind = _match(member, secrets)
+                        if kind:
+                            kind += " inside a zip member"
+                            break
+            except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+                raise JobPacketRefused("job_packet_file_names_the_site", f"{relative}: a zip that cannot be read") from exc
+        if kind:
+            raise JobPacketRefused("job_packet_file_names_the_site", f"{relative} holds {kind}")
 
 
 def _code_revision() -> str:
@@ -1036,7 +1238,8 @@ def _readme(*, files: list[str], preparation: Mapping[str, Any] | None, base_sce
                   f"{_cell(frame.get('declared_up_axis'))}; physical scale measured: "
                   f"{_cell(frame.get('physical_scale_measured'))}. The reconstruction's own up axis: "
                   f"{_cell(_mapping(base_scene).get('up_axis'))}."]
-    for prefix, words in (("files/video/", "- `files/video/`: the job's video as uploaded, with its sound removed."),
+    for prefix, words in (("files/video/", "- `files/video/`: the job's video, without its sound or its recorded details "
+                                           "such as place and time."),
                           ("files/task/", "- `files/task/success_rule.json`: the success rule's thresholds, as the "
                                           "simulation checks them."),
                           ("files/early-trial/", "- `files/early-trial/clips/`: clips of the early trial's runs.")):
@@ -1081,7 +1284,8 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
     pull = check_job_state(capture_dir, context, pull_root=inputs.pull_root, now=now)
     if context.get("capture_id") != capture_dir.name or context.get("scene_id") != capture_dir.parent.parent.name:
         raise JobPacketRefused("job_packet_input_identity_mismatch", f"{TASK_CONTEXT} names another capture or site")
-    basis = permission_basis(context, owned=owned, owned_list=owned_list, now=now)
+    basis = permission_basis(context, owned=owned, owned_list=owned_list, now=now,
+                             video_sha256=recorded_video_sha256(capture_dir, pull) if owned is not None else None)
     output_root = Path(output_root)
     if output_root.is_symlink() or not output_root.is_dir():
         raise JobPacketRefused("job_packet_output_root_invalid", str(output_root))
@@ -1107,6 +1311,9 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
     video = _video(inputs, pull, _read_json(capture_dir, capture_dir / "raw" / "manifest.json"))
     if video is not None:
         _require_sound_tools()
+        if "video_sha256" in basis and _sha256(video) != basis["video_sha256"]:
+            raise JobPacketRefused("job_packet_owned_capture_video_mismatch",
+                                   f"{video.relative_to(capture_dir).as_posix()} is not the video pipeline_staging_manifest.json records")
     publication = None
     if inputs.screening_publication is not None:
         root, path = _file_argument(inputs.screening_publication)
@@ -1138,24 +1345,30 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
     kind = kind_of_job(preparation, context)
     number = secrets.token_hex(8)
 
-    # --- the sheet ---
-    description = str(context.get("description") or "").strip()
+    # --- the sheet: the site's own words go in as written, without contact details it typed ---
+    removed: list[bool] = []
+    own = _redacted({key: context.get(key) for key in ("description", "success_criteria", "operator_task_details",
+                                                       "operator_answers", "unresolved")}, removed)
+    prep = _redacted(prep, removed)
+    contract = _redacted(contract, removed)
+    criteria = _mapping(contract).get("criteria") if isinstance(contract, Mapping) else None
+    description = str(own.get("description") or "").strip()
     sheet = ["# Job packet", "", f"Packet number: {number}", "", TERMS_LINE, "", "Status: " + _status(
         video=video is not None, first_look=first_look == "shown", reconstruction=reconstruction, simulation=simulation,
         rule=isinstance(contract, Mapping), trial=publication is not None), "",
         "## The job, in the site's words", "", *(f"> {line}" for line in description.splitlines()), "",
         f"Kind of job: {kind}.", "", "## Constraints and what the site told us", ""]
-    stated = _mapping(context.get("success_criteria"))
-    details = _mapping(context.get("operator_task_details"))
+    stated = _mapping(own.get("success_criteria"))
+    details = _mapping(own.get("operator_task_details"))
     constraints = [(words, value) for words, value in (
         ("The site's own success definition", stated.get("successDefinition")),
         ("Success rate the site wants (%)", stated.get("successRate")),
         ("Cycle time the site wants (s)", stated.get("cycleTimeSeconds")),
         ("Object weight, as the site stated it (not checked)", details.get("item_weight")),
         ("Object make and model, as the site stated it", details.get("item_make_model")),
-        *sorted(_mapping(context.get("operator_answers")).items())) if value not in (None, "")]
+        *sorted(_mapping(own.get("operator_answers")).items())) if value not in (None, "")]
     sheet += [f"- {_cell(words)}: {_cell(value)}" for words, value in constraints]
-    unresolved = context.get("unresolved")
+    unresolved = own.get("unresolved")
     if isinstance(unresolved, list) and unresolved:
         sheet.append("- Still unanswered: " + ", ".join(_cell(item) for item in unresolved))
     if sheet[-1] == "":
@@ -1176,8 +1389,8 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
         measured, estimated = _measured_and_estimated(prep, base_scene, fit_table, publication)
         sheet += ["", "## Measured", ""] + [f"- {line}" for line in measured]
         sheet += ["", "## Estimated", ""] + [f"- {line}" for line in estimated]
-    sheet += ["", "## The video", "", "`files/video/`: the job's video as uploaded, with its sound removed. A deployment "
-              "company does not need sound to judge a job." if video is not None else "The video is not in this packet."]
+    sheet += ["", "## The video", "", "`files/video/`: the job's video, without its sound or its recorded details such as "
+              "place and time. A deployment company needs neither to judge a job." if video is not None else "The video is not in this packet."]
     sheet += ["", "## First look on paper", ""]
     sheet += fit_lines(fit_table) if fit_table is not None else [
         "The first look is not shown: its table did not match the record that names it, so it could not be checked."
@@ -1197,6 +1410,8 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
               "- No test at the site: everything here comes from one video" + (" and a simulation of it." if simulation
                                                                                else "."),
               "- No safety assessment of any robot at this site.", ""]
+    if any(removed):
+        sheet[6] += " Contact details the site typed into its description or answers were removed."
 
     # --- write: the packet folder, then the operator record beside it ---
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -1224,7 +1439,8 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
         if video is not None:
             target = packet / "files" / "video" / f"video{video.suffix.lower()}"
             target.parent.mkdir(parents=True, exist_ok=True)
-            sound = _copy_without_sound(video, target)
+            sound = _copy_video(video, target)
+        _scan_packet(packet, _secrets(capture_dir, context, pull))
         listed = []
         for relative in sorted([*written, *(row[2] for row in copies), *(row[2] for row in members),
                                 *([f"files/video/video{video.suffix.lower()}"] if video is not None else [])]):

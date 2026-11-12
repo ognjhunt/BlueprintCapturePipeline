@@ -1705,9 +1705,9 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
         if attempt is None:
             return False
         row = {"status": "preparing", "attempt": attempt}
-    elif row["status"] == "preparing" and site_withdrawal_state(plan["site_id"]) == "withdrawn":
-        with _lock(root):
-            _release_withdrawn(root, _ledger(root), plan["site_id"])
+    elif row["status"] == "preparing" and (withdrawal := site_withdrawal_state(plan["site_id"])) in {"withdrawn", "unknown"}:
+        with _lock(root):  # an unreadable withdrawal launches nothing now; the reservation stays until it reads
+            _release_withdrawn(root, _ledger(root), plan["site_id"]) if withdrawal == "withdrawn" else None
         return False
     if row["status"] not in ACTIVE_STATUSES:
         return False

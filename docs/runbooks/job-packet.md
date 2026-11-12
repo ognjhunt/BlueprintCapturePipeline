@@ -81,8 +81,8 @@ python3 scripts/export_job_packet.py --pull-root ./pulled --capture-dir <the cap
 ```
 
 The machine needs `ffmpeg` and `ffprobe`: the video goes in without its sound
-(video stream copied as it is), and the tool refuses rather than copy a video
-with sound. `config/beta_policy_candidates.v1.json` must not be group-writable
+or its recorded details such as place and time (the video stream is copied as
+it is), and the tool refuses rather than copy a video that keeps either. `config/beta_policy_candidates.v1.json` must not be group-writable
 (`chmod 644`).
 
 A packet is made only when one of these holds:
@@ -102,9 +102,13 @@ is not in it yet.
 
 ## 4. Before it leaves
 
-Read `JOB_SHEET.md` whole. The packet holds no site name, address, contact,
-token, link or storage path; an introduction is made only when the site asks
-for one on its job page.
+Read the whole sheet, `JOB_SHEET.md`, before the packet leaves. The tool
+removes email addresses, phone numbers and web links from the site's own words,
+and reads every copied file for ids, keys, paths and links, but a name or a
+street address the site typed is still there in its words: take it out by hand.
+The packet holds no site name, address, contact, token, link or storage path
+from the records; an introduction is made only when the site asks for one on
+its job page.
 Beside the folder, `packet-<number>.operator-record.json` holds the job's ids,
 takedown keys, the permission basis, input digests, the pull record and who ran
 it. Keep it; never send it. Record recipient, date and packet number in the
