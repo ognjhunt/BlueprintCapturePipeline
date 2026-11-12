@@ -1,0 +1,194 @@
+{
+ "schema_version": "owner_approved_deletion_manifest.v1",
+ "manifest_id": "2026-11-12-host-work-volume",
+ "approved_by": "owner",
+ "approved_at": "2026-11-12T21:05:00Z",
+ "expires_at": "2026-11-19T21:05:00Z",
+ "approval_evidence": "Owner, 2026-11-12 about 21:05Z, asked to approve each on its own (yes or no): 1. `task-evaluation-inputs/sam31-preparations`: 10.1 GB, 22 folders of preparation outputs from development scenes in September, untouched for at least 57 days, in a lane that is switched off. The system's own clean-up already lists all 22 as removable but only as a dry run. Lost: those old outputs. 2. `task-evaluation-inputs/stage-replays/claude-provision-trial`: 11.7 GB, a zero-cost trial replay from October. Lost: that replay's files. 3. Only if 1 and 2 free less than expected (some files are shared between folders): `task-evaluation-inputs/configured-controls`: 9.1 GB, newest file 27 September, lane switched off. Answered verbatim \"yes approve all 3\". This manifest: items 1 and 2, every child folder measured through the door.",
+ "entries": [
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/063f1eb69e2d124b9aae55d920aa66993fe5ef097990a2cd9f16a9a6ae515107",
+   "newest_mtime_epoch": 1789477302,
+   "apparent_bytes": 950021780,
+   "file_count": 1739,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/0fe57f63c8d9d39e3ded28440fb7c49e10f084d8af32d78843e85e827961409f",
+   "newest_mtime_epoch": 1789176614,
+   "apparent_bytes": 4524737,
+   "file_count": 2,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/191c6abeb5a164a2dff4c8fa9415a8ece7c60704e81a9906bc3045633bb886f0",
+   "newest_mtime_epoch": 1789477286,
+   "apparent_bytes": 74013753,
+   "file_count": 60,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/24eec2e15c69768295c9cadf20fa1cdcec901a2cdff5710406a44eb84cff0b36",
+   "newest_mtime_epoch": 1789477289,
+   "apparent_bytes": 610929582,
+   "file_count": 1528,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/260ab3cccf35c91aecaf8c469708aae4d0286e3d8eecba2e6a57dcacd65d35da",
+   "newest_mtime_epoch": 1789477289,
+   "apparent_bytes": 787512678,
+   "file_count": 1595,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/298248b7f430b3499ffd135ca6d929a587a96161a3417d82a80893f878f6dd84",
+   "newest_mtime_epoch": 1789477289,
+   "apparent_bytes": 610927181,
+   "file_count": 1530,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/40f19cfe241b3b38b97d8e1dd7ff65fe61415ba323ce9e6fd4722d24d1fd2675",
+   "newest_mtime_epoch": 1789260279,
+   "apparent_bytes": 7686,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/467ed2ebef9df78f05845212c8063ca90de9cbff07b56bdca2f0a4bf16aacbea",
+   "newest_mtime_epoch": 1789477291,
+   "apparent_bytes": 875838662,
+   "file_count": 1649,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/49c0548db2728f3c037a8b0a0792121eaaf601f551f4397bb865cfa4c961803a",
+   "newest_mtime_epoch": 1789551770,
+   "apparent_bytes": 576557317,
+   "file_count": 146,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/54d3e925223f4f55259bcd62d995808c61f48130dcbdfb5e833800c75a19afa1",
+   "newest_mtime_epoch": 1789192585,
+   "apparent_bytes": 26943908,
+   "file_count": 37,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/60f21fcfd13a896454d8ffd3a78adc3208a5c5f64b26f2ec0a52346922535d23",
+   "newest_mtime_epoch": 1789477289,
+   "apparent_bytes": 610950311,
+   "file_count": 1528,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/6914498c6bdb800d35c055ff6455115069d5350a6fb9c7ae6a256558e9304974",
+   "newest_mtime_epoch": 1789477305,
+   "apparent_bytes": 107213920,
+   "file_count": 116,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/7d55208a956774a392baca8e13ebc6d893ca6ee05e68761b6aeb476c674986fa",
+   "newest_mtime_epoch": 1789255051,
+   "apparent_bytes": 7686,
+   "file_count": 3,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/8028baaa95369126a8639a331b7b23a87056a56f4a96441f53601773a0db14aa",
+   "newest_mtime_epoch": 1789342953,
+   "apparent_bytes": 223698450,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/9886469d243b171a27ada9b68bcc4631af1d0e634901e65d641afc35206dbf4e",
+   "newest_mtime_epoch": 1789154909,
+   "apparent_bytes": 0,
+   "file_count": 0,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/9e8c1617589c9272078174d839c97956c59bab973267e36c9e43204a751f924f",
+   "newest_mtime_epoch": 1789477305,
+   "apparent_bytes": 727867424,
+   "file_count": 419,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/ba90410986ce52fc32c9e0eac12e6f724b324a68c35f32ab2572a5a87ac3657b",
+   "newest_mtime_epoch": 1789547784,
+   "apparent_bytes": 1350940349,
+   "file_count": 2051,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/bb0cdd0304397727e69252c207959415899b8f7b3d13ad351a344e6ff2748b61",
+   "newest_mtime_epoch": 1789477303,
+   "apparent_bytes": 386178325,
+   "file_count": 147,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/bf04d68a2bcb28869997ce62db56eb7308a94bdfde3ed42e6ce1d41ec4867d42",
+   "newest_mtime_epoch": 1789477305,
+   "apparent_bytes": 647611233,
+   "file_count": 346,
+   "door_unlisted_entries": 1
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/c036ef918e4e4de711dbe802fcc1fbfcd83ac3d781bce6c07407e11a48033cd0",
+   "newest_mtime_epoch": 1789477293,
+   "apparent_bytes": 386178254,
+   "file_count": 147,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/c29248d761664cdc54435d2ae94c9b71b0f376777b18c6a6d33d395c91ab8552",
+   "newest_mtime_epoch": 1789477289,
+   "apparent_bytes": 949995138,
+   "file_count": 1720,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations/d4032965cae31040dc1a35c69b423bd78c65834670bfaeabbf9325f41342ec1a",
+   "newest_mtime_epoch": 1789342958,
+   "apparent_bytes": 223698450,
+   "file_count": 14,
+   "door_unlisted_entries": 0
+  },
+  {
+   "class": "task_evaluation_inputs_subfolder",
+   "path": "/var/lib/blueprint/task-evaluation-inputs/stage-replays/claude-provision-trial",
+   "newest_mtime_epoch": 1791922921,
+   "apparent_bytes": 12334711444,
+   "file_count": 53755,
+   "door_unlisted_entries": 217
+  }
+ ]
+}

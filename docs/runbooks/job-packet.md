@@ -111,12 +111,46 @@ Every refusal names the file or place it is about. A packet is never held for
 the simulation, the success rule or the early trial: the status line says what
 is not in it yet.
 
+The simulation is in the packet only as one composed stage,
+`files/simulation/scene.usda`. Open that file: it places the room, its hidden
+collision geometry and the job's object where Blueprint's simulation puts them,
+in metres, with the up axis the scene plan states. Each part's file is
+referenced on a child prim (`/World/<part>/Asset`), so its own transform is
+kept under the plan's pose. The plan itself, a record, is never copied. When a
+plan row cannot be placed (a missing pose, a file that was not copied), there is
+no `scene.usda`, and the sheet says the simulation is not finished. The success
+rule (`files/task/success_rule.json`) passes through the same allow-list as the
+company download: numbers and fixed mode words only, so no label the site typed
+is in it.
+
 ## 4. Before it leaves
 
 Read the whole sheet, `JOB_SHEET.md`, before the packet leaves. The tool
 removes email addresses, phone numbers and web links from the site's own words,
-and reads every copied file for ids, keys, paths and links, but a name or a
-street address the site typed is still there in its words: take it out by hand.
+and writes every simulation file itself instead of copying it: in
+`files/simulation/` and `files/object/` each USD layer is written by `Sdf`,
+each usdz is rebuilt from its members, and each PNG or JPEG is rewritten without
+its text, EXIF, ICC and comment data (`outbound_file_writer`; pixels unchanged).
+Any other kind of file there refuses the packet. Then the shared scan
+(`outbound_file_scan`; its rules are a table in the module's docstring) reads
+the whole packet as the proof. Kinds are decided by content, not by the file's
+ending. Parsed text (a USD layer's text form, image metadata, text files, a
+PLY's header, a GLB's JSON) is read for ids, keys, paths, links, email and IP
+addresses and the site's identity; the raw bytes of binary files (the video,
+clips, the PLY and GLB bodies) for the job's long ids and keys, long-prefix
+tokens, links and long host paths. The one limit: numeric payload (pixels,
+coding tables, palette and transparency tables, numeric arrays) is not searched
+as text. Textures lose their colour
+profile and their EXIF, so a photo that relied on an EXIF rotation shows
+unrotated. The site's identity is its name, organisation, typed
+address, contact and submitter names, email and phone. It is matched as whole
+words, ignoring case and accents; a value of two or more words is also matched
+with separators removed (`Zebra Plant Foods` as `ZebraPlant_Foods`). Single
+words under five letters, common scene words and address parts that are only a
+unit, a number or a country are not matched. The site's description of its job
+is not looked for: the site agreed to share it, and the sheet quotes it on
+purpose. So a name or a street address the site typed into its description is
+still there: take it out by hand.
 The packet holds no site name, address, contact, token, link or storage path
 from the records; an introduction is made only when the site asks for one on
 its job page.

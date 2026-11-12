@@ -82,8 +82,7 @@ from typing import Any
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .permission_recheck import recheck_requested_since
-from .sharing_statement import covers_sharing, owned_captures, sharing_basis
+from . import company_share_permission as permission
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 
 logger = logging.getLogger(__name__)
@@ -100,12 +99,12 @@ ARTIFACT_KIND = "website-company-clip"
 FORMAT = "mp4_h264_faststart_video_only"
 CONTENT_TYPE = "video/mp4"
 #: Beside the manifest: the last live read of the capture's rights (``_record_live``), on success and on failure.
-STATEMENT_CHECK_FILE = "statement_check.json"
+STATEMENT_CHECK_FILE = permission.STATEMENT_CHECK_FILE
 #: The live rights are read at most once a window per capture, and at least once a window for a published clip.
-LIVE_STATEMENT_RECHECK_SECONDS = 6 * 3600
+LIVE_STATEMENT_RECHECK_SECONDS = permission.LIVE_STATEMENT_RECHECK_SECONDS
 #: A clip shared on a live grant stays shared while the last grant is younger than this, so a WebApp that does
 #: not answer one re-read does not take every clip back; a definite "no" takes it back at once.
-LIVE_GRANT_LIFETIME_SECONDS = 2 * LIVE_STATEMENT_RECHECK_SECONDS
+LIVE_GRANT_LIFETIME_SECONDS = permission.LIVE_GRANT_LIFETIME_SECONDS
 MAX_CLIP_BYTES = 64 * 1024 * 1024
 MAX_LONG_EDGE = 1280
 MAX_FPS = 30
@@ -140,10 +139,9 @@ _FORMAT_TAGS = {"major_brand": re.compile(r"[a-z0-9 ]{4}"), "minor_version": re.
 _STREAM_TAGS = {"language": re.compile(r"und"), "handler_name": re.compile(r"VideoHandler"),
                 "vendor_id": re.compile(r"\[0\]\[0\]\[0\]\[0\]"), "encoder": re.compile(r"Lavc[0-9.]+ libx264")}
 #: A WebApp refusal that means the site's rights no longer allow the clip.
-_RIGHTS_REFUSALS = re.compile(r"(source_revoked|consent_revoked|consent_expired|website_capture_withdrawn"
-                              r"|capture_revoked_or_expired|website_company_clip_not_permitted)\b")
-_NOT_PERMITTED = "website_company_clip_not_permitted"
-_RIGHTS_REFUSED = "website_company_clip_rights_refused"
+_RIGHTS_REFUSALS = permission.RIGHTS_REFUSALS
+_NOT_PERMITTED = permission.NOT_PERMITTED
+_RIGHTS_REFUSED = permission.RIGHTS_REFUSED
 #: Beside the lock: a raw upload's digest, kept before any manifest exists (keyed by path, size and mtime).
 RAW_DIGEST_FILE = "raw_upload_digest.json"
 #: An after-encode proof that refuses a clip is recorded for that source and builder revision and tried
@@ -174,22 +172,9 @@ def clip_filename(capture_id: str, request_id: str) -> str:
     return f"{capture_id}.mp4" if capture_id.startswith("walkthrough-") else f"{request_id}-{capture_id}.mp4"
 
 
-def _read(path: Path) -> dict[str, Any]:
-    try:
-        value = {} if path.is_symlink() else json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
+_read = permission.read_json
 
-
-def _identity(capture_root: Path) -> dict[str, str]:
-    root = Path(capture_root)
-    scene_id, capture_id = root.parent.parent.name, root.name
-    request_id = scene_id.removeprefix("site-")
-    if (root.parent.name != "captures" or not scene_id.startswith("site-")
-            or not capture_name_matches_request(request_id, capture_id)):
-        raise ValueError("website_company_clip_capture_identity_invalid")
-    return {"request_id": request_id, "scene_id": scene_id, "capture_id": capture_id}
+_identity = permission.capture_identity
 
 
 def _sha256_file(path: Path) -> str:
@@ -318,114 +303,30 @@ def upload_sha256(capture_root: Path, source: Mapping[str, Any]) -> str | None:
 
 
 def owned_basis_holds(capture_id: str, video_sha256: str | None) -> bool:
-    """The capture is on Blueprint's own list and its row's prefix names this upload. A local read, made
-    every pass and on every route read; an unreadable list holds for nothing."""
-    return sharing_basis({"capture_id": capture_id}, video_sha256=video_sha256,
-                         owned_list=OWNED_CAPTURES_LIST) is not None
-
+    """The capture is on Blueprint's own list and its row's prefix names this upload (``company_share_permission``)."""
+    return permission.owned_basis_holds(capture_id, video_sha256, OWNED_CAPTURES_LIST)
 
 def _on_owned_list(capture_id: str) -> bool:
-    return capture_id in owned_captures(OWNED_CAPTURES_LIST)[0]
+    return permission.on_owned_list(capture_id, OWNED_CAPTURES_LIST)
 
+recorded_statement_version = permission.recorded_statement_version
 
-def recorded_statement_version(capture_root: Path) -> str | None:
-    """The statement version the capture's files kept at submission (a snapshot)."""
-    root = Path(capture_root)
-    for path in (root / "pipeline" / "website_task_context.json", root / "raw" / "manifest.json"):
-        rights = _read(path).get("capture_rights")
-        version = rights.get("statement_version") if isinstance(rights, Mapping) else None
-        if isinstance(version, str):
-            return version
-    return None
+_live_rights = permission.live_rights
 
+_record_live = permission.record_live
 
-def _live_rights(identity: Mapping[str, str]) -> Mapping[str, Any]:
-    """The WebApp's current ``capture_rights``, projected from the request's current consent."""
-    from .website_task_context import load_current_website_task_context
-    context = load_current_website_task_context(request_id=identity["request_id"], scene_id=identity["scene_id"],
-                                                capture_id=identity["capture_id"], purpose="scene_preparation")
-    rights = context.get("capture_rights")
-    return rights if isinstance(rights, Mapping) else {}
+_live_due = permission.live_due
 
-
-def _record_live(root: Path, identity: Mapping[str, str], check_rights: Callable[..., Mapping[str, Any]],
-                 now: float) -> dict[str, Any]:
-    """Read the live rights once and record the answer, a failure included.
-
-    ``outcome``: ``covers_sharing`` (consent granted, sharing statement), ``not_sharing`` (consent granted,
-    an older statement), ``rights_refused`` (consent not granted, or the WebApp said revoked: definite) or
-    ``unanswered`` (no answer: the clip's state does not change on it). ``granted_at_epoch`` is the last
-    time the answer covered sharing; a definite answer that does not clears it.
-    """
-    previous = _read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE)
-    try:
-        rights = check_rights(identity)
-    except Exception as error:  # noqa: BLE001 - classified: a definite refusal, or no answer
-        rights, failure = None, error
-    if rights is None:
-        outcome = "rights_refused" if _RIGHTS_REFUSALS.search(str(failure)) else "unanswered"
-        version, fingerprint, reason = None, None, _reason(failure)
-    else:
-        version = rights.get("statement_version")
-        version = version if isinstance(version, str) else None
-        granted = rights.get("consent_revoked") is False and rights.get("consent_status") == "granted"
-        outcome = ("rights_refused" if not granted else "covers_sharing" if covers_sharing(version)
-                   else "not_sharing")
-        fingerprint = canonical_digest({"statement_version": version, "consent_status": rights.get("consent_status"),
-                                        "consent_revoked": rights.get("consent_revoked")})
-        reason = {"rights_refused": _RIGHTS_REFUSED, "not_sharing": _NOT_PERMITTED}.get(outcome)
-    kept = previous.get("granted_at_epoch") if outcome == "unanswered" else None
-    value = {"checked_at_epoch": int(now), "outcome": outcome, "reason": reason, "statement_version": version,
-             "rights_fingerprint": fingerprint,
-             "granted_at_epoch": int(now) if outcome == "covers_sharing" else kept if isinstance(kept, int) else None}
-    write_json(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE, value)
-    return value
-
-
-def _live_due(check: Mapping[str, Any], now: float, root: Path) -> bool:
-    """A live read is due: none yet, the window has passed, or the website asked for a recheck since
-    (``permission_recheck``: a job's permission changed)."""
-    checked = check.get("checked_at_epoch")
-    return (not isinstance(checked, int) or not 0 <= now - checked < LIVE_STATEMENT_RECHECK_SECONDS
-            or recheck_requested_since(root, checked))
-
-
-def live_grant_holds(check: Mapping[str, Any], now: float | None = None) -> bool:
-    """The last live read granted sharing and no definite answer has said otherwise since; with ``now``,
-    also that the grant is younger than ``LIVE_GRANT_LIFETIME_SECONDS``."""
-    granted = check.get("granted_at_epoch")
-    if check.get("outcome") not in ("covers_sharing", "unanswered") or not isinstance(granted, int):
-        return False
-    return now is None or 0 <= now - granted < LIVE_GRANT_LIFETIME_SECONDS
-
+live_grant_holds = permission.live_grant_holds
 
 def _may_be_permitted(root: Path, identity: Mapping[str, str], now: float) -> bool:
-    """No network: the snapshot covers sharing, the capture is on Blueprint's own list, the last live read
-    granted sharing, or a live read is due. Otherwise a capture gets no directory, file or request."""
-    if covers_sharing(recorded_statement_version(root)) or _on_owned_list(identity["capture_id"]):
-        return True
-    check = _read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE)
-    return _live_due(check, now, root) or live_grant_holds(check, now)
+    return permission.may_be_permitted(root, identity, now, OWNED_CAPTURES_LIST)
 
-
-def _decided_basis(check: Mapping[str, Any], owned: bool) -> dict[str, Any] | None:
-    """The rule that lets the clip be shared now: a live grant, else Blueprint's own capture, else None."""
-    if check.get("outcome") == "covers_sharing":
-        return {"permission_basis": "site_sharing_statement", "statement_version": check.get("statement_version")}
-    if owned and check.get("outcome") == "not_sharing":  # consent definitely granted, Blueprint's own video
-        return {"permission_basis": "blueprint_owned_capture", "statement_version": check.get("statement_version")}
-    return None
-
+_decided_basis = permission.decided_basis
 
 def delivery_gate_allows(capture_root: Path) -> bool:
     """The serve-time takedown gate (consent re-read live, no open takedown) and no withdrawal."""
-    from .consent_takedown import evaluate_delivery_time_takedown_gate
-    root = Path(capture_root)
-    if capture_withdrawn(root):
-        return False
-    gate = evaluate_delivery_time_takedown_gate(capture_root=root, surface="website_company_clip")
-    return gate.get("status") == "allowed"
-
+    return permission.delivery_gate_allows(capture_root, surface="website_company_clip")
 
 def target_dimensions(width: int, height: int) -> tuple[int, int]:
     """Long edge at most ``MAX_LONG_EDGE``, same aspect, even sides; never larger than the source."""
@@ -659,9 +560,7 @@ def _archive(path: Path, *, identity: Mapping[str, str]) -> dict[str, Any]:
             "filename": filename}
 
 
-def _retract(uri: str) -> None:
-    from .website_scene_preview import _retract as retract_object
-    retract_object(uri)
+_retract = permission.retract_object
 
 
 def _deliver(record: Mapping[str, Any], *, identity: Mapping[str, str]) -> None:
@@ -674,30 +573,13 @@ def _deliver(record: Mapping[str, Any], *, identity: Mapping[str, str]) -> None:
         raise ValueError("website_company_clip_acceptance_invalid")
 
 
-def _reason(error: BaseException) -> str:
-    text = str(error)
-    return text if re.fullmatch(r"[a-z][a-z0-9_.:-]{0,159}", text) else type(error).__name__
+_reason = permission.reason_code
 
+_hidden = permission.hidden
 
-def _hidden(archive: Mapping[str, Any]) -> bool:
-    return archive.get("retracted") is True or archive.get("retraction") == "pending"
+_take_back = permission.take_back
 
-
-def _take_back(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
-    """Record the retraction before deleting, so a failed deletion is retried, never forgotten."""
-    from .website_scene_preview import _finish_retraction
-    archive = manifest.get("archive")
-    if not isinstance(archive, Mapping) or not isinstance(archive.get("uri"), str) or archive.get("retracted"):
-        return True
-    manifest["archive"] = {**archive, "retraction": "pending"}
-    write_json(manifest_path, manifest)
-    return _finish_retraction(manifest, manifest_path, retract)
-
-
-def _retraction_pending(manifest: Mapping[str, Any]) -> bool:
-    archive = manifest.get("archive")
-    return isinstance(archive, Mapping) and archive.get("retraction") == "pending" and isinstance(archive.get("uri"), str)
-
+_retraction_pending = permission.retraction_pending
 
 def _current(manifest: Mapping[str, Any], revision: str, clip: Path) -> bool:
     built, archive = manifest.get("clip") or {}, manifest.get("archive") or {}
@@ -744,16 +626,8 @@ def publish_company_clip(capture_root: Path, *, now: Callable[[], float] = time.
 
 def _refused_live(check: Mapping[str, Any], manifest: dict[str, Any], manifest_path: Path,
                   retract: Callable[[str], None]) -> dict[str, Any] | None:
-    """The answer to a live read that stops sharing: a definite refusal or no basis takes any archived copy
-    back; no answer refuses this pass only. None when the answer allows nothing to be said yet."""
-    if check["outcome"] == "rights_refused":
-        if manifest:
-            _take_back(manifest, manifest_path, retract)
-        return {"status": "refused", "reason": check.get("reason") or _RIGHTS_REFUSED}
-    if check["outcome"] == "unanswered":
-        return {"status": "refused", "reason": check.get("reason") or "website_company_clip_rights_unanswered"}
-    return None
-
+    return permission.refused_live(check, manifest, manifest_path, retract,
+                                   unanswered="website_company_clip_rights_unanswered")
 
 def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
     identity = _identity(root)
@@ -797,8 +671,11 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
                 check = _record_live(root, identity, check_rights, now())
                 if check["outcome"] == "rights_refused":
                     return _refused_live(check, manifest, manifest_path, retract)
-            if owned or live_grant_holds(check, now()):
+            # A recorded definite "no" (this pass's read or the simulation package's) stops any basis.
+            if check.get("outcome") != "rights_refused" and (owned or live_grant_holds(check, now())):
                 return {"status": "current", "clip_revision": revision}
+            if check.get("outcome") == "rights_refused":
+                return _refused_live(check, manifest, manifest_path, retract)
             _take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}
         if manifest.get("clip_revision") == revision and manifest.get("refused") == OVER_CAP:
@@ -961,13 +838,7 @@ def _wall_clock() -> float:
 
 
 def _basis_still_holds(root: Path, capture_id: str, manifest: Mapping[str, Any]) -> bool:
-    basis = (manifest.get("permission") or {}).get("permission_basis")
-    if basis == "blueprint_owned_capture":
-        return owned_basis_holds(capture_id, manifest.get("upload_sha256"))
-    if basis == "site_sharing_statement":
-        return live_grant_holds(_read(root.joinpath(*DIRECTORY) / STATEMENT_CHECK_FILE), _wall_clock())
-    return False
-
+    return permission.basis_still_holds(root, capture_id, manifest, _wall_clock(), OWNED_CAPTURES_LIST)
 
 def open_company_clip(*, request_id: str, capture_id: str, digest: str, storage_root: Path | None,
                       range_header: str | None = None, client: Any = None,

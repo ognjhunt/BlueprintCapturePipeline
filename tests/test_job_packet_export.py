@@ -59,6 +59,23 @@ def _write(path: Path, value) -> Path:
     return path
 
 
+def _usd_bytes(name: str, *, usdz: bool = False) -> bytes:
+    """A real, clean USD layer (binary, or a usdz holding one): the packet scan opens every USD file it copies."""
+    import tempfile
+
+    from pxr import Usd, UsdGeom, UsdUtils
+    with tempfile.TemporaryDirectory() as scratch:
+        layer = Path(scratch) / "layer.usdc"
+        stage = Usd.Stage.CreateNew(str(layer))
+        stage.SetDefaultPrim(UsdGeom.Xform.Define(stage, f"/{name}").GetPrim())
+        stage.GetRootLayer().Save()
+        if not usdz:
+            return layer.read_bytes()
+        package = Path(scratch) / "layer.usdz"
+        assert UsdUtils.CreateNewUsdzPackage(str(layer), str(package))
+        return package.read_bytes()
+
+
 def _sealed(value: dict, field: str) -> dict:
     value[field] = canonical_digest(value, digest_field=field)
     return value
@@ -247,18 +264,28 @@ def _job(tmp_path: Path, clip: bytes, *, trial: str = "zero", simulation: bool =
                                                     "owner_success_assumption": {"status": "assumed"},
                                                     "source_path": f"{HOST}/{STORAGE}"})
         _write(team / "native-task-packet" / "native_task_arena_scene_plan.v1.json",
-               {"scene_id": SITE, "task_spec": {"task_success_contract": _contract()}, "launch_root": f"{HOST}/x"})
-        _write(team / "native-task-packet" / "collision.usdc", b"usd collision")
-        _write(team / "native-task-packet" / "scene_appearance.usdc", b"usd appearance")
+               {"scene_id": SITE, "task_spec": {"task_success_contract": _contract(),
+                                                "interaction_affordance": {"lift_unit_world": [0.0, 0.0, 1.0]}},
+                "launch_root": f"{HOST}/x", "objects": [
+                    {"semantic_role": role, "usd_path": name, "visible": role != "scene_collision",
+                     "prim_path": f"/World/{STORAGE}", "pose_world": {"position_world_m": position,
+                                                                      "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}}
+                    for role, name, position in (("scene_collision", "collision.usdc", [0.0, 0.0, 0.0]),
+                                                 ("scene_appearance", "scene_appearance.usdc", [0.0, 0.0, 0.0]),
+                                                 ("task_object", "assets/object.usdz", [1.5, -0.25, 0.9]))]})
+        _write(team / "native-task-packet" / "collision.usdc", _usd_bytes("Collision"))
+        _write(team / "native-task-packet" / "scene_appearance.usdc", _usd_bytes("Appearance"))
+        _write(team / "native-task-packet" / "assets" / "object.usdz", _usd_bytes("Object", usdz=True))
         configured = tmp_path / "configured"
         _write(configured / "configured_scene_revision.v1.json", {"revision_digest": REVISION, "storage": LINK})
         configured.mkdir(exist_ok=True)
         with zipfile.ZipFile(configured / "configured_scene_bundle.v1.zip", "w") as bundle:
-            for member, data in (("appearance.usdc", b"look"), ("collision.usdc", b"walls"), ("replacement.usdz", b"obj"),
+            for member, data in (("appearance.usdc", _usd_bytes("Look")), ("collision.usdc", _usd_bytes("Walls")),
+                                 ("replacement.usdz", _usd_bytes("Object", usdz=True)),
                                  ("configured_scene_bundle_candidate.v1.json", json.dumps(
                                      {"scene_id": SITE, "capture_id": CAPTURE, "source": f"gs://{STORAGE}"}))):
                 bundle.writestr(member, data)
-        _write(configured / "replacement_asset.usdz", b"usdz")
+        _write(configured / "replacement_asset.usdz", _usd_bytes("Replacement", usdz=True))
         inputs.update(team_scene_dir=team, configured_scene_dir=configured)
     if trial != "none":
         succeeded = 0 if trial == "zero" else 3
@@ -423,13 +450,17 @@ def test_the_packet_holds_the_whole_job(tmp_path, job, clip_with_sound) -> None:
                      "files/simulation/configured-scene/replacement.usdz",
                      "files/simulation/team-scene/native-task-packet/collision.usdc",
                      "files/simulation/team-scene/native-task-packet/scene_appearance.usdc",
+                     "files/simulation/team-scene/native-task-packet/assets/object.usdz", "files/simulation/scene.usda",
                      "files/task/success_rule.json", "files/early-trial/clips/clip-01.mp4"}
     on_disk = {path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()}
     assert on_disk == paths | {"manifest.json"}
     for row in manifest["files"]:
         data = (folder / row["path"]).read_bytes()
         assert row["size"] == len(data) and row["sha256"] == hashlib.sha256(data).hexdigest()
-    assert json.loads((folder / "files/task/success_rule.json").read_text()) == {"criteria": _contract()["criteria"]}
+    # The rule ships through the shared allow-list: the site's own label ("back shelf") stays out.
+    expected_rule = copy.deepcopy(_contract()["criteria"])
+    del expected_rule["surface_target"]["visible_label"]
+    assert json.loads((folder / "files/task/success_rule.json").read_text()) == {"criteria": expected_rule}
     on_disk_manifest = json.loads((folder / "manifest.json").read_text())
     assert on_disk_manifest["permission_basis"] == {"rule": "site_sharing_permission", "statement_version": CURRENT}
     assert on_disk_manifest["first_look_source"] == "pipeline_robot_fit_table"
@@ -1453,6 +1484,34 @@ def test_other_callers_keep_todays_command() -> None:
         "-map_metadata", "-1", "-map_chapters", "-1", "-map_metadata:s:v", "-1"]
 
 
+# --- the simulation travels as one composed stage --------------------------------------------------------
+
+def test_the_packet_carries_one_composed_stage_that_places_the_object(tmp_path, job) -> None:
+    from pxr import Usd, UsdGeom, UsdUtils
+    folder = Path(build_job_packet(job(), output_root=_out(tmp_path))["packet_dir"])
+    stage_path = folder / "files/simulation/scene.usda"
+    _layers, _assets, unresolved = UsdUtils.ComputeAllDependencies(str(stage_path))
+    assert unresolved == []
+    stage = Usd.Stage.Open(str(stage_path))
+    world = UsdGeom.Xformable(stage.GetPrimAtPath("/World/Object")).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    assert list(world.ExtractTranslation()) == pytest.approx([1.5, -0.25, 0.9])
+    assert UsdGeom.GetStageUpAxis(stage) == "Z"
+    text = stage_path.read_text()
+    for value in (STORAGE, SITE, "native_task_arena_scene_plan", "scene_collision"):
+        assert value not in text
+    assert "files/simulation/scene.usda" in (folder / "README.md").read_text()
+
+
+def test_without_a_composed_stage_the_sheet_does_not_say_the_simulation_is_in(tmp_path, job) -> None:
+    inputs = job()
+    _edit(inputs.team_scene_dir / "native-task-packet" / "native_task_arena_scene_plan.v1.json",
+          lambda value: value["objects"][2].pop("pose_world"))
+    result = build_job_packet(inputs, output_root=_out(tmp_path))
+    sheet = _sheet(result)
+    assert "files/simulation/scene.usda" not in {row["path"] for row in result["files"]}
+    assert "The simulation of the site with the job's object in it is not finished. It will follow." in sheet
+
+
 # --- every file copied into the packet is read for ids, keys, paths and links ------------------------------
 
 def _zip(path: Path, member: str, data: bytes) -> None:
@@ -1476,12 +1535,12 @@ PLANTED_FILES = {
     "usdz_member": (lambda inputs: _zip(inputs.configured_scene_dir / "replacement_asset.usdz", "asset.usda",
                                         f'#usda 1.0\n(doc = "gs://{STORAGE}/a")\n'.encode()),
                     "files/object/replacement_asset.usdz", "a storage link inside a zip member"),
-    "bundle_member": (lambda inputs: _bundle(inputs, f"owned by {USER}".encode()),
+    "bundle_member": (lambda inputs: _bundle(inputs, _usd_bytes(f"owned_by_{USER}")),
                       "files/simulation/configured-scene/appearance.usdc", "an owner or organisation id"),
     "clip_bytes": (lambda inputs: _write(inputs.review_videos_dir / "cell_runs" / "01" / f"{CAPTURE}-camera.mp4",
-                                         b"\x00moov req-1 site-req-1"), "files/early-trial/clips/clip-01.mp4", "a job id"),
-    "reconstruction_link": (lambda inputs: _write(inputs.capture_dir / SPLAT, f"ply\ncomment {LINK}\n".encode()),
-                            "files/reconstruction/atlas_depth_splat_levelled.ply", "a web link"),
+                                         b"\x00moov " + CAPTURE.encode()), "files/early-trial/clips/clip-01.mp4", "a job id"),
+    "reconstruction_link": (lambda inputs: _write(inputs.capture_dir / SPLAT, f"ply\ncomment {LINK}\nend_header\n".encode()),
+                            "files/reconstruction/atlas_depth_splat_levelled.ply", "a web link"),  # its header
     "pull_root_path": (lambda inputs: _write(inputs.capture_dir / COLLISION, str(inputs.pull_root.absolute()).encode()),
                        "files/reconstruction/collider_conditioned.glb", "the pull root's path"),
 }
@@ -1496,6 +1555,55 @@ def test_a_copied_file_that_names_the_site_or_a_path_is_refused_by_file_and_kind
     assert refusal.code == "job_packet_file_names_the_site" and str(refusal).endswith(f"{relative} holds {kind}")
     for value in (CAPTURE, TOKEN, STORAGE, USER, LINK, "/var/lib/blueprint", str(inputs.pull_root)):
         assert value not in str(refusal)
+
+
+@pytest.mark.parametrize("words", [NAME, STREET, EMAIL, PHONE, NAME.lower()])
+def test_the_sites_identity_in_a_copied_file_refuses_the_packet(tmp_path, job, words) -> None:
+    inputs = job()
+    _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", f'#usda 1.0\n(doc = "made for {words}")\n')
+    refusal = _refusal(inputs, tmp_path)
+    assert refusal.code == "job_packet_file_names_the_site"
+    assert str(refusal).endswith("files/simulation/team-scene/native-task-packet/look.usda holds the site's name or "
+                                 "contact details")
+    assert words.lower() not in str(refusal).lower()
+
+
+def test_the_sites_description_in_a_copied_file_is_the_job_and_is_kept(tmp_path, job) -> None:
+    inputs = job()
+    _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", f'#usda 1.0\n(doc = "{SENTENCE}")\n')
+    result = build_job_packet(inputs, output_root=_out(tmp_path))
+    assert SENTENCE in _sheet(result)
+
+
+@pytest.mark.parametrize("planted", [b"/tmp/work/site-scan", b"https://tool.example.org", b"jane@acmemail.example",
+                                     b"gs://bucket-x/capture"])
+def test_a_binary_ply_header_is_read_as_text(tmp_path, job, planted) -> None:
+    inputs = job()
+    header = (b"ply\nformat binary_little_endian 1.0\ncomment exported from " + planted
+              + b"\nelement vertex 1000\nproperty float x\nend_header\n")
+    _write(inputs.capture_dir / SPLAT, header + os.urandom(12000))
+    refusal = _refusal(inputs, tmp_path)
+    assert refusal.code == "job_packet_file_names_the_site"
+    assert "files/reconstruction/atlas_depth_splat_levelled.ply holds" in str(refusal)
+    assert planted.decode() not in str(refusal)
+
+
+def test_a_ply_whose_header_never_ends_is_refused(tmp_path, job) -> None:
+    inputs = job()
+    _write(inputs.capture_dir / SPLAT, b"ply\nformat binary_little_endian 1.0\n" + b"\x00" * (1 << 20) + b"end_header")
+    refusal = _refusal(inputs, tmp_path)
+    assert str(refusal).endswith("files/reconstruction/atlas_depth_splat_levelled.ply: a header that cannot be read")
+
+
+def test_the_packets_simulation_files_are_written_not_copied(tmp_path, job) -> None:
+    inputs = job()
+    usdz = inputs.configured_scene_dir / "replacement_asset.usdz"
+    data = usdz.read_bytes()
+    with zipfile.ZipFile(usdz, "a") as archive:
+        archive.comment = b"gs://bucket-x/comment"
+    folder = Path(build_job_packet(inputs, output_root=_out(tmp_path))["packet_dir"])
+    shipped = (folder / "files/object/replacement_asset.usdz").read_bytes()
+    assert b"gs://bucket-x" not in shipped and shipped != data
 
 
 def test_a_clip_sidecar_and_a_namespace_link_are_fine(tmp_path, job) -> None:

@@ -3,10 +3,15 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/owner_approved_deletion.py
 #   src/blueprint_pipeline/website_scene_workspace_references.py
-#   deploy/owner-approved-deletions/2026-11-04-arena-scratch.json
+#   deploy/owner-approved-deletions/held/2026-11-04-arena-scratch.json
+#   deploy/owner-approved-deletions/held/README.md
+#   src/blueprint_pipeline/website_scene_workspace_queue.py
 #   deploy/owner-approved-deletions/held/2026-11-04-authority-ended-scenes.json
-#   deploy/owner-approved-deletions/2026-11-04-controlled-policy-integration.json
-#   deploy/owner-approved-deletions/2026-11-12-old-development-folders.json
+#   deploy/owner-approved-deletions/held/2026-11-04-controlled-policy-integration.json
+#   deploy/owner-approved-deletions/held/2026-11-12-old-development-folders.json
+#   deploy/owner-approved-deletions/2026-11-12-host-work-volume.json
+#   deploy/owner-approved-deletions/held/2026-11-12-host-work-volume-reserve.json
+#   scripts/measure_owner_approved_deletion_folders.py
 #   deploy/systemd/blueprint-owner-approved-deletion-plan.service
 #   deploy/systemd/blueprint-owner-approved-deletion.service
 #   tests/fixtures/owner_approved_deletion_2026_11_12_naming_files.json
@@ -71,7 +76,8 @@ class Host:
                                      launch_profile_catalog=self.catalog,
                                      registry_roots=[self.control / "website-source-bindings",
                                                      self.control / "beta-policy-screening"],
-                                     release_roots=[root / "release"], door_roots=[root / "door"])
+                                     release_roots=[root / "release"], door_roots=[root / "door"],
+                                     live_queue_root=self.control)
 
     def write(self, path: Path, document) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -408,10 +414,13 @@ def test_the_shipped_manifests_validate_and_never_name_the_live_capture():
     # The 2026-11-04 scenes manifest is held aside (deploy/owner-approved-deletions/held/README.md), unchanged.
     assert not (REPO_ROOT / "deploy/owner-approved-deletions/2026-11-04-authority-ended-scenes.json").exists()
     assert (REPO_ROOT / "deploy/owner-approved-deletions/held/2026-11-04-authority-ended-scenes.json").is_file()
-    assert [path.stem for path in manifests] == ["2026-11-04-arena-scratch",
-                                                 "2026-11-04-controlled-policy-integration",
-                                                 "2026-11-12-old-development-folders"]
-    for path in manifests:
+    # Applied manifests are held aside too (held/README.md): a run deletes only what this release's plan names.
+    assert [path.stem for path in manifests] == ["2026-11-12-host-work-volume"]
+    held = REPO_ROOT / "deploy" / "owner-approved-deletions" / "held"
+    applied = [held / f"{name}.json" for name in (
+        "2026-11-04-arena-scratch", "2026-11-04-controlled-policy-integration", "2026-11-12-old-development-folders")]
+    assert all(path.is_file() for path in applied)
+    for path in [*manifests, *applied]:
         manifest, _ = oad.load_manifest(path)
         assert not any("447ae4f4" in json.dumps(entry) for entry in manifest["entries"])
         for entry in manifest["entries"]:
@@ -716,7 +725,8 @@ def test_the_2026_11_12_manifest_replayed_against_the_naming_files_refuses_the_1
         (mirror / root).mkdir(parents=True, exist_ok=True)
     catalog = mirror / "var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-profile-catalog.json"
     catalog.write_text("[]", encoding="utf-8")
-    manifest, _ = oad.load_manifest(REPO_ROOT / "deploy/owner-approved-deletions/2026-11-12-old-development-folders.json")
+    manifest, _ = oad.load_manifest(
+        REPO_ROOT / "deploy/owner-approved-deletions/held/2026-11-12-old-development-folders.json")
     paths = [entry["path"] for entry in manifest["entries"]]
 
     state = oad.scan_live_state(
@@ -743,7 +753,7 @@ def test_every_class_is_either_privacy_required_or_housekeeping():
     # A new class must be put in exactly one of the two sets before a manifest may list it.
     assert set(oad.ENTRY_VALIDATORS) == oad.PRIVACY_REQUIRED_CLASSES | oad.HOUSEKEEPING_CLASSES
     assert not oad.PRIVACY_REQUIRED_CLASSES & oad.HOUSEKEEPING_CLASSES
-    assert oad.PRIVACY_REQUIRED_CLASSES == {oad.SCENE} and oad.HOUSEKEEPING_CLASSES == {oad.FOLDER}
+    assert oad.PRIVACY_REQUIRED_CLASSES == {oad.SCENE} and oad.HOUSEKEEPING_CLASSES == {oad.FOLDER, oad.SUBFOLDER}
 
 
 def _privacy_scene_named_by_a_binding(tmp_path, host):
@@ -773,8 +783,10 @@ def test_a_privacy_deletion_named_by_a_binding_is_eligible_and_records_the_refer
     row = plan["entries"][0]
     assert oad._journal(plan["manifest_id"], plan["entries"], plan["reference_scan"])[
         "references_left_pointing_at_nothing_count"] == 1
-    assert json.loads(capsys.readouterr().out) == {"manifest_id": "test-manifest", oad.LEFT_POINTING_AT_NOTHING: {
-        "path": str(scene), "named_by": [str(binding)], "unreadable": []}}
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [line["eligible"]["path"] for line in lines if "eligible" in line] == [str(scene)]
+    assert [line for line in lines if "eligible" not in line] == [{"manifest_id": "test-manifest", oad.LEFT_POINTING_AT_NOTHING: {
+        "path": str(scene), "named_by": [str(binding)], "unreadable": []}}]
 
     assert (row["status"], row["reasons"], row["named_by"]) == ("eligible", [], [str(binding)])
     assert row[oad.LEFT_POINTING_AT_NOTHING] == {"named_by": [str(binding)], "unreadable": []}
@@ -839,7 +851,9 @@ def test_a_folder_released_code_uses_as_a_path_component_is_refused(host, name):
 
     row = host.plan(host.manifest([host.folder_entry(folder)]))["entries"][0]
 
-    assert row["reasons"] == ["named_by_released_code"]
+    # A subfolder parent is also a scan root (its loose JSON is read), so it is refused as that too.
+    assert row["reasons"] == ["named_by_released_code",
+                              *(["live_state_scan_root"] if name in oad.SUBFOLDER_PARENTS else [])]
     assert row["named_by_released_code"] and all(
         path.startswith(str(REPO_ROOT / "src")) or path.startswith(str(REPO_ROOT / "scripts"))
         or path.startswith(str(REPO_ROOT / "deploy")) for path in row["named_by_released_code"])
@@ -921,8 +935,13 @@ def test_the_journal_names_each_refused_path_its_reasons_and_naming_files_but_no
 
     out = capsys.readouterr().out
     rows, summary = journal(out)
-    assert rows == [{"manifest_id": "test-manifest", "refused": {
-        "path": str(folder), "reasons": ["named_by_live_state"], "named_by": [str(env)], "named_by_released_code": []}}]
+    eligible = plans[-1]["entries"][1]["identity"]
+    assert rows == [{"manifest_id": "test-manifest", "eligible": {
+        "class": oad.FOLDER, "door_unlisted_entries": 0, "measured_apparent_bytes": eligible["apparent_bytes"],
+        "measured_file_count": eligible["file_count"], "path": str(other),
+        "recorded_apparent_bytes": eligible["apparent_bytes"], "recorded_file_count": eligible["file_count"]}},
+                    {"manifest_id": "test-manifest", "refused": {
+        "named_by": [str(env)], "named_by_released_code": [], "path": str(folder), "reasons": ["named_by_live_state"]}}]
     assert (summary["reference_scan"], summary["refused_count"], summary["unreadable_count"]) == ("complete", 1, 0)
     assert "s3cr3t" not in out
     broken = host.write(host.etc / "bad.json", "{")
@@ -1048,3 +1067,478 @@ def test_references_record_an_unreadable_queue_file_for_a_privacy_path(host):
     unreadable: list = []
     assert references.reasons(path, unreadable) == []
     assert unreadable == [{"path": str(bad), "code": "queue_inventory_unreadable"}]
+
+
+# --- task_evaluation_inputs_subfolder: a direct child of one of three owner-named parents ----------
+
+SAM31 = "sam31-preparations"
+CHILD = "0fe57f63c8d9d39e3ded28440fb7c49e"
+
+
+def _sub(host: Host, parent: str = SAM31, name: str = CHILD, **kwargs) -> Path:
+    return host.folder(f"{parent}/{name}", **kwargs)
+
+
+def _sub_entry(host: Host, folder: Path, **overrides) -> dict:
+    return host.folder_entry(folder, **{"class": oad.SUBFOLDER, **overrides})
+
+
+def test_subfolder_parents_are_exactly_the_three_the_owner_named():
+    # The owner approved sam31-preparations, stage-replays/<the one trial replay> and configured-controls.
+    assert set(oad.SUBFOLDER_PARENTS) == {"sam31-preparations", "stage-replays", "configured-controls"}
+    assert oad.SUBFOLDER_PARENTS["sam31-preparations"] is None and oad.SUBFOLDER_PARENTS["configured-controls"] is None
+    assert len(oad.SUBFOLDER_PARENTS["stage-replays"]) == 1
+    assert oad.SUBFOLDER in oad.HOUSEKEEPING_CLASSES and oad.SUBFOLDER not in oad.PRIVACY_REQUIRED_CLASSES
+
+
+def test_an_eligible_subfolder_is_deleted_with_a_receipt_and_its_parent_and_siblings_stay(host):
+    child, sibling = _sub(host), _sub(host, name="191c6abeb5a164a2")
+    other_parent = _sub(host, "configured-controls", "scene839873-16ea923e")
+    parent_mode = (host.inputs / SAM31).stat().st_mode
+    manifest = host.manifest([_sub_entry(host, child)])
+
+    plan = host.plan(manifest)
+    assert (plan["eligible_count"], plan["entries"][0]["reasons"]) == (1, [])
+    assert child.is_dir()
+    result = host.apply(manifest)
+
+    assert result["outcome_counts"] == {"deleted": 1} and not child.exists()
+    assert sibling.is_dir() and other_parent.is_dir() and (host.inputs / SAM31).is_dir()
+    assert (host.inputs / SAM31).stat().st_mode == parent_mode
+    assert sorted(path.name for path in (host.inputs / SAM31).iterdir()) == [sibling.name]  # no aside left
+    receipt = json.loads((host.reports / "test-manifest" / "receipts" / f"{oad._key(str(child))}.json").read_text())
+    assert (receipt["status"], receipt["class"], receipt["path"]) == ("deleted", oad.SUBFOLDER, str(child))
+    assert receipt["aside_name"].startswith(oad.ASIDE_PREFIX)
+
+
+@pytest.mark.parametrize("relative", [
+    "lanes/x",                                  # a parent not on the list
+    "sam31-preparations/abc/def",               # three deep
+    "sam31-preparations/stage-replays/x",       # three deep, through two allowed names
+    "sam31-preparations",                       # the parent itself
+    "stage-replays/../configured-controls/x",   # a name with ``..``
+    "sam31-preparations/..",
+    "sam31-preparations//abc",
+    "sam31-preparations/abc/",
+    "sam31-preparations/.owner-approved-deletion-abc",  # the aside prefix
+    "stage-replays/agent-execution",            # under stage-replays only the one approved replay
+    "stage-replays/x",
+    "x",                                        # a direct child of the inputs root is a folder, not a subfolder
+])
+def test_a_subfolder_outside_the_three_parents_is_refused_at_manifest_load(tmp_path, relative):
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({
+        "schema_version": oad.MANIFEST_SCHEMA, "manifest_id": "m", "approved_by": "owner",
+        "approval_evidence": "yes", "approved_at": APPROVED_AT, "expires_at": "2026-11-05T15:00:00Z",
+        "entries": [{"class": oad.SUBFOLDER, "path": f"{oad.INPUTS_ROOT}/{relative}", "newest_mtime_epoch": 1,
+                     "apparent_bytes": 1, "file_count": 1, "door_unlisted_entries": 0}]}))
+
+    with pytest.raises(oad.OwnerApprovedDeletionError, match="entry_path_outside_allowlist"):
+        oad.load_manifest(manifest)
+
+
+def test_a_folder_entry_may_still_not_name_a_subfolder(tmp_path):
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({
+        "schema_version": oad.MANIFEST_SCHEMA, "manifest_id": "m", "approved_by": "owner",
+        "approval_evidence": "yes", "approved_at": APPROVED_AT, "expires_at": "2026-11-05T15:00:00Z",
+        "entries": [{"class": oad.FOLDER, "path": f"{oad.INPUTS_ROOT}/{SAM31}/{CHILD}", "newest_mtime_epoch": 1,
+                     "apparent_bytes": 1, "file_count": 1, "door_unlisted_entries": 0}]}))
+
+    with pytest.raises(oad.OwnerApprovedDeletionError, match="entry_path_outside_allowlist"):
+        oad.load_manifest(manifest)
+
+
+def test_a_subfolder_under_a_linked_or_non_directory_parent_is_refused(host, tmp_path):
+    outside = tmp_path / "outside-parent"
+    (outside / CHILD).mkdir(parents=True)
+    (outside / CHILD / "precious.bin").write_bytes(b"x")
+    (host.inputs / SAM31).symlink_to(outside)
+    (host.inputs / "configured-controls").write_text("not a directory")
+    entries = [{"class": oad.SUBFOLDER, "path": f"{host.inputs}/{parent}/{CHILD}", "newest_mtime_epoch": 0,
+                "apparent_bytes": 1, "file_count": 1, "door_unlisted_entries": 0}
+               for parent in (SAM31, "configured-controls")]
+    manifest = host.manifest(entries)
+
+    plan = host.plan(manifest)
+
+    # A parent that is not a directory also leaves its loose JSON unread, so the scan is incomplete as well.
+    assert [row["reasons"] for row in plan["entries"]] == [["parent_unsafe", "reference_scan_incomplete"],
+                                                           ["parent_unsafe", "reference_scan_incomplete"]]
+    host.apply(manifest)
+    assert (outside / CHILD / "precious.bin").is_file()
+
+
+def test_a_subfolder_whose_parent_is_a_mount_point_or_whose_mount_table_is_unreadable_is_refused(host, tmp_path):
+    child = _sub(host)
+    table = tmp_path / "mountinfo"
+    table.write_text(f"1 0 8:1 / / rw - ext4 /dev/vda rw\n2 1 8:1 /x {host.inputs / SAM31} rw - ext4 /dev/vda rw\n")
+    host.settings.mountinfo = table
+    manifest = host.manifest([_sub_entry(host, child)])
+    assert host.plan(manifest)["entries"][0]["reasons"] == ["parent_unsafe"]
+
+    host.settings.mountinfo = tmp_path / "absent"
+    assert host.plan(manifest)["entries"][0]["reasons"] == ["mount_table_unavailable"]
+    table.write_text(f"1 0 8:1 / / rw - ext4 /dev/vda rw\n2 1 8:1 /x {child}/inner rw - ext4 /dev/vda rw\n")
+    host.settings.mountinfo = table
+    assert host.plan(manifest)["entries"][0]["reasons"] == ["mount_point_inside"]
+    table.write_text(f"1 0 8:1 / / rw - ext4 /dev/vda rw\n2 1 8:1 /x {child} rw - ext4 /dev/vda rw\n")
+    assert host.plan(manifest)["entries"][0]["reasons"] == ["mount_point"]
+    assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 1} and child.is_dir()
+
+
+def test_a_subfolder_that_is_a_link_or_a_file_is_refused(host, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.json").write_text("{}")
+    (host.inputs / SAM31).mkdir()
+    link = host.inputs / SAM31 / "linked"
+    link.symlink_to(outside)
+    plain = host.inputs / SAM31 / "plain"
+    plain.write_bytes(b"x")
+    manifest = host.manifest([{"class": oad.SUBFOLDER, "path": str(path), "newest_mtime_epoch": 0,
+                               "apparent_bytes": 0, "file_count": 0, "door_unlisted_entries": 0}
+                              for path in (link, plain)])
+
+    assert [row["reasons"] for row in host.plan(manifest)["entries"]] == [["not_a_directory"], ["not_a_directory"]]
+    host.apply(manifest)
+    assert link.is_symlink() and plain.is_file() and (outside / "precious.json").is_file()
+
+
+def test_a_subfolder_changed_since_the_manifest_or_since_the_plan_is_kept(host):
+    child, later = _sub(host), _sub(host, "configured-controls", "replay-r2")
+    entry = _sub_entry(host, child)
+    (child / "job" / "late.json").write_text("{}")
+    assert host.plan(host.manifest([entry]))["entries"][0]["reasons"] == ["changed_since_approval"]
+
+    manifest = host.manifest([_sub_entry(host, later)], manifest_id="second")
+    assert host.plan(manifest)["eligible_count"] == 1
+    # Still what the owner approved (same newest mtime, bytes and files), but not what the plan measured.
+    extra = later / "job" / "extra"
+    extra.mkdir()
+    for path in (extra, later / "job"):
+        os.utime(path, (1787000000, 1787000000))
+    result = host.apply(manifest)
+
+    assert result["outcomes"] == [{"path": str(later), "outcome": "skipped", "reasons": ["changed_since_plan"]}]
+    assert later.is_dir()
+
+
+@pytest.mark.parametrize("pin", ["child", "inside", "parent"])
+def test_a_pin_on_a_subfolder_inside_it_or_on_its_parent_keeps_it(host, pin):
+    child = _sub(host)
+    path = {"child": child, "inside": child / "job", "parent": child.parent}[pin]
+    write_storage_pin(pins_root=host.control / "storage-pins", kind="preparation", owner_id="pin-1",
+                      paths=[path], ttl_seconds=DAY, now=lambda: APPROVED_EPOCH)
+    manifest = host.manifest([_sub_entry(host, child)])
+
+    assert host.plan(manifest)["entries"][0]["reasons"] == ["pinned"]
+    assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 1} and child.is_dir()
+
+
+def test_a_queue_message_unit_file_or_process_naming_a_subfolder_keeps_it(host):
+    queued, unit, used = (_sub(host, name=name) for name in ("queued-r1", "unit-r1", "used-r1"))
+    (host.control / "queue" / "processing" / "row.json").write_text(json.dumps({"input": str(queued / "job")}))
+    (host.root / "units" / "x.service").write_text(f"[Service]\nReadWritePaths={unit}/job\n")
+    process = host.root / "proc" / "4242"
+    (process / "fd").mkdir(parents=True)
+    (process / "cmdline").write_bytes(b"python\0-m\0x\0")
+    (process / "environ").write_bytes(b"")
+    (process / "cwd").symlink_to(used / "job")
+    manifest = host.manifest([_sub_entry(host, path) for path in (queued, unit, used)])
+
+    assert _statuses(host.plan(manifest)) == {"queued-r1": ("skipped", ["queue_referenced"]),
+                                              "unit-r1": ("skipped", ["unit_referenced:x.service"]),
+                                              "used-r1": ("skipped", ["in_use"])}
+    assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 3}
+
+
+@pytest.mark.parametrize("where", ["same_parent", "inputs_root", "at_the_parent"])
+def test_a_symlink_into_a_subfolder_keeps_it(host, where):
+    child = _sub(host)
+    if where == "same_parent":
+        (child.parent / "alias").symlink_to(f"{child.name}/job")
+    elif where == "inputs_root":
+        (host.inputs / "alias").symlink_to(f"{SAM31}/{child.name}")
+    else:
+        (host.inputs / "alias").symlink_to(SAM31)  # the child stays reachable through the link
+
+    assert host.plan(host.manifest([_sub_entry(host, child)]))["entries"][0]["reasons"] == ["symlink_target"]
+
+
+@pytest.mark.parametrize("named", ["child", "under"])
+def test_live_state_naming_a_subfolder_or_a_path_under_it_keeps_it(host, named):
+    child = _sub(host)
+    path = child if named == "child" else child / "job" / "result.json"
+    profile = host.write(host.etc / "task-evaluation-launch-profiles" / "p.json", {"immutable_inputs": [
+        {"path": str(path)}]})
+    manifest = host.manifest([_sub_entry(host, child)])
+
+    row = host.plan(manifest)["entries"][0]
+
+    assert (row["reasons"], row["named_by"]) == (["named_by_live_state"], [str(profile)])
+    assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 1} and child.is_dir()
+
+
+def test_loose_json_beside_a_subfolder_is_live_state(host):
+    child = _sub(host, "configured-controls", "replay-r1")
+    preflight = host.write(host.inputs / "configured-controls" / "preflight.json", {"parent": f"{child}/out"})
+
+    row = host.plan(host.manifest([_sub_entry(host, child)]))["entries"][0]
+
+    assert (row["reasons"], row["named_by"]) == (["named_by_live_state"], [str(preflight)])
+
+
+def test_an_incomplete_scan_keeps_a_subfolder(host):
+    child = _sub(host)
+    broken = host.write(host.etc / "bad.json", "{")
+
+    plan = host.plan(host.manifest([_sub_entry(host, child)]))
+
+    assert plan["entries"][0]["reasons"] == ["reference_scan_incomplete"]
+    assert plan["reference_scan"]["unreadable"] == [{"path": str(broken), "code": "not_json"}]
+
+
+def test_a_subfolder_holding_a_scan_root_is_refused(host):
+    child = _sub(host)
+    host.settings.registry_roots = (*host.settings.registry_roots, child / "registry")
+
+    assert host.plan(host.manifest([_sub_entry(host, child)]))["entries"][0]["reasons"] == ["live_state_scan_root"]
+
+
+def test_released_code_naming_the_child_refuses_it_but_naming_only_the_parent_does_not(host):
+    used, plain = _sub(host, SAM31, "toolchains"), _sub(host)
+    host.settings.release_roots = (REPO_ROOT,)  # the real source tree names toolchains as a path component
+    assert any(f'"{SAM31}"' in path.read_text() or f"/{SAM31}" in path.read_text()
+               for path in (REPO_ROOT / "deploy" / "systemd").glob("*.service"))
+
+    rows = {Path(row["path"]).name: row for row in host.plan(host.manifest(
+        [_sub_entry(host, used), _sub_entry(host, plain)]))["entries"]}
+
+    assert rows["toolchains"]["reasons"] == ["named_by_released_code"]
+    assert rows["toolchains"]["named_by_released_code"]
+    assert (rows[CHILD]["reasons"], rows[CHILD]["named_by_released_code"]) == ([], [])
+
+
+def test_naming_only_the_parent_does_not_refuse_a_subfolder(host):
+    # The planner's decision of 2026-11-12 (not the owner's): otherwise nothing under a named root could ever
+    # be cleared.
+    child = _sub(host)
+    parent = child.parent
+    host.write(host.etc / "task-evaluation-launch-profiles" / "p.json", {"root": str(parent)})
+    (host.root / "units" / "gc.service").write_text(f"[Service]\nReadOnlyPaths={parent}\n")
+    (host.control / "queue" / "pending" / "row.json").write_text(json.dumps({"root": str(parent)}))
+    process = host.root / "proc" / "4242"
+    (process / "fd").mkdir(parents=True)
+    (process / "cmdline").write_bytes(f"python\0--root\0{parent}\0".encode())
+    (process / "environ").write_bytes(b"")
+    (process / "cwd").symlink_to(parent)
+    manifest = host.manifest([_sub_entry(host, child)])
+
+    assert host.plan(manifest)["eligible_count"] == 1
+    assert host.apply(manifest)["outcome_counts"] == {"deleted": 1} and parent.is_dir()
+
+
+def test_a_subfolder_holding_a_real_bind_mount_is_refused(host, tmp_path):
+    """A same-filesystem bind mount keeps the device number; the mount table still shows it.
+
+    Only the mount and the unmount need root. On the disposable CI runner (``BLUEPRINT_DISPOSABLE_LINUX_TEST=1``)
+    they run through ``sudo -n`` and a failure there fails the test.
+    """
+    import subprocess
+    import sys
+
+    child = _sub(host)
+    source = tmp_path / "mounted-source"
+    source.mkdir()
+    (source / "data.txt").write_text("another tree", encoding="utf-8")
+    mounted = child / "job" / "mnt"
+    mounted.mkdir()
+    prefix: list[str] = []
+    bound = subprocess.run(["mount", "--bind", str(source), str(mounted)], capture_output=True, text=True)
+    if bound.returncode != 0:
+        if sys.platform != "linux" or os.environ.get("BLUEPRINT_DISPOSABLE_LINUX_TEST") != "1":
+            pytest.skip("no mount rights here and no disposable Linux runner opt-in "
+                        "(BLUEPRINT_DISPOSABLE_LINUX_TEST=1): " + bound.stderr.strip()[:200])
+        prefix = ["sudo", "-n"]
+        bound = subprocess.run([*prefix, "mount", "--bind", str(source), str(mounted)],
+                               capture_output=True, text=True, timeout=60)
+        assert bound.returncode == 0, "sudo -n mount --bind failed on the disposable runner: " + (
+            bound.stdout + bound.stderr)
+    try:
+        manifest = host.manifest([_sub_entry(host, child)])
+        assert host.plan(manifest)["entries"][0]["reasons"] == ["mount_point_inside"]
+        assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 1}
+        assert (source / "data.txt").read_text() == "another tree"
+    finally:
+        unmounted = subprocess.run([*prefix, "umount", str(mounted)], capture_output=True, text=True, timeout=60)
+        assert unmounted.returncode == 0, unmounted.stdout + unmounted.stderr
+
+
+def test_the_2026_11_12_host_work_volume_manifests_list_only_subfolders_and_the_reserve_is_held():
+    directory = REPO_ROOT / "deploy" / "owner-approved-deletions"
+    active, _ = oad.load_manifest(directory / "2026-11-12-host-work-volume.json")
+    held, _ = oad.load_manifest(directory / "held" / "2026-11-12-host-work-volume-reserve.json")
+    assert directory / "held" / "2026-11-12-host-work-volume-reserve.json" not in oad.manifests(directory)
+    for entry in active["entries"]:
+        path = Path(entry["path"])
+        assert entry["class"] == oad.SUBFOLDER and path.parent.parent == oad.INPUTS_ROOT
+        assert path.parent.name in (SAM31, "stage-replays")
+    parents = [Path(entry["path"]).parent.name for entry in active["entries"]]
+    # Item 1: the 22 folders of sam31-preparations; item 2: the one trial replay folder named in the question.
+    assert (parents.count(SAM31), parents.count("stage-replays")) == (22, 1)
+    replay = next(Path(entry["path"]) for entry in active["entries"] if entry["path"].count("/stage-replays/"))
+    assert f"`task-evaluation-inputs/stage-replays/{replay.name}`" in active["approval_evidence"]
+    assert all(entry["class"] == oad.SUBFOLDER and Path(entry["path"]).parent == oad.INPUTS_ROOT / "configured-controls"
+               for entry in held["entries"])
+    for manifest in (active, held):
+        assert manifest["approved_at"] == "2026-11-12T21:05:00Z"
+        assert '"yes approve all 3"' in manifest["approval_evidence"]
+
+
+# --- after the independent review of 2026-11-12 (D1 to D5) ------------------------------------------
+
+
+def test_under_stage_replays_only_the_approved_replay_is_accepted(tmp_path):
+    (approved,) = oad.SUBFOLDER_PARENTS["stage-replays"]
+
+    def load(name: str):
+        manifest = tmp_path / "m.json"
+        manifest.write_text(json.dumps({
+            "schema_version": oad.MANIFEST_SCHEMA, "manifest_id": "m", "approved_by": "owner",
+            "approval_evidence": "yes", "approved_at": APPROVED_AT, "expires_at": "2026-11-05T15:00:00Z",
+            "entries": [{"class": oad.SUBFOLDER, "path": f"{oad.INPUTS_ROOT}/stage-replays/{name}",
+                         "newest_mtime_epoch": 1, "apparent_bytes": 1, "file_count": 1, "door_unlisted_entries": 0}]}))
+        return oad.load_manifest(manifest)
+
+    assert load(approved)[0]["entries"][0]["path"].endswith(f"/stage-replays/{approved}")
+    for other in ("agent-execution", approved + "-2", approved.upper()):
+        with pytest.raises(oad.OwnerApprovedDeletionError, match="entry_path_outside_allowlist"):
+            load(other)
+
+
+def test_the_plan_journal_names_every_eligible_path_with_measured_and_recorded_bytes(host, capsys):
+    # The reviewer's probe test_probe_journal_never_names_an_eligible_path, inverted.
+    a, b = _sub(host, name="aaa"), _sub(host, name="bbb")
+    (host.root / "units" / "x.service").write_text(f"[Service]\nReadWritePaths={b}\n")
+    entry = _sub_entry(host, a, door_unlisted_entries=2)
+    plan = host.plan(host.manifest([entry, _sub_entry(host, b)]))
+    capsys.readouterr()
+
+    counts = oad._journal(plan["manifest_id"], plan["entries"], plan["reference_scan"])
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert lines[0] == {"manifest_id": "test-manifest", "eligible": {
+        "class": oad.SUBFOLDER, "door_unlisted_entries": 2, "measured_apparent_bytes": entry["apparent_bytes"],
+        "measured_file_count": entry["file_count"], "path": str(a), "recorded_apparent_bytes": entry["apparent_bytes"],
+        "recorded_file_count": entry["file_count"]}}
+    assert [line["refused"]["path"] for line in lines[1:]] == [str(b)]
+    assert (counts["eligible_count"], counts["refused_count"]) == (1, 1)
+
+
+def test_the_apply_journal_names_each_path_as_it_deletes_it(host, capsys):
+    child = _sub(host)
+    manifest = host.manifest([_sub_entry(host, child)])
+    plan = host.plan(manifest)
+    capsys.readouterr()
+
+    result = host.apply(manifest)
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert lines == [{"manifest_id": "test-manifest", "deleting": {
+        "apparent_bytes": plan["entries"][0]["identity"]["apparent_bytes"], "class": oad.SUBFOLDER,
+        "file_count": plan["entries"][0]["identity"]["file_count"], "path": str(child)}}]
+    oad._journal(result["manifest_id"], result["outcomes"], result["reference_scan"])
+    (line,) = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert line["deleted"]["path"] == str(child) and line["deleted"]["apparent_bytes"] > 0
+
+
+def test_the_real_held_manifests_are_neither_planned_nor_applied(tmp_path, monkeypatch):
+    directory = REPO_ROOT / "deploy" / "owner-approved-deletions"
+    seen = []
+    monkeypatch.setattr(oad, "plan_manifest", lambda path, **_: seen.append(path.name) or {
+        "manifest_id": "m", "plan_digest": "d", "entry_count": 0, "eligible_count": 0,
+        "eligible_apparent_bytes": 0, "skipped_counts": {}})
+    monkeypatch.setattr(oad, "apply_manifest", lambda path, **_: seen.append(path.name) or {
+        "manifest_id": "m", "result_digest": "d", "deleted_count": 0, "deleted_apparent_bytes": 0,
+        "outcome_counts": {}})
+    monkeypatch.setenv(oad.QUEUE_ROOTS_ENV, str(tmp_path / "queue"))
+    for action in (["plan"], ["apply", "--ack", oad.APPLY_ACK]):
+        assert oad.main([*action, "--manifest-dir", str(directory), "--report-root", str(tmp_path / "reports"),
+                         "--pins-root", str(tmp_path / "pins"), "--intent-root", str(tmp_path / "intents")]) == 0
+    assert seen == ["2026-11-12-host-work-volume.json"] * 2
+
+
+def _live_states() -> list[tuple[str, str]]:
+    from blueprint_pipeline.control_plane_release_leases import LIVE_QUEUE_STATES
+
+    return [(queue, state) for queue, states in LIVE_QUEUE_STATES.items() for state in states]
+
+
+def test_a_waiting_external_sam_job_naming_a_subfolder_keeps_it(host):
+    # The reviewer's probe test_probe_waiting_external_sam_job_is_not_seen, inverted: a paid external job's output.
+    child = _sub(host)
+    host.write(host.control / "sam31-preparation-executions" / "waiting_external" / "job.json",
+               {"parent_request_digest": "sha256:" + CHILD, "child_id": "c1", "output_root": f"{child}/c1"})
+    manifest = host.manifest([_sub_entry(host, child)])
+
+    assert host.plan(manifest)["entries"][0]["reasons"] == ["queue_referenced"]
+    assert host.apply(manifest)["outcome_counts"] == {"not_eligible_in_plan": 1} and child.is_dir()
+
+
+@pytest.mark.parametrize(("queue", "state"), _live_states())
+def test_every_live_queue_state_the_repository_lists_keeps_a_path_it_names(host, queue, state):
+    child, folder = _sub(host), host.folder("arena-launch-r1")
+    host.write(host.control / queue / state / "row.json", {"child": child.name, "input": f"{folder}/job"})
+
+    rows = host.plan(host.manifest([_sub_entry(host, child), host.folder_entry(folder)]))["entries"]
+
+    assert [row["reasons"] for row in rows] == [["queue_referenced"], ["queue_referenced"]]
+
+
+def test_a_terminal_queue_state_names_nothing(host):
+    child = _sub(host)
+    host.write(host.control / "sam31-preparation-executions" / "completed" / "job.json", {"child": child.name})
+
+    assert host.plan(host.manifest([_sub_entry(host, child)]))["eligible_count"] == 1
+
+
+@pytest.mark.parametrize(("factor", "reasons"), [(1.25, []), (1.26, ["larger_than_approved"])])
+def test_a_partly_listed_folder_may_grow_only_to_a_quarter_more_than_recorded(host, factor, reasons):
+    child = _sub(host, files={"inputs.bin": b"x" * 10000})
+    recorded = int(10000 / factor)
+    entry = _sub_entry(host, child, apparent_bytes=recorded, door_unlisted_entries=1)
+    assert recorded * oad.MAX_UNLISTED_GROWTH >= 10000 if not reasons else recorded * oad.MAX_UNLISTED_GROWTH < 10000
+
+    assert host.plan(host.manifest([entry]))["entries"][0]["reasons"] == reasons
+
+
+def test_a_partly_listed_folder_with_a_newer_file_is_still_refused(host):
+    child = _sub(host)
+    entry = _sub_entry(host, child, door_unlisted_entries=1)
+    (child / "job" / "late.json").write_text("{}")
+
+    assert host.plan(host.manifest([entry]))["entries"][0]["reasons"] == ["changed_since_approval"]
+
+
+@pytest.mark.parametrize("where", ["other_parent", "inputs_root_at_itself", "parent_at_inputs_root"])
+def test_links_in_the_other_parents_or_at_the_inputs_root_keep_a_subfolder(host, where):
+    child = _sub(host)
+    other = host.inputs / "configured-controls"
+    other.mkdir()
+    if where == "other_parent":
+        (other / "to-sam").symlink_to(f"../{SAM31}/{child.name}/job")
+    elif where == "inputs_root_at_itself":
+        (host.inputs / "alias").symlink_to(".")
+    else:
+        (other / "up").symlink_to("..")
+
+    assert host.plan(host.manifest([_sub_entry(host, child)]))["entries"][0]["reasons"] == ["symlink_target"]
+
+
+def test_a_whole_parent_listed_as_a_folder_is_a_scan_root(host):
+    parent = _sub(host).parent
+
+    row = host.plan(host.manifest([host.folder_entry(parent)]))["entries"][0]
+
+    assert row["reasons"] == ["live_state_scan_root"]

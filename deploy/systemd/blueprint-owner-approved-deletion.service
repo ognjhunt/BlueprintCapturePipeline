@@ -8,7 +8,9 @@ Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline/blob/main/doc
 Type=oneshot
 # Root reads root-only pins and every process's descriptors (CAP_SYS_PTRACE) for the reference
 # checks, and removes trees other accounts own (CAP_DAC_OVERRIDE). It writes only the two
-# allowlisted parents and its report; the module touches nothing but the listed paths.
+# allowlisted roots and its report; the module touches nothing but the listed paths. The
+# subfolder kind's three parents (sam31-preparations, stage-replays, configured-controls) lie
+# inside the inputs root, so they need no wider path here.
 User=root
 Group=root
 UMask=0077

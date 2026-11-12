@@ -509,6 +509,7 @@ def test_restore_never_repairs_a_changed_sealed_file(tmp_path, monkeypatch):
     cache = root / _PACKAGE / "__pycache__"
     with _unsealed(root / _PACKAGE):
         cache.mkdir()
+    (cache / "run.cpython-311.pyc").write_bytes(b"bytecode")
 
     record = _restore(module, root, commit, digest)
 
@@ -620,6 +621,138 @@ def test_restore_reseals_a_parent_it_opened_to_remove_an_entry(tmp_path, monkeyp
     _validate(module, root, commit)
 
 
+# The restore is never stricter than the full check (host run of 2026-11-12):
+# the check ignores directories that hold no file, so the restore leaves them,
+# shipped or planted. It removed two shipped folders on the reference job's paid
+# run (``mujoco.libs``, empty; ``lpips/weights``, two empty sub-folders).
+
+_SHIPPED = f"{_PACKAGE}/runtime"
+
+
+def _shipped_directories(root: Path, *relatives: str) -> None:
+    """Directories that came with the unpacked toolchain and hold no file, sealed 0555."""
+    import os
+
+    base = root / _SHIPPED
+    with _unsealed(base):
+        for relative in relatives:
+            (base / relative).mkdir(parents=True)
+        for relative in relatives:
+            for directory, _names, _files in os.walk(base / relative.split("/")[0], topdown=False):
+                os.chmod(directory, 0o555)
+
+
+def test_restore_leaves_a_shipped_empty_directory_and_names_it_nowhere(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    _shipped_directories(root, "mujoco.libs")
+    shipped = root / _SHIPPED / "mujoco.libs"
+    _validate(module, root, commit)  # the full check accepts it as shipped
+
+    record = _restore(module, root, commit, digest)
+
+    assert shipped.is_dir() and shipped.stat().st_mode & 0o777 == 0o555
+    assert record["status"] == "unchanged"
+    assert record["removed"] == [] and record["removed_count"] == 0 and record["removed_entry_count"] == 0
+    assert record["modes_restored"] == [] and record["left"] == []
+    _validate(module, root, commit)
+
+
+def test_restore_leaves_a_shipped_directory_of_only_empty_directories(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    _shipped_directories(root, "lpips/weights/v0.0", "lpips/weights/v0.1")
+    weights = root / _SHIPPED / "lpips" / "weights"
+    before = _snapshot(root / _SHIPPED / "lpips")
+    _validate(module, root, commit)
+
+    record = _restore(module, root, commit, digest)
+
+    assert _snapshot(root / _SHIPPED / "lpips") == before
+    assert sorted(path.name for path in weights.iterdir()) == ["v0.0", "v0.1"]
+    assert record["status"] == "unchanged"
+    assert record["removed"] == [] and record["modes_restored"] == [] and record["left"] == []
+    _validate(module, root, commit)
+
+
+def test_restore_removes_a_planted_pycache_with_files_entirely(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    cache = root / _SHIPPED / "__pycache__"
+    with _unsealed(root / _SHIPPED):
+        cache.mkdir()
+    (cache / "a.cpython-311.pyc").write_bytes(b"a")
+    (cache / "nested").mkdir()
+    (cache / "nested" / "b.cpython-311.pyc").write_bytes(b"b")
+
+    record = _restore(module, root, commit, digest)
+
+    assert not cache.exists()
+    assert record["removed"] == [{"relative_path": f"{_SHIPPED}/__pycache__", "kind": "directory",
+                                  "contained_entries": 3}]
+    assert record["removed_count"] == 1 and record["removed_entry_count"] == 4
+    _validate(module, root, commit)
+
+
+def test_a_file_planted_in_a_shipped_empty_directory_takes_the_directory_with_it(tmp_path, monkeypatch):
+    """The one case where a shipped directory goes: it contained a removed entry and is empty after.
+
+    The full check would accept the empty directory; the rule cannot tell it
+    from a planted one, and removing it costs nothing the check asks for.
+    """
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    _shipped_directories(root, "mujoco.libs")
+    shipped = root / _SHIPPED / "mujoco.libs"
+    with _unsealed(shipped):
+        (shipped / "planted.so").write_bytes(b"x")
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_file_invalid:{_SHIPPED}/mujoco.libs/planted.so$"):
+        _validate(module, root, commit)
+
+    record = _restore(module, root, commit, digest)
+
+    assert not shipped.exists()
+    assert record["removed"] == [{"relative_path": f"{_SHIPPED}/mujoco.libs", "kind": "directory",
+                                  "contained_entries": 1}]
+    assert record["removed_entry_count"] == 2 and record["modes_restored"] == []
+    assert (root / _SHIPPED).stat().st_mode & 0o777 == 0o555
+    _validate(module, root, commit)
+
+
+def test_a_file_planted_beside_empty_directories_goes_and_its_directory_stays(tmp_path, monkeypatch):
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    _shipped_directories(root, "lpips/weights/v0.0")
+    weights = root / _SHIPPED / "lpips" / "weights"
+    with _unsealed(weights):
+        (weights / "stray.pth").write_bytes(b"x")
+
+    record = _restore(module, root, commit, digest)
+
+    assert not (weights / "stray.pth").exists() and (weights / "v0.0").is_dir()
+    assert record["removed"] == [{"relative_path": f"{_SHIPPED}/lpips/weights/stray.pth", "kind": "file",
+                                  "contained_entries": 0}]
+    assert weights.stat().st_mode & 0o777 == 0o555 and record["modes_restored"] == []
+    _validate(module, root, commit)
+
+
+def test_a_planted_empty_directory_is_left_and_not_reported_removed(tmp_path, monkeypatch):
+    """The check ignores an empty directory except for its write bits, which are cleared."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    planted = root / _SHIPPED / "__pycache__"
+    with _unsealed(root / _SHIPPED):
+        planted.mkdir()
+    planted.chmod(0o755)  # as container root leaves it, whatever the umask
+    with pytest.raises(module.TaskEvaluationSceneConfigurationStageProducerError,
+                       match=f"^scene_configuration_toolchain_not_read_only:{_SHIPPED}/__pycache__$"):
+        _validate(module, root, commit)
+
+    record = _restore(module, root, commit, digest)
+
+    assert planted.is_dir() and planted.stat().st_mode & 0o777 == 0o555
+    assert record["removed"] == [] and record["removed_count"] == 0 and record["removed_entry_count"] == 0
+    assert record["modes_restored"] == [{"relative_path": f"{_SHIPPED}/__pycache__", "kind": "directory",
+                                         "before_mode": "0o755", "after_mode": "0o555"}]
+    assert record["left"] == []
+    _validate(module, root, commit)
+
+
 # Review of 5321b4372: races, mounts, hard links, deep trees and the guard.
 
 
@@ -647,6 +780,7 @@ def test_guard_accepts_a_root_reached_through_a_linked_ancestor(tmp_path, monkey
     cache = root / _PACKAGE / "__pycache__"
     with _unsealed(root / _PACKAGE):
         cache.mkdir()
+    (cache / "run.cpython-311.pyc").write_bytes(b"bytecode")
 
     assert module.is_run_toolchain_copy(via_link) is True
     record = _restore(module, via_link, commit, digest)
@@ -871,7 +1005,11 @@ def test_a_real_mount_inside_the_tree_is_left_alone(tmp_path, monkeypatch):
 
 
 def test_a_very_deep_planted_tree_is_removed_without_recursion(tmp_path, monkeypatch):
-    """Review probe P7: 3000 levels raised RecursionError out of rmtree."""
+    """Review probe P7: 3000 levels raised RecursionError out of rmtree.
+
+    One planted file at the bottom: every level then contained a removed entry
+    and is empty afterwards, so the whole chain goes, bottom-up.
+    """
     import os
 
     module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
@@ -885,13 +1023,14 @@ def test_a_very_deep_planted_tree_is_removed_without_recursion(tmp_path, monkeyp
             child = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=here)
             os.close(here)
             here = child
+        os.close(os.open("x.pyc", os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=here))
     finally:
         os.close(here)
 
     record = _restore(module, root, commit, digest)
 
     assert record["removed"] == [{"relative_path": f"{_PACKAGE}/__pycache__", "kind": "directory",
-                                  "contained_entries": 3000}]
+                                  "contained_entries": 3001}]
     assert not base.exists()
     _validate(module, root, commit)
 
@@ -927,6 +1066,7 @@ def test_without_a_mount_table_no_directory_is_removed(tmp_path, monkeypatch):
     record = _restore(module, root, commit, digest)
 
     assert record["left"] == [{"relative_path": f"{_PACKAGE}/__pycache__", "reason": "mount_table_unavailable"}]
+    assert record["directories_kept_because"] == "mount_table_unavailable"  # said in the record (RA5)
     assert (cache / "data.txt").read_text() == "could be a bind mount's data"
     assert sorted(row["relative_path"] for row in record["removed"]) == ["stages/link", "stages/stray.txt"]
     assert not stray.exists() and not link.is_symlink()
@@ -971,9 +1111,10 @@ def test_a_failed_listing_leaks_no_handle(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "_entries", entries)
     before = _open_handles()
-    with pytest.raises(OSError, match="listing failed"):
-        _restore(module, root, commit, digest)
+    # Recorded under its own reason and the walk goes on (review of 877cc3a98, RA1 and RA4).
+    record = _restore(module, root, commit, digest)
     assert _open_handles() == before
+    assert len(record["left"]) == 1 and record["left"][0]["reason"] == "list_failed:EMFILE"
 
 
 def test_a_kept_folder_swapped_for_an_outside_link_before_it_is_opened(tmp_path, monkeypatch):
@@ -1002,3 +1143,240 @@ def test_a_kept_folder_swapped_for_an_outside_link_before_it_is_opened(tmp_path,
 
     assert swapped and (mirror / "planted.txt").read_text() == "OUTSIDE"
     assert {"relative_path": "components", "reason": "entry_changed"} in record["left"]
+
+
+# Review of 877cc3a98 (RA1 to RA4): a failing step never aborts the restore or leaves the tree worse than it
+# found it, and only what the full check refuses is removed. Ported from the reviewer's probes.
+
+
+def _verdict(module, root, commit) -> str | None:
+    """The full check's verdict: None when it passes, else the refusal's code."""
+    try:
+        _validate(module, root, commit)
+    except module.TaskEvaluationSceneConfigurationStageProducerError as exc:
+        return str(exc)
+    return None
+
+
+def _directory_write_bits(root: Path) -> dict[str, int]:
+    import os
+    import stat as stat_module
+
+    return {directory: stat_module.S_IMODE(os.lstat(directory).st_mode) & 0o222
+            for directory, _names, _files in os.walk(root)}
+
+
+def test_a_name_swapped_for_a_directory_before_its_unlink_is_left_and_the_walk_goes_on(tmp_path, monkeypatch):
+    """Probe p13b: it raised IsADirectoryError and left the shipped parent writable; the check then refused."""
+    import os
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "zz").write_bytes(b"x")
+    assert _verdict(module, root, commit) == f"scene_configuration_toolchain_file_invalid:{_SHIPPED}/zz"
+    real = module._entries
+
+    def entries(handle):
+        rows = real(handle)
+        if any(name == "zz" for name, _info in rows):
+            with _unsealed(base):
+                (base / "zz").unlink()
+                (base / "zz").mkdir()
+                os.chmod(base / "zz", 0o555)
+        return rows
+
+    monkeypatch.setattr(module, "_entries", entries)
+
+    record = _restore(module, root, commit, digest)
+
+    assert {"relative_path": f"{_SHIPPED}/zz", "reason": "entry_changed"} in record["left"]
+    assert stat_module.S_IMODE(base.stat().st_mode) == 0o555
+    assert _verdict(module, root, commit) is None  # better than before: an empty sealed folder is accepted
+
+
+def test_an_unlink_refused_is_recorded_and_its_parent_is_sealed_again(tmp_path, monkeypatch):
+    """Probe p15: the refusal then named the shipped parent (not_read_only) instead of the planted file."""
+    import os
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "zz").write_bytes(b"x")
+    before = _verdict(module, root, commit)
+    real_unlink = os.unlink
+
+    def unlink(name, *args, **kwargs):
+        if name == "zz":
+            raise PermissionError(1, "Operation not permitted")
+        return real_unlink(name, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "unlink", unlink)
+    record = _restore(module, root, commit, digest)
+    monkeypatch.setattr(module.os, "unlink", real_unlink)
+
+    assert record["left"] == [{"relative_path": f"{_SHIPPED}/zz", "reason": "unlink_failed:EPERM"}]
+    assert stat_module.S_IMODE(base.stat().st_mode) == 0o555
+    assert _verdict(module, root, commit) == before == f"scene_configuration_toolchain_file_invalid:{_SHIPPED}/zz"
+
+
+def test_an_error_that_escapes_still_seals_every_directory_it_opened(tmp_path, monkeypatch):
+    import os
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "planted").mkdir()
+    (base / "planted" / "zz").write_bytes(b"x")
+    (base / "planted").chmod(0o555)
+    bits = _directory_write_bits(root)
+    handles = _open_handles()
+
+    def unlink(name, *args, **kwargs):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(module.os, "unlink", unlink)
+    with pytest.raises(RuntimeError, match="synthetic"):
+        _restore(module, root, commit, digest)
+    monkeypatch.setattr(module.os, "unlink", os.unlink)
+
+    assert _directory_write_bits(root) == bits and _open_handles() == handles
+
+
+def test_running_out_of_handles_deep_in_a_planted_tree_never_makes_the_verdict_worse(tmp_path, monkeypatch):
+    """Probe p17: 400 planted levels with 256 handles. It raised EMFILE and left shipped folders writable."""
+    import os
+    import resource
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "deep").mkdir()
+    here = os.open(base / "deep", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for _ in range(400):
+            os.mkdir("d", dir_fd=here)
+            child = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=here)
+            os.close(here)
+            here = child
+        os.close(os.open("x.pyc", os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=here))
+    finally:
+        os.close(here)
+    before = _verdict(module, root, commit)
+    assert before is not None and f"{_SHIPPED}/deep" in before
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))
+    try:
+        record = _restore(module, root, commit, digest)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+    assert any(row["reason"] in ("open_failed:EMFILE", "list_failed:EMFILE") for row in record["left"])
+    assert stat_module.S_IMODE(base.stat().st_mode) == 0o555
+    after = _verdict(module, root, commit)
+    # Still refused, and still by a planted entry under deep/: never by a shipped folder.
+    assert after is not None and f"{_SHIPPED}/deep" in after
+
+
+def test_a_fifo_a_socket_and_a_device_node_are_left_as_the_check_leaves_them(tmp_path, monkeypatch):
+    """Probe p6, inverted: the check skips them, so the restore removes none and names none."""
+    import os
+    import socket
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    made = []
+    with _unsealed(base):
+        os.mkfifo(base / "fifo")
+        made.append("fifo")
+        cwd = os.getcwd()
+        os.chdir(base)
+        try:
+            listening = socket.socket(socket.AF_UNIX)
+            listening.bind("sock")
+            made.append("sock")
+        finally:
+            os.chdir(cwd)
+        try:
+            os.mknod(base / "dev", 0o400 | stat_module.S_IFCHR, os.makedev(1, 3))
+            made.append("dev")
+        except PermissionError:
+            pass  # no device nodes without the right to make them; the FIFO and the socket still run
+    try:
+        assert _verdict(module, root, commit) is None
+        record = _restore(module, root, commit, digest)
+        assert all(os.path.lexists(base / name) for name in made)
+        assert record["status"] == "unchanged" and record["removed"] == [] and record["left"] == []
+        assert _verdict(module, root, commit) is None
+    finally:
+        listening.close()
+
+
+@pytest.mark.parametrize("order", ["forward", "reverse"])
+def test_a_sealed_file_with_a_write_bit_and_a_planted_hard_link_is_restored_in_either_order(
+        tmp_path, monkeypatch, order):
+    """Probe p9b: the sealed file was left ``hard_linked`` when listed before its planted link."""
+    import os
+    import stat as stat_module
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    sealed = root / _PACKAGE / "run"
+    with _unsealed(sealed.parent):
+        os.link(sealed, sealed.parent / "zz_link")
+        os.link(sealed, sealed.parent / "aa_link")
+    sealed.chmod(stat_module.S_IMODE(sealed.stat().st_mode) | 0o200)
+    real = module._entries
+    monkeypatch.setattr(module, "_entries",
+                        lambda handle: sorted(real(handle), key=lambda row: row[0], reverse=order == "reverse"))
+
+    record = _restore(module, root, commit, digest)
+
+    assert not os.path.lexists(sealed.parent / "zz_link") and not os.path.lexists(sealed.parent / "aa_link")
+    assert sealed.stat().st_nlink == 1 and not sealed.stat().st_mode & 0o222
+    assert {"relative_path": f"{_PACKAGE}/run", "kind": "file", "before_mode": "0o755",
+            "after_mode": "0o555"} in record["modes_restored"]
+    assert record["left"] == []
+    assert _verdict(module, root, commit) is None
+
+
+def test_a_refused_rmdir_is_recorded_under_its_own_reason(tmp_path, monkeypatch):
+    """Probe p16: an EPERM was recorded as entry_changed."""
+    import os
+
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    with _unsealed(base):
+        (base / "pd").mkdir()
+    (base / "pd" / "f").write_bytes(b"x")
+    real = os.rmdir
+
+    def rmdir(name, *args, **kwargs):
+        if name == "pd":
+            raise PermissionError(1, "nope")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "rmdir", rmdir)
+    record = _restore(module, root, commit, digest)
+    monkeypatch.setattr(module.os, "rmdir", real)
+
+    assert record["left"] == [{"relative_path": f"{_SHIPPED}/pd", "reason": "rmdir_failed:EPERM"}]
+    assert _verdict(module, root, commit) is None
+
+
+def test_each_recorded_path_keeps_only_its_last_200_characters(tmp_path, monkeypatch):
+    """Probe p19: each path was bounded only by PATH_MAX."""
+    module, root, commit, digest = _run_copy(tmp_path, monkeypatch)
+    base = root / _SHIPPED
+    name = "n" * 250
+    with _unsealed(base):
+        (base / name).write_bytes(b"x")
+
+    record = _restore(module, root, commit, digest)
+
+    [row] = record["removed"]
+    assert row["relative_path"] == "..." + f"{_SHIPPED}/{name}"[-200:]
+    assert _verdict(module, root, commit) is None
