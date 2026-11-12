@@ -256,8 +256,9 @@ def test_an_unresolved_plan_refuses_is_recorded_and_alerts_after_the_bound(harne
     harness.run()
     state = harness.state()
     assert state["status"] == "unresolved" and harness.applies == []
-    # One per object plus one per by-name listing (Atlas previews, scene previews, company clips).
-    assert state["unresolved_reasons"] == {"website_withdrawal_deletion_object_store_unconfigured": 5}
+    # One per object plus one per by-name listing (Atlas previews, scene previews, company clips and the
+    # simulation packages deployment companies download).
+    assert state["unresolved_reasons"] == {"website_withdrawal_deletion_object_store_unconfigured": 6}
     assert harness.site_files() > 0 and harness.posts == []
     # Re-planned within the bound: still recorded, still quiet.
     harness.run(offset=7 * HOUR)
