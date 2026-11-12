@@ -28,7 +28,8 @@ SystemCallFilter=~ptrace process_vm_readv process_vm_writev
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_PTRACE
 AmbientCapabilities=CAP_DAC_OVERRIDE CAP_SYS_PTRACE
 # The live-state check reads /etc/blueprint (not the provider key files hidden here), the scene
-# intents, the source bindings, the launch-profile catalog and the registries: ProtectSystem=strict
+# intents, the source bindings, the launch-profile catalog, the registries and the released code
+# (the active release and the operator door scripts): ProtectSystem=strict
 # leaves them readable. Hide nothing else they need (test_owner_approved_deletion).
 InaccessiblePaths=-/etc/blueprint/provider-secrets
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/storage-gc

@@ -1169,13 +1169,24 @@ Nothing runs it on a timer. An operator starts two oneshot units by hand:
    (`task-evaluation-inputs/public-source-bindings`), the launch-profile catalog,
    the loose JSON in `task-evaluation-inputs`, and, when present, the website
    source bindings, the configured-scene activation intents, beta policy
-   screening and standing authorizations. A named path is refused as
+   screening and standing authorizations (also `.jsonl`, `.yaml`, `.toml` as
+   text; linked folders are followed once). A named path is refused as
    `named_by_live_state`, and the row's `named_by` lists every naming file. A
-   file inside a path the same manifest deletes does not count; a file marked
-   ended, revoked or `development_only` does. If a required root is missing or a
-   file cannot be read or is not JSON, every path is `reference_scan_incomplete`,
+   file inside a path this run deletes does not count; a file marked
+   ended, revoked or `development_only` does. A folder whose name the active
+   release's `src`, `deploy` or `scripts` (never the deletion manifests) or the
+   door's installed scripts use as a path component is refused as
+   `named_by_released_code` (files in `named_by_released_code`), and a folder that
+   is or holds a root the scan reads as `live_state_scan_root`. If a required root
+   is missing, or a file cannot be read, is not JSON, is nested too deeply or lies
+   below the depth limit, every folder is `reference_scan_incomplete`,
    nothing is eligible, and `reference_scan.unreadable` lists what could not be
-   read. There is no override. On 2026-11-12 a clearance made before this check
+   read; a file removed between listing and reading names nothing. There is no
+   override. Privacy comes first: for an `authority_ended_scene_workspace` (the
+   classes in `PRIVACY_REQUIRED_CLASSES`) these references and an incomplete scan
+   never keep the workspace; the plan and receipt record them as
+   `references_left_pointing_at_nothing` (`named_by`, `unreadable`), to be
+   retired afterwards. On 2026-11-12 a clearance made before this check
    deleted 112 folders those files still named and stopped production for six
    hours.
 2. `blueprint-owner-approved-deletion.service` deletes what a plan of the same
@@ -1201,7 +1212,12 @@ to get past it. A `reference_scan_incomplete` plan is fixed by making the listed
 file readable or valid, or by restoring the missing root, never by moving it out
 of the scan.
 
-Receipts and plans are root `0644` under `0755`, so the door can read them.
+The report directory is created under the units' `UMask=0077`, so the door
+cannot open the plan or the receipts. Each run therefore prints, to its journal
+(`operator_door.py journal <unit>`), every refused path with its `reasons`,
+`named_by` and `named_by_released_code`, every unreadable path with its code, and
+every `references_left_pointing_at_nothing` row: paths only, never a value read
+from a file.
 Run it again and a deleted path reports `already_deleted`.
 
 ```bash
