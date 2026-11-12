@@ -27,8 +27,10 @@ restores it in place for an OPEN job (its scene intent window still runs; ``open
   pass and its hold is published as released;
 - a failure of the archive's own integrity (its digest, a member list that does not match the pointer, a
   symlink, an archive that will not open) cannot clear by waiting: the bytes stored are not the bytes
-  offloaded. It ends the tries for this cold-storage episode as ``ARCHIVE_INVALID`` (host-only, in the
-  restore record and the screening outcome; the job keeps its cold-storage hold) and is tried again only
+  offloaded. It ends the tries for this cold-storage episode as ``ARCHIVE_INVALID`` (in the restore record
+  and the screening outcome; the job's hold becomes ``team_scene_packet_blocked`` with this code as its
+  detail, which the website words as its general "a problem on our side" sentence, never "being restored",
+  and reports to staff with its held-evaluation alert) and is tried again only
   when the pointer changes.
 
 A job whose window has ended is not restored: there is nothing left to run for it, and the screening pass
@@ -55,7 +57,8 @@ RETRY_FIRST_SECONDS = 900
 RETRY_CAP_SECONDS = 6 * 3600
 ROLE = "evidence_offload"
 RESTORED = "restored"
-#: The archive in the store does not match its pointer: tried again only for a changed pointer. Host only.
+#: The archive in the store does not match its pointer: tried again only for a changed pointer. Published as the
+#: hold's detail under ``team_scene_packet_blocked`` (``scene_run_cold_storage.cold_storage_hold``).
 ARCHIVE_INVALID = "scene_run_restore_archive_integrity_failed"
 #: ``control_plane_evidence_offload.restore_offloaded_evidence``'s refusals of the archive's own bytes.
 INTEGRITY_ERRORS = frozenset({"control_plane_evidence_restore_digest_mismatch",
