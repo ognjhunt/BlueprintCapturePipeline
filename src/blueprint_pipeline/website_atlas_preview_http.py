@@ -3,7 +3,8 @@
 The WebApp checks the signed-in owner and current consent, then streams these
 bytes on; callers name a capture and digest, never a path or object key. The
 web-sized scene preview a site opens from its job page (``website_scene_preview``)
-is read the same way.
+is read the same way, and so is the silent clip an approved deployment company
+watches (``website_company_clip``), which also answers one byte range.
 """
 import logging
 import os
@@ -74,6 +75,41 @@ def register_website_atlas_preview_routes(app: FastAPI, *, require_admission: Ca
         return StreamingResponse(chunks(), media_type="application/octet-stream", headers={
             "Content-Length": str(size), "X-Blueprint-Artifact-SHA256": digest, "Content-Disposition": "inline",
             "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/api/live-pipeline/website-company-clips/{capture_id}/clip.mp4",
+             dependencies=[Depends(require_admission)])
+    async def read_company_clip(request: Request, capture_id: str, request_id: str = "",
+                                digest: str = "") -> StreamingResponse:
+        """The silent company clip (``website_company_clip``), read like the scene preview, by range."""
+        from fastapi.responses import JSONResponse
+
+        from .website_company_clip import CompanyClipUnavailable, RangeNotSatisfiable, open_company_clip
+        _webapp_only(request)
+        try:
+            body, size, served = await run_in_threadpool(
+                open_company_clip, request_id=request_id, capture_id=capture_id, digest=digest,
+                storage_root=_storage_root(), range_header=request.headers.get("range"))
+        except CompanyClipUnavailable:
+            raise HTTPException(status_code=404, detail="website_company_clip_unavailable") from None
+        except RangeNotSatisfiable as exc:
+            return JSONResponse({"detail": "website_company_clip_range_not_satisfiable"}, status_code=416, headers={
+                "Content-Range": f"bytes */{exc.size}", "Cache-Control": "private, no-store"})
+        except Exception as exc:  # noqa: BLE001 - storage errors can carry signed URLs; name only the class
+            logger.warning("website_company_clip_read_unavailable type=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="website_company_clip_storage_unavailable") from None
+
+        def chunks():
+            try:
+                yield from body.iter_chunks(CHUNK_BYTES)
+            finally:
+                body.close()
+        headers = {"Accept-Ranges": "bytes", "X-Blueprint-Artifact-SHA256": digest, "Content-Disposition": "inline",
+                   "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+        if served is None:
+            return StreamingResponse(chunks(), media_type="video/mp4", headers={**headers, "Content-Length": str(size)})
+        first, last = served
+        return StreamingResponse(chunks(), status_code=206, media_type="video/mp4", headers={
+            **headers, "Content-Length": str(last - first + 1), "Content-Range": f"bytes {first}-{last}/{size}"})
 
     @app.get("/api/live-pipeline/website-atlas-previews/{capture_id}/bundle",
              dependencies=[Depends(require_admission)])
