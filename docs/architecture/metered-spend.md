@@ -1,11 +1,11 @@
 # Metered spend: one account-wide monthly limit
 
 Owner decision, 2026-11-07: **"Meter + monthly cap"**, set the same day to
-**USD 200 a month**.
+**USD 200 a month**, and raised to **USD 300 a month** on 2026-11-12.
 
 Future jobs get no budget or confirmation of their own. Every paid call is
 metered against its job and shown. Alerts go at 50 %, 80 % and 100 % of one
-account-wide monthly limit ($100, $160, $200). Spend stops only at that limit.
+account-wide monthly limit ($150, $240, $300). Spend stops only at that limit.
 The provider runaway guards stay.
 
 | Stage | Scope | Status |
@@ -252,9 +252,9 @@ and under `capacity.provider_spend.providers.account`.
 
 | Code | Severity | When |
 |---|---|---|
-| `account_spend_month_50pct` | warn (delivered once) | counted ≥ $100 |
-| `account_spend_month_80pct` | page (hourly) | counted ≥ $160 |
-| `account_spend_month_limit_reached` | page (hourly) | counted ≥ $200: new paid admissions are refused |
+| `account_spend_month_50pct` | warn (delivered once) | counted ≥ $150 |
+| `account_spend_month_80pct` | page (hourly) | counted ≥ $240 |
+| `account_spend_month_limit_reached` | page (hourly) | counted ≥ $300: new paid admissions are refused |
 | `account_spend_limit_not_set` | warn | No config file, off the control plane. The row carries the month's spend. |
 | `account_spend_limit_missing` | page (hourly) | No config file on the production control plane: new paid admissions are refused. |
 | `account_spend_limit_config_invalid` | page | The config exists but does not validate. |

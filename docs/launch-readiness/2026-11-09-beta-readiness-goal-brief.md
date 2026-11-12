@@ -60,8 +60,8 @@ Do not start a subagent for work that takes three tool calls or fewer.
 - **Do not make things up.** No invented results, captures, approvals or
   readiness. Unknown stays unknown. Simulation results never certify physical
   performance or safety.
-- **Money.** The account-wide limit is USD 200 per UTC month (owner,
-  2026-11-07). Every ceiling is in the `AGENTS.md` "Spend limits" table. Paid
+- **Money.** The account-wide limit is USD 300 per UTC month (owner,
+  2026-11-07; raised from USD 200 on 2026-11-12). Every ceiling is in the `AGENTS.md` "Spend limits" table. Paid
   compute starts only through `paid_resource_allocator`. A change to any money
   value is the owner's decision.
 - **Host access** goes through the operator door

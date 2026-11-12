@@ -107,7 +107,7 @@ Every ceiling, with the file that sets it, is in the "Spend limits" table of [`A
 
 The WebApp's job ceiling (`server/utils/websiteJobCeiling.ts`) bounds all four.
 
-One account-wide monthly limit (USD 200, `config/account_monthly_spend_limit.v1.json`) bounds every job and every provider together. It is enforced at `paid_resource_admission`. `paid_spend_meter` meters each paid admission against its job. Stage 1 adds them beside the ledgers above; the plan to remove the per-job ledgers is [`architecture/metered-spend.md`](architecture/metered-spend.md).
+One account-wide monthly limit (USD 300, `config/account_monthly_spend_limit.v1.json`) bounds every job and every provider together. It is enforced at `paid_resource_admission`. `paid_spend_meter` meters each paid admission against its job. Stage 1 adds them beside the ledgers above; the plan to remove the per-job ledgers is [`architecture/metered-spend.md`](architecture/metered-spend.md).
 
 ## Where to look next
 

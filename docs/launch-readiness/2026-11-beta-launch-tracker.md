@@ -42,7 +42,7 @@ An end-to-end audit of both repos on 2026-11-10 asked one question of every step
 **Owner actions before any of this takes effect**
 
 1. Deploy the Pipeline through the door. The WebApp must be live first (it is, if automatic deployment is on).
-2. Decide the monthly account limit. It is $200; the door read $141.08 spent on 11-10 at 15:10Z.
+2. Decide the monthly account limit. It was $200; the door read $141.08 spent on 11-10 at 15:10Z. The owner raised it to $300 on 2026-11-12.
 3. To turn on automatic deletion after a withdrawal: install `/etc/blueprint/website-withdrawal-deletion-approval.json` with a cool-off of 0 to 720 hours. Until then the unit only plans.
 4. To let a deploy adopt an in-flight $0 preparation: run the read-only checks in `docs/runbooks/beta-operations.md` once after a deploy, then set `BLUEPRINT_RELEASE_PREPARATION_ADOPTION=enabled` in `/etc/blueprint/pipeline-control-plane.env`. It has not run on a host.
 5. `BLUEPRINT_WEBSITE_AUTOMATIC_BUDGET_EXTENSION=false` on Render turns the automatic extension off for new grants. It is on by default.
