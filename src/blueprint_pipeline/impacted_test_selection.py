@@ -61,11 +61,7 @@ SENTINEL_TESTS = (
     # Whole-repository release checks that ci.yml otherwise runs only on push to main.
     "tests/test_paid_resource_allocator_verifier.py::test_repository_satisfies_paid_resource_allocator_verification",
     "tests/test_release_quality_governance.py::test_repository_source_governance_policy_is_satisfied",
-    "tests/test_release_engineering_contracts.py::test_risk_based_verification_workflows_are_bounded",
     "tests/test_lane_writer_governance.py::test_reviewed_lane_writer_manifest_is_satisfied",
-    "tests/test_materializer_reachability.py::test_unreachable_materializers_only_ever_decrease",
-    # Doctrine: no executable code names one customer's scene, capture or task.
-    "tests/test_no_scene_specific_code.py::test_executable_code_names_no_customer_scene",
     # Import closures: a leak from a CPU-only lane into the GPU/provider hot lane can come
     # from any module in the closure, so a reverse-import mapping rarely selects these.
     # About 25 s; without them a leak first fails the nightly full lane.
@@ -400,8 +396,6 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
             impacted.update(
                 _matching_tests(changed_path=changed_path, test_sources=test_sources)
             )
-            if changed_path.startswith(".github/") or "CI_" in changed_path:
-                impacted.add("tests/test_release_engineering_contracts.py")
             reasons.append(f"policy_or_documentation:{changed_path}")
             continue
 

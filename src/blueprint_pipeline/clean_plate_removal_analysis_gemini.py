@@ -110,7 +110,7 @@ DESTINATION_REGION_INSTRUCTION = (
 )
 #: The analysis's own judgment of each object's rigidity (2026-11-03): a soft task object is
 #: held rather than authored as a rigid body (``task_profile_contracts.task_object_rigidity``).
-#: It names the property, never example objects (tests/test_harness_prompts_scene_agnostic.py).
+#: It names the property, never example objects.
 RIGIDITY_INSTRUCTION = (
     "Also give 'rigidity' for each target: rigid when the object keeps its own shape when it is "
     "picked up, moved or set down; deformable when its shape changes when it is handled, because it "
@@ -1192,7 +1192,7 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
 
 #: The analysis asked again, only for the movable furniture around the support, and only once the site owner
 #: approved measuring it (``robot_access_measurement``): the same video call, its own decision and receipt.
-#: It names the property, never an object kind (tests/test_harness_prompts_scene_agnostic.py).
+#: It names the property, never an object kind.
 OBSTACLE_PROMPT_INSTRUCTION = (
     "This walkthrough was already analysed for its task. Now report only the free-standing movable "
     "furniture that stands on the floor around the support the task uses: separate pieces that are not "
