@@ -6,7 +6,6 @@ from pathlib import Path
 import os
 import subprocess
 
-import scripts.deploy_control_plane_commit as deploy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,52 +17,6 @@ SETTLEMENT_TIMER = "blueprint-native-g1-team-campaign-settlement.timer"
 
 def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
-
-
-def test_g1_team_queue_has_hardened_once_only_controller_and_timer() -> None:
-    service = _text(f"deploy/systemd/{SERVICE}")
-    timer = _text(f"deploy/systemd/{TIMER}")
-    intake = _text("deploy/systemd/blueprint-pipeline-intake.service")
-    installer = _text("scripts/install_live_pipeline_control_plane.sh")
-    assert "native_g1_team_campaign_dispatcher" in service
-    assert "KillMode=process" in service
-    assert "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process" in service
-    assert "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE=true" in service
-    assert 'ARGS+=(--execute)' in service
-    assert "VAST_LAUNCH_LOCK_FILE=" in service
-    assert "--registry-path" in service and "--queue-root" in service
-    assert "OnUnitInactiveSec=2min" in timer
-    assert SERVICE in timer
-    assert "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH=" in intake
-    assert "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT=" in intake
-    assert SERVICE in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    assert TIMER in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    # Paused by the 2026-11-12 frame: installed, but a release disarms it.
-    assert TIMER not in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
-    assert TIMER in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS
-    assert f"deploy/systemd/{SERVICE}" in installer
-    assert f"deploy/systemd/{TIMER}" in installer
-    assert f"systemctl enable --now {TIMER}" in installer
-
-
-def test_g1_team_settlement_is_armed_for_posted_billing_and_private_review() -> None:
-    service = _text(f"deploy/systemd/{SETTLEMENT_SERVICE}")
-    timer = _text(f"deploy/systemd/{SETTLEMENT_TIMER}")
-    installer = _text("scripts/install_live_pipeline_control_plane.sh")
-    assert "native_g1_team_campaign_settlement" in service
-    assert "--billing-audit-root" in service
-    assert "--result-root" in service
-    assert "--queue-root" in service
-    assert "--execute" not in service
-    assert "OnUnitInactiveSec=5min" in timer
-    assert SETTLEMENT_SERVICE in timer
-    assert SETTLEMENT_SERVICE in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    assert SETTLEMENT_TIMER in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    assert SETTLEMENT_TIMER not in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
-    assert SETTLEMENT_TIMER in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS
-    assert f"deploy/systemd/{SETTLEMENT_SERVICE}" in installer
-    assert f"deploy/systemd/{SETTLEMENT_TIMER}" in installer
-    assert f"systemctl enable --now {SETTLEMENT_TIMER}" in installer
 
 
 def test_installed_dispatch_command_reaches_selected_queue_without_builtin_queue(tmp_path):

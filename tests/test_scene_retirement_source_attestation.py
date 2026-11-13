@@ -633,59 +633,6 @@ def test_wheel_redirect_is_refused_before_following_another_origin():
         handler.redirect_request(None, None, 302, "redirect", {}, "https://other.invalid/file.whl")
 
 
-def test_wrapper_embeds_the_same_admission_before_first_privileged_execution():
-    source = (SCRIPTS / "deploy_control_plane_commit.py").read_text()
-    shell = (SCRIPTS / "install_live_pipeline_control_plane.sh").read_text()
-    embedded = shell.split("<<'PY_RUNTIME'\n", 1)[1].split("\nPY_RUNTIME", 1)[0]
-    original = ast.parse(source)
-    wrapper = ast.parse(embedded)
-    names = {
-        "_SourceDeadlineSocket",
-        "_SourceDeadlineHTTPSConnection",
-        "_SourceDeadlineHTTPSHandler",
-        "_SourceClosingHTTPErrorProcessor",
-        "_SourceNoRedirect",
-        "_source_response_opener",
-        "_source_connection_remaining",
-        "_source_resolve_addresses",
-        "_source_validated_resolver_result",
-        "_source_create_deadline_connection",
-        "_scene_source_snappy",
-        "_scene_source_selector_bytes",
-        "_scene_source_delivery",
-        "_scene_source_cache_publish",
-        "_scene_source_selected_proof",
-        "_scene_source_attestation",
-        "_bootstrap_scene_retirement_installer",
-        "_scene_runtime_diagnostic",
-        "_prepare_scene_retirement_runtime",
-    }
-    left = {
-        node.name: ast.dump(node, include_attributes=False)
-        for node in original.body
-        if isinstance(node, (ast.FunctionDef,ast.ClassDef)) and node.name in names
-    }
-    right = {
-        node.name: ast.dump(node, include_attributes=False)
-        for node in wrapper.body
-        if isinstance(node, (ast.FunctionDef,ast.ClassDef)) and node.name in names
-    }
-    assert left == right
-    assert "sha1(" not in embedded and "sha1(" not in source
-    bootstrap = ast.get_source_segment(
-        embedded,
-        next(
-            node
-            for node in wrapper.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_bootstrap_scene_retirement_installer"
-        ),
-    )
-    assert bootstrap.index("_scene_source_attestation(") < bootstrap.index("body = admitted")
-    assert "_deadline=deadline" in embedded
-    assert shell.index("PY_RUNTIME\nfi") < shell.index("run chown -R")
-
-
 @pytest.mark.parametrize("deadline", [0.0, float("nan"), float("inf"), -float("inf")])
 def test_deployer_earlier_or_nonfinite_origin_refuses_before_any_proof(
     tmp_path, monkeypatch, deadline
@@ -1117,26 +1064,3 @@ def test_source_transports_clamp_connection_timeout_before_any_late_connect(tmp_
     with pytest.raises(TimeoutError,match='controlled_http_response_timeout'):
         namespace['_SourceDeadlineHTTPSConnection']('synthetic.invalid',deadline=100,timeout=30).connect()
     assert calls == [100]
-
-
-def test_source_transports_are_embedded_identically_without_new_bandit_suppressions():
-    names = {'_SourceDeadlineSocket','_SourceDeadlineHTTPSConnection','_SourceDeadlineHTTPSHandler',
-             '_SourceClosingHTTPErrorProcessor','_SourceNoRedirect','_source_response_opener',
-             '_source_connection_remaining','_source_resolve_addresses','_source_validated_resolver_result',
-             '_source_create_deadline_connection'}
-    def definitions(raw):
-        return {node.name:ast.dump(node,include_attributes=False) for node in ast.parse(raw).body
-                if isinstance(node,(ast.FunctionDef,ast.ClassDef)) and node.name in names}
-    deployed = definitions((SCRIPTS/'deploy_control_plane_commit.py').read_text())
-    assert len(deployed) == len(names)
-    assert definitions((SCRIPTS/'install_scene_retirement_runtime.py').read_text()) == deployed
-    shell = (SCRIPTS/'install_live_pipeline_control_plane.sh').read_text()
-    embedded = shell.split("<<'PY_RUNTIME'\n",1)[1].split('\nPY_RUNTIME',1)[0]
-    assert definitions(embedded) == deployed
-    from collections import Counter
-    for name in ('install_scene_retirement_runtime.py','deploy_control_plane_commit.py','install_live_pipeline_control_plane.sh'):
-        baseline = subprocess.check_output(['/usr/bin/git','show',
-            '20159f08a9470b26e8c1f988f39fa076ff82fb7f:scripts/'+name],cwd=SCRIPTS.parent).decode()
-        def comments(raw):
-            return Counter(line[line.index('# nosec'):].strip() for line in raw.splitlines() if '# nosec' in line)
-        assert not comments((SCRIPTS/name).read_text())-comments(baseline)

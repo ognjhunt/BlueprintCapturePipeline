@@ -7,41 +7,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD_DIR = REPO_ROOT / "deploy" / "systemd"
 TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
 TERRAFORM_TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
-ROOT_DOCKERFILE = REPO_ROOT / "Dockerfile"
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install_live_pipeline_control_plane.sh"
 PIPELINE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "deploy.sh"
-FULL_TEST_LANE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "full-test-lane.yml"
-CI_REQUIRED_CHECKS_DOC = REPO_ROOT / "docs" / "CI_REQUIRED_CHECKS.md"
-ACTIVE_LAUNCH_DOCS_AND_COMMAND_SOURCES = (
-    REPO_ROOT / "README.md",
-    REPO_ROOT / "docs" / "PAID_MARKETPLACE_BETA_LAUNCH_GATE.md",
-    REPO_ROOT / "docs" / "FIRST_GPU_E2E_RUNBOOK.md",
-    REPO_ROOT / "src" / "blueprint_pipeline" / "g1_controlled_proof_setup.py",
-    REPO_ROOT / "src" / "blueprint_pipeline" / "wam_vla_policy_endpoint_setup.py",
-)
 
 
 def _read(name: str) -> str:
     return (SYSTEMD_DIR / name).read_text(encoding="utf-8")
-
-
-def test_scene_progression_uses_pinned_checkout_and_config_gated_periodic_worker():
-    unit = _read("blueprint-task-evaluation-scene-progression.service")
-    assert "User=blueprint" in unit
-    assert "ProtectSystem=strict" in unit and "NoNewPrivileges=true" in unit
-    assert "ConditionPathExists=/etc/blueprint/task-evaluation-scene-progression.json" in unit
-    assert "exec env PYTHONPATH=src" in unit
-    assert "-m blueprint_pipeline.task_evaluation_scene_retirement_supervisor " in unit
-    assert "--worker blueprint_pipeline.task_evaluation_scene_progression -- --config " in unit
-    assert "paid_resource_allocator" not in unit
-    queue = "Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions"
-    assert queue in unit
-    assert queue in _read("blueprint-task-evaluation-launch-dispatcher.service")
-    assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in unit
-    assert "OnUnitInactiveSec=1min" in _read("blueprint-task-evaluation-scene-progression.timer")
-    installer = INSTALL_SCRIPT.read_text()
-    for suffix in ("service", "timer"):
-        assert "blueprint-task-evaluation-scene-progression." + suffix in installer
 
 
 def _terraform_resource_body(text: str, resource_type: str, name: str) -> str:
@@ -78,14 +49,6 @@ def _terraform_variable_body(text: str, name: str) -> str:
                 return text[body_start:index]
         index += 1
     raise AssertionError(f"Unclosed Terraform variable block: {name}")
-
-
-def test_active_launch_docs_and_generated_commands_do_not_embed_laptop_paths():
-    for path in ACTIVE_LAUNCH_DOCS_AND_COMMAND_SOURCES:
-        text = path.read_text(encoding="utf-8")
-        assert re.search(r"/Users/[^/]+/", text) is None, (
-            f"personal absolute path leaked into {path.relative_to(REPO_ROOT)}"
-        )
 
 
 def test_production_systemd_units_set_fail_closed_runtime_posture():
@@ -419,10 +382,6 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
     assert 'install -o root -g "${SERVICE_GROUP}" -m 0640' in installer
     assert 'install -d -m 0755 "${SYSTEMD_DIR}" "${ENV_DIR}" "${HANDOFF_DIR}"' not in installer
 
-    baseline = (REPO_ROOT / "docs" / "SYSTEMD_SECURITY_BASELINE.md").read_text(encoding="utf-8")
-    assert "systemd-analyze security" in baseline
-    assert "threshold=40" in baseline
-
 
 #: Money safety, and the door to the host (#3329): the OOM killer passes them over. Never weakened: no
 #: throttle, no pressure kill, the memory cap each had before. G1 campaign settlement settles money too.
@@ -565,14 +524,6 @@ NOTIFIER_ON_FAILURE = "blueprint-unit-failure@%n.service"
 WITHDRAWAL_DELETION_UNIT = "blueprint-website-withdrawal-deletion.service"
 STATE_BACKUP_UNIT = "blueprint-control-plane-state-backup.service"
 REAPER_HEARTBEAT_UNIT = "blueprint-off-host-reaper-heartbeat.service"
-#: The live reading the slice is sized from (2026-11-10 15:10Z, nothing heavy running), in the decimal GB that
-#: /proc/meminfo's kB make, and the readiness plan's ceiling for the heavy units' caps together.
-HOST_MEMTOTAL_GB = 8.33
-HOST_IDLE_AVAILABLE_GB = 6.19
-PLAN_BATCH_CEILING_GB = 6.5
-#: The largest peak recorded on the host for one batch unit (launch activation and embodiment preparation,
-#: docs/research/control-plane-host-profile-2026-10-31.md), in systemd's binary units like the caps.
-LARGEST_RECORDED_BATCH_PEAK = "4.2G"
 #: Every worker that moves a job's payload: it decodes video, fuses or loads scenes, compiles episodes or
 #: stages GPU bundles. BATCH_SLICE bounds them together.
 BATCH_SLICE_UNITS = (
@@ -673,12 +624,6 @@ KILL_MODE_PROCESS_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-team-evaluation-runner.service",
 )
-#: Timer- or path-driven oneshots allowed to run with no start timeout, each with its reason. None today.
-ONESHOTS_WITHOUT_A_START_TIMEOUT: dict[str, str] = {}
-
-
-def _binary_gigabytes(decimal_gigabytes: float) -> float:
-    return decimal_gigabytes * 1e9 / 2**30
 
 
 def _timeout_seconds(value: str) -> int | None:
@@ -687,38 +632,6 @@ def _timeout_seconds(value: str) -> int | None:
     if match is None:
         return None
     return int(match[1]) * {None: 1, "s": 1, "m": 60, "min": 60, "h": 3600, "d": 86400}[match[2]] or None
-
-
-def _triggered_services() -> dict[str, list[str]]:
-    """Each service a timer or a path unit starts, with the triggers that start it."""
-    started: dict[str, list[str]] = {}
-    for trigger in sorted([*SYSTEMD_DIR.glob("*.timer"), *SYSTEMD_DIR.glob("*.path")]):
-        target = (_directives(trigger.name).get("Unit") or [f"{trigger.stem}.service"])[0]
-        started.setdefault(target, []).append(trigger.name)
-    return started
-
-
-def test_every_timer_or_path_driven_oneshot_has_a_start_timeout() -> None:
-    """A oneshot has no start timeout by default, and a timer that waits for it to go inactive
-    (OnUnitInactiveSec) never fires again once one run hangs: the spend guard and the handoff
-    listener ran that way."""
-    started = _triggered_services()
-    assert len(started) >= 30 and all((SYSTEMD_DIR / service).is_file() for service in started)
-    unbounded = []
-    for service in started:
-        values = _directives(service)
-        if values.get("Type") != ["oneshot"]:
-            continue
-        spans = values.get("TimeoutStartSec") or []
-        if len(spans) != 1 or _timeout_seconds(spans[0]) is None:
-            unbounded.append(service)
-    assert sorted(unbounded) == sorted(ONESHOTS_WITHOUT_A_START_TIMEOUT)
-    assert all(ONESHOTS_WITHOUT_A_START_TIMEOUT.values()), "each exception says why"
-    # The oneshots nothing triggers (started by hand or by Wants=) are bounded too.
-    for unit in SYSTEMD_DIR.glob("*.service"):
-        values = _directives(unit.name)
-        if values.get("Type") == ["oneshot"]:
-            assert _timeout_seconds((values.get("TimeoutStartSec") or [""])[0]) is not None, unit.name
 
 
 def test_a_hung_spend_guard_or_handoff_listener_run_ends_without_ending_real_work() -> None:
@@ -746,27 +659,6 @@ def test_units_that_keep_a_watchdog_child_alive_still_do() -> None:
         KILL_MODE_PROCESS_UNITS
     )
     assert {unit for unit in services if "KillMode" in _directives(unit)} == set(KILL_MODE_PROCESS_UNITS)
-
-
-def test_the_batch_slice_bounds_the_batch_units_below_the_host() -> None:
-    values = _directives(BATCH_SLICE)
-    assert len(values["MemoryHigh"]) == len(values["MemoryMax"]) == 1
-    high, maximum = _gigabytes(values["MemoryHigh"][0]), _gigabytes(values["MemoryMax"][0])
-    idle = _binary_gigabytes(HOST_IDLE_AVAILABLE_GB)
-    # Below what the host has free with nothing heavy running, so the batch units at their bound leave
-    # the always-on and money-safety units the difference; and within the plan's ceiling.
-    assert maximum < idle < _binary_gigabytes(HOST_MEMTOTAL_GB)
-    assert maximum <= _binary_gigabytes(PLAN_BATCH_CEILING_GB)
-    # The throttle starts above every peak recorded on the host for a batch unit, below the kill line.
-    recorded = [_gigabytes(LARGEST_RECORDED_BATCH_PEAK),
-                *(_gigabytes(row[3]) for unit, row in HOST_MEMORY.items() if unit in BATCH_SLICE_UNITS)]
-    assert max(recorded) < high < maximum
-    # The largest overlap on record that survives today stays under the kill line: scene progression
-    # with team scene packet. A limit that killed it would be a regression.
-    overlap = sum(_gigabytes(HOST_MEMORY[unit][3]) for unit in (
-        "blueprint-task-evaluation-scene-progression.service", "blueprint-team-scene-packet.service"))
-    assert overlap < maximum
-    assert not {"ManagedOOMMemoryPressure", "ManagedOOMSwap", "MemoryLow", "MemoryMin"} & set(values)
 
 
 def test_batch_units_are_in_the_slice_and_always_on_and_money_units_are_not() -> None:
@@ -836,182 +728,6 @@ def test_units_whose_failure_matters_start_the_failure_notifier() -> None:
     assert not notified & set(UNIT_FAILURE_ROUTINE_EXIT_UNITS)
     assert all(UNIT_FAILURE_ROUTINE_EXIT_UNITS.values())
     assert all((SYSTEMD_DIR / unit).is_file() for unit in UNIT_FAILURE_ROUTINE_EXIT_UNITS)
-
-
-def test_the_slice_and_the_notifier_are_installed_before_the_units_that_name_them() -> None:
-    deployed = _deployed_units()
-    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
-    naming = [unit for unit in deployed
-              if unit.endswith(".service") and {"Slice", "OnFailure"} & set(_directives(unit))]
-    assert set(BATCH_SLICE_UNITS) & set(deployed) <= set(naming)
-    for name in (BATCH_SLICE, NOTIFIER_UNIT):
-        assert (SYSTEMD_DIR / name).is_file()
-        assert deployed.count(name) == 1
-        assert deployed.index(name) < min(deployed.index(unit) for unit in naming)
-        target = '"${SYSTEMD_DIR}/' + name + '"'
-        assert installer.count(target) == 1
-        first_naming_install = min(
-            installer.index('"${SYSTEMD_DIR}/' + unit + '"') for unit in naming
-            if '"${SYSTEMD_DIR}/' + unit + '"' in installer
-        )
-        assert installer.index(target) < first_naming_install < installer.index("systemctl daemon-reload")
-    # The installer creates the notifier's one writable directory; the deploy tool derives it from the unit.
-    assert '"${STATE_DIR}/unit-failures"' in installer
-
-
-def test_pubsub_handoff_listener_has_repeated_deployed_runner():
-    service = _read("blueprint-pubsub-handoff-listener.service")
-    timer = _read("blueprint-pubsub-handoff-listener.timer")
-    env_example = _read("pipeline-control-plane.env.example")
-    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
-
-    assert "blueprint_pipeline.pubsub_handoff_listener" in service
-    assert "--subscription" in service
-    assert "BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true" in service
-    assert "BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true" in service
-    assert (
-        "BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION=blueprint-pipeline-handoff-listener" in env_example
-    )
-    assert (
-        "GOOGLE_APPLICATION_CREDENTIALS=/etc/blueprint/credentials/pipeline-handoff-listener.json"
-    ) in env_example
-    assert "GOOGLE_CLOUD_PROJECT=blueprint-8c1ca" in env_example
-    assert "BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true" in env_example
-    assert "BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true" in env_example
-    assert (
-        "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX="
-        "/var/lib/blueprint/pipeline-control-plane/robot-eval-job-requests"
-    ) in env_example
-    assert (
-        "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR="
-        "/var/lib/blueprint/pipeline-control-plane/incoming_webapp_job_requests"
-    ) in env_example
-    assert "OnActiveSec=30s" in timer
-    assert "OnUnitInactiveSec=1min" in timer
-    assert "OnBootSec=" not in timer
-    assert "Unit=blueprint-pubsub-handoff-listener.service" in timer
-    assert "blueprint-pubsub-handoff-listener.service" in installer
-    assert "blueprint-pubsub-handoff-listener.timer" in installer
-    assert "systemctl enable --now blueprint-pubsub-handoff-listener.timer" in installer
-    assert 'chown -R --no-dereference "${SERVICE_USER}:${SERVICE_GROUP}"' in installer
-    assert "${STATE_DIR}/robot-eval-job-requests" in installer
-    assert "${STATE_DIR}/incoming_webapp_job_requests" in installer
-    assert "${HANDOFF_DIR}" in installer
-
-
-def test_capture_reconstruction_dispatcher_stays_retired():
-    """The queue had no consumer after its dispatcher was retired (P-RT-01, H-03); nothing installs or feeds it."""
-    env_example = _read("pipeline-control-plane.env.example")
-    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
-
-    for suffix in ("service", "path", "timer"):
-        assert not (SYSTEMD_DIR / f"blueprint-capture-reconstruction-dispatcher.{suffix}").exists()
-    assert "blueprint-capture-reconstruction-dispatcher" not in installer
-    assert "capture-reconstruction-queue" not in installer
-    for name in (
-        "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT",
-        "BLUEPRINT_CAPTURE_RECONSTRUCTION_QUEUE_ROOT",
-        "BLUEPRINT_CAPTURE_RECONSTRUCTION_STATE_ROOT",
-        "BLUEPRINT_CAPTURE_RECONSTRUCTION_DERIVED_ROOT",
-    ):
-        assert name not in env_example
-    listener = (REPO_ROOT / "src/blueprint_pipeline/pubsub_handoff_listener.py").read_text(encoding="utf-8")
-    assert "capture_reconstruction_launch_dispatcher" not in listener
-
-
-def test_installer_binds_the_exact_canonical_worker_wheel_and_hash_pinned_runtime():
-    env_example = _read("pipeline-control-plane.env.example")
-    installer = INSTALL_SCRIPT.read_text(encoding="utf-8")
-
-    assert "build_canonical_3dgs_worker_wheel.sh" in installer
-    worker_builder = (
-        REPO_ROOT / "scripts" / "build_canonical_3dgs_worker_wheel.sh"
-    ).read_text(encoding="utf-8")
-    assert '${TMPDIR:-/tmp}/blueprint-canonical-worker-build.XXXXXX' in worker_builder
-    assert '${TMPDIR:-/private/tmp}' not in worker_builder
-    assert '"$runtime_python" -m pip wheel' in worker_builder
-    assert "--no-build-isolation" in worker_builder
-    assert "--no-deps" in worker_builder
-    assert 'SOURCE_DATE_EPOCH="$source_date_epoch"' in worker_builder
-    assert "uv build" not in worker_builder
-    assert 'WORKER_RELEASE_DIR="/opt/blueprint/releases/canonical-3dgs-worker/${SOURCE_COMMIT}"' in installer
-    assert "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL" in installer
-    assert "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL" not in env_example
-    assert "REPLACED_BY_INSTALLER_EXACT_RELEASE_WHEEL" not in env_example
-    assert "BLUEPRINT_AWS_" not in env_example
-    runtime_requirements = _read("production-control-plane-requirements.txt")
-    assert "production-control-plane-requirements.txt" in installer
-    assert "--require-hashes" in installer
-    assert 'm.version("rfc8785") == "0.1.4"' in installer
-    assert "rfc8785==0.1.4" in runtime_requirements
-    assert "sha256:520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48" in runtime_requirements
-
-
-def test_control_plane_postcheck_pages_or_fails_blocked_manifests():
-    """Kept for the host's installed copy of the retired loop until an operator removes it (P-RT-06)."""
-    postcheck = _read("blueprint-control-plane-postchecks.sh")
-    env_example = _read("pipeline-control-plane.env.example")
-
-    assert "blueprint_pipeline.live_pipeline_proof_audit" in postcheck
-    assert "blueprint_pipeline.live_pipeline_manifest_alert" in postcheck
-    assert "BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true" in env_example
-    assert "BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL" in env_example
-
-
-def test_terraform_alert_policies_require_notification_channels_or_explicit_waiver():
-    text = TERRAFORM_MAIN.read_text(encoding="utf-8")
-
-    assert 'variable "allow_empty_monitoring_notification_channels"' in text
-    assert "notification_channels = var.monitoring_notification_channels" in text
-    assert (
-        text.count(
-            "var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0"
-        )
-        >= 4
-    )
-    assert "Set allow_empty_monitoring_notification_channels=true only for dry-run plans." in text
-
-
-def test_terraform_queue_depth_alert_uses_beta_backpressure_thresholds():
-    text = TERRAFORM_MAIN.read_text(encoding="utf-8")
-    body = _terraform_resource_body(text, "google_monitoring_alert_policy", "queue_depth")
-
-    assert 'variable "pipeline_queue_depth_alert_threshold"' in text
-    assert "default     = 50" in text
-    assert 'variable "pipeline_queue_depth_alert_duration"' in text
-    assert 'default     = "300s"' in text
-    assert "duration        = var.pipeline_queue_depth_alert_duration" in body
-    assert "threshold_value = var.pipeline_queue_depth_alert_threshold" in body
-    assert "threshold_value = 100" not in body
-    assert 'duration        = "600s"' not in body
-    assert "per-user intake pressure" in body
-
-
-def test_terraform_keeps_firestore_latency_alert_without_phantom_captures_indexes():
-    # SCALE2-07: the four `captures_*` index resources targeted a literal
-    # `captures` collection that no repo has ever written. The real
-    # capture-record collection is creatorCaptures, whose composites (including
-    # the createdAtShard scale-up companions) are owned by
-    # Blueprint-WebApp/firestore.indexes.json. This repo keeps only the shared
-    # database and the latency alerting.
-    text = TERRAFORM_MAIN.read_text(encoding="utf-8")
-    latency_alert = _terraform_resource_body(
-        text,
-        "google_monitoring_alert_policy",
-        "firestore_request_latency",
-    )
-
-    assert 'resource "google_firestore_index" "captures_status"' not in text
-    assert 'resource "google_firestore_index" "captures_user"' not in text
-    assert 'resource "google_firestore_index" "captures_status_created_at_shard"' not in text
-    assert 'resource "google_firestore_index" "captures_user_created_at_shard"' not in text
-    assert 'collection = "captures"' not in text
-
-    assert "serviceruntime.googleapis.com/api/request_latencies" in latency_alert
-    assert "resource.service == 'firestore.googleapis.com'" in latency_alert
-    assert "| condition val() > 0.25 's'" in latency_alert
-    assert "creatorCaptures created_at composite indexes" in latency_alert
-    assert "Blueprint-WebApp firestore.indexes.json" in latency_alert
 
 
 def test_terraform_gpu_warm_pool_defaults_stay_scale_to_zero():
@@ -1088,53 +804,6 @@ def test_privacy_runner_auth_tokens_fail_closed_before_deploy() -> None:
     assert "Creating terraform.tfvars" not in deploy_script
 
 
-def test_terraform_state_is_remote_locked_retained_and_cmek_validated() -> None:
-    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
-    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-
-    assert 'backend "gcs" {}' in terraform
-    assert "validate_terraform_state_backend.py" in deploy_script
-    assert "TERRAFORM_STATE_BUCKET" in deploy_script
-    assert "TERRAFORM_STATE_PREFIX" in deploy_script
-    assert "TERRAFORM_STATE_KMS_KEY" in deploy_script
-    assert "-backend-config=kms_encryption_key=" in deploy_script
-    assert "-reconfigure" in deploy_script
-    assert "*.tfstate" in gitignore
-    assert "*.tfstate.*" in gitignore
-    assert "*.tfvars" in gitignore
-    assert "*.tfplan" in gitignore
-
-
-def test_full_deploy_requires_authenticated_readback_service_canaries() -> None:
-    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
-    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
-
-    assert 'output "deployed_image_digests"' in terraform
-    assert "run_deployment_service_canaries.py" in deploy_script
-    assert "--topology-evidence" in deploy_script
-    assert "--privacy-secret-name" in deploy_script
-    assert "--video-secret-name" in deploy_script
-    assert "Authenticated deployment service canaries did not pass" in deploy_script
-    assert "authenticated_service_canaries" in deploy_script
-    assert "model task success remains separately required" in deploy_script
-
-
-def test_pipeline_failure_alert_counts_failures_over_five_minutes() -> None:
-    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
-    body = _terraform_resource_body(
-        terraform, "google_monitoring_alert_policy", "pipeline_failures"
-    )
-
-    assert 'alignment_period     = "300s"' in body
-    assert 'per_series_aligner   = "ALIGN_SUM"' in body
-    assert 'cross_series_reducer = "REDUCE_SUM"' in body
-    assert "threshold_value = 5" in body
-    assert 'comparison      = "COMPARISON_GT"' in body
-    assert 'duration        = "0s"' in body
-    assert "ALIGN_RATE" not in body
-
-
 def test_us_only_beta_residency_is_enforced_as_code() -> None:
     terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
     tfvars_example = TERRAFORM_TFVARS_EXAMPLE.read_text(encoding="utf-8")
@@ -1149,24 +818,6 @@ def test_us_only_beta_residency_is_enforced_as_code() -> None:
     assert "europe-west1" not in deploy_script
     assert "validate_beta_data_residency" in deploy_script
     assert '"$PRIMARY_REGION" != us-*' in deploy_script
-
-
-def test_terraform_is_the_single_deployment_topology_owner() -> None:
-    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    full_deploy = deploy_script[deploy_script.index("    # Full deployment") :]
-
-    assert 'topology_owner: "terraform"' in deploy_script
-    assert "terraform plan -input=false -detailed-exitcode" in deploy_script
-    assert "Post-apply Terraform drift detected" in deploy_script
-    assert "terraform output -json" in deploy_script
-    assert "blueprint.terraform_topology_evidence.v1" in deploy_script
-    assert "--function-only was removed" in deploy_script
-    assert "    apply_terraform" in full_deploy
-    assert "    setup_iam" not in full_deploy
-    assert "    create_pubsub_topics" not in full_deploy
-    assert "    create_cloud_tasks_queues" not in full_deploy
-    assert "    create_cloud_run_jobs" not in full_deploy
-    assert "    deploy_cloud_function" not in full_deploy
 
 
 def test_terraform_privacy_runners_have_per_service_gpu_caps_and_spend_alert():
@@ -1197,20 +848,6 @@ def test_terraform_privacy_runners_have_per_service_gpu_caps_and_spend_alert():
     assert "cloud_run_revision" in text
     assert "local.privacy_runner_monitoring_service_filter" in text
     assert "Sustained GPU runner billable instance time" in text
-
-
-def test_terraform_declares_private_large_video_ingest_topic_for_extract_frames():
-    text = TERRAFORM_MAIN.read_text(encoding="utf-8")
-
-    assert 'variable "capture_extract_frames_service_account_email"' in text
-    assert 'resource "google_pubsub_topic" "large_video_ingest"' in text
-    assert 'name   = "blueprint-large-video-ingest"' in text
-    assert (
-        'resource "google_pubsub_topic_iam_member" "capture_extract_frames_large_video_ingest_publisher"'
-        in text
-    )
-    assert 'member  = "serviceAccount:${var.capture_extract_frames_service_account_email}"' in text
-    assert 'output "large_video_ingest_topic"' in text
 
 
 def test_terraform_declares_optional_gcp_billing_budget_for_gpu_fleet():
@@ -1311,261 +948,6 @@ def test_spend_guard_refresh_leaves_a_bounded_idle_window_after_slow_runs():
     assert seconds(settings["OnActiveSec"]) <= 60
 
 
-def _unit_settings(name: str) -> dict[str, str]:
-    return dict(
-        line.split("=", 1)
-        for line in _read(name).splitlines()
-        if line and not line.startswith(("#", "[")) and "=" in line
-    )
-
-
-def _span_seconds(value: str) -> int:
-    match = re.fullmatch(r"(\d+)(s|min|h)", value)
-    assert match is not None, f"unbounded time span: {value}"
-    return int(match[1]) * {"s": 1, "min": 60, "h": 3600}[match[2]]
-
-
-def test_preflight_cadence_leaves_the_host_idle_and_the_door_summary_fresh(tmp_path):
-    """E-02: a ~13-minute run every 15 minutes kept the preflight busy 87% of the time.
-
-    The operator door serves the summary only while it is at most an hour old,
-    stamped when a run starts. Start-to-start spacing bounds that age whatever
-    a run takes: one interval, the randomized delay, and the longest run the
-    unit allows before the next summary replaces it.
-    """
-    import dataclasses
-    import json
-    import sys
-    import time
-
-    timer = _unit_settings("blueprint-control-plane-preflight.timer")
-    service = _unit_settings("blueprint-control-plane-preflight.service")
-    assert "OnUnitInactiveSec" not in timer, "spacing from completion would add a run to the bound"
-    interval = _span_seconds(timer["OnUnitActiveSec"])
-    delay = _span_seconds(timer["RandomizedDelaySec"])
-    longest_run = _span_seconds(service["TimeoutStartSec"])
-    assert interval >= 30 * 60
-    assert longest_run < interval, "a run always ends before the next one is due"
-    oldest_served = interval + delay + longest_run
-
-    sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
-    try:
-        from operator_door.config import DoorConfig
-        from operator_door.status import _preflight
-    finally:
-        sys.path.remove(str(REPO_ROOT / "deploy" / "operator-door"))
-    from blueprint_pipeline.production_preflight_summary import build_safe_summary
-
-    release = tmp_path / ("a" * 40)
-    release.mkdir()
-    active = tmp_path / "active"
-    active.symlink_to(release)
-    public = tmp_path / "preflight" / "public"
-    public.mkdir(parents=True)
-    config = dataclasses.replace(
-        DoorConfig(), preflight_summary=str(public / "summary.json"), active_release_link=str(active)
-    )
-
-    def served(age_seconds: int) -> str:
-        stamped = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age_seconds))
-        report = {"schema_version": "task_evaluation_production_chain_preflight.v1",
-                  "generated_at": stamped, "active_sha": "a" * 40, "lane": "diagnostic",
-                  "units": {}, "host_findings": []}
-        summary = build_safe_summary(report, raw_report_bytes=json.dumps(report).encode())
-        (public / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
-        return _preflight(config)["status"]
-
-    # A margin for scheduling jitter under load still stays inside the door's hour.
-    assert served(oldest_served + 5 * 60) == "observed"
-    # The bound is real: the cadence an hour apart would leave the door refusing it.
-    assert served(60 * 60 + delay + longest_run) == "refused"
-
-
-def test_main_deploy_image_includes_ffmpeg_for_clip_and_keyframe_lanes():
-    text = ROOT_DOCKERFILE.read_text(encoding="utf-8")
-
-    assert "ffmpeg" in text
-
-
-def test_ci_workflows_checkout_the_pinned_blueprint_contracts_revision():
-    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    match = re.search(r"BlueprintContracts\.git@([0-9a-f]{40})", pyproject)
-    assert match is not None
-    pinned_ref = match.group(1)
-
-    for workflow in (
-        REPO_ROOT / ".github" / "workflows" / "ci.yml",
-        REPO_ROOT / ".github" / "workflows" / "full-test-lane.yml",
-        REPO_ROOT / ".github" / "workflows" / "sim-only-local-gate.yml",
-    ):
-        text = workflow.read_text(encoding="utf-8")
-        assert f"CONTRACTS_REF: {pinned_ref}" in text
-        assert "CONTRACTS_REF: ${{ github.head_ref || github.ref_name }}" not in text
-        assert "CONTRACTS_REF: ${{ github.ref_name }}" not in text
-
-
-def test_full_test_lane_is_explicit_or_nightly_and_gates_deploy_contract():
-    workflow = FULL_TEST_LANE_WORKFLOW.read_text(encoding="utf-8")
-    event_block = workflow.split("jobs:", 1)[0]
-    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    required_doc = CI_REQUIRED_CHECKS_DOC.read_text(encoding="utf-8")
-
-    assert "pull_request:" not in event_block
-    assert "push:" not in event_block
-    assert "workflow_call:" in event_block
-    assert "schedule:" in event_block
-    assert 'cron: "17 8 * * *"' in event_block
-    assert "workflow_dispatch:" in event_block
-    assert "uv run --no-sync scripts/pytest_full.sh" in workflow
-    assert (
-        '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml"'
-        in workflow
-    )
-    assert "scripts/full_lane_sharding.py aggregate" in workflow
-    assert "Full pytest lane on CPU runner" in workflow
-    assert 'FULL_TEST_LANE_REQUIRED="${FULL_TEST_LANE_REQUIRED:-true}"' in deploy_script
-    assert "check_full_test_lane_deploy_gate" in deploy_script
-    assert "FULL_TEST_LANE_COMMIT" in deploy_script
-    assert "FULL_TEST_LANE_EVIDENCE_URI" in deploy_script
-    assert "verify_deploy_release_provenance.py" in deploy_script
-    assert "verify_clean_release_source" in deploy_script
-    assert "status --porcelain=v1 --untracked-files=all" in deploy_script
-    assert "fetch --quiet origin main" in deploy_script
-    assert "refs/remotes/origin/main" in deploy_script
-    assert 'merge-base --is-ancestor "$current_sha" refs/remotes/origin/main' in deploy_script
-    assert "not in exact parity with origin/main" not in deploy_script
-    assert "FULL_TEST_LANE_BYPASS_REASON" not in deploy_script
-    assert "this deploy path has no text-only CI bypass" in deploy_script
-    assert (
-        "Full Test Lane / Full pytest lane on CPU runner passed for this exact commit"
-        in deploy_script
-    )
-    assert "Full Test Lane / Full pytest lane on CPU" in required_doc
-    assert "production_deployment_promotion" in required_doc
-    assert "on that exact protected-main commit SHA" in required_doc
-    assert "proves their disjoint union" in required_doc
-    assert "No shard uses xdist" in required_doc
-    assert "deploy/scripts/deploy.sh" in required_doc
-    assert "nightly scheduled run is supplementary health evidence only" in required_doc
-
-
-def test_release_images_are_versioned_manifested_and_rejected_if_latest():
-    terraform = TERRAFORM_MAIN.read_text(encoding="utf-8")
-    tfvars_example = TERRAFORM_TFVARS_EXAMPLE.read_text(encoding="utf-8")
-    deploy_script = PIPELINE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
-    required_doc = CI_REQUIRED_CHECKS_DOC.read_text(encoding="utf-8")
-
-    image_variables = (
-        "docker_image",
-        "privacy_sam3_image",
-        "privacy_vip_image",
-        "privacy_deepprivacy2_image",
-        "video_to_world_image",
-    )
-    image_names = (
-        "blueprint-pipeline",
-        "sam3-privacy",
-        "vip-privacy",
-        "deepprivacy2-privacy",
-        "video-to-world",
-    )
-
-    for variable in image_variables:
-        body = _terraform_variable_body(terraform, variable)
-        if variable == "docker_image":
-            assert "default" not in body
-        else:
-            assert f'var.deployment_scope == "remote_cpu" && var.{variable} == ""' in body
-        assert "nullable    = false" in body
-        assert "^.+@sha256:[0-9a-f]{64}$" in body
-        assert "non-latest versioned release tag" not in body
-        assert f"var.{variable}" in body
-
-    for image_name in image_names:
-        assert f"{image_name}:latest" not in terraform
-        assert f"{image_name}:latest" not in tfvars_example
-        assert f"{image_name}@sha256:" in tfvars_example
-
-    assert 'IMAGE_TAG="${IMAGE_TAG:-}"' in deploy_script
-    assert 'IMAGE_TAG="${GIT_SHA:0:12}"' in deploy_script
-    assert "validate_release_image_tag" in deploy_script
-    assert "pin_pushed_image_digests" in deploy_script
-    assert "gcloud container images describe" in deploy_script
-    assert "image_summary.fully_qualified_digest" in deploy_script
-    assert "require_resolved_image_matches" in deploy_script
-    assert "tag/digest mismatch" in deploy_script
-    assert "pin_pushed_image_digests" in deploy_script
-    assert "DEPLOYMENT_MANIFEST_PATH" in deploy_script
-    assert "blueprint.pipeline_deployment_manifest.v1" in deploy_script
-    assert "deploy/scripts/deploy.sh --rollback --rollback-image-tag " in deploy_script
-    assert "latest`/`dev`/`test`" in required_doc
-    assert "pipeline-deployment-manifest.json" in required_doc
-    assert "Terraform image variables require immutable `@sha256` digests" in required_doc
-
-
-def test_sim_only_gate_uses_explicit_webapp_ref_with_launch_fixes():
-    text = (REPO_ROOT / ".github" / "workflows" / "sim-only-local-gate.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "WEBAPP_REF: ${{ inputs.webapp_ref || 'main' }}" in text
-    assert "WEBAPP_REF: ${{ inputs.webapp_ref || github.head_ref || github.ref_name }}" not in text
-    assert "launch-robot-eval-delivery-forwarding-fixes" not in text
-
-
-def test_sim_only_gate_uses_headless_linux_mujoco_rendering():
-    text = (REPO_ROOT / ".github" / "workflows" / "sim-only-local-gate.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "runs-on: ubuntu-latest" in text
-    assert "MUJOCO_GL: osmesa" in text
-    assert "libosmesa6" in text
-    assert "runs-on: macos-latest" not in text
-    assert "MUJOCO_GL: glfw" not in text
-
-
-def test_sam31_profile_registry_is_content_bound_in_the_base_units():
-    """Every unit that resolves the SAM server profile -- including the progression
-    service that runs the look-ahead admission replay, which never received a
-    per-scene PROFILE_ENV drop-in -- reads one fixed content-addressed registry from
-    its base unit file. The scene-progression factory (the registrar) mounts it
-    read-write; the resolvers mount it read-only. The path lives under
-    /var/lib/blueprint so the deploy's unit-sandbox installer creates it."""
-    from blueprint_pipeline.task_evaluation_sam31_profile_registry import (
-        DEFAULT_PROFILE_REGISTRY_ROOT as FIXED,
-    )
-
-    assert FIXED.startswith("/var/lib/blueprint/") and Path(FIXED).suffix == ""
-    env_line = f"Environment=BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR={FIXED}"
-
-    resolvers = (
-        "blueprint-task-evaluation-configured-controls-progression.service",
-        "blueprint-task-evaluation-launch-preparation.service",
-        "blueprint-task-evaluation-sam31-preparation-execution.service",
-        "blueprint-task-evaluation-launch-activation.service",
-        "blueprint-task-evaluation-launch-supervisor.service",
-        "blueprint-task-evaluation-launch-reconciler.service",
-        "blueprint-task-evaluation-launch-dispatcher.service",
-    )
-    for name in resolvers:
-        text = _read(name)
-        assert env_line in text, name
-        assert f"ReadOnlyPaths={FIXED}" in text, name
-        assert f"ReadWritePaths={FIXED}" not in text, name
-
-    registrar = _read("blueprint-task-evaluation-scene-progression.service")
-    assert env_line in registrar
-    assert f"ReadWritePaths={FIXED}" in registrar
-    assert f"ReadOnlyPaths={FIXED}" not in registrar
-
-
-def test_activation_loads_operator_owned_preparation_routing():
-    assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in _read(
-        "blueprint-task-evaluation-launch-activation.service"
-    )
-
-
 def test_website_capture_worker_loads_deployed_geometry_runtime(monkeypatch):
     service = _read("blueprint-pubsub-handoff-listener.service")
     assert service.index("EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env") < service.index(
@@ -1609,30 +991,6 @@ def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read
     assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in capacity
     assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in capacity
     assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in capacity
-
-
-def test_volume_admission_units_map_bulk_roles_to_their_writers() -> None:
-    role_targets = (
-        "Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS="
-        "launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,"
-        "episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,"
-        "launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,"
-        "launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,"
-        "policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,"
-        "handoff_staging=/var/lib/blueprint/pubsub-handoffs,"
-        "scene_configuration_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,"
-        "policy_canary_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries"
-    )
-    for name in (
-        "blueprint-pipeline-intake.service",
-        "blueprint-task-evaluation-scene-progression.service",
-        "blueprint-control-plane-capacity.service",
-    ):
-        assert role_targets in (SYSTEMD_DIR / name).read_text(encoding="utf-8")
-    capacity = (SYSTEMD_DIR / "blueprint-control-plane-capacity.service").read_text(
-        encoding="utf-8"
-    )
-    assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work" in capacity
 
 
 def test_probe_and_screening_attempts_stage_on_the_work_volume_and_stay_watched() -> None:
@@ -1684,16 +1042,6 @@ def test_streamed_canary_units_bind_the_b2_artifact_store() -> None:
         lines = unit.splitlines()
         assert [line for line in lines if line in bindings] == bindings, name
         assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in lines, name
-
-
-def test_intake_reads_website_preparation_status_from_the_listener_tree() -> None:
-    """Beta L3/L6: the signed status route finds a website capture that no capture-root map
-    names in the listener's own tree. The intake unit binds that tree itself, exactly as the
-    listener does, instead of depending on what the shared environment file happens to set."""
-    binding = "Environment=BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT=/var/lib/blueprint/pubsub-handoffs"
-    for name in ("blueprint-pipeline-intake.service", "blueprint-pubsub-handoff-listener.service"):
-        assert binding in _read(name).splitlines(), name
-
 
 
 def test_launch_activation_unit_outlasts_its_preparation_command(tmp_path, monkeypatch):

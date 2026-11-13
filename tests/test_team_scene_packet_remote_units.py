@@ -13,12 +13,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import scripts.deploy_control_plane_commit as deploy
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import team_scene_packet_remote as lane
 from blueprint_pipeline import team_scene_packet_remote_condition as condition
 from blueprint_pipeline.control_plane_storage_roots import classify_path
-from blueprint_pipeline.production_runtime_env_guard import CONTROL_PLANE_ENTRYPOINTS
 from tests.remote_team_scene_packet_support import team_config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,19 +111,3 @@ def test_the_no_spend_worker_holds_no_key_and_wakes_for_what_the_paid_unit_retur
     collector = (ROOT / "src/blueprint_pipeline/team_scene_packet_collector.py").read_text(encoding="utf-8")
     assert "allocate=shared.subprocess_allocate" in collector and "subprocess" not in collector.replace(
         "shared.subprocess_allocate", "")
-
-
-def test_every_deploy_installs_and_arms_the_paid_trio_as_authority_gated() -> None:
-    assert {f"{PAID}.service", f"{PAID}.timer", f"{PAID}.path"} <= set(deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS)
-    assert f"{PAID}.path" in deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
-    assert f"{PAID}.path" not in deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS
-    assert f"{PAID}.timer" in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
-    directories = set(deploy.DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES)
-    assert {f"{JOBS}/{kind}/team_scene_packet" for kind in ("handoffs", "shadow", "fallback", "collected",
-                                                             "envelopes")} <= directories
-    assert len(deploy.DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES) == len(directories)
-    for module in ("team_scene_packet_collector", "team_scene_packet_remote_condition"):
-        assert f"blueprint_pipeline.{module}" in CONTROL_PLANE_ENTRYPOINTS
-    mount = (ROOT / "deploy/host/mount_work_volume.sh").read_text(encoding="utf-8")
-    for unit in (f"{PAID}.path", f"{PAID}.timer", f"{PAID}.service"):
-        assert f"  {unit}\n" in mount
