@@ -229,14 +229,9 @@ URL or operator assertion alone is never deploy evidence;
 there is no text-only bypass.
 
 GitHub artifacts are 90-day transport copies, not the durable audit archive.
-For a release, `Release Evidence Retention / Immutable BASE release evidence
-archive` must archive the exact-SHA evidence bundle to versioned S3 Object Lock
-`COMPLIANCE` storage, retain it for at least 2,555 days, and verify version,
-checksum, size, metadata, retention, and a full version-specific GET digest
-readback. External artifact-signature and immutable-retention envelopes are
-required even for `BASE`; the immutable receipt is release evidence, while the
-workflow YAML and an unexecuted bundle are not. See
-`docs/RELEASE_SUPPLY_CHAIN_AND_RETENTION.md`.
+The release evidence graph requires external artifact-signature and
+immutable-retention envelopes even for `BASE`; no workflow in this repository
+produces them. See `docs/RELEASE_SUPPLY_CHAIN_AND_RETENTION.md`.
 
 Dependabot configuration and pinned CodeQL workflow files are committed, but
 repository vulnerability alerts, branch protection, successful CodeQL uploads,
