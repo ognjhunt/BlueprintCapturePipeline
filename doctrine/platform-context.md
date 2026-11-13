@@ -117,7 +117,11 @@ the jobs they decline.
 The long-term vision is an independent proving ground where every job is
 tested against every robot: a site posts once and is told the moment a robot
 can do its job, and the backlog of jobs is a live map of real demand. It is a
-direction, not current work.
+direction, not current work. The long-term business model that goes with it
+(a percentage of work paid through Blueprint, a subscription for each robot in
+a fleet, paid tools and demand data for large buyers, paid testing for robot
+makers) is in `VISION.md` under "Long-term business model". It is for later
+and changes nothing that is charged or said today.
 
 Words to use: "deployment company" (not vendor, integrator or OEM), "job
 packet", "first look", "simulation of your site", "early trial", "responses".
