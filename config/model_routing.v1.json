@@ -46,6 +46,20 @@
       }
     }
   },
+  "site_consents": {
+    "2026-09-24.v1": {
+      "provider": "anthropic",
+      "model": "claude-opus-5-5",
+      "roles": [
+        "artisan_text",
+        "artisan_compaction"
+      ],
+      "data_classes": [
+        "site_frames"
+      ],
+      "source": "Blueprint-WebApp client/src/components/site/SiteCaptureStart.tsx:851-854 (read 2026-11-13): the development-test statement a site may accept, 'send selected frames and task evidence from this recording to Anthropic for Claude Opus 5.5 3D authoring', statement version 2026-09-24.v1 (server/routes/inbound-request.ts:1320). It covers 3D authoring only."
+    }
+  },
   "roles": {
     "artisan_text": {
       "data_class": "site_frames",
@@ -111,7 +125,8 @@
       "data_class": "site_video",
       "call_kind": "single_call",
       "output": "text",
-      "today": "clean_plate_removal_analysis_gemini.DEFAULT_MODEL (video input)"
+      "today": "clean_plate_removal_analysis_gemini.DEFAULT_MODEL unless the host sets BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL, with thinking_level 'low' on the Interactions API (video input)",
+      "model_override_env": "BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL"
     },
     "website_spec_research": {
       "data_class": "site_frames",
@@ -120,10 +135,10 @@
       "today": "website_object_spec_research.MODEL, no reasoning setting, hosted web search"
     },
     "task_parameter_proposal": {
-      "data_class": "site_job_text",
+      "data_class": "site_frames",
       "call_kind": "agent_run",
       "output": "text",
-      "today": "task_evaluation_task_parameter_proposal.MODEL at reasoning effort high"
+      "today": "task_evaluation_task_parameter_proposal.MODEL at reasoning effort high; classed with frames because its authority field records a private derived-frame disclosure (task_evaluation_task_parameter_proposal.py:207)"
     },
     "website_image_repair": {
       "data_class": "site_frames",
@@ -142,6 +157,26 @@
       "call_kind": "agent_run",
       "output": "text",
       "today": "task_evaluation_supervisor.agents_sdk.DEFAULT_SUPERVISOR_AGENT_MODEL, no reasoning setting"
+    },
+    "atlas_scene_planner": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "text",
+      "model_source": "job_policy",
+      "today": "atlas_scene_planner: the model the website's Atlas runtime policy names (configuration policy.model; the Pipeline admits gpt-6* models), no reasoning setting, hosted web search"
+    },
+    "sam31_visual_review": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "text",
+      "today": "public_scene_sam31_track_selection_review.AI_REVIEW_MODEL through public_scene_sam31_ai_visual_reviewer, no reasoning setting"
+    },
+    "website_movable_obstacles": {
+      "data_class": "site_video",
+      "call_kind": "single_call",
+      "output": "text",
+      "model_override_env": "BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL",
+      "today": "clean_plate_removal_analysis_gemini.movable_obstacle_request: DEFAULT_MODEL unless the host sets BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL, thinking_level 'low' (robot_access_measurement)"
     }
   },
   "profiles": {
@@ -220,7 +255,7 @@
         {
           "provider": "google",
           "model": "gemini-3.8-flash",
-          "effort": null
+          "effort": "low"
         }
       ],
       "website_spec_research": [
@@ -256,6 +291,27 @@
           "provider": "openai",
           "model": "gpt-6.1-sol",
           "effort": null
+        }
+      ],
+      "atlas_scene_planner": [
+        {
+          "provider": "openai",
+          "model": null,
+          "effort": null
+        }
+      ],
+      "sam31_visual_review": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "website_movable_obstacles": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": "low"
         }
       ]
     },
@@ -369,7 +425,7 @@
         {
           "provider": "google",
           "model": "gemini-3.8-flash",
-          "effort": null
+          "effort": "low"
         }
       ],
       "website_spec_research": [
@@ -430,6 +486,37 @@
           "provider": "openai",
           "model": "gpt-6.1-sol",
           "effort": null
+        }
+      ],
+      "atlas_scene_planner": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": null
+        },
+        {
+          "provider": "openai",
+          "model": null,
+          "effort": null
+        }
+      ],
+      "sam31_visual_review": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": null
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "website_movable_obstacles": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": "low"
         }
       ]
     }

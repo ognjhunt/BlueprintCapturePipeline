@@ -4,23 +4,27 @@ Pure: no I/O, clock, environment or SDK import. It reads an SDK error by its
 class and typed fields, never by log text, and it is not wired into any money
 path yet: nothing calls it.
 
-Only a typed no-funds error can start a switch (``classify_provider_error``):
+One trigger table, the same in the website and here (``classify_fields``):
 
-- OpenAI: HTTP 429 ``RateLimitError`` whose error ``type`` is
-  ``insufficient_quota`` and ``code`` is ``insufficient_quota`` or
-  ``credit_balance_exhausted``: the out-of-credit stop the repository already
-  proves (``task_evaluation_unentered_authoring_budget._quota_refusal_termination``).
-- Anthropic: HTTP 402 ``billing_error``; HTTP 429 with
-  ``error.details.error_code == "enforced_spend_limit_reached"`` (the usage
-  tier's monthly cap, ``EnforcedSpendLimitReachedError`` in the SDK); HTTP 400
-  ``invalid_request_error`` whose message starts with the two documented
-  "You have reached your specified ... API usage limits" texts (a spend limit
-  the organization set; the documentation identifies it by message only).
+- OpenAI, out of funds: HTTP 429 AND (error code in ``OPENAI_NO_FUNDS_CODES``
+  OR error type ``insufficient_quota``). The codes are the 429 billing codes on
+  the OpenAI error-codes page; ``insufficient_quota`` is also the recorded stop
+  (``task_evaluation_unentered_authoring_budget._quota_refusal_termination``).
+- Anthropic, out of funds: HTTP 402 OR error type ``billing_error``; HTTP 429
+  with error code ``enforced_spend_limit_reached`` (the usage tier's monthly
+  cap); HTTP 400 ``invalid_request_error`` whose message starts with one of the
+  two documented "You have reached your specified ... API usage limits" texts
+  (a spend limit the organization set; only the message identifies it, so a
+  wording change can only fail to switch).
+- Never out of funds: any other 429 (rate limit, ramp limit, ``slow_down``), 529
+  and 5xx, timeouts, connection errors, other 400s, 401/403/404/413, refusals,
+  an error from another SDK, and every shape in ``UNSETTLED_SHAPES``.
 
-Everything else is not no-funds, including shapes the documentation does not
-settle (``UNSETTLED_SHAPES``). A switch never happens silently: a ``switch``
-decision always carries its ``provider_switch.v1`` record, and a refused one
-always carries the typed reason for every missing precondition.
+A wrapped error is classified through its ``__cause__`` chain, and only a link
+that is a typed error of the provider's own SDK can match. A switch never happens
+silently: a ``switch`` decision always carries its ``provider_switch.v1`` record,
+and a refused one carries the typed reason for every missing precondition,
+including the privacy gate, which is re-run here on the target entry.
 
 When a switch may take effect: a single stateless call switches at the next
 call; an agent run switches only between attempts, as a fresh run, because its
@@ -35,23 +39,28 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .model_routing import ResolvedRoute, RouteEntry
+from .model_routing import ResolvedRoute, RouteEntry, load_config, privacy_refusal, validate_config
 
 SWITCH_SCHEMA_VERSION = "provider_switch.v1"
 NO_FUNDS = "no_funds"
 NOT_NO_FUNDS = "not_no_funds"
 
-_OPENAI_QUOTA_CODES = frozenset({"insufficient_quota", "credit_balance_exhausted"})
-_ANTHROPIC_OWN_LIMIT_PREFIXES = ("You have reached your specified API usage limits",
-                                 "You have reached your specified workspace API usage limits")
+OPENAI_NO_FUNDS_CODES = frozenset({"insufficient_quota", "credit_balance_exhausted",
+                                   "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
+                                   "organization_usage_limit_exceeded"})
+ANTHROPIC_OWN_LIMIT_PREFIXES = ("You have reached your specified API usage limits",
+                                "You have reached your specified workspace API usage limits")
+_CAUSE_DEPTH = 8
 #: Shapes that may mean "no funds" but that neither the SDK types, the live
 #: documentation nor a recorded stop settle. Classified NOT no-funds until one is.
 UNSETTLED_SHAPES = (
-    "anthropic: the text 'Your credit balance is too low' (no status or type in the documentation read 2026-11-13)",
+    "anthropic: the text 'Your credit balance is too low' (no status or type in the documentation read 2026-11-13);"
+    " the first paid canary must record what it returns",
+    "anthropic: whether 402 billing_error also covers an expired card rather than a lack of funds",
     "google: HTTP 402 (the troubleshooting page lists depleted Prepay credits among 400/402/403 causes, no body shape)",
     "google: HTTP 403 PERMISSION_DENIED citing an outstanding balance (message only)",
     "google: HTTP 429 RESOURCE_EXHAUSTED with 'prepayment credits are depleted' (repository string match, no recorded stop)",
-    "openai: any other billing code on a 429 or another status (the OpenAI documentation was not read for more codes)",
+    "openai: a billing code that is not on the error-codes page",
 )
 
 
@@ -82,8 +91,7 @@ def _mro_names(exc: BaseException) -> frozenset[str]:
     return frozenset(cls.__name__ for cls in type(exc).__mro__)
 
 
-def _status(exc: BaseException) -> int | None:
-    value = getattr(exc, "status_code", None)
+def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
@@ -108,63 +116,74 @@ def _request_id(exc: BaseException) -> str | None:
     return value
 
 
-def _openai(exc: BaseException) -> ErrorClassification:
-    status = _status(exc)
-    error = _error_object(getattr(exc, "body", None))
-    error_type = _str(getattr(exc, "type", None)) or _str(error.get("type"))
-    code = _str(getattr(exc, "code", None)) or _str(error.get("code"))
-    common = {"provider": "openai", "http_status": status, "error_type": error_type, "error_code": code,
-              "request_id": _request_id(exc)}
-    if (status == 429 and "RateLimitError" in _mro_names(exc) and error_type == "insufficient_quota"
-            and code in _OPENAI_QUOTA_CODES):
-        return ErrorClassification(NO_FUNDS, "openai_insufficient_quota", **common)
-    return ErrorClassification(NOT_NO_FUNDS, _not_no_funds_reason("openai", status), **common)
+def classify_fields(provider: str, *, http_status: int | None, error_type: str | None, error_code: str | None,
+                    message: str | None = None, request_id: str | None = None) -> ErrorClassification:
+    """The trigger table over typed fields of one provider answer.
+
+    The fields must come from a typed record of the provider's answer (an SDK
+    error, or a record built from one), never from log text.
+    """
+    common = {"provider": provider, "http_status": http_status, "error_type": error_type, "error_code": error_code,
+              "request_id": request_id}
+    if provider == "openai":
+        if http_status == 429 and (error_code in OPENAI_NO_FUNDS_CODES or error_type == "insufficient_quota"):
+            return ErrorClassification(NO_FUNDS, "openai_out_of_funds", **common)
+    elif provider == "anthropic":
+        if http_status == 402 or error_type == "billing_error":
+            return ErrorClassification(NO_FUNDS, "anthropic_billing_error", **common)
+        if http_status == 429 and error_code == "enforced_spend_limit_reached":
+            return ErrorClassification(NO_FUNDS, "anthropic_enforced_spend_limit_reached", **common)
+        if (http_status == 400 and error_type == "invalid_request_error" and isinstance(message, str)
+                and message.startswith(ANTHROPIC_OWN_LIMIT_PREFIXES)):
+            return ErrorClassification(NO_FUNDS, "anthropic_own_spend_limit_reached", **common)
+    status = http_status if http_status is not None else "no_status"
+    return ErrorClassification(NOT_NO_FUNDS, f"{provider}_error_not_no_funds:{status}", **common)
 
 
-def _anthropic(exc: BaseException) -> ErrorClassification:
-    status = _status(exc)
+def _sdk_fields(provider: str, exc: BaseException) -> dict[str, Any] | None:
+    """Typed fields of ``exc`` when it is an error of ``provider``'s own SDK, else ``None``."""
+    sdk = {"openai": "openai", "anthropic": "anthropic", "google": "google"}.get(provider)
+    if sdk is None or _sdk(exc) != sdk:
+        return None
+    if provider == "google":
+        return {"http_status": _int(getattr(exc, "code", None)), "error_type": _str(getattr(exc, "status", None)),
+                "error_code": None, "message": _str(getattr(exc, "message", None))}
+    if "APIStatusError" not in _mro_names(exc):
+        return {"http_status": None, "error_type": None, "error_code": None, "message": None,
+                "request_id": None}
     error = _error_object(getattr(exc, "body", None))
     details = error.get("details") if isinstance(error.get("details"), Mapping) else {}
-    error_type = _str(error.get("type")) or _str(getattr(exc, "type", None))
-    code = _str(details.get("error_code")) or _str(getattr(exc, "error_code", None))
-    message = _str(error.get("message")) or _str(getattr(exc, "api_message", None)) or ""
-    common = {"provider": "anthropic", "http_status": status, "error_type": error_type, "error_code": code,
-              "request_id": _request_id(exc)}
-    is_status_error = "APIStatusError" in _mro_names(exc)
-    if is_status_error and status == 402 and error_type == "billing_error":
-        return ErrorClassification(NO_FUNDS, "anthropic_billing_error", **common)
-    if (is_status_error and status == 429 and error_type == "rate_limit_error"
-            and code == "enforced_spend_limit_reached"):
-        return ErrorClassification(NO_FUNDS, "anthropic_enforced_spend_limit_reached", **common)
-    if (is_status_error and status == 400 and error_type == "invalid_request_error"
-            and message.startswith(_ANTHROPIC_OWN_LIMIT_PREFIXES)):
-        return ErrorClassification(NO_FUNDS, "anthropic_own_spend_limit_reached", **common)
-    return ErrorClassification(NOT_NO_FUNDS, _not_no_funds_reason("anthropic", status), **common)
-
-
-def _google(exc: BaseException) -> ErrorClassification:
-    code = getattr(exc, "code", None)
-    status = code if isinstance(code, int) and not isinstance(code, bool) else None
-    return ErrorClassification(NOT_NO_FUNDS, _not_no_funds_reason("google", status), provider="google",
-                               http_status=status, error_type=_str(getattr(exc, "status", None)))
-
-
-def _not_no_funds_reason(provider: str, status: int | None) -> str:
-    return f"{provider}_error_not_no_funds:{status if status is not None else 'no_status'}"
+    if provider == "openai":
+        error_type = _str(getattr(exc, "type", None)) or _str(error.get("type"))
+        code = _str(getattr(exc, "code", None)) or _str(error.get("code"))
+    else:
+        error_type = _str(error.get("type")) or _str(getattr(exc, "type", None))
+        code = _str(details.get("error_code")) or _str(getattr(exc, "error_code", None))
+    message = _str(error.get("message")) or _str(getattr(exc, "api_message", None))
+    return {"http_status": _int(getattr(exc, "status_code", None)), "error_type": error_type, "error_code": code,
+            "message": message, "request_id": _request_id(exc)}
 
 
 def classify_provider_error(provider: str, exc: BaseException) -> ErrorClassification:
-    """Is ``exc``, raised by ``provider``'s official SDK, a typed "no funds" answer?
+    """Is ``exc`` (or an error in its ``__cause__`` chain) a typed "no funds" answer of ``provider``'s SDK?
 
-    An error from another SDK than the provider's, or no SDK at all, is never no-funds.
+    The first link that is an error of the provider's own SDK and matches the
+    table decides. With no such link the answer is not no-funds.
     """
-    sdk = _sdk(exc)
-    if provider == "openai" and sdk == "openai":
-        return _openai(exc)
-    if provider == "anthropic" and sdk == "anthropic":
-        return _anthropic(exc)
-    if provider == "google" and sdk == "google":
-        return _google(exc)
+    first: ErrorClassification | None = None
+    link: BaseException | None = exc
+    for _ in range(_CAUSE_DEPTH):
+        if link is None:
+            break
+        fields = _sdk_fields(provider, link)
+        if fields is not None:
+            result = classify_fields(provider, **fields)
+            if result.no_funds:
+                return result
+            first = first or result
+        link = link.__cause__
+    if first is not None:
+        return first
     return ErrorClassification(NOT_NO_FUNDS, f"{provider}_error_not_from_provider_sdk:{type(exc).__name__}",
                                provider=provider)
 
@@ -191,8 +210,7 @@ def precondition_failures(entry: RouteEntry, *, list_price: Mapping[str, Any] | 
                           facts: SwitchFacts) -> tuple[str, ...]:
     """The typed reason for each precondition ``entry`` misses; empty when all hold.
 
-    The privacy gate is not repeated here: a provider it forbids for the
-    route's data is never in ``route.entries`` (``model_routing.resolve_route``).
+    The privacy gate is checked separately by ``decide_failover``.
     The codes' words let ``job_retry_policy.hard_stop_kind`` name the hard stop:
     ``unauthorized`` and ``consent`` are privacy or rights, ``price``, ``cost``
     and ``spend`` are money; a missing key or host is neither.
@@ -237,7 +255,8 @@ def _digest(value: Any) -> str:
 
 def decide_failover(route: ResolvedRoute, *, failed_index: int, error: BaseException, facts: SwitchFacts,
                     attempt_id: str, occurred_at: str,
-                    refused_call_meter_row: Mapping[str, Any] | None = None) -> FailoverDecision:
+                    refused_call_meter_row: Mapping[str, Any] | None = None,
+                    config: Mapping[str, Any] | None = None) -> FailoverDecision:
     """After ``route.entries[failed_index]`` raised ``error``: no switch, stop, or switch.
 
     A stop's ``code`` is ``provider_funds_exhausted:<provider>``, which the retry
@@ -252,13 +271,20 @@ def decide_failover(route: ResolvedRoute, *, failed_index: int, error: BaseExcep
     if not classification.no_funds:
         return FailoverDecision("no_switch", classification.reason, classification, failed_index)
     stop_code = f"provider_funds_exhausted:{current.provider}"
+    config = load_config() if config is None else validate_config(config)
     refusals: list[tuple[int, tuple[str, ...]]] = []
     for index in range(failed_index + 1, len(route.entries)):
         entry = route.entries[index]
         if entry.provider == current.provider:
             refusals.append((index, (f"provider_failover_same_provider:{entry.provider}",)))
             continue
-        failures = precondition_failures(entry, list_price=route.list_prices[index], facts=facts)
+        # The gate again, from the configuration's data class for the role: a
+        # hand-built or restored route cannot carry a forbidden provider this far.
+        privacy = privacy_refusal(config, role=route.role, entry=entry,
+                                  privacy_policy_version=route.privacy_policy_version,
+                                  site_consents=route.site_consents)
+        failures = ((f"provider_failover_privacy_not_permitted:{entry.provider}",) if privacy is not None else ()) \
+            + precondition_failures(entry, list_price=route.list_prices[index], facts=facts)
         if failures:
             refusals.append((index, failures))
             continue
@@ -280,11 +306,12 @@ def switch_record(route: ResolvedRoute, *, from_index: int, to_index: int, class
         raise ValueError("provider_switch_identity_required")
     body = {
         "schema_version": SWITCH_SCHEMA_VERSION, "role": route.role, "data_class": route.data_class,
-        "call_kind": route.call_kind, "privacy_policy": route.privacy_policy, "takes_effect": takes_effect,
+        "call_kind": route.call_kind, "privacy_policy_version": route.privacy_policy_version,
+        "privacy_policy": route.privacy_policy, "takes_effect": takes_effect,
         "fresh_run": takes_effect == "next_attempt_fresh_run",
         "from": {**route.entries[from_index].as_dict(), "index": from_index},
         "to": {**route.entries[to_index].as_dict(), "index": to_index,
-               "list_price": json.loads(json.dumps(route.list_prices[to_index]))},
+               "list_price": route.plain_list_price(to_index)},
         "error": classification.as_dict(), "attempt_id": attempt_id, "occurred_at": occurred_at,
         "refused_call_meter_row": None if refused_call_meter_row is None else dict(refused_call_meter_row),
         "route_digest": route.record()["route_digest"],
