@@ -49,10 +49,11 @@ DEAD_MACHINE_PROOF_BLOCKERS = frozenset({
 #: archive after a CPU prestage, the lane reads the prestage's own archive instead
 #: (``task_evaluation_scene_configuration_vast``), whose result is by design
 #: ``completed_prefix``, neither ``completed`` nor ``blocked``. Website job
-#: 2026-11-13: machine 60447916 never started its container after stages 1-4 ran
-#: on the host, and this blocker alone kept the retry from firing. Beside a proof
-#: blocker it cannot describe our own work: those are raised only while the
-#: startup probe has not seen our bundle start, and the adapter stops there.
+#: 2026-11-13: instance 60447916 never started its container after stages 1-4 ran
+#: on the host, and this blocker alone kept the retry from firing. A proof blocker
+#: is raised only when the probe never observed our heartbeat or any bundle marker
+#: over the whole live run, and the adapter stops there; so beside one, this
+#: blocker describes the prestage archive, not work the GPU machine was seen to do.
 DEAD_MACHINE_CONSEQUENCE_BLOCKERS = frozenset({
     "scene_configuration_configured_revision_not_published",
     "scene_configuration_provider_envelope_mismatch",
