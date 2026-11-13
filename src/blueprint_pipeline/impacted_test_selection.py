@@ -214,8 +214,6 @@ def _matching_tests(
         tokens.add(path.parent.name)
 
     for test_path, source in test_sources.items():
-        if test_path == "tests/test_impacted_test_selection.py":
-            continue
         if (any(token and token in source for token in tokens)
                 or (module_name in source
                     and any(re.search(pattern, source) for pattern in module_patterns))):

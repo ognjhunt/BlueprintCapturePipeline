@@ -49,7 +49,7 @@ from blueprint_pipeline.groot_n17_droid_policy_runtime import (
 )
 # Dotted import on purpose: the impacted-test selector maps a changed source
 # module to the tests whose source names it, so a worker-only change runs this
-# rehearsal (pinned in tests/test_impacted_test_selection.py).
+# rehearsal.
 import blueprint_pipeline.native_task_arena_policy_canary_worker as worker
 from blueprint_pipeline.policy_canary_episode_interpretation_closeout import (
     materialize_policy_canary_episode_interpretations,

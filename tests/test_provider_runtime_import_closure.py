@@ -15,8 +15,7 @@ import zipfile
 
 import pytest
 
-# Dotted import on purpose: a bundle-only change must select this suite (pinned
-# in tests/test_impacted_test_selection.py).
+# Dotted import on purpose: a bundle-only change must select this suite.
 import blueprint_pipeline.native_task_arena_policy_canary_bundle as bundle
 from blueprint_pipeline import vast_provider_adapter
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest

@@ -13,7 +13,6 @@ on:
       - "scripts/run_sim_only_beta_local_gate.py"
       - "src/blueprint_pipeline/**"
       - "tests/fixtures/sim_only_beta_local_capture/**"
-      - "tests/test_sim_only_beta_local_gate.py"
   workflow_dispatch:
     inputs:
       webapp_ref:

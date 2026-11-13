@@ -185,8 +185,7 @@ durations (`.github/full-test-lane-duration-baseline.json`): every file stays
 whole on one shard except a file heavier than half a shard, whose tests are
 scheduled by node ID. Every green lane uploads
 `full-test-lane-duration-baseline.refreshed.json` in its `full-test-lane-<run>`
-artifact; when shards drift apart, commit that file as the baseline (and update
-the source run pinned in `tests/test_full_lane_sharding.py`). Each shard retains its own collection, JUnit, and verification
+artifact; when shards drift apart, commit that file as the baseline. Each shard retains its own collection, JUnit, and verification
 receipt; the canonical job proves their disjoint union has no duplicates,
 omissions, failures, errors, or skips before rebuilding the existing canonical
 JUnit and `cpu_full.json` artifact. The deploy verifier revalidates every shard
