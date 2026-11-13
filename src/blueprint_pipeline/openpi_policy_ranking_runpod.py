@@ -43,7 +43,6 @@ from .openpi_policy_ranking_gpu_bootstrap import (
 )
 from .openpi_policy_ranking_gpu_admission import (
     build_openpi_policy_ranking_gpu_admission,
-    collect_openpi_policy_ranking_runpod_preflight,
     collect_openpi_policy_ranking_vast_preflight,
 )
 from .paid_lane_guard import (
@@ -61,13 +60,13 @@ from .paid_provider_lane_lease import (
 )
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    RUNPOD_RETIRED_BLOCKER,
     require_paid_resource_admission,
 )
 from .production_gpu_campaign_budget import (
     CampaignBudgetExceeded,
     ProductionGpuCampaignBudget,
 )
-from .runpod_provider_adapter import run_runpod_provider_adapter
 from .safe_outbound_http import presigned_transfer_policy
 from .safe_outbound_http import request as safe_http_request
 from .task_evaluation_artifact_manifest import (
@@ -914,55 +913,6 @@ def build_openpi_policy_ranking_provider_request(
     }
 
 
-def shape_openpi_policy_ranking_request_without_mutation(
-    *,
-    prepared: Mapping[str, Any],
-    output_path: str | Path,
-    input_secret_url: str,
-    output_secret_put_url: str,
-    pod_name: str,
-) -> dict[str, Any]:
-    """Validate the exact redacted provider payload without making an API call."""
-
-    if prepared.get("status") != "admitted" or not isinstance(
-        prepared.get("bound_request"), Mapping
-    ):
-        return {
-            "status": "blocked",
-            "blockers": ["openpi_runpod_request_not_admitted"],
-            "provider_mutations_performed": 0,
-        }
-    output = Path(output_path).expanduser().resolve()
-    bound_request_path = output.parent / "openpi_provider_launch_request.json"
-    write_json(bound_request_path, dict(prepared["bound_request"]))
-    names = (INPUT_SECRET_URL_ENV, OUTPUT_SECRET_PUT_URL_ENV)
-    previous = {
-        key: os.environ.get(key)
-        for key in (*names, GENERIC_OUTPUT_SECRET_URL_ENV, FORWARD_SECRET_ENV_NAMES_ENV)
-    }
-    os.environ[INPUT_SECRET_URL_ENV] = input_secret_url
-    os.environ[OUTPUT_SECRET_PUT_URL_ENV] = output_secret_put_url
-    # The generic adapter contract requires an output sink whenever the worker
-    # owns finalization. It is never persisted and the worker uses the OpenPI-
-    # specific alias above.
-    os.environ[GENERIC_OUTPUT_SECRET_URL_ENV] = output_secret_put_url
-    os.environ[FORWARD_SECRET_ENV_NAMES_ENV] = ",".join(names)
-    try:
-        return run_runpod_provider_adapter(
-            provider_launch_request_path=bound_request_path,
-            output_path=output,
-            mode="dry-run",
-            pod_name=pod_name,
-            gpu_type_id=str(prepared["admission"]["gpu_type_id"]),
-        )
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
 def run_openpi_policy_ranking_campaign(
     *,
     release_evidence: str | Path,
@@ -1007,35 +957,27 @@ def run_openpi_policy_ranking_campaign(
     input_bundle = _read_object(input_bundle_receipt)
     preflight = _read_object(preflight_bundle)
     resolved_provider = str(provider_name or "vast").strip().lower()
-    if resolved_provider not in {"vast", "runpod"}:
+    if resolved_provider != "vast":
         result = {
             "status": "blocked",
-            "blockers": ["openpi_gpu_provider_unsupported"],
+            "blockers": (
+                [RUNPOD_RETIRED_BLOCKER]
+                if resolved_provider == "runpod"
+                else ["openpi_gpu_provider_unsupported"]
+            ),
             "provider_mutations_performed": 0,
         }
         write_json(Path(admission_out), result)
         return result
     provider = get_render_provider(resolved_provider) if execute else None
     if execute and provider is not None:
-        preflight = (
-            collect_openpi_policy_ranking_vast_preflight(
-                name_prefix=CANARY_NAME_PREFIX,
-                container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
-                capacity_probe=provider.capacity_preflight,
-                inventory_probe=lambda prefix: provider.billable_inventory(
-                    name_prefix=prefix
-                ),
-            )
-            if resolved_provider == "vast"
-            else collect_openpi_policy_ranking_runpod_preflight(
-                name_prefix=CANARY_NAME_PREFIX,
-                gpu_type_ids=list(preflight.get("requested_gpu_types") or []),
-                container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
-                capacity_probe=provider.capacity_preflight,
-                inventory_probe=lambda prefix: provider.billable_inventory(
-                    name_prefix=prefix
-                ),
-            )
+        preflight = collect_openpi_policy_ranking_vast_preflight(
+            name_prefix=CANARY_NAME_PREFIX,
+            container_disk_bytes=int(preflight.get("container_disk_bytes") or 0),
+            capacity_probe=provider.capacity_preflight,
+            inventory_probe=lambda prefix: provider.billable_inventory(
+                name_prefix=prefix
+            ),
         )
         write_json(root / "openpi_provider_preflight_launch_refresh.json", preflight)
     if str(preflight.get("provider") or "") != resolved_provider:
@@ -1317,43 +1259,32 @@ def run_openpi_policy_ranking_campaign(
         (INPUT_SECRET_URL_ENV, OUTPUT_SECRET_PUT_URL_ENV)
     )
     try:
-        if resolved_provider == "vast":
-            vast_request = _build_vast_launch_request(
-                provider=provider,
-                root=root,
-                pod_name=pod_name,
-                release=release,
-                input_bundle=input_bundle,
-                preflight=preflight,
-                input_secret_url=input_secret_url,
-                output_secret_put_url=output_secret_put_url,
-            )
-            launch = provider.launch(
-                root,
-                vast_request,
-                cold=True,
-                paid_resource_admission_grant=grant,
-            )
-            adapter = {
-                **dict(launch),
-                "status": (
-                    "submitted" if launch.get("status") == "launched" else "blocked"
-                ),
-                "provider": "vast",
-                "raw_secret_values_recorded": False,
-            }
-            adapter.pop("error", None)
-            write_json(Path(adapter_output), _seal_terminal(adapter, adapter_output))
-        else:
-            adapter = run_runpod_provider_adapter(
-                provider_launch_request_path=bound_request_out,
-                output_path=adapter_output,
-                mode="on-demand-pod",
-                allow_runpod_api_call=True,
-                pod_name=pod_name,
-                gpu_type_id=str(preflight["gpu_type_id"]),
-                paid_resource_admission_grant=grant,
-            )
+        vast_request = _build_vast_launch_request(
+            provider=provider,
+            root=root,
+            pod_name=pod_name,
+            release=release,
+            input_bundle=input_bundle,
+            preflight=preflight,
+            input_secret_url=input_secret_url,
+            output_secret_put_url=output_secret_put_url,
+        )
+        launch = provider.launch(
+            root,
+            vast_request,
+            cold=True,
+            paid_resource_admission_grant=grant,
+        )
+        adapter = {
+            **dict(launch),
+            "status": (
+                "submitted" if launch.get("status") == "launched" else "blocked"
+            ),
+            "provider": "vast",
+            "raw_secret_values_recorded": False,
+        }
+        adapter.pop("error", None)
+        write_json(Path(adapter_output), _seal_terminal(adapter, adapter_output))
     except Exception as exc:
         mark_pending_teardown_ambiguous(
             pending["path"],
@@ -1391,12 +1322,7 @@ def run_openpi_policy_ranking_campaign(
             else:
                 os.environ[key] = value
 
-    if resolved_provider == "vast":
-        pod_id = str(adapter.get("instance_id") or "").strip()
-    else:
-        response = adapter.get("runpod_response")
-        response = response if isinstance(response, Mapping) else {}
-        pod_id = str(response.get("id") or "").strip()
+    pod_id = str(adapter.get("instance_id") or "").strip()
     if adapter.get("status") == "submitted" and pod_id:
         bind_pending_teardown_instance(pending["path"], pod_id)
         receipt["pod_id"] = pod_id
@@ -1463,5 +1389,4 @@ def run_openpi_policy_ranking_campaign(
 __all__ = [
     "build_openpi_policy_ranking_provider_request",
     "run_openpi_policy_ranking_campaign",
-    "shape_openpi_policy_ranking_request_without_mutation",
 ]
