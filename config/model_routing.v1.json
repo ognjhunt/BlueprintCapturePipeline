@@ -1,0 +1,527 @@
+{
+  "schema_version": "blueprint.model_routing.v1",
+  "active_profile": "current",
+  "note": "Which provider and model each model-calling role uses, in order: the first entry the privacy gate permits is the default, later entries are tried only after a typed no-funds error (model_failover). 'current' is what runs today. 'same_level_claude' is available but not active. Nothing reads this file on a paid path yet.",
+  "privacy_policies": {
+    "baseline": {
+      "note": "Applies to every job whose Privacy Policy version is not listed here, and to a job with no recorded version. It is the provider list of Privacy Policy 2026-11-12.2 (Blueprint-WebApp client/src/lib/legalAcceptance.ts PRIVACY_VERSION, read 2026-11-13). A later version that names more providers is added as its own key; a listed version never narrows this.",
+      "data_classes": {
+        "site_frames": {
+          "description": "Frames or images from a site's capture, with the job description that goes with them for that step.",
+          "providers": [
+            "openai",
+            "google"
+          ],
+          "providers_by_site_choice": [
+            "anthropic"
+          ],
+          "source": "Blueprint-WebApp client/src/pages/Privacy.tsx, 'AI, 3D processing and compute' and 'AI in the Service' (read 2026-11-13): OpenAI reads the job description and frames; Google Gemini watches footage and frames from it to draft and check the job brief; Anthropic receives frames only when a site explicitly chooses that option."
+        },
+        "site_video": {
+          "description": "A site's footage as video.",
+          "providers": [
+            "google"
+          ],
+          "providers_by_site_choice": [],
+          "source": "Privacy.tsx (read 2026-11-13): Google Gemini watches site footage with its sound removed. No other model provider is named for footage."
+        },
+        "site_job_text": {
+          "description": "A site's job description or task facts without frames.",
+          "providers": [
+            "openai",
+            "google"
+          ],
+          "providers_by_site_choice": [],
+          "source": "Privacy.tsx (read 2026-11-13): OpenAI reads the job description; Gemini drafts and checks the job brief. Anthropic is named for job text nowhere, so it is not permitted."
+        },
+        "internal_text": {
+          "description": "Blueprint's own text that carries no site data and no personal information.",
+          "providers": [
+            "openai",
+            "anthropic"
+          ],
+          "providers_by_site_choice": [],
+          "source": "Privacy.tsx (read 2026-11-13): Anthropic drafts and sorts internal work where we configure it."
+        }
+      }
+    }
+  },
+  "roles": {
+    "artisan_text": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "text",
+      "today": "task_object_authoring_backend.ARTISAN_MODELS model and thinking (design, coding and review)"
+    },
+    "artisan_compaction": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "text",
+      "today": "task_object_authoring_backend.ARTISAN_MODELS compaction_model"
+    },
+    "artisan_image_envelope": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "image",
+      "today": "task_object_authoring_backend.ARTISAN_MODELS image_model"
+    },
+    "artisan_image_tool": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "image",
+      "today": "task_object_authoring_backend.ARTISAN_MODELS image_tool_model"
+    },
+    "website_image_edit": {
+      "data_class": "site_frames",
+      "call_kind": "single_call",
+      "output": "image",
+      "today": "website_image_completion.BACKEND_ID in docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json, execution model_snapshot"
+    },
+    "website_view_review": {
+      "data_class": "site_frames",
+      "call_kind": "single_call",
+      "output": "text",
+      "today": "clean_plate_removal_analysis_gemini.DEFAULT_MODEL (website_image_completion review, atlas_whole_view_review)"
+    },
+    "website_task_grounding": {
+      "data_class": "site_frames",
+      "call_kind": "single_call",
+      "output": "text",
+      "today": "clean_plate_removal_analysis_gemini.DEFAULT_MODEL (website_task_grounding)"
+    },
+    "website_removal_visibility": {
+      "data_class": "site_frames",
+      "call_kind": "single_call",
+      "output": "text",
+      "today": "clean_plate_removal_analysis_gemini.DEFAULT_MODEL (atlas_removal_visibility)"
+    },
+    "website_assembly_coverage": {
+      "data_class": "site_frames",
+      "call_kind": "single_call",
+      "output": "text",
+      "today": "website_assembly_coverage.CLASSIFIER_MODEL and CLASSIFIER_THINKING_LEVEL"
+    },
+    "website_candidate_ranking": {
+      "data_class": "site_job_text",
+      "call_kind": "single_call",
+      "output": "text",
+      "today": "website_candidate_ranking.MODEL"
+    },
+    "website_removal_analysis": {
+      "data_class": "site_video",
+      "call_kind": "single_call",
+      "output": "text",
+      "today": "clean_plate_removal_analysis_gemini.DEFAULT_MODEL (video input)"
+    },
+    "website_spec_research": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "text",
+      "today": "website_object_spec_research.MODEL, no reasoning setting, hosted web search"
+    },
+    "task_parameter_proposal": {
+      "data_class": "site_job_text",
+      "call_kind": "agent_run",
+      "output": "text",
+      "today": "task_evaluation_task_parameter_proposal.MODEL at reasoning effort high"
+    },
+    "website_image_repair": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "text",
+      "today": "website_image_repair_agent.MODEL, no reasoning setting"
+    },
+    "robot_placement": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "text",
+      "today": "task_evaluation_robot_placement_agent.ROBOT_PLACEMENT_AGENT_MODEL and ROBOT_PLACEMENT_AGENT_REASONING_EFFORT"
+    },
+    "agents_default": {
+      "data_class": "site_frames",
+      "call_kind": "agent_run",
+      "output": "text",
+      "today": "task_evaluation_supervisor.agents_sdk.DEFAULT_SUPERVISOR_AGENT_MODEL, no reasoning setting"
+    }
+  },
+  "profiles": {
+    "current": {
+      "artisan_text": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": "max"
+        }
+      ],
+      "artisan_compaction": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "artisan_image_envelope": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "artisan_image_tool": [
+        {
+          "provider": "openai",
+          "model": "gpt-image-2.5-sunburst",
+          "effort": null
+        }
+      ],
+      "website_image_edit": [
+        {
+          "provider": "openai",
+          "model": "gpt-image-2.5-sunburst-2026-09-08",
+          "effort": null
+        }
+      ],
+      "website_view_review": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_task_grounding": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_removal_visibility": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_assembly_coverage": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": "LOW"
+        }
+      ],
+      "website_candidate_ranking": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_removal_analysis": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_spec_research": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "task_parameter_proposal": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": "high"
+        }
+      ],
+      "website_image_repair": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "robot_placement": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": "high"
+        }
+      ],
+      "agents_default": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ]
+    },
+    "same_level_claude": {
+      "artisan_text": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": "max"
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": "max"
+        }
+      ],
+      "artisan_compaction": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": null
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "artisan_image_envelope": [
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "artisan_image_tool": [
+        {
+          "provider": "openai",
+          "model": "gpt-image-2.5-sunburst",
+          "effort": null
+        }
+      ],
+      "website_image_edit": [
+        {
+          "provider": "openai",
+          "model": "gpt-image-2.5-sunburst-2026-09-08",
+          "effort": null
+        }
+      ],
+      "website_view_review": [
+        {
+          "provider": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": null
+        },
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_task_grounding": [
+        {
+          "provider": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": null
+        },
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_removal_visibility": [
+        {
+          "provider": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": null
+        },
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_assembly_coverage": [
+        {
+          "provider": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": "low"
+        },
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": "LOW"
+        }
+      ],
+      "website_candidate_ranking": [
+        {
+          "provider": "anthropic",
+          "model": "claude-haiku-5-5",
+          "effort": null
+        },
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_removal_analysis": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "effort": null
+        }
+      ],
+      "website_spec_research": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": null
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "task_parameter_proposal": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": "high"
+        }
+      ],
+      "website_image_repair": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": null
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ],
+      "robot_placement": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": "high"
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": "high"
+        }
+      ],
+      "agents_default": [
+        {
+          "provider": "anthropic",
+          "model": "claude-opus-5-5",
+          "effort": null
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "effort": null
+        }
+      ]
+    }
+  },
+  "prices": {
+    "openai": {
+      "gpt-6.1-sol": {
+        "kind": "text",
+        "read_on": "2026-09-29",
+        "source": "https://developers.openai.com/api/docs/pricing, as recorded in src/blueprint_pipeline/openai_prompt_cache.py",
+        "usd_per_million_tokens": {
+          "input": 2.0,
+          "cache_write": 2.5,
+          "cache_read": 0.1,
+          "output": 10.0
+        }
+      },
+      "gpt-image-2.5-sunburst": {
+        "kind": "image",
+        "read_on": "2026-09-08",
+        "source": "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst, as recorded in docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json",
+        "usd_per_million_tokens": {
+          "input_text": 5.0,
+          "input_image": 8.0,
+          "output_image": 30.0
+        }
+      },
+      "gpt-image-2.5-sunburst-2026-09-08": {
+        "kind": "image",
+        "read_on": "2026-09-08",
+        "source": "https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst, as recorded in docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json",
+        "usd_per_million_tokens": {
+          "input_text": 5.0,
+          "input_image": 8.0,
+          "output_image": 30.0
+        }
+      }
+    },
+    "google": {
+      "gemini-3.8-flash": {
+        "kind": "text",
+        "read_on": "2026-09-19",
+        "source": "https://ai.google.dev/gemini-api/docs/pricing, as recorded in src/blueprint_pipeline/website_gemini_receipts.py",
+        "usd_per_million_tokens": {
+          "input": 0.75,
+          "output": 3.75
+        }
+      }
+    },
+    "anthropic": {
+      "claude-opus-5-5": {
+        "kind": "text",
+        "read_on": "2026-11-13",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "usd_per_million_tokens": {
+          "input": 4.0,
+          "cache_write": 5.0,
+          "cache_write_1h": 8.0,
+          "cache_read": 0.2,
+          "output": 20.0
+        }
+      },
+      "claude-haiku-5-5": {
+        "kind": "text",
+        "read_on": "2026-11-13",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "usd_per_million_tokens": {
+          "input": 0.1,
+          "cache_write": 0.125,
+          "cache_write_1h": 0.2,
+          "cache_read": 0.01,
+          "output": 0.5
+        },
+        "long_prompt": {
+          "above_input_tokens": 100000,
+          "usd_per_million_tokens": {
+            "input": 0.5,
+            "cache_write": 0.625,
+            "cache_write_1h": 1.0,
+            "cache_read": 0.05,
+            "output": 2.5
+          }
+        }
+      }
+    }
+  },
+  "provider_surcharges": {
+    "anthropic": {
+      "read_on": "2026-11-13",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "us_inference_geo_multiplier": 1.1,
+      "web_search_usd_per_thousand": 10.0
+    }
+  }
+}
