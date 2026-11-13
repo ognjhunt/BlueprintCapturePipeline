@@ -421,3 +421,194 @@ def test_refusal_reasons_reach_the_run_result_but_not_the_recorded_blocker(conte
     monkeypatch.setattr(engine, "_source", lambda *a, **kw: (_ for _ in ()).throw(
         ValueError("scene_progression_recovery_provider_zero_required")))
     assert "blocker_detail" not in engine.process_scene_intents(config_path=config)["results"][0]
+
+
+def test_a_dependency_failure_records_its_type_and_code_location_but_not_its_message(context, monkeypatch):
+    """2026-11-13: a FileNotFoundError parked a website job as
+    ``scene_progression_dependency_unavailable`` and nothing said which call raised it."""
+    config = configuration(context, monkeypatch)
+    directory = context[0]["intent_path"].parent
+    from blueprint_pipeline import task_evaluation_scene_attempt_evidence as evidence
+
+    def source(*args, **kwargs):
+        evidence.record(Path("/var/lib/blueprint/x/post_teardown_provider_zero_receipt.json"))
+
+    monkeypatch.setattr(engine, "_source", source)
+    row = engine.process_scene_intents(config_path=config)["results"][0]
+    assert row["blockers"] == ["scene_progression_dependency_unavailable"]
+    where = row["blocker_detail"][0]
+    assert where.startswith("FileNotFoundError@blueprint_pipeline.")
+    module, function, line = where.split("@", 1)[1].split(":")
+    assert module == "blueprint_pipeline.validation_file_digests" and function == "sha256_file" and line.isdigit()
+    recorded = json.loads((directory / "progression.json").read_text())
+    assert recorded["state"][engine.DEPENDENCY_FAILURE_FIELD] == where
+    assert recorded["blockers"] == ["scene_progression_dependency_unavailable"]
+    assert "/var/lib" not in json.dumps(recorded) and "Errno" not in json.dumps(row)
+
+    # The same failure again rewrites nothing; once the pass gets past it, the note is gone.
+    events = sorted((directory / "progression-events").glob("*.json"))
+    assert engine.process_scene_intents(config_path=config)["results"][0] == row
+    assert sorted((directory / "progression-events").glob("*.json")) == events
+    monkeypatch.undo()
+    config = configuration(context, monkeypatch)
+    later = engine.process_scene_intents(config_path=config)["results"][0]
+    assert later["blockers"] != ["scene_progression_dependency_unavailable"]
+    recorded = json.loads((directory / "progression.json").read_text())
+    assert engine.DEPENDENCY_FAILURE_FIELD not in recorded["state"]
+
+
+def test_a_recorded_dependency_failure_does_not_survive_a_later_refusal(context, monkeypatch):
+    """Review probe: the handler rebuilds state from disk, so it drops the old location itself."""
+    config = configuration(context, monkeypatch)
+    directory = context[0]["intent_path"].parent
+
+    def missing(*a, **k):
+        Path("/nonexistent/rv/file.json").read_bytes()
+    monkeypatch.setattr(engine, "_source", missing)
+    engine.process_scene_intents(config_path=config)
+    assert engine.DEPENDENCY_FAILURE_FIELD in json.loads((directory / "progression.json").read_text())["state"]
+
+    def refused(*a, **k):
+        raise ValueError("scene_progression_rv_refused:reason_one")
+    monkeypatch.setattr(engine, "_source", refused)
+    row = engine.process_scene_intents(config_path=config)["results"][0]
+    assert row["blockers"] == ["scene_progression_rv_refused"] and row["blocker_detail"] == ["reason_one"]
+    recorded = json.loads((directory / "progression.json").read_text())
+    assert engine.DEPENDENCY_FAILURE_FIELD not in recorded["state"]
+
+
+def test_any_exception_from_one_job_blocks_that_job_and_the_pass_goes_on(context, monkeypatch):
+    """2026-11-13: a RuntimeError subclass from one job's activation ended the whole unit run."""
+    from blueprint_pipeline import task_evaluation_scene_outcome as outcome
+    config = configuration(context, monkeypatch)
+    directory = context[0]["intent_path"].parent
+    later = directory.parent / "scene-zzzz-later-job"
+    later.mkdir()
+
+    class Unforeseen(Exception):
+        pass
+
+    def unforeseen(*a, **k):
+        raise Unforeseen("/var/lib/blueprint/private/path and site text")
+    monkeypatch.setattr(engine, "_source", unforeseen)
+    run = engine.process_scene_intents(config_path=config)
+    first, second = run["results"]
+    assert first["intent_id"] == directory.name and first["status"] == "blocked"
+    assert first["blockers"] == [engine.UNEXPECTED_FAILURE_BLOCKER]
+    [where] = first["blocker_detail"]
+    assert where.startswith("Unforeseen@blueprint_pipeline.task_evaluation_scene_progression:_advance_intent:")
+    assert "/var/lib" not in json.dumps(run) and "site text" not in json.dumps(run)
+    # The job after it in the same pass is still visited.
+    assert (second["intent_id"], second["status"], second["blockers"]) == (
+        later.name, "blocked", ["scene_progression_state_invalid"])
+    intent = json.loads((directory / "intent.json").read_text())
+    decided = outcome.read_outcome(directory, intent)
+    assert (decided["kind"], decided["terminal"], decided["reason_code"]) == ("setup_repair", False, "pipeline_fault")
+
+
+def test_a_coded_pipeline_error_that_is_not_a_value_error_keeps_its_own_code(context, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_configuration_activation_identity import (
+        SceneConfigurationActivationAutomationError,
+    )
+    config = configuration(context, monkeypatch)
+
+    def refused(*a, **k):
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_immutable_conflict:intent_registry_same_release_conflict")
+    monkeypatch.setattr(engine, "_source", refused)
+    row = engine.process_scene_intents(config_path=config)["results"][0]
+    assert row["blockers"] == [engine.ACTIVATION_CONFLICT_BLOCKER]
+    assert row["blocker_detail"][0] == "intent_registry_same_release_conflict"
+    assert row["blocker_detail"][1].startswith("SceneConfigurationActivationAutomationError@blueprint_pipeline.")
+
+
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, SystemExit, MemoryError, RecursionError])
+def test_an_interrupt_or_exit_still_stops_the_run(context, monkeypatch, stop):
+    config = configuration(context, monkeypatch)
+
+    def interrupted(*a, **k):
+        raise stop()
+    monkeypatch.setattr(engine, "_source", interrupted)
+    with pytest.raises(stop):
+        engine.process_scene_intents(config_path=config)
+
+
+def test_a_pass_that_ends_normally_drops_the_earlier_notes(context, monkeypatch):
+    """The start of every pass drops the last failure's location and refusal note."""
+    from types import SimpleNamespace
+    config = configuration(context, monkeypatch)
+    directory = context[0]["intent_path"].parent
+
+    def missing(*a, **k):
+        Path("/nonexistent/rv/file.json").read_bytes()
+    monkeypatch.setattr(engine, "_source", missing)
+    engine.process_scene_intents(config_path=config)
+    recorded = json.loads((directory / "progression.json").read_text())["state"]
+    assert engine.DEPENDENCY_FAILURE_FIELD in recorded
+    monkeypatch.setattr(engine, "_source", lambda *a, **k: SimpleNamespace(
+        analysis_reference=None, status="awaiting_source", blockers=["source_not_yet_uploaded"]))
+    row = engine.process_scene_intents(config_path=config)["results"][0]
+    assert (row["status"], row["blockers"]) == ("awaiting_source", ["source_not_yet_uploaded"])
+    recorded = json.loads((directory / "progression.json").read_text())["state"]
+    assert engine.DEPENDENCY_FAILURE_FIELD not in recorded and engine.ACTIVATION_REFUSAL_FIELD not in recorded
+
+
+@pytest.mark.parametrize("message, expected", [
+    ("scene_progression_" + "a" * 200, "scene_progression_unexpected_failure"),
+    ("scene_progression_caf\u00e9_refused", "scene_progression_unexpected_failure"),
+    ("scene_progression_" + "a" * (120 - 18), "scene_progression_" + "a" * (120 - 18)),
+])
+def test_a_code_from_a_message_is_ascii_and_bounded(context, monkeypatch, message, expected):
+    config = configuration(context, monkeypatch)
+
+    def refused(*a, **k):
+        raise ValueError(message + ":reason")
+    monkeypatch.setattr(engine, "_source", refused)
+    assert engine.process_scene_intents(config_path=config)["results"][0]["blockers"] == [expected]
+
+
+def test_an_overlong_code_from_a_pipeline_error_falls_back_to_unexpected(context, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_configuration_activation_identity import (
+        SceneConfigurationActivationAutomationError,
+    )
+    config = configuration(context, monkeypatch)
+
+    def refused(*a, **k):
+        raise SceneConfigurationActivationAutomationError("scene_configuration_" + "x" * 150)
+    monkeypatch.setattr(engine, "_source", refused)
+    row = engine.process_scene_intents(config_path=config)["results"][0]
+    assert row["blockers"] == [engine.UNEXPECTED_FAILURE_BLOCKER]
+    assert engine.MAX_BLOCKER_CODE_LENGTH == 120
+
+
+def _parking(**changes):
+    stored = {"attempt_id": "source-1", "attempt_commit": "c" * 40,
+              engine.ACTIVATION_REFUSAL_FIELD: engine.SAME_RELEASE_CONFLICT_DETAIL}
+    progress = {"status": "blocked", "blockers": [engine.ACTIVATION_CONFLICT_BLOCKER], "state": stored}
+    state, attempt_id, commit = {}, "source-1", "c" * 40
+    for key, value in changes.items():
+        if key == "progress":
+            progress.update(value)
+        elif key == "stored":
+            stored.update(value)
+        elif key == "state":
+            state = value
+        elif key == "attempt_id":
+            attempt_id = value
+        elif key == "commit":
+            commit = value
+    return engine._parked_activation(progress, state, attempt_id=attempt_id, commit=commit)
+
+
+@pytest.mark.parametrize("changes", [
+    {"progress": {"blockers": ["scene_progression_dependency_unavailable"]}},
+    {"progress": {"blockers": [engine.ACTIVATION_CONFLICT_BLOCKER, "another"]}},
+    {"progress": {"status": "awaiting_execution"}},
+    {"stored": {engine.ACTIVATION_REFUSAL_FIELD: None}},
+    {"attempt_id": "source-2"},
+    {"commit": "d" * 40},
+    {"state": {"activation": {"path": "/x"}}},
+])
+def test_only_this_attempts_same_release_conflict_on_this_release_is_parked(changes):
+    assert _parking() is True
+    assert _parking(**changes) is False

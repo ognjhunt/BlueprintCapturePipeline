@@ -257,3 +257,70 @@ def test_reconciler_service_binds_the_published_profile_directory() -> None:
 
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR" in service
     assert "--profile-dir" in service
+
+
+def test_a_reconciliation_record_is_published_whole_and_never_replaced(tmp_path, monkeypatch):
+    """The scene progression tick reads the provider-zero receipt; it must never see half of one."""
+    import os
+
+    from blueprint_pipeline import task_evaluation_launch_reconciler as reconciler
+
+    path = tmp_path / "run" / reconciler.POST_TEARDOWN_PROVIDER_ZERO_FILENAME
+    value = {"status": "provider_zero_confirmed", "launch_id": LAUNCH_ID}
+    linked = []
+    real_link = os.link
+
+    def link(source, destination, **kwargs):
+        # At publication the final name does not exist yet and the source is complete.
+        assert not Path(destination).exists()
+        assert json.loads(Path(source).read_text()) == value
+        linked.append(destination)
+        return real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(reconciler.os, "link", link)
+    reconciler._write_immutable(path, value)
+    assert linked == [path] and json.loads(path.read_text()) == value
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+    monkeypatch.setattr(reconciler.os, "link", real_link)
+
+    sealed = path.read_bytes()
+    reconciler._write_immutable(path, value)  # byte-identical: accepted, untouched
+    with pytest.raises(reconciler.TaskEvaluationLaunchError, match="immutable_reconciliation_conflict"):
+        reconciler._write_immutable(path, {**value, "status": "other"})
+    assert path.read_bytes() == sealed
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+
+    # A write that fails part-way leaves nothing at the final name and no temporary behind.
+    other = tmp_path / "run2" / reconciler.POST_TEARDOWN_PROVIDER_ZERO_FILENAME
+
+    def broken(_descriptor):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(reconciler.os, "fsync", broken)
+    with pytest.raises(OSError, match="disk full"):
+        reconciler._write_immutable(other, value)
+    assert list(other.parent.iterdir()) == []
+
+
+def test_a_crashed_reconciler_write_does_not_make_a_pre_run_folder_look_like_a_run(tmp_path):
+    from blueprint_pipeline import task_evaluation_launch_reconciler as reconciler
+
+    leftover = reconciler._sealing_name("orphan_recovery_receipt.json")
+    assert reconciler._is_sealing_leftover(leftover, {"orphan_recovery_receipt.json"})
+
+    def evidence(*names):
+        run = tmp_path / f"run-{len(list(tmp_path.iterdir()))}"
+        run.mkdir()
+        for name in names:
+            (run / name).mkdir() if name == "reconciliations" else (run / name).write_text("{}")
+        return reconciler._dispatcher_run_evidence(run)
+
+    assert evidence() is True  # an empty folder is the dispatcher's
+    assert evidence("reconciliations") is False
+    assert evidence("reconciliations", leftover) is False
+    assert evidence(leftover) is False
+    # Exactly the writer's names: anything else still counts as the dispatcher's.
+    assert evidence("reconciliations", reconciler._sealing_name("launch_started.json")) is True
+    assert evidence("reconciliations", ".orphan_recovery_receipt.json.sealing") is True
+    assert evidence("reconciliations", ".orphan_recovery_receipt.json.12.xyz.sealing") is True
+    assert evidence("reconciliations", "launch_started.json") is True

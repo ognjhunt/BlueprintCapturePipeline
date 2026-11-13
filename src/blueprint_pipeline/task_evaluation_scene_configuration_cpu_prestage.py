@@ -41,6 +41,10 @@ WORK_DIR_ENV = "BLUEPRINT_SCENE_CONFIGURATION_CPU_PRESTAGE_WORK_DIR"
 PREFIX_URL_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_PREFIX_CAPSULE_URL"
 PREFIX_SHA_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_PREFIX_CAPSULE_SHA256"
 PREFIX_BYTES_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_PREFIX_CAPSULE_BYTES"
+# The paid run's on-start downloads the capsule with the same curl helper as
+# the bundle (resume, retries), checks its sha256 and size in shell, and names
+# the local copy here; the runner reads only that file.
+PREFIX_PATH_ENV = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_PREFIX_CAPSULE_PATH"
 RECEIPT_SCHEMA = "task_evaluation_scene_configuration_cpu_prestage_receipt.v1"
 TRANSPORT_SCHEMA = "task_evaluation_scene_configuration_cpu_prestage_transport.v1"
 RESTORE_SCHEMA = "task_evaluation_scene_configuration_cpu_prestage_restore.v1"
@@ -476,6 +480,27 @@ def prepare_stage_prefix_before_gpu(
     return receipt
 
 
+def local_stage_prefix_capsule_opener(environment: Mapping[str, str]) -> Callable[..., Any] | None:
+    """The opener for the capsule the on-start already downloaded and checked.
+
+    None when this run carries no prefix. When it does, the local copy named by
+    ``PREFIX_PATH_ENV`` must be a regular file: an on-start that did not fetch
+    it (a script that does not match this bundle) stops the run by name here,
+    and the runner never falls back to fetching over the network itself.
+    ``consume_stage_prefix_capsule`` still checks its digest, size, stage ids,
+    run id and root.
+    """
+    bound = [str(environment.get(name) or "") for name in (PREFIX_URL_ENV, PREFIX_SHA_ENV, PREFIX_BYTES_ENV)]
+    local = str(environment.get(PREFIX_PATH_ENV) or "")
+    if not any(bound) and not local:
+        return None
+    _require(all(bound), "capsule_binding_incomplete")
+    path = Path(local)
+    _require(bool(local) and path.is_absolute() and not path.is_symlink() and path.is_file(),
+             "capsule_local_file_missing")
+    return lambda _url, timeout=None: path.open("rb")
+
+
 def consume_stage_prefix_capsule(*, environment: Mapping[str, str], output_root: str | Path,
                                  expected_run_id: str, opener: Callable[..., Any] | None = None) -> dict[str, Any] | None:
     """Restore a control-plane prefix at its exact paths before the paid run's chain."""
@@ -523,7 +548,8 @@ def consume_stage_prefix_capsule(*, environment: Mapping[str, str], output_root:
 
 __all__ = [
     "BUNDLE_DIRNAME", "CPU_ADAPTERS", "CpuPrestageError", "DEFAULT_WORK_DIR", "PREFIX_BYTES_ENV",
-    "PREFIX_SHA_ENV", "PREFIX_URL_ENV", "RECEIPT_SCHEMA", "STAGE_LIMIT_ENV", "WORK_DIR_ENV",
-    "consume_stage_prefix_capsule", "prepare_stage_prefix_before_gpu", "prestage_stage_limit",
+    "PREFIX_PATH_ENV", "PREFIX_SHA_ENV", "PREFIX_URL_ENV", "RECEIPT_SCHEMA", "STAGE_LIMIT_ENV", "WORK_DIR_ENV",
+    "consume_stage_prefix_capsule", "local_stage_prefix_capsule_opener", "prepare_stage_prefix_before_gpu",
+    "prestage_stage_limit",
     "prestage_ttl_seconds", "validate_stage_prefix_capsule",
 ]

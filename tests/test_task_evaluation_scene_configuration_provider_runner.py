@@ -167,3 +167,78 @@ def test_native_runner_validates_real_prefix_before_skipping_authoring_tools(tmp
     else:
         assert result["status"] == "completed" and len(observed) == 6
         assert result["stage_chain"]["stage_count"] == 6
+
+
+def _prefix_runner(tmp_path: Path, monkeypatch, *, local_copy: bool):
+    """The paid runner with a control-plane prefix bound to its run and output."""
+
+    import urllib.request
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_cpu_prestage as prestage
+    from tests.test_task_evaluation_scene_configuration_cpu_prestage import (
+        RUN_ID,
+        _capsule,
+        _consume_environment,
+    )
+
+    runner = _provider_runner()
+    runtime = tmp_path / "provider_runtime"
+    output = (tmp_path / "runtime_output").resolve()
+    result_path = output / "task_evaluation_scene_configuration_provider_result.v1.json"
+    capsule = tmp_path / "work" / "task_evaluation_scene_configuration_stage_prefix_capsule.zip"
+    capsule.parent.mkdir()
+    _capsule(capsule, ["stage-1", "stage-2", "stage-3", "stage-4"], output_root=output)
+    for name, value in _consume_environment(capsule).items():
+        monkeypatch.setenv(name, value)
+    if local_copy:
+        monkeypatch.setenv(prestage.PREFIX_PATH_ENV, str(capsule))
+    else:
+        monkeypatch.delenv(prestage.PREFIX_PATH_ENV, raising=False)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT", str(runtime))
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT", str(output))
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT", str(result_path))
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH", str(time.time() + 27_000))
+    monkeypatch.delenv("BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT", raising=False)
+    monkeypatch.setattr(runner, "_read", lambda _path: {"envelope_digest": "sha256:" + "a" * 64})
+    monkeypatch.setattr(runner, "_hydrate_envelope", lambda _runtime, _portable: {
+        "run_id": RUN_ID, "expected_production_commit": "b" * 40,
+        "control_plane_envelope_digest": "sha256:" + "c" * 64, "stage_configuration_references": []})
+    fetched: list = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: fetched.append(args))
+    reached: list = []
+
+    def stop_before_stage_execution(**_kwargs):
+        reached.append(True)
+        raise RuntimeError("test_stops_before_stage_execution")
+
+    monkeypatch.setattr(runner, "execute_scene_configuration_stage_chain", stop_before_stage_execution)
+    return runner, output, result_path, fetched, reached
+
+
+def test_paid_runner_restores_the_prefix_from_the_onstarts_local_copy(tmp_path: Path, monkeypatch) -> None:
+    runner, output, result_path, fetched, reached = _prefix_runner(tmp_path, monkeypatch, local_copy=True)
+
+    assert runner.main() == 2
+    assert fetched == [] and reached == [True]
+    assert (output / "cpu_prestage_restore.json").is_file()
+    assert (output / "stages/stage-4/producer/artifact.usda").is_file()
+    blocker = json.loads(result_path.read_text(encoding="utf-8"))["blockers"][0]
+    assert "test_stops_before_stage_execution" in blocker
+
+
+def test_paid_runner_without_the_local_capsule_stops_by_name_and_never_fetches(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """An on-start that does not match the bundle did not download the prefix."""
+
+    runner, output, result_path, fetched, reached = _prefix_runner(tmp_path, monkeypatch, local_copy=False)
+
+    assert runner.main() == 2
+    assert fetched == [] and reached == []
+    assert not (output / "cpu_prestage_restore.json").exists()
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "scene_configuration_provider_failed:CpuPrestageError:cpu_prestage_capsule_local_file_missing"
+    ]
+    assert "cpu_prestage_capsule_local_file_missing" in capsys.readouterr().out

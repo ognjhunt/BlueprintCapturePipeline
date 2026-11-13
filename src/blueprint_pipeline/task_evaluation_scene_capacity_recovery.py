@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+import os
 import shutil
 
 from . import task_evaluation_scene_intent_contracts as intake
@@ -120,6 +121,26 @@ def dead_machine_launch_failure(result) -> bool:
             and any(b in DEAD_MACHINE_PROOF_BLOCKERS for b in blockers)
             and result.get("continuing_spend_from_this_run") is False)
 RESULT_RELATIVE = "allocator/scene-configuration-job/task_evaluation_scene_configuration_vast_result.v1.json"
+ZERO_RECEIPT = "post_teardown_provider_zero_receipt.json"
+#: A recoverable launch whose provider-zero receipt is not written yet: a wait, not a fault.
+PROVIDER_ZERO_PENDING_BLOCKER = "scene_configuration_provider_zero_pending"
+#: The same receipt still missing past the bound below: flagged (non-terminal), never retried on.
+PROVIDER_ZERO_UNCONFIRMED_BLOCKER = "scene_configuration_provider_zero_unconfirmed"
+#: How long after the failed result's own ``generated_at`` a healthy host writes the
+#: receipt, from the unit timings in deploy/systemd:
+#: - blueprint-task-evaluation-launch-reconciler.timer: OnUnitInactiveSec=2min,
+#:   RandomizedDelaySec=20s; .service: TimeoutStartSec=2min (one cycle <= 4 min 20 s).
+#: - The receipt needs a guard report newer than the teardown and <= 300 s old
+#:   (the launch profile's ``reconciliation.max_guard_age_seconds``);
+#:   blueprint-gpu-spend-guard.timer: OnUnitInactiveSec=1min, RandomizedDelaySec=10s;
+#:   .service: TimeoutStartSec=20min (one run may take 20 min).
+#: Worst healthy case 20 min + 1 min 10 s + 4 min 20 s, about 25.5 min; the bound is 30.
+#: The incident this covers (2026-11-13) took 101 s from result to receipt.
+#: A deploy pauses these timers (the guard timer says so; the reconciler timer has a
+#: door-hold condition). After a deploy longer than this bound a job can be flagged
+#: PROVIDER_ZERO_UNCONFIRMED_BLOCKER (non-terminal) before its receipt arrives; it is
+#: observed every pass, so recovery proceeds normally once the receipt is written.
+PROVIDER_ZERO_CONFIRMATION_BOUND_SECONDS = 30 * 60
 MAX_LAUNCHES = 4096
 
 
@@ -258,6 +279,17 @@ def _launch_refs(directory, profile, link_path, preparation_path, factory_path, 
     return refs
 
 
+def _seconds_since(stamp, now):
+    """Seconds from an ISO time with a zone to ``now``; ``None`` when it is missing or unreadable."""
+    try:
+        moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(stamp, str) or moment.tzinfo is None:
+        return None
+    return now - moment.timestamp()
+
+
 def observe_failure(*, attempt, link_path, preparation_path, factory_path, config, now=None):
     """Find only this preparation's configuration launch, never another intent's failure."""
     import time
@@ -317,9 +349,21 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
                 observation.update(recovery_withheld=withheld, blockers=[
                     *blockers, f"preallocation_capacity_recovery_withheld:{withheld}"])
             return observation
+        if not os.path.lexists(directory / ZERO_RECEIPT):
+            # Every recoverable kind needs this receipt (validate_source reads it).
+            # The dispatcher seals the blocked launch first; the launch reconciler
+            # writes the receipt after it (website job, 2026-11-13: 08:17:23, then
+            # 08:19:04). Until then the launch is not reconciled: a wait, then a
+            # flag. Anything else at the path is refused by validation as before.
+            waited = _seconds_since(result.get("generated_at"), now)
+            unconfirmed = waited is None or waited > PROVIDER_ZERO_CONFIRMATION_BOUND_SECONDS
+            return {"recoverable": False, "pending": True, "unconfirmed": unconfirmed,
+                    "blockers": [PROVIDER_ZERO_UNCONFIRMED_BLOCKER if unconfirmed
+                                 else PROVIDER_ZERO_PENDING_BLOCKER],
+                    "result": record(result_path)}
         refs = _launch_refs(directory, profile, link_path, preparation_path, factory_path, link)
         refs.update({name: record(directory / filename) for name, filename in (
-            ("zero", "post_teardown_provider_zero_receipt.json"), ("result", RESULT_RELATIVE))})
+            ("zero", ZERO_RECEIPT), ("result", RESULT_RELATIVE))})
         values = validate_source(refs, prior_attempt=attempt, kind=kind)
         matches.append({"recoverable": True, "kind": kind,
                         "blockers": [str(b) for b in (result.get("blockers") or [])],

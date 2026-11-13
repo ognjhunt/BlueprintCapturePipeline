@@ -84,15 +84,41 @@ def _read(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
+def _sealing_name(name: str) -> str:
+    """The temporary name ``_write_immutable`` writes under before linking ``name`` into place."""
+    return f".{name}.{os.getpid()}.{os.urandom(8).hex()}.sealing"
+
+
+def _is_sealing_leftover(entry: str, final_names) -> bool:
+    """A temporary left by a crashed ``_write_immutable`` of one of ``final_names``."""
+    if not (entry.startswith(".") and entry.endswith(".sealing")):
+        return False
+    stem, _, rest = entry[1:-len(".sealing")].rpartition(".")
+    name, _, pid = stem.rpartition(".")
+    return (name in final_names and pid.isdigit() and len(rest) == 16
+            and all(c in "0123456789abcdef" for c in rest))
+
+
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
     payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Written whole under a temporary name, then linked into place: a reader (the
+    # scene progression tick) never sees a partial record, and an existing one is
+    # never replaced. Mode follows the umask, as ``open("xb")`` did.
+    temporary = path.with_name(_sealing_name(path.name))
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666)
     try:
-        with path.open("xb") as stream:
+        with os.fdopen(descriptor, "wb") as stream:
             stream.write(payload)
-    except FileExistsError:
-        if path.read_bytes() != payload:
-            raise TaskEvaluationLaunchError(f"immutable_reconciliation_conflict:{path.name}")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            if path.read_bytes() != payload:
+                raise TaskEvaluationLaunchError(f"immutable_reconciliation_conflict:{path.name}")
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _file_digest(path: Path) -> str:
@@ -841,7 +867,10 @@ def _dispatcher_run_evidence(run_root: Path) -> bool:
         return True  # Unreadable is not proof of absence: keep the existing wait.
     # The reconciler never leaves an empty run directory; only the dispatcher's
     # create_launch_output does.
-    return not entries or not entries <= _RECONCILER_RUN_ENTRIES
+    # A crashed reconciler write of its own record leaves a temporary; that is the
+    # reconciler's trace, not the dispatcher's.
+    own = {entry for entry in entries if not _is_sealing_leftover(entry, _RECONCILER_RUN_ENTRIES)}
+    return not entries or not own <= _RECONCILER_RUN_ENTRIES
 
 
 def reconcile_launches(

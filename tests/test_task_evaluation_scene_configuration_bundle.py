@@ -4445,7 +4445,7 @@ def test_stage_budget_exceeds_the_budget_it_grants_its_child() -> None:
 
 
 def test_scene_configuration_gets_the_cold_pull_heartbeat_window() -> None:
-    """The lane admits an 18-minute cold Isaac pull, so the window must know."""
+    """The lane admits a 30-minute cold Isaac pull, so the window must know."""
 
     import inspect
 
@@ -5314,6 +5314,386 @@ def test_scene_configuration_onstart_provisions_the_bundled_browser_libraries() 
         script.split(" install -y ", 1)[1].split(" >", 1)[0].split()
     )
     assert required_browser_packages <= installed
+
+
+def _scene_onstart() -> str:
+    return vpa._probe_shell_script(
+        "https://heartbeat.example.test",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        expected_provider_bundle_sha256="sha256:" + "a" * 64,
+    )
+
+
+_ENTRYPOINT_CALL = (
+    'bash "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh"; '
+    "provider_rc=$?; "
+)
+
+
+def _run_prefix_capsule_onstart_step(tmp_path: Path, environment: dict[str, str], *, fast_retries: bool = False):
+    """Run the rendered on-start from the capsule step to the entrypoint call.
+
+    The real ``blueprint_download_url`` helper (curl) and the real step text,
+    cut from the rendered script; the entrypoint is a stand-in that reports
+    what the runner would receive. ``fast_retries`` shortens only curl's retry
+    timers in this copy, so a failing transfer ends in seconds; the three
+    passes and every branch stay as rendered.
+    """
+
+    script = _scene_onstart()
+    helper = script[script.index("blueprint_download_url() { "):script.index("blueprint_upload_same_file() {")]
+    if fast_retries:
+        assert helper.count("--retry 5 --retry-delay 3 ") == 1
+        helper = helper.replace("--retry 5 --retry-delay 3 ", "--retry 0 --retry-delay 0 ")
+    step = script[script.index("prefix_capsule_rc=0; "):script.index(_ENTRYPOINT_CALL) + len(_ENTRYPOINT_CALL)]
+    assert script.index("BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED") < script.index(step)
+    assert step.index("prefix_capsule_rc=0; ") < step.index("BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED")
+    runtime = tmp_path / "provider_runtime"
+    runtime.mkdir(exist_ok=True)
+    (runtime / "run_task_evaluation_scene_configuration_provider.sh").write_text(
+        "echo RUNNER_PYTHONDONTWRITEBYTECODE:${PYTHONDONTWRITEBYTECODE:-}\n"
+        'local_capsule="${BLUEPRINT_SCENE_CONFIGURATION_STAGE_PREFIX_CAPSULE_PATH:-}"\n'
+        'echo RUNNER_LOCAL_CAPSULE:$local_capsule\n'
+        'if [ -n "$local_capsule" ]; then echo RUNNER_LOCAL_SHA:$(sha256sum "$local_capsule" | cut -d" " -f1); fi\n'
+        "exit 0\n"
+    )
+    work = tmp_path / "work"
+    work.mkdir(exist_ok=True)
+    completed = subprocess.run(
+        ["bash", "-c", "set +e; " + helper + step + "echo ENTRYPOINT_RC:$provider_rc; fi; echo STEP_DONE"],
+        # No proxy variables: curl talks to the local fixture server directly.
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "WORK_DIR": str(work),
+             "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT": str(runtime), **environment},
+        capture_output=True, text=True, check=False, timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "STEP_DONE" in completed.stdout
+    return completed.stdout, work
+
+
+@pytest.fixture
+def _capsule_server(tmp_path: Path):
+    """A local HTTP server for the capsule, like the object store's signed GET.
+
+    ``/forbidden*`` answers 403 (an expired signed link), ``/truncated*``
+    promises the whole capsule and closes after half, anything else is served
+    from the directory (404 when absent). Requests are counted by path.
+    """
+
+    import functools
+    import http.server
+    import threading
+
+    served = tmp_path / "served"
+    served.mkdir()
+    requests: list[str] = []
+
+    class _Handler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            requests.append(self.path)
+            if self.path.startswith("/forbidden"):
+                self.send_error(403)
+                return
+            if self.path.startswith("/truncated"):
+                body = _capsule_bytes()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body[: len(body) // 2])
+                self.wfile.flush()
+                self.close_connection = True
+                return
+            super().do_GET()
+
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(_Handler, directory=str(served))
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield served, f"http://127.0.0.1:{server.server_address[1]}", requests
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _capsule_bytes() -> bytes:
+    return b"PK\x05\x06" + bytes(range(256)) * 4096
+
+
+def _prefix_environment(url: str, *, sha: str | None, size: str | None) -> dict[str, str]:
+    from blueprint_pipeline.task_evaluation_scene_configuration_cpu_prestage import (
+        PREFIX_BYTES_ENV,
+        PREFIX_SHA_ENV,
+        PREFIX_URL_ENV,
+    )
+
+    environment = {PREFIX_URL_ENV: url}
+    if sha is not None:
+        environment[PREFIX_SHA_ENV] = sha
+    if size is not None:
+        environment[PREFIX_BYTES_ENV] = size
+    return environment
+
+
+def _stopped_before_the_runner(lines: list[str], work: Path) -> None:
+    from blueprint_pipeline.vast_provider_bundle_digest_guard import STAGE_PREFIX_CAPSULE_FILENAME
+
+    assert "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED" not in lines
+    assert "BLUEPRINT_VAST_SCENE_CONFIGURATION_STAGE_PREFIX_SHA256_VERIFIED" not in lines
+    assert not [line for line in lines if line.startswith("RUNNER_")]
+    assert not (work / STAGE_PREFIX_CAPSULE_FILENAME).exists()
+    assert not (work / (STAGE_PREFIX_CAPSULE_FILENAME + ".transfer")).exists()
+
+
+@pytest.mark.skipif(shutil.which("curl") is None, reason="curl is the on-start transport")
+@pytest.mark.parametrize("stale", [False, True])
+def test_onstart_downloads_and_checks_the_stage_prefix_before_the_runner(
+    tmp_path: Path, _capsule_server, stale: bool
+) -> None:
+    """With ``stale``, an earlier on-start left a wrong partial at the path.
+
+    Resuming it (``--continue-at -``) would splice its bytes into the capsule;
+    the step removes it first and downloads from byte zero.
+    """
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_cpu_prestage import PREFIX_PATH_ENV
+    from blueprint_pipeline.vast_provider_bundle_digest_guard import STAGE_PREFIX_CAPSULE_FILENAME
+
+    served, base, requests = _capsule_server
+    payload = _capsule_bytes()
+    (served / "prefix.zip").write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    if stale:
+        (tmp_path / "work").mkdir()
+        (tmp_path / "work" / STAGE_PREFIX_CAPSULE_FILENAME).write_bytes(b"\xff" * 4096)
+
+    output, work = _run_prefix_capsule_onstart_step(tmp_path, _prefix_environment(
+        f"{base}/prefix.zip?X-Amz-Signature=fixture", sha="sha256:" + digest, size=str(len(payload))),
+        fast_retries=stale)
+
+    lines = output.splitlines()
+    local = work / STAGE_PREFIX_CAPSULE_FILENAME
+    assert lines.index("BLUEPRINT_VAST_SCENE_CONFIGURATION_STAGE_PREFIX_DOWNLOAD_STARTED") < lines.index(
+        "BLUEPRINT_VAST_SCENE_CONFIGURATION_STAGE_PREFIX_DOWNLOAD_EXIT_CODE:0") < lines.index(
+        "BLUEPRINT_VAST_SCENE_CONFIGURATION_STAGE_PREFIX_SHA256_VERIFIED") < lines.index(
+        "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED")
+    assert f"RUNNER_LOCAL_CAPSULE:{local}" in lines
+    assert f"RUNNER_LOCAL_SHA:{digest}" in lines
+    assert local.read_bytes() == payload
+    assert not (work / (STAGE_PREFIX_CAPSULE_FILENAME + ".transfer")).exists()
+    assert "ENTRYPOINT_RC:0" in lines
+    assert len(requests) == 1
+    # Plain progress lines: none may switch the wait to structured markers early.
+    assert not [line for line in lines if line.startswith("BLUEPRINT_") and "_PROGRESS:" in line]
+    assert PREFIX_PATH_ENV == "BLUEPRINT_SCENE_CONFIGURATION_STAGE_PREFIX_CAPSULE_PATH"
+
+
+@pytest.mark.skipif(shutil.which("curl") is None, reason="curl is the on-start transport")
+@pytest.mark.parametrize("fault", ["sha256", "bytes"])
+def test_a_stage_prefix_that_does_not_match_its_binding_stops_before_the_runner(
+    tmp_path: Path, _capsule_server, fault: str
+) -> None:
+    served, base, _requests = _capsule_server
+    payload = _capsule_bytes()
+    (served / "prefix.zip").write_bytes(payload)
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    output, work = _run_prefix_capsule_onstart_step(tmp_path, _prefix_environment(
+        f"{base}/prefix.zip", sha="sha256:" + "0" * 64 if fault == "sha256" else digest,
+        size=str(len(payload) + 1 if fault == "bytes" else len(payload))))
+
+    lines = output.splitlines()
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_stage_prefix_digest_mismatch" in lines
+    assert "BLUEPRINT_VAST_SCENE_CONFIGURATION_STAGE_PREFIX_DOWNLOAD_EXIT_CODE:0" in lines
+    _stopped_before_the_runner(lines, work)
+
+
+@pytest.mark.skipif(shutil.which("curl") is None, reason="curl is the on-start transport")
+@pytest.mark.parametrize("path,http,curl_codes", [
+    ("missing.zip", "404", {"22"}),
+    ("forbidden/prefix.zip", "403", {"22"}),
+    ("truncated/prefix.zip", "200", {"18", "33", "56"}),
+])
+def test_a_failed_stage_prefix_transfer_names_its_status_and_leaves_no_partial(
+    tmp_path: Path, _capsule_server, path: str, http: str, curl_codes: set[str]
+) -> None:
+    """An expired link (403), a missing object (404) and a cut transfer differ by name."""
+
+    _served, base, requests = _capsule_server
+    payload = _capsule_bytes()
+    signature = "X-Amz-Signature=fixture-signature"
+
+    output, work = _run_prefix_capsule_onstart_step(tmp_path, _prefix_environment(
+        f"{base}/{path}?{signature}", sha="sha256:" + hashlib.sha256(payload).hexdigest(),
+        size=str(len(payload))), fast_retries=True)
+
+    lines = output.splitlines()
+    assert "BLUEPRINT_VAST_SCENE_CONFIGURATION_STAGE_PREFIX_DOWNLOAD_EXIT_CODE:28" in lines
+    [blocked] = [line for line in lines if line.startswith("BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:")]
+    prefix = f"BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_stage_prefix_download_failed:28:http_{http}:curl_"
+    assert blocked.startswith(prefix), blocked
+    assert blocked[len(prefix):] in curl_codes, blocked
+    assert signature not in output and "127.0.0.1" not in blocked
+    assert len(requests) == 3  # three resumable passes of the shared helper
+    _stopped_before_the_runner(lines, work)
+
+
+@pytest.mark.parametrize("sha,size,blocker", [
+    (None, "4096", "binding_incomplete"),
+    ("", "4096", "binding_incomplete"),
+    ("sha256:" + "a" * 64, None, "binding_incomplete"),
+    ("sha256:" + "a" * 64, "", "binding_incomplete"),
+    ("a" * 64, "4096", "binding_invalid"),
+    ("sha256:" + "A" * 64, "4096", "binding_invalid"),
+    ("sha256:" + "a" * 63, "4096", "binding_invalid"),
+    ("sha256:" + "a" * 65, "4096", "binding_invalid"),
+    ("sha256:" + "g" * 64, "4096", "binding_invalid"),
+    ("sha256:" + "a" * 64, "12a", "binding_invalid"),
+    ("sha256:" + "a" * 64, "-5", "binding_invalid"),
+    ("sha256:" + "a" * 64, "0", "binding_invalid"),
+    ("sha256:" + "a" * 64, "04096", "binding_invalid"),
+])
+def test_a_stage_prefix_binding_is_checked_by_name_before_any_transfer(
+    tmp_path: Path, _capsule_server, sha: str | None, size: str | None, blocker: str
+) -> None:
+    """An older host that passed no sha256 or size, or a malformed one, never downloads."""
+
+    _served, base, requests = _capsule_server
+
+    output, work = _run_prefix_capsule_onstart_step(
+        tmp_path, _prefix_environment(f"{base}/prefix.zip", sha=sha, size=size))
+
+    lines = output.splitlines()
+    assert f"BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:scene_configuration_stage_prefix_{blocker}" in lines
+    assert not [line for line in lines if "STAGE_PREFIX_DOWNLOAD" in line]
+    assert requests == []
+    _stopped_before_the_runner(lines, work)
+
+
+def test_the_shared_download_helper_reports_only_when_asked() -> None:
+    """Every other download (the bundle among them) runs curl exactly as before."""
+
+    from blueprint_pipeline.vast_provider_bundle_digest_guard import DOWNLOAD_REPORT_OPTION
+
+    script = _scene_onstart()
+    helper = script[script.index("blueprint_download_url() { "):script.index("blueprint_upload_same_file() {")]
+    assert DOWNLOAD_REPORT_OPTION in helper
+    assert DOWNLOAD_REPORT_OPTION.startswith("${blueprint_download_report:+")
+    step = script[script.index("prefix_capsule_rc=0; "):script.index(_ENTRYPOINT_CALL)]
+    assert 'blueprint_download_report="$PREFIX_CAPSULE_TRANSFER"; ' in step
+    assert step.index('blueprint_download_report="$PREFIX_CAPSULE_TRANSFER"; ') < step.index(
+        "blueprint_download_url ") < step.index("blueprint_download_report=''; ")
+    assert "blueprint_download_report" not in script.replace(helper, "").replace(step, "")
+
+
+def test_a_run_without_a_stage_prefix_starts_the_runner_without_downloading(tmp_path: Path) -> None:
+    output, work = _run_prefix_capsule_onstart_step(tmp_path, {})
+
+    lines = output.splitlines()
+    assert not [line for line in lines if "STAGE_PREFIX" in line]
+    assert "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED" in lines
+    assert "RUNNER_LOCAL_CAPSULE:" in lines
+    assert list(work.iterdir()) == []
+
+
+def test_onstart_and_entrypoint_write_no_bytecode(tmp_path: Path) -> None:
+    """Root ignores the sealed toolchain's read-only modes; no ``__pycache__``.
+
+    The on-start exports it before the entrypoint (covering the output-archive
+    step too); the bundle's entrypoint exports it before its first Python.
+    """
+
+    output, _work = _run_prefix_capsule_onstart_step(tmp_path, {})
+    assert "RUNNER_PYTHONDONTWRITEBYTECODE:1" in output.splitlines()
+    script = _scene_onstart()
+    assert script.index("export PYTHONDONTWRITEBYTECODE=1; ") < script.index(_ENTRYPOINT_CALL) < script.index(
+        "write_output_archive(output_dir, output_zip)")
+
+    entrypoint = (
+        Path(__file__).resolve().parents[1] / "scripts" / "run_task_evaluation_scene_configuration_provider.sh"
+    ).read_text(encoding="utf-8")
+    export = "\nexport PYTHONDONTWRITEBYTECODE=1\n"
+    assert export in entrypoint
+    # Before every Python step it runs (``write_blocked_result`` is only defined above it).
+    for step in ('"$PYTHON_BIN" - "$RUNTIME_ROOT/toolchain"',
+                 "blueprint_pipeline.task_evaluation_scene_configuration_python_runtime",
+                 '"$PYTHON_BIN" "$RUNTIME_ROOT/task_evaluation_scene_configuration_provider_runner.py"'):
+        assert entrypoint.index(export) < entrypoint.index(step)
+
+
+def test_entrypoint_runner_process_tree_inherits_no_bytecode(tmp_path: Path) -> None:
+    """Run the real entrypoint up to its first Python and read what it inherits."""
+
+    runtime = tmp_path / "provider_runtime"
+    runtime.mkdir()
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    seen = tmp_path / "python_environment.log"
+    (stub / "python3").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "PYTHONDONTWRITEBYTECODE=${{PYTHONDONTWRITEBYTECODE:-}}" >> "{seen}"\n'
+        "cat >/dev/null\n"
+        "exit 86\n"
+    )
+    (stub / "python3").chmod(0o755)
+    script = Path(__file__).resolve().parents[1] / "scripts/run_task_evaluation_scene_configuration_provider.sh"
+    # A file, not a pipe: the entrypoint's progress ticker sleeps in a child.
+    with (tmp_path / "entrypoint.log").open("wb") as log:
+        completed = subprocess.run(
+            ["bash", str(script)],
+            env={"PATH": f"{stub}:/usr/bin:/bin",
+                 "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT": str(runtime),
+                 "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT": str(tmp_path / "runtime_output")},
+            stdout=log, stderr=subprocess.STDOUT, check=False, timeout=60,
+        )
+    assert completed.returncode == 86
+    observed = seen.read_text().splitlines()
+    assert observed and set(observed) == {"PYTHONDONTWRITEBYTECODE=1"}
+
+
+def test_apt_steps_each_leave_a_plain_progress_line_and_keep_their_timeouts() -> None:
+    script = _scene_onstart()
+    update = script.index("timeout 300 apt-get ")
+    update_line = script.index("echo BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_UPDATE_EXIT_CODE:$apt_update_rc; ")
+    install = script.index("timeout 900 apt-get ")
+    install_line = script.index("echo BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_INSTALL_EXIT_CODE:$toolchain_rc; ")
+    assert update < update_line < install < install_line < script.index("for required_command in")
+    assert script.count("timeout 300 apt-get ") == 1 and script.count("timeout 900 apt-get ") == 1
+    assert "_PROGRESS:" not in script[update:install_line]
+
+
+@pytest.mark.parametrize("update_rc,install_rc", [(0, 0), (100, 0), (0, 100), (124, 0), (0, 124)])
+def test_apt_markers_keep_the_failure_code_the_toolchain_check_reports(
+    tmp_path: Path, update_rc: int, install_rc: int
+) -> None:
+    script = _scene_onstart()
+    start = script.index("if [ $toolchain_rc -eq 0 ] && command -v apt-get")
+    end = script.index('mkdir -p "$WORK_DIR/scene_configuration_bin"; ')
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "apt-get").write_text(
+        "#!/bin/sh\n"
+        f'case "$*" in *" update"*) exit {update_rc};; *" install "*) exit {install_rc};; esac\nexit 3\n'
+    )
+    (stub / "apt-get").chmod(0o755)
+    completed = subprocess.run(
+        ["bash", "-c", "toolchain_rc=0; " + script[start:end] + "echo TOOLCHAIN_RC:$toolchain_rc"],
+        env={"PATH": f"{stub}:/usr/bin:/bin"}, capture_output=True, text=True, check=False, timeout=60,
+    )
+    lines = completed.stdout.splitlines()
+    assert f"BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_UPDATE_EXIT_CODE:{update_rc}" in lines
+    expected = update_rc or install_rc
+    assert f"TOOLCHAIN_RC:{expected}" in lines
+    if update_rc:
+        assert not [line for line in lines if "APT_INSTALL_EXIT_CODE" in line]
+    else:
+        assert f"BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_INSTALL_EXIT_CODE:{install_rc}" in lines
 
 
 def test_publication_restores_only_bound_metadata_from_portable_bundle(tmp_path):

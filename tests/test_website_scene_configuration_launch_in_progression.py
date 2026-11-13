@@ -432,3 +432,79 @@ def test_scene_progression_ticks_stage_then_launch_a_website_job(
     assert third["state"]["scene_configuration_launch"] == launched
     assert third["event_sequence"] == second["event_sequence"]
     assert len(tick.submissions) == 1
+
+
+def test_an_activation_this_release_refuses_parks_the_job_without_crashing_or_looping(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-11-13: a same-release retry's activation intent conflicted with the first
+    attempt's registration. The error escaped the tick and ended every run that reached it."""
+    from blueprint_pipeline.task_evaluation_scene_outcome import read_outcome
+    from tests.test_website_native_submission import prepare_website_construction
+
+    prepare_website_construction(tmp_path, monkeypatch, False)
+    config_path, moment = _activation_enabled(tmp_path)
+    _launch_environment(tmp_path, monkeypatch)
+    provisions: list[dict] = []
+
+    def refused(**kwargs):
+        provisions.append(kwargs)
+        raise automation.SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_immutable_conflict:intent_registry_same_release_conflict")
+
+    def tick(at: float) -> dict:
+        [row] = progression.process_scene_intents(
+            config_path=config_path, now=at, activation_provisioner=refused,
+            configuration_launcher=lambda **_: pytest.fail("a refused activation never launches"))["results"]
+        return row
+
+    row = tick(moment)
+    assert (row["status"], row["blockers"]) == ("blocked", [progression.ACTIVATION_CONFLICT_BLOCKER])
+    assert row["blocker_detail"][0] == "intent_registry_same_release_conflict"
+    directory = next((tmp_path / "intents").glob("scene-*"))
+    intent = json.loads((directory / "intent.json").read_text())
+    decided = read_outcome(directory, intent)
+    assert (decided["kind"], decided["terminal"], decided["reason_code"]) == ("setup_repair", False, "pipeline_fault")
+    projection = json.loads((directory / "progression.json").read_text())
+    inputs = next(tmp_path.rglob("activation_inputs.json"))
+    sealed = inputs.read_bytes()
+
+    # Later passes on the same release: parked, with no new provisioning, events or inputs.
+    # The parked row repeats the code; the location and the fixed refusal code stay on the record.
+    assert projection["state"][progression.DEPENDENCY_FAILURE_FIELD] == row["blocker_detail"][1]
+    assert projection["state"][progression.ACTIVATION_REFUSAL_FIELD] == "intent_registry_same_release_conflict"
+    for at in (moment + 60, moment + 120):
+        assert tick(at) == {key: value for key, value in row.items() if key != "blocker_detail"}
+    assert len(provisions) == 1
+    assert json.loads((directory / "progression.json").read_text()) == projection
+    assert inputs.read_bytes() == sealed
+
+
+@pytest.mark.parametrize("first", [
+    "scene_configuration_activation_immutable_conflict:[Errno 28] No space left on device",
+    "scene_configuration_activation_immutable_conflict",
+    "scene_configuration_activation_immutable_conflict:intent_registry_lock_invalid",
+])
+def test_another_activation_refusal_with_the_same_code_is_tried_again_next_pass(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str) -> None:
+    """Only the registry's same-release conflict parks; a full disk is retried."""
+    from tests.test_website_native_submission import prepare_website_construction
+
+    prepare_website_construction(tmp_path, monkeypatch, False)
+    config_path, moment = _activation_enabled(tmp_path)
+    _launch_environment(tmp_path, monkeypatch)
+    provisions: list[dict] = []
+
+    def refused(**kwargs):
+        provisions.append(kwargs)
+        raise automation.SceneConfigurationActivationAutomationError(first)
+
+    for index, at in enumerate((moment, moment + 60, moment + 120)):
+        [row] = progression.process_scene_intents(
+            config_path=config_path, now=at, activation_provisioner=refused,
+            configuration_launcher=lambda **_: pytest.fail("a refused activation never launches"))["results"]
+        assert row["blockers"] == [progression.ACTIVATION_CONFLICT_BLOCKER]
+        assert len(provisions) == index + 1
+    directory = next((tmp_path / "intents").glob("scene-*"))
+    stored = json.loads((directory / "progression.json").read_text())["state"]
+    assert progression.ACTIVATION_REFUSAL_FIELD not in stored
+    assert "Errno" not in json.dumps(stored) and "No space" not in json.dumps(stored)

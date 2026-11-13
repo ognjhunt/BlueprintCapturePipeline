@@ -1944,3 +1944,135 @@ def test_articulated_stage_three_refuses_an_unbound_depth_hypothesis(tmp_path):
                 artifact("replacement_graph_spec", sealed["graph_path"]),
             ),
         )
+
+
+# --- stage 5 and 6 artifacts survive the provider output archive -------------
+
+
+@pytest.mark.parametrize("suffix", [".usda", ".usdc", ".usdz", ".usd"])
+def test_stage_five_and_six_artifacts_survive_the_provider_output_archive(tmp_path: Path, suffix: str) -> None:
+    """Publication re-hashes every declared stage artifact from the provider zip.
+
+    ``write_output_archive`` silently leaves out anything under an excluded
+    directory name, and publication then refuses the whole result. Run the
+    real stage-5 (``simready_native_import_qualification``, with the passive
+    destination) and stage-6 (``native_task_scene_assembly``) handlers at the
+    paid run's own layout and check that every path they declare is outside
+    every excluded name and comes back out of the archive byte for byte.
+    """
+
+    import zipfile
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import (
+        EXCLUDED_PARTS,
+        write_output_archive,
+    )
+
+    runtime_output = tmp_path / "task_evaluation_scene_configuration_provider_bundle" / "runtime_output"
+    stages = runtime_output / "stages"
+    upstream = {}
+    for stage_id, name, payload in (
+        ("stage-1", "configured_appearance_without_source_object.usdc", b"appearance"),
+        ("stage-2", "configured_collision_without_source_object.usda", b"#usda 1.0\n"),
+        ("stage-4", "statically_qualified_replacement_asset" + suffix, b"replacement"),
+        ("stage-4", "static_qualification_receipt.v1.json", b'{"status":"qualified"}\n'),
+        ("stage-4", "statically_qualified_destination_asset.usdz", b"PK-tray"),
+        ("stage-4", "destination_static_qualification_receipt.v1.json", b'{"status":"qualified"}\n'),
+    ):
+        path = stages / stage_id / "adapter" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        upstream[name.split(".")[0]] = path
+    identity = {"id": "replacement-mug", "version": "v1"}
+    producer = stages / "stage-5" / "producer"
+    producer.mkdir(parents=True)
+    runtime_path = _json_file(producer / "native_import_runtime_result.v1.json", _native_runtime_result(
+        identity=identity, asset=upstream["statically_qualified_replacement_asset"],
+        static_receipt=upstream["static_qualification_receipt"]))
+    destination_runtime_path = _json_file(
+        producer / "destination_native_import_runtime_result.v1.json",
+        _native_runtime_result(identity=DESTINATION_IDENTITY,
+                               asset=upstream["statically_qualified_destination_asset"],
+                               static_receipt=upstream["destination_static_qualification_receipt"]))
+    (tmp_path / "inputs").mkdir()
+    native_configuration = _native_stage_inputs(tmp_path / "inputs")["configuration"]
+    native_adapter = stages / "stage-5" / "adapter"
+    native_adapter.mkdir()
+    stage_five = execute_simready_native_import_qualification(
+        envelope={"recipe": {"subject_identity": identity,
+                             "supplemental_destination": {"identity": DESTINATION_IDENTITY, "relation": "inside"}}},
+        stage={"stage_id": "stage-5", "capability": "replacement_native_import_qualification",
+               "execution_class": "gpu_canary"},
+        configuration=native_configuration,
+        configuration_path=_json_file(tmp_path / "native-configuration.json", native_configuration),
+        dependency_results=({"output_artifacts": [
+            artifact("statically_qualified_replacement_asset", upstream["statically_qualified_replacement_asset"]),
+            artifact("static_qualification_receipt", upstream["static_qualification_receipt"]),
+            artifact("statically_qualified_destination_asset", upstream["statically_qualified_destination_asset"]),
+            artifact("destination_static_qualification_receipt",
+                     upstream["destination_static_qualification_receipt"]),
+        ]},),
+        output_root=native_adapter,
+        provider_runtime_artifacts=(artifact("native_import_runtime_result", runtime_path),
+                                    artifact("destination_native_import_runtime_result", destination_runtime_path)),
+    )
+    scene_identity = {"id": "website-scene", "version": "v1"}
+    assembly_configuration = {
+        "schema_version": "task_evaluation_scene_assembly_configuration.v1",
+        "scene_identity": scene_identity,
+        "replacement": {
+            "qualified_asset_from_stage": "stage-5",
+            "source_and_replacement_visual_instances_must_not_coexist": True,
+            "source_and_replacement_collision_instances_must_not_coexist": True,
+        },
+        "robot_mount_interface": {
+            "publish_robot_neutral_scene_mount_frame": True,
+            "robot_specific_base_transform_and_reachability_deferred_to_each_evaluation": True,
+        },
+        "evaluation_episode_executed_in_this_run": False,
+        "scene_construction_repeated_per_evaluation": False,
+    }
+    assembly_adapter = stages / "stage-6" / "adapter"
+    assembly_adapter.mkdir(parents=True)
+    stage_six = execute_native_task_scene_assembly(
+        envelope={"run_id": "website-run", "team_namespace": "blueprint-adp", "expected_production_commit": "a" * 40,
+                  "recipe": {"scene_identity": scene_identity, "task_identity": {"id": "task", "version": "v1"},
+                             "subject_identity": identity}},
+        stage={"stage_id": "stage-6", "capability": "scene_assembly", "execution_class": "no_spend"},
+        configuration=assembly_configuration,
+        configuration_path=_json_file(tmp_path / "assembly.json", assembly_configuration),
+        dependency_results=(
+            {"output_artifacts": [artifact("configured_appearance_without_source_object",
+                                           upstream["configured_appearance_without_source_object"])]},
+            {"output_artifacts": [artifact("configured_collision_without_source_object",
+                                           upstream["configured_collision_without_source_object"])]},
+            {"output_artifacts": []},
+            {"output_artifacts": []},
+            stage_five,
+        ),
+        output_root=assembly_adapter,
+    )
+
+    declared = {}
+    for result in (stage_five, stage_six):
+        for row in result["output_artifacts"]:
+            relative = Path(row["path"]).resolve().relative_to(runtime_output.resolve())
+            declared[relative.as_posix()] = row
+    assert sorted(declared) == sorted([
+        f"stages/stage-5/adapter/native_qualified_replacement_asset{suffix}",
+        "stages/stage-5/adapter/native_import_qualification_receipt.v1.json",
+        "stages/stage-5/adapter/native_qualified_destination_asset.usdz",
+        "stages/stage-5/adapter/destination_native_import_qualification_receipt.v1.json",
+        "stages/stage-6/adapter/configured_scene_bundle_candidate/configured_scene_bundle_candidate.v1.json",
+        "stages/stage-6/adapter/scene_assembly_receipt.v1.json",
+    ])
+    excluded = {relative: sorted(EXCLUDED_PARTS & set(Path(relative).parts)) for relative in declared}
+    assert {relative: parts for relative, parts in excluded.items() if parts} == {}
+
+    output_zip = tmp_path / "task_evaluation_scene_configuration_provider_output.zip"
+    write_output_archive(runtime_output, output_zip)
+    with zipfile.ZipFile(output_zip) as archive:
+        members = set(archive.namelist())
+        for relative, row in declared.items():
+            assert relative in members, relative
+            assert "sha256:" + hashlib.sha256(archive.read(relative)).hexdigest() == row["digest"]

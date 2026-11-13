@@ -1869,3 +1869,71 @@ def test_a_machine_that_died_after_the_cpu_prestage_is_retried_as_a_dead_machine
     ]
     assert result["continuing_spend_from_this_run"] is False
     assert dead_machine_launch_failure(result) is True
+
+
+# ---------------------------------------------------------------------------
+# The admitted cold Isaac pull (2026-11-12: two cold machines still pulling
+# when the 1200 s start-up wait ended them)
+# ---------------------------------------------------------------------------
+
+
+def test_scene_configuration_launch_admits_a_30_minute_cold_pull(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline.vast_probe_guards import (
+        cold_pull_aware_heartbeat_no_progress_seconds,
+    )
+
+    lane = _harness(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    fake_adapter = scene_vast.run_vast_provider_adapter
+
+    def adapter(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        return fake_adapter(**kwargs)
+
+    monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", adapter)
+
+    result = lane.run()
+
+    assert result["status"] == "completed", result.get("blockers")
+    (kwargs,) = calls
+    assert kwargs["allow_cold_isaac_image_pull"] is True
+    assert kwargs["min_cold_isaac_pull_live_minutes"] == 30
+    # Unchanged around it: the configured wait and the money.
+    assert kwargs["heartbeat_no_progress_seconds"] == 1_200
+    assert kwargs["max_hourly_rate"] == MAX_HOURLY_RATE_USD
+
+    def window(kind: str) -> int:
+        return cold_pull_aware_heartbeat_no_progress_seconds(
+            configured_seconds=kwargs["heartbeat_no_progress_seconds"],
+            provider_bundle_kind=kind,
+            allow_cold_image_pull=kwargs["allow_cold_isaac_image_pull"],
+            min_cold_image_pull_live_minutes=kwargs["min_cold_isaac_pull_live_minutes"],
+            startup_timeout_seconds=kwargs["startup_timeout_seconds"],
+            max_live_minutes=kwargs["max_live_minutes"],
+        )
+
+    # The start-up wait the adapter resolves for this launch is 30 minutes.
+    assert window(kwargs["provider_bundle_kind"]) == 1_800
+    # A kind outside the cold-pull list keeps its configured wait.
+    assert window("isaac") == 1_200
+
+    # S2: this launch opts into the download-speed preference, and the real
+    # image preflight for its arguments admits the cold pull, so the floor is on.
+    from blueprint_pipeline import vast_provider_adapter as vpa
+
+    assert kwargs["prefer_fast_cold_pull_download"] is True
+    preflight = vpa._isaac_image_startup_preflight(
+        job_dir=tmp_path, generated_at="2026-11-13T00:00:00Z",
+        enable_isaac_smoke=kwargs["enable_isaac_smoke"],
+        enable_blueprint_bundle=kwargs["enable_blueprint_bundle"],
+        provider_bundle_kind=kwargs["provider_bundle_kind"],
+        selected_container_image=kwargs["isaac_image"], vast_template_hash_id=None,
+        use_vast_template_image=False, max_live_minutes=kwargs["max_live_minutes"],
+        allow_cold_isaac_image_pull=kwargs["allow_cold_isaac_image_pull"],
+        min_cold_isaac_pull_live_minutes=kwargs["min_cold_isaac_pull_live_minutes"],
+    )
+    assert preflight["blockers"] == []
+    assert vpa._cold_pull_download_speed_floor_mbps(
+        preflight, opted_in=kwargs["prefer_fast_cold_pull_download"]) == 500.0
+    # S1: its container-missing bound agrees with the admitted cold pull.
+    assert vpa._container_missing_max_seconds(kwargs["provider_bundle_kind"]) == 1_800

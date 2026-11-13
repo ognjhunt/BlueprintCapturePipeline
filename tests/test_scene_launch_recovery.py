@@ -590,3 +590,120 @@ def test_a_machine_that_died_after_the_cpu_prestage_of_a_zero_retry_intent_is_re
         engine._recover_configuration_capacity(**args)
     assert "recovery_predecessors" not in state
     assert len(list((directory / "preparation-attempts").glob("*.json"))) == 1
+
+
+def test_a_dead_machine_whose_provider_zero_receipt_is_not_written_yet_waits_and_then_recovers(
+        tmp_path, monkeypatch):
+    """Website job, 2026-11-13: the dispatcher sealed the blocked launch at 08:17:23,
+    the launch reconciler wrote ``post_teardown_provider_zero_receipt.json`` at 08:19:04,
+    and the 08:17:45 tick read the receipt in between. Its FileNotFoundError parked the
+    job as ``pipeline_fault``; the launch is simply not reconciled yet."""
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    directory, free, state, args = _cpu_prestage_dead_machine_job(tmp_path, monkeypatch)
+    observed = _observe(free, args["config"], {"link": {"path": str(args["link_path"])},
+        "preparation": {"path": str(args["preparation_path"])}, "factory": state["factory"]})
+    zero = Path(observed["records"]["zero"]["path"])
+    assert zero.name == "post_teardown_provider_zero_receipt.json"
+    sealed = zero.read_bytes()
+    zero.unlink()
+
+    pending = _observe(free, args["config"], {"link": {"path": str(args["link_path"])},
+        "preparation": {"path": str(args["preparation_path"])}, "factory": state["factory"]})
+    assert pending["recoverable"] is False and pending["pending"] is True
+    assert pending["blockers"] == [recovery.PROVIDER_ZERO_PENDING_BLOCKER]
+    waited = engine._recover_configuration_capacity(**args)
+    assert waited == {"status": "awaiting_execution", "phase": "scene_configuration",
+                      "blockers": [recovery.PROVIDER_ZERO_PENDING_BLOCKER]}
+    # A wait is no fault and nothing is spent or retained for it.
+    assert decide_outcome(waited["status"], waited["phase"], waited["blockers"]) is None
+    assert "configuration_failure" not in state and "recovery_predecessors" not in state
+    assert state["attempt_id"] == free["attempt_id"]
+    assert len(list((directory / "preparation-attempts").glob("*.json"))) == 1
+    assert not (tmp_path / "output" / "capacity-recovery").exists()
+
+    zero.write_bytes(sealed)
+    reserved = engine._recover_configuration_capacity(**{**args, "now": 201})
+    assert reserved == {"status": "preparing", "phase": "capacity_recovery_reserved", "blockers": []}
+    assert state["recovery_predecessors"][-1]["kind"] == PAID_RETRY_KIND
+    assert len(list((directory / "preparation-attempts").glob("*.json"))) == 2
+
+
+def _without_zero_receipt(tmp_path, monkeypatch, *, result_changes=None):
+    """The dead-machine job with its provider-zero receipt taken away (and its bytes kept)."""
+    directory, free, state, args = _cpu_prestage_dead_machine_job(tmp_path, monkeypatch)
+    refs = {"link": {"path": str(args["link_path"])}, "preparation": {"path": str(args["preparation_path"])},
+            "factory": state["factory"]}
+    observed = _observe(free, args["config"], refs)
+    if result_changes is not None:
+        result_path = Path(observed["records"]["result"]["path"])
+        result = {**observed["values"]["result"], **result_changes}
+        result = {key: value for key, value in result.items() if value is not _ABSENT}
+        write(result_path, result, "result_digest")
+    zero = Path(observed["records"]["zero"]["path"])
+    sealed = zero.read_bytes()
+    zero.unlink()
+    generated = datetime.fromisoformat(observed["values"]["result"]["generated_at"]).timestamp()
+    return directory, free, state, args, refs, zero, sealed, generated
+
+
+_ABSENT = object()
+
+
+def test_a_missing_provider_zero_receipt_waits_up_to_the_bound_then_is_flagged_never_retried(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    directory, free, state, args, refs, zero, sealed, generated = _without_zero_receipt(tmp_path, monkeypatch)
+    bound = recovery.PROVIDER_ZERO_CONFIRMATION_BOUND_SECONDS
+    assert bound == 30 * 60
+
+    inside = engine._recover_configuration_capacity(**{**args, "now": generated + bound})
+    assert inside == {"status": "awaiting_execution", "phase": "scene_configuration",
+                      "blockers": [recovery.PROVIDER_ZERO_PENDING_BLOCKER]}
+    past = engine._recover_configuration_capacity(**{**args, "now": generated + bound + 1})
+    assert past == {"status": "blocked", "phase": "scene_configuration",
+                    "blockers": [recovery.PROVIDER_ZERO_UNCONFIRMED_BLOCKER]}
+    flagged = decide_outcome(past["status"], past["phase"], past["blockers"])
+    assert flagged == {"kind": "setup_repair", "terminal": False, "reason_category": "blueprint_fault",
+                       "reason_code": "pipeline_fault"}
+    # The timeout itself is never a retry: nothing retained, reserved or recorded.
+    assert "configuration_failure" not in state and "recovery_predecessors" not in state
+    assert len(list((directory / "preparation-attempts").glob("*.json"))) == 1
+    assert not (tmp_path / "output" / "capacity-recovery").exists()
+
+    # Still observed on every pass: a receipt that arrives late meets the normal rule.
+    zero.write_bytes(sealed)
+    late = _observe(free, args["config"], refs, now=generated + 4 * bound)
+    assert late["recoverable"] is True and late["kind"] == recovery.DEAD_MACHINE_KIND
+
+
+@pytest.mark.parametrize("generated_at", [_ABSENT, None, "", "not-a-time", "2026-11-13T08:17:20", 1794557840])
+def test_a_result_without_a_readable_zoned_time_is_past_the_bound(tmp_path, monkeypatch, generated_at):
+    _directory, free, _state, args, refs, _zero, _sealed, _generated = _without_zero_receipt(
+        tmp_path, monkeypatch, result_changes={"generated_at": generated_at})
+    observed = _observe(free, args["config"], refs, now=200)
+    assert observed["pending"] is True and observed["unconfirmed"] is True
+    assert observed["blockers"] == [recovery.PROVIDER_ZERO_UNCONFIRMED_BLOCKER]
+
+
+def test_a_failure_no_rule_takes_is_not_pending_without_its_receipt(tmp_path, monkeypatch):
+    """Pending is only for a launch some recovery rule would take; anything else is named as on main."""
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    blockers = ["scene_configuration_scene_inputs_invalid"]
+    _directory, free, state, args, refs, _zero, _sealed, _generated = _without_zero_receipt(
+        tmp_path, monkeypatch, result_changes={"blockers": blockers})
+    observed = _observe(free, args["config"], refs)
+    assert observed == {"recoverable": False, "blockers": blockers, "result": observed["result"]}
+    assert engine._recover_configuration_capacity(**args) == {
+        "status": "blocked", "phase": "scene_configuration_failed", "blockers": blockers}
+    assert state["configuration_failure"] == observed["result"]
+
+
+def test_a_directory_or_dangling_symlink_at_the_receipt_path_is_refused_not_pending(tmp_path, monkeypatch):
+    _directory, free, _state, args, refs, zero, _sealed, _generated = _without_zero_receipt(tmp_path, monkeypatch)
+    zero.mkdir()
+    with pytest.raises(IsADirectoryError):
+        _observe(free, args["config"], refs)
+    zero.rmdir()
+    zero.symlink_to(zero.parent / "absent-receipt.json")
+    with pytest.raises(ValueError, match="symlink"):
+        _observe(free, args["config"], refs)

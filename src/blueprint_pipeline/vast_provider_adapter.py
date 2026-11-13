@@ -82,8 +82,10 @@ from .paid_resource_admission import (
     PaidResourceAdmissionGrant,
     require_paid_resource_admission_grant,
 )
-from .vast_offer_selection_helpers import (
-    keyword_match_rank as _keyword_match_rank,
+from .vast_offer_selection_helpers import (  # noqa: F401 - floor re-exported for callers
+    COLD_PULL_PREFERRED_MIN_DOWNLOAD_MBPS, download_speed_manifest_fields, download_speed_mbps,
+    cold_pull_download_speed_floor_mbps as _cold_pull_download_speed_floor_mbps,
+    download_speed_sort_rank, keyword_match_rank as _keyword_match_rank,
     machine_id_set as _machine_id_set,
     regex_match_rank as _regex_match_rank,
     version_at_least as _version_at_least,
@@ -149,6 +151,8 @@ from .vast_probe_guards import (
     VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
     bounded_container_missing_retry_attempts,
     cold_pull_aware_heartbeat_no_progress_seconds,
+    heartbeat_wait_end_summary as _heartbeat_wait_end_summary,
+    terminal_startup_error as _terminal_startup_error,
 )
 from .vast_session_budget_contract import (
     attempt_estimated_cost as _attempt_estimated_cost,
@@ -198,7 +202,7 @@ from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progr
 from .beta_screening_control_delivery import RuntimeControlRelay, runtime_control_probe
 from .vast_signal_guard import OneStopSignal
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
-from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
+from .vast_provider_bundle_digest_guard import DOWNLOAD_REPORT_OPTION, provider_bundle_digest_guard, stage_prefix_capsule_step
 
 
 VAST_RUNTIME_DISCOVERY_SCHEMA_VERSION = "vast_runtime_discovery.v1"
@@ -1589,6 +1593,7 @@ def _offer_summary(
             offer.get("inet_down_cost")
         ),
         "provider_upload_cost_per_gb_usd": _number(offer.get("inet_up_cost")),
+        "provider_download_speed_mbps": download_speed_mbps(offer.get("inet_down")),  # Mbit/s
         "disk_gb": int(disk_gb),
         # Vast reports the host's currently allocatable disk separately from
         # the disk requested in the create payload.  A create call can return
@@ -1664,6 +1669,7 @@ def _offer_artifact_summary(offer: Mapping[str, Any] | None) -> dict[str, Any] |
         "provider_upload_cost_per_gb_usd": offer.get(
             "provider_upload_cost_per_gb_usd"
         ),
+        "provider_download_speed_mbps": download_speed_mbps(offer.get("provider_download_speed_mbps")),
         "disk_gb": offer.get("disk_gb"),
         "provider_available_disk_gb": offer.get("provider_available_disk_gb"),
         "driver_version": _string(offer.get("driver_version")) or None,
@@ -1959,6 +1965,7 @@ def _select_offer(
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
     require_virtual_machine: bool = False,
+    prefer_min_download_mbps: float = 0.0,
 ) -> dict[str, Any] | None:
     if type(require_virtual_machine) is not bool:
         raise ValueError("vast_virtual_machine_flag_invalid")
@@ -2035,6 +2042,7 @@ def _select_offer(
         key=lambda item: (
             _driver_sort_rank(item),
             _driver_newer_branch_sort_rank(item),
+            download_speed_sort_rank(item, prefer_min_download_mbps),  # see its docstring
             _keyword_match_rank(item.get("gpu_name"), preferred_gpu_keywords),
             _regex_match_rank(item.get("geolocation"), preferred_geolocation_regex),
             -float(_number(item.get("reliability")) or 0.0),
@@ -2130,6 +2138,7 @@ def _offer_selection_manifest(
     max_live_minutes: int = 0,
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
+    prefer_min_download_mbps: float = 0.0,
 ) -> dict[str, Any]:
     policy = resolve_gpu_selection_policy(gpu_selection_policy, prefer_isaac_rt=prefer_isaac_rt)
     summaries = [_offer_summary(offer, disk_gb=disk_gb) for offer in offers]
@@ -2272,6 +2281,7 @@ def _offer_selection_manifest(
         "selected_offer_isaac_rt_candidate": bool(
             selected_offer and selected_offer.get("isaac_rt_candidate")
         ),
+        **download_speed_manifest_fields(selected_offer, prefer_min_download_mbps),
         "machine_avoidlist_path": str(machine_avoidlist_path),
         "excluded_machine_ids": sorted(excluded),
         "excluded_offer_count": excluded_offer_count,
@@ -4566,7 +4576,7 @@ def _probe_shell_script(
         f'if command -v curl >/dev/null 2>&1; then '
         'blueprint_download_pass=1; '
         'while [ "$blueprint_download_pass" -le 3 ]; do '
-        f'curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
+        f'curl {curl_download_protocol}{DOWNLOAD_REPORT_OPTION} -fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
         "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_RETRY:curl:$blueprint_download_pass; "
         "blueprint_download_pass=$((blueprint_download_pass + 1)); done; "
         "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; return 28; fi; "
@@ -4721,10 +4731,10 @@ def _probe_shell_script(
                 'if [ $toolchain_rc -eq 0 ]; then dpkg -i "$CUDA_KEYRING" >/tmp/blueprint_scene_configuration_cuda_keyring.log 2>&1 || toolchain_rc=$?; fi; '
                 'rm -f "$CUDA_KEYRING"; '
                 "if [ $toolchain_rc -eq 0 ] && command -v apt-get >/dev/null 2>&1; then "
-                "timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update >/tmp/blueprint_scene_configuration_apt_update.log 2>&1 && "
+                "timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update >/tmp/blueprint_scene_configuration_apt_update.log 2>&1; apt_update_rc=$?; echo BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_UPDATE_EXIT_CODE:$apt_update_rc; if [ $apt_update_rc -ne 0 ]; then toolchain_rc=$apt_update_rc; else "
                 "DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y "
-                + SCENE_CONFIGURATION_APT_PACKAGES
-                + " >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; "
+                + SCENE_CONFIGURATION_APT_PACKAGES  # plain lines, not _PROGRESS:, so structured tracking starts no earlier
+                + " >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; echo BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_INSTALL_EXIT_CODE:$toolchain_rc; fi; "
                 "elif [ $toolchain_rc -eq 0 ]; then toolchain_rc=127; "
                 "fi; "
                 'mkdir -p "$WORK_DIR/scene_configuration_bin"; '
@@ -4761,8 +4771,8 @@ def _probe_shell_script(
                 'export BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/provider_runtime"; '
                 'export BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/runtime_output"; '
                 'export BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH="$WORK_DIR/task_evaluation_scene_configuration_stage_checkpoint.zip"; '
-                'mkdir -p "$BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"; '
-                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'mkdir -p "$BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"; ' + stage_prefix_capsule_step()
+                + "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
                 'bash "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
                 'rm -rf "$WORK_DIR/.blueprint-runtime-secrets" "$WORK_DIR/blueprint_runtime_secret_exports.sh"; secret_scrub_rc=$?; '
@@ -4790,7 +4800,7 @@ def _probe_shell_script(
                 "blueprint_upload_read_response || exit 86; blueprint_upload_cleanup || exit 86; echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
-                "fi; fi; fi; fi; fi; fi; "
+                "fi; fi; fi; fi; fi; fi; fi; "  # the last closes the stage-prefix capsule step
             )
         elif provider_bundle_kind == "adp_simpler":
             script += (
@@ -5970,26 +5980,6 @@ def _instance_liveness_from_payload(
     }
 
 
-def _terminal_startup_error(row: Mapping[str, Any]) -> str | None:
-    """Classify provider-reported container faults that cannot recover in place.
-
-    Vast can keep ``actual_status=created`` after Docker has already rejected
-    the container. Treating every ``created`` row as an image-pull race then
-    burns the full startup timeout even though the provider has supplied a
-    definitive host fault. Match only the narrow, documented NVIDIA CDI
-    failure observed in production; unknown daemon text remains under the
-    existing bounded startup watchdog.
-    """
-
-    status_message = _string(row.get("status_msg")).lower()
-    if (
-        "failed to inject cdi devices" in status_message
-        and "unresolvable cdi devices" in status_message
-    ):
-        return "vast_gpu_cdi_device_unresolvable"
-    return None
-
-
 def _instance_list_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     instances = payload.get("instances")
     if isinstance(instances, list):
@@ -6410,7 +6400,7 @@ def _request_logs_and_fetch(
     output_probe: Callable[[], bool] | None = None,
     remote_progress_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + max(0, max_wait_seconds)
+    deadline = (wait_started := time.monotonic()) + max(0, max_wait_seconds)
     attempts: list[dict[str, Any]] = []
     output_text = ""
     response: dict[str, Any] = {}
@@ -6594,10 +6584,16 @@ def _request_logs_and_fetch(
         # forever, so this watchdog would end a healthy render at twenty
         # minutes and name it `no_log_progress_timeout` -- blaming the workload
         # for a transport fault, which is the misattribution #459 set out to
-        # stop. While a second channel is live and answering, the run is bounded
-        # by its deadline, which is the TTL the spend cap was computed against.
+        # stop. While a second channel is live, the run is bounded by its deadline
+        # (the spend cap's TTL) -- not while the machine is still starting (no output).
+        instance_status = _string(last_instance_liveness.get("status")).lower()
+        instance_still_starting = bool(
+            last_instance_liveness.get("observed")
+            and instance_status in {"created", "creating", "loading", "scheduling"}
+        )
         watching_a_live_second_channel = bool(
             output_probe is not None and not output_probe_failed and not log_bytes_ever_read
+            and not instance_still_starting
         )
         no_progress_timeout_reached = bool(
             no_progress_limit_seconds
@@ -6638,11 +6634,6 @@ def _request_logs_and_fetch(
                 "instance_exited_observed_count": instance_exited_count,
                 "instance_liveness_probe_error": last_instance_liveness.get("probe_error"),
             }
-        )
-        instance_status = _string(last_instance_liveness.get("status")).lower()
-        instance_still_starting = bool(
-            last_instance_liveness.get("observed")
-            and instance_status in {"created", "creating", "loading", "scheduling"}
         )
         # Vast can return Docker's "No such container" while the provider API
         # still truthfully reports an instance in its bounded image-pull/startup
@@ -6787,14 +6778,15 @@ def _request_logs_and_fetch(
             and last_instance_liveness.get("ssh_port")
         ),
         "break_reason": break_reason,
+        "wait_elapsed_seconds": round(max(0.0, time.monotonic() - wait_started), 1),
     }
 
 
 def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
     """Allow digest-pinned ADP images the same bounded cold-pull window as WAM."""
 
-    if provider_bundle_kind == "paired_target_native_import":
-        return max(
+    if provider_bundle_kind in {"paired_target_native_import", "task_evaluation_scene_configuration"}:
+        return max(  # both admit a 30-minute cold pull; this bound agrees with it
             30 * 60,
             _env_int(
                 VAST_WAM_CONTAINER_MISSING_MAX_SECONDS_ENV,
@@ -7117,6 +7109,7 @@ def run_vast_provider_adapter(
     vast_template_hash_id: str | None = None,
     use_vast_template_image: bool = False,
     allow_cold_isaac_image_pull: bool = True,
+    prefer_fast_cold_pull_download: bool = False,  # opt-in: fast-download offers first
     min_cold_isaac_pull_live_minutes: int = DEFAULT_MIN_COLD_ISAAC_PULL_LIVE_MINUTES,
     disk_gb: int | None = None,
     min_gpu_ram_mb: int | None = None,
@@ -7924,6 +7917,8 @@ def run_vast_provider_adapter(
         min_cold_isaac_pull_live_minutes=min_cold_isaac_pull_live_minutes,
     )
     image_startup_blockers = _string_list(image_startup_preflight.get("blockers"))
+    cold_pull_download_floor_mbps = _cold_pull_download_speed_floor_mbps(
+        image_startup_preflight, opted_in=prefer_fast_cold_pull_download)
 
     session_guard = _session_budget_guard(
         job_dir=resolved_job_dir,
@@ -8488,6 +8483,7 @@ def run_vast_provider_adapter(
                 max_live_minutes=max_live_minutes,
                 expected_provider_download_bytes=expected_provider_download_bytes,
                 expected_provider_upload_bytes=expected_provider_upload_bytes,
+                prefer_min_download_mbps=cold_pull_download_floor_mbps,
             )
             selected_offer = _select_offer(
                 offers, require_isaac_rt_candidate=require_rt, **selection_kwargs
@@ -8610,6 +8606,7 @@ def run_vast_provider_adapter(
                 max_live_minutes=max_live_minutes,
                 expected_provider_download_bytes=expected_provider_download_bytes,
                 expected_provider_upload_bytes=expected_provider_upload_bytes,
+                prefer_min_download_mbps=cold_pull_download_floor_mbps,
             )
             write_json(resolved_job_dir / "vast_offer_selection_manifest.json", offer_manifest)
             _append_phase(
@@ -8851,6 +8848,7 @@ def run_vast_provider_adapter(
                     max_live_minutes=max_live_minutes,
                     expected_provider_download_bytes=expected_provider_download_bytes,
                     expected_provider_upload_bytes=expected_provider_upload_bytes,
+                    prefer_min_download_mbps=cold_pull_download_floor_mbps,
                 )
                 write_json(
                     resolved_job_dir / "vast_offer_selection_manifest.json",
@@ -9211,6 +9209,8 @@ def run_vast_provider_adapter(
             ),
             instance_id=instance_id,
             warnings=heartbeat_warnings,
+            **({} if startup_probe_ok else _heartbeat_wait_end_summary(  # how a failed wait ended
+                onstart_logs, no_progress_timeout_seconds=resolved_heartbeat_no_progress_seconds)),
         )
         if not heartbeat_ok and not downstream_marker_seen:
             raise RuntimeError(

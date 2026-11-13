@@ -368,6 +368,170 @@ def test_the_runtime_restores_the_prefix_at_its_exact_paths(tmp_path: Path, caps
     assert prestage.consume_stage_prefix_capsule(environment={}, output_root=output, expected_run_id=RUN_ID) is None
 
 
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> list:
+    import urllib.request
+
+    fetched: list = []
+
+    def refuse(*args, **kwargs):
+        fetched.append(args)
+        raise AssertionError("the runner must not fetch the capsule itself")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    return fetched
+
+
+def test_the_runtime_reads_only_the_local_capsule_the_onstart_checked(tmp_path: Path, monkeypatch) -> None:
+    """The on-start downloads with curl and checks it; the runner reads that file."""
+
+    fetched = _no_network(monkeypatch)
+    output = (tmp_path / "runtime_output").resolve()
+    output.mkdir()
+    capsule = tmp_path / "work" / "task_evaluation_scene_configuration_stage_prefix_capsule.zip"
+    capsule.parent.mkdir()
+    _capsule(capsule, ["stage-1", "stage-2", "stage-3", "stage-4"], output_root=output)
+    environment = {**_consume_environment(capsule), prestage.PREFIX_PATH_ENV: str(capsule)}
+
+    value = prestage.consume_stage_prefix_capsule(
+        environment=environment, output_root=output, expected_run_id=RUN_ID,
+        opener=prestage.local_stage_prefix_capsule_opener(environment))
+
+    assert value["completed_stage_ids"] == ["stage-1", "stage-2", "stage-3", "stage-4"]
+    assert value["capsule_sha256"] == prestage._sha(capsule)
+    assert (output / "stages/stage-4/producer/artifact.usda").is_file()
+    assert fetched == []
+
+
+@pytest.mark.parametrize("fault", ["digest", "bytes", "path", "run"])
+def test_a_local_capsule_keeps_every_check_of_the_downloaded_one(tmp_path: Path, monkeypatch, fault: str) -> None:
+    _no_network(monkeypatch)
+    output = (tmp_path / "runtime_output").resolve()
+    output.mkdir()
+    capsule = tmp_path / "capsule.zip"
+    _capsule(capsule, ["stage-1", "stage-2"], output_root=tmp_path / "elsewhere" if fault == "path" else output,
+             transport_overrides={"run_id": "other-run"} if fault == "run" else None)
+    environment = {**_consume_environment(capsule), prestage.PREFIX_PATH_ENV: str(capsule)}
+    if fault == "digest":
+        environment[prestage.PREFIX_SHA_ENV] = "sha256:" + "0" * 64
+    if fault == "bytes":
+        environment[prestage.PREFIX_BYTES_ENV] = str(capsule.stat().st_size - 1)
+    with pytest.raises(prestage.CpuPrestageError):
+        prestage.consume_stage_prefix_capsule(environment=environment, output_root=output, expected_run_id=RUN_ID,
+                                              opener=prestage.local_stage_prefix_capsule_opener(environment))
+    assert not (output / "stages/stage-1").exists()
+    assert not (output / "cpu_prestage_restore.json").exists()
+
+
+@pytest.mark.parametrize("local", ["absent", "missing_file", "symlink", "directory", "relative"])
+def test_a_prefix_without_its_local_copy_stops_by_name_and_never_fetches(
+        tmp_path: Path, monkeypatch, local: str) -> None:
+    """An on-start that does not match this bundle did not fetch the capsule."""
+
+    fetched = _no_network(monkeypatch)
+    capsule = tmp_path / "capsule.zip"
+    _capsule(capsule, ["stage-1"], output_root=tmp_path)
+    environment = _consume_environment(capsule)
+    if local == "missing_file":
+        environment[prestage.PREFIX_PATH_ENV] = str(tmp_path / "not-downloaded.zip")
+    elif local == "symlink":
+        link = tmp_path / "link.zip"
+        link.symlink_to(capsule)
+        environment[prestage.PREFIX_PATH_ENV] = str(link)
+    elif local == "directory":
+        environment[prestage.PREFIX_PATH_ENV] = str(tmp_path)
+    elif local == "relative":
+        # The file exists relative to the working directory: only the
+        # absolute-path rule refuses it.
+        monkeypatch.chdir(tmp_path)
+        assert Path("capsule.zip").is_file()
+        environment[prestage.PREFIX_PATH_ENV] = "capsule.zip"
+    with pytest.raises(prestage.CpuPrestageError, match="^cpu_prestage_capsule_local_file_missing$"):
+        prestage.local_stage_prefix_capsule_opener(environment)
+    assert fetched == []
+
+
+def test_no_prefix_means_no_opener_and_a_partial_binding_stops(tmp_path: Path) -> None:
+    assert prestage.local_stage_prefix_capsule_opener({}) is None
+    capsule = tmp_path / "capsule.zip"
+    capsule.write_bytes(b"x")
+    for missing in (prestage.PREFIX_URL_ENV, prestage.PREFIX_SHA_ENV, prestage.PREFIX_BYTES_ENV):
+        environment = {prestage.PREFIX_URL_ENV: "https://store.example/c.zip",
+                       prestage.PREFIX_SHA_ENV: "sha256:" + "0" * 64, prestage.PREFIX_BYTES_ENV: "1",
+                       prestage.PREFIX_PATH_ENV: str(capsule)}
+        environment.pop(missing)
+        with pytest.raises(prestage.CpuPrestageError, match="^cpu_prestage_capsule_binding_incomplete$"):
+            prestage.local_stage_prefix_capsule_opener(environment)
+    with pytest.raises(prestage.CpuPrestageError, match="^cpu_prestage_capsule_binding_incomplete$"):
+        prestage.local_stage_prefix_capsule_opener({prestage.PREFIX_PATH_ENV: str(capsule)})
+
+
+def _planned_output(tmp_path: Path) -> Path:
+    output = (tmp_path / "workspace" / BUNDLE / "runtime_output").resolve()
+    output.mkdir(parents=True)
+    return output
+
+
+@pytest.mark.parametrize("planned", ["sibling", "dotdot", "relative", "trailing_slash"])
+def test_a_capsule_bound_to_another_spelling_of_the_root_is_refused(tmp_path: Path, planned: str) -> None:
+    """The planned root must be the machine's output root, literally."""
+
+    output = _planned_output(tmp_path)
+    (output.parent.parent / "other" / "runtime_output").mkdir(parents=True)
+    planned_root = {
+        "sibling": str(output.parent.parent / "other" / "runtime_output"),
+        "dotdot": str(output.parent) + "/../" + BUNDLE + "/runtime_output",
+        "relative": "workspace/" + BUNDLE + "/runtime_output",
+        "trailing_slash": str(output) + "/",
+    }[planned]
+    capsule = tmp_path / "capsule.zip"
+    _capsule(capsule, ["stage-1"], output_root=output, transport_overrides={"output_root": planned_root})
+    payload = capsule.read_bytes()
+    with pytest.raises(prestage.CpuPrestageError, match="^cpu_prestage_capsule_bound_to_other_run_or_path$"):
+        prestage.consume_stage_prefix_capsule(environment=_consume_environment(capsule), output_root=output,
+                                              expected_run_id=RUN_ID, opener=lambda url, timeout: _Response(payload))
+    assert not (output / "stages/stage-1").exists()
+
+
+def test_a_linked_workspace_is_refused_at_once_by_name(tmp_path: Path) -> None:
+    """``/workspace`` as a link stops here, before anything is restored.
+
+    The runner hands over its resolved output root; the host planned the
+    literal one. Accepting the link here would only move the stop later (the
+    resume binding and the output archive both bind literal paths).
+    """
+
+    real = tmp_path / "data" / "workspace"
+    real.mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    workspace.symlink_to(real, target_is_directory=True)
+    output = workspace / BUNDLE / "runtime_output"
+    output.mkdir(parents=True)
+    capsule = tmp_path / "capsule.zip"
+    _capsule(capsule, ["stage-1"], output_root=output)
+    payload = capsule.read_bytes()
+    with pytest.raises(prestage.CpuPrestageError, match="^cpu_prestage_capsule_bound_to_other_run_or_path$"):
+        prestage.consume_stage_prefix_capsule(environment=_consume_environment(capsule), output_root=output.resolve(),
+                                              expected_run_id=RUN_ID, opener=lambda url, timeout: _Response(payload))
+    with pytest.raises(prestage.CpuPrestageError, match="^cpu_prestage_output_root_invalid$"):
+        prestage.consume_stage_prefix_capsule(environment=_consume_environment(capsule), output_root=output,
+                                              expected_run_id=RUN_ID, opener=lambda url, timeout: _Response(payload))
+    assert not (output.resolve() / "stages").exists()
+
+
+def test_the_output_root_itself_may_not_be_a_link_or_unnormal(tmp_path: Path) -> None:
+    output = _planned_output(tmp_path)
+    link = tmp_path / "output-link"
+    link.symlink_to(output, target_is_directory=True)
+    capsule = tmp_path / "capsule.zip"
+    _capsule(capsule, ["stage-1"], output_root=output)
+    payload = capsule.read_bytes()
+    for root in (link, output.parent / ".." / BUNDLE / "runtime_output"):
+        with pytest.raises(prestage.CpuPrestageError, match="^cpu_prestage_output_root_invalid$"):
+            prestage.consume_stage_prefix_capsule(environment=_consume_environment(capsule), output_root=root,
+                                                  expected_run_id=RUN_ID,
+                                                  opener=lambda url, timeout: _Response(payload))
+
+
 @pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
 def test_rehearsal_a_real_prefix_sealed_on_the_host_is_adopted_by_the_paid_chain_at_the_same_paths(
         tmp_path, capsys, backend):

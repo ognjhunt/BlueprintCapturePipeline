@@ -498,6 +498,11 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
                                factory_path=_reference(state["factory"]), config=config, now=now)
     if observed is None:
         return None
+    if observed.get("pending"):
+        # Observed again on every pass; the recovery rules apply once the launch
+        # reconciler confirms provider zero. Past the bound it is flagged, never retried on.
+        return {"status": "blocked" if observed["unconfirmed"] else "awaiting_execution",
+                "phase": "scene_configuration", "blockers": observed["blockers"]}
     state["configuration_failure"] = observed["result"]
     if not observed["recoverable"]:
         return {"status": "blocked", "phase": "scene_configuration_failed", "blockers": observed["blockers"]}
@@ -629,6 +634,9 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                     activation_provisioner, now, configuration_launcher=None):
     progress = load_progression(directory, intent)
     state = deepcopy(progress.get("state", {})) if progress else {}
+    # An earlier pass's exception is not this pass's: a fresh failure records its own.
+    state.pop(DEPENDENCY_FAILURE_FIELD, None)
+    state.pop(ACTIVATION_REFUSAL_FIELD, None)
     def emit(status, phase, blockers=(), result_reference=None):
         nonlocal progress
         progress = advance(directory, intent, progress, status=status, phase=phase, state=deepcopy(state),
@@ -939,6 +947,11 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             state["activation_link"] = _activation_link(intent=intent, attempt=attempt, link=link,
                 observed=observed, directory=directory, config=config, now=now)
         link = read(_reference(state["activation_link"]), digest_field="link_digest")
+        if _parked_activation(progress, state, attempt_id=active_id, commit=release["source_commit"]):
+            # Parked: the same release refuses this attempt's activation on every pass.
+            # Do not refresh project spend, re-provision or write events again; a new
+            # release retires the attempt above, before this point.
+            return progress
         if not state.get("activation"):
             emit("preparing", "activation")
         state["activation"] = _activation(intent=intent, link=link, config=config, output=output,
@@ -960,6 +973,56 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                         state["scene_configuration_launch"].get("blockers") or ())
         return emit("awaiting_execution", "scene_configuration")
     return emit("awaiting_execution", "preparation_complete")
+
+
+#: Where a non-refusal exception left ``_advance_intent``: its type and the innermost
+#: ``blueprint_pipeline`` frame. Never the message, which can carry paths or site text.
+DEPENDENCY_FAILURE_FIELD = "dependency_failure"
+
+
+#: A failure that is neither a coded refusal nor a missing dependency.
+UNEXPECTED_FAILURE_BLOCKER = "scene_progression_unexpected_failure"
+#: The activation step's refusal code. It covers several refusals (a full disk, a
+#: symlink, a byte conflict); only the registry's same-release conflict below is permanent.
+ACTIVATION_CONFLICT_BLOCKER = "scene_configuration_activation_immutable_conflict"
+#: The registry already holds a different live intent for the scene/task on this
+#: release; it cannot clear on the same release. Recorded under ACTIVATION_REFUSAL_FIELD
+#: as this fixed code only, never the message.
+SAME_RELEASE_CONFLICT_DETAIL = "intent_registry_same_release_conflict"
+ACTIVATION_REFUSAL_FIELD = "activation_refusal"
+#: A blocker code taken from an error message: ASCII ``[a-z0-9_]`` and at most this long.
+#: The longest code in the package today is 80 characters.
+MAX_BLOCKER_CODE_LENGTH = 120
+_BLOCKER_CODE_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+
+
+def _parked_activation(progress, state, *, attempt_id, commit):
+    """This attempt's activation was refused by the registry's same-release rule on this release."""
+    stored = (progress or {}).get("state") or {}
+    return (not state.get("activation") and progress is not None and progress.get("status") == "blocked"
+            and progress.get("blockers") == [ACTIVATION_CONFLICT_BLOCKER]
+            and stored.get(ACTIVATION_REFUSAL_FIELD) == SAME_RELEASE_CONFLICT_DETAIL
+            and stored.get("attempt_id") == attempt_id and stored.get("attempt_commit") == commit)
+
+
+def _fits_blocker_code(code):
+    return 0 < len(code) <= MAX_BLOCKER_CODE_LENGTH and set(code) <= _BLOCKER_CODE_CHARACTERS
+
+
+def _pipeline_refusal(exc):
+    """A Blueprint error class whose message leads with its own stable code."""
+    return type(exc).__module__.startswith("blueprint_pipeline.")
+
+
+def _dependency_failure(exc):
+    """``"FileNotFoundError@blueprint_pipeline.module:function:line"`` for one exception."""
+    where, frame = "", exc.__traceback__
+    while frame is not None:
+        module = frame.tb_frame.f_globals.get("__name__", "")
+        if module == "blueprint_pipeline" or module.startswith("blueprint_pipeline."):
+            where = f"{module}:{frame.tb_frame.f_code.co_name}:{frame.tb_lineno}"
+        frame = frame.tb_next
+    return f"{type(exc).__name__}@{where or 'unknown'}"
 
 
 def _blocker_detail(exc):
@@ -1053,16 +1116,31 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                             publisher=publisher, submitter=submitter, status_reader=status_reader,
                             activation_provisioner=activation_provisioner, now=moment,
                             configuration_launcher=configuration_launcher)
-                except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
+                except (MemoryError, RecursionError):
+                    raise  # host-wide or runaway: stop the run rather than mark one job
+                except Exception as exc:  # noqa: BLE001 - one job's failure never ends the pass
+                    # KeyboardInterrupt and SystemExit are not Exceptions: they still stop the run.
                     progress = load_progression(directory, intent)
                     failure_state = dict(progress.get("state", {}) if progress else {})
+                    # Rebuilt from disk: drop an earlier pass's notes before recording this one.
+                    failure_state.pop(DEPENDENCY_FAILURE_FIELD, None)
+                    failure_state.pop(ACTIVATION_REFUSAL_FIELD, None)
                     if getattr(exc, "failure_reference", None) is not None:
                         _reference(exc.failure_reference)
                         failure_state["preparation_failure"] = exc.failure_reference
-                    code = str(exc).split(":", 1)[0] if isinstance(exc, ValueError) else "scene_progression_dependency_unavailable"
-                    if not code or not all(c.islower() or c.isdigit() or c == "_" for c in code):
-                        code = "scene_progression_dependency_unavailable"
-                    detail = _blocker_detail(exc) if isinstance(exc, ValueError) else []
+                    coded = isinstance(exc, ValueError) or _pipeline_refusal(exc)
+                    fallback = ("scene_progression_dependency_unavailable"
+                                if isinstance(exc, (OSError, KeyError, TypeError, ImportError))
+                                else UNEXPECTED_FAILURE_BLOCKER)
+                    code = str(exc).split(":", 1)[0] if coded else fallback
+                    if not _fits_blocker_code(code):
+                        code = fallback
+                    if str(exc) == f"{ACTIVATION_CONFLICT_BLOCKER}:{SAME_RELEASE_CONFLICT_DETAIL}":
+                        failure_state[ACTIVATION_REFUSAL_FIELD] = SAME_RELEASE_CONFLICT_DETAIL
+                    detail = _blocker_detail(exc) if coded else []
+                    if not isinstance(exc, ValueError):
+                        failure_state[DEPENDENCY_FAILURE_FIELD] = _dependency_failure(exc)
+                        detail = [*detail, failure_state[DEPENDENCY_FAILURE_FIELD]]
                     progress = advance(directory, intent, progress, status="blocked", phase="preparation",
                         state=failure_state, blockers=[code], now=moment)
                     settle_outcome(directory, intent, progress, now=moment)
@@ -1072,8 +1150,11 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                              **({"source_binding": progress["state"]["source_binding"]}
                                 if (progress.get("state") or {}).get("source_binding") else {}),
                              "progression_digest": progress["progression_digest"]})
-        except (OSError, ValueError, KeyError, TypeError):
-            rows.append({"intent_id": directory.name, "status": "blocked", "blockers": ["scene_progression_state_invalid"]})
+        except (MemoryError, RecursionError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - an unreadable intent never ends the pass
+            rows.append({"intent_id": directory.name, "status": "blocked", "blockers": ["scene_progression_state_invalid"],
+                         **({} if isinstance(exc, ValueError) else {"blocker_detail": [_dependency_failure(exc)]})})
     return intake._seal({"schema_version": "task_evaluation_scene_progression_run.v1",
         "status": "processed" if rows else "idle", "source_commit": release["source_commit"], "results": rows,
         "provider_allocation_performed": False}, "run_digest")
