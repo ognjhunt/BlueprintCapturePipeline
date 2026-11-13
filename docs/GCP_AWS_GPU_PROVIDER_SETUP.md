@@ -1,7 +1,7 @@
-# GCP and AWS paid-GPU provider setup
+# GCP paid-GPU provider setup
 
-GCP Compute Engine and AWS EC2 implement the same `GpuRenderProvider` contract
-as RunPod, Vast, and DigitalOcean: request construction, read-only quota/capacity
+GCP Compute Engine implements the same `GpuRenderProvider` contract
+as Vast and DigitalOcean: request construction, read-only quota/capacity
 preflight, guarded launch, inspection, scoped inventory, permanent teardown,
 fleet spend coverage, and closure credential reporting.
 
@@ -15,8 +15,8 @@ block before a mutating API call.
 - Use a digest-pinned worker image.
 - Signed input/output URLs remain the provider-neutral data transport.
 - A passing prelaunch spend guard is mandatory for `launch()`.
-- GCP disks and AWS root EBS are encrypted/auto-deleted with the VM.
-- GCP receives no external IP. AWS uses only the named subnet/security groups.
+- GCP disks are encrypted/auto-deleted with the VM.
+- GCP receives no external IP.
 - `terminate()` plus fresh API-confirmed zero inventory is spend closure; `stop()` is not.
 - Production host images already contain the exact worker digest. VM startup
   verifies `/etc/blueprint/worker-image-ref` and the local Docker cache; it does
@@ -88,39 +88,6 @@ export BLUEPRINT_GCP_REGISTRY_HOST="us-central1-docker.pkg.dev"
 
 `public` is the default registry mode.
 
-## AWS EC2
-
-The launcher uses the standard boto3 credential chain. Prefer a named profile,
-web-identity role, or container role. `BLUEPRINT_AWS_ACCOUNT_ID` is mandatory;
-STS caller identity must match it. The launcher principal needs scoped EC2 read
-and lifecycle permissions, Service Quotas read, `ec2:CreateTags`, and
-`iam:PassRole` only for the selected worker profile.
-
-```bash
-export AWS_PROFILE="blueprint-gpu-launcher"
-export BLUEPRINT_AWS_ACCOUNT_ID="123456789012"
-export BLUEPRINT_AWS_REGION="us-east-1"
-export BLUEPRINT_AWS_INSTANCE_TYPE="g6e.2xlarge"
-export BLUEPRINT_AWS_AMI_ID="ami-..."
-export BLUEPRINT_AWS_SUBNET_ID="subnet-..."
-export BLUEPRINT_AWS_SECURITY_GROUP_IDS="sg-..." # comma-separated
-export BLUEPRINT_AWS_IAM_INSTANCE_PROFILE_ARN="arn:aws:iam::123456789012:instance-profile/blueprint-gpu-worker"
-export BLUEPRINT_AWS_HOURLY_RATE_USD="<verified-current-all-in-rate>"
-export BLUEPRINT_AWS_MAX_HOURLY_RATE_USD="<authorized-ceiling>"
-```
-
-`BLUEPRINT_AWS_KEY_NAME` is optional. For a private ECR image:
-
-```bash
-export BLUEPRINT_AWS_REGISTRY_AUTH="aws_ecr"
-export BLUEPRINT_AWS_REGISTRY_HOST="123456789012.dkr.ecr.us-east-1.amazonaws.com"
-```
-
-The selected AMI must contain the NVIDIA driver, Docker plus NVIDIA Container
-Toolkit, Python 3, the exact digest-pinned worker image, and matching
-`/etc/blueprint/worker-image-ref`. Customer VM startup performs no ECR login or
-image pull.
-
 The GCP warm pool was retired on 2026-11-06 (its units were never installed on
 the production host). Its former architecture, Packer host-image build,
 readiness contract and promotion gate are kept for history in
@@ -130,15 +97,14 @@ readiness contract and promotion gate are kept for history in
 
 ```bash
 python -m blueprint_pipeline.isaac_particlefield_render_job --list-providers
-python scripts/gpu_spend_guard.py --require-provider gcp --require-provider aws \
+python scripts/gpu_spend_guard.py --require-provider gcp \
   --json-report /tmp/gpu_spend_guard.json
 ```
 
-Both providers are accepted by the render job:
+The render job accepts the provider:
 
 ```bash
 python -m blueprint_pipeline.isaac_particlefield_render_job --provider gcp <required-args>
-python -m blueprint_pipeline.isaac_particlefield_render_job --provider aws <required-args>
 ```
 
 After an attempt, terminate and rerun the guard. Closure requires `succeeded`

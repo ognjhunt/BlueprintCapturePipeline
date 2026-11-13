@@ -657,41 +657,6 @@ not mounted, the image launcher can download the public
 on the GPU worker when `BLUEPRINT_UNITREE_UNIFOLM_ALLOW_HF_DOWNLOAD=true`.
 Those weights are runtime material, not image-baked artifacts.
 
-The long-lived RunPod `/act` server remains an architecture target, not a
-supported public allocation command. Its legacy `launch` mode exits with
-`legacy_unitree_unifolm_runpod_launch_cli_disabled`; route it through the
-canonical allocator before attempting a paid launch.
-
-The launch manifest writes a proxy URL shaped like
-`https://<pod_id>-8777.proxy.runpod.net/act`. Point the local command adapter at
-that URL:
-
-```bash
-export BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND="python -m blueprint_pipeline.unitree_unifolm_vla_server_bridge --server-url https://<pod_id>-8777.proxy.runpod.net/act"
-export BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT=unitreerobotics/UnifoLM-VLA-Base
-export BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT=unitreerobotics/UnifoLM-VLM-Base
-```
-
-This is the path that can make `unitree_endpoint_hand_policy_used=true`, but
-only after the remote server is actually reachable and returns a fresh action
-for the current observation. Delete the pod when finished:
-
-```bash
-blueprint-launch-unitree-unifolm-runpod-server poll \
-  --job-dir robot_eval_jobs/unitree_unifolm_runpod_server_<timestamp>
-
-blueprint-launch-unitree-unifolm-runpod-server probe \
-  --job-dir robot_eval_jobs/unitree_unifolm_runpod_server_<timestamp>
-
-blueprint-launch-unitree-unifolm-runpod-server delete \
-  --job-dir robot_eval_jobs/unitree_unifolm_runpod_server_<timestamp>
-```
-
-`poll` reads RunPod pod state. `probe` reads the public status proxy and records
-whether the backend `run_unitree_unifolm_vla_server` process is running, whether
-a backend startup error occurred, and the redacted server log tail. A running
-pod without a reachable proxy or running backend is not a hand-policy proof.
-
 When a provider smoke completes, point the evaluator at it with:
 
 ```bash

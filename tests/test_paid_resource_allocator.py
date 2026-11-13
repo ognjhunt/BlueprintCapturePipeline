@@ -1370,14 +1370,6 @@ def test_gpu_qualification_control_plane_identity_still_requires_clean_checkout(
     assert identity["orchestrator_source_commit"] == "c" * 40
 
 
-def test_strict_probe_runbook_arms_watchdog_within_budget_reservation() -> None:
-    runbook = (Path(__file__).parents[1] / "docs/runbooks/groot-oscar-thin-release.md").read_text(
-        encoding="utf-8"
-    )
-    assert 'deadline="$(( $(date +%s) + 480 ))"' in runbook
-    assert 'deadline="$(( $(date +%s) + 900 ))"' not in runbook
-
-
 def test_gpu_qualification_gpu_status_is_a_successful_control_observation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
