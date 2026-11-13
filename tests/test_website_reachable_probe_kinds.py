@@ -51,7 +51,6 @@ NOT_WEBSITE_REACHABLE: dict[str, str] = {
     # post-training work stays frozen under both active programs (the free
     # beta and Arm Decision Proof v1).
     "openpi-policy-ranking": "frozen_program",
-    "persistent-policy-wam-loop": "frozen_program",
     "policy-ranking-cosmos-reasoner": "frozen_program",
     "policy-ranking-successor-cosmos": "frozen_program",
     "single-kitchen-episode": "frozen_program",
