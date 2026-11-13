@@ -486,3 +486,73 @@ def test_a_measured_dead_machine_is_rechecked_by_role_not_5u(tmp_path, monkeypat
     assert status(measured) == "waiting_for_capacity"
     free["value"] = requirements["required_free_bytes_before_download"] + overhead
     assert status(ceiling) == "admitted"
+
+
+#: The sealed blockers of a website job's launch on 2026-11-13: stages 1-4 ran on
+#: the host's CPU prestage, the rented machine never started its container, and
+#: the lane read the prestage's own archive, whose result is ``completed_prefix``.
+CPU_PRESTAGE_DEAD_MACHINE_BLOCKERS = [
+    "scene_configuration_configured_revision_not_published",
+    "scene_configuration_provider_not_completed",
+    "scene_configuration_provider_result_status_invalid",
+    "vast_heartbeat_no_log_progress_timeout",
+]
+
+
+def _cpu_prestage_dead_machine(**overrides):
+    """The fields the predicate reads, in that launch result's shape (no site data)."""
+    return _dead_machine_result(**{
+        "blockers": list(CPU_PRESTAGE_DEAD_MACHINE_BLOCKERS), "provider_mutations_performed": 1,
+        "retry_cap": 0, "api_pretraining": None,
+        "cpu_prestage": {"status": "completed_prefix_before_gpu_allocation",
+                         "completed_stage_ids": ["stage-1", "stage-2", "stage-3", "stage-4"],
+                         "gpu_execution_performed": False, "provider_mutations_performed": 0},
+        **overrides})
+
+
+def test_a_machine_that_died_after_a_cpu_prestage_is_a_dead_machine():
+    assert capacity.dead_machine_launch_failure(_cpu_prestage_dead_machine()) is True
+
+
+def test_the_prestage_record_without_proof_the_machine_died_is_not_a_dead_machine():
+    blockers = [b for b in CPU_PRESTAGE_DEAD_MACHINE_BLOCKERS if b not in capacity.DEAD_MACHINE_PROOF_BLOCKERS]
+    assert len(blockers) == len(CPU_PRESTAGE_DEAD_MACHINE_BLOCKERS) - 1
+    assert capacity.dead_machine_launch_failure(_cpu_prestage_dead_machine(blockers=blockers)) is False
+
+
+@pytest.mark.parametrize("blockers", [
+    # Our bundle ran on a live machine and returned a result the lane does not accept.
+    ["scene_configuration_configured_revision_not_published", "scene_configuration_provider_not_completed",
+     "scene_configuration_provider_result_status_invalid"],
+    # The same, with the provider's own reasons for failing.
+    ["provider_result_blocker:stage-5 simulation failed", "scene_configuration_configured_revision_not_published",
+     "scene_configuration_provider_not_completed", "scene_configuration_provider_result_status_invalid"],
+    # Proof beside a blocker only live work produces keeps every other terminal path.
+    ["scene_configuration_provider_result_status_invalid", "scene_configuration_stage_chain_invalid",
+     "vast_heartbeat_no_log_progress_timeout"],
+    ["provider_result_blocker:stage-5 simulation failed", "scene_configuration_provider_result_status_invalid",
+     "vast_heartbeat_instance_exited"],
+])
+def test_a_live_machine_execution_failure_with_an_invalid_result_status_is_not_a_dead_machine(blockers):
+    assert capacity.dead_machine_launch_failure(_cpu_prestage_dead_machine(blockers=blockers)) is False
+
+
+@pytest.mark.parametrize("spend", [True, None, "false", 0])
+def test_the_prestage_dead_machine_still_needs_proof_nothing_is_spending(spend):
+    assert capacity.dead_machine_launch_failure(_cpu_prestage_dead_machine(continuing_spend_from_this_run=spend)) is False
+    record = _cpu_prestage_dead_machine()
+    del record["continuing_spend_from_this_run"]
+    assert capacity.dead_machine_launch_failure(record) is False
+
+
+def test_an_invalid_result_status_does_not_widen_the_zero_spend_classes():
+    """The $0 classes share the consequence set but still need proof nothing started."""
+    from blueprint_pipeline import task_evaluation_scene_launch_recovery as launch_recovery
+    prestage = _cpu_prestage_dead_machine(blockers=["provider_credit_insufficient",
+                                                    "scene_configuration_provider_result_status_invalid"],
+                                          provider_mutations_performed=0,
+                                          provider_runtime_output_zip_path="/job/cpu_prestage_output.zip")
+    assert capacity.credit_launch_failure(prestage) is False
+    assert launch_recovery.transient_launch_failure(
+        {**prestage, "blockers": ["independent_watchdog_not_armed",
+                                  "scene_configuration_provider_result_status_invalid"]}) is False

@@ -501,3 +501,92 @@ def test_an_intent_with_paid_source_rows_keeps_counting_source_rows(tmp_path):
 def test_the_request_carries_the_retry_its_grant_names(authority, expected):
     from blueprint_pipeline.website_preparation_contracts import scene_configuration_max_retries
     assert scene_configuration_max_retries(authority) == expected
+
+
+# -- a machine that died after the CPU prestage: the whole recovery path -----------------------------
+
+def _cpu_prestage_dead_machine_job(tmp_path, monkeypatch, *, retries=1):
+    """A free preparation attempt whose launch is the 2026-11-13 website record's shape.
+
+    Real observation, source validation, capacity admission, failure retention and
+    ownership reconciliation run on it; only the disk is simulated (as in the fixture).
+    """
+    from tests.test_task_evaluation_scene_capacity_recovery import CPU_PRESTAGE_DEAD_MACHINE_BLOCKERS
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import (
+        create_preparation_attempt, preparation_attempt_path,
+    )
+    intent, first, observed, config, _evidence = capacity_fixture(tmp_path, monkeypatch, retries=retries)
+    refs, values = observed["records"], observed["values"]
+    directory = tmp_path / intent["intent_id"]
+    job = Path(refs["result"]["path"]).parent
+    archive = job / "cpu_prestage_output.zip"
+    archive.write_bytes(b"prestage archive")
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(tmp_path))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS", "webapp")
+    result = {**values["result"], "provider_mutations_performed": 1, "api_pretraining": None,
+              "blockers": list(CPU_PRESTAGE_DEAD_MACHINE_BLOCKERS),
+              "cpu_prestage": {"status": "completed_prefix_before_gpu_allocation",
+                               "completed_stage_ids": ["stage-1", "stage-2", "stage-3", "stage-4"],
+                               "gpu_execution_performed": False, "provider_mutations_performed": 0},
+              "provider_runtime_output_zip_path": str(archive)}
+    write(Path(refs["result"]["path"]), result, "result_digest")
+    free = create_preparation_attempt(directory=directory, attempt_id="source-prestaged", now=150,
+        source_commit=first["source_commit"], runtime_digest=first["runtime_digest"],
+        input_digest=first["input_digest"])
+    factory_path = Path(refs["factory"]["path"])
+    factory = json.loads(factory_path.read_text())
+    factory["attempt_digest"] = free["attempt_digest"]
+    factory_ref = write(factory_path, factory, "factory_digest")
+    for name in ("children", "child-queue", "launch-queue"):
+        (tmp_path / name).mkdir()
+    config = {**config, "provider_guard_path": str(tmp_path / "guard.json"), "ownership_roots": [str(tmp_path)],
+              "child_execution_root": str(tmp_path / "children"), "child_queue_root": str(tmp_path / "child-queue"),
+              "launch_queue_root": str(tmp_path / "launch-queue")}
+    state = {"attempt": recovery.record(preparation_attempt_path(directory, free["attempt_id"])),
+             "attempt_id": free["attempt_id"], "factory": factory_ref, "binding_digest": first["input_digest"]}
+    args = dict(directory=directory, intent=json.loads((directory / "intent.json").read_text()),
+                state=state, attempt=free,
+                link_path=Path(refs["link"]["path"]), preparation_path=Path(refs["preparation"]["path"]),
+                config=config, release={"source_commit": first["source_commit"], "runtime_digest": first["runtime_digest"]},
+                machinery={"maximum_preparation_spend_usd": 0}, output=tmp_path / "output", now=200)
+    return directory, free, state, args
+
+
+def test_a_machine_that_died_after_the_cpu_prestage_reaches_one_paid_successor_and_stops_at_the_cap(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    directory, free, state, args = _cpu_prestage_dead_machine_job(tmp_path, monkeypatch)
+    observed = _observe(free, args["config"], {"link": {"path": str(args["link_path"])},
+        "preparation": {"path": str(args["preparation_path"])}, "factory": state["factory"]})
+    assert observed["recoverable"] and observed["kind"] == recovery.DEAD_MACHINE_KIND
+    assert observed["values"]["result"]["provider_mutations_performed"] == 1
+
+    reserved = engine._recover_configuration_capacity(**args)
+
+    assert reserved == {"status": "preparing", "phase": "capacity_recovery_reserved", "blockers": []}
+    predecessor = state["recovery_predecessors"][-1]
+    assert predecessor["kind"] == PAID_RETRY_KIND and "configuration_failure_kind" not in predecessor
+    ownership = json.loads(Path(predecessor["evidence"]["ownership_reconciliation"]["path"]).read_text())
+    assert ownership["status"] == "closed_without_resource"
+    failure = json.loads(Path(predecessor["evidence"]["failure"]["path"]).read_text())
+    assert failure["configuration_failure_kind"] == recovery.DEAD_MACHINE_KIND
+    assert failure["capacity_admission"]["status"] == "admitted"
+    assert state["attempt_id"] != free["attempt_id"] and "factory" not in state
+    successor = json.loads(Path(state["attempt"]["path"]).read_text())
+    assert successor["maximum_spend_usd"] == 0 and successor["paid_authority_granted"] is False
+    assert len(list((directory / "preparation-attempts").glob("*.json"))) == 2
+
+    # The successor's machine dies too: the one signed retry is spent.
+    state.update(factory=predecessor["factory"], attempt=predecessor["attempt"], attempt_id=free["attempt_id"])
+    with pytest.raises(ValueError, match="retry_cap_exhausted"):
+        engine._recover_configuration_capacity(**{**args, "now": 201})
+    assert len(list((directory / "preparation-attempts").glob("*.json"))) == 2
+
+
+def test_a_machine_that_died_after_the_cpu_prestage_of_a_zero_retry_intent_is_refused(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    directory, _free, state, args = _cpu_prestage_dead_machine_job(tmp_path, monkeypatch, retries=0)
+    with pytest.raises(ValueError, match="retry_cap_exhausted"):
+        engine._recover_configuration_capacity(**args)
+    assert "recovery_predecessors" not in state
+    assert len(list((directory / "preparation-attempts").glob("*.json"))) == 1
