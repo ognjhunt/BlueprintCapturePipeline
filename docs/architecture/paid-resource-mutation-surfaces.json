@@ -528,14 +528,6 @@
       ]
     },
     {
-      "path": "src/blueprint_pipeline/skypilot_provisioner.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": [
-        "require_paid_resource_admission_grant",
-        "skypilot_pilot_launch_disabled"
-      ]
-    },
-    {
       "path": "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py",
       "classification": "metered_object_storage_data_plane",
       "required_markers": [

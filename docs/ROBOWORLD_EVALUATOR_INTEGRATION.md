@@ -10,9 +10,6 @@ The implementation surfaces are:
 - `blueprint_pipeline.roboworld_evaluator`: progress rubric, criterion-scoped
   view authority, segment aggregation, segment ablation, judge calibration, and
   future-backend admission;
-- `blueprint_pipeline.benchmark_uncertainty`: rollout convergence,
-  policy-rank stability versus coverage, hierarchical uncertainty, and
-  leave-one-out sensitivity;
 - `roboworld_progress_v1` in `evaluator_evidence_profiles.py`: the evidence
   requirements for using the profile in decision-grade evaluator rows; and
 - `_normalize_wam_success_labels()` in `oscar_cosmos_wam_evaluator.py`: the
@@ -104,24 +101,6 @@ The resulting report includes:
 Human labels are the frozen campaign reference, not a substitute for matched
 real-robot outcome anchors.
 
-## Convergence and hierarchical uncertainty
-
-`benchmark_uncertainty_report.v1` consumes digest-bound per-attempt predicted
-and independently accepted reference scores. Its hierarchy resamples:
-
-1. policies;
-2. sites within sampled policy instances;
-3. task families and tasks;
-4. matched initial conditions; and
-5. trials within the matched condition.
-
-It reports 95% intervals for Pearson, Spearman, Kendall tau-b, pairwise ordering
-accuracy, and MMRV; trial-count convergence; policy-rank stability versus
-coverage; top-policy selection frequency; leave-one-policy-out sensitivity; and
-leave-one-task-family-out sensitivity. Ten thousand bootstrap replicates are
-required for the statistical layer to be eligible for the separate external
-claim gate. The report itself never enables a public claim.
-
 ## Commands
 
 ```bash
@@ -131,7 +110,6 @@ blueprint-run-roboworld-evaluator-study aggregate --input segments.json --output
 blueprint-run-roboworld-evaluator-study ablate-segments --input ablation.json --output ablation-report.json
 blueprint-run-roboworld-evaluator-study calibrate-judges --input campaign.json --output campaign-report.json
 blueprint-run-roboworld-evaluator-study admission --input admission-evidence.json --output checklist.json
-blueprint-build-benchmark-uncertainty-report --input uncertainty.json --output uncertainty-report.json
 ```
 
 No command launches a provider, trains a model, contacts a judge API, or
@@ -162,7 +140,5 @@ privacy, provenance, and buyer contracts.
 - `docs/schemas/segment_aggregation_ablation.schema.json`
 - `docs/schemas/judge_calibration_campaign_request.schema.json`
 - `docs/schemas/judge_calibration_campaign_report.schema.json`
-- `docs/schemas/benchmark_uncertainty_request.schema.json`
-- `docs/schemas/benchmark_uncertainty_report.schema.json`
 - `docs/schemas/roboworld_admission_evidence.schema.json`
 - `docs/schemas/roboworld_admission_reproduction_checklist.schema.json`

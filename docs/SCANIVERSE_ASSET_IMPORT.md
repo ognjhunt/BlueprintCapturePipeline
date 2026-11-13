@@ -57,21 +57,12 @@ gates pass.
 
 ## Polycam route
 
-Polycam can feed this pipeline in two distinct ways:
+Polycam can feed this pipeline one way:
 
 - A user-managed `GLB`, `USDZ`, or `PLY` export can enter the strict local
   external-import lane now. It is a derived appearance/mesh/point-cloud
   candidate and must still pass Blueprint scale, geometry, collider, and Isaac
   qualification.
-- A LiDAR capture made after enabling Polycam Developer Mode can expose a raw
-  data ZIP with cameras, confidence images, depth images, and mesh information.
-  `blueprint-adapt-polycam-developer-raw` now admits that ZIP through the
-  separate `polycam_developer_source_profile.v1` contract. The adapter hashes
-  the untouched archive and every regular member, binds the declared semantic
-  lanes, rejects unsafe ZIP structures, and abstains on missing lanes. The ZIP
-  is still a Polycam raw export, not Blueprint Raw Contract 3.2: it lacks
-  Blueprint's encoder-attempt and retained-frame evidence, and provider-declared
-  metric units do not independently prove scale.
 
 Polycam also documents an Enterprise Content Management API with capture
 listing, source `session.zip`, artifact download, export conversion jobs, and

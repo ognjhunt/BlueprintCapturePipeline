@@ -118,9 +118,6 @@ Implemented:
   `unitree_endpoint_fresh_policy_action_command_ran=false`, and
   `unitree_endpoint_provider_output_replay_used=true`. This is endpoint/action
   plumbing evidence, not fresh Unitree hand-policy inference.
-- A reusable Unitree UnifoLM GPU image-context generator,
-  `blueprint-build-unitree-unifolm-gpu-image`, based on Unitree's CUDA 12.4
-  install path. The image context does not bake checkpoints or credentials.
 - A pushed Unitree UnifoLM SDPA fallback provider image:
   `docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124-sdpa3`.
   Its build-time healthcheck passes on the CPU builder and public registry
@@ -402,7 +399,6 @@ The runtime audit and provider-smoke helpers are:
 
 ```bash
 blueprint-run-unitree-groot-n17-sonic-policy-runtime --job-dir robot_eval_jobs/<job_id>
-blueprint-run-unitree-groot-n17-sonic-policy-server-preflight --job-dir robot_eval_jobs/<job_id>
 blueprint-run-unitree-groot-n17-sonic-policy-provider-smoke \
   --job-dir robot_eval_jobs/<job_id> \
   --frame-path <simulated-policy-frame>
@@ -584,15 +580,6 @@ real UnifoLM server is running. If the server is not listening, the adapter must
 emit `blocked_unitree_unifolm_vla_server_call_failed:URLError`; that is not a
 policy proof.
 
-The provider-smoke/import command is:
-
-```bash
-blueprint-run-unitree-unifolm-policy-provider-smoke \
-  --job-dir /path/to/job \
-  --frame-path /path/to/head_or_torso_frame.png \
-  --mode vla
-```
-
 The Vast adapter can validate the Unitree-specific bundle kind in dry-run mode:
 
 ```bash
@@ -626,29 +613,7 @@ provider job returned a Unitree action, but replay keeps
 `unitree_unifolm_policy_action_command_ran=false` for the current invocation and
 does not set `unitree_hand_manipulation_policy_used`.
 
-Build the reusable image context with:
-
-```bash
-blueprint-build-unitree-unifolm-gpu-image \
-  --job-dir /path/to/unitree_unifolm_gpu_image_context \
-  --image-ref docker.io/<user>/blueprint-unitree-unifolm:<versioned-tag>
-```
-
-The default generated image uses `--dependency-profile inference`. That profile
-keeps the Unitree server/runtime dependencies needed for a bounded policy call
-including TensorFlow image preprocessing, Qwen/Transformers, Diffusers action
-modules, FastAPI, and the Blueprint bridge, while excluding training/data-stack
-packages such as `datasets`, `deepspeed`, W&B, `tensorflow_datasets`, and
-`tensorflow_graphics`. Use `--dependency-profile full` only when intentionally
-building Unitree's broader training/data image; it is not required for the fast
-fresh-policy proof lane.
-
-Then build/push using the generated `build_image.sh` and `push_image.sh`, and
-use the pushed image as `--public-image` for the Vast adapter. Image build/push
-is still not policy execution proof; the proof starts only when the live provider
-loads checkpoints and returns policy JSON.
-
-The generated image also includes `run_unitree_unifolm_vla_policy_once`. That
+The pushed image also includes `run_unitree_unifolm_vla_policy_once`. That
 command bridges the Blueprint policy-command contract to Unitree's `/act`
 server: it starts `run_unitree_unifolm_vla_server`, waits for the server port,
 then calls `blueprint-unitree-unifolm-vla-server-bridge`. If checkpoint paths are
