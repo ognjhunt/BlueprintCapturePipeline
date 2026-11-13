@@ -44,11 +44,21 @@ DEAD_MACHINE_PROOF_BLOCKERS = frozenset({
 })
 #: Consequences of producing no output. They may accompany the proof above, and on
 #: their own they mean the work failed rather than the machine dying.
+#:
+#: ``scene_configuration_provider_result_status_invalid``: when the GPU returns no
+#: archive after a CPU prestage, the lane reads the prestage's own archive instead
+#: (``task_evaluation_scene_configuration_vast``), whose result is by design
+#: ``completed_prefix``, neither ``completed`` nor ``blocked``. Website job
+#: 2026-11-13: machine 60447916 never started its container after stages 1-4 ran
+#: on the host, and this blocker alone kept the retry from firing. Beside a proof
+#: blocker it cannot describe our own work: those are raised only while the
+#: startup probe has not seen our bundle start, and the adapter stops there.
 DEAD_MACHINE_CONSEQUENCE_BLOCKERS = frozenset({
     "scene_configuration_configured_revision_not_published",
     "scene_configuration_provider_envelope_mismatch",
     "scene_configuration_provider_not_completed",
     "scene_configuration_provider_output_zip_invalid",
+    "scene_configuration_provider_result_status_invalid",
     "scene_configuration_provider_run_id_mismatch",
     "scene_configuration_provider_source_commit_mismatch",
     "scene_configuration_provider_source_envelope_mismatch",

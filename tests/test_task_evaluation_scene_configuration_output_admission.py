@@ -272,7 +272,8 @@ def _inference_manifest(run_id: str, *, reservations: int, digest_valid: bool = 
     return manifest
 
 
-def _write_prefix_output(job_dir: Path, work: Path, receipt: dict, *, spend: str) -> None:
+def _write_prefix_output(job_dir: Path, work: Path, receipt: dict, *, spend: str,
+                         faithful_result: bool = False) -> None:
     """``cpu_prestage_output.zip`` as the prestage writes it, from its runtime output.
 
     ``spend`` is what stage 3 recorded against the attempt's external caps:
@@ -281,7 +282,9 @@ def _write_prefix_output(job_dir: Path, work: Path, receipt: dict, *, spend: str
     ``unverified_manifest`` (an audit that does not verify). ``missing``,
     ``corrupt`` and ``incomplete`` leave no archive that can prove anything;
     ``crashed`` leaves the writer's partial archive, cut off before the
-    stage-3 receipt it would have held.
+    stage-3 receipt it would have held. ``faithful_result`` writes every field
+    the real prestage's result carries, so the lane's extractor judges only its
+    ``completed_prefix`` status.
     """
 
     archive = job_dir / "cpu_prestage_output.zip"
@@ -299,6 +302,13 @@ def _write_prefix_output(job_dir: Path, work: Path, receipt: dict, *, spend: str
             "source_commit": receipt["source_commit"],
             "result_digest": "",
         }
+        if faithful_result:
+            result.update({
+                "blockers": [], "provider_zero_required_after_return": True,
+                "evaluation_episode_executed": False, "candidate_policy_queried": False,
+                "construction_envelope_digest": receipt.get("portable_construction_envelope_digest"),
+                "source_construction_envelope_digest": receipt.get("construction_envelope_source_digest"),
+            })
         result["result_digest"] = canonical_digest(result, digest_field="result_digest")
         files = {
             RESULT_NAME: json.dumps(result),
@@ -620,6 +630,7 @@ def _install_prestage(
     free_after: int | None = None,
     residue_bytes: int | None = None,
     elsewhere: bool = False,
+    faithful_result: bool = False,
 ) -> dict:
     """A CPU prefix that reserves its real need on the same ledger and volume.
 
@@ -650,7 +661,8 @@ def _install_prestage(
             workload="cpu_prestage",
         ):
             observed["ledger_during"] = _ledger_rows(lane.ledger)
-            _write_prefix_output(job, work, bundle_receipt, spend=prefix_spend)
+            _write_prefix_output(job, work, bundle_receipt, spend=prefix_spend,
+                                 faithful_result=faithful_result)
             output = job / "cpu_prestage_output.zip"
             kept = output.stat().st_size if output.is_file() else 0
             capsule = job / "cpu_prestage_capsule.zip"
@@ -1821,3 +1833,39 @@ def test_dead_machine_retry_accepts_new_codes(tmp_path, monkeypatch) -> None:
             twin = [old if blocker == new else blocker for blocker in blockers]
             assert dead_machine_launch_failure({**measured, "blockers": twin}) is False
             assert dead_machine_launch_failure({**measured, "blockers": blockers}) is False
+
+
+def test_a_machine_that_died_after_the_cpu_prestage_is_retried_as_a_dead_machine(
+    tmp_path, monkeypatch
+) -> None:
+    """Website job, 2026-11-13: stages 1-4 ran on the host, the rented machine never
+    started its container, and the lane read the prestage's own archive. Its
+    ``completed_prefix`` result is a consequence of the dead machine, not live work."""
+
+    lane = _harness(tmp_path, monkeypatch)
+    work = tmp_path / "prestage-work"
+    work.mkdir()
+    _install_prestage(lane, monkeypatch, work, faithful_result=True)
+    lane.behaviour["output"] = "dead"
+    fake_adapter = scene_vast.run_vast_provider_adapter
+
+    def timed_out(**kwargs):  # type: ignore[no-untyped-def]
+        value = {**fake_adapter(**kwargs), "blockers": ["vast_heartbeat_no_log_progress_timeout"]}
+        (Path(kwargs["job_dir"]) / "vast_provider_adapter_result.json").write_text(
+            json.dumps(value), encoding="utf-8")
+        return value
+
+    monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", timed_out)
+
+    result = lane.run(cpu_prestage_stage_limit="stage-2")
+
+    assert Path(result["provider_runtime_output_zip_path"]).name == "cpu_prestage_output.zip"
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        "scene_configuration_configured_revision_not_published",
+        "scene_configuration_provider_not_completed",
+        "scene_configuration_provider_result_status_invalid",
+        "vast_heartbeat_no_log_progress_timeout",
+    ]
+    assert result["continuing_spend_from_this_run"] is False
+    assert dead_machine_launch_failure(result) is True
