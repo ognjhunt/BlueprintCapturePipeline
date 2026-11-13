@@ -43,6 +43,38 @@ is tested against every robot: a site posts once and is told the moment a robot
 can do its job, and the backlog of jobs is a live map of real demand. It is a
 direction, not current work, and it authorizes no present work.
 
+### Long-term business model
+
+Decided by the owner on 2026-11-13 as the model to keep in mind. It is for
+later: none of it is built, priced or promised now, and it authorizes no
+present work.
+
+The end goal, in the owner's words: the "linkedin for robot jobs/deployment
+opportunities", with a fleet management layer under it: how robots get to and
+from each job, along with payments and contracts.
+
+At that end state the money comes from the work, not from the introduction.
+Four layers:
+
+1. **Payments and contracts.** Work is contracted and paid through Blueprint,
+   and Blueprint keeps a percentage of what is paid. The success rule in each
+   job packet (what counts as the job done) is the measure the work is paid on.
+2. **Fleet.** Whoever operates the robots pays a subscription for each robot.
+3. **The network.** Profiles are free for sites and for deployment companies.
+   Large buyers pay for hiring tools and for the map of demand.
+4. **Testing.** Robot makers pay to have their robots tested against real
+   jobs. A company pays for the test, never for the result or for its rank.
+
+The software gets Blueprint into the transaction; the payments are the
+business. A site pays nothing to post a job or to get its answer.
+
+What is true today does not change because of this. Deployment companies will
+pay; how is not decided, and no price is stated anywhere. Each introduction is
+recorded as a billable event and nothing is charged. Blueprint charges no fee
+for and takes no percentage of any pilot or deployment, and its Terms say so
+until the owner replaces that sentence. Whether introductions are charged
+during the beta is the owner's decision and has not been made.
+
 ### Invariants
 
 1. Raw capture and authoritative physical outcomes outrank derived artifacts.
