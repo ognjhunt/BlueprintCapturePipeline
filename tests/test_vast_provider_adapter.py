@@ -10220,3 +10220,645 @@ def test_bundle_preflight_skips_vendored_runtime_json_but_still_parses_manifests
     parsed = preflight("manifest")
     assert parsed["json_member_parse_errors"] == [manifest + ":JSONDecodeError"]
     assert "provider_runtime_bundle_json_parse_failed" in parsed["blockers"]
+
+
+# ---------------------------------------------------------------------------
+# Cold-pull download-speed preference and the readable start-up ending
+# (2026-11-12: two cheapest RTX 4090 offers never finished the Isaac pull).
+# ---------------------------------------------------------------------------
+
+_COLD_PULL_FLOOR = vpa.COLD_PULL_PREFERRED_MIN_DOWNLOAD_MBPS
+
+
+def _speed_offer(offer_id: int, dph: float, inet_down: object = None, **extra: object) -> dict:
+    offer: dict[str, object] = {
+        "id": offer_id,
+        "ask_contract_id": offer_id,
+        "gpu_name": "RTX 4090",
+        "dph_total": dph,
+        "driver_version": "580.95.05",
+        "machine_id": offer_id * 10,
+        "num_gpus": 1,
+        "rentable": True,
+    }
+    if inet_down is not None:
+        offer["inet_down"] = inet_down
+    offer.update(extra)
+    return offer
+
+
+def test_cold_pull_download_floor_is_500_megabits() -> None:
+    assert _COLD_PULL_FLOOR == 500.0
+
+
+def test_cold_pull_prefers_a_dearer_fast_offer_over_a_cheap_slow_one() -> None:
+    offers = [_speed_offer(1, 0.40, 120.0), _speed_offer(2, 0.55, 900.0)]
+
+    today = _select_offer(offers, max_hourly_rate=0.80)
+    cold = _select_offer(offers, max_hourly_rate=0.80, prefer_min_download_mbps=_COLD_PULL_FLOOR)
+
+    assert today is not None and today["ask_contract_id"] == 1
+    assert cold is not None and cold["ask_contract_id"] == 2
+    assert cold["provider_download_speed_mbps"] == 900.0
+
+
+def test_cold_pull_picks_the_cheapest_fast_offer() -> None:
+    offers = [
+        _speed_offer(1, 0.30, 100.0),
+        _speed_offer(2, 0.70, 2000.0),
+        _speed_offer(3, 0.50, 500.0),  # at the floor counts as fast
+    ]
+
+    cold = _select_offer(offers, max_hourly_rate=0.80, prefer_min_download_mbps=_COLD_PULL_FLOOR)
+
+    assert cold is not None and cold["ask_contract_id"] == 3
+
+
+@pytest.mark.parametrize(
+    "speeds",
+    [
+        (120.0, 80.0, 499.9),
+        (None, None, None),
+        ("n/a", float("nan"), -5.0),
+        (None, "300", 10.0),
+    ],
+)
+def test_cold_pull_with_no_fast_offer_selects_exactly_what_today_selects(speeds) -> None:
+    offers = [
+        _speed_offer(1, 0.45, speeds[0], reliability=0.99),
+        _speed_offer(2, 0.40, speeds[1], reliability=0.98),
+        _speed_offer(3, 0.35, speeds[2], gpu_name="RTX A6000", reliability=0.97),
+    ]
+    kwargs = {"max_hourly_rate": 0.80, "preferred_gpu_keywords": ("RTX 4090",)}
+
+    today = _select_offer(offers, **kwargs)
+    cold = _select_offer(offers, prefer_min_download_mbps=_COLD_PULL_FLOOR, **kwargs)
+
+    assert today is not None
+    assert cold == today
+    assert today["ask_contract_id"] == 1
+
+
+def test_offer_download_speed_reading_is_tolerant() -> None:
+    def speed(value: object) -> object:
+        offer = {"id": 1, "gpu_name": "RTX 4090", "dph_total": 0.2}
+        if value is not None:
+            offer["inet_down"] = value
+        return vpa._offer_summary(offer)["provider_download_speed_mbps"]
+
+    assert speed(858.3) == 858.3
+    assert speed("640") == 640.0
+    for unknown in (None, "fast", True, float("inf"), float("nan"), -1, [], {}):
+        assert speed(unknown) is None
+
+
+def test_cold_pull_preference_never_brings_back_an_excluded_or_unlisted_machine() -> None:
+    offers = [_speed_offer(1, 0.40, 120.0), _speed_offer(2, 0.55, 900.0)]
+    floor = {"max_hourly_rate": 0.80, "prefer_min_download_mbps": _COLD_PULL_FLOOR}
+
+    avoided = _select_offer(offers, excluded_machine_ids=[20], **floor)
+    unlisted = _select_offer(offers, allowed_machine_ids=[10], **floor)
+
+    # The fast machine is avoided / not admitted: the slow one is still found.
+    assert avoided is not None and avoided["ask_contract_id"] == 1
+    assert unlisted is not None and unlisted["ask_contract_id"] == 1
+
+
+def test_cold_pull_preference_keeps_gpu_keyword_and_rt_order_inside_each_group() -> None:
+    offers = [
+        _speed_offer(1, 0.20, 100.0),  # slow RTX 4090, cheapest
+        _speed_offer(2, 0.30, 900.0, gpu_name="RTX A6000"),
+        _speed_offer(3, 0.60, 900.0),  # fast RTX 4090
+    ]
+    cold = _select_offer(
+        offers,
+        max_hourly_rate=0.80,
+        preferred_gpu_keywords=("RTX 4090",),
+        prefer_min_download_mbps=_COLD_PULL_FLOOR,
+    )
+    assert cold is not None and cold["ask_contract_id"] == 3
+
+    # prefer_isaac_rt still chooses the RT pool first: a fast non-RT machine
+    # does not displace a slow RT one.
+    rt_first = _select_offer(
+        [_speed_offer(1, 0.40, 100.0), _speed_offer(2, 0.30, 900.0, gpu_name="Tesla V100")],
+        max_hourly_rate=0.80,
+        prefer_min_download_mbps=_COLD_PULL_FLOOR,
+    )
+    assert rt_first is not None and rt_first["ask_contract_id"] == 1
+
+
+def test_cold_pull_preference_ranks_after_driver_support_when_drivers_are_not_filtered() -> None:
+    # A lane that does not require a known driver: driver support is
+    # correctness, speed a preference, so the slow supported machine wins.
+    offers = [
+        _speed_offer(1, 0.50, 100.0, driver_version="580.95.05"),
+        _speed_offer(2, 0.40, 2000.0, driver_version=""),
+    ]
+    selected = _select_offer(
+        offers, max_hourly_rate=0.80, prefer_min_download_mbps=_COLD_PULL_FLOOR
+    )
+    assert selected is not None and selected["ask_contract_id"] == 1
+    assert offers[1]["driver_version"] == "" and selected["driver_version"] == "580.95.05"
+
+
+def test_cold_pull_fast_machine_wins_where_drivers_are_filtered() -> None:
+    # Scene configuration's shape: known-supported drivers required, its GPU
+    # keywords preferred. The unknown-driver offer is filtered out; among the
+    # supported ones the dearer fast machine beats the cheap slow one.
+    offers = [
+        _speed_offer(1, 0.40, 120.0),
+        _speed_offer(2, 0.30, 2000.0, driver_version=""),
+        _speed_offer(3, 0.55, 900.0),
+    ]
+    kwargs = {
+        "max_hourly_rate": 0.80,
+        "require_known_supported_isaac_driver": True,
+        "preferred_gpu_keywords": ("RTX 4090", "L40S", "RTX A6000"),
+    }
+    assert _select_offer(offers, **kwargs)["ask_contract_id"] == 1  # today
+    cold = _select_offer(offers, prefer_min_download_mbps=_COLD_PULL_FLOOR, **kwargs)
+    assert cold is not None and cold["ask_contract_id"] == 3
+
+
+def test_cold_pull_speed_ranks_ahead_of_gpu_keyword_and_reliability() -> None:
+    # By decision: the image must arrive, so with the preference on a fast
+    # machine of a lower-preference GPU beats a slow machine of the top one,
+    # and a fast less-reliable host beats a slow more-reliable one.
+    floor = {"max_hourly_rate": 0.80, "prefer_min_download_mbps": _COLD_PULL_FLOOR,
+             "preferred_gpu_keywords": ("RTX 4090",)}
+    keyword = _select_offer(
+        [_speed_offer(1, 0.40, 100.0), _speed_offer(2, 0.60, 900.0, gpu_name="RTX A6000")],
+        **floor,
+    )
+    assert keyword is not None and keyword["ask_contract_id"] == 2
+    reliability = _select_offer(
+        [_speed_offer(1, 0.40, 100.0, reliability=0.99),
+         _speed_offer(2, 0.60, 900.0, reliability=0.90)],
+        **floor,
+    )
+    assert reliability is not None and reliability["ask_contract_id"] == 2
+
+
+@pytest.mark.parametrize(
+    ("preflight", "expected"),
+    [
+        ({"isaac_path_requested": True, "allow_cold_isaac_image_pull": True,
+          "template_image_cache_proven": False}, 500.0),
+        ({"isaac_path_requested": True, "allow_cold_isaac_image_pull": False,
+          "template_image_cache_proven": False}, 0.0),
+        ({"isaac_path_requested": True, "allow_cold_isaac_image_pull": True,
+          "template_image_cache_proven": True}, 0.0),
+        ({"isaac_path_requested": False, "allow_cold_isaac_image_pull": True,
+          "template_image_cache_proven": False}, 0.0),
+    ],
+)
+def test_download_preference_applies_only_when_a_cold_isaac_pull_is_admitted(
+    preflight, expected
+) -> None:
+    assert vpa._cold_pull_download_speed_floor_mbps(preflight, opted_in=True) == expected
+    # Opt-in: without the launch asking, never (whatever the defaults say).
+    assert vpa._cold_pull_download_speed_floor_mbps(preflight) == 0.0
+    assert vpa._cold_pull_download_speed_floor_mbps(preflight, opted_in=False) == 0.0
+
+
+def test_offer_selection_manifest_records_download_speeds_and_the_floor(tmp_path: Path) -> None:
+    offers = [_speed_offer(1, 0.40, 120.0), _speed_offer(2, 0.55, 900.0), _speed_offer(3, 0.5)]
+    selected = _select_offer(offers, max_hourly_rate=0.80, prefer_min_download_mbps=_COLD_PULL_FLOOR)
+
+    manifest = _offer_selection_manifest(
+        generated_at="2026-11-13T00:00:00Z",
+        status_code=200,
+        offers=offers,
+        selected_offer=selected,
+        max_hourly_rate=0.80,
+        min_gpu_ram_mb=0,
+        require_known_supported_isaac_driver=False,
+        excluded_machine_ids=[],
+        allowed_machine_ids=[],
+        machine_avoidlist_path=tmp_path / "avoid.json",
+        avoidlist_status=None,
+        blockers=[],
+        prefer_min_download_mbps=_COLD_PULL_FLOOR,
+    )
+
+    assert manifest["download_speed_floor_mbps"] == 500.0
+    assert manifest["download_speed_preference_applied"] is True
+    assert manifest["selected_offer_download_speed_mbps"] == 900.0
+    assert manifest["selected_offer_meets_download_speed_floor"] is True
+    assert manifest["selected_offer"]["provider_download_speed_mbps"] == 900.0
+    assert [item["provider_download_speed_mbps"] for item in manifest["considered_offers"]] == [
+        120.0, 900.0, None
+    ]
+    # Existing keys stay.
+    for key in ("selected_offer", "considered_offers", "excluded_machine_ids", "blockers",
+                "preferred_gpu_keywords", "prefer_isaac_rt", "raw_secret_values_recorded"):
+        assert key in manifest
+
+    # The floor recorded is the floor in force: none when the preference is off.
+    off = _offer_selection_manifest(
+        generated_at="2026-11-13T00:00:00Z", status_code=200, offers=offers,
+        selected_offer=selected, max_hourly_rate=0.80, min_gpu_ram_mb=0,
+        require_known_supported_isaac_driver=False, excluded_machine_ids=[],
+        allowed_machine_ids=[], machine_avoidlist_path=tmp_path / "avoid.json",
+        avoidlist_status=None, blockers=[],
+    )
+    assert off["download_speed_floor_mbps"] is None
+    assert off["download_speed_preference_applied"] is False
+    assert off["selected_offer_meets_download_speed_floor"] is None
+    assert off["selected_offer_download_speed_mbps"] == 900.0
+
+
+def _run_cold_pull_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    enable_isaac_smoke: bool,
+    log_text: str = "Error response from daemon: No such container: C.7001\n",
+    refuse_first_create: bool = False,
+    **adapter_kwargs: object,
+) -> tuple[dict, list[str], Path]:
+    secret = _configure_live_gates(tmp_path, monkeypatch)
+    monkeypatch.setenv(vpa.VAST_HEARTBEAT_NO_PROGRESS_SECONDS_ENV, "2")
+    monkeypatch.setenv(vpa.VAST_CREATE_STALE_OFFER_RETRY_ATTEMPTS_ENV, "1")
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    created: list[str] = []
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["api_key"] == secret
+        method, path = kwargs["method"], kwargs["path"]
+        if method == "GET" and path == "/instances/":
+            return 200, {"instances": []}
+        if method == "POST":
+            return 200, {"offers": [_speed_offer(25706, 0.40, 95.0),
+                                    _speed_offer(60701, 0.41),
+                                    _speed_offer(4242, 0.62, 1800.0),
+                                    _speed_offer(4343, 0.70, 1500.0)]}
+        if method == "PUT" and path.startswith("/asks/"):
+            created.append(path)
+            if refuse_first_create and len(created) == 1:
+                raise urllib.error.HTTPError(
+                    f"https://vast.invalid/api/v0{path}", 400, "bad request", {},
+                    BytesIO(b'{"success":false,"error":"invalid_args",'
+                            b'"msg":"error 404/3603: no_such_ask Instance type is not available"}'),
+                )
+            return 200, {"success": True, "new_contract": 7001}
+        if method == "GET" and path == "/instances/7001/":
+            return 200, _created_instance_detail("running", dph_total=0.4)
+        if method == "PUT" and path == "/instances/request_logs/7001/":
+            return 200, {"success": True, "result_url": "https://logs.example/cold-pull"}
+        if method == "DELETE" and path == "/instances/7001/":
+            return 200, {"success": True}
+        raise AssertionError(kwargs)
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_a, **_k: log_text)
+    job = tmp_path / "cold-pull"
+    result = run_vast_provider_adapter(
+        job_dir=job,
+        mode="live-startup-probe",
+        paid_resource_admission_grant=_paid_grant(),
+        allow_vast_api_call=True,
+        allow_instance_launch=True,
+        enable_isaac_smoke=enable_isaac_smoke,
+        max_hourly_rate=0.80,
+        poll_interval_seconds=0,
+        startup_timeout_seconds=1200,
+        session_max_live_minutes=None,
+        **adapter_kwargs,
+    )
+    return result, created, job
+
+
+def test_cold_pull_launch_rents_the_fast_machine_and_records_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, created, job = _run_cold_pull_launch(
+        tmp_path, monkeypatch, enable_isaac_smoke=True, prefer_fast_cold_pull_download=True
+    )
+
+    assert created == ["/asks/4242/"]
+    offer = _read_json(job / "vast_offer_selection_manifest.json")
+    assert offer["download_speed_preference_applied"] is True
+    assert offer["selected_offer_download_speed_mbps"] == 1800.0
+    assert offer["selected_offer_meets_download_speed_floor"] is True
+    assert [o["provider_download_speed_mbps"] for o in offer["considered_offers"]] == [
+        95.0, None, 1800.0, 1500.0
+    ]
+    assert result["status"] == "failed"
+
+
+def test_launch_without_a_cold_isaac_pull_selects_as_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _result, created, job = _run_cold_pull_launch(tmp_path, monkeypatch, enable_isaac_smoke=False)
+
+    assert created == ["/asks/25706/"]
+    offer = _read_json(job / "vast_offer_selection_manifest.json")
+    assert offer["download_speed_preference_applied"] is False
+    assert offer["download_speed_floor_mbps"] is None
+    assert offer["selected_offer_download_speed_mbps"] == 95.0
+    assert offer["selected_offer_meets_download_speed_floor"] is None
+
+
+@pytest.mark.parametrize(
+    "launch",
+    [
+        {"enable_isaac_smoke": True},  # an Isaac launch that did not opt in
+        {"enable_isaac_smoke": True, "use_vast_template_image": True,
+         "vast_template_hash_id": "tmpl-hash-1"},  # a template-image launch
+        {"enable_isaac_smoke": True, "use_vast_template_image": True,
+         "vast_template_hash_id": "tmpl-hash-1", "prefer_fast_cold_pull_download": False},
+    ],
+)
+def test_launches_that_do_not_opt_in_select_as_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launch: dict
+) -> None:
+    _result, created, job = _run_cold_pull_launch(tmp_path, monkeypatch, **launch)
+
+    assert created == ["/asks/25706/"]
+    offer = _read_json(job / "vast_offer_selection_manifest.json")
+    assert offer["download_speed_preference_applied"] is False
+    assert offer["download_speed_floor_mbps"] is None
+
+
+def test_only_the_scene_configuration_launch_opts_into_the_speed_preference() -> None:
+    import blueprint_pipeline
+
+    root = Path(blueprint_pipeline.__file__).parent
+    callers = sorted(
+        path.name for path in root.rglob("*.py")
+        if "prefer_fast_cold_pull_download=" in path.read_text(encoding="utf-8")
+        and path.name != "vast_provider_adapter.py"
+    )
+    assert callers == ["task_evaluation_scene_configuration_vast.py"]
+    paired = (root / "paired_target_native_import_vast.py").read_text(encoding="utf-8")
+    assert "run_vast_provider_adapter(" in paired
+    assert "prefer_fast_cold_pull_download" not in paired
+
+
+def test_reselection_after_a_create_refusal_keeps_the_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written: list[dict] = []
+    real_write_json = vpa.write_json
+
+    def recording_write_json(path, payload, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if Path(path).name == "vast_offer_selection_manifest.json":
+            written.append(json.loads(json.dumps(payload)))
+        return real_write_json(path, payload, *args, **kwargs)
+
+    monkeypatch.setattr(vpa, "write_json", recording_write_json)
+    _result, created, _job = _run_cold_pull_launch(
+        tmp_path, monkeypatch, enable_isaac_smoke=True, refuse_first_create=True,
+        prefer_fast_cold_pull_download=True,
+    )
+
+    assert created == ["/asks/4242/", "/asks/4343/"]  # the next fast machine
+    reselection = [m for m in written if m["blockers"] == ["vast_create_stale_offer_retry"]]
+    assert reselection
+    for manifest in reselection:
+        assert manifest["download_speed_floor_mbps"] == 500.0
+        assert manifest["download_speed_preference_applied"] is True
+    assert written[-1]["selected_offer_download_speed_mbps"] == 1500.0
+
+
+def test_successful_heartbeat_phase_row_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _result, _created, job = _run_cold_pull_launch(
+        tmp_path, monkeypatch, enable_isaac_smoke=False,
+        log_text="BLUEPRINT_VAST_HEARTBEAT_OK\nRTX 4090, 580.95.05, 24564 MiB\n"
+                 "BLUEPRINT_VAST_GPU_SANITY_OK\n",
+    )
+    rows = [
+        json.loads(line)
+        for line in (job / "vast_runtime_phase_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    row = next(r for r in rows if r["phase"] == "vast_heartbeat_completed_or_blocked")
+    assert row["status"] == "completed"
+    assert set(row) == {"schema_version", "generated_at", "phase", "status", "blockers",
+                        "proof_effect", "instance_id", "warnings"}
+
+
+def test_startup_no_progress_ending_is_readable_from_the_phase_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, _created, job = _run_cold_pull_launch(tmp_path, monkeypatch, enable_isaac_smoke=False)
+
+    assert result["blockers"][0] == "vast_heartbeat_no_log_progress_timeout"
+    rows = [
+        json.loads(line)
+        for line in (job / "vast_runtime_phase_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    row = next(r for r in rows if r["phase"] == "vast_heartbeat_completed_or_blocked")
+    assert row["status"] == "blocked"
+    assert row["break_reason"] == "no_log_progress_timeout"
+    assert row["instance_final_status"] == "running"
+    assert row["terminal_startup_error"] is None
+    assert row["no_progress_timeout_seconds"] == 2
+    assert isinstance(row["wait_elapsed_seconds"], float) and row["wait_elapsed_seconds"] > 0
+    startup = _read_json(job / "vast_startup_probe_manifest.json")
+    assert row["wait_elapsed_seconds"] == startup["container_log_result"]["wait_elapsed_seconds"]
+    text = json.dumps(row)
+    for forbidden in ("daemon", "No such container", "logs.example", "http", "secret-vast-key"):
+        assert forbidden not in text
+
+
+@pytest.mark.parametrize("elapsed", [float("nan"), float("inf"), "soon", None])
+def test_heartbeat_wait_end_summary_records_a_non_finite_elapsed_as_null(elapsed) -> None:
+    summary = vpa._heartbeat_wait_end_summary(
+        {"break_reason": "no_log_progress_timeout", "wait_elapsed_seconds": elapsed},
+        no_progress_timeout_seconds=1800,
+    )
+    assert summary["wait_elapsed_seconds"] is None
+
+
+def test_heartbeat_wait_end_summary_keeps_only_plain_words() -> None:
+    summary = vpa._heartbeat_wait_end_summary(
+        {
+            "break_reason": "vast_gpu_cdi_device_unresolvable",
+            "instance_final_status": "Error response from daemon: https://x/y?key=1",
+            "terminal_startup_error": "vast_gpu_cdi_device_unresolvable",
+            "wait_elapsed_seconds": 1251.0,
+        },
+        no_progress_timeout_seconds=1800,
+    )
+    assert summary == {
+        "break_reason": "vast_gpu_cdi_device_unresolvable",
+        "instance_final_status": None,
+        "terminal_startup_error": "vast_gpu_cdi_device_unresolvable",
+        "wait_elapsed_seconds": 1251.0,
+        "no_progress_timeout_seconds": 1800,
+    }
+
+
+# ---------------------------------------------------------------------------
+# The start-up wait on the real wait function, with a fake clock
+# ---------------------------------------------------------------------------
+
+_SCENE_KIND = "task_evaluation_scene_configuration"
+_SCENE_TTL_SECONDS = 27_000  # 450 minutes
+
+
+def _real_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    kind: str,
+    status_at: object,
+    log_at: object,
+    output_at: object = None,
+    no_progress_seconds: int = 1800,
+) -> tuple[dict, float]:
+    """Drive ``_request_logs_and_fetch`` as the adapter does, on a fake clock."""
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(vpa.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(vpa.time, "sleep", lambda seconds: clock.__setitem__(
+        "now", clock["now"] + max(0.0, float(seconds))))
+
+    def fake_api_json(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["path"] == "/instances/request_logs/7001/"
+        return 200, {"success": True, "result_url": "https://logs.example/wait"}
+
+    def liveness(**_kwargs):  # type: ignore[no-untyped-def]
+        status = status_at(clock["now"])  # type: ignore[operator]
+        if status is None:
+            return {"observed": False, "status": "unknown", "exited": False,
+                    "probe_error": "provider_instance_unreadable"}
+        return {"observed": True, "status": status, "exited": False, "probe_error": None}
+
+    monkeypatch.setattr(vpa, "_api_json", fake_api_json)
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_a, **_k: log_at(clock["now"]))  # type: ignore[operator]
+    monkeypatch.setattr(vpa, "_instance_liveness", liveness)
+    max_wait = min(_SCENE_TTL_SECONDS, 450 * 60)
+    result = vpa._request_logs_and_fetch(
+        instance_id=7001,
+        api_key="k",
+        output_log_path=tmp_path / "wait.log",
+        secret_values=[],
+        max_wait_seconds=max_wait,
+        retry_interval_seconds=30,
+        success_markers=["BLUEPRINT_VAST_HEARTBEAT_OK"],
+        container_missing_retry_attempts=vpa.bounded_container_missing_retry_attempts(
+            max_wait_seconds=max_wait,
+            retry_interval_seconds=30,
+            max_missing_seconds=vpa._container_missing_max_seconds(kind),
+        ),
+        no_progress_seconds=no_progress_seconds,
+        output_probe=(
+            None if output_at is None else (lambda: bool(output_at(clock["now"])))  # type: ignore[operator]
+        ),
+    )
+    return result, clock["now"]
+
+
+_NO_CONTAINER = "Error response from daemon: No such container: C.7001\n"
+
+
+def test_scene_configuration_container_missing_bound_matches_its_cold_pull() -> None:
+    assert vpa._container_missing_max_seconds(_SCENE_KIND) == 1800
+    assert vpa._container_missing_max_seconds("paired_target_native_import") == 1800
+    assert vpa._container_missing_max_seconds("isaac") == 720
+    assert vpa._container_missing_max_seconds("adp_simready_isaac") == 720
+
+
+def test_running_cold_pull_with_no_container_for_25_minutes_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, ended = _real_wait(
+        tmp_path, monkeypatch, kind=_SCENE_KIND,
+        status_at=lambda _t: "running",
+        log_at=lambda t: _NO_CONTAINER if t < 25 * 60 else "BLUEPRINT_VAST_HEARTBEAT_OK\n",
+    )
+    assert result["break_reason"] == "success_marker_found"
+    assert 25 * 60 <= ended < 27 * 60
+
+
+def test_running_no_container_still_ends_at_the_old_bound_for_another_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, ended = _real_wait(
+        tmp_path, monkeypatch, kind="isaac",
+        status_at=lambda _t: "running",
+        log_at=lambda t: _NO_CONTAINER if t < 25 * 60 else "BLUEPRINT_VAST_HEARTBEAT_OK\n",
+    )
+    assert result["break_reason"] == "terminal_container_missing"
+    assert 720 <= ended < 1000
+
+
+def test_machine_that_never_produces_a_container_still_ends_at_30_minutes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, ended = _real_wait(
+        tmp_path, monkeypatch, kind=_SCENE_KIND,
+        status_at=lambda _t: "running", log_at=lambda _t: _NO_CONTAINER,
+    )
+    # Unchanging daemon text is not progress, so the 1800 s no-progress limit
+    # ends it first (60 container-missing readings would take longer).
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert 1800 <= ended < 1900
+    assert vpa._log_result_saw_container_missing(result)
+
+
+def test_starting_machine_with_empty_logs_ends_at_the_no_progress_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # (a) Provider says still starting, empty log text, output probe "not yet":
+    # no container can be producing output, so the output channel does not
+    # defer the no-progress limit.
+    result, ended = _real_wait(
+        tmp_path, monkeypatch, kind=_SCENE_KIND,
+        status_at=lambda _t: "loading", log_at=lambda _t: "", output_at=lambda _t: False,
+    )
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["no_progress_timeout_reached"] is True
+    assert 1800 <= ended < 1900
+
+
+@pytest.mark.parametrize("status", ["running", None])  # (b) started; (c) liveness unreadable
+def test_started_or_unreadable_machine_with_a_dark_log_keeps_todays_deferral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status
+) -> None:
+    result, ended = _real_wait(
+        tmp_path, monkeypatch, kind=_SCENE_KIND,
+        status_at=lambda _t: status, log_at=lambda _t: "",
+        output_at=lambda t: t >= 3000,
+    )
+    assert result["break_reason"] == "provider_output_observed"
+    assert result["no_progress_timeout_reached"] is False
+    assert ended >= 3000
+
+
+@pytest.mark.parametrize("log_text", ["", _NO_CONTAINER])
+def test_never_started_machine_ends_with_the_dead_machine_blockers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_text: str
+) -> None:
+    from blueprint_pipeline.task_evaluation_scene_capacity_recovery import (
+        DEAD_MACHINE_PROOF_BLOCKERS,
+    )
+
+    monkeypatch.setattr(vpa, "_provider_output_probe", lambda _url: (lambda: False))
+    monkeypatch.setattr(vpa, "_instance_liveness", lambda **_k: {
+        "observed": True, "status": "loading", "exited": False, "probe_error": None})
+    result, _created, job = _run_cold_pull_launch(
+        tmp_path, monkeypatch, enable_isaac_smoke=False, log_text=log_text,
+    )
+
+    assert result["blockers"] == ["vast_heartbeat_no_log_progress_timeout"]
+    assert set(result["blockers"]) <= DEAD_MACHINE_PROOF_BLOCKERS
+    startup = _read_json(job / "vast_startup_probe_manifest.json")
+    assert startup["container_log_result"]["break_reason"] == "no_log_progress_timeout"
+    assert startup["blockers"] == (
+        ["vast_heartbeat_no_log_progress_timeout", "vast_heartbeat_output_missing_success_marker"]
+    )

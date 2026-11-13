@@ -117,3 +117,91 @@ def _approved_vast_offer_matches(approved: Any, observed: Any = None) -> bool:
                 or value < 0 or value > approved[key]):
             return False
     return True
+
+
+#: Provider-reported download speed (``inet_down``, megabits per second) at or
+#: above which an offer is tried first when the launch admits a cold Isaac
+#: image pull, right after the two driver ranks (driver support is correctness,
+#: speed a preference). A multi-gigabyte digest-pinned image has to arrive well inside
+#: the admitted cold-pull time; on 2026-11-12 two consecutive scene-configuration
+#: launches rented the cheapest RTX 4090 offer with no speed check (machines
+#: 25706 and 60701), the provider reported "still starting" for the whole
+#: window and both ended `no_log_progress_timeout` at 20m51s. This only orders
+#: the acceptable offers -- within equal driver ranks, fast first, then the
+#: rest in today's order -- and never excludes one, so no launch that finds a
+#: machine today finds none.
+COLD_PULL_PREFERRED_MIN_DOWNLOAD_MBPS = 500.0
+
+
+def download_speed_mbps(value: Any) -> float | None:
+    """Vast's ``inet_down`` in megabits per second; missing or non-numeric is unknown."""
+
+    speed = _number(value)
+    if speed is None or not math.isfinite(speed) or speed < 0:
+        return None
+    return speed
+
+
+def meets_download_speed_floor(offer: Mapping[str, Any] | None, floor_mbps: float) -> bool:
+    """Known and at or above the floor; an unknown speed counts as below it."""
+
+    speed = download_speed_mbps((offer or {}).get("provider_download_speed_mbps"))
+    return speed is not None and speed >= float(floor_mbps)
+
+
+def download_speed_sort_rank(offer: Mapping[str, Any], floor_mbps: float) -> int:
+    """Ranked after the driver ranks: fast first under a floor; no floor ranks all alike.
+
+    By decision it ranks after driver support (correctness) and AHEAD of the GPU
+    keyword, location and reliability preferences: the image must arrive. With
+    a zero floor every offer gets 0, so the (stable) sort is today's.
+    """
+
+    return 0 if not floor_mbps or meets_download_speed_floor(offer, floor_mbps) else 1
+
+
+def cold_pull_download_speed_floor_mbps(
+    image_startup_preflight: Mapping[str, Any], *, opted_in: bool = False
+) -> float:
+    """The download-speed preference for a launch that asked for it.
+
+    Opt-in: zero (no preference, today's order) unless the launch asked for it
+    (``prefer_fast_cold_pull_download``) AND requests the Isaac path, admits a
+    cold image pull and has no proven cached template image.
+    """
+
+    if (
+        opted_in is True
+        and image_startup_preflight.get("isaac_path_requested") is True
+        and image_startup_preflight.get("allow_cold_isaac_image_pull") is True
+        and image_startup_preflight.get("template_image_cache_proven") is not True
+    ):
+        return COLD_PULL_PREFERRED_MIN_DOWNLOAD_MBPS
+    return 0.0
+
+
+def download_speed_manifest_fields(
+    selected_offer: Mapping[str, Any] | None, prefer_min_download_mbps: float
+) -> dict[str, Any]:
+    """What the chosen machine reported, and the floor in force for this launch.
+
+    The floor (and whether the selected offer met it) is null when no
+    preference was in force. Kept in the offer-selection record so a later
+    startup failure can be judged from records alone.
+    """
+
+    floor = float(prefer_min_download_mbps) if prefer_min_download_mbps else None
+    return {
+        "download_speed_floor_mbps": floor,
+        "download_speed_preference_applied": floor is not None,
+        "selected_offer_download_speed_mbps": (
+            download_speed_mbps(selected_offer.get("provider_download_speed_mbps"))
+            if selected_offer
+            else None
+        ),
+        "selected_offer_meets_download_speed_floor": (
+            meets_download_speed_floor(selected_offer, floor)
+            if selected_offer and floor is not None
+            else None
+        ),
+    }

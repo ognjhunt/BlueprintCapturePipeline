@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -184,7 +186,7 @@ def cold_pull_aware_heartbeat_no_progress_seconds(
             "wam",
             "paired_target_native_import",
             "adp_simready_isaac",
-            # Scene configuration admits an 18-minute cold Isaac pull and then
+            # Scene configuration admits a 30-minute cold Isaac pull and then
             # runs six stages, so it is the same shape as the three above: the
             # admission gate allows the pull, the live window is sized for it,
             # and this window would expire first while looking like a flake.
@@ -199,3 +201,55 @@ def cold_pull_aware_heartbeat_no_progress_seconds(
         max(0, int(max_live_minutes)) * 60,
     )
     return max(resolved, admitted_cold_pull_seconds)
+
+
+def terminal_startup_error(row: Mapping[str, Any]) -> str | None:
+    """Classify provider-reported container faults that cannot recover in place.
+
+    Vast can keep ``actual_status=created`` after Docker has already rejected
+    the container. Treating every ``created`` row as an image-pull race then
+    burns the full startup timeout even though the provider has supplied a
+    definitive host fault. Match only the narrow, documented NVIDIA CDI
+    failure observed in production; unknown daemon text remains under the
+    existing bounded startup watchdog.
+    """
+
+    raw = row.get("status_msg")
+    status_message = raw.strip().lower() if isinstance(raw, str) else ""
+    if (
+        "failed to inject cdi devices" in status_message
+        and "unresolvable cdi devices" in status_message
+    ):
+        return "vast_gpu_cdi_device_unresolvable"
+    return None
+
+
+_PLAIN_STATUS_WORD = re.compile(r"[a-z0-9_-]{1,64}")
+
+
+def _plain_status_word(value: Any) -> str | None:
+    """A provider status or our classification, or None; never free text."""
+
+    text = value.strip().lower() if isinstance(value, str) else ""
+    return text if _PLAIN_STATUS_WORD.fullmatch(text) else None
+
+
+def heartbeat_wait_end_summary(
+    log_result: Mapping[str, Any], *, no_progress_timeout_seconds: int
+) -> dict[str, Any]:
+    """How the startup wait ended, for the phase log of a run that did not start.
+
+    The full account lives in ``vast_startup_probe_manifest.json``, which the
+    read-only operator door refuses to show (it carries a secret-looking field
+    name), so two 2026-11-12 failures could not be read directly. Only plain
+    status words and numbers go here: no log text, URLs or keys.
+    """
+
+    elapsed = _number(log_result.get("wait_elapsed_seconds"))
+    return {
+        "break_reason": _plain_status_word(log_result.get("break_reason")),
+        "instance_final_status": _plain_status_word(log_result.get("instance_final_status")),
+        "terminal_startup_error": _plain_status_word(log_result.get("terminal_startup_error")),
+        "wait_elapsed_seconds": elapsed if elapsed is not None and math.isfinite(elapsed) else None,
+        "no_progress_timeout_seconds": int(no_progress_timeout_seconds),
+    }

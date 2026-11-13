@@ -4445,7 +4445,7 @@ def test_stage_budget_exceeds_the_budget_it_grants_its_child() -> None:
 
 
 def test_scene_configuration_gets_the_cold_pull_heartbeat_window() -> None:
-    """The lane admits an 18-minute cold Isaac pull, so the window must know."""
+    """The lane admits a 30-minute cold Isaac pull, so the window must know."""
 
     import inspect
 

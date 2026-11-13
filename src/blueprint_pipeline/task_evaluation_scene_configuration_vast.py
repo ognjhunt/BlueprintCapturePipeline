@@ -1579,7 +1579,11 @@ def run_scene_configuration_vast(
                 provider_bundle_kind=PROVIDER_BUNDLE_KIND,
                 vast_launch_mode="ssh_direct",
                 allow_cold_isaac_image_pull=True,
-                min_cold_isaac_pull_live_minutes=18,
+                prefer_fast_cold_pull_download=True,  # offers that can pull the image in time first
+                # 30, was 18 (two cold pulls outlasted 1200 s, 2026-11-12): start-up and no-progress
+                # wait 1800 s; that also bounds a workload hung after start, nothing sooner. Worst
+                # case +10 min at <= $0.80/h (~$0.13), inside the unchanged spend cap and TTL.
+                min_cold_isaac_pull_live_minutes=30,
                 disk_gb=100,
                 min_gpu_ram_mb=24_000,
                 poll_interval_seconds=10,
