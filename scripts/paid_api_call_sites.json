@@ -235,13 +235,6 @@
       "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_admission",
       "note": "inference is the priced request; the model-metadata GET (discover_model_metadata) is an unpriced listing; policy_canary_session_bundle_identity ships the client into the admitted session bundle"
     },
-    "src/blueprint_pipeline/groot_oscar_runpod_serverless.py::<module>::runpod_serverless_api_url": {
-      "provider": "runpod_serverless",
-      "class": "admitted",
-      "via": "src/blueprint_pipeline/groot_oscar_runpod_serverless.py::run_active_worker",
-      "admission": "src/blueprint_pipeline/groot_oscar_runpod_serverless.py::require_paid_resource_admission",
-      "note": "every _submit_job call is in run_active_worker after the admission; RunPod is retired, so the admission refuses"
-    },
     "src/blueprint_pipeline/hosted_image_generation_preflight.py::<module>::openai_api_url": {
       "provider": "openai",
       "class": "admitted",

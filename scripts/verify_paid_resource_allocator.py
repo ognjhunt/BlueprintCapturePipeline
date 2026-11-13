@@ -14,11 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "src/blueprint_pipeline/paid_resource_allocator.py"
 CPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py"
-GPU_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
 MODEL_VOLUME_WATCHDOG = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_volume_watchdog.py"
-STORAGE_VOLUME_ADAPTER = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py"
 LAMBDA_ADAPTER = ROOT / "src/blueprint_pipeline/lambda_provider_adapter.py"
-RUNPOD_PREFLIGHT = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_preflight.py"
 THIN_RELEASE_CONTRACT = ROOT / "src/blueprint_pipeline/thin_release_image_contract.py"
 RUNBOOK = ROOT / "docs/runbooks/groot-oscar-thin-release.md"
 THIN_ENTRYPOINT = (
@@ -68,10 +65,6 @@ PRODUCTION_SCAN_EXCLUSIONS = {
 APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
     "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
-    "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
-    "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
-    "src/blueprint_pipeline/groot_oscar_runpod_storage_volume.py",
-    "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
     "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
     "src/blueprint_pipeline/native_g1_paid_campaign.py",
@@ -97,9 +90,6 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/website_task_context.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
-    "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
-    "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
-    "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
     "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
     "src/blueprint_pipeline/native_g1_paid_campaign.py",
     "src/blueprint_pipeline/native_g1_team_paid_policy.py",
@@ -901,11 +891,8 @@ def verify() -> list[str]:
     ]
     canonical = CANONICAL.read_text(encoding="utf-8")
     cpu = CPU_ADAPTER.read_text(encoding="utf-8")
-    gpu = GPU_ADAPTER.read_text(encoding="utf-8")
     model_volume_watchdog = MODEL_VOLUME_WATCHDOG.read_text(encoding="utf-8")
-    storage_volume = STORAGE_VOLUME_ADAPTER.read_text(encoding="utf-8")
     lambda_adapter = LAMBDA_ADAPTER.read_text(encoding="utf-8")
-    runpod_preflight = RUNPOD_PREFLIGHT.read_text(encoding="utf-8")
     thin_release = THIN_RELEASE_CONTRACT.read_text(encoding="utf-8")
     thin_entrypoint = THIN_ENTRYPOINT.read_text(encoding="utf-8")
     runpod_watchdog = RUNPOD_WATCHDOG.read_text(encoding="utf-8")
@@ -917,8 +904,6 @@ def verify() -> list[str]:
         blockers.append("canonical_allocator_runpod_retirement_refusal_missing")
     if "legacy_cpu_builder_launcher_disabled" not in cpu:
         blockers.append("legacy_cpu_builder_not_hard_disabled")
-    if "legacy_gpu_canary_launcher_disabled" not in gpu:
-        blockers.append("legacy_gpu_canary_not_hard_disabled")
     blockers.extend(_canonical_subcommand_blockers(canonical, AGENTS.read_text(encoding="utf-8")))
     blockers.extend(
         _remote_cpu_lane_blockers(
@@ -926,57 +911,10 @@ def verify() -> list[str]:
             CLOUD_RUN_JOBS_CLIENT.read_text(encoding="utf-8"),
         )
     )
-    model_calls = _function_calls(STORAGE_VOLUME_ADAPTER)
-    storage_calls = model_calls.get("run_storage_model_volume", set())
-    if "require_paid_resource_admission" not in storage_calls:
-        blockers.append("model_volume_bypasses_shared_admission")
-    if "run_builder" not in storage_calls:
-        blockers.append("model_volume_missing_canonical_cpu_builder_route")
-    if '"/pods"' in storage_volume:
-        blockers.append("storage_model_volume_may_allocate_runpod_pod")
-    if "_delete_volume" not in storage_calls:
-        blockers.append("model_volume_failure_volume_teardown_missing")
-    if "watchdog_handoff.json" not in storage_volume:
-        blockers.append("model_volume_independent_watchdog_missing")
-    if "WATCHDOG_HANDOFF_SCHEMA_VERSION" not in storage_volume:
-        blockers.append("model_volume_watchdog_handoff_schema_missing")
-    if not all(
-        marker in storage_volume
-        for marker in ("watchdog_pid", "watchdog_state_path", "watchdog_nonce")
-    ):
-        blockers.append("model_volume_watchdog_process_handoff_missing")
-    if not all(
-        marker in storage_volume
-        for marker in (
-            "_watchdog_process_running",
-            "storage_model_volume_watchdog_exited_before_builder",
-            "volume_ready_watchdog_retained",
-        )
-    ):
-        blockers.append("model_volume_ready_handoff_liveness_guard_missing")
     if "_runpod_call(" not in model_volume_watchdog or "def watchdog(" not in model_volume_watchdog:
         blockers.append("model_volume_watchdog_teardown_surface_missing")
     if '"POST"' in model_volume_watchdog:
         blockers.append("model_volume_watchdog_may_create_provider_resources")
-    if not all(
-        marker in runpod_preflight
-        for marker in (
-            "build_model_volume_watchdog_handoff_evidence",
-            "model_volume_watchdog_handoff_volume_mismatch",
-            "model_volume_watchdog_ttl_does_not_cover_canary",
-            "model_volume_watchdog_process_not_alive",
-            "model_volume_watchdog_process_identity_invalid",
-            "watchdog_process_identity_verified",
-            "MODEL_VOLUME_WATCHDOG_MARGIN_SECONDS",
-        )
-    ):
-        blockers.append("gpu_preflight_model_volume_watchdog_handoff_guard_missing")
-    if "model_volume_watchdog_handoff=" not in gpu:
-        blockers.append("gpu_launch_refresh_drops_model_volume_watchdog_handoff")
-    if "pod_prefix=None" not in storage_volume or "volume_prefix=None" not in storage_volume:
-        blockers.append("model_volume_global_inventory_guard_missing")
-    if "build_runpod_network_volume_evidence(" not in storage_volume:
-        blockers.append("model_volume_provider_reported_size_guard_missing")
     if not all(
         marker in lambda_adapter
         for marker in (
@@ -988,11 +926,8 @@ def verify() -> list[str]:
         blockers.append("lambda_termination_shared_admission_guard_missing")
     if "python -m blueprint_pipeline.paid_resource_allocator" not in runbook:
         blockers.append("canonical_allocator_command_missing_from_runbook")
-    if "--model-volume-watchdog-handoff" not in runbook:
-        blockers.append("runbook_model_volume_watchdog_handoff_missing")
     legacy_docs = (
         "python -m blueprint_pipeline.groot_oscar_digitalocean_builder launch",
-        "python -m blueprint_pipeline.groot_oscar_runpod_canary",
     )
     if any(item in runbook for item in legacy_docs):
         blockers.append("runbook_recommends_legacy_paid_launcher")
@@ -1093,28 +1028,6 @@ def verify() -> list[str]:
         blockers.append("remote_build_pushes_unvalidated_final_release_tag")
     if '-t "$foundation_ref" --push' in packet_builder:
         blockers.append("remote_build_pushes_unvalidated_final_foundation_tag")
-    gpu_calls = _function_calls(GPU_ADAPTER)
-    if "run_runpod_provider_adapter" not in gpu_calls.get("run_canary", set()):
-        blockers.append("gpu_provider_mutation_moved_outside_guarded_adapter")
-    if "require_paid_resource_admission" not in gpu_calls.get("run_canary", set()):
-        blockers.append("gpu_allocator_bypasses_shared_admission")
-    if not all(
-        marker in gpu
-        for marker in (
-            "RUNPOD_IMAGE_STARTUP_CANARY_MODE",
-            "RUNPOD_STRICT_POLICY_SMOKE_MODE",
-            "if probe_kind == STRICT_POLICY_SMOKE_PROBE_KIND",
-            "else RUNPOD_IMAGE_STARTUP_CANARY_MODE",
-        )
-    ):
-        blockers.append("gpu_canary_dry_run_mode_differs_from_execution")
-    runpod_adapter = (ROOT / "src/blueprint_pipeline/runpod_provider_adapter.py").read_text(
-        encoding="utf-8"
-    )
-    if 'shape["docker_entrypoint"] = ["/opt/blueprint/thin_release_entrypoint.sh"]' not in gpu:
-        blockers.append("gpu_canary_bypasses_thin_release_entrypoint")
-    if "use_thin_entrypoint" not in runpod_adapter:
-        blockers.append("generic_gpu_canary_forces_thin_release_entrypoint")
     return sorted(set(blockers))
 
 
