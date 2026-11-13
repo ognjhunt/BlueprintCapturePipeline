@@ -424,11 +424,15 @@ def main() -> int:
 
     stage_limit = os.environ.get("BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT") or None
     try:
-        from blueprint_pipeline.task_evaluation_scene_configuration_cpu_prestage import consume_stage_prefix_capsule
+        from blueprint_pipeline.task_evaluation_scene_configuration_cpu_prestage import (
+            consume_stage_prefix_capsule, local_stage_prefix_capsule_opener,
+        )
         # A prefix executed on the control plane is restored at these exact
         # paths first; the chain adopts it and starts at the first GPU stage.
+        # The on-start downloaded and checked it; only that local copy is read.
         consume_stage_prefix_capsule(environment=os.environ, output_root=output,
-                                     expected_run_id=str(envelope["run_id"]))
+                                     expected_run_id=str(envelope["run_id"]),
+                                     opener=local_stage_prefix_capsule_opener(os.environ))
         from blueprint_pipeline.task_evaluation_astra_stage_resume import completed_astra_prefix
         if any(value.get("authoring_backend") == "astra_cad_blender_v1"
                for value, _ in configurations.values()) and not completed_astra_prefix(

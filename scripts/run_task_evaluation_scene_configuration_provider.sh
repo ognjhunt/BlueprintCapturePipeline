@@ -11,6 +11,14 @@ if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN=$(command -v python3 || true)
 fi
 
+# No Python process this entrypoint starts writes bytecode. The container runs
+# as root, which ignores the sealed toolchain's read-only modes: a GPU stage 5
+# once died on `scene_configuration_toolchain_not_read_only` over a
+# `__pycache__` that an earlier stage's imports left in the run's own copy.
+# Bytecode the toolchain ships is still read; Blender's own Python ignores the
+# environment and is covered by its driver (`sys.dont_write_bytecode`).
+export PYTHONDONTWRITEBYTECODE=1
+
 # Preserve the image's original import path for the native Isaac component.
 # The provider runtime below deliberately adds standalone usd-core so the bare
 # import preflight and Content Agents can use pxr before Kit starts; the native

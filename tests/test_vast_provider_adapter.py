@@ -1268,6 +1268,80 @@ def test_request_logs_retries_transient_missing_container_marker(
     assert "BLUEPRINT_VAST_ONSTART_DONE" in (tmp_path / "onstart.log").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("phase", ["apt", "prefix_capsule"])
+def test_silent_onstart_steps_stay_inside_the_no_progress_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    """apt update (<=300 s) then install (<=900 s) write only to their own logs.
+
+    Their timeouts add up to the scene-configuration no-progress window
+    (1 200 s) exactly. The rendered on-start's own lines after each step must
+    keep a slow but healthy mirror alive, and must not be ``_PROGRESS:`` lines,
+    which would make every later unstructured line (the bundle and capsule
+    downloads) stop counting before the entrypoint's ticker starts.
+    """
+
+    script = vpa._probe_shell_script(
+        "https://heartbeat.example.test",
+        enable_isaac_smoke=True,
+        enable_blueprint_bundle=True,
+        provider_bundle_kind="task_evaluation_scene_configuration",
+        expected_provider_bundle_sha256="sha256:" + "a" * 64,
+    )
+
+    def emitted(marker: str, rc: str = "0") -> list[str]:
+        return [f"{marker}:{rc}"] if f"echo {marker}:" in script else []
+
+    if phase == "apt":
+        # (seconds after the step starts, lines the on-start prints then)
+        timeline = [
+            (0, ["BLUEPRINT_VAST_ISAAC_SMOKE_COMPLETED", "BLUEPRINT_VAST_PROVIDER_BUNDLE_STARTED"]),
+            (299, emitted("BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_UPDATE_EXIT_CODE")),
+            (299 + 899, emitted("BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_INSTALL_EXIT_CODE")),
+            (299 + 899 + 300, ["BLUEPRINT_VAST_ONSTART_DONE"]),
+        ]
+    else:
+        # A 274 MB capsule at the transfer floor (512 KiB/s) takes ~535 s.
+        timeline = [
+            (0, ["BLUEPRINT_VAST_SCENE_CONFIGURATION_BUNDLE_SHA256_VERIFIED"]),
+            (660, [line for line in ("BLUEPRINT_VAST_SCENE_CONFIGURATION_STAGE_PREFIX_DOWNLOAD_STARTED",)
+                   if f"echo {line};" in script]),
+            (660 + 535, emitted("BLUEPRINT_VAST_SCENE_CONFIGURATION_STAGE_PREFIX_DOWNLOAD_EXIT_CODE")),
+            (660 + 535 + 600, ["BLUEPRINT_VAST_ONSTART_DONE"]),
+        ]
+    assert not [line for _at, lines in timeline for line in lines if "_PROGRESS:" in line]
+    clock = {"now": 0.0}
+
+    def log_text(*_args, **_kwargs) -> str:
+        return "\n".join(line for at, lines in timeline if clock["now"] >= at for line in lines) + "\n"
+
+    def sleep(seconds: float = 0) -> None:
+        clock["now"] += float(seconds)
+
+    monkeypatch.setattr(vpa.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(vpa.time, "sleep", sleep)
+    monkeypatch.setattr(vpa, "_api_json", lambda **_kwargs: (200, {"result_url": "https://example.invalid/log"}))
+    monkeypatch.setattr(vpa, "_fetch_text", log_text)
+    monkeypatch.setattr(vpa, "_instance_liveness", lambda **_kwargs: {
+        "observed": True, "status": "running", "exited": False, "probe_error": None})
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=25,
+        max_wait_seconds=6 * 3600,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        no_progress_seconds=1_200,
+    )
+
+    assert result["break_reason"] == "success_marker_found"
+    assert result["no_progress_timeout_reached"] is False
+    assert not any(row["structured_phase_tracking_active"] for row in result["log_poll_attempts"])
+
+
 def test_request_logs_records_api_url_error_without_raising(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

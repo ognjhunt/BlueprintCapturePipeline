@@ -198,7 +198,7 @@ from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progr
 from .beta_screening_control_delivery import RuntimeControlRelay, runtime_control_probe
 from .vast_signal_guard import OneStopSignal
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
-from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
+from .vast_provider_bundle_digest_guard import DOWNLOAD_REPORT_OPTION, provider_bundle_digest_guard, stage_prefix_capsule_step
 
 
 VAST_RUNTIME_DISCOVERY_SCHEMA_VERSION = "vast_runtime_discovery.v1"
@@ -4566,7 +4566,7 @@ def _probe_shell_script(
         f'if command -v curl >/dev/null 2>&1; then '
         'blueprint_download_pass=1; '
         'while [ "$blueprint_download_pass" -le 3 ]; do '
-        f'curl {curl_download_protocol}-fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
+        f'curl {curl_download_protocol}{DOWNLOAD_REPORT_OPTION} -fL "$blueprint_download_src" -o "$blueprint_download_dst" && return 0; '
         "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_RETRY:curl:$blueprint_download_pass; "
         "blueprint_download_pass=$((blueprint_download_pass + 1)); done; "
         "echo BLUEPRINT_VAST_DOWNLOAD_TRANSPORT_FAILED:curl; return 28; fi; "
@@ -4721,10 +4721,10 @@ def _probe_shell_script(
                 'if [ $toolchain_rc -eq 0 ]; then dpkg -i "$CUDA_KEYRING" >/tmp/blueprint_scene_configuration_cuda_keyring.log 2>&1 || toolchain_rc=$?; fi; '
                 'rm -f "$CUDA_KEYRING"; '
                 "if [ $toolchain_rc -eq 0 ] && command -v apt-get >/dev/null 2>&1; then "
-                "timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update >/tmp/blueprint_scene_configuration_apt_update.log 2>&1 && "
+                "timeout 300 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update >/tmp/blueprint_scene_configuration_apt_update.log 2>&1; apt_update_rc=$?; echo BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_UPDATE_EXIT_CODE:$apt_update_rc; if [ $apt_update_rc -ne 0 ]; then toolchain_rc=$apt_update_rc; else "
                 "DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y "
-                + SCENE_CONFIGURATION_APT_PACKAGES
-                + " >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; "
+                + SCENE_CONFIGURATION_APT_PACKAGES  # plain lines, not _PROGRESS:, so structured tracking starts no earlier
+                + " >/tmp/blueprint_scene_configuration_apt_install.log 2>&1 || toolchain_rc=$?; echo BLUEPRINT_VAST_SCENE_CONFIGURATION_APT_INSTALL_EXIT_CODE:$toolchain_rc; fi; "
                 "elif [ $toolchain_rc -eq 0 ]; then toolchain_rc=127; "
                 "fi; "
                 'mkdir -p "$WORK_DIR/scene_configuration_bin"; '
@@ -4761,8 +4761,8 @@ def _probe_shell_script(
                 'export BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/provider_runtime"; '
                 'export BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/runtime_output"; '
                 'export BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH="$WORK_DIR/task_evaluation_scene_configuration_stage_checkpoint.zip"; '
-                'mkdir -p "$BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"; '
-                "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
+                'mkdir -p "$BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"; ' + stage_prefix_capsule_step()
+                + "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
                 'bash "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
                 'rm -rf "$WORK_DIR/.blueprint-runtime-secrets" "$WORK_DIR/blueprint_runtime_secret_exports.sh"; secret_scrub_rc=$?; '
@@ -4790,7 +4790,7 @@ def _probe_shell_script(
                 "blueprint_upload_read_response || exit 86; blueprint_upload_cleanup || exit 86; echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; "
                 "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
                 "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
-                "fi; fi; fi; fi; fi; fi; "
+                "fi; fi; fi; fi; fi; fi; fi; "  # the last closes the stage-prefix capsule step
             )
         elif provider_bundle_kind == "adp_simpler":
             script += (
