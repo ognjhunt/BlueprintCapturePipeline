@@ -20,16 +20,12 @@ from blueprint_pipeline.openpi_policy_ranking_runpod import (
     _build_vast_launch_request,
     _monitor_openpi_output_and_teardown,
     _validate_output_archive,
-    build_openpi_policy_ranking_provider_request,
     run_openpi_policy_ranking_campaign,
-    shape_openpi_policy_ranking_request_without_mutation,
 )
 from blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap import POLICY_IDS
 from blueprint_pipeline.openpi_policy_ranking_gpu_job import FROZEN_VARIANTS
 from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
-import pytest
 
-pytestmark = pytest.mark.usefixtures("legacy_runpod_mechanics")  # RunPod retired 2026-11-05; see conftest
 
 
 def _completed_output_archive() -> bytes:
@@ -331,47 +327,6 @@ def _inputs():
     return release, bundle, preflight, spend
 
 
-def test_openpi_request_shape_is_redacted_and_one_gpu(tmp_path: Path) -> None:
-    release, bundle, preflight, spend = _inputs()
-    prepared = build_openpi_policy_ranking_provider_request(
-        release=release,
-        input_bundle=bundle,
-        preflight=preflight,
-        spend=spend,
-        expected_source_commit="a" * 40,
-        job_id="openpi-test",
-    )
-    input_url = "https://storage.example/input?x-goog-signature=input-secret"
-    output_url = "https://storage.example/output?x-goog-signature=output-secret"
-    output = tmp_path / "adapter.json"
-    result = shape_openpi_policy_ranking_request_without_mutation(
-        prepared=prepared,
-        output_path=output,
-        input_secret_url=input_url,
-        output_secret_put_url=output_url,
-        pod_name="blueprint-openpi-ranking-test",
-    )
-    assert result["status"] == "dry_run_ready"
-    body = result["runpod_request"]["on_demand_pod"]["body"]
-    assert body["gpuCount"] == 1
-    assert body["containerDiskInGb"] == 100
-    assert body["volumeInGb"] == 80
-    assert body["dockerEntrypoint"][-2:] == [
-        "blueprint_pipeline.openpi_policy_ranking_gpu_bootstrap",
-        "run",
-    ]
-    assert body["env"][INPUT_SECRET_URL_ENV] == "<redacted:secret-env>"
-    assert body["env"][OUTPUT_SECRET_PUT_URL_ENV] == "<redacted:secret-env>"
-    assert body["env"][EXECUTION_MODE_ENV] == "full_campaign"
-    persisted = output.read_text(encoding="utf-8")
-    assert input_url not in persisted
-    assert output_url not in persisted
-    assert "input-secret" not in persisted
-    assert "output-secret" not in persisted
-    request = json.loads((tmp_path / "openpi_provider_launch_request.json").read_text())
-    assert input_url not in json.dumps(request)
-
-
 def test_vast_launch_request_uses_frozen_floor_and_args_entrypoint(
     tmp_path: Path,
 ) -> None:
@@ -455,38 +410,6 @@ def test_vast_launch_request_routes_current_canary_receipt_to_canary_mode(
     assert request["create_payload"]["env"][EXECUTION_MODE_ENV] == (
         "new_site_diagnostic_canary"
     )
-
-
-def test_openpi_campaign_dry_run_stays_mutation_free(tmp_path: Path) -> None:
-    release, bundle, preflight, _spend = _inputs()
-    release_path = tmp_path / "release.json"
-    bundle_path = tmp_path / "bundle.json"
-    preflight_path = tmp_path / "preflight.json"
-    release_path.write_text(json.dumps(release), encoding="utf-8")
-    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
-    preflight_path.write_text(json.dumps(preflight), encoding="utf-8")
-
-    result = run_openpi_policy_ranking_campaign(
-        release_evidence=release_path,
-        input_bundle_receipt=bundle_path,
-        preflight_bundle=preflight_path,
-        admission_out=tmp_path / "admission.json",
-        bound_request_out=tmp_path / "bound.json",
-        adapter_output=tmp_path / "adapter.json",
-        input_secret_url_file=tmp_path / "unused-input-url",
-        output_secret_put_url_file=tmp_path / "unused-output-url",
-        pod_name="blueprint-groot-oscar-canary-openpi-ranking-test",
-        expected_source_commit="a" * 40,
-        execute=False,
-        hard_ttl_seconds=3600,
-        max_spend_usd=1.0,
-        provider_name="runpod",
-    )
-
-    assert result["status"] == "dry_run_ready"
-    assert result["provider_mutations_performed"] == 0
-    assert result["watchdog_process_started"] is False
-    assert result["budget_reservation_created"] is False
 
 
 def test_execute_no_create_keeps_watchdog_in_control_until_terminal(
@@ -575,15 +498,6 @@ def test_execute_no_create_keeps_watchdog_in_control_until_terminal(
         lease_module,
         "_pid_is_alive",
         lambda pid: pid in {os.getpid(), Process.pid},
-    )
-    monkeypatch.setattr(
-        runpod_module,
-        "run_runpod_provider_adapter",
-        lambda **_kwargs: {
-            "status": "blocked",
-            "blockers": ["synthetic_no_create"],
-            "runpod_side_effects_may_have_occurred": False,
-        },
     )
     monkeypatch.setattr(
         runpod_module,

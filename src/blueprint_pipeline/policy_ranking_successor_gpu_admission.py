@@ -14,9 +14,6 @@ import json
 import math
 import os
 import re
-import signal
-import subprocess
-import sys
 import time
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -52,14 +49,6 @@ from .policy_ranking_successor_cosmos import (
 )
 from .provider_runtime_bundle_contract import provider_runtime_contract_blockers
 from .gpu_render_providers import get_render_provider
-from .groot_oscar_runpod_watchdog import EVIDENCE_NAME as RUNPOD_WATCHDOG_EVIDENCE_NAME
-from .runpod_wam_async_runner import (
-    RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV,
-    RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV,
-    RUNPOD_WAM_TEARDOWN_ACTION_ENV,
-    create_runpod_wam_async_run,
-    poll_runpod_wam_async_run,
-)
 from .vast_wam_authorized_runner import run_vast_wam_authorized_runner
 from .vast_provider_adapter import (
     VAST_API_GATE_ENV,
@@ -70,7 +59,6 @@ from .vast_session_budget_contract import (
     build_vast_session_budget_guard,
     successor_session_live_limit_minutes,
 )
-from .watchdog_owner_teardown_contract import write_owner_teardown_cancel_request
 
 
 from .spend_authority_consumption_root import consumption_root
@@ -543,88 +531,6 @@ def collect_successor_vast_preflight(
         "status": "verified" if not blockers else "blocked",
         "experiment_id": profile.experiment_id,
         "provider": "vast",
-        "observed_at_epoch": time.time(),
-        "blockers": blockers,
-        "provider_api_verified": api_verified,
-        "provider_inventory_verified_zero": inventory_zero,
-        "selected_offer": selected or None,
-        "capacity_request": request,
-        "capacity_snapshot": capacity,
-        "task_billable_inventory": task_inventory,
-        "billable_inventory": inventory,
-        "provider_mutations_performed": 0,
-        "reservation_proven": False,
-        "raw_secret_values_recorded": False,
-    }
-    result["manifest_sha256"] = canonical_sha256(result)
-    return result
-
-
-def collect_successor_runpod_preflight(
-    *,
-    name_prefix: str,
-    profile: SuccessorGPUProfile = DROID_REFERENCE_PROFILE,
-    gpu_type_ids: Sequence[str] = (
-        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
-        "NVIDIA H100 80GB HBM3",
-        "NVIDIA H100 PCIe",
-    ),
-) -> dict[str, Any]:
-    """Read-only RunPod capacity and provider-zero preflight for Cosmos inference."""
-
-    provider = get_render_provider("runpod")
-    request = {
-        "gpuTypeIds": list(gpu_type_ids),
-        "cloudType": "SECURE",
-        "min_gpu_ram_mb": 80_000,
-        "requires_rtx": False,
-    }
-    capacity = provider.capacity_preflight(request)
-    task_inventory = provider.billable_inventory(name_prefix=name_prefix)
-    inventory = provider.billable_inventory(name_prefix="")
-    viable = []
-    for row in capacity.get("viable_gpu_types", []):
-        if not isinstance(row, Mapping):
-            continue
-        gpu_name = str(row.get("gpu_type_id") or row.get("display_name") or "")
-        memory_gb = int(row.get("memory_in_gb") or 0)
-        price = float(row.get("on_demand_price_usd_per_hour") or 0.0)
-        if (
-            any(keyword in gpu_name.upper() for keyword in ("RTX PRO 6000", "H100"))
-            and memory_gb >= 80
-            and 0.0 < price <= profile.max_hourly_rate_usd
-            and row.get("capacity_confidence") == "advisory"
-        ):
-            viable.append(
-                {
-                    **dict(row),
-                    "gpu_name": gpu_name,
-                    "gpu_ram_mb": memory_gb * 1000,
-                    "hourly_rate_usd": price,
-                }
-            )
-    viable.sort(key=lambda row: float(row["hourly_rate_usd"]))
-    selected = viable[0] if viable else {}
-    inventory_zero = bool(
-        inventory.get("api_confirmed") is True and inventory.get("live_resource_count") == 0
-    )
-    api_verified = bool(
-        capacity.get("status") == "available"
-        and inventory.get("api_confirmed") is True
-        and task_inventory.get("api_confirmed") is True
-    )
-    blockers: list[str] = []
-    if not api_verified:
-        blockers.append("successor_runpod_api_not_verified")
-    if not inventory_zero:
-        blockers.append("successor_runpod_inventory_not_zero")
-    if not selected:
-        blockers.append("successor_compatible_runpod_offer_unavailable")
-    result: dict[str, Any] = {
-        "schema_version": profile.preflight_schema,
-        "status": "verified" if not blockers else "blocked",
-        "experiment_id": profile.experiment_id,
-        "provider": "runpod",
         "observed_at_epoch": time.time(),
         "blockers": blockers,
         "provider_api_verified": api_verified,
@@ -1364,286 +1270,12 @@ def _consume_authorization_once(
     }
 
 
-RUNPOD_DROID_REFERENCE_PREFIX = "blueprint-groot-oscar-canary-droid-reference-"
-
-
 def _read_json_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _arm_runpod_successor_watchdog(
-    *, job_dir: Path, deadline_epoch: float
-) -> tuple[dict[str, Any], subprocess.Popen[str] | None, Path]:
-    out_dir = job_dir / "independent_runpod_watchdog"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    command = [
-        sys.executable,
-        "-m",
-        "blueprint_pipeline.groot_oscar_runpod_watchdog",
-        "--out-dir",
-        str(out_dir),
-        "--pod-name-prefix",
-        RUNPOD_DROID_REFERENCE_PREFIX,
-        "--deadline-epoch",
-        str(deadline_epoch),
-        "--provider",
-        "runpod",
-    ]
-    try:
-        process = subprocess.Popen(  # noqa: S603  # nosec B603 - fixed module argv
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            start_new_session=True,
-            close_fds=True,
-        )
-    except OSError as exc:
-        return (
-            {
-                "status": "blocked",
-                "blockers": ["successor_runpod_watchdog_process_start_failed"],
-                "error_type": type(exc).__name__,
-                "provider_mutations_performed": 0,
-            },
-            None,
-            out_dir,
-        )
-    evidence_path = out_dir / RUNPOD_WATCHDOG_EVIDENCE_NAME
-    until = time.monotonic() + 10.0
-    evidence: dict[str, Any] = {}
-    while time.monotonic() < until:
-        evidence = _read_json_object(evidence_path)
-        if (
-            evidence.get("status") == "armed"
-            and evidence.get("independent_process") is True
-            and evidence.get("pid") == process.pid
-            and evidence.get("provider") == "runpod"
-            and evidence.get("pod_name_prefix") == RUNPOD_DROID_REFERENCE_PREFIX
-            and process.poll() is None
-        ):
-            return evidence, process, out_dir
-        if process.poll() is not None:
-            break
-        time.sleep(0.1)
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-    return (
-        {
-            "status": "blocked",
-            "blockers": ["successor_runpod_watchdog_not_confirmed_armed"],
-            "provider_mutations_performed": 0,
-        },
-        None,
-        out_dir,
-    )
-
-
-def _stop_unallocated_runpod_watchdog(process: subprocess.Popen[str] | None) -> None:
-    if process is None or process.poll() is not None:
-        return
-    process.send_signal(signal.SIGTERM)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
-
-
-def _close_runpod_watchdog_after_provider_zero(
-    *,
-    process: subprocess.Popen[str],
-    out_dir: Path,
-    pod_id: str,
-    provider_zero: bool,
-) -> dict[str, Any]:
-    if not pod_id or not provider_zero:
-        return {
-            "status": "retained_until_hard_ttl",
-            "provider_absence_confirmed": False,
-            "watchdog_process_alive": process.poll() is None,
-        }
-    write_owner_teardown_cancel_request(
-        root=out_dir,
-        pod_name_prefix=RUNPOD_DROID_REFERENCE_PREFIX,
-        provider_name="runpod",
-        instance_id=pod_id,
-    )
-    until = time.monotonic() + 45.0
-    while process.poll() is None and time.monotonic() < until:
-        time.sleep(0.2)
-    terminal = _read_json_object(out_dir / RUNPOD_WATCHDOG_EVIDENCE_NAME)
-    passed = bool(
-        terminal.get("status") == "provider_terminal"
-        and terminal.get("provider_absence_confirmed") is True
-    )
-    return {
-        "status": "provider_terminal" if passed else "retained_until_hard_ttl",
-        "provider_absence_confirmed": passed,
-        "watchdog_process_exit_code": process.poll(),
-        "watchdog_process_alive": process.poll() is None,
-    }
-
-
-def _run_successor_runpod(
-    *,
-    job_dir: str | Path,
-    provider_bundle_path: str | Path,
-    public_base_url: str | None,
-    token_file: str | Path | None,
-    secret_env_file: str | Path | None,
-    provider_bundle_url_file: str | Path | None,
-    provider_output_put_url_file: str | Path | None,
-    provider_output_get_url_file: str | Path | None,
-    output_path: str | Path | None,
-    profile: SuccessorGPUProfile,
-    selected_offer: Mapping[str, Any],
-    session_max_live_minutes: int,
-    paid_resource_admission_grant: Any,
-    pre_provider_mutation_hook: Any,
-) -> dict[str, Any]:
-    root = Path(job_dir).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    authorized_live_minutes = min(int(session_max_live_minutes), profile.hard_ttl_seconds // 60)
-    deadline = time.time() + authorized_live_minutes * 60
-    watchdog, process, watchdog_dir = _arm_runpod_successor_watchdog(
-        job_dir=root, deadline_epoch=deadline
-    )
-    write_json(root / "runpod_successor_watchdog_handoff.json", watchdog)
-    if watchdog.get("status") != "armed" or process is None:
-        return {
-            "status": "blocked",
-            "blockers": list(watchdog.get("blockers") or []),
-            "provider_mutations_performed": 0,
-            "independent_watchdog_handoff": watchdog,
-        }
-    gpu_name = str(selected_offer.get("gpu_name") or selected_offer.get("gpu_type_id") or "")
-    pod_name = f"{RUNPOD_DROID_REFERENCE_PREFIX}{int(time.time())}"
-    prior_disable_warm = os.environ.get(RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV)
-    prior_teardown = os.environ.get(RUNPOD_WAM_TEARDOWN_ACTION_ENV)
-    prior_terminal_hold = os.environ.get(RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV)
-    os.environ[RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV] = "1"
-    os.environ[RUNPOD_WAM_TEARDOWN_ACTION_ENV] = "delete"
-    os.environ[RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV] = str(profile.hard_ttl_seconds)
-    try:
-        create = create_runpod_wam_async_run(
-            job_dir=root,
-            bundle_path=provider_bundle_path,
-            public_base_url=public_base_url or "",
-            provider_bundle_url_file=provider_bundle_url_file,
-            provider_output_put_url_file=provider_output_put_url_file,
-            provider_output_get_url_file=provider_output_get_url_file,
-            token_file=token_file,
-            secret_env_file=secret_env_file,
-            output_path=output_path,
-            max_spend_usd=profile.max_compute_cap_usd,
-            allow_paid_runpod_launch=True,
-            gpu_type_ids=(gpu_name,),
-            image_name=profile.public_image,
-            provider_bundle_kind=profile.provider_bundle_kind,
-            container_disk_gb=100,
-            volume_gb=20,
-            cloud_type="SECURE",
-            min_vcpu_per_gpu=8,
-            min_ram_per_gpu=32,
-            pod_name=pod_name,
-            paid_resource_admission_grant=paid_resource_admission_grant,
-            forward_model_secret_env=False,
-            pre_provider_mutation_hook=pre_provider_mutation_hook,
-        )
-    finally:
-        if prior_disable_warm is None:
-            os.environ.pop(RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV, None)
-        else:
-            os.environ[RUNPOD_WAM_DISABLE_WARM_CANDIDATE_ENV] = prior_disable_warm
-        if prior_teardown is None:
-            os.environ.pop(RUNPOD_WAM_TEARDOWN_ACTION_ENV, None)
-        else:
-            os.environ[RUNPOD_WAM_TEARDOWN_ACTION_ENV] = prior_teardown
-        if prior_terminal_hold is None:
-            os.environ.pop(RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV, None)
-        else:
-            os.environ[RUNPOD_WAM_TERMINAL_HOLD_SECONDS_ENV] = prior_terminal_hold
-    if create.get("status") != "pod_created":
-        _stop_unallocated_runpod_watchdog(process)
-        return {
-            "status": "blocked",
-            "blockers": list(create.get("blockers") or ["successor_runpod_create_failed"]),
-            "provider_mutations_performed": int(create.get("provider_mutations_performed") or 0),
-            "runpod_create": create,
-            "independent_watchdog_handoff": watchdog,
-        }
-    state = _read_json_object(root / "runpod_wam_async_state.json")
-    pod_id = str(state.get("pod_id") or create.get("pod_id") or "")
-    poll = poll_runpod_wam_async_run(
-        job_dir=root,
-        max_wait_seconds=max(60, authorized_live_minutes * 60),
-        retry_interval_seconds=5,
-        teardown=True,
-    )
-    provider = get_render_provider("runpod")
-    task_inventory = provider.billable_inventory(name_prefix=RUNPOD_DROID_REFERENCE_PREFIX)
-    global_inventory = provider.billable_inventory(name_prefix="")
-    provider_zero = bool(
-        task_inventory.get("api_confirmed") is True
-        and task_inventory.get("live_resource_count") == 0
-        and global_inventory.get("api_confirmed") is True
-        and global_inventory.get("live_resource_count") == 0
-    )
-    watchdog_close = _close_runpod_watchdog_after_provider_zero(
-        process=process,
-        out_dir=watchdog_dir,
-        pod_id=pod_id,
-        provider_zero=provider_zero,
-    )
-    created_at = float(state.get("created_at_epoch") or time.time())
-    runtime_seconds = max(0.0, time.time() - created_at)
-    hourly_rate = float(selected_offer.get("hourly_rate_usd") or 0.0)
-    estimated_cost = runtime_seconds * hourly_rate / 3600.0
-    completed = bool(
-        poll.get("status") == "completed"
-        and poll.get("continuing_spend_from_this_run") is False
-        and provider_zero
-        and watchdog_close.get("status") == "provider_terminal"
-    )
-    return {
-        "status": "completed" if completed else "blocked",
-        "blockers": []
-        if completed
-        else [
-            *list(poll.get("blockers") or []),
-            *([] if provider_zero else ["successor_runpod_provider_zero_not_proven"]),
-            *(
-                []
-                if watchdog_close.get("status") == "provider_terminal"
-                else ["successor_runpod_watchdog_not_terminal"]
-            ),
-        ],
-        "provider": "runpod",
-        "pod_id": pod_id or None,
-        "runpod_create": create,
-        "runpod_poll": poll,
-        "task_inventory": task_inventory,
-        "global_inventory": global_inventory,
-        "provider_zero_verified": provider_zero,
-        "continuing_hourly_burn": not provider_zero,
-        "runtime_seconds": runtime_seconds,
-        "selected_hourly_rate_usd": hourly_rate,
-        "estimated_gpu_cost_usd": estimated_cost,
-        "independent_watchdog_handoff": watchdog,
-        "independent_watchdog_close": watchdog_close,
-        "provider_mutations_performed": 1,
-        "raw_secret_values_recorded": False,
-    }
 
 
 def run_successor_gpu_lane(
@@ -1818,75 +1450,6 @@ def run_successor_gpu_lane(
         }
         write_json(Path(adapter_output), result)
         return result
-    if provider_name == "runpod":
-        consumption: dict[str, Any] = {
-            "status": "not_consumed",
-            "reason": "awaiting_verified_staging_and_selected_offer",
-            "provider_mutations_performed": 0,
-        }
-
-        def consume_immediately_before_runpod_mutation() -> Mapping[str, Any]:
-            nonlocal consumption
-            observed_preflight_epoch = provider_preflight.get("observed_at_epoch")
-            mutation_now_epoch = time.time()
-            if (
-                type(observed_preflight_epoch) not in {int, float}
-                or not math.isfinite(float(observed_preflight_epoch))
-                or not 0.0
-                <= mutation_now_epoch - float(observed_preflight_epoch)
-                <= MAX_PREFLIGHT_AGE_SECONDS
-            ):
-                consumption = {
-                    "status": "blocked",
-                    "blockers": ["successor_runpod_preflight_stale_or_future_at_provider_mutation"],
-                    "provider_mutations_performed": 0,
-                }
-                return consumption
-            consumption = _consume_authorization_once(
-                authorization,
-                expected_source_commit=expected_source_commit,
-                profile=profile,
-            )
-            return consumption
-
-        result = _run_successor_runpod(
-            job_dir=job_dir,
-            provider_bundle_path=provider_bundle_path,
-            public_base_url=public_base_url,
-            token_file=token_file,
-            secret_env_file=secret_env_file,
-            provider_bundle_url_file=provider_bundle_url_file,
-            provider_output_put_url_file=provider_output_put_url_file,
-            provider_output_get_url_file=provider_output_get_url_file,
-            output_path=output_path,
-            profile=profile,
-            selected_offer=_mapping(admission.get("selected_offer")),
-            session_max_live_minutes=int(session_limit["session_max_live_runtime_minutes"]),
-            paid_resource_admission_grant=grant,
-            pre_provider_mutation_hook=consume_immediately_before_runpod_mutation,
-        )
-        if consumption["status"] != "consumed":
-            blockers = [str(item) for item in result.get("blockers") or []]
-            if result.get("status") in {"completed", "retained_owned"}:
-                blockers.append(
-                    "successor_compute_authorization_not_consumed_before_provider_mutation"
-                )
-                result["status"] = "blocked"
-            result["blockers"] = sorted(set(blockers))
-        else:
-            admission["authorization_consumption"] = consumption
-            admission["manifest_sha256"] = canonical_sha256(
-                {key: value for key, value in admission.items() if key != "manifest_sha256"}
-            )
-            write_json(Path(admission_out), admission)
-            bound["authorization_consumption"] = consumption
-            bound["manifest_sha256"] = canonical_sha256(
-                {key: value for key, value in bound.items() if key != "manifest_sha256"}
-            )
-            write_json(Path(bound_request_out), bound)
-        result["authorization_consumption"] = consumption
-        write_json(Path(adapter_output), result)
-        return result
     if provider_name != "vast":
         result = {
             "status": "blocked",
@@ -2032,7 +1595,6 @@ __all__ = [
     "SuccessorGPUProfile",
     "build_successor_gpu_admission",
     "collect_successor_vast_preflight",
-    "collect_successor_runpod_preflight",
     "inspect_successor_bundle",
     "run_successor_gpu_lane",
 ]

@@ -230,12 +230,11 @@ not capture or physical truth.
 
 ## Paid Resources and Closeout
 
-Do not launch provider-specific builders or canaries directly. Any paid CPU,
-model-volume, or GPU allocation must use:
+Do not launch provider-specific builders or canaries directly. Any paid CPU
+or GPU allocation must use:
 
 ```bash
 python -m blueprint_pipeline.paid_resource_allocator cpu-build <arguments>
-python -m blueprint_pipeline.paid_resource_allocator model-volume <arguments>
 python -m blueprint_pipeline.paid_resource_allocator gpu-canary <arguments>
 ```
 

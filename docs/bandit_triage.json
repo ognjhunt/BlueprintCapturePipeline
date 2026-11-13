@@ -423,18 +423,6 @@
     {
       "disposition": "accepted_risk",
       "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/runpod_live_execution_proof.py",
-      "fingerprint": "fe6684aeadd94fad3d0d2d7ca94e16e1457a6662d4d76c2e25ae4f44010432fb",
-      "line_number": 190,
-      "owner": "@ognjhunt",
-      "reason": "The URL is a constant https host chosen in code; no customer data reaches it. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/site_world_runtime_service_client.py",
       "fingerprint": "4983040ab1c87b363f4799aa2c19f94f1135c5f807042be4c13c74b27b29aea9",
       "line_number": 67,
@@ -455,18 +443,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B614"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/unitree_unifolm_runpod_server.py",
-      "fingerprint": "436c4b5c82fff9e0aa54d57bc4201ce87181e677ce03aa9da3166b0f212384cd",
-      "line_number": 665,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
     },
     {
       "disposition": "accepted_risk",

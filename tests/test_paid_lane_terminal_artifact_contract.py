@@ -91,8 +91,6 @@ SEALED_BY_ALLOCATOR_CALLER = {
 #: The tests below refuse a stale entry, refuse an entry that has quietly
 #: started sealing, and cap the total so the ledger cannot absorb a new lane.
 UNSEALED_LANE_DEBT = {
-    "groot_oscar_runpod_canary.py": "frozen_program",
-    "groot_oscar_runpod_persistent_carrier_campaign.py": "frozen_program",
     "groot_oscar_runpod_s3_model_cache.py": "frozen_program",
     "measurement_chrono_dem_vast_canary.py": "shares_unsealed_canonical_allocator_write",
     "measurement_dlo_lab_vast_canary.py": "shares_unsealed_canonical_allocator_write",
@@ -101,7 +99,6 @@ UNSEALED_LANE_DEBT = {
     "reconstruction_vast_operation.py": "shares_unsealed_canonical_allocator_write",
     "single_g1_kitchen_episode_runpod.py": "frozen_program",
     "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
-    "unitree_unifolm_runpod_server.py": "frozen_program",
 }
 
 VALID_DEBT_REASONS = {"shares_unsealed_canonical_allocator_write", "frozen_program"}
@@ -227,7 +224,7 @@ def test_the_widened_discovery_still_sees_the_lanes_it_used_to() -> None:
     assert {module for module in PAID_LANE_MODULES if module.endswith("_vast.py")} <= discovered
     # The runpod family, invisible here until a live canary depended on it.
     assert "openpi_policy_ranking_runpod.py" in discovered
-    assert sum(1 for module in discovered if "_runpod" in module) >= 6
+    assert sum(1 for module in discovered if "_runpod" in module) >= 3
 
 
 def test_a_lane_sealed_by_its_caller_really_is_sealed_by_that_caller() -> None:
@@ -300,7 +297,7 @@ def test_the_unsealed_lane_debt_is_stated_rather_than_implied() -> None:
         "cannot report completed after paying for a GPU. Lower this bound as "
         "lanes are sealed; do not raise it to make it pass."
     )
-    assert len(UNSEALED_LANE_DEBT) <= 11, (
+    assert len(UNSEALED_LANE_DEBT) <= 8, (
         f"unsealed paid lanes grew to {len(UNSEALED_LANE_DEBT)}: "
         f"{sorted(UNSEALED_LANE_DEBT)}. Lower this bound as lanes are sealed; "
         "raise it only when discovery widens to a provider family that was "

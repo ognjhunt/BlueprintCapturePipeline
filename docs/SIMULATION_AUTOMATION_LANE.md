@@ -292,10 +292,7 @@ deterministic manifests that are safe to sync to WebApp as advisory status:
   `prebuilt_isaac_eval_worker_image_ref_missing` instead of falling back to a
   slow direct Isaac Sim base image startup. Isaac RunPod requests also declare a
   first-artifact startup watchdog (`startup_artifact_timeout_seconds`, default
-  `360` in the Isaac command path). `blueprint-collect-runpod-live-execution-proof`
-  can poll the staged `isaac_provider_runtime_output.zip` and stop the pod with
-  `provider_pod_startup_or_image_pull_timeout` when the Blueprint wrapper never
-  starts or the image pull/startup path exceeds that window. The runtime output
+  `360` in the Isaac command path). The runtime output
   zip must be a valid non-empty zip; empty staging PUT probes are recorded as
   absent startup evidence. `blueprint-run-runpod-provider-adapter --mode
   image-startup-canary-pod` submits a same-image canary whose only proof claim is

@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **40 dispatched, 20 website-reachable, 20 named
+Current executable inventory: **39 dispatched, 20 website-reachable, 19 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
@@ -91,10 +91,9 @@ Their historical receipts remain immutable spend and provenance anchors. No
 new profile should make them reachable unless the active-program decision is
 explicitly changed.
 
-### Frozen programs (7)
+### Frozen programs (6)
 
 - `openpi-policy-ranking`
-- `persistent-policy-wam-loop`
 - `policy-ranking-cosmos-reasoner`
 - `policy-ranking-successor-cosmos`
 - `single-kitchen-episode`
