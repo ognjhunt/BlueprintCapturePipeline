@@ -102,20 +102,33 @@ def _decode(value, root: Path):
         codec._model_types = original
 
 
+def accepted_candidate() -> dict:
+    """Upstream's accepted-inspection reference active in this process, as a payload entry.
+
+    Upstream keeps the reference in a process-local ``ContextVar`` and hands it
+    to its own subprocess runners (``probe_summary_runner``). A model load the
+    sandbox does on upstream's behalf carries it the same way, so the worker
+    re-enters ``accepted_inspection`` and reuses the accepted mesh bytes.
+    """
+    from sdk.runtime.accepted_inspection import current_reference
+    reference = current_reference()
+    return {} if reference is None else {"accepted_candidate": reference}
+
+
 def load_model_globals(script_path: Path, *, sdk_package="sdk") -> dict:
     source = Path(script_path).resolve()
-    value = _rpc("load_model", model_path=str(source), sdk_package=sdk_package)
+    value = _rpc("load_model", model_path=str(source), sdk_package=sdk_package, **accepted_candidate())
     model = _decode(value["object_model"], source.parent)
     result = {"object_model": model, "__file__": str(source)}
     if value["has_tests"]:
         result["run_tests"] = lambda: _decode(_rpc("authored_tests", model_path=str(source),
-                                                     sdk_package=sdk_package), source.parent)
+                                                     sdk_package=sdk_package, **accepted_candidate()), source.parent)
     return result
 
 
 def run_qa_tests(model_path: Path, test_code: str, *, sdk_package="sdk", preserve_existing_meshes=False):
-    return _rpc("qa", model_path=str(model_path), test_code=test_code,
-                sdk_package=sdk_package, preserve_existing_meshes=preserve_existing_meshes)
+    return _rpc("qa", model_path=str(model_path), test_code=test_code, sdk_package=sdk_package,
+                preserve_existing_meshes=preserve_existing_meshes, **accepted_candidate())
 
 
 def run_blender_script(script_path, out_name, workspace, *, visual_budget, timeout):

@@ -62,7 +62,16 @@ the tracked patches in order and seals each digest in its manifest (`patches`;
 `patches/artisan/0001-confine-generated-code.patch` routes generated model,
 QA, probe and Blender execution through Blueprint's OS sandbox; admits a
 declared one-part rigid model without a fake joint; and retains visual/collision
-identity and opacity in USD. `patches/artisan/0002-gpt-6-1-sol.patch` prices
+identity and opacity in USD. While upstream holds an accepted inspection
+(`sdk/runtime/accepted_inspection.py`), a model load, authored-test or QA
+request to the sandbox carries upstream's `current_reference()` as
+`accepted_candidate`, and the worker re-enters `accepted_inspection` with it,
+as upstream's own `probe_summary_runner` does: the load reuses the accepted mesh
+bytes, writes no mesh and no `.anchors.json` sidecar, and every dependency file
+stays as staged. Without it a sandbox recompile rewrote `assets/meshes/*.obj`
+(CadQuery's bytes differ from process to process) and P4 failed with "accepted
+inspection dependencies do not match candidate". A reference whose manifest is
+outside the workspace is refused. `patches/artisan/0002-gpt-6-1-sol.patch` prices
 and admits `gpt-6.1-sol` (text, compaction and image envelope) and lets it run
 at `xhigh` and `max` reasoning, as upstream already allowed for `gpt-6-astra`.
 Design/Coding/Review, CAD, collision construction, simulation, repair, review
