@@ -309,22 +309,50 @@ def test_without_consent_claude_is_never_a_target(config: dict) -> None:
     assert decision.action == "switch" and route.entries[decision.to_index].provider == "google"
 
 
-def test_a_hand_built_route_cannot_switch_to_a_forbidden_provider(config: dict) -> None:
-    """The reviewer's probe, inverted: a route built by hand with Claude for frames does not switch to it."""
+def test_a_hand_built_route_cannot_switch_to_a_forbidden_provider(config: dict, monkeypatch) -> None:
+    """The reviewer's probe, inverted: a route built with Claude for frames is refused, and so is the switch."""
     base = routing.resolve_route("website_spec_research", config=config)
-    forged = dataclasses.replace(base, entries=(base.entries[0], routing.RouteEntry("anthropic", "claude-opus-5-5",
-                                                                                     None)),
-                                 list_prices=(base.list_prices[0], config["prices"]["anthropic"]["claude-opus-5-5"]))
-    decision = _decide(forged, _openai(openai.RateLimitError, 429, QUOTA), config)
+    opus = routing.RouteEntry("anthropic", "claude-opus-5-5", None)
+    opus_price = config["prices"]["anthropic"]["claude-opus-5-5"]
+    with pytest.raises(routing.ModelRoutingError, match="model_route_entry_provider_privacy_not_permitted"):
+        dataclasses.replace(base, entries=(base.entries[0], opus), list_prices=(base.list_prices[0], opus_price))
+    # A route that was admitted under another table (here: one that let Claude see frames) is
+    # gated again at the decision, under the shipped tables.
+    loose = copy.deepcopy(config)
+    loose["privacy_policies"]["baseline"]["data_classes"]["site_frames"]["providers"].append("anthropic")
+    loose["privacy_policies"]["baseline"]["data_classes"]["site_frames"]["providers_by_site_choice"] = []
+    loose["site_consents"] = {}
+    monkeypatch.setattr(routing, "_load_shipped", lambda: copy.deepcopy(loose))
+    admitted = dataclasses.replace(base, entries=(base.entries[0], opus), list_prices=(base.list_prices[0],
+                                                                                         opus_price))
+    monkeypatch.undo()
+    decision = _decide(admitted, _openai(openai.RateLimitError, 429, QUOTA), config)
     assert decision.action == "stop" and decision.record is None
     assert decision.refusals == ((1, ("provider_failover_privacy_not_permitted:anthropic",)),)
     assert hard_stop_kind(decision.refusals[0][1][0]) == PRIVACY_RIGHTS
-    # Relabelling the hand-built route's data class does not help: the gate reads the role's class.
-    relabelled = dataclasses.replace(forged, data_class="internal_text")
-    assert _decide(relabelled, _openai(openai.RateLimitError, 429, QUOTA), config).action == "stop"
-    # Nor does a consent: the 3D authoring statement does not cover spec research.
-    consented = dataclasses.replace(forged, site_consents=(CONSENT,))
-    assert _decide(consented, _openai(openai.RateLimitError, 429, QUOTA), config).action == "stop"
+    assert decision.config_digest_matches_current is True
+
+
+def test_a_loosened_configuration_cannot_drive_a_switch(config: dict) -> None:
+    loose = copy.deepcopy(config)
+    loose["privacy_policies"]["baseline"]["data_classes"]["site_frames"]["providers"].append("anthropic")
+    loose["privacy_policies"]["baseline"]["data_classes"]["site_frames"]["providers_by_site_choice"] = []
+    loose["site_consents"] = {}
+    route = _route(config)
+    with pytest.raises(routing.ModelRoutingError, match="model_routing_privacy_not_shipped:privacy_policies"):
+        _decide(route, _openai(openai.RateLimitError, 429, QUOTA), loose)
+
+
+def test_a_switch_record_says_which_configuration_it_was_resolved_under(config: dict) -> None:
+    route = _route(config)
+    changed = copy.deepcopy(config)
+    changed["prices"]["anthropic"]["claude-opus-5-5"]["usd_per_million_tokens"]["output"] = 21.0
+    decision = _decide(route, _openai(openai.RateLimitError, 429, QUOTA), changed)
+    assert decision.action == "switch" and decision.config_digest_matches_current is False
+    assert decision.record["config_digest"] == route.config_digest
+    assert decision.record["config_digest_matches_current"] is False
+    # The frozen price is the one the route was resolved with.
+    assert decision.record["to"]["list_price"]["usd_per_million_tokens"]["output"] == 20.0
 
 
 @pytest.mark.parametrize("make", [

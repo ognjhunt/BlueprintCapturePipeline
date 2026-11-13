@@ -1,8 +1,11 @@
 """Decide whether a provider's "no funds" answer may move a role to the next provider.
 
-Pure: no I/O, clock, environment or SDK import. It reads an SDK error by its
-class and typed fields, never by log text, and it is not wired into any money
-path yet: nothing calls it.
+No SDK import and no environment read. It reads an SDK error by its class and
+typed fields, never by log text. It reads one file: the shipped routing
+configuration, for the privacy gate always, and for the whole configuration when
+``decide_failover`` is given none (validating that reads today's date to refuse a
+price dated in the future). It is not wired into any money path yet: nothing
+calls it.
 
 One trigger table, the same in the website and here (``classify_fields``):
 
@@ -39,7 +42,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .model_routing import ResolvedRoute, RouteEntry, load_config, privacy_refusal, validate_config
+from .model_routing import ResolvedRoute, RouteEntry, config_digest, load_config, privacy_refusal, validate_config
 
 SWITCH_SCHEMA_VERSION = "provider_switch.v1"
 NO_FUNDS = "no_funds"
@@ -61,6 +64,8 @@ UNSETTLED_SHAPES = (
     "google: HTTP 403 PERMISSION_DENIED citing an outstanding balance (message only)",
     "google: HTTP 429 RESOURCE_EXHAUSTED with 'prepayment credits are depleted' (repository string match, no recorded stop)",
     "openai: a billing code that is not on the error-codes page",
+    "anthropic: where the error code sits; the documentation and SDK 2.8.0 put it at error.details.error_code,"
+    " and a code carried anywhere else (for example error.code) is not read",
 )
 
 
@@ -246,6 +251,8 @@ class FailoverDecision:
     takes_effect: str | None = None
     refusals: tuple[tuple[int, tuple[str, ...]], ...] = ()
     record: dict[str, Any] | None = None
+    #: Whether the route was resolved under the configuration in force now (information, not a refusal).
+    config_digest_matches_current: bool | None = None
 
 
 def _digest(value: Any) -> str:
@@ -272,15 +279,16 @@ def decide_failover(route: ResolvedRoute, *, failed_index: int, error: BaseExcep
         return FailoverDecision("no_switch", classification.reason, classification, failed_index)
     stop_code = f"provider_funds_exhausted:{current.provider}"
     config = load_config() if config is None else validate_config(config)
+    current_config = route.config_digest == config_digest(config)
     refusals: list[tuple[int, tuple[str, ...]]] = []
     for index in range(failed_index + 1, len(route.entries)):
         entry = route.entries[index]
         if entry.provider == current.provider:
             refusals.append((index, (f"provider_failover_same_provider:{entry.provider}",)))
             continue
-        # The gate again, from the configuration's data class for the role: a
-        # hand-built or restored route cannot carry a forbidden provider this far.
-        privacy = privacy_refusal(config, role=route.role, entry=entry,
+        # The gate again, under the shipped tables: a hand-built or restored route
+        # cannot carry a forbidden provider this far.
+        privacy = privacy_refusal(role=route.role, entry=entry,
                                   privacy_policy_version=route.privacy_policy_version,
                                   site_consents=route.site_consents)
         failures = ((f"provider_failover_privacy_not_permitted:{entry.provider}",) if privacy is not None else ()) \
@@ -291,16 +299,20 @@ def decide_failover(route: ResolvedRoute, *, failed_index: int, error: BaseExcep
         takes_effect = "next_call" if route.call_kind == "single_call" else "next_attempt_fresh_run"
         record = switch_record(route, from_index=failed_index, to_index=index, classification=classification,
                                takes_effect=takes_effect, attempt_id=attempt_id, occurred_at=occurred_at,
-                               refused_call_meter_row=refused_call_meter_row)
+                               refused_call_meter_row=refused_call_meter_row,
+                               config_digest_matches_current=current_config)
         return FailoverDecision("switch", f"provider_switch:{current.provider}:{entry.provider}", classification,
                                 failed_index, to_index=index, takes_effect=takes_effect,
-                                refusals=tuple(refusals), record=record)
-    return FailoverDecision("stop", stop_code, classification, failed_index, refusals=tuple(refusals))
+                                refusals=tuple(refusals), record=record,
+                                config_digest_matches_current=current_config)
+    return FailoverDecision("stop", stop_code, classification, failed_index, refusals=tuple(refusals),
+                            config_digest_matches_current=current_config)
 
 
 def switch_record(route: ResolvedRoute, *, from_index: int, to_index: int, classification: ErrorClassification,
                   takes_effect: str, attempt_id: str, occurred_at: str,
-                  refused_call_meter_row: Mapping[str, Any] | None) -> dict[str, Any]:
+                  refused_call_meter_row: Mapping[str, Any] | None,
+                  config_digest_matches_current: bool | None = None) -> dict[str, Any]:
     """The ``provider_switch.v1`` receipt; ``record_digest`` seals every other field."""
     if not isinstance(attempt_id, str) or not attempt_id or not isinstance(occurred_at, str) or not occurred_at:
         raise ValueError("provider_switch_identity_required")
@@ -314,6 +326,7 @@ def switch_record(route: ResolvedRoute, *, from_index: int, to_index: int, class
                "list_price": route.plain_list_price(to_index)},
         "error": classification.as_dict(), "attempt_id": attempt_id, "occurred_at": occurred_at,
         "refused_call_meter_row": None if refused_call_meter_row is None else dict(refused_call_meter_row),
-        "route_digest": route.record()["route_digest"],
+        "route_digest": route.record()["route_digest"], "config_digest": route.config_digest,
+        "config_digest_matches_current": config_digest_matches_current,
     }
     return {**body, "record_digest": _digest(body)}

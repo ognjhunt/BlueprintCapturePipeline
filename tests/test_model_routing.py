@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import dataclasses
 import json
 import math
 from datetime import date
@@ -161,8 +162,8 @@ def test_no_configuration_resolves_each_role_to_exactly_today(config: dict, role
 
 def test_resolving_with_the_shipped_file_reads_the_same_routes(config: dict) -> None:
     for role in config["roles"]:
-        assert (resolve_route(role, job_model="gpt-6.1-sol").entries
-                == resolve_route(role, config=config, job_model="gpt-6.1-sol").entries)
+        assert (resolve_route(role, job_model=_job_model(config, role)).entries
+                == resolve_route(role, config=config, job_model=_job_model(config, role)).entries)
 
 
 def test_only_the_routing_tests_and_the_failover_module_import_the_routing_modules() -> None:
@@ -192,8 +193,22 @@ CONSENTED_ROLES = {"artisan_text", "artisan_compaction"}
 JOB_MODEL = "gpt-6.1-sol"
 
 
+def _job_model(config: dict, role: str) -> str | None:
+    return JOB_MODEL if config["roles"][role].get("model_source") == "job_policy" else None
+
+
 def _resolve(role: str, config: dict, **kwargs):
-    return resolve_route(role, config=config, job_model=JOB_MODEL, **kwargs)
+    return resolve_route(role, config=config, job_model=_job_model(config, role), **kwargs)
+
+
+@pytest.fixture()
+def shipped(monkeypatch):
+    """Replace the shipped file's content for one test: the one seam the privacy gate has."""
+    def install(config: dict) -> dict:
+        frozen = copy.deepcopy(config)
+        monkeypatch.setattr(routing, "_load_shipped", lambda: copy.deepcopy(frozen))
+        return copy.deepcopy(frozen)
+    return install
 
 
 def test_same_level_mapping_exists_but_is_not_the_default(config: dict) -> None:
@@ -272,7 +287,7 @@ def test_a_consent_statement_cannot_widen_what_the_privacy_policy_admits(config:
 
 
 def test_privacy_gate_per_data_class_matches_todays_wording(config: dict) -> None:
-    permitted = {name: routing.permitted_providers(config, name) for name in routing.DATA_CLASSES}
+    permitted = {name: routing.permitted_providers(name) for name in routing.DATA_CLASSES}
     assert permitted == {"site_frames": {"openai", "google"}, "site_video": {"google"},
                          "site_job_text": {"openai", "google"}, "internal_text": {"openai", "anthropic"}}
     by_choice = {name: row["providers_by_site_choice"]
@@ -280,12 +295,13 @@ def test_privacy_gate_per_data_class_matches_todays_wording(config: dict) -> Non
     assert by_choice == {"site_frames": ["anthropic"], "site_video": [], "site_job_text": [], "internal_text": []}
 
 
-def test_an_unlisted_privacy_version_gets_the_baseline(config: dict) -> None:
+def test_an_unlisted_privacy_version_gets_the_baseline(config: dict, shipped) -> None:
     config = copy.deepcopy(config)
     wider = copy.deepcopy(config["privacy_policies"]["baseline"])
     wider["data_classes"]["site_frames"]["providers"].append("anthropic")
     wider["data_classes"]["site_frames"]["providers_by_site_choice"] = []
     config["privacy_policies"]["2099-01-01.1"] = wider
+    config = shipped(config)
     validate_config(config, today=TODAY)
     new = resolve_route("artisan_text", config=config, profile="same_level_claude",
                         privacy_policy_version="2099-01-01.1")
@@ -326,12 +342,138 @@ def test_an_image_role_never_routes_to_a_text_only_provider(config: dict) -> Non
 def test_a_job_policy_model_must_be_named_and_priced(config: dict) -> None:
     with pytest.raises(ModelRoutingError, match="job_model_required:atlas_scene_planner"):
         resolve_route("atlas_scene_planner", config=config)
-    with pytest.raises(ModelRoutingError, match="unpriced:current:atlas_scene_planner:openai:gpt-6-astra"):
-        resolve_route("atlas_scene_planner", config=config, job_model="gpt-6-astra")
+    with pytest.raises(ModelRoutingError, match="unpriced:current:atlas_scene_planner:openai:gpt-5.6-sol"):
+        resolve_route("atlas_scene_planner", config=config, job_model="gpt-5.6-sol")
     bad = copy.deepcopy(config)
     bad["profiles"]["current"]["website_spec_research"][0]["model"] = None
     with pytest.raises(ModelRoutingError, match="model_routing_model_invalid:current:website_spec_research"):
         validate_config(bad, today=TODAY)
+
+
+def test_a_job_model_for_a_role_that_takes_none_is_refused(config: dict) -> None:
+    with pytest.raises(ModelRoutingError, match="model_routing_job_model_not_taken:robot_placement"):
+        resolve_route("robot_placement", config=config, job_model="claude-opus-5-5")
+
+
+def test_every_model_the_planner_admits_today_resolves_at_the_repositorys_price(config: dict) -> None:
+    from blueprint_pipeline import openai_prompt_cache
+
+    def planner_admits(model: str) -> bool:  # atlas_scene_planner.py:697
+        return model.startswith("gpt-6") and openai_prompt_cache.pricing_for_model(model) is not None
+
+    families = sorted({pricing.model_family for pricing in openai_prompt_cache._GPT56_PRICING.values()})
+    candidates = [model for family in families for model in (family, family + "-2026-09-01")]
+    admitted = [model for model in candidates if planner_admits(model)]
+    assert {model for model in admitted if "-2026-" not in model} == {
+        "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"}
+    for model in admitted:
+        route = resolve_route("atlas_scene_planner", config=config, job_model=model)
+        assert route.default.model == model
+        pricing = openai_prompt_cache.pricing_for_model(model)
+        listed = route.list_price(0)
+        assert dict(listed["usd_per_million_tokens"]) == {
+            "input": pricing.uncached_input_per_million_usd, "cache_write": pricing.cache_write_per_million_usd,
+            "cache_read": pricing.cached_read_per_million_usd, "output": pricing.output_per_million_usd}
+        long = listed["long_prompt"]
+        assert long["above_input_tokens"] == pricing.long_context_threshold_tokens
+        assert long["usd_per_million_tokens"]["input"] == pytest.approx(
+            pricing.uncached_input_per_million_usd * pricing.long_context_input_multiplier)
+        assert long["usd_per_million_tokens"]["output"] == pytest.approx(
+            pricing.output_per_million_usd * pricing.long_context_output_multiplier)
+    for model in (model for model in candidates if not planner_admits(model)):
+        with pytest.raises(ModelRoutingError, match="unpriced"):
+            resolve_route("atlas_scene_planner", config=config, job_model=model)
+
+
+# --- the gate reads only the shipped privacy tables (the reviewer's probes, inverted) ---
+
+
+def _loosened(config: dict) -> list[tuple[str, dict]]:
+    widened = copy.deepcopy(config)
+    widened["site_consents"] = {}
+    for name in ("site_frames", "site_job_text", "site_video"):
+        row = widened["privacy_policies"]["baseline"]["data_classes"][name]
+        row["providers"] = sorted(set(row["providers"]) | {"anthropic"})
+        row["providers_by_site_choice"] = []
+    rewritten = copy.deepcopy(config)
+    rewritten["site_consents"]["2026-09-24.v1"]["model"] = "claude-haiku-5-5"
+    rewritten["site_consents"]["2026-09-24.v1"]["roles"] = [
+        role for role, row in config["roles"].items() if row["data_class"] == "site_frames"]
+    versioned = copy.deepcopy(config)
+    wide = copy.deepcopy(config["privacy_policies"]["baseline"])
+    wide["data_classes"]["site_frames"]["providers"] = ["openai", "google", "anthropic"]
+    wide["data_classes"]["site_frames"]["providers_by_site_choice"] = []
+    versioned["privacy_policies"]["2026-11-12.2"] = wide
+    relabelled = copy.deepcopy(config)
+    relabelled["roles"]["website_candidate_ranking"]["data_class"] = "site_frames"
+    return [("privacy_policies", widened), ("site_consents", rewritten), ("privacy_policies", versioned),
+            ("role_data_classes", relabelled)]
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_a_loosened_configuration_is_refused_everywhere(config: dict, index: int, tmp_path) -> None:
+    part, loosened = _loosened(config)[index]
+    code = f"model_routing_privacy_not_shipped:{part}"
+    with pytest.raises(ModelRoutingError, match=code):
+        validate_config(loosened, today=TODAY)
+    path = tmp_path / "model_routing.v1.json"
+    path.write_text(json.dumps(loosened), encoding="utf-8")
+    with pytest.raises(ModelRoutingError, match=code):
+        routing.load_config(path, today=TODAY)
+    for role in ("website_view_review", "website_candidate_ranking", "website_removal_analysis", "robot_placement"):
+        with pytest.raises(ModelRoutingError, match=code):
+            resolve_route(role, config=loosened, profile="same_level_claude", privacy_policy_version="2026-11-12.2",
+                          site_consents=(routing.SiteConsent("2026-09-24.v1", "anthropic", "claude-haiku-5-5"),))
+    record = resolve_route("robot_placement", config=config).record()
+    with pytest.raises(ModelRoutingError, match=code):
+        route_from_record(record, config=loosened)
+
+
+def test_the_gate_takes_no_table_from_its_caller() -> None:
+    import inspect
+
+    assert "config" not in inspect.signature(routing.privacy_refusal).parameters
+    assert "config" not in inspect.signature(routing.permitted_providers).parameters
+    assert "config" not in inspect.signature(routing.privacy_policy_key).parameters
+    # Video stays with Google, whatever a caller would like.
+    assert routing.privacy_refusal(role="website_removal_analysis",
+                                   entry=routing.RouteEntry("anthropic", "claude-opus-5-5", None),
+                                   privacy_policy_version=None, site_consents=(CONSENT,)) == (
+        "provider_privacy_not_permitted:anthropic:site_video")
+
+
+def test_no_route_can_hold_an_entry_the_gate_refuses(config: dict) -> None:
+    route = resolve_route("robot_placement", config=config)
+    opus = routing.RouteEntry("anthropic", "claude-opus-5-5", "high")
+    opus_price = config["prices"]["anthropic"]["claude-opus-5-5"]
+    with pytest.raises(ModelRoutingError, match="model_route_entry_provider_privacy_not_permitted:anthropic"):
+        dataclasses.replace(route, entries=(opus,), list_prices=(opus_price,))  # a forbidden default
+    with pytest.raises(ModelRoutingError, match="model_route_entry_provider_privacy_not_permitted:anthropic"):
+        dataclasses.replace(route, entries=route.entries + (opus,), list_prices=route.list_prices + (opus_price,))
+    with pytest.raises(ModelRoutingError, match="model_route_role_class_mismatch"):
+        dataclasses.replace(route, data_class="internal_text")
+    # The residual this module states: the same data class under another role's name is not detectable here.
+    relabelled = dataclasses.replace(route, role="artisan_text", site_consents=(CONSENT,), entries=(
+        routing.RouteEntry("anthropic", "claude-opus-5-5", None), *route.entries),
+        list_prices=(opus_price, *route.list_prices))
+    assert relabelled.default.provider == "anthropic"
+
+
+def test_a_restored_route_says_whether_its_configuration_is_current(config: dict) -> None:
+    record = resolve_route("robot_placement", config=config).record()
+    assert route_from_record(record, config=config).config_digest_matches_current is True
+    changed = copy.deepcopy(config)
+    changed["prices"]["openai"]["gpt-6.1-sol"]["usd_per_million_tokens"]["output"] = 11.0
+    restored = route_from_record(record, config=changed)
+    assert restored.config_digest_matches_current is False
+    assert restored.list_price(0)["usd_per_million_tokens"]["output"] == 10.0
+
+
+def test_the_shipped_job_text_row_carries_its_note(config: dict) -> None:
+    note = config["privacy_policies"]["baseline"]["data_classes"]["site_job_text"]["note"]
+    assert "what runs today" in note and "new Privacy version" in note
+    for role in ("website_removal_analysis", "website_movable_obstacles"):
+        assert "documentation only" in config["roles"][role]["today"]
 
 
 # --- freezing ----------------------------------------------------------------

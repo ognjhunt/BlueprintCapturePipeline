@@ -32,7 +32,8 @@
             "google"
           ],
           "providers_by_site_choice": [],
-          "source": "Privacy.tsx (read 2026-11-13): OpenAI reads the job description; Gemini drafts and checks the job brief. Anthropic is named for job text nowhere, so it is not permitted."
+          "source": "Privacy.tsx (read 2026-11-13): OpenAI reads the job description; Gemini drafts and checks the job brief. Anthropic is named for job text nowhere, so it is not permitted.",
+          "note": "Google here is what runs today (candidate ranking reads the task facts). The Privacy page names Gemini for footage and frames from it, to draft and check the job brief; the website's new Privacy version is to state job text for it plainly. Nothing that runs is changed by this row."
         },
         "internal_text": {
           "description": "Blueprint's own text that carries no site data and no personal information.",
@@ -125,7 +126,7 @@
       "data_class": "site_video",
       "call_kind": "single_call",
       "output": "text",
-      "today": "clean_plate_removal_analysis_gemini.DEFAULT_MODEL unless the host sets BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL, with thinking_level 'low' on the Interactions API (video input)",
+      "today": "clean_plate_removal_analysis_gemini.DEFAULT_MODEL unless the host sets BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL, with thinking_level 'low' on the Interactions API (video input); the override is documentation only: the call site reads BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL itself and the routing does not apply it",
       "model_override_env": "BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL"
     },
     "website_spec_research": {
@@ -163,7 +164,7 @@
       "call_kind": "agent_run",
       "output": "text",
       "model_source": "job_policy",
-      "today": "atlas_scene_planner: the model the website's Atlas runtime policy names (configuration policy.model; the Pipeline admits gpt-6* models), no reasoning setting, hosted web search"
+      "today": "atlas_scene_planner: the model the website's Atlas runtime policy names (configuration policy.model); the Pipeline admits a gpt-6* model its own price table prices (atlas_scene_planner.py:697), and each of those has a price row here; no reasoning setting, hosted web search"
     },
     "sam31_visual_review": {
       "data_class": "site_frames",
@@ -176,7 +177,7 @@
       "call_kind": "single_call",
       "output": "text",
       "model_override_env": "BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL",
-      "today": "clean_plate_removal_analysis_gemini.movable_obstacle_request: DEFAULT_MODEL unless the host sets BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL, thinking_level 'low' (robot_access_measurement)"
+      "today": "clean_plate_removal_analysis_gemini.movable_obstacle_request: DEFAULT_MODEL unless the host sets BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL, thinking_level 'low' (robot_access_measurement); the override is documentation only: the call site reads BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL itself and the routing does not apply it"
     }
   },
   "profiles": {
@@ -532,6 +533,15 @@
           "cache_write": 2.5,
           "cache_read": 0.1,
           "output": 10.0
+        },
+        "long_prompt": {
+          "above_input_tokens": 272000,
+          "usd_per_million_tokens": {
+            "input": 4.0,
+            "cache_write": 5.0,
+            "cache_read": 0.2,
+            "output": 15.0
+          }
         }
       },
       "gpt-image-2.5-sunburst": {
@@ -552,6 +562,66 @@
           "input_text": 5.0,
           "input_image": 8.0,
           "output_image": 30.0
+        }
+      },
+      "gpt-6-astra": {
+        "kind": "text",
+        "read_on": "2026-09-29",
+        "source": "https://developers.openai.com/api/docs/pricing, as recorded in src/blueprint_pipeline/openai_prompt_cache.py",
+        "usd_per_million_tokens": {
+          "input": 10.0,
+          "cache_write": 12.5,
+          "cache_read": 1.0,
+          "output": 50.0
+        },
+        "long_prompt": {
+          "above_input_tokens": 272000,
+          "usd_per_million_tokens": {
+            "input": 20.0,
+            "cache_write": 25.0,
+            "cache_read": 2.0,
+            "output": 75.0
+          }
+        }
+      },
+      "gpt-6-sol": {
+        "kind": "text",
+        "read_on": "2026-09-29",
+        "source": "https://developers.openai.com/api/docs/pricing, as recorded in src/blueprint_pipeline/openai_prompt_cache.py",
+        "usd_per_million_tokens": {
+          "input": 2.0,
+          "cache_write": 2.5,
+          "cache_read": 0.2,
+          "output": 10.0
+        },
+        "long_prompt": {
+          "above_input_tokens": 272000,
+          "usd_per_million_tokens": {
+            "input": 4.0,
+            "cache_write": 5.0,
+            "cache_read": 0.4,
+            "output": 15.0
+          }
+        }
+      },
+      "gpt-6-luna": {
+        "kind": "text",
+        "read_on": "2026-09-29",
+        "source": "https://developers.openai.com/api/docs/pricing, as recorded in src/blueprint_pipeline/openai_prompt_cache.py",
+        "usd_per_million_tokens": {
+          "input": 0.1,
+          "cache_write": 0.125,
+          "cache_read": 0.01,
+          "output": 0.5
+        },
+        "long_prompt": {
+          "above_input_tokens": 272000,
+          "usd_per_million_tokens": {
+            "input": 0.2,
+            "cache_write": 0.25,
+            "cache_read": 0.02,
+            "output": 0.75
+          }
         }
       }
     },

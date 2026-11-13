@@ -17,10 +17,21 @@ site's explicit choice is admitted only with a ``SiteConsent`` naming a consent
 statement the configuration lists, and only for that statement's roles, model
 and data classes.
 
-The gate runs wherever a route comes into being or is acted on: at resolution,
-when a frozen record is restored (``route_from_record`` re-checks every entry
-against the current privacy table; a recomputed digest is not enough), and
-before a failover switch (``model_failover``).
+The gate reads three things only from the shipped file at the module's own path
+(``SHIPPED_CONFIG_PATH``), whatever configuration a caller passes: the Privacy
+Policy tables, the consent statements and each role's data class. A configuration
+whose values for those three differ from the shipped file is refused
+(``model_routing_privacy_not_shipped``); a caller's configuration may differ in
+profiles, entries and prices only. Tests that need another privacy table replace
+``_load_shipped``, the one seam.
+
+The gate runs wherever a route comes into being or is acted on: every entry of a
+``ResolvedRoute`` is gated when the route is built (resolution, restore,
+``dataclasses.replace`` or direct construction), a restored record is re-gated
+whatever its digest says, and ``model_failover`` re-gates a switch target. What
+this module cannot detect is a caller that names the wrong role for its call:
+callers pass the role as a constant at each call site, and their request-shape
+tests assert it.
 
 A route is resolved once for an attempt and then frozen: ``ResolvedRoute.record``
 carries the entries, their list prices and a digest, and every nested value is
@@ -37,7 +48,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
@@ -153,6 +164,10 @@ class ResolvedRoute:
     skipped: tuple[tuple[RouteEntry, str], ...]
     site_consents: tuple[SiteConsent, ...]
     config_digest: str
+    #: Set by ``route_from_record``: whether the route was resolved under the current
+    #: configuration. A difference is information, not a refusal (configurations change
+    #: between releases); the privacy gate is re-run either way. Not part of the record.
+    config_digest_matches_current: bool | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         # Hold private, read-only copies, so neither the configuration nor a
@@ -169,6 +184,13 @@ class ResolvedRoute:
         object.__setattr__(self, "skipped", skipped)
         object.__setattr__(self, "site_consents", consents)
         object.__setattr__(self, "list_prices", tuple(_freeze(price) for price in self.list_prices))
+        # No route can exist with an entry the gate refuses for its role, the default included.
+        shipped_class = _shipped_privacy()["role_classes"].get(self.role)
+        _require(shipped_class is not None and shipped_class == self.data_class, "model_route_role_class_mismatch")
+        for entry in entries:
+            reason = privacy_refusal(role=self.role, entry=entry, privacy_policy_version=self.privacy_policy_version,
+                                     site_consents=consents)
+            _require(reason is None, "model_route_entry_" + (reason or ""))
 
     @property
     def default(self) -> RouteEntry:
@@ -265,7 +287,19 @@ def _validate_prices(prices: Any, *, today: date) -> dict[tuple[str, str], Mappi
 
 
 def validate_config(config: Any, *, today: date | None = None) -> dict[str, Any]:
-    """Check the whole configuration; return it unchanged or raise ``ModelRoutingError``."""
+    """Check the whole configuration, its privacy part against the shipped file; return it or raise."""
+    config = _validate_structure(config, today=today)
+    shipped = _shipped_privacy()
+    _require(config["privacy_policies"] == shipped["privacy_policies"],
+             "model_routing_privacy_not_shipped:privacy_policies")
+    _require(config.get("site_consents", {}) == shipped["site_consents"],
+             "model_routing_privacy_not_shipped:site_consents")
+    _require({role: row["data_class"] for role, row in config["roles"].items()} == shipped["role_classes"],
+             "model_routing_privacy_not_shipped:role_data_classes")
+    return config
+
+
+def _validate_structure(config: Any, *, today: date | None = None) -> dict[str, Any]:
     today = today or date.today()
     _require(isinstance(config, Mapping) and config.get("schema_version") == SCHEMA_VERSION
              and set(config) <= {"schema_version", "active_profile", "note", "privacy_policies", "site_consents",
@@ -280,10 +314,10 @@ def validate_config(config: Any, *, today: date | None = None) -> dict[str, Any]
         for name, row in classes.items():
             where = f"{version}:{name}"
             _require(isinstance(row, Mapping), f"model_routing_data_class_invalid:{where}")
-            for field in ("providers", "providers_by_site_choice"):
-                values = row.get(field)
+            for key in ("providers", "providers_by_site_choice"):
+                values = row.get(key)
                 _require(isinstance(values, list) and len(set(values)) == len(values) and set(values) <= PROVIDERS,
-                         f"model_routing_data_class_invalid:{where}:{field}")
+                         f"model_routing_data_class_invalid:{where}:{key}")
             _require(not set(row["providers"]) & set(row["providers_by_site_choice"]),
                      f"model_routing_data_class_invalid:{where}:overlap")
             _text(row.get("source"), f"model_routing_data_class_source_missing:{where}")
@@ -356,31 +390,46 @@ def validate_config(config: Any, *, today: date | None = None) -> dict[str, Any]
     return dict(config)
 
 
-def load_config(path: Path | None = None, *, today: date | None = None) -> dict[str, Any]:
-    target = SHIPPED_CONFIG_PATH if path is None else path
+def _read(path: Path) -> Any:
     try:
-        config = json.loads(target.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ModelRoutingError("model_routing_config_unreadable") from exc
-    return validate_config(config, today=today)
+
+
+def _load_shipped() -> dict[str, Any]:
+    """The shipped configuration file, structurally validated. The one seam tests may replace."""
+    return _validate_structure(_read(SHIPPED_CONFIG_PATH))
+
+
+def _shipped_privacy() -> dict[str, Any]:
+    """The three things the gate reads, always from the shipped file: never a caller's argument."""
+    shipped = _load_shipped()
+    return {"privacy_policies": shipped["privacy_policies"], "site_consents": shipped.get("site_consents", {}),
+            "role_classes": {role: row["data_class"] for role, row in shipped["roles"].items()}}
+
+
+def load_config(path: Path | None = None, *, today: date | None = None) -> dict[str, Any]:
+    """A configuration file (the shipped one by default); another path must carry the shipped privacy part."""
+    return validate_config(_read(SHIPPED_CONFIG_PATH if path is None else path), today=today)
 
 
 def config_digest(config: Mapping[str, Any]) -> str:
     return _digest(config)
 
 
-def privacy_policy_key(config: Mapping[str, Any], version: str | None) -> str:
-    """The table key that gates a job submitted under Privacy Policy ``version``."""
-    if isinstance(version, str) and version != BASELINE_PRIVACY_POLICY and version in config["privacy_policies"]:
+def privacy_policy_key(version: str | None) -> str:
+    """The shipped privacy table key that gates a job submitted under Privacy Policy ``version``."""
+    policies = _shipped_privacy()["privacy_policies"]
+    if isinstance(version, str) and version != BASELINE_PRIVACY_POLICY and version in policies:
         return version
     return BASELINE_PRIVACY_POLICY
 
 
-def permitted_providers(config: Mapping[str, Any], data_class: str, *,
-                        privacy_policy_version: str | None = None) -> frozenset[str]:
+def permitted_providers(data_class: str, *, privacy_policy_version: str | None = None) -> frozenset[str]:
     """Providers the job's Privacy Policy version permits for ``data_class`` without any site consent."""
-    key = privacy_policy_key(config, privacy_policy_version)
-    row = config["privacy_policies"][key]["data_classes"].get(data_class)
+    policies = _shipped_privacy()["privacy_policies"]
+    row = policies[privacy_policy_key(privacy_policy_version)]["data_classes"].get(data_class)
     _require(row is not None, f"model_routing_data_class_unknown:{data_class}")
     return frozenset(row["providers"])
 
@@ -391,29 +440,41 @@ def _consents(value: Any) -> tuple[SiteConsent, ...]:
     return value
 
 
-def privacy_refusal(config: Mapping[str, Any], *, role: str, entry: RouteEntry, privacy_policy_version: str | None,
+def privacy_refusal(*, role: str, entry: RouteEntry, privacy_policy_version: str | None,
                     site_consents: tuple[SiteConsent, ...]) -> str | None:
     """The privacy gate for one entry: ``None`` when permitted, else the typed reason.
 
-    The data class is the configuration's for ``role``, never a caller's.
+    Every table it reads (the privacy policies, the consent statements and the
+    role's data class) comes from the shipped file, never from an argument.
     """
-    roles = config["roles"]
-    if role not in roles:
+    shipped = _shipped_privacy()
+    data_class = shipped["role_classes"].get(role)
+    if data_class is None:
         return f"provider_privacy_role_unknown:{role}"
-    data_class = roles[role]["data_class"]
-    key = privacy_policy_key(config, privacy_policy_version)
-    row = config["privacy_policies"][key]["data_classes"][data_class]
+    row = shipped["privacy_policies"][privacy_policy_key(privacy_policy_version)]["data_classes"][data_class]
     if entry.provider in row["providers"]:
         return None
     if entry.provider in row["providers_by_site_choice"]:
-        statements = config.get("site_consents", {})
         for consent in _consents(site_consents):
-            statement = statements.get(consent.statement_version)
+            statement = shipped["site_consents"].get(consent.statement_version)
             if (statement is not None and statement["provider"] == consent.provider == entry.provider
                     and statement["model"] == consent.model == entry.model
                     and role in statement["roles"] and data_class in statement["data_classes"]):
                 return None
     return f"provider_privacy_not_permitted:{entry.provider}:{data_class}"
+
+
+def job_price_row(config: Mapping[str, Any], provider: str, model: str) -> Mapping[str, Any] | None:
+    """The price row for a model a job's own policy names: the exact model, else its family.
+
+    A family row ``F`` prices ``F`` and its dated snapshots ``F-...``, as the
+    repository's own table does (``openai_prompt_cache.pricing_for_model``).
+    """
+    exact = price_row(config, provider, model)
+    if exact is not None:
+        return exact
+    families = [name for name in config["prices"].get(provider, {}) if model.startswith(name + "-")]
+    return config["prices"][provider][max(families, key=len)] if families else None
 
 
 def resolve_route(role: str, *, config: Mapping[str, Any] | None = None, profile: str | None = None,
@@ -436,6 +497,7 @@ def resolve_route(role: str, *, config: Mapping[str, Any] | None = None, profile
              "model_routing_privacy_version_invalid")
     row = roles[role]
     job_policy = row.get("model_source", "routing") == "job_policy"
+    _require(job_policy or job_model is None, f"model_routing_job_model_not_taken:{role}")
     kept: list[RouteEntry] = []
     skipped: list[tuple[RouteEntry, str]] = []
     for raw in config["profiles"][name][role]:
@@ -443,19 +505,20 @@ def resolve_route(role: str, *, config: Mapping[str, Any] | None = None, profile
         if entry.model is None:
             _require(isinstance(job_model, str) and bool(job_model), f"model_routing_job_model_required:{role}")
             entry = RouteEntry(entry.provider, job_model, entry.effort)
-            _require(price_row(config, entry.provider, entry.model) is not None,
+            _require(job_price_row(config, entry.provider, entry.model) is not None,
                      f"model_routing_unpriced:{name}:{role}:{entry.provider}:{entry.model}")
-        reason = privacy_refusal(config, role=role, entry=entry, privacy_policy_version=privacy_policy_version,
+        reason = privacy_refusal(role=role, entry=entry, privacy_policy_version=privacy_policy_version,
                                  site_consents=site_consents)
         if reason is None:
             kept.append(entry)
         else:
             skipped.append((entry, reason))
     _require(bool(kept), f"model_routing_no_permitted_provider:{role}")
-    prices = tuple(price_row(config, entry.provider, entry.model) for entry in kept)
+    prices = tuple(job_price_row(config, entry.provider, entry.model) if job_policy
+                   else price_row(config, entry.provider, entry.model) for entry in kept)
     return ResolvedRoute(role=role, data_class=row["data_class"], call_kind=row["call_kind"], output=row["output"],
                          profile=name, privacy_policy_version=privacy_policy_version,
-                         privacy_policy=privacy_policy_key(config, privacy_policy_version), entries=tuple(kept),
+                         privacy_policy=privacy_policy_key(privacy_policy_version), entries=tuple(kept),
                          list_prices=prices, skipped=tuple(skipped), site_consents=tuple(site_consents),
                          config_digest=config_digest(config))
 
@@ -464,8 +527,10 @@ def route_from_record(record: Mapping[str, Any], *, config: Mapping[str, Any] | 
     """Restore a frozen route as resolved, after re-running the privacy gate on it.
 
     The entries and list prices are the record's own (frozen). The role's data
-    class and the privacy table are the current configuration's: a record whose
-    entries the gate would not keep now is refused, whatever its digest says.
+    class, the privacy tables and the consent statements are the shipped file's:
+    a record whose entries the gate would not keep now is refused, whatever its
+    digest says. ``config_digest_matches_current`` says whether the route was
+    resolved under the current configuration.
     """
     _require(isinstance(record, Mapping) and record.get("schema_version") == ROUTE_SCHEMA_VERSION,
              "model_route_record_invalid")
@@ -478,32 +543,33 @@ def route_from_record(record: Mapping[str, Any], *, config: Mapping[str, Any] | 
         skipped = tuple((_entry({k: v for k, v in value.items() if k != "reason"}, where="record"),
                          _text(value["reason"], "model_route_record_invalid")) for value in record["skipped"])
         consents = tuple(SiteConsent(**value) for value in record["site_consents"])
-        version = record["privacy_policy_version"]
-        route = ResolvedRoute(role=_text(record["role"], "model_route_record_invalid"),
-                              data_class=record["data_class"], call_kind=record["call_kind"], output=record["output"],
-                              profile=_text(record["profile"], "model_route_record_invalid"),
-                              privacy_policy_version=version,
-                              privacy_policy=_text(record["privacy_policy"], "model_route_record_invalid"),
-                              entries=entries, list_prices=prices, skipped=skipped, site_consents=consents,
-                              config_digest=_text(record["config_digest"], "model_route_record_invalid"))
+        fields = {"role": _text(record["role"], "model_route_record_invalid"), "data_class": record["data_class"],
+                  "call_kind": record["call_kind"], "output": record["output"],
+                  "profile": _text(record["profile"], "model_route_record_invalid"),
+                  "privacy_policy_version": record["privacy_policy_version"],
+                  "privacy_policy": _text(record["privacy_policy"], "model_route_record_invalid"),
+                  "config_digest": _text(record["config_digest"], "model_route_record_invalid")}
     except (KeyError, TypeError, AttributeError) as exc:
         raise ModelRoutingError("model_route_record_invalid") from exc
     for index, price in enumerate(prices):
         _require(isinstance(price, Mapping) and price.get("kind") in _PRICE_KEYS, "model_route_record_invalid")
         _rates(price.get("usd_per_million_tokens"), kind=price["kind"], where=f"record:{index}")
-    _require(bool(entries) and route.data_class in DATA_CLASSES and route.call_kind in CALL_KINDS
-             and route.output in OUTPUTS, "model_route_record_invalid")
+    _require(bool(entries) and fields["data_class"] in DATA_CLASSES and fields["call_kind"] in CALL_KINDS
+             and fields["output"] in OUTPUTS, "model_route_record_invalid")
+    _require(fields["privacy_policy_version"] is None or isinstance(fields["privacy_policy_version"], str),
+             "model_route_record_invalid")
     config = load_config() if config is None else validate_config(config)
-    row = config["roles"].get(route.role)
+    row = config["roles"].get(fields["role"])
     _require(row is not None and (row["data_class"], row["call_kind"], row["output"])
-             == (route.data_class, route.call_kind, route.output), "model_route_record_role_mismatch")
-    _require(route.privacy_policy == privacy_policy_key(config, route.privacy_policy_version),
+             == (fields["data_class"], fields["call_kind"], fields["output"]), "model_route_record_role_mismatch")
+    _require(fields["privacy_policy"] == privacy_policy_key(fields["privacy_policy_version"]),
              "model_route_record_privacy_key_mismatch")
     for entry in entries:
-        reason = privacy_refusal(config, role=route.role, entry=entry,
-                                 privacy_policy_version=route.privacy_policy_version, site_consents=consents)
+        reason = privacy_refusal(role=fields["role"], entry=entry,
+                                 privacy_policy_version=fields["privacy_policy_version"], site_consents=consents)
         _require(reason is None, "model_route_record_" + (reason or ""))
-    return route
+    return ResolvedRoute(**fields, entries=entries, list_prices=prices, skipped=skipped, site_consents=consents,
+                         config_digest_matches_current=fields["config_digest"] == config_digest(config))
 
 
 def price_row(config: Mapping[str, Any], provider: str, model: str) -> Mapping[str, Any] | None:
