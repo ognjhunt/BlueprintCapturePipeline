@@ -761,15 +761,6 @@ OAuth-owning command hooks.
 local `--operator-mode fake` path requires `BLUEPRINT_ALLOW_FAKE_LIVE_OPERATORS`
 and only proves local operator-control code paths.
 
-Site/capture batch registry with retry/resume status:
-
-```bash
-blueprint-build-capture-batch-registry \
-  --capture-root /path/to/capture-root \
-  --registry-path /path/to/site_capture_batch_registry.json \
-  --retry-stage gpu_handoff
-```
-
 Blocked-by-default command simulator job:
 
 ```bash
