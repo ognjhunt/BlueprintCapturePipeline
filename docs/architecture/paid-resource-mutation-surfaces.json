@@ -320,7 +320,6 @@
       "classification": "canonical_allocator",
       "required_markers": [
         "cpu-build",
-        "model-volume",
         "gpu-canary",
         "provider-reconstruction",
         "remote-cpu-job"

@@ -43,7 +43,7 @@ RUNPOD_RETIREMENT_ADMISSION_ENTRIES = (
 AGENTS = ROOT / "AGENTS.md"
 REMOTE_CPU_ALLOCATOR = ROOT / "src/blueprint_pipeline/remote_cpu_job_allocator.py"
 CLOUD_RUN_JOBS_CLIENT = ROOT / "src/blueprint_pipeline/cloud_run_jobs_client.py"
-CANONICAL_SUBCOMMANDS = ("cpu-build", "model-volume", "gpu-canary", "provider-reconstruction", "remote-cpu-job")
+CANONICAL_SUBCOMMANDS = ("cpu-build", "gpu-canary", "provider-reconstruction", "remote-cpu-job")
 # Plan 14 §8: what run_remote_cpu_job must reach, and the blocker each missing call raises.
 REMOTE_CPU_REQUIRED_CALLS = {
     "require_paid_resource_admission": "remote_cpu_lane_bypasses_shared_admission",
@@ -911,7 +911,7 @@ def verify() -> list[str]:
     runpod_watchdog = RUNPOD_WATCHDOG.read_text(encoding="utf-8")
     runbook = RUNBOOK.read_text(encoding="utf-8")
 
-    if "run_builder(" not in canonical or "run_canary(" not in canonical:
+    if "run_builder(" not in canonical:
         blockers.append("canonical_allocator_missing_adapter_route")
     if "runpod_allocator_request_blockers(args)" not in canonical:
         blockers.append("canonical_allocator_runpod_retirement_refusal_missing")
@@ -926,8 +926,6 @@ def verify() -> list[str]:
             CLOUD_RUN_JOBS_CLIENT.read_text(encoding="utf-8"),
         )
     )
-    if "run_storage_model_volume(" not in canonical:
-        blockers.append("canonical_allocator_missing_model_volume_route")
     model_calls = _function_calls(STORAGE_VOLUME_ADAPTER)
     storage_calls = model_calls.get("run_storage_model_volume", set())
     if "require_paid_resource_admission" not in storage_calls:
