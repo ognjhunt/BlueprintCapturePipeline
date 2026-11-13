@@ -5,11 +5,28 @@ generated data or runs the ARTISAN model controller inside this worker.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+
+
+def accepted_protection(model_path: Path, payload: dict, root: Path):
+    """Re-enter upstream's ``accepted_inspection`` when the caller held one.
+
+    While it is on, upstream reuses the accepted mesh bytes, refuses to create a
+    mesh or an ``.anchors.json`` sidecar, and re-verifies every dependency file
+    on exit, as its own ``probe_summary_runner`` does.
+    """
+    reference = payload.pop("accepted_candidate", None)
+    if reference is None:
+        return contextlib.nullcontext()
+    if not isinstance(reference, dict) or not Path(str(reference.get("manifest_path") or "")).resolve().is_relative_to(root):
+        raise ValueError("artisan_accepted_candidate_outside_workspace")
+    from sdk.runtime.accepted_inspection import accepted_inspection
+    return accepted_inspection(model_path, reference)
 
 
 def main() -> int:
@@ -34,7 +51,7 @@ def main() -> int:
             source = Path(payload["model_path"])
             if not source.resolve().is_relative_to(root):
                 raise ValueError("artisan_model_outside_workspace")
-            with activate_asset_session(asset_session_for_script(source)):
+            with accepted_protection(source, payload, root), activate_asset_session(asset_session_for_script(source)):
                 namespace = load_model_globals(source, sdk_package=payload["sdk_package"])
                 if operation == "authored_tests":
                     value = codec._encode(namespace["run_tests"]())
@@ -43,7 +60,9 @@ def main() -> int:
                              "has_tests": callable(namespace.get("run_tests"))}
         elif operation == "qa":
             from sdk.runtime.runtime import run_qa_tests
-            value = run_qa_tests(Path(payload.pop("model_path")), **payload)
+            source = Path(payload.pop("model_path"))
+            with accepted_protection(source, payload, root):
+                value = run_qa_tests(source, **payload)
         elif operation == "blender":
             from sdk.runtime.blender_author import run_script
             value = run_script(**payload)
