@@ -51,13 +51,12 @@ no-spend worker, woken by its path unit, does the rest on the CPU:
 - a compiled rigid half no ranked stance carries from, whose nearer stances
   movable furniture plausibly blocks (chairs, stools the scene's review names),
   records the furniture's measurement as due (``robot_access_measurement``). It
-  returns to pending once per such measurement, and the worker runs it before
-  compiling again: the analysis call and SAM masks for just those items,
-  Blueprint's own preparation spend, reserved through the job's preparation-spend
-  path within its already-approved caps like any other preparation analysis
-  call, kept as a sidecar of the intent's current preparation. A refused
-  reservation (caps, window) or any other failure holds the request by name in
-  its status (``robot_access_measurement``); the site is never asked about it.
+  returns to pending once per such measurement, and the worker reads it before
+  compiling again: a measurement retained as a sidecar of the intent's current
+  preparation is read, and none is bought any more (it served only the dropped
+  early trial, so the worker makes no paid call). Without one, or on any other
+  failure, the request is held by name in its status (``robot_access_measurement``);
+  the site is never asked about it.
   With the furniture measured, the half proposes moving the items that would
   give the Franka room (``robot_access_furniture``), and the same timer pass
   asks the site owner. An approval, sealed under the request's intent, returns
@@ -206,6 +205,8 @@ ROBOT_ACCESS_REQUEUE_FIELD = "robot_access_confirmation_requeued"
 ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD = "robot_access_measurement_requeued"
 #: The typed hold a measurement that could not run leaves on the request's status (with its own reason).
 ROBOT_ACCESS_MEASUREMENT_HOLD = "team_scene_robot_access_measurement_held"
+#: Why a due measurement is not bought: it served only the dropped early trial (``_measure_furniture``).
+PAID_MEASUREMENT_STOPPED = "paid_measurement_stopped"
 # A held measurement of the binding still due goes back to pending at most once per release
 # (``_measurement_retry_untried``): a transient cause (the network, a timeout, a busy or failing service:
 # ``measurement_transient``) under the release that held it once ``ROBOT_ACCESS_MEASUREMENT_RETRY_SECONDS`` have
@@ -490,7 +491,7 @@ def final_block(status: Mapping[str, Any], *, release: str | None) -> bool:
     release cannot be told. An owner contract that cannot be sealed is final at once: nothing waits for the
     owner's confirmation any more, and the timed schedule leaves it alone (``refusal_retry_cause``), so the
     job hears that it is held. The screening pass names a final one to the website job
-    (``beta_policy_screening_holds``).
+    (``scene_stage_holds``).
     """
 
     blockers = status.get("blockers")
@@ -879,7 +880,7 @@ def enqueue_team_scene_request(*, intent: Mapping[str, Any], run_root: str | Pat
     if failed:
         # A decided failure is sealed for this revision: no team can ever be admitted to it, so nothing is
         # compiled. The request is kept under holds/ instead, where the screening pass reads it to tell the
-        # website job its evaluation is held, by name (``beta_policy_screening_holds``).
+        # website job its evaluation is held, by name (``scene_stage_holds``).
         (root / HOLDS_DIRNAME).mkdir(exist_ok=True, mode=0o750)
         _write_new(root / HOLDS_DIRNAME / f"{key}.json", request, staging=root)
         return {"status": "not_enqueued", "reason": "robot_free_probe_failed", "hold_request_key": key}
@@ -1304,18 +1305,17 @@ def measurement_transient(exc: BaseException) -> bool:
 
 
 def _measure_furniture(request: Mapping[str, Any], binding_digest: str) -> dict[str, Any]:
-    """Run a half's due movable furniture measurement (``robot_access_measurement``); its outcome, never raised.
+    """Read a half's retained movable furniture measurement (``robot_access_measurement``); its outcome, never raised.
 
-    The only spend this worker makes: Blueprint's own preparation spend, the analysis call and the SAM
-    masks for just those items, reserved through the job's preparation-spend path within its approved
-    caps, each call keeping its admission in its receipt. ``measured`` names the sidecar and what was
-    reserved; anything else (a refused reservation, the caps or window, a changed binding) is ``held``
-    by ``ROBOT_ACCESS_MEASUREMENT_HOLD`` and its typed reason, and the half is kept as it is. A hold names
-    its ``cause`` (``transient`` or ``refusal``, ``measurement_transient``) and when it was held, so a
-    transient one is tried again (``_measurement_retry_untried``).
+    The measurement was bought only for the early trial's robot stance (Gemini analysis and SAM masks),
+    and the owner dropped the trial (2026-11-14): no new measurement is bought here, so this worker makes
+    no paid call. A measurement already retained for the intent's current preparation is still read and
+    ``measured`` names it and what it reserved; without one the half is ``held`` by
+    ``ROBOT_ACCESS_MEASUREMENT_HOLD`` and ``PAID_MEASUREMENT_STOPPED`` (a refusal), and kept as it is. A hold
+    names its ``cause`` and when it was held, as before.
     """
 
-    from .robot_access_measurement import run_measurement
+    from .robot_access_measurement import _sidecar_path, _valid_sidecar, current_preparation
 
     held_at = _utc_now().isoformat(timespec="seconds")
     try:
@@ -1323,8 +1323,12 @@ def _measure_furniture(request: Mapping[str, Any], binding_digest: str) -> dict[
         if scope is None:
             return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:intent_unbound",
                     "binding_digest": binding_digest, "reason": unbound, "cause": "refusal", "held_at": held_at}
-        sidecar = run_measurement(scope, binding_digest=binding_digest, revision_digest=request["scene_revision_digest"])
-    except Exception as exc:  # noqa: BLE001 - a measurement that cannot run is a typed hold; the queue goes on
+        current = current_preparation(scope)
+        sidecar = _valid_sidecar(_sidecar_path(current), current)
+        if sidecar is None:
+            return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:{PAID_MEASUREMENT_STOPPED}",
+                    "binding_digest": binding_digest, "cause": "refusal", "held_at": held_at}
+    except Exception as exc:  # noqa: BLE001 - a measurement that cannot be read is a typed hold; the queue goes on
         from .bounded_error import error_description
 
         return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:{_hold_code(exc)}",

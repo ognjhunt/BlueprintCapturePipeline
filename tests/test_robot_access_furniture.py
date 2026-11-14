@@ -286,32 +286,35 @@ def test_chairs_are_measured_without_asking_the_site_then_moved_only_on_the_owne
     assert _status(queue, key)[worker.ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD] == [due["binding_digest"]]
     assert measurement.measurement_due(first["_compiled"]["path"])["binding_digest"] == due["binding_digest"]
 
-    # 3. The worker measures. A refused reservation (the job's caps or window) holds by name, spends nothing
-    #    and changes nothing; a measurement of anything but the half's binding is refused before any call.
+    # 3. The worker buys no measurement (it served only the dropped early trial): with none retained, the half
+    #    is held by name, nothing is spent and nothing changes.
+    bought = measurement.run_measurement
+    monkeypatch.setattr(measurement, "run_measurement",
+                        lambda *a, **k: pytest.fail("the packet worker bought a furniture measurement"))
+    held = worker._measure_furniture(request, due["binding_digest"])
+    assert held["status"] == "held" and held["cause"] == "refusal"
+    assert held["hold"] == "team_scene_robot_access_measurement_held:paid_measurement_stopped"
+    assert held["binding_digest"] == due["binding_digest"]
+    assert paid.calls == [] and not (capture / "pipeline" / "robot_access" / renewed["digest"][7:23]
+                                     / "movable_furniture.v1.json").exists()
+    # A measurement retained before the trial was dropped (bought then, within the job's caps): the module's
+    # own refusals still come before any call, and what it kept is read by the worker without buying again.
     def refused(**_: Any) -> Any:
         raise ValueError("website_preparation_spend_receipt_invalid")
 
-    monkeypatch.setattr(measurement, "run_measurement", functools.partial(
-        measurement.run_measurement, analyze=refused, segment=paid.segment, geometry=lambda *_: {"frames": []},
-        frames=lambda **_: []))
-    held = worker._measure_furniture(request, due["binding_digest"])
-    assert held["status"] == "held"
-    assert held["hold"] == "team_scene_robot_access_measurement_held:website_preparation_spend_receipt_invalid"
-    assert held["binding_digest"] == due["binding_digest"]
-    assert worker._measure_furniture(request, "sha256:" + "9" * 64)["hold"] == (
-        "team_scene_robot_access_measurement_held:robot_access_measurement_binding_changed")
-    assert paid.calls == [] and not (capture / "pipeline" / "robot_access" / renewed["digest"][7:23]
-                                     / "movable_furniture.v1.json").exists()
-    # Within the caps: one analysis and one SAM concept for the chairs, kept as a sidecar of the renewal's
-    # preparation with what each call reserved.
-    monkeypatch.setattr(measurement, "run_measurement", functools.partial(
-        measurement.run_measurement.func, analyze=paid.analyze, segment=paid.segment,
-        geometry=lambda *_: {"frames": []}, frames=lambda **_: []))
+    measure = functools.partial(bought, scope, revision_digest=request["scene_revision_digest"],
+                                segment=paid.segment, geometry=lambda *_: {"frames": []}, frames=lambda **_: [])
+    with pytest.raises(ValueError, match="website_preparation_spend_receipt_invalid"):
+        measure(binding_digest=due["binding_digest"], analyze=refused)
+    with pytest.raises(ValueError, match="robot_access_measurement_binding_changed"):
+        measure(binding_digest="sha256:" + "9" * 64, analyze=paid.analyze)
+    assert paid.calls == []
+    sidecar = measure(binding_digest=due["binding_digest"], analyze=paid.analyze)
+    assert paid.calls == [("analysis", 0.04), ("segmentation", 0.36, ["wooden chair"])]
     measured = worker._measure_furniture(request, due["binding_digest"])
     assert measured["status"] == "measured" and measured["reserved_cost_usd"] == 0.22
-    assert paid.calls == [("analysis", 0.04), ("segmentation", 0.36, ["wooden chair"])]
     path = capture / "pipeline" / "robot_access" / renewed["digest"][7:23] / "movable_furniture.v1.json"
-    sidecar = json.loads(path.read_text())
+    assert json.loads(path.read_text()) == sidecar
     assert sidecar["sidecar_digest"] == measured["sidecar_digest"] and sidecar["lineage"] == binding["lineage"]
     assert sidecar["measurement"]["binding_digest"] == due["binding_digest"]
     assert sidecar["analysis"]["reserved_cost_usd"] == 0.04 and sidecar["segmentation"]["reserved_cost_usd"] == 0.18
@@ -320,7 +323,7 @@ def test_chairs_are_measured_without_asking_the_site_then_moved_only_on_the_owne
     assert canonical_digest(renewed, digest_field="digest") == renewed["digest"] == json.loads(
         (capture / "pipeline/website_scene_preparation/renewals" / RENEWAL / "preparation.json").read_text())["digest"]
     assert "movable_furniture" not in renewed
-    # Measuring again buys nothing.
+    # Reading it again buys nothing.
     assert worker._measure_furniture(request, due["binding_digest"])["sidecar_digest"] == sidecar["sidecar_digest"]
     assert len(paid.calls) == 2
 
@@ -423,12 +426,11 @@ def test_a_republished_atlas_result_refuses_the_measurement_before_anything_is_b
     with pytest.raises(ValueError, match="^robot_access_measurement_geometry_changed$"):
         measure()
     assert paid.calls == [] and decoded == [] and not sidecar.exists()
+    # The packet worker no longer buys one at all: it holds the half by name without reaching the module.
     monkeypatch.setattr(worker, "owner_success_confirmation_scope", lambda request: (scope, None))
-    monkeypatch.setattr(measurement, "run_measurement", functools.partial(
-        measurement.run_measurement, analyze=paid.analyze, segment=paid.segment, frames=frames))
     held = worker._measure_furniture({"scene_revision_digest": revision}, offer["binding_digest"])
     assert held["status"] == "held" and held["cause"] == "refusal"
-    assert held["hold"] == "team_scene_robot_access_measurement_held:robot_access_measurement_geometry_changed"
+    assert held["hold"] == "team_scene_robot_access_measurement_held:paid_measurement_stopped"
     assert held["binding_digest"] == offer["binding_digest"]
     assert paid.calls == [] and decoded == [] and not sidecar.exists()
 
@@ -600,14 +602,14 @@ def test_the_sidecar_is_the_current_preparations_and_a_stale_one_is_never_read(t
 def test_a_refused_measurement_is_a_typed_hold_and_never_compiles_the_half_again(monkeypatch) -> None:
     calls: list[Any] = []
 
-    def failing(scope: Any, **kwargs: Any) -> Any:
-        calls.append(kwargs["binding_digest"])
+    def failing(scope: Any) -> Any:
+        calls.append(scope["directory"])
         raise ValueError("website_preparation_spend_receipt_invalid")
 
-    monkeypatch.setattr(measurement, "run_measurement", failing)
+    monkeypatch.setattr(measurement, "current_preparation", failing)
     monkeypatch.setattr(worker, "owner_success_confirmation_scope", lambda request: ({"intent": {}, "directory": "/x"}, None))
     outcome = worker._measure_furniture({"scene_revision_digest": "sha256:" + "1" * 64}, "sha256:" + "2" * 64)
-    assert outcome["status"] == "held" and calls == ["sha256:" + "2" * 64]
+    assert outcome["status"] == "held" and calls == ["/x"]
     assert outcome["hold"] == "team_scene_robot_access_measurement_held:website_preparation_spend_receipt_invalid"
     # The same binding is tried once: a held measurement is not requeued again.
     status = {"status": "completed", "team_scene_inputs_path": "/nowhere",
