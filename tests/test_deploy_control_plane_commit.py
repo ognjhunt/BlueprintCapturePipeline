@@ -966,7 +966,7 @@ def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tm
     restore = deploy._restore_installed_path_units
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
     triggers = [unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))]
-    already_off = "blueprint-task-evaluation-sam31-preparation-execution.timer"
+    already_off = "blueprint-task-evaluation-episode-compilation.timer"
     states = {unit: {"enabled": "enabled", "state": "active"} for unit in triggers}
     states[already_off] = {"enabled": "disabled", "state": "inactive"}
     before = {unit: dict(state) for unit, state in states.items()}
