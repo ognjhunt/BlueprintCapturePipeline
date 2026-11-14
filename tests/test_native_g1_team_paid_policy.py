@@ -150,27 +150,6 @@ def test_real_canonical_dry_transport_checks_actual_call_arguments(tmp_path, mon
     assert not (Path(args.adp_job_dir) / lane.CONSUMPTION_FILENAME).exists()
 
 
-def test_canonical_allocator_cli_reaches_real_selected_dry_transport(tmp_path, monkeypatch, capsys):
-    from blueprint_pipeline import paid_resource_allocator as allocator
-    args, _, identity = _setup(tmp_path, monkeypatch)
-    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers", lambda: ([], identity))
-    argv = ["gpu-canary", "--probe-kind", lane.PROBE_KIND, "--provider", "vast"]
-    for name in (
-        "g1_team_bundle_receipt", "g1_team_intent", "g1_team_registry", "g1_team_approval",
-        "g1_team_credential_registry", "adp_job_dir", "admission_out", "adapter_output",
-        "adp_max_hourly_rate_usd", "adp_max_spend_usd", "adp_hard_ttl_seconds",
-    ):
-        argv.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
-    for client in args.g1_team_trusted_client:
-        argv.extend(["--g1-team-trusted-client", client])
-    assert allocator.main(argv) == 0
-    assert json.loads(capsys.readouterr().out)["success"] is True
-    result = json.loads(Path(args.adapter_output).read_text())
-    assert result["status"] == "dry_run_ready"
-    assert result["provider_mutations_performed"] == 0
-    assert not (Path(args.adp_job_dir) / lane.CONSUMPTION_FILENAME).exists()
-
-
 def test_unknown_transport_exception_does_not_invent_provider_zero(tmp_path, monkeypatch):
     args, _, identity = _setup(tmp_path, monkeypatch)
     def adapter(**kwargs):

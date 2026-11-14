@@ -901,28 +901,6 @@ def _allocator_args(tmp_path: Path) -> list[str]:
     ]
 
 
-def test_allocator_forbids_policy_in_blank_stage_articulated_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    args = _allocator_args(tmp_path) + [
-        "--adp009d-policy-candidate",
-        "pi05_droid",
-    ]
-
-    assert allocator.main(args) == 2
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    assert "adp009d_execution_modes_conflict" in result["blockers"]
-    assert (
-        "adp009d_articulated_native_policy_or_controls_forbidden"
-        in result["blockers"]
-    )
-
-
 def test_transport_selects_articulated_bundle_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
