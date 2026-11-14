@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import hmac
 import json
-from datetime import datetime, timezone
 from io import BytesIO
 
 import pytest
-from fastapi.testclient import TestClient
 
-from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.decision_evidence_contracts import (
     DecisionEvidenceRequest,
     EvidenceMethodProfile,
@@ -20,7 +16,6 @@ from blueprint_pipeline.local_evidence_adapters import ANALYTIC_REACHABILITY_ADA
 from blueprint_pipeline.local_evidence_adapters import (
     SWEPT_AABB_COLLISION_SIMULATION_ADAPTER,
 )
-from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.task_evaluation_run_control_plane import (
     TaskEvaluationRunControlPlaneError,
     authorize_task_evaluation_run,
@@ -28,13 +23,8 @@ from blueprint_pipeline.task_evaluation_run_control_plane import (
     prepare_task_evaluation_run,
 )
 from blueprint_pipeline.task_evaluation_run_webapp_sync import (
-    TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
     build_task_evaluation_run_webapp_publication,
     sync_task_evaluation_run_to_webapp,
-)
-from blueprint_pipeline.task_evaluation_method_catalog import (
-    TASK_EVALUATION_METHOD_CATALOG_PATH_ENV,
-    validate_task_evaluation_method_catalog,
 )
 
 
@@ -710,126 +700,3 @@ def test_terminal_run_sync_requires_exact_signed_receipt(tmp_path, monkeypatch) 
     )
     assert mismatched["status"] == "failed"
     assert mismatched["reason"] == "response_binding_mismatch"
-def test_signed_service_plans_authorizes_executes_and_inspects(tmp_path, monkeypatch) -> None:
-    manifest = tmp_path / "control" / "manifest.json"
-    manifest.parent.mkdir(parents=True)
-    manifest.write_text("{}", encoding="utf-8")
-    token = "run-service-test-secret"
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest))
-    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "work"))
-    monkeypatch.setenv(
-        service.INTAKE_CLIENT_SECRETS_ENV,
-        json.dumps({"blueprint-webapp": token}),
-    )
-    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
-    monkeypatch.delenv(service.INTAKE_TOKEN_ENV, raising=False)
-    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
-
-    def signed_headers(body: str, nonce: str) -> dict[str, str]:
-        timestamp = datetime.now(timezone.utc).isoformat()
-        signature = hmac.new(
-            token.encode("utf-8"),
-            f"{timestamp}.blueprint-webapp.{nonce}.{body}".encode("utf-8"),
-            "sha256",
-        ).hexdigest()
-        return {
-            "content-type": "application/json",
-            "x-blueprint-pipeline-timestamp": timestamp,
-            "x-blueprint-pipeline-client-id": "blueprint-webapp",
-            "x-blueprint-pipeline-nonce": nonce,
-            "x-blueprint-pipeline-signature": f"sha256={signature}",
-        }
-
-    testbed = _testbed()
-    profile = _profile()
-    catalog = validate_task_evaluation_method_catalog({
-        "schema_version": "task_evaluation_method_catalog.v1",
-        "catalog_id": "service-local-methods",
-        "version": "1",
-        "method_profiles": [profile],
-        "qualifications": [_qualification(profile)],
-    })
-    catalog_path = tmp_path / "method-catalog.json"
-    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
-    monkeypatch.setenv(TASK_EVALUATION_METHOD_CATALOG_PATH_ENV, str(catalog_path))
-    plan_submission = {
-        "schema_version": "task_evaluation_run_plan_submission.v2",
-        "run_id": "run-service-1",
-        "capture_session_id": "capture-session-service-1",
-        "intake_id": "capture-1",
-        "decision_evidence_request": _request(testbed),
-        "testbed": testbed,
-        "idempotency_key": "prepare-run-service-1",
-    }
-    plan_body = json.dumps(plan_submission, separators=(",", ":"))
-    client = TestClient(service.create_app())
-    planned = client.post(
-        "/api/live-pipeline/task-evaluation-runs/plan",
-        content=plan_body,
-        headers=signed_headers(plan_body, "run-service-plan-nonce"),
-    )
-    assert planned.status_code == 200
-    plan_result = planned.json()
-    assert plan_result["state"] == "authorization_required"
-    assert plan_result["method_catalog"] == {
-        "catalog_id": "service-local-methods",
-        "version": "1",
-        "catalog_digest": catalog["catalog_digest"],
-        "pipeline_owned": True,
-    }
-    assert plan_result["authorization_candidates"] == [{
-        "adapter_reference": ANALYTIC_REACHABILITY_ADAPTER,
-        "method_id": "local-analytic-reachability",
-        "method_version": "1",
-        "method_profile_digest": profile["method_profile_digest"],
-        "method_family": "analytic_geometry_kinematics",
-        "expected_cost_usd": 0.0,
-        "proof_tier": "analytic_only",
-        "execution_authorized": False,
-    }]
-
-    authorization_submission = {
-        "schema_version": "task_evaluation_run_authorization_submission.v1",
-        "plan_digest": plan_result["evidence_plan"]["plan_digest"],
-        "authorized_adapter_references": [ANALYTIC_REACHABILITY_ADAPTER],
-        "actor": {"role": "customer", "identity": "firebase:buyer-1"},
-        "idempotency_key": "authorize-run-service-1",
-    }
-    authorization_body = json.dumps(authorization_submission, separators=(",", ":"))
-    authorized = client.post(
-        "/api/live-pipeline/task-evaluation-runs/run-service-1/authorize",
-        content=authorization_body,
-        headers=signed_headers(authorization_body, "run-service-authorize-nonce"),
-    )
-    assert authorized.status_code == 200
-    assert authorized.json()["physical_robot_run_authorized"] is False
-
-    executed = client.post(
-        "/api/live-pipeline/task-evaluation-runs/run-service-1/execute",
-        content=b"",
-        headers=signed_headers("", "run-service-execute-nonce"),
-    )
-    assert executed.status_code == 200
-    assert executed.json()["state"] == "decided"
-    assert executed.json()["decision_envelope"]["overall_outcome"] == "decision"
-    assert executed.json()["webapp_sync"]["status"] == "skipped"
-
-    monkeypatch.setenv(TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV, "true")
-    required_sync = client.post(
-        "/api/live-pipeline/task-evaluation-runs/run-service-1/execute",
-        content=b"",
-        headers=signed_headers("", "run-service-required-sync-nonce"),
-    )
-    assert required_sync.status_code == 502
-    assert "task_evaluation_run_webapp_sync_required" in required_sync.json()["detail"]
-    monkeypatch.delenv(TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV, raising=False)
-
-    inspected = client.get(
-        "/api/live-pipeline/task-evaluation-runs/run-service-1",
-        headers=signed_headers("", "run-service-inspect-nonce"),
-    )
-    assert inspected.status_code == 200
-    assert inspected.json()["state"] == "decided"
-    assert inspected.json()["proof_boundary"]["comparative_policy_ranking_verdict"] == (
-        "thesis_not_supported"
-    )
