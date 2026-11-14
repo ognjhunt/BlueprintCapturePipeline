@@ -71,8 +71,6 @@
     "src/blueprint_pipeline/provider_staging_verification.py": [
       "tests/test_provider_staging_verification.py"
     ],
-    ],
-    ],
     "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py": [
       "tests/test_semantic_teacher_image_edit_vast.py"
     ],
