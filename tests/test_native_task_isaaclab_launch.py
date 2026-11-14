@@ -16,7 +16,6 @@ from blueprint_pipeline.native_task_isaaclab_launch import (
     launch_native_task_isaaclab,
     verify_native_task_isaaclab_launch_contract,
 )
-from blueprint_pipeline.adp009d_native_microcheck_bundle import DEFAULT_IMAGE
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_REPOSITORY,
     ISAACLAB_RUNTIME_COMPATIBILITY_COMMIT,
@@ -213,10 +212,6 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
         "nvcr.io/nvidia/isaac-sim:6.0.1@"
         "sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
     )
-    assert DEFAULT_IMAGE.endswith(
-        "@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9"
-    )
-    assert NATIVE_TASK_ARENA_IMAGE != DEFAULT_IMAGE
 
 
 @pytest.mark.parametrize(

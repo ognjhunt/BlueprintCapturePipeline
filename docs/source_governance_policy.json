@@ -5,7 +5,7 @@
       "tests/test_adp009d_control_episode.py"
     ],
     "src/blueprint_pipeline/adp009d_isaac_runtime.py": [
-      "tests/test_adp009d_native_microcheck_bundle.py"
+      "tests/test_adp009d_hold_trace_wiring.py"
     ],
     "src/blueprint_pipeline/adp009d_physics_backend_comparison.py": [
       "tests/test_adp009d_physics_backend_comparison.py"

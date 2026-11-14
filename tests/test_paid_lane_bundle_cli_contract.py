@@ -47,7 +47,6 @@ BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     # Generic Arena bundle is a shared library, not a launch entry point.
     "native_task_arena_bundle.py",
     # ADP-009D diagnostics.
-    "adp009d_native_microcheck_bundle.py",
 }
 
 

@@ -369,7 +369,6 @@ def test_the_server_is_loopback_only() -> None:
 
 
 def test_provisioning_starts_the_server_and_the_bundle_ships_the_episode() -> None:
-    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
     from blueprint_pipeline.adp009d_policy_provisioning import (
         build_provisioning_script,
     )
@@ -381,8 +380,6 @@ def test_provisioning_starts_the_server_and_the_bundle_ships_the_episode() -> No
     assert script.index("adp009d_checkpoint_fetch_worker.py") < script.index(
         "adp009d_policy_server_worker.py"
     )
-    # The runtime learns which candidate is bound.
-    assert "BLUEPRINT_ADP009D_POLICY_CANDIDATE" in ENTRYPOINT
 
 
 def test_the_runtime_runs_an_episode_only_with_a_measured_gripper() -> None:
@@ -478,16 +475,11 @@ def test_a_skipped_episode_says_why_rather_than_vanishing() -> None:
     from pathlib import Path
 
     from blueprint_pipeline import adp009d_isaac_runtime as runtime
-    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
 
     source = Path(runtime.__file__).read_text(encoding="utf-8")
     assert "policy_episode_skipped_reason" in source
     assert '"no_policy_candidate_bound"' in source
     assert '"policy_candidate_bound"' in source
-
-    # The candidate is baked in, never a passthrough of an unset variable.
-    assert "@@POLICY_CANDIDATE@@" in ENTRYPOINT
-    assert "${BLUEPRINT_ADP009D_POLICY_CANDIDATE:-}" not in ENTRYPOINT
 
 
 def test_each_candidate_gets_its_own_transport_and_launch() -> None:

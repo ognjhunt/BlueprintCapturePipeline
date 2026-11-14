@@ -36,7 +36,6 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
 #: boundary that its evidence was never inventoried.
 PAID_LANE_MODULES = (
     "adp009d_aura_native_vast.py",
-    "adp009d_franka_vast.py",
     "adp009d_ovrtx_vast.py",
     "adp_aura_author_smoke_vast.py",
     "adp_content_agents_vast.py",

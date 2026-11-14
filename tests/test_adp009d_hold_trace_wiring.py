@@ -4,21 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from blueprint_pipeline import adp009d_native_microcheck_bundle as bundle_module
 from blueprint_pipeline import adp009d_isaac_runtime as isaac_runtime
-
-
-def test_bundle_ships_the_hold_trace_module() -> None:
-    """The runtime imports it by flat name, so the bundle must carry the file.
-
-    A module wired into the runtime but missing from the bundle dies as a
-    ModuleNotFoundError on the worker, after provisioning has already been paid
-    for.
-    """
-
-    source = Path(bundle_module.__file__).read_text(encoding="utf-8")
-
-    assert '"adp009d_hold_trace.py"' in source
 
 
 def test_runtime_records_a_per_step_hold_trace() -> None:
