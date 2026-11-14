@@ -54,7 +54,6 @@ PAID_LANE_MODULES = (
     # `new-site-diagnostic-canary` #544 made reachable share this runner.
     "openpi_policy_ranking_runpod.py",
     "paired_target_native_import_vast.py",
-    "public_scene_aura_exact_residual_vast.py",
     "public_scene_artifixer3d_vast.py",
     "public_scene_simready_isaac_vast.py",
     "reconstruction_vast_worker_smoke.py",

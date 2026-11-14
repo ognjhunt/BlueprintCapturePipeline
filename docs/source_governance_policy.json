@@ -131,12 +131,6 @@
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": [
       "tests/test_public_scene_artifixer3d_vast.py"
     ],
-    "src/blueprint_pipeline/public_scene_replacement_occlusion.py": [
-      "tests/test_adp009d_replacement_occlusion.py"
-    ],
-    "src/blueprint_pipeline/public_scene_suite_admission.py": [
-      "tests/test_public_scene_suite_admission.py"
-    ],
     "src/blueprint_pipeline/robot_eval_dataset.py": [
       "tests/test_robot_eval_dataset.py"
     ],
@@ -295,8 +289,6 @@
     "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
     "src/blueprint_pipeline/post_training_data_package.py": 6727,
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
-    "src/blueprint_pipeline/public_scene_replacement_occlusion.py": 2004,
-    "src/blueprint_pipeline/public_scene_suite_admission.py": 2066,
     "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,
     "src/blueprint_pipeline/robot_eval_job_orchestrator.py": 12558,

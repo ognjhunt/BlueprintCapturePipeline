@@ -44,7 +44,6 @@ BUNDLE_BUILT_BY_SCRIPT = {
 #: means giving that module a `main()`.
 BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     # Frozen or retired lanes -- no launch path is wanted.
-    "public_scene_aura_exact_residual_bundle.py",
     "cosmos_edge_closed_loop_provider_bundle.py",
     # Generic Arena bundle is a shared library, not a launch entry point.
     "native_task_arena_bundle.py",
@@ -180,14 +179,7 @@ def test_a_bundle_module_has_an_entrypoint_or_is_a_named_gap(path: Path) -> None
 
 
 #: Authority materializers with no command line. Named, not skipped.
-#:
-#: `public_scene_aura_exact_residual_vast` is retired: no launch profile will
-#: be built for it and no attempt will be authorized, so it wants no entry
-#: point. Its *historical* receipts remain this campaign's spend anchor, which
-#: is a reason to keep the artifacts, not a reason to keep the path.
-AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT = {
-    "public_scene_aura_exact_residual_vast.py",
-}
+AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT: set[str] = set()
 
 
 def _authority_materializers() -> list[tuple[Path, str]]:
