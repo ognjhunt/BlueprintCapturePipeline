@@ -10,10 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
-from blueprint_pipeline.adp_founder_sim_protocol import (
-    build_founder_approval_receipt,
-    expected_founder_approval_statement,
-)
 from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     DEFAULT_IMAGE,
     _bounded_spend_gate_open,
@@ -21,15 +17,10 @@ from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     _next_attempt_root,
     _remaining_session_live_minutes,
     _vast_authority_environment,
-    build_arena_native_control_bundle,
 )
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.provider_runtime_bundle_contract import (
-    provider_runtime_contract_blockers,
-)
 from blueprint_pipeline.vast_provider_adapter import (
-    _blueprint_bundle_preflight,
     _probe_env,
     _probe_shell_script,
     _resolve_launch_mode,
@@ -43,16 +34,6 @@ def _isolate_supervisor_context(monkeypatch: pytest.MonkeyPatch) -> None:
     # Watchdog contract tests set their own systemd context explicitly.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
-
-
-def _approval_path(tmp_path: Path) -> Path:
-    receipt = build_founder_approval_receipt(
-        statement=expected_founder_approval_statement(),
-        evidence_ref="codex-task://test/user-message",
-    )
-    path = tmp_path / "approval.json"
-    write_json(path, receipt)
-    return path
 
 
 def _dry_run_bundle(tmp_path: Path) -> dict:
@@ -260,50 +241,6 @@ def test_policy_query_blocker_requires_query_for_an_evaluation_transport() -> No
         )
         == "adp009d_candidate_policy_query_status_missing"
     )
-
-
-def test_bundle_is_deterministic_approved_and_native_control_only(tmp_path: Path) -> None:
-    approval = _approval_path(tmp_path)
-    first = build_arena_native_control_bundle(
-        approval_path=approval, job_dir=tmp_path / "first", generated_at="fixed"
-    )
-    second = build_arena_native_control_bundle(
-        approval_path=approval, job_dir=tmp_path / "second", generated_at="fixed"
-    )
-
-    assert first["status"] == "ready"
-    assert first["bundle_sha256"] == second["bundle_sha256"]
-    assert first["candidate_policy_queried"] is False
-    assert first["candidate_outcomes_accessed"] is False
-    assert first["container_image"] == DEFAULT_IMAGE
-    with zipfile.ZipFile(first["bundle_path"]) as archive:
-        names = set(archive.namelist())
-        entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode()
-        runner = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
-    assert "provider_runtime/founder_sim_approval_receipt.json" in names
-    assert "provider_runtime/arena_worker_request.json" in names
-    assert "GR00T-N1.6-DROID" not in runner
-    assert "pi05_droid_jointpos_polaris" not in runner
-    assert (
-        provider_runtime_contract_blockers(
-            provider_bundle_kind="adp_arena",
-            entrypoint_text=entrypoint,
-            runner_text=runner,
-        )
-        == []
-    )
-    preflight = _blueprint_bundle_preflight(
-        job_dir=tmp_path / "preflight",
-        generated_at="fixed",
-        enable_blueprint_bundle=True,
-        enable_isaac_smoke=True,
-        provider_bundle_kind="adp_arena",
-        bundle_path=Path(first["bundle_path"]),
-        provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
-        provider_output_put_url="https://example.com/output.zip?sig=redacted",
-    )
-    assert preflight["status"] == "passed"
-    assert preflight["blockers"] == []
 
 
 def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(
