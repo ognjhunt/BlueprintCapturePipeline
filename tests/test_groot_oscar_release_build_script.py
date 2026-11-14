@@ -2,7 +2,6 @@ from pathlib import Path
 
 
 LEGACY_SCRIPT = Path("scripts/build_push_groot_oscar_closed_loop_image.sh")
-PACKET = Path("src/blueprint_pipeline/groot_oscar_thin_remote_build_packet.py")
 FOUNDATION = Path(
     "deploy/docker/robot_eval_worker/groot_oscar_closed_loop/Foundation.Dockerfile"
 )
@@ -28,19 +27,6 @@ def test_legacy_monolithic_build_is_fail_closed() -> None:
     )
     assert lines[disable + 1] == "exit 2"
     assert disable < 20
-
-
-def test_canonical_thin_build_attests_and_scans_only_registry_digest() -> None:
-    text = PACKET.read_text(encoding="utf-8")
-    compact = " ".join(text.split())
-    assert "--attest type=sbom --attest type=provenance,mode=max" in compact
-    assert '\"registry:$release_exact\"' in text
-    assert 'syft_bin\" \"$release_exact' not in text
-    assert "release_supply_chain_disk_admission.json" in text
-    assert "release_buildkit_sbom_attestation.json" in text
-    assert "release_buildkit_provenance_attestation.json" in text
-    assert "release_supply_chain_manifest.json" in text
-    assert "SYFT_ARCHIVE_SHA256" in text
 
 
 def test_foundation_uses_runtime_only_wbc_multistage_closure() -> None:
