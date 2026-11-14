@@ -101,20 +101,6 @@ def test_optional_phase2_skill_is_skipped_and_says_why(limit, monkeypatch):
     assert codex("qualification_weakness_summarizer", {}) is None
 
 
-def test_arena_live_operator_gate_asks_the_limit_last(limit, monkeypatch):
-    from blueprint_pipeline import arena_result_ingest as arena
-
-    monkeypatch.setattr(arena, "_env_truthy", lambda _name: True)
-    monkeypatch.setattr(arena, "_module_available", lambda _names: True)
-    monkeypatch.setattr(arena, "codex_cli_path", lambda *_args: "/usr/bin/codex")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    assert arena._live_agents_blockers(True) == [REACHED]
-    assert arena._live_codex_blockers(True) == [REACHED]
-    assert arena._live_agents_blockers(False) == ["missing_cli_allow_live_agents_sdk"]  # its own gates first
-    limit["blockers"] = []
-    assert arena._live_agents_blockers(True) == [] and arena._live_codex_blockers(True) == []
-
-
 def test_operator_runtime_refuses_before_any_live_call(limit):
     from blueprint_pipeline import agent_operator_runtime as runtime
 

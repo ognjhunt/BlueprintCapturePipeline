@@ -89,39 +89,6 @@
       "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
       "note": "every path from an automatic entry passes the account-wide monthly limit; a refusal skips the optional skill (returns None, the deterministic fallback runs) and records why"
     },
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_agents_sdk_operator._run::openai_agents_sdk_runner": {
-      "provider": "openai",
-      "class": "admitted",
-      "guards": [
-        "_live_agents_blockers",
-        "_live_codex_blockers"
-      ],
-      "via": "src/blueprint_pipeline/arena_result_ingest.py::_live_agents_blockers",
-      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
-      "note": "the live-operator gate asks the account-wide monthly limit last; a refusal is a ledger blocker (status blocked), nothing sent, and the next ingest asks again"
-    },
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_cli": {
-      "provider": "openai",
-      "class": "admitted",
-      "guards": [
-        "_live_agents_blockers",
-        "_live_codex_blockers"
-      ],
-      "via": "src/blueprint_pipeline/arena_result_ingest.py::_live_codex_blockers",
-      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
-      "note": "the live-operator gate asks the account-wide monthly limit last; a refusal is a ledger blocker (status blocked), nothing sent, and the next ingest asks again"
-    },
-    "src/blueprint_pipeline/arena_result_ingest.py::_run_codex_sdk_operator::openai_codex_client_construction": {
-      "provider": "openai",
-      "class": "admitted",
-      "guards": [
-        "_live_agents_blockers",
-        "_live_codex_blockers"
-      ],
-      "via": "src/blueprint_pipeline/arena_result_ingest.py::_live_codex_blockers",
-      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
-      "note": "the live-operator gate asks the account-wide monthly limit last; a refusal is a ledger blocker (status blocked), nothing sent, and the next ingest asks again"
-    },
     "src/blueprint_pipeline/atlas_background_automation.py::_provider_preflight::meta_sam_credentials": {
       "provider": "meta_sam",
       "class": "not_paid",

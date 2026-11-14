@@ -13,9 +13,6 @@
     "src/blueprint_pipeline/adp_content_agents_vast.py": [
       "tests/test_adp_content_agents_vast.py"
     ],
-    "src/blueprint_pipeline/arena_result_ingest.py": [
-      "tests/test_arena_result_ingest.py"
-    ],
     "src/blueprint_pipeline/articulated_usd_depth_sweep.py": [
       "tests/test_adp009d_articulated_usd_depth_sweep.py"
     ],
@@ -68,9 +65,6 @@
     "src/blueprint_pipeline/paid_resource_allocator.py": [
       "tests/test_paid_resource_allocator.py"
     ],
-    "src/blueprint_pipeline/post_training_data_package.py": [
-      "tests/test_post_training_data_package.py"
-    ],
     "src/blueprint_pipeline/provider_bundle_staging_common.py": [
       "tests/test_provider_bundle_staging_common.py"
     ],
@@ -79,9 +73,6 @@
     ],
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": [
       "tests/test_public_scene_artifixer3d_vast.py"
-    ],
-    "src/blueprint_pipeline/sc3_fidelity_contracts.py": [
-      "tests/test_sc3_fidelity_contracts.py"
     ],
     "src/blueprint_pipeline/scene_asset_preflight.py": [
       "tests/test_scene_asset_preflight_coverage.py"
@@ -158,7 +149,6 @@
     "src/blueprint_pipeline/adp009d_physics_backend_comparison.py": 2041,
     "src/blueprint_pipeline/adp_task_scoring.py": 2130,
     "src/blueprint_pipeline/adp_content_agents_vast.py": 2800,
-    "src/blueprint_pipeline/arena_result_ingest.py": 2383,
     "src/blueprint_pipeline/articulated_usd_depth_sweep.py": 2786,
     "src/blueprint_pipeline/capture_orchestrator.py": 2002,
     "src/blueprint_pipeline/geometry_stage.py": 2244,
@@ -175,9 +165,7 @@
     "src/blueprint_pipeline/native_task_construction_plan.py": 2281,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
-    "src/blueprint_pipeline/post_training_data_package.py": 6727,
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
-    "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
     "src/blueprint_pipeline/scene_asset_preflight.py": 2213,
     "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py": 2517,
     "src/blueprint_pipeline/site_package_orchestrator.py": 5697,

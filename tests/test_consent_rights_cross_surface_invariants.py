@@ -1,7 +1,7 @@
 """Cross-surface fail-closed invariants for capture-rights and consent values.
 
 The consent contract flows raw manifest → materialization → qualification →
-generated-asset gates → PTDP packaging → buyer readout. These tests assert the
+generated-asset gates → delivery. These tests assert the
 single invariant every surface must share: a malformed, wrong-typed, unknown,
 or contradictory consent value can only ever DOWNGRADE a permission or claim,
 never upgrade it — and all surfaces agree on the same hostile input.
@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import materialization
-from blueprint_pipeline import post_training_data_package as ptdp
 from blueprint_pipeline import site_package_orchestrator as qualification
 from blueprint_pipeline.consent_normalization import (
     CONSENT_ACTIVE_STATUSES,
@@ -308,111 +307,6 @@ def test_delivery_gate_still_allows_clean_active_consent(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# PTDP packaging
-# ---------------------------------------------------------------------------
-
-
-def _consent_evidence(tmp_path: Path, rights_consent: object, rights_packet=None):
-    root = _capture_root(tmp_path, rights_consent)
-    return ptdp._build_consent_evidence_record(
-        capture_root=root,
-        output_dir=tmp_path / "out",
-        rights_packet=rights_packet or {},
-        scene_id="scene-1",
-        capture_id="capture-1",
-        generated_at="2026-07-11T00:00:00+00:00",
-    )
-
-
-def test_ptdp_blocks_top_level_revocation_hidden_by_nested_block(
-    tmp_path: Path,
-) -> None:
-    record = _consent_evidence(
-        tmp_path,
-        {
-            "consent_revoked": True,
-            "rights": {
-                "consent_status": "granted",
-                "consent_scope": ["model_training", "robot_evaluation"],
-                "consent_no_expiration": True,
-            },
-        },
-    )
-    assert record["consent_revoked"] is True
-    assert record["status"] == "blocked_consent_revoked_takedown_required"
-
-
-def test_ptdp_blocks_contradictory_status_spellings(tmp_path: Path) -> None:
-    record = _consent_evidence(
-        tmp_path,
-        {
-            "consent_status": "granted",
-            "consentStatus": "denied",
-            "consent_scope": ["model_training", "robot_evaluation"],
-            "consent_no_expiration": True,
-        },
-    )
-    assert record["consent_evidence_present"] is False
-    assert any(
-        blocker.startswith("consent_status_unknown:") for blocker in record["blockers"]
-    )
-
-
-def test_ptdp_blocks_malformed_revocation_flag_on_active_status(
-    tmp_path: Path,
-) -> None:
-    record = _consent_evidence(
-        tmp_path,
-        {
-            "consent_status": "granted",
-            "consent_revoked": "maybe",
-            "consent_scope": ["model_training", "robot_evaluation"],
-            "consent_no_expiration": True,
-        },
-    )
-    assert record["consent_evidence_present"] is False
-
-
-def test_ptdp_per_record_revocation_blocks_package(tmp_path: Path) -> None:
-    record = _consent_evidence(
-        tmp_path,
-        {
-            "consent_status": "granted",
-            "consent_scope": ["model_training", "robot_evaluation"],
-            "consent_no_expiration": True,
-        },
-        rights_packet={
-            "records": [
-                {"rights_scope": "model_training", "status": "revoked"},
-            ]
-        },
-    )
-    assert record["consent_revoked"] is True
-    assert record["status"] == "blocked_consent_revoked_takedown_required"
-
-
-def test_ptdp_live_closure_gate_passed_requires_strict_true() -> None:
-    for hostile in ("false", "no", "0", 1, "true", [True]):
-        reference = ptdp._live_closure_gate_reference(
-            {"gates": {"rights_privacy_scope": {"passed": hostile, "blockers": []}}},
-            "rights_privacy_scope",
-        )
-        assert reference["passed"] is False, hostile
-        assert ptdp._gate_blockers(
-            reference, "rights_privacy_scope", "fallback_blocker"
-        ), hostile
-    reference = ptdp._live_closure_gate_reference(
-        {"gates": {"rights_privacy_scope": {"passed": True, "blockers": []}}},
-        "rights_privacy_scope",
-    )
-    assert reference["passed"] is True
-    assert (
-        ptdp._gate_blockers(reference, "rights_privacy_scope", "fallback_blocker")
-        == []
-    )
-
-
-# ---------------------------------------------------------------------------
 # Cross-surface agreement matrix
 # ---------------------------------------------------------------------------
 
@@ -442,8 +336,7 @@ def test_every_surface_blocks_the_same_hostile_consent_source(
 ) -> None:
     """The core invariant: no surface may be more permissive than another.
 
-    For each hostile consent source, the delivery gate must refuse to serve,
-    and PTDP must refuse consent evidence.
+    For each hostile consent source, the delivery gate must refuse to serve.
     """
     root = _capture_root(tmp_path, source)
 
@@ -452,16 +345,6 @@ def test_every_surface_blocks_the_same_hostile_consent_source(
 
     gate = evaluate_delivery_time_takedown_gate(capture_root=root, surface="matrix")
     assert gate["serve_allowed"] is False
-
-    record = ptdp._build_consent_evidence_record(
-        capture_root=root,
-        output_dir=tmp_path / "out",
-        rights_packet={},
-        scene_id="scene-1",
-        capture_id="capture-1",
-        generated_at="2026-07-11T00:00:00+00:00",
-    )
-    assert record["consent_evidence_present"] is False
 
 
 def test_active_statuses_and_revoked_statuses_are_disjoint() -> None:
