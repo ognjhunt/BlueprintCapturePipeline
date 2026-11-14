@@ -792,6 +792,8 @@ will not stop does not fail the release and is named in the receipt's
 alarm and the preflight do not count them. To bring a lane back, move all its names from
 `DEFAULT_PAUSED_LANE_DISARM_UNITS` back into the arm lists (timers into
 `DEFAULT_ALWAYS_ARM_TIMER_UNITS`, paths into the list they came from) and deploy.
+Before it switches the release, every release also stops and disables, if installed, the triggers this repo no longer ships (`DEFAULT_RETIRED_TRIGGER_UNITS`, the door's `RETIRED_HOLD_UNITS`: `blueprint-pipeline-control-plane.timer`, `blueprint-capture-reconstruction-dispatcher.timer` and `.path`); their services and files are left alone, absent is fine,
+and the receipt's `unshipped_trigger_retirement` lists each as `retired`, `already_off`, `absent` or `failed` (a failure does not fail the release; a rollback leaves them off).
 A release that fails restores the earlier state, so paused lanes that were on before stay on until a release succeeds. Releasing a door hold on `blueprint-agent-run-dispatcher.timer` starts that timer until the next release.
 
 Not done: `reset-failed` on the transient failed units (O-24). It needs a door
