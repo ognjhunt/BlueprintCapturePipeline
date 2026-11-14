@@ -1636,16 +1636,21 @@ def test_every_native_preparation_command_passes_its_real_cli_parser(monkeypatch
             else:
                 module = importlib.import_module("scripts." + Path(argv[1]).stem)
                 arguments = argv[2:]
-            if retired_allocator_lane(argv):
-                # The allocator branch for this lane was removed: the request is
-                # recognised and refused before any provider call.
-                assert module.main(arguments) == 2
-                refused += 1
-                continue
             with pytest.raises(ParsedWithoutExecution):
                 module.main(arguments)
+            if retired_allocator_lane(argv):
+                # The allocator branch for this lane was removed: its argv still passes the
+                # real parser, and the request is refused before any provider call.
+                refusals = []
+                with monkeypatch.context() as real_parser:
+                    real_parser.setattr(argparse.ArgumentParser, "parse_args", original)
+                    real_parser.setattr(module, "write_json", lambda path, value: refusals.append(value))
+                    assert module.main(arguments) == 2
+                assert [value["blockers"] for value in refusals] == [["native_task_arena_allocator_lane_removed"]]
+                assert refusals[0]["provider_mutations_performed"] == 0
+                refused += 1
     assert refused > 0
-    assert len(observed) + refused == sum(len(steps) for lane, steps in prep.LANES.items() if lane.startswith("native_task_arena_"))
+    assert len(observed) == sum(len(steps) for lane, steps in prep.LANES.items() if lane.startswith("native_task_arena_"))
 
 
 def test_native_genesis_refreshes_inventory_without_changing_consent_or_budget(tmp_path):

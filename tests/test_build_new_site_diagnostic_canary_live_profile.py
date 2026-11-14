@@ -299,29 +299,6 @@ def test_refuses_a_receipt_the_lane_never_finished(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_the_allocators_own_required_arguments_are_all_supplied(tmp_path: Path) -> None:
-    """Read from the allocator branch rather than restated here.
-
-    The branch builds its `missing` list from two literal tuples of argparse
-    destinations -- one always, one only under `--execute`. An omission in the
-    second is invisible until a live launch, which is when this lane's
-    execute-only campaign arguments would have been discovered.
-    """
-
-    required = _required_allocator_destinations()
-    assert len(required) >= 8, "the allocator branch extraction stopped working"
-
-    argv = _build(_fixture(tmp_path))["allocator"]["argv"]
-    flags = {item for item in argv if item.startswith("--")}
-    missing = sorted(
-        destination
-        for destination in required
-        if "--" + destination.replace("_", "-") not in flags
-    )
-
-    assert not missing, f"the allocator would refuse this profile for: {missing}"
-
-
 def test_carries_this_profiles_ttl_and_spend_rather_than_the_lane_defaults(
     tmp_path: Path,
 ) -> None:

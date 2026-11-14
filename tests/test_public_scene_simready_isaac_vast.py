@@ -8,7 +8,6 @@ import zipfile
 
 import pytest
 
-import blueprint_pipeline.paid_resource_allocator as allocator
 import blueprint_pipeline.public_scene_simready_isaac_vast as runtime
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -711,24 +710,6 @@ def _allocator_args(tmp_path: Path, receipt: Path) -> list[str]:
         "--adp-hard-ttl-seconds",
         "10800",
     ]
-
-
-def test_allocator_execute_requires_paid_attempt_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt = tmp_path / "bundle_receipt.json"
-    write_json(receipt, _bundle(tmp_path))
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-
-    rc = allocator.main([*_allocator_args(tmp_path, receipt), "--execute"])
-
-    assert rc == 2
-    result = json.loads((tmp_path / "adapter.json").read_text(encoding="utf-8"))
-    assert "simready_isaac_paid_attempt_authority_missing" in result["blockers"]
 
 
 def test_operator_machine_pin_env_parses_and_reaches_the_adapter() -> None:

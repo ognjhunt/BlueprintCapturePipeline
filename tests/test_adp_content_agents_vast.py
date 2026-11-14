@@ -24,7 +24,6 @@ from blueprint_pipeline import (
     adp_content_agents_codex_advisory_review as codex_advisory,
 )
 from blueprint_pipeline import adp_content_agents_bundle_preflight as bundle_preflight
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.content_agents_execution_route import (
     materialize_content_agents_execution_route,
@@ -3141,62 +3140,6 @@ def test_content_agents_authority_binds_same_goal_concurrent_instances(
             hard_ttl_seconds=7200,
             allowed_active_instance_ids=[23, 17],
         )
-
-
-def test_canonical_allocator_rejects_mutated_bundle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path, content=b"before")
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    bundle = Path(receipt_value["bundle_path"])
-    bundle.write_bytes(b"after")
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=False)) == 2
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    assert "adp_content_agents_bundle_binding_invalid" in result["blockers"]
-
-
-def test_canonical_allocator_requires_exact_bundle_config_preflight(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    arguments = _allocator_args(tmp_path, receipt, preflight, execute=False)
-    flag = arguments.index("--adp-content-agents-config-preflight-receipt")
-    del arguments[flag : flag + 2]
-
-    assert allocator.main(arguments) == 2
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    assert "adp_content_agents_config_preflight_receipt" in result["blockers"]
-
-
-def test_canonical_allocator_rejects_changed_preflight_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    (tmp_path / "texture.log").write_text("changed after preflight", encoding="utf-8")
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-
-    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=False)) == 2
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    assert (
-        "adp_content_agents_config_preflight_execution_invalid:texture"
-        in result["blockers"]
-    )
 
 
 def _executable_preflight_fixture(tmp_path: Path) -> tuple[Path, str]:

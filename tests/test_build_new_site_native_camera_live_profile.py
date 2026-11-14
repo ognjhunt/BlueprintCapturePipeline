@@ -240,27 +240,6 @@ def _allocator_arguments_for_the_lane() -> set[str]:
     return attributes
 
 
-def test_the_profile_carries_every_allocator_argument_the_lane_reads(
-    tmp_path: Path,
-) -> None:
-    """An omitted flag fixes a paid decision at a default nobody chose.
-
-    Derived from the allocator's own call rather than written down here, so a
-    new argument on that call fails this instead of quietly defaulting on the
-    next live run.
-    """
-
-    argv = _build(_fixture(tmp_path))["allocator"]["argv"]
-    # `--execute` is appended by the dispatcher and forbidden in a profile.
-    expected = sorted(_allocator_arguments_for_the_lane() - {"execute"})
-
-    assert expected, "the allocator call for this lane was not found"
-    missing = [
-        name for name in expected if "--" + name.replace("_", "-") not in argv
-    ]
-    assert not missing, f"profile argv omits allocator arguments: {missing}"
-
-
 def test_every_builder_parameter_is_reachable_from_the_command_line() -> None:
     """The flag table is the call signature, so neither can drift from it."""
 

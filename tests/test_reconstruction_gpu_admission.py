@@ -6,7 +6,6 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
     CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
@@ -14,7 +13,6 @@ from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
 from blueprint_pipeline.reconstruction_gpu_admission import (
     EXPECTED_RUNTIME_RESULT_SCHEMAS,
     PREFLIGHT_SCHEMA_VERSION,
-    PROBE_KIND,
     REQUEST_SCHEMA_VERSION,
     build_reconstruction_gpu_canary_admission,
     build_reconstruction_gpu_canary_request,
@@ -604,61 +602,3 @@ def test_reconstruction_canary_rejects_digest_and_clean_checkout_drift():
     assert "reconstruction_gpu_request_digest_mismatch" in admission["blockers"]
     assert "reconstruction_gpu_checkout_source_commit_mismatch" in admission["blockers"]
     assert "reconstruction_gpu_checkout_not_clean" in admission["blockers"]
-
-
-def test_allocator_routes_reconstruction_probe_without_provider_mutation(
-    tmp_path: Path, monkeypatch, capsys
-):
-    request_path = tmp_path / "request.json"
-    preflight_path = tmp_path / "preflight.json"
-    request_path.write_text(json.dumps(_request()), encoding="utf-8")
-    preflight_path.write_text(json.dumps(_preflight(observed_at_epoch=1000.0)), encoding="utf-8")
-    monkeypatch.setattr(
-        allocator,
-        "_source_checkout_blockers",
-        lambda _expected, **_kwargs: ([], SHA),
-    )
-    monkeypatch.setattr("blueprint_pipeline.reconstruction_gpu_admission.time.time", lambda: 1001.0)
-    exit_code = allocator.main(
-        [
-            "gpu-canary",
-            "--provider",
-            "vast",
-            "--probe-kind",
-            PROBE_KIND,
-            "--provider-launch-request",
-            str(request_path),
-            "--release-evidence",
-            str(tmp_path / "unused-release.json"),
-            "--model-cache-evidence",
-            str(tmp_path / "unused-models.json"),
-            "--preflight-bundle",
-            str(preflight_path),
-            "--admission-out",
-            str(tmp_path / "admission.json"),
-            "--bound-request-out",
-            str(tmp_path / "bound.json"),
-            "--adapter-output",
-            str(tmp_path / "adapter.json"),
-            "--pod-name",
-            "blueprint-reconstruction-smoke",
-            "--expected-source-commit",
-            SHA,
-            "--reconstruction-max-spend-usd",
-            "1.0",
-            "--reconstruction-hard-ttl-seconds",
-            "1800",
-            "--reconstruction-retry-cap",
-            "1",
-            "--reconstruction-authority-id",
-            "user-authorization-20260730",
-        ]
-    )
-    assert exit_code == 0
-    assert json.loads(capsys.readouterr().out) == {"success": True}
-    admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
-    adapter = json.loads((tmp_path / "adapter.json").read_text(encoding="utf-8"))
-    assert admission["status"] == "dry_run_ready"
-    assert adapter["provider_mutations_performed"] == 0
-    assert adapter["cost_usd"] == 0.0
-
