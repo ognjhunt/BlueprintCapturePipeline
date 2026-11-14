@@ -93,8 +93,6 @@ WORKER_UNITS=(
   blueprint-task-evaluation-launch-dispatcher.path
   blueprint-rigid-robot-free-probe-runner.path
   blueprint-rigid-robot-free-probe-runner.timer
-  blueprint-task-evaluation-configured-controls-progression.timer
-  blueprint-task-evaluation-configured-controls-progression.path
   blueprint-task-evaluation-terminal-resource-release.path
   blueprint-control-plane-storage-gc.timer
   blueprint-website-withdrawal-deletion.timer
@@ -121,7 +119,6 @@ WORKER_UNITS=(
   blueprint-task-evaluation-launch-activation.service
   blueprint-task-evaluation-launch-dispatcher.service
   blueprint-rigid-robot-free-probe-runner.service
-  blueprint-task-evaluation-configured-controls-progression.service
   blueprint-task-evaluation-terminal-resource-release.service
   blueprint-control-plane-storage-gc.service
   blueprint-website-withdrawal-deletion.service

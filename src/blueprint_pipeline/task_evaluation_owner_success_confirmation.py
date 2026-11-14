@@ -209,7 +209,7 @@ def published_job(directory: Path, intent: Mapping[str, Any]) -> dict[str, Any]:
     from . import task_evaluation_scene_intake as intake
     from .robot_free_readiness_retention import WORK_DIRECTORY
     from .task_evaluation_configured_controls_deferred_inputs import _document_name
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_configured_controls_source_evidence import _validate_source
     from .task_evaluation_configured_scene_revision import validate_configured_scene_revision
     from .task_evaluation_rigid_relocation_native_adapter import (
         DEFINITION_CONTRACT_PATH,

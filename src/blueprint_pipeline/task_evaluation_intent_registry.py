@@ -37,6 +37,10 @@ def _supersession_authority(expected_commit: str) -> None:
             values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         except (OSError, subprocess.SubprocessError) as exc:
             raise IntentRegistryError("intent_registry_worker_quiescence_unproven") from exc
+        if values.get("LoadState") == "not-found" and values.get("ActiveState") == "inactive":
+            # The configured-controls worker's units are no longer shipped: a
+            # host without them has no writer to wait for.
+            continue
         if values.get("LoadState") != "loaded":
             raise IntentRegistryError("intent_registry_worker_quiescence_unproven")
         if index == 0 and (values.get("ActiveState") in {"active", "activating"}

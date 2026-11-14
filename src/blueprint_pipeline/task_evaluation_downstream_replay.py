@@ -604,7 +604,7 @@ class _Harness:
         from . import rigid_robot_free_probe_runner as runner
         from . import robot_free_readiness_retention as retention
         from . import task_evaluation_configured_controls_deferred_inputs as deferred_inputs
-        from . import task_evaluation_configured_controls_progression_worker as progression_worker
+        from . import task_evaluation_configured_controls_source_evidence as source_evidence
         from . import task_evaluation_scene_attempt_binding as attempt_binding
         from . import task_evaluation_scene_intake as intake
         from . import team_candidate_quick10_registry as registry
@@ -651,7 +651,7 @@ class _Harness:
                 (runner, "enqueue_rigid_robot_free_probe", probe_enqueued),
                 (family_sources, "_profile_captures", this_capture)):
             _swap(stack, module, name, value)
-        for module, names in ((progression_worker, ("_validate_source",)),
+        for module, names in ((source_evidence, ("_validate_source",)),
                               (attempt_binding, ("require_scene_execution_binding",)),
                               (intake, ("_require", "_read")),
                               (packets, ("_compile", "resolve_capture_root", "packet_inputs", "validated_request")),

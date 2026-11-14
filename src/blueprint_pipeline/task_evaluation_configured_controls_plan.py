@@ -164,7 +164,7 @@ def materialize_configured_controls_plan(
         raise TaskEvaluationConfiguredControlsPlanError(
             "configured_controls_plan_launch_root_invalid"
         )
-    from .task_evaluation_configured_controls_progression_worker import (
+    from .task_evaluation_configured_controls_source_evidence import (
         _validate_source,
     )
 

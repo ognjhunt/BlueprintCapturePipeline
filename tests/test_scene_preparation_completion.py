@@ -1,5 +1,7 @@
 """Preparation completion needs publication/readback/closure, not robot controls."""
+import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +12,103 @@ from blueprint_pipeline.task_evaluation_scene_execution_authority import bind_sc
 from blueprint_pipeline.task_evaluation_scene_preparation_completion import reconcile_preparation_completion
 from blueprint_pipeline.task_evaluation_launch_terminal_evidence import _scene_configuration_terminal_projection
 from tests.test_website_scene_preparation_scope import preparation_request
-from tests.test_task_evaluation_configured_controls_progression_worker import _source, _digest, SOURCE_CONFIGURATION_COMMIT
+
+
+SOURCE_CONFIGURATION_COMMIT = "c" * 40
+
+
+def _write(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _digest(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _source(tmp_path: Path, *, provider_zero: bool = True) -> tuple[Path, Path]:
+    launch_id = "scene-839873-qualifying"
+    run_root = tmp_path / "launch-runs" / launch_id
+    terminal_path = tmp_path / "allocator" / "result.json"
+    publication_path = tmp_path / "allocator" / "publication.json"
+    revision_path = tmp_path / "allocator" / "revision.json"
+    _write(publication_path, {"schema_version": "test.publication.v1"})
+    _write(revision_path, {"schema_version": "test.revision.v1"})
+    _write(
+        terminal_path,
+        {
+            "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+            "run_id": "scene-839873-configuration",
+            "publication_result_path": str(publication_path),
+            "configured_scene_revision_path": str(revision_path),
+        },
+    )
+    receipt: dict[str, object] = {
+        "schema_version": "task_evaluation_launch_receipt.v1",
+        "status": "completed",
+        "launch_id": launch_id,
+        "source_commit": SOURCE_CONFIGURATION_COMMIT,
+        "run_id": "scene-839873",
+        "request_digest": "sha256:" + "1" * 64,
+        "launch_profile_digest": "sha256:" + "2" * 64,
+        "terminal_evidence": {
+            "status": "passed",
+            "result": {
+                "path": str(terminal_path),
+                "exists": True,
+                "digest": _digest(terminal_path),
+            },
+            "scene_configuration": {"configuration_completed": True},
+        },
+        "receipt_digest": "",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    _write(run_root / "launch_receipt.json", receipt)
+    sync: dict[str, object] = {
+        "schema_version": "task_evaluation_launch_webapp_sync_result.v1",
+        "status": "succeeded",
+        "launch_id": launch_id,
+        "run_id": receipt["run_id"],
+        "request_digest": receipt["request_digest"],
+        "receipt_digest": receipt["receipt_digest"],
+        "attempt_number": 1,
+        "attempted_at": "2026-08-28T20:00:00+00:00",
+        "provider_mutation_performed": False,
+        "response": {
+            "schema_version": "task_evaluation_launch_web_sync_receipt.v1",
+            "status": "completed",
+            "already_exists": False,
+            "launch_id": launch_id,
+            "run_id": receipt["run_id"],
+            "request_digest": receipt["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+        },
+        "sync_result_digest": "",
+    }
+    sync["sync_result_digest"] = canonical_digest(sync, digest_field="sync_result_digest")
+    _write(run_root / "webapp_sync_succeeded.json", sync)
+    if provider_zero:
+        zero: dict[str, object] = {
+            "schema_version": "task_evaluation_post_teardown_provider_zero.v1",
+            "status": "provider_zero_confirmed",
+            "launch_id": launch_id,
+            "run_id": receipt["run_id"],
+            "request_digest": receipt["request_digest"],
+            "receipt_digest": receipt["receipt_digest"],
+            "launch_profile_digest": receipt["launch_profile_digest"],
+            "provider_zero_verified": True,
+            "continuing_spend_from_this_run": False,
+            "allocator_invoked": False,
+            "provider_mutation_performed": False,
+            "automatic_retry_performed": False,
+            "blockers": [],
+            "provider_zero_receipt_digest": "",
+        }
+        zero["provider_zero_receipt_digest"] = canonical_digest(
+            zero, digest_field="provider_zero_receipt_digest"
+        )
+        _write(run_root / "post_teardown_provider_zero_receipt.json", zero)
+    return run_root.parent, terminal_path
 
 
 def save(path, value, field=None):

@@ -90,7 +90,7 @@ def _snapshot(root: Path) -> dict[str, bytes]:
 
 @pytest.mark.parametrize("cross_runtime", [False, True])
 def test_valid_source_matches_worker_without_writing(tmp_path, cross_runtime):
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
+    from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as worker
     from blueprint_pipeline.configured_controls_plan_validation import (
         TaskEvaluationConfiguredControlsProgressionWorkerError,
     )
@@ -229,7 +229,6 @@ def test_read_only_closures_cannot_reach_active_workers(seed):
 
     active = {
         "task_evaluation_controls_autoprovision",
-        "task_evaluation_configured_controls_progression_worker",
         "task_evaluation_launch_dispatcher",
         "task_evaluation_launch_reconciler",
         "task_evaluation_scene_intake",

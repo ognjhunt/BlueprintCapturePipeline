@@ -168,37 +168,6 @@ def test_confirmed_drawer_contract_keeps_the_qualified_opening_threshold(tmp_pat
             }, task_kind='articulated_open_close')
 
 
-def test_worker_omits_controls_before_any_standalone_controls_admission(tmp_path,monkeypatch):
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
-    from tests.test_task_evaluation_configured_controls_progression_worker import _plan,_write,_sealed_progression
-    plan_path=_plan(tmp_path)
-    plan=json.loads(plan_path.read_bytes())
-    launches,_,_,directive,_,_=scoped(tmp_path,monkeypatch,launch_id=plan['source_launch_id'])
-    state=tmp_path/'progressions'/plan['source_launch_id']/f"franka-controls-{plan['expected_production_commit'][:12]}"
-    _write(state/'configured_controls_progression.v1.json',_sealed_progression('episode_preparation_queued',
-        episode_preparation_request={'preparation_id':'prep-1'}))
-    _write(state/'construction_activation_progression.json',_sealed_progression('construction_activation_queued'))
-    _write(state/'construction_launch_progression.json',_sealed_progression('construction_launch_queued',launch_id='construction-1'))
-    prep=tmp_path/'preparations'
-    _write(prep/'identities/prep-1.json',{'identity':'prep-1'})
-    _write(prep/'results/prep-1-a.json',{'status':'prepared'})
-    def forbidden(*args,**kwargs):
-        pytest.fail('omitted standalone controls reached activation or launch')
-    monkeypatch.setattr(worker,'stage_configured_controls_activation',forbidden)
-    monkeypatch.setattr(worker,'submit_authorized_progression_launch',forbidden)
-    result=worker.advance_configured_controls_plan(plan_path=plan_path,launch_state_root=launches,
-        progression_root=tmp_path/'progressions',preparation_queue_root=prep,activation_queue_root=tmp_path/'activations')
-    assert result['status']=='controls_omitted_for_diagnostic_policy'
-    assert result['control_omission_directive_digest']==directive['directive_digest']
-    assert result['controls_qualified'] is result['qualified_comparison_permitted'] is False
-    assert not (state/'controls_activation_progression.json').exists()
-    assert not (state/'controls_launch_progression.json').exists()
-    _write(state/'controls_activation_progression.json',_sealed_progression('controls_activation_queued'))
-    with pytest.raises(worker.TaskEvaluationConfiguredControlsProgressionWorkerError,match='omission_after_controls_admission'):
-        worker.advance_configured_controls_plan(plan_path=plan_path,launch_state_root=launches,
-            progression_root=tmp_path/'progressions',preparation_queue_root=prep,activation_queue_root=tmp_path/'activations')
-
-
 @pytest.mark.parametrize("fault", ["revoked", "expired", "profile_changed"])
 def test_platform_pause_does_not_bypass_owner_authority(tmp_path, monkeypatch, fault):
     launches, launch, path, _, directory, now = scoped(tmp_path, monkeypatch)

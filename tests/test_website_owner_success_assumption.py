@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as source
+from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as source
 from blueprint_pipeline import task_evaluation_owner_success_confirmation as confirmation
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import team_scene_packet_remote as lane

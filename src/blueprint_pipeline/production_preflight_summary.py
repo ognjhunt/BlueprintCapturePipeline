@@ -31,7 +31,7 @@ _PUBLIC_UNITS = frozenset(BETA_RIGID_UNITS) | frozenset(
     "blueprint-" + name + ".service" for name in (
         "task-evaluation-launch-preparation",
         "task-evaluation-episode-compilation", "task-evaluation-episode-compilation-remote",
-        "task-evaluation-launch-activation", "task-evaluation-configured-controls-progression",
+        "task-evaluation-launch-activation",
         "task-evaluation-launch-dispatcher", "task-evaluation-launch-reconciler",
         "task-evaluation-terminal-resource-release", "gpu-spend-guard",
         "provider-billing-reconciler", "control-plane-storage-gc", "scene-project-spend-refresh",

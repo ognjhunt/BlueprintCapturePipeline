@@ -107,7 +107,7 @@ def _status(queue: Path, key: str) -> dict[str, Any]:
 def _republish(job: Any, tmp_path: Path, monkeypatch, **values: Any) -> dict[str, Any]:
     """The same intent republished with other thresholds, as the host retains it."""
 
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as source
+    from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as source
 
     configured, references = rethreshold(job.revision, job.references, tmp_path / "owner-case", **values)
     payload = json.dumps(configured, sort_keys=True).encode()

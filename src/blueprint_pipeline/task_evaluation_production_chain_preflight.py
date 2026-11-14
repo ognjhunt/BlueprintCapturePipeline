@@ -81,7 +81,6 @@ CHAIN_UNITS: tuple[str, ...] = (
     # Plan 14 §1: the paid remote-compilation unit (its ExecCondition skips it while the effective mode is host).
     "blueprint-task-evaluation-episode-compilation-remote.service",
     "blueprint-task-evaluation-launch-activation.service",
-    "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-terminal-resource-release.service",
@@ -95,13 +94,11 @@ CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-scene-project-spend-refresh.service",
 )
 
-# The persistent-owner authority consumers: both dispatchers and controls
-# progression.  Selection scope, owner-store resolution and (for controls) the
-# autoprovision config + assets are checked here so an owner-mode gap is named
-# before a dispatch rather than after a wrong or empty selection.
+# The persistent-owner authority consumers: both dispatchers.  Selection
+# scope and owner-store resolution are checked here so an owner-mode gap is
+# named before a dispatch rather than after a wrong or empty selection.
 OWNER_AUTHORITY_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-task-evaluation-configured-controls-progression.service",
 )
 CONTROLS_PROGRESSION_UNIT = "blueprint-task-evaluation-configured-controls-progression.service"
 EPISODE_COMPILATION_UNIT = "blueprint-task-evaluation-episode-compilation.service"
@@ -1003,8 +1000,7 @@ def binding_checks(units: Mapping[str, dict[str, Any]], active_sha: str, ids: tu
     # inside the progression service, so that unit must resolve the profile too;
     # before the content registry it never received a per-scene PROFILE_ENV
     # drop-in and refused with sam31_server_profile_missing.
-    for unit_name in ("blueprint-task-evaluation-launch-preparation.service",
-                      "blueprint-task-evaluation-configured-controls-progression.service"):
+    for unit_name in ("blueprint-task-evaluation-launch-preparation.service",):
         unit = units.get(unit_name, {})
         registry = unit.get("effective_environment", {}).get("BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR")
         if registry:
@@ -1088,23 +1084,6 @@ def _sam31_provider_profile_findings(hardware_profile: Path, unit_name: str, act
 
 def handoff_checks(units: Mapping[str, dict[str, Any]], ids: tuple[int, int]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
-    uid, gid = ids
-    unit_name = "blueprint-task-evaluation-configured-controls-progression.service"
-    env = units.get(unit_name, {}).get("effective_environment", {})
-    email = str(env.get("BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL") or "").strip()
-    if not email or "@" not in email:
-        findings.append(_finding("blocker", "policy_canary_notification_email_unset", unit=unit_name, env="BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL", consequence="hand-off returns policy_canary_handoff_not_configured after controls"))
-    secret = str(env.get("BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE") or "")
-    if not secret or not Path(secret).is_file() or not readable_by(Path(secret), uid, gid):
-        findings.append(_finding("blocker", "webapp_submission_secret_file_unreadable_by_service", unit=unit_name, path=secret or None))
-    if not str(env.get("BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL") or "").startswith("https://"):
-        findings.append(_finding("blocker", "webapp_submission_url_unset", unit=unit_name))
-    catalog = str(env.get("BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG") or "")
-    if not catalog:
-        findings.append(_finding("blocker", "launch_profile_catalog_path_unset", unit=unit_name))
-    public = str(units.get("blueprint-pipeline-intake.service", {}).get("effective_environment", {}).get("BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH") or "")
-    if catalog and public and catalog != public:
-        findings.append(_finding("blocker", "launch_profile_catalog_path_disagrees_with_intake", progression=catalog, intake=public))
     dispatcher_unit = "blueprint-task-evaluation-launch-dispatcher.service"
     dispatcher = units.get(dispatcher_unit, {}).get("effective_environment", {})
     if str(dispatcher.get("BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE") or "").strip() not in {"1", "true", "yes"}:

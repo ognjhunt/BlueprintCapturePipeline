@@ -83,8 +83,6 @@ class DoorConfig:
         "blueprint-beta-policy-screening.service",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-scene-progression.service",
-        "blueprint-task-evaluation-configured-controls-progression.timer",
-        "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-reconciler.timer",
@@ -109,7 +107,6 @@ class DoorConfig:
     venv_python: str = "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
     idle_wait_units: tuple[str, ...] = (
         "blueprint-task-evaluation-scene-progression.service",
-        "blueprint-task-evaluation-configured-controls-progression.service",
     )
     idle_wait_seconds: int = 1800
 

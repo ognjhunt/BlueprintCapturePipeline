@@ -201,7 +201,7 @@ def test_a_scene_is_refused_by_name_before_any_packet(tmp_path) -> None:
 
 def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_registry_reads_it(
         tmp_path, monkeypatch) -> None:
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as source
+    from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as source
     from blueprint_pipeline.team_candidate_quick10_registry import (
         REGISTRY_ENV,
         REGISTRY_SCHEMA,

@@ -97,7 +97,7 @@ def publish(tmp_path: Path, monkeypatch, *, configured: dict[str, Any] | None = 
             references: dict[str, Any] | None = None, request_digest: str = "sha256:" + "a" * 64) -> SimpleNamespace:
     """A staged intent whose progression completed with a published revision, as the host retains it."""
 
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as source
+    from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as source
 
     if configured is None:
         configured, references = proposal_only_case(tmp_path / "case")
@@ -319,7 +319,7 @@ def test_a_preview_taken_before_the_thresholds_changed_cannot_be_applied(tmp_pat
     progression["result_reference"] = {**progression["result_reference"], "digest": _sha(payload),
                                        "size_bytes": len(payload)}
     (job.directory / "progression.json").write_text(json.dumps(intake._seal(progression, "progression_digest")))
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as source
+    from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as source
     monkeypatch.setattr(source, "_validate_source", lambda root: ({
         "configured_scene_revision_path": str(job.run / "configured_scene_revision.v1.json"),
         "configured_scene_revision_digest": configured["revision_digest"]}, {}, {}))

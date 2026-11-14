@@ -232,7 +232,7 @@ def _offloaded(world) -> Path:
 
 
 def test_before_the_fix_the_offloaded_447_run_reads_as_an_invalid_launch_receipt(world):
-    from blueprint_pipeline.task_evaluation_configured_controls_progression_worker import (
+    from blueprint_pipeline.task_evaluation_configured_controls_source_evidence import (
         TaskEvaluationConfiguredControlsProgressionWorkerError,
         _validate_source,
     )

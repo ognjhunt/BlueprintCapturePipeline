@@ -1,7 +1,7 @@
 """The owner-scope wiring ships in the units, and scene_store() resolves the owner.
 
 Spec C installs ``persistent_owner_only`` and the shared owner-store identity in
-both dispatchers and controls progression.  These tests pin the shipped unit
+both dispatchers.  These tests pin the shipped unit
 wiring and the ``scene_store()`` contract the wiring depends on, so a future edit
 cannot silently drop owner mode back to ``all_authorized`` or leave the store
 unresolvable.
@@ -22,7 +22,6 @@ STORE_ENV_FILE = "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progress
 CONFIG_ENV_FILE = "EnvironmentFile=-/etc/blueprint/task-evaluation-controls-autoprovision.env"
 UNITS = (
     "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-task-evaluation-configured-controls-progression.service",
 )
 
 
@@ -37,19 +36,6 @@ def test_every_authority_unit_installs_persistent_owner_scope_and_store(unit):
     # The shared owner store is loaded optionally ("-"): its absence must never
     # block the unit start, only leave selection with nothing to resolve.
     assert STORE_ENV_FILE in text, f"{unit} must load the shared owner-store env"
-
-
-def test_controls_progression_loads_autoprovision_config_optionally():
-    text = _unit("blueprint-task-evaluation-configured-controls-progression.service")
-    # Optional load: a missing file leaves the legacy lane, never fails closed.
-    assert CONFIG_ENV_FILE in text
-    # The autoprovision worker installs intents into the registry, so it must be
-    # writable, not read-only, for this unit.
-    read_write = [line for line in text.splitlines() if line.startswith("ReadWritePaths=")]
-    read_only = [line for line in text.splitlines() if line.startswith("ReadOnlyPaths=")]
-    intents = "/etc/blueprint/task-evaluation-configured-controls-intents"
-    assert any(intents in line for line in read_write)
-    assert not any(intents in line for line in read_only)
 
 
 def test_scope_is_never_downgraded_to_all_authorized():

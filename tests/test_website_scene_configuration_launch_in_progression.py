@@ -20,7 +20,6 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import task_evaluation_controls_autoprovision as autoprovision
-from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
 from blueprint_pipeline import task_evaluation_scene_configuration_activation_automation as automation
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import task_evaluation_scene_progression as progression
@@ -244,7 +243,7 @@ def _website_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, queue: Path)
     return staged
 
 
-def test_controls_worker_reports_website_jobs_and_writes_nothing_for_them(
+def test_controls_owner_scope_reports_website_jobs_and_writes_nothing_for_them(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = tmp_path / "task-evaluation-owned-scene-preparations"
     staged = _website_scope(tmp_path, monkeypatch, queue)
@@ -254,24 +253,20 @@ def test_controls_worker_reports_website_jobs_and_writes_nothing_for_them(
     assert not scope.unresolved
     monkeypatch.setattr(automation, "advance_scene_configuration_activation",
                         lambda **_: pytest.fail("the controls worker must not stage a Website job"))
-    monkeypatch.setattr(worker, "running_release_commit", lambda: COMMIT)
     monkeypatch.setattr(automation, "running_release_commit", lambda: COMMIT)
     intent_root = tmp_path / "scene-configuration-intents"
     intent_root.mkdir()
-    report = worker.process_plans(
-        plan_root=tmp_path / "plans", autostart_intent_root=tmp_path / "intents",
-        launch_state_root=tmp_path / "launch", progression_root=tmp_path / "progression",
-        preparation_queue_root=tmp_path / "cli-launch-preparations",
-        episode_compilation_queue_root=tmp_path / "compilations",
-        activation_queue_root=tmp_path / "activations", repo_root=tmp_path / "repo",
-        webapp_secret_file=tmp_path / "secret",
-        webapp_endpoint="https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
-        scene_configuration_activation_intent_root=intent_root,
-        profile_dir=tmp_path / "profiles", standing_authorization_dir=tmp_path / "standing")
-    rows = [row for row in report["rows"] if row.get("lane") == automation.LANE]
+    rows = scope.configuration_activation_rows(
+        intent_root=intent_root, configured_controls_intent_root=tmp_path / "intents",
+        profile_dir=tmp_path / "profiles", standing_authorization_dir=tmp_path / "standing",
+        context={"preparation_queue_root": tmp_path / "cli-launch-preparations",
+                 "activation_queue_root": tmp_path / "activations",
+                 "progression_root": tmp_path / "progression", "repo_root": tmp_path / "repo",
+                 "webapp_secret_file": tmp_path / "secret",
+                 "webapp_endpoint": "https://tryblueprint.io/api/internal/task-evaluation-launch-submissions"})
+    rows = [row for row in rows if row.get("lane") == automation.LANE]
     assert rows == [{"lane": automation.LANE, "preparation_id": PREPARATION_ID,
                      "status": automation.SCENE_PROGRESSION_OWNED_STATUS}]
-    assert report["status"] == "completed", report
     assert not (tmp_path / "progression" / automation.STATE_DIRECTORY).exists()
     assert not (tmp_path / "activations").exists()
 

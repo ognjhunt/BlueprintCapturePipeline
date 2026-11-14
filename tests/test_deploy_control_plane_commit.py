@@ -55,108 +55,6 @@ def _private_temporary_directory(tmp_path_factory, monkeypatch):
     return scratch
 
 
-def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(monkeypatch, tmp_path):
-    calls = []
-    commit = 'a'*40
-    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
-    unit.parent.mkdir(parents=True)
-    unit.write_bytes((REPO_ROOT/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service').read_bytes())
-    def run(argv, **kwargs):
-        calls.append(argv)
-        if argv[:2] == ['systemctl', 'show']:
-            return SimpleNamespace(stdout='LoadState=loaded\nActiveState=failed\nMainPID=0\n')
-        if argv[:2] == ['systemctl', 'reset-failed']:
-            return SimpleNamespace(stdout='')
-        assert argv[0] == 'systemd-run' and '--wait' in argv
-        assert '--property=User=blueprint' in argv
-        assert sum(arg.startswith('--setenv=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_') for arg in argv) == 6
-        assert f'PYTHONPATH={tmp_path / "src"}' in argv
-        assert 'blueprint_pipeline.task_evaluation_terminal_controls_deploy' in argv
-        assert kwargs['timeout'] >= 1800  # retained validation exceeded ten minutes on the host
-        return SimpleNamespace(stdout=json.dumps({'status':'prepared','source_commit':commit,
-            'provider_mutation_performed':False,'model_called':False,'placement_materialized':False}))
-    monkeypatch.setattr(deploy.subprocess, 'run', run)
-    result = deploy._prepare_terminal_controls_adoptions(release_path=tmp_path, commit=commit, config_path=tmp_path/'config.json')
-    assert result['status'] == 'prepared'
-    assert sum(argv[:2] == ['systemctl','reset-failed'] for argv in calls) == 3
-
-
-def test_terminal_controls_child_failure_reports_typed_code_without_stderr(monkeypatch, tmp_path):
-    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
-    unit.parent.mkdir(parents=True)
-    unit.write_bytes((REPO_ROOT/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service').read_bytes())
-
-    def run(argv, **_kwargs):
-        if argv[:2] == ['systemctl', 'show']:
-            return SimpleNamespace(stdout='LoadState=loaded\nActiveState=inactive\nMainPID=0\n')
-        raise subprocess.CalledProcessError(
-            1, argv, output='',
-            stderr='secret-token-value\nConfiguredControlsProvisioningError: configured_controls_provisioning_registry_conflict:permission denied\n',
-        )
-
-    monkeypatch.setattr(deploy.subprocess, 'run', run)
-    with pytest.raises(deploy.ControlPlaneDeployError) as error:
-        deploy._prepare_terminal_controls_adoptions(
-            release_path=tmp_path, commit='a'*40, config_path=tmp_path/'config.json'
-        )
-    assert 'configured_controls_provisioning_registry_conflict' in str(error.value)
-    assert 'secret-token-value' not in str(error.value)
-    assert 'stderr_sha256_' in str(error.value)
-
-
-def test_terminal_controls_deploy_refuses_missing_scoped_artifact_store(tmp_path):
-    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
-    unit.parent.mkdir(parents=True)
-    unit.write_text('[Service]\nEnvironment=BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/tmp/legacy\n')
-    with pytest.raises(deploy.ControlPlaneDeployError, match='artifact_store_env_missing'):
-        deploy._terminal_controls_artifact_store_env(tmp_path)
-
-
-@pytest.mark.parametrize('active,pid', [('active','0'), ('inactive','12'), ('activating','0')])
-def test_terminal_controls_deploy_refuses_a_worker_race(monkeypatch, tmp_path, active, pid):
-    calls = []
-    def run(argv, **kwargs):
-        calls.append(argv)
-        return SimpleNamespace(stdout=f'LoadState=loaded\nActiveState={active}\nMainPID={pid}\n')
-    monkeypatch.setattr(deploy.subprocess, 'run', run)
-    with pytest.raises(deploy.ControlPlaneDeployError, match='worker_not_quiescent'):
-        deploy._prepare_terminal_controls_adoptions(release_path=tmp_path, commit='a'*40, config_path=tmp_path/'config.json')
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize("finishes", [True, False])
-def test_terminal_controls_drain_is_bounded_and_never_kills_worker(monkeypatch, finishes):
-    elapsed = [0.0]
-    calls = []
-    monkeypatch.setattr(deploy.time, "monotonic", lambda: elapsed[0])
-    monkeypatch.setattr(deploy.time, "sleep", lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds))
-
-    def run(argv, **kwargs):
-        calls.append(argv)
-        assert argv[:2] == ["systemctl", "show"]
-        busy = argv[2].endswith(".service") and not (finishes and elapsed[0] >= 2)
-        return SimpleNamespace(stdout="LoadState=loaded\nActiveState=" +
-            ("activating\nMainPID=123\n" if busy else "inactive\nMainPID=0\n"))
-
-    monkeypatch.setattr(deploy.subprocess, "run", run)
-    if finishes:
-        deploy._require_terminal_controls_quiescence(wait_seconds=4)
-        assert elapsed[0] == 2
-    else:
-        with pytest.raises(deploy.ControlPlaneDeployError, match="worker_not_quiescent"):
-            deploy._require_terminal_controls_quiescence(wait_seconds=4)
-        assert elapsed[0] == 4
-    assert calls[0][2].endswith(".path") and calls[1][2].endswith(".timer")
-
-
-def test_terminal_controls_drain_refuses_armed_trigger_without_waiting(monkeypatch):
-    monkeypatch.setattr(deploy.subprocess, "run", lambda *a, **kw:
-        SimpleNamespace(stdout="LoadState=loaded\nActiveState=active\nMainPID=0\n"))
-    monkeypatch.setattr(deploy.time, "sleep", lambda _: pytest.fail("must not wait with trigger armed"))
-    with pytest.raises(deploy.ControlPlaneDeployError, match="worker_not_quiescent"):
-        deploy._require_terminal_controls_quiescence(wait_seconds=600)
-
-
 def test_retention_reader_repair_preserves_owner_and_private_file_modes(tmp_path):
     root = tmp_path / "release-retention"
     root.mkdir(mode=0o700)
@@ -632,30 +530,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     screening_timer.write_text(
         "[Timer]\nOnUnitInactiveSec=1min\n", encoding="utf-8"
     )
-    progression_service = (
-        unit_dir
-        / "blueprint-task-evaluation-configured-controls-progression.service"
-    )
-    progression_service.write_text(
-        "[Service]\nExecStart=/usr/bin/blueprint-progress-configured-controls\n",
-        encoding="utf-8",
-    )
-    progression_timer = (
-        unit_dir
-        / "blueprint-task-evaluation-configured-controls-progression.timer"
-    )
-    progression_timer.write_text(
-        "[Timer]\nOnUnitInactiveSec=2min\n",
-        encoding="utf-8",
-    )
-    progression_path = (
-        unit_dir
-        / "blueprint-task-evaluation-configured-controls-progression.path"
-    )
-    progression_path.write_text(
-        "[Path]\nPathChanged=/task-evaluation-episode-compilations/results\n",
-        encoding="utf-8",
-    )
     storage_gc_service = unit_dir / "blueprint-control-plane-storage-gc.service"
     storage_gc_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-reclaim-storage\n",
@@ -781,9 +655,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         *team_remote_units,
         screening_service,
         screening_timer,
-        progression_service,
-        progression_timer,
-        progression_path,
         *additional_sources[10:],
         storage_gc_service,
         storage_gc_timer,
@@ -861,9 +732,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-team-scene-packet-remote.path",
         "blueprint-beta-policy-screening.service",
         "blueprint-beta-policy-screening.timer",
-        "blueprint-task-evaluation-configured-controls-progression.service",
-        "blueprint-task-evaluation-configured-controls-progression.timer",
-        "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-task-evaluation-scene-progression.service",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-launch-reconciler.service",
@@ -961,8 +829,6 @@ def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
 
 PAUSED_LANE_UNITS = (
     "blueprint-agent-run-dispatcher.timer",
-    "blueprint-task-evaluation-configured-controls-progression.timer",
-    "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-episode-compilation.timer",
 )
@@ -1014,7 +880,7 @@ def test_release_disarms_a_paused_lane_unit_idempotently(
     monkeypatch, case: str, before: tuple[str, str], returncode: int, final: tuple[str, str],
     preserve_controls: bool,
 ) -> None:
-    unit = "blueprint-task-evaluation-configured-controls-progression.timer"
+    unit = "blueprint-agent-run-dispatcher.timer"
     state = {"is-enabled": before[0], "is-active": before[1]}
     calls: list[tuple[str, ...]] = []
 
@@ -4227,7 +4093,6 @@ def test_installer_records_the_service_account_access_receipt(
     assert installed["service_account_access"]["status"] == "readable"
 
 
-
 def _protection_sources(tmp_path: Path, **overrides: object):
     """Typed protection sources laid out like the host, under ``tmp_path``."""
 
@@ -6175,69 +6040,13 @@ def test_controls_lane_with_a_cleared_robot_asset_does_not_block_the_release(tmp
     armed = {name: Path(previous[name]["path"]).read_bytes() for name in ("config", "catalog", "environment")}
     Path(kwargs["catalog"]["bindings"]["franka-droid"]["robot_asset_usd"]["path"]).unlink()
 
-    def unexpected(**_):
-        pytest.fail("terminal adoptions need an installed configuration")
-
-    monkeypatch.setattr(deploy, "_prepare_terminal_controls_adoptions", unexpected)
-    installation, adoptions = deploy._install_controls_autoprovision_lane(
-        bootstrap=config_root / "controls-autoprovision-bootstrap.json",
-        release_path=tmp_path, commit="a" * 40)
+    installation = deploy._install_controls_autoprovision_lane(
+        bootstrap=config_root / "controls-autoprovision-bootstrap.json")
     assert installation["status"] == "blocked"
     assert installation["blocker"] == "controls_autoprovision_asset_invalid"
     assert installation["configuration_written"] is False
-    assert adoptions == {"status": "skipped", "blocker": "controls_autoprovision_asset_invalid",
-                         "provider_mutation_performed": False}
     # Nothing new is armed: the last installed configuration is left exactly as it was.
     assert {name: Path(previous[name]["path"]).read_bytes() for name in armed} == armed
-
-
-def test_terminal_controls_lane_failure_is_recorded_but_a_live_worker_still_stops_the_release(tmp_path, monkeypatch):
-    _kwargs, config_root, _previous = _controls_lane_installed(tmp_path, monkeypatch)
-    bootstrap = config_root / "controls-autoprovision-bootstrap.json"
-    failure = ["deploy_terminal_controls_adoptions_failed:controls_autoprovision_asset_invalid:exit_1:stderr_sha256_x"]
-
-    def lane_failure(**_):
-        raise deploy.ControlPlaneDeployError(failure[0])
-
-    monkeypatch.setattr(deploy, "_prepare_terminal_controls_adoptions", lane_failure)
-    installation, adoptions = deploy._install_controls_autoprovision_lane(
-        bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)
-    assert installation["status"] == "installed"
-    assert adoptions == {"status": "blocked", "blocker": failure[0], "provider_mutation_performed": False}
-    for stops in ("deploy_terminal_controls_worker_not_quiescent",
-                  "deploy_terminal_controls_report_invalid",
-                  "deploy_terminal_controls_adoptions_failed:configured_controls_provisioning_registry_conflict:exit_1:x",
-                  "deploy_terminal_controls_adoptions_failed:unclassified:exit_1:x"):
-        failure[0] = stops
-        with pytest.raises(deploy.ControlPlaneDeployError):
-            deploy._install_controls_autoprovision_lane(bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)
-    failure[0] = "deploy_terminal_controls_report_unparseable"
-    assert deploy._install_controls_autoprovision_lane(
-        bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)[1]["status"] == "blocked"
-
-
-@pytest.mark.parametrize("field", ["provider_mutation_performed", "model_called", "placement_materialized"])
-def test_terminal_controls_report_of_a_provider_or_model_touch_stops_the_release(tmp_path, monkeypatch, field):
-    """A money fact in the helper's report is never swallowed by the lane step."""
-    _kwargs, config_root, _previous = _controls_lane_installed(tmp_path, monkeypatch)
-    commit = "a" * 40
-    unit = tmp_path / "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service"
-    unit.parent.mkdir(parents=True)
-    unit.write_bytes((REPO_ROOT / "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service").read_bytes())
-    report = {"status": "prepared", "source_commit": commit, "provider_mutation_performed": False,
-              "model_called": False, "placement_materialized": False, field: True}
-
-    def run(argv, **_kwargs):
-        if argv[:2] == ["systemctl", "show"]:
-            return SimpleNamespace(stdout="LoadState=loaded\nActiveState=inactive\nMainPID=0\n")
-        if argv[:2] == ["systemctl", "reset-failed"]:
-            return SimpleNamespace(stdout="")
-        return SimpleNamespace(stdout=json.dumps(report))
-
-    monkeypatch.setattr(deploy.subprocess, "run", run)
-    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_terminal_controls_report_invalid"):
-        deploy._install_controls_autoprovision_lane(
-            bootstrap=config_root / "controls-autoprovision-bootstrap.json", release_path=tmp_path, commit=commit)
 
 
 def test_blocked_lane_receipt_says_whether_the_installer_wrote_before_it_failed(tmp_path, monkeypatch):
@@ -6250,16 +6059,14 @@ def test_blocked_lane_receipt_says_whether_the_installer_wrote_before_it_failed(
         raise ValueError("controls_autoprovision_unmanaged_file")
 
     monkeypatch.setattr(installer, "install_controls_autoprovision", fails_after_writing_the_catalog)
-    installation, _ = deploy._install_controls_autoprovision_lane(
-        bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)
+    installation = deploy._install_controls_autoprovision_lane(bootstrap=bootstrap)
     assert installation["blocker"] == "controls_autoprovision_unmanaged_file"
     assert installation["configuration_written"] is True
     unreadable = tmp_path / "unreadable-bootstrap.json"
     unreadable.write_text("not json")
     monkeypatch.setattr(installer, "install_controls_autoprovision",
                         lambda *, bootstrap_path: (_ for _ in ()).throw(ValueError("controls_autoprovision_bootstrap_scope_invalid")))
-    installation, _ = deploy._install_controls_autoprovision_lane(
-        bootstrap=unreadable, release_path=tmp_path, commit="a" * 40)
+    installation = deploy._install_controls_autoprovision_lane(bootstrap=unreadable)
     assert installation["configuration_written"] == "not_determined"
 
 
@@ -6267,5 +6074,4 @@ def test_release_installs_the_controls_lane_through_the_non_blocking_step():
     source = (REPO_ROOT / "scripts" / "deploy_control_plane_commit.py").read_text()
     body = source[source.index("def deploy_control_plane_commit("):]
     assert "install_controls_autoprovision(" not in body
-    assert "_prepare_terminal_controls_adoptions(" not in body
     assert "_install_controls_autoprovision_lane(" in body

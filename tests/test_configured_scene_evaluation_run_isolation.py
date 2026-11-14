@@ -1,6 +1,5 @@
 """ADP-009D/day-21: distinct team requests reuse a scene without sharing a run."""
 from pathlib import Path
-import json
 
 import pytest
 
@@ -123,34 +122,3 @@ def test_handoff_uses_the_same_per_request_state_directory(tmp_path, monkeypatch
     for call in observed:
         assert call["state_root"].name == progression_directory("b" * 40, call["evaluation_run_id"])
         assert call["source_launch_id"] == "shared-source"
-
-
-def test_controller_forwards_request_scope_and_keeps_each_progression_separate(tmp_path, monkeypatch):
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
-    from blueprint_pipeline.configured_scene_run_identity import episode_namespace, progression_directory
-    from tests.test_task_evaluation_configured_controls_progression_worker import _source, _plan, _seal_plan
-    launches, _ = _source(tmp_path)
-    original = json.loads(_plan(tmp_path).read_text())
-    terminal, _, _ = worker._validate_source(launches / original["source_launch_id"])
-    observed = []
-    monkeypatch.setattr(worker, "stage_configured_controls_episode_preparation",
-                        lambda **kw: observed.append(kw) or {"status": "episode_preparation_queued"})
-    for run_id in ("one", "two"):
-        plan = json.loads(json.dumps(original))
-        plan["evaluation_run_id"] = run_id
-        namespace = episode_namespace(terminal["run_id"], plan["expected_production_commit"],
-                                      evaluation_run_id=run_id)
-        for phase in ("construction", "controls"):
-            plan["future_outputs"][phase]["expected_activation_id"] = f"{namespace}-episode-{phase}"
-        _seal_plan(plan)
-        path = tmp_path / f"plan-{run_id}.json"
-        path.write_text(json.dumps(plan))
-        worker.advance_configured_controls_plan(
-            plan_path=path, launch_state_root=launches, progression_root=tmp_path / "progressions",
-            preparation_queue_root=tmp_path / "preparations", activation_queue_root=tmp_path / "activations",
-            publisher_factory=lambda: object(),
-        )
-    assert [row["evaluation_run_id"] for row in observed] == ["one", "two"]
-    assert observed[0]["output_root"] != observed[1]["output_root"]
-    for row in observed:
-        assert row["output_root"].name == progression_directory(row["expected_production_commit"], row["evaluation_run_id"])

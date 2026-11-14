@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
+from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as worker
 from blueprint_pipeline.task_evaluation_configured_controls_plan import (
     TaskEvaluationConfiguredControlsPlanError,
     materialize_configured_controls_plan,
@@ -161,30 +161,6 @@ def test_materializes_exact_present_inputs_and_binds_future_identities(
     assert plan["provider_mutation_performed"] is False
 
 
-def test_destination_plan_inserts_probe_before_construction_and_controls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _qualifying_source(monkeypatch)
-    (tmp_path / "profiles").mkdir()
-    result = materialize_configured_controls_plan(
-        source_launch_id=SOURCE_LAUNCH_ID,
-        launch_state_root=tmp_path / "launch-runs",
-        expected_production_commit=TARGET_COMMIT,
-        submitted_by="configured-controls-materializer",
-        bindings=_destination_bindings(tmp_path),
-        plan_root=tmp_path / "plans",
-        profile_dir=tmp_path / "profiles",
-    )
-    plan = worker._plan(Path(result["plan_path"]))
-    assert plan["schema_version"].endswith(".v3")
-    assert set(plan["phases"]) == {"destination", "construction", "controls"}
-    assert "lineage_path" in plan["phases"]["destination"]
-    assert "lineage_path" not in plan["phases"]["construction"]
-    assert plan["future_outputs"]["destination"][
-        "expected_activation_id"
-    ].endswith("-probe-destination")
-
-
 def test_plan_destination_is_scoped_to_the_expected_production_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -246,31 +222,6 @@ def test_nonqualifying_source_refuses_before_plan_write(
             profile_dir=tmp_path / "profiles",
         )
     assert not (tmp_path / "plans").exists()
-
-
-def test_worker_refuses_present_input_changed_after_materialization(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _qualifying_source(monkeypatch)
-    bindings = _bindings(tmp_path)
-    (tmp_path / "profiles").mkdir()
-    result = materialize_configured_controls_plan(
-        source_launch_id=SOURCE_LAUNCH_ID,
-        launch_state_root=tmp_path / "launch-runs",
-        expected_production_commit=TARGET_COMMIT,
-        submitted_by="configured-controls-materializer",
-        bindings=bindings,
-        plan_root=tmp_path / "plans",
-        profile_dir=tmp_path / "profiles",
-    )
-    changed = Path(str(bindings["runtime_binding_path"]))
-    changed.chmod(0o640)
-    changed.write_text('{"schema_version":"changed"}\n', encoding="utf-8")
-    with pytest.raises(
-        worker.TaskEvaluationConfiguredControlsProgressionWorkerError,
-        match="configured_controls_worker_plan_inventory_invalid",
-    ):
-        worker._plan(Path(result["plan_path"]))
 
 
 def test_profile_directory_must_exist_before_plan_materialization(

@@ -470,9 +470,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-team-scene-packet-remote.path",
     "blueprint-beta-policy-screening.service",
     "blueprint-beta-policy-screening.timer",
-    "blueprint-task-evaluation-configured-controls-progression.service",
-    "blueprint-task-evaluation-configured-controls-progression.timer",
-    "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-task-evaluation-scene-progression.service",
     "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-launch-reconciler.service",
@@ -619,8 +616,6 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
 )
 
 CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
-    "blueprint-task-evaluation-configured-controls-progression.timer",
-    "blueprint-task-evaluation-configured-controls-progression.path",
 )
 #: Triggers of lanes paused by the owner's frame of 2026-11-12 (one site video
 #: in, one job packet out; keep the code, start no new work).  No website job
@@ -633,10 +628,6 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
 DEFAULT_PAUSED_LANE_DISARM_UNITS = (
     # Agent runs: founder stop since 2026-10-02. The door holds the dispatcher.
     "blueprint-agent-run-dispatcher.timer",
-    # Configured-controls progression: website jobs have no controls plan
-    # (task_evaluation_scene_progression writes their launch itself).
-    "blueprint-task-evaluation-configured-controls-progression.timer",
-    "blueprint-task-evaluation-configured-controls-progression.path",
     # Robot-team evaluation lanes, deleted by the owner (a deployment company
     # running its own software in our simulation is later). Their triggers stop
     # here before the WebApp routes they call are removed.
@@ -670,6 +661,8 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-team-evaluation-runner.path",
+    "blueprint-task-evaluation-configured-controls-progression.path",
+    "blueprint-task-evaluation-configured-controls-progression.timer",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the
@@ -3957,116 +3950,6 @@ def _draining_service_units(
         raise
 
 
-def _require_terminal_controls_quiescence(*, wait_seconds: float = 0) -> None:
-    """With triggers stopped, allow an existing materializer to finish naturally."""
-    deadline = time.monotonic() + wait_seconds
-    for suffix in ('path', 'timer', 'service'):
-        unit = 'blueprint-task-evaluation-configured-controls-progression.' + suffix
-        while True:
-            observed = subprocess.run(['systemctl', 'show', unit, '-p', 'LoadState', '-p', 'ActiveState', '-p', 'MainPID'],
-                                      check=True, capture_output=True, text=True, timeout=10)
-            fields = dict(line.split('=', 1) for line in observed.stdout.splitlines() if '=' in line)
-            if (fields.get('LoadState') == 'loaded' and fields.get('ActiveState') in {'inactive', 'failed'}
-                    and fields.get('MainPID', '0') == '0'):
-                break
-            remaining = deadline - time.monotonic()
-            if suffix != 'service' or fields.get('LoadState') != 'loaded' or remaining <= 0:
-                raise ControlPlaneDeployError('deploy_terminal_controls_worker_not_quiescent')
-            time.sleep(min(2, remaining))
-        if fields['ActiveState'] == 'failed':
-            subprocess.run(['systemctl', 'reset-failed', unit], check=True, capture_output=True, text=True, timeout=10)
-
-
-def _terminal_controls_artifact_store_env(release: Path) -> list[str]:
-    """Give the deploy helper the same scoped artifact store as its worker."""
-    unit = release / 'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
-    required = (
-        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE',
-        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE',
-        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE',
-        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE',
-        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE',
-        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET',
-    )
-    values: dict[str, str] = {}
-    for line in unit.read_text().splitlines():
-        if not line.startswith('Environment=') or '=' not in line[len('Environment='):]:
-            continue
-        name, value = line[len('Environment='):].split('=', 1)
-        if name in required:
-            if name in values or not value or (name.endswith('_FILE') and
-                    not value.startswith('/etc/blueprint/provider-secrets/')):
-                raise ControlPlaneDeployError('deploy_terminal_controls_artifact_store_env_invalid')
-            values[name] = value
-    if set(values) != set(required):
-        raise ControlPlaneDeployError('deploy_terminal_controls_artifact_store_env_missing')
-    return [f'--setenv={name}={values[name]}' for name in required]
-
-
-def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: str,
-                                        config_path: str | Path) -> dict[str, Any]:
-    """Use the registry's required quiescence before restoring its worker.
-
-    A worker cannot supersede its own live registration: doing this after the
-    timers restart either refuses or races an old materialization. This step
-    runs only under the deploy's provider locks and stopped automation triggers.
-    """
-    _require_terminal_controls_quiescence()
-    release = Path(release_path)
-    argv = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
-        '--property=Type=exec', '--property=User=blueprint', '--property=Group=blueprint',
-        '--property=EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env',
-        '--property=EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env',
-        *_terminal_controls_artifact_store_env(release),
-        '/usr/bin/env', f'PYTHONPATH={release / "src"}', 'PYTHONDONTWRITEBYTECODE=1',
-        'GIT_CONFIG_COUNT=1', 'GIT_CONFIG_KEY_0=safe.directory', f'GIT_CONFIG_VALUE_0={release}',
-        sys.executable, '-m', 'blueprint_pipeline.task_evaluation_terminal_controls_deploy',
-        '--config', str(config_path), '--expected-commit', commit]
-    # Retained placement validation exceeded ten minutes on the 4-vCPU host.
-    # Keep the deploy locks and quiescence while the existing worker finishes.
-    try:
-        result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=1800)
-    except subprocess.CalledProcessError as exc:
-        # The helper's stdout/stderr are captured by systemd-run, not journald.
-        # Surface only a bounded typed error; never echo a child traceback or
-        # its environment into an operator-door deployment receipt.
-        output = (exc.stderr or "") + "\n" + (exc.stdout or "")
-        codes = re.findall(r"(?:[A-Za-z0-9_.]+(?:Error|Exception)):\s*([a-z][a-z0-9_]+)", output)
-        code = codes[-1] if codes else "unclassified"
-        digest = hashlib.sha256(output.encode("utf-8", errors="replace")).hexdigest()
-        raise ControlPlaneDeployError(
-            f"deploy_terminal_controls_adoptions_failed:{code}:exit_{exc.returncode}:stderr_sha256_{digest}"
-        ) from None
-    try:
-        report = json.loads(result.stdout)
-    except ValueError as exc:
-        raise ControlPlaneDeployError('deploy_terminal_controls_report_unparseable') from exc
-    if (report.get('status') != 'prepared' or report.get('source_commit') != commit
-            or report.get('provider_mutation_performed') is not False
-            or report.get('model_called') is not False or report.get('placement_materialized') is not False):
-        raise ControlPlaneDeployError('deploy_terminal_controls_report_invalid')
-    return report
-
-
-#: Failures of the terminal-controls helper that come from the lane's own
-#: retained inputs or configuration (the asset, the catalog, the bootstrap's
-#: contents), and a report that cannot be parsed. A report that names a
-#: provider mutation, a model call or a materialized placement, a non-quiescent
-#: worker, and any other child failure still stop the release.
-_TERMINAL_CONTROLS_LANE_CODES = re.compile(
-    r"(controls_autoprovision_[a-z0-9_]+|configured_controls_autostart_artifact_invalid)"
-)
-
-
-def _terminal_controls_lane_failure(message: str) -> bool:
-    if message == "deploy_terminal_controls_report_unparseable":
-        return True
-    prefix = "deploy_terminal_controls_adoptions_failed:"
-    if not message.startswith(prefix):
-        return False
-    return _TERMINAL_CONTROLS_LANE_CODES.fullmatch(message[len(prefix):].split(":", 1)[0]) is not None
-
-
 def _controls_lane_files(bootstrap: Path) -> dict[str, str | None] | None:
     """Digests of the files the installer writes, or None when they cannot be named."""
     from blueprint_pipeline.task_evaluation_controls_autoprovision_installation import (
@@ -4084,8 +3967,7 @@ def _controls_lane_files(bootstrap: Path) -> dict[str, str | None] | None:
         return None
 
 
-def _install_controls_autoprovision_lane(*, bootstrap: Path, release_path: str | Path,
-                                         commit: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def _install_controls_autoprovision_lane(*, bootstrap: Path) -> dict[str, Any]:
     """Install the controls lane; its own inputs never block the release.
 
     The installer validates every retained robot asset before it writes
@@ -4101,7 +3983,7 @@ def _install_controls_autoprovision_lane(*, bootstrap: Path, release_path: str |
 
     files_before = _controls_lane_files(bootstrap)
     try:
-        installation = install_controls_autoprovision(bootstrap_path=bootstrap)
+        return install_controls_autoprovision(bootstrap_path=bootstrap)
     except (ValueError, OSError, KeyError, TypeError) as exc:
         code = str(exc).split(":", 1)[0] if isinstance(exc, ValueError) else ""
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,159}", code):
@@ -4111,18 +3993,8 @@ def _install_controls_autoprovision_lane(*, bootstrap: Path, release_path: str |
             written: bool | str = "not_determined"
         else:
             written = files_before != files_after
-        blocked = {"status": "blocked", "blocker": code, "bootstrap_path": str(bootstrap),
-                   "configuration_written": written, "provider_mutation_performed": False}
-        return blocked, {"status": "skipped", "blocker": code, "provider_mutation_performed": False}
-    try:
-        adoptions = _prepare_terminal_controls_adoptions(
-            release_path=release_path, commit=commit, config_path=installation["config"]["path"],
-        )
-    except ControlPlaneDeployError as exc:
-        if not _terminal_controls_lane_failure(str(exc)):
-            raise
-        adoptions = {"status": "blocked", "blocker": str(exc), "provider_mutation_performed": False}
-    return installation, adoptions
+        return {"status": "blocked", "blocker": code, "bootstrap_path": str(bootstrap),
+                "configuration_written": written, "provider_mutation_performed": False}
 
 
 def _install_intake_runtime_identity_drop_in(
@@ -5694,8 +5566,6 @@ def deploy_control_plane_commit(
             )
         )
         pause_clock["quiesced"] = time.monotonic()
-        if Path(controls_autoprovision_bootstrap_file).expanduser().exists():
-            _require_terminal_controls_quiescence(wait_seconds=600)
         _mark_stage("triggers_paused")
         installed_provenance = _install_release_provenance(
             payload=provenance_payload,
@@ -5804,10 +5674,8 @@ def deploy_control_plane_commit(
             controls_autoprovision_bootstrap_file
         ).expanduser()
         if controls_autoprovision_bootstrap.exists():
-            (controls_autoprovision_installation,
-             terminal_controls_adoptions) = _install_controls_autoprovision_lane(
+            controls_autoprovision_installation = _install_controls_autoprovision_lane(
                 bootstrap=controls_autoprovision_bootstrap,
-                release_path=staged_release['release_path'], commit=commit,
             )
         else:
             controls_autoprovision_installation = {
@@ -5815,7 +5683,6 @@ def deploy_control_plane_commit(
                 "bootstrap_path": str(controls_autoprovision_bootstrap),
                 "provider_mutation_performed": False,
             }
-            terminal_controls_adoptions = {'status': 'not_configured', 'provider_mutation_performed': False}
         # Half the deploys of 2026-10-30 spent ~5 minutes in the stage around
         # this and half ~10 seconds; mark it so the next receipt says which step.
         _mark_stage("controls_autoprovision_installed")
@@ -5987,7 +5854,6 @@ def deploy_control_plane_commit(
         "scene_configuration_environment": scene_configuration_environment,
         "scene_preparation_installation": scene_preparation_installation,
         "controls_autoprovision_installation": controls_autoprovision_installation,
-        "terminal_controls_adoptions": terminal_controls_adoptions,
         # Every slot actually held, not the one base path the caller named.
         # The lock is an N-slot semaphore, so recording the input would
         # under-report what this deploy was exclusive with -- and a receipt

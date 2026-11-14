@@ -12,7 +12,7 @@ from blueprint_pipeline.task_evaluation_launch_activation_contract import valida
 
 
 def source_closeout(tmp_path):
-    from tests.test_task_evaluation_configured_controls_progression_worker import _source
+    from tests.test_scene_preparation_completion import _source
     root, _ = _source(tmp_path / 'source-closure')
     old = root / 'scene-839873-qualifying'
     target = tmp_path / 'launch-runs' / rehearsal.SOURCE_LAUNCH_ID
@@ -155,43 +155,6 @@ def test_strict_task_accepts_exact_circular_target_without_requiring_container_o
             _require_strict_owner_success_contract(task_spec=spec, contract=contract)
     else:
         _require_strict_owner_success_contract(task_spec=spec, contract=contract)
-
-
-@pytest.mark.parametrize("compiled", [False, True])
-def test_controller_skips_scripted_construction_after_cpu_compilation(tmp_path, monkeypatch, compiled):
-    from tests import test_task_evaluation_configured_controls_progression_worker as fixture
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
-    from blueprint_pipeline import task_evaluation_scene_control_omission as omission
-    launch_root, _ = fixture._source(tmp_path)
-    plan_path = fixture._plan(tmp_path)
-    plan = json.loads(plan_path.read_bytes())
-    state = tmp_path / 'progressions' / plan['source_launch_id'] / ('franka-controls-' + plan['expected_production_commit'][:12])
-    fixture._write(state / 'configured_controls_progression.v1.json', fixture._sealed_progression(
-        'episode_preparation_queued', episode_preparation_request={'preparation_id': 'prep'}))
-    fixture._write(tmp_path / 'preparations/identities/prep.json', {'identity': 'prep'})
-    preparation = {'run_id': 'run', 'episode_compilation_id': 'compile', 'episode_compilation_queue_envelope_digest': 'sha256:' + 'b' * 64,
-                   'status': 'queued_for_production_episode_compilation'}
-    fixture._write(tmp_path / 'preparations/results/prep-a.json', preparation)
-    if compiled:
-        result = {'schema_version': 'task_evaluation_episode_compilation_result.v1',
-                  'status': 'compiled_for_production_launch', 'run_id': 'run', 'compilation_id': 'compile',
-                  'source_commit': plan['expected_production_commit'], 'blockers': [],
-                  'provider_mutation_performed': False, 'paid_execution_requested': False}
-        result['result_digest'] = canonical_digest(result, digest_field='result_digest')
-        fixture._write(tmp_path / 'compilations/results' / ('compile-' + 'b' * 64 + '.json'), result)
-    monkeypatch.setattr(omission, 'load_for_run', lambda **_: {'directive_digest': 'sha256:' + 'c' * 64})
-    def no_launch(**_):
-        pytest.fail('scripted construction must not be activated')
-    monkeypatch.setattr(worker, 'stage_configured_controls_activation', no_launch)
-    result = worker.advance_configured_controls_plan(plan_path=plan_path, launch_state_root=launch_root,
-        progression_root=tmp_path / 'progressions', preparation_queue_root=tmp_path / 'preparations',
-        activation_queue_root=tmp_path / 'activations', episode_compilation_queue_root=tmp_path / 'compilations',
-        publisher_factory=lambda: object())
-    assert result['status'] == ('controls_omitted_for_diagnostic_policy' if compiled else 'awaiting_construction_compilation')
-    if compiled:
-        assert result['construction_rehearsal_performed'] is False
-        assert result['qualified_comparison_permitted'] is False
-    assert not (state / 'construction_activation_progression.json').exists()
 
 
 def test_pause_binds_selected_team_request_not_robot_free_site_intent(tmp_path, monkeypatch):

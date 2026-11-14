@@ -47,7 +47,6 @@ _KNOWN_UNITS = {
     'blueprint-task-evaluation-launch-dispatcher.service': 'task_evaluation_launch_dispatcher',
     'blueprint-task-evaluation-launch-reconciler.service': 'task_evaluation_launch_reconciler',
     'blueprint-task-evaluation-terminal-resource-release.service': 'task_evaluation_terminal_resource_release',
-    'blueprint-task-evaluation-configured-controls-progression.service': 'task_evaluation_configured_controls_progression_worker',
 }
 _UNIT_PROPERTIES = frozenset(('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID',
                              'ControlPID', 'Job', 'NeedDaemonReload', 'FragmentPath',
@@ -1126,7 +1125,6 @@ _WORKERS = frozenset('blueprint_pipeline.' + name for name in (
     'task_evaluation_launch_dispatcher',
     'task_evaluation_launch_reconciler',
     'task_evaluation_terminal_resource_release',
-    'task_evaluation_configured_controls_progression_worker',
 ))
 
 

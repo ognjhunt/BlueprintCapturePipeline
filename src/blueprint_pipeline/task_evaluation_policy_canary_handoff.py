@@ -789,7 +789,7 @@ def advance_policy_canary_handoff(
 
     publisher = publisher_factory()
     if direct:
-        from .task_evaluation_configured_controls_progression_worker import _validate_source
+        from .task_evaluation_configured_controls_source_evidence import _validate_source
         _, source_receipt, _ = _validate_source(launches / source_launch_id)
         if (source_receipt.get("launch_id") != source_launch_id
                 or source_receipt.get("launch_profile_digest") != _base_profile.get("profile_digest")):

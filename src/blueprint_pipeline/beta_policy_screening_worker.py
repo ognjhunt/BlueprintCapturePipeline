@@ -121,7 +121,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_screening_team import catalog_for_profile
     from .rigid_robot_free_probe_runner import _running_release, source_commit
     from .scene_run_cold_storage import COLD_STORAGE, cold_storage_hold, in_cold_storage, require_on_disk
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_configured_controls_source_evidence import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
     from .team_scene_packet_worker import (
         _read_json,
