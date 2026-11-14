@@ -284,7 +284,6 @@ blueprint-run-simulation-automation = "blueprint_pipeline.simulation_automation:
 blueprint-run-site-eval-director = "blueprint_pipeline.site_eval_director:main"
 blueprint-run-robot-eval-job = "blueprint_pipeline.robot_eval_job_orchestrator:main"
 blueprint-run-robot-eval-worker = "blueprint_pipeline.robot_eval_worker:main"
-blueprint-run-policy-autoresearch-local-evaluator = "blueprint_pipeline.policy_autoresearch_local_evaluator:main"
 blueprint-run-wam-fixture-evaluator = "blueprint_pipeline.wam_fixture_evaluator:main"
 blueprint-run-roboworld-evaluator-study = "blueprint_pipeline.roboworld_evaluator:main"
 blueprint-prepare-robot-eval-provider-inputs = "blueprint_pipeline.robot_eval_provider_input_setup:main"

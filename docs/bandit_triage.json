@@ -37,42 +37,6 @@
       "test_id": "B310"
     },
     {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/oscar_runtime_asset_contract.py",
-      "fingerprint": "71395dd4ddc5bee0e2418ce1258f3aee4fc16ce4df5475b550d7a4db03c21c33",
-      "line_number": 636,
-      "owner": "@ognjhunt",
-      "reason": "The Hugging Face snapshot call is pinned to the immutable REASON1_REVISION constant and its resolved cache path is verified against that revision before use. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B615"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/oscar_runtime_asset_contract.py",
-      "fingerprint": "bfac83107ac2983cce71d11d2e04b622b760a887b6bf1b2ae6f2c7ffb12b178a",
-      "line_number": 646,
-      "owner": "@ognjhunt",
-      "reason": "The Hugging Face file download is pinned to the immutable WAN_VAE_REVISION constant and the resolved cache path is verified against the contracted asset before use. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B615"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/oscar_runtime_asset_contract.py",
-      "fingerprint": "79a711c25e034cf293570d07d0cb32bef6779957ebeb12d82a09611f79f2bb3c",
-      "line_number": 794,
-      "owner": "@ognjhunt",
-      "reason": "The processor probe loads only the previously verified local immutable snapshot path with local_files_only enabled, so this call performs no unpinned remote model fetch. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B615"
-    },
-    {
       "disposition": "accepted_risk",
       "expires_on": "2026-12-06",
       "filename": "src/blueprint_pipeline/isaac_particlefield_render_job.py",

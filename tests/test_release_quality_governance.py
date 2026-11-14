@@ -1502,7 +1502,6 @@ def test_outbound_http_call_sites_route_through_the_safe_boundary() -> None:
     root = Path(__file__).resolve().parents[1]
     rewired = (
         "src/blueprint_pipeline/gpu_render_providers.py",
-        "src/blueprint_pipeline/isaac_persistent_task_completion_client.py",
         "src/blueprint_pipeline/wam_strict_action_consistency_scorer_client.py",
         "scripts/run_isaac_g1_kitchen_parity_eval.py",
     )
