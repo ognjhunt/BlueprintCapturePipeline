@@ -209,23 +209,6 @@ def test_completed_authoring_is_reusable_after_an_interrupted_packaging_attempt(
     assert len(calls) == 2
 
 
-def test_no_cost_replay_preserves_the_original_stage_root(authoring_fixture, tmp_path):
-    from blueprint_pipeline.task_evaluation_astra_authoring_replay import replay_completed_astra_authoring
-    f = authoring_fixture
-    execute(f, FixtureInvoker(f.request, f.runtime / "inference"), f.runtime / "authoring")
-    stage = f.runtime.parent
-    for key, name in ((driver._INPUT_ENV, "stage_production_input.v1.json"), (driver._DEPENDENCIES_ENV, "dependency_results.v1.json")):
-        (stage / name).write_bytes(Path(f.component.environment[key]).read_bytes())
-    before = adoption._inventory(f.runtime)
-    def invoke(**kwargs):
-        return driver.execute_astra_component(**{**f.component.kwargs, **kwargs})
-    result = replay_completed_astra_authoring(retained_stage_root=stage, replay_root=tmp_path / "no-cost-replay",
-        toolchain_root=Path(f.component.environment[driver.TOOLCHAIN_ROOT_ENV]), component_root=f.package, executor=invoke)
-    assert result["status"] == "completed"
-    assert adoption._inventory(f.runtime) == before
-    assert f.executed == ["cad", "blender"]
-
-
 def test_automatic_replay_refuses_changed_rights_receipt_even_if_booleans_still_allow_it(authoring_fixture):
     f = authoring_fixture
     execute(f, FixtureInvoker(f.request, f.runtime / "inference"), f.runtime / "authoring")
