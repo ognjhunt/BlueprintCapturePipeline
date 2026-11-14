@@ -130,8 +130,7 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
                       attempt_dir: Path) -> dict[str, Any]:
     """Build and static-preflight a sealed provider bundle; never allocate."""
     if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
-        from .beta_policy_screening_g1_launch import prepare_candidate as prepare_g1
-        return prepare_g1(plan=plan, candidate=candidate, attempt_dir=attempt_dir)
+        raise ValueError("g1_beta_screening_lane_removed")  # refused before any bundle or allocator request
     from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .native_task_arena_policy_canary_bundle import (
         build_policy_canary_session_bundle, preflight_sealed_policy_canary_bundle,
@@ -365,8 +364,7 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         _check_quote(plan, candidate)
         execution = candidate.get("execution_spec") or {}
         if execution.get("backend") == "native_g1.v1":
-            from .beta_policy_screening_g1_launch import reopen_candidate
-            reopen_candidate(plan, candidate)
+            raise ValueError("g1_beta_screening_lane_removed")
         if execution.get("backend") == "task_family_native.v1":
             from .beta_policy_screening_family import reopen_family_planning_inputs, validate_family_candidate_catalog
             scene = _read(_bound_path(plan["scene_inputs"]))
@@ -623,17 +621,10 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
                          "provider_zero_verified": True, "no_allocation_proven": False,
                          "applicability": "historical_only", "blockers": [stopped["reason"]]})
         if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
-            try:
-                from .beta_policy_screening_g1_launch import join_result
-                joined = join_result(plan=plan, candidate=candidate, adapter=adapter, prepared=prepared,
-                                     receipt=absence, adapter_path=result_path)
-            except (OSError, ValueError, KeyError, TypeError):
-                return kept({"status": "blocked", "provider_allocation_performed": True,
-                             "provider_zero_verified": True, "no_allocation_proven": False,
-                             "blockers": _unscored_blockers(adapter, root, "g1_beta_native_result_missing_or_invalid")})
-            return kept({"status": "completed", "provider_allocation_performed": True,
+            # The G1 lane is removed: a session settled before that stays unscored, its spend already proven zero.
+            return kept({"status": "blocked", "provider_allocation_performed": True,
                          "provider_zero_verified": True, "no_allocation_proven": False,
-                         "result": joined, "blockers": joined.get("blockers") or []})
+                         "blockers": _unscored_blockers(adapter, root, "g1_beta_native_result_missing_or_invalid")})
         try:
             native_path = Path(str(adapter.get("native_control_result_path") or ""))
             native = _read(native_path)

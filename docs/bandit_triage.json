@@ -337,18 +337,6 @@
       "test_id": "B104"
     },
     {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_artifact_runtime.py",
-      "fingerprint": "12613b5d71060faf749e456223c1b1d2c83f2d2f732b109b499eb8932c8ffd13",
-      "line_number": 154,
-      "owner": "@ognjhunt",
-      "reason": "Literal /tmp paths are inside bwrap --tmpfs /tmp with --unshare-all, --clearenv, UID/GID 65534 and all capabilities dropped. The artifact is bound by SHA256, held read-only descriptors and bounded link-free unpacking; only minimal runtime paths are read-only bound and GPU access is explicit character-device binding. HOME/XDG are set in the private tmpfs after clearenv; the host wrapper environment does not reach artifact execution. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
       "disposition": "mitigated_by_control",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/task_evaluation_result_artifact_store.py",
@@ -368,18 +356,6 @@
       "line_number": 169,
       "owner": "@ognjhunt",
       "reason": "Both literal /tmp uses construct namespace-local paths: bwrap installs a fresh --tmpfs /tmp and unshares namespaces, or the privileged fallback unshares pid/ipc/uts/net then drops credentials/groups and sets no-new-privileges. System/admitted roots are read-only, only the admitted attempt root is writable, and environment/credentials are cleared. These strings do not create predictable files in host /tmp. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_artifact_runtime.py",
-      "fingerprint": "47ed176bc7b207df2106b641c505ae3434d067040dfea7f1501172b7cc9c95c9",
-      "line_number": 167,
-      "owner": "@ognjhunt",
-      "reason": "Literal /tmp paths are inside bwrap --tmpfs /tmp with --unshare-all, --clearenv, UID/GID 65534 and all capabilities dropped. The artifact is bound by SHA256, held read-only descriptors and bounded link-free unpacking; only minimal runtime paths are read-only bound and GPU access is explicit character-device binding. HOME/XDG are set in the private tmpfs after clearenv; the host wrapper environment does not reach artifact execution. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B108"
@@ -443,18 +419,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B103"
-    },
-    {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_vm_system_installation.py",
-      "fingerprint": "71b84abafc1108b78711b66c2d0f95a8995ed844d624391710593f11e7c63d0e",
-      "line_number": 105,
-      "owner": "@ognjhunt",
-      "reason": "Offline exact-host installation probes use bwrap --tmpfs /tmp with all namespaces unshared, cleared environment, UID/GID 65534 and a read-only held archive fd. The fixed Python -I -B -S probe and observed namespace checks require expected UID/GID, zero effective capabilities and only loopback interfaces. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
     },
     {
       "disposition": "mitigated_by_control",
@@ -543,18 +507,6 @@
     {
       "disposition": "mitigated_by_control",
       "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_artifact_runtime.py",
-      "fingerprint": "8b9145e06fb643331c38515e0b3493082cdc3d9300a5ee0758a7e0b43b6259ef",
-      "line_number": 291,
-      "owner": "@ognjhunt",
-      "reason": "The literals HOME=/tmp and XDG_CACHE_HOME=/tmp belong to the host launcher environment for the checked canonical bwrap command, not an already active namespace. Only fixed PATH/HOME/XDG_CACHE_HOME/LANG values are passed; inherited credentials and Python override variables are excluded. That canonical command then uses --unshare-all, --clearenv and a private tmpfs for HOME/XDG, fixed UID/GID65534, dropped capabilities, admitted network configuration and held read-only artifact descriptor and explicit revalidated character-device binding when GPU is admitted. SHA256/link-free bounded artifact admission precedes execution. The control excludes arbitrary direct commands. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/control_plane_disk_footprints.py",
       "fingerprint": "906cfa012cd535bd973a68242f3433444e8677b84cb0c60d6c3c0322e7328e15",
       "line_number": 122,
@@ -563,30 +515,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B103"
-    },
-    {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_artifact_runtime.py",
-      "fingerprint": "9d24c5c7d20d08ed095a07278e6d5778ab3d9f60921836a61d65d3bad2816d1f",
-      "line_number": 168,
-      "owner": "@ognjhunt",
-      "reason": "Literal /tmp paths are inside bwrap --tmpfs /tmp with --unshare-all, --clearenv, UID/GID 65534 and all capabilities dropped. The artifact is bound by SHA256, held read-only descriptors and bounded link-free unpacking; only minimal runtime paths are read-only bound and GPU access is explicit character-device binding. HOME/XDG are set in the private tmpfs after clearenv; the host wrapper environment does not reach artifact execution. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_artifact_runtime.py",
-      "fingerprint": "a242cabbbed535735b91d5474d5854b9753014c16f02047ca1e24159ffa9c6ed",
-      "line_number": 292,
-      "owner": "@ognjhunt",
-      "reason": "The literals HOME=/tmp and XDG_CACHE_HOME=/tmp belong to the host launcher environment for the checked canonical bwrap command, not an already active namespace. Only fixed PATH/HOME/XDG_CACHE_HOME/LANG values are passed; inherited credentials and Python override variables are excluded. That canonical command then uses --unshare-all, --clearenv and a private tmpfs for HOME/XDG, fixed UID/GID65534, dropped capabilities, admitted network configuration and held read-only artifact descriptor and explicit revalidated character-device binding when GPU is admitted. SHA256/link-free bounded artifact admission precedes execution. The control excludes arbitrary direct commands. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
     },
     {
       "disposition": "mitigated_by_control",
@@ -623,30 +551,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B103"
-    },
-    {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_container_runtime.py",
-      "fingerprint": "bc5069f20c029fe45b202b21287ab3af03617c51e616490fcda35b7b8c7e495d",
-      "line_number": 53,
-      "owner": "@ognjhunt",
-      "reason": "The /tmp string is a private Docker tmpfs of 1024 MiB with nosuid,nodev, inside a read-only root and network-none container with all capabilities dropped, UID 65534, bounded PIDs/CPU/memory and an exact already-local pinned image. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_vm_host.py",
-      "fingerprint": "d14acd4adaf1a00e4887cb553a12f56af1524d5437080abbda7b9f158a8a3101",
-      "line_number": 229,
-      "owner": "@ognjhunt",
-      "reason": "TemporaryDirectory creates unique mode-0700 scratch with owned lifecycle cleanup. Relay _private_path validates canonical private owner/mode ancestry, refuses an existing socket, binds mode-0600 config/socket and compares socket identity before unlink so a replacement is preserved. Relay authority uses HMAC challenge/profile bindings, refuses replay, bounds frame/time and tears down watchdog/container; the relay mount is narrowly read-only. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
     },
     {
       "disposition": "mitigated_by_control",
@@ -707,18 +611,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B103"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/native_g1_team_archive_gpu.py",
-      "fingerprint": "f07b0549c92887625e75f3f62a1cbf30e26f7e37b0106848022a4ce58808d444",
-      "line_number": 198,
-      "owner": "@ognjhunt",
-      "reason": "The host environment is restricted to trusted bwrap launcher PATH/HOME/XDG/LANG, without inherited credentials or Python path overrides. Canonical constructor clears that environment and sets HOME/XDG inside a private tmpfs, with fixed UID/GID/capability/network/device/fd bindings checked by the GPU probe. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
     },
     {
       "disposition": "mitigated_by_control",

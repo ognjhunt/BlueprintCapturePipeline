@@ -251,29 +251,6 @@ def test_a_same_commit_re_plan_never_takes_a_money_stopped_row_with_it(tmp_path,
         "candidate-000", "candidate-001"]
 
 
-def test_the_g1_lane_names_why_its_paid_admission_refused(tmp_path, monkeypatch):
-    """The G1 allocator recorded only that the admission raised, so a stale report and a reached
-    limit read the same."""
-    from blueprint_pipeline import native_g1_beta_paid as paid
-    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
-    from tests.test_native_g1_beta_paid import dispatch, setup
-
-    args, _, _, identity, _, _ = setup(tmp_path, monkeypatch)
-
-    def refuse(*_args, **_kwargs):
-        raise PaidResourceAdmissionBlocked([REPORT_STALE])
-
-    monkeypatch.setattr(paid, "require_paid_resource_admission", refuse)
-    monkeypatch.setattr(paid, "run_arena_native_control_vast", lambda **_: pytest.fail("refused admission spent"))
-    result = dispatch(args, identity)
-    assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
-    assert result["blockers"] == [coordinator.G1_ADMISSION_WRAPPER, REPORT_STALE]
-    assert coordinator._money_evidence_stale(result) == "account_monthly_spend_report_unreadable"
-
-
-# --- a campaign that cannot move says so; its reservation stays open ------------------------------
-
-
 def test_a_row_unresolved_past_the_bound_is_held_by_name_and_its_reservation_stays_open(tmp_path, monkeypatch):
     coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
     _pass(tmp_path, LOST)

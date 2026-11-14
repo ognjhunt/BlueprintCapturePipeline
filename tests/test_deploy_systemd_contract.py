@@ -394,7 +394,6 @@ HOST_SAFETY_GUARD_UNITS = (
     "blueprint-task-evaluation-launch-supervisor.service",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-terminal-resource-release.service",
-    "blueprint-native-g1-team-campaign-settlement.service",
 )
 #: Host memory (8.3 GB, no swap). Units with a new cap that binds below the host, so a runaway is killed in
 #: its own unit, never host-wide (the kernel's OOM killer took the whole host's view five times on
@@ -449,7 +448,6 @@ HOST_MEMORY_KEPT = {
     "blueprint-beta-policy-screening.service": ("-200", "5.5G"),
     "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
     "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "5.5G"),
-    "blueprint-native-g1-team-campaign-dispatcher.service": ("-200", "5.5G"),
     "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "5.5G"),
     "blueprint-existing-policy-canary-continuation.service": ("-200", "5.5G"),
     "blueprint-agent-run-dispatcher.service": ("-200", "5.5G"),
@@ -543,7 +541,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-existing-policy-canary-continuation.service",
-    "blueprint-native-g1-team-campaign-dispatcher.service",
     "blueprint-team-evaluation-runner.service",
     "blueprint-agent-run-dispatcher.service",
     "blueprint-task-evaluation-episode-compilation.service",
@@ -564,7 +561,6 @@ OUTSIDE_BATCH_SLICE = {
     "blueprint-gpu-spend-guard.service": "money safety: the spend guard and orphan reaper",
     "blueprint-provider-billing-reconciler.service": "money safety: the billing feed the guard reads",
     "blueprint-scene-project-spend-refresh.service": "money safety: the scene spend ledger's refresh",
-    "blueprint-native-g1-team-campaign-settlement.service": "money safety: settles campaign spend",
     "blueprint-task-evaluation-launch-reconciler.service": "money safety: the provider-zero proof",
     "blueprint-task-evaluation-launch-supervisor.service": "money safety: launch supervision",
     "blueprint-task-evaluation-terminal-resource-release.service": "money safety: releases paid resources",
@@ -616,7 +612,6 @@ KILL_MODE_PROCESS_UNITS = (
     "blueprint-agent-run-dispatcher.service",
     "blueprint-beta-policy-screening.service",
     "blueprint-embodiment-preparation.service",
-    "blueprint-native-g1-team-campaign-dispatcher.service",
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-task-evaluation-launch-dispatcher.service",

@@ -104,10 +104,13 @@ def gpu_infeasible_blockers(runtime: Any, *, max_compute_cap: Any = None) -> lis
     return [GPU_MEMORY_FLOOR_UNRENTABLE] if parts == [] else []
 
 
+G1_LANE_REMOVED = "g1_beta_screening_lane_removed"
+
+
 def candidate_gpu_blockers(candidate: Mapping[str, Any], *, max_compute_cap: Any = None) -> list[str]:
     """``gpu_infeasible_blockers`` for a catalog candidate as screening planning applies it.
 
-    G1's candidates are measured against their own lane's filters; a disabled candidate keeps its own
+    G1's candidates are never rented: their lane is removed. A disabled candidate keeps its own
     reason and is not measured here. Planning (``beta_policy_screening_capabilities``) and the website robot fit precheck
     (``website_robot_fit_precheck``) both read this one rule. Planning takes the ceiling of the process
     it runs in; the precheck, which runs in another, passes ``CEILING_LIFTED``: a floor no part meets
@@ -118,10 +121,7 @@ def candidate_gpu_blockers(candidate: Mapping[str, Any], *, max_compute_cap: Any
     if candidate["eligibility"]["enabled"] is not True:
         return []
     if candidate["candidate_id"] in G1_LANE_CANDIDATES:
-        from .native_g1_beta_session import offer_hardware
-
-        parts = rentable_parts(None, max_compute_cap=max_compute_cap, lane=offer_hardware())
-        return [GPU_MEMORY_FLOOR_UNRENTABLE] if parts == [] else []
+        return [G1_LANE_REMOVED]
     return gpu_infeasible_blockers(candidate["runtime"], max_compute_cap=max_compute_cap)
 
 

@@ -1567,7 +1567,7 @@ def _terminal_index_findings(units: Mapping[str, dict[str, Any]]) -> list[dict[s
 PAID_ALLOCATION_UNITS: tuple[str, ...] = tuple(f"blueprint-{name}.service" for name in (
     "task-evaluation-launch-dispatcher", "task-evaluation-policy-canary-dispatcher",
     "task-evaluation-sam31-preparation-execution", "rigid-robot-free-probe-runner", "beta-policy-screening",
-    "pubsub-handoff-listener", "native-g1-team-campaign-dispatcher", "team-evaluation-runner",
+    "pubsub-handoff-listener", "team-evaluation-runner",
     "embodiment-preparation", "agent-run-dispatcher"))
 
 

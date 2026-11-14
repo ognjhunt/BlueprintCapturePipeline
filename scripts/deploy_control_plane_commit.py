@@ -471,10 +471,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-rigid-robot-free-probe-runner.path",
     "blueprint-rigid-robot-free-probe-runner.timer",
-    "blueprint-native-g1-team-campaign-dispatcher.service",
-    "blueprint-native-g1-team-campaign-dispatcher.timer",
-    "blueprint-native-g1-team-campaign-settlement.service",
-    "blueprint-native-g1-team-campaign-settlement.timer",
     "blueprint-scene-object-discovery.service",
     "blueprint-scene-object-discovery.path",
     # A prepared website scene's robot-team half, compiled on this host; no allocator.
@@ -649,11 +645,6 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
 #: outside this list.  Their unit files and code stay.  To re-arm a lane, move
 #: all its names back into the arm lists (a name in both refuses the release).
 DEFAULT_PAUSED_LANE_DISARM_UNITS = (
-    # Humanoid G1 team campaigns: only these timers start or settle them (the
-    # intake only queues a campaign; no WebApp caller submits one). Beta
-    # screening runs its G1 candidates through its own launch.
-    "blueprint-native-g1-team-campaign-dispatcher.timer",
-    "blueprint-native-g1-team-campaign-settlement.timer",
     # Agent runs: founder stop since 2026-10-02. The dispatcher stages team
     # evaluations and reads their terminal results; the runner path runs them.
     "blueprint-agent-run-dispatcher.timer",

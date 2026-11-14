@@ -124,10 +124,6 @@ from .vast_provider_field_parsing import (
     content_range_total_bytes as _content_range_total_bytes,
     version_tuple as _version_tuple,
 )
-from .native_g1_vast_bundle_contract import (
-    REQUIRED_ENTRIES as NATIVE_G1_REQUIRED_ENTRIES,
-    validate_manifest as validate_g1_manifest,
-)
 from .provider_output_disk_capacity import (
     download_provider_output_with_capacity_guard as _download_provider_output_with_capacity_guard,
 )
@@ -205,6 +201,8 @@ from .vast_args_payload_transport import args_mode_command, onstart_mode_script,
 from .vast_provider_bundle_digest_guard import DOWNLOAD_REPORT_OPTION, provider_bundle_digest_guard, stage_prefix_capsule_step
 
 
+NATIVE_G1_REMOVED_BUNDLE_KINDS = frozenset({
+    "native_g1_development_campaign", "native_g1_team_policy", "native_g1_beta_screening"})
 VAST_RUNTIME_DISCOVERY_SCHEMA_VERSION = "vast_runtime_discovery.v1"
 VAST_PROVIDER_PLAN_SCHEMA_VERSION = "vast_provider_plan.v1"
 VAST_OFFER_SELECTION_SCHEMA_VERSION = "vast_offer_selection_manifest.v1"
@@ -2759,24 +2757,12 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
-    elif provider_bundle_kind == "native_g1_development_campaign":
-        required_entries = NATIVE_G1_REQUIRED_ENTRIES
+    elif provider_bundle_kind in NATIVE_G1_REMOVED_BUNDLE_KINDS:
+        # The native G1 lanes are removed: such a bundle is refused below, before any provider call.
+        required_entries = set()
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
-        runner_member = "provider_runtime/blueprint_pipeline/native_g1_provider_runtime.py"
-        readiness_name = "native_g1_provider_manifest.json"
-    elif provider_bundle_kind == "native_g1_beta_screening":
-        from .native_g1_beta_session import REQUIRED_ENTRIES as G1_BETA_REQUIRED_ENTRIES
-        from .native_g1_beta_bundle import validate_bundle_archive as validate_g1_beta_manifest
-        required_entries = set(G1_BETA_REQUIRED_ENTRIES)
-        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
-        runner_member = "provider_runtime/blueprint_pipeline/native_g1_beta_runtime.py"
-        readiness_name = "native_g1_beta_provider_manifest.json"
-    elif provider_bundle_kind == "native_g1_team_policy":
-        from .native_g1_team_provider_bundle import REQUIRED_ENTRIES, validate_g1_team_provider_manifest
-        required_entries = set(REQUIRED_ENTRIES)
-        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
-        runner_member = "provider_runtime/blueprint_pipeline/native_g1_team_provider_runtime.py"
-        readiness_name = "native_g1_team_provider_manifest.json"
+        runner_member = "provider_runtime/blueprint_pipeline/native_g1_lane_removed.py"
+        readiness_name = "native_g1_lane_removed.json"
     elif provider_bundle_kind == "paired_target_native_import":
         required_entries = paired_target_native_import_required_entries
         entrypoint_member = "provider_runtime/run_paired_target_native_import_probe.sh"
@@ -3118,31 +3104,8 @@ def _blueprint_bundle_preflight(
                             blockers.append(
                                 "native_task_arena_provider_manifest_invalid"
                             )
-                    if provider_bundle_kind == "native_g1_development_campaign":
-                        readiness_member = "provider_runtime/native_g1_provider_manifest.json"
-                        readiness_source = "immutable_bundle_member"
-                        try:
-                            readiness = dict(validate_g1_manifest(archive))
-                            readiness["local_bundle_ready_for_remote_staging"] = True
-                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                            blockers.append("native_g1_provider_manifest_invalid")
-                    if provider_bundle_kind == "native_g1_beta_screening":
-                        readiness_member = "provider_runtime/native_g1_beta_provider_manifest.json"
-                        readiness_source = "immutable_bundle_member"
-                        try:
-                            manifest = json.loads(archive.read(readiness_member))
-                            readiness = dict(validate_g1_beta_manifest(archive, manifest))
-                            readiness["local_bundle_ready_for_remote_staging"] = True
-                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                            blockers.append("native_g1_beta_provider_manifest_invalid")
-                    if provider_bundle_kind == "native_g1_team_policy":
-                        readiness_member = "provider_runtime/native_g1_team_provider_manifest.json"
-                        readiness_source = "immutable_bundle_member"
-                        try:
-                            readiness = dict(validate_g1_team_provider_manifest(archive))
-                            readiness["local_bundle_ready_for_remote_staging"] = True
-                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                            blockers.append("native_g1_team_provider_manifest_invalid")
+                    if provider_bundle_kind in NATIVE_G1_REMOVED_BUNDLE_KINDS:
+                        blockers.append("native_g1_lane_removed")
                     if provider_bundle_kind == "task_evaluation_scene_configuration":
                         readiness_member = (
                             "provider_runtime/"
@@ -4416,11 +4379,8 @@ def _probe_shell_script(
     if type(virtual_machine) is not bool:
         raise ValueError("virtual_machine_flag_invalid")
     if virtual_machine:
-        if (provider_bundle_kind != "native_g1_team_policy" or not enable_blueprint_bundle
-                or enable_isaac_smoke or expected_provider_bundle_sha256 is None):
-            raise ValueError("vm_transport_probe_contract_invalid")
-        from .native_g1_team_vm_transport import vm_probe_script
-        return vm_probe_script(expected_provider_bundle_sha256, heartbeat_url)
+        # Only the removed native G1 team lane ever rented a virtual machine.
+        raise ValueError("vm_transport_probe_contract_invalid")
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
     if expected_provider_bundle_sha256 is not None and re.fullmatch(

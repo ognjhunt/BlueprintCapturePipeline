@@ -33,11 +33,6 @@ def _interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any]) -
     """
     from .beta_policy_candidate_catalog import load_catalog
     interface = spec["policy_interface_id"]
-    if interface == "humanoidarena_semantic_v3":
-        from .beta_policy_screening_g1 import interface_contract, runtime_contract, validate_execution_spec
-        validate_execution_spec(spec)
-        return (configured.get("interface") == interface_contract(spec["candidate_id"])
-                and configured.get("runtime") == runtime_contract())
     from .policy_interface_binding import TEAM_ROBOT_INTERFACES
     if interface in TEAM_ROBOT_INTERFACES:
         from .beta_policy_screening_team import team_interface_matches
@@ -276,27 +271,9 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             infeasible[key] = unrentable  # Listed with its reason, never funded: the budget goes on in plan order.
             continue
         try:
-            from .beta_policy_screening_g1 import (BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES,
-                                                   CELLS_PER_SESSION as G1_CELLS_PER_SESSION,
-                                                   DROPPED_START_OFFSETS_FIELD)
-            g1 = key in G1_CANDIDATES
             override = (profile.get("screening_candidates") or {}).get(key)
             model = None
-            if g1:
-                if profile.get("native_g1_registration_source") not in (None, dict(source)):
-                    raise ValueError("g1_beta_registration_current_source_changed")
-                from .beta_policy_screening_g1 import candidate_execution_spec, validate_execution_spec
-                if family:
-                    raise ValueError("g1_beta_native_rigid_task_required")
-                if not override or not override.get("native_g1"):
-                    raise ValueError("g1_beta_scene_packet_missing")
-                from .native_g1_beta_tokenizer import resolve_selected_tokenizer
-                resolve_selected_tokenizer([key])
-                spec = candidate_execution_spec(candidate_id=key, registration=override["native_g1"],
-                    scene_plan=scene_plan, base_packet=inputs["base_native_packet"], source=source,
-                    contract=contract, site_id=scene["site_id"])
-                inventory = repo / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
-            elif override:
+            if override:
                 if override.get("robot_policy") is not None:
                     from .beta_policy_screening_team import build_registered_team_spec
                     if family:
@@ -317,8 +294,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                 spec, inventory = templates[key]
             else:
                 raise ValueError(template_failures.get(key, "runtime_candidate_binding_missing"))
-            spec = (validate_execution_spec(spec, candidate_id=key) if g1 else
-                    validate_task_family_policy_execution_spec(spec, candidate_id=key, scene_plan=scene_plan) if family
+            spec = (validate_task_family_policy_execution_spec(spec, candidate_id=key, scene_plan=scene_plan) if family
                     else validate_robolab_policy_execution_spec(spec, candidate_id=key))
             if (key in templates and not override
                     and configured["policy"] != next(row["policy"] for row in
@@ -365,23 +341,12 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             descriptor = {"schema_version": EXECUTION_SCHEMA, "candidate_id": key,
                           "policy_execution_spec": _record(path), "checkpoint_inventory": _record(inventory) if inventory else None,
                           "configuration_digest": configured["configuration_digest"],
-                          "runtime_digest": spec["runtime_identity_digest"], "backend": G1_BACKEND if g1 else FAMILY_BACKEND if family else "robolab.v1",
+                          "runtime_digest": spec["runtime_identity_digest"], "backend": FAMILY_BACKEND if family else "robolab.v1",
                           "task_success_contract_digest": spec["task_success_contract_digest"],
                           "max_hourly_rate_usd": str(rate.quantize(Decimal("0.01"), rounding=ROUND_UP)),
                           "hard_ttl_seconds": ttl, "implementation_commit": commit, **hosted_settings}
             if model is not None:
                 descriptor["team_robot_model"] = model
-            dropped = {}
-            if g1:
-                # A spawn the CPU check could not measure is flagged, never refused (only an overlap is).
-                from .beta_policy_screening_g1 import dropped_start_offsets, setup_quality_flags
-                spawn_flags = setup_quality_flags(spec)
-                if spawn_flags:
-                    descriptor["setup_quality_flags"] = spawn_flags
-                # A navigation start offset that overlaps the room is not funded; the row keeps the others.
-                dropped = dropped_start_offsets(spec)
-                if dropped:
-                    descriptor[DROPPED_START_OFFSETS_FIELD] = dropped
             minimum_memory = configured["runtime"]["minimum_gpu_memory_gb"]
             if minimum_memory is not None:
                 descriptor["minimum_gpu_memory_gb"] = minimum_memory
@@ -403,7 +368,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                      "valid_until": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
                      "configuration_digest": configured["configuration_digest"],
                      "scene_revision_digest": inputs["scene_revision_digest"],
-                     "episode_count": G1_CELLS_PER_SESSION - len(dropped) if g1 else 10,
+                     "episode_count": 10,
                      "maximum_cost_usd": str(total_cap.quantize(Decimal("0.01"), rounding=ROUND_UP)), "quote_digest": ""}
             quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
             quotes[key] = quote

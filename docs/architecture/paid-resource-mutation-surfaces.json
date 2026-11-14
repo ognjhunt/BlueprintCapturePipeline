@@ -4,9 +4,6 @@
     "build_paid_lane_admission": [
       "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
       "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
-      "src/blueprint_pipeline/native_g1_paid_campaign.py",
-      "src/blueprint_pipeline/native_g1_team_paid_policy.py",
-      "src/blueprint_pipeline/native_g1_beta_paid.py",
       "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
@@ -19,9 +16,6 @@
       "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
       "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
       "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
-      "src/blueprint_pipeline/native_g1_paid_campaign.py",
-      "src/blueprint_pipeline/native_g1_team_paid_policy.py",
-      "src/blueprint_pipeline/native_g1_beta_paid.py",
       "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
@@ -234,37 +228,6 @@
         "put_object",
         "delete_object",
         "single_use_delete_ack_required"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/native_g1_team_paid_policy.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "run_arena_native_control_vast"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/native_g1_paid_campaign.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "run_arena_native_control_vast"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/native_g1_beta_paid.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "consume_session_authority_once",
-        "_controller_release_authority",
-        "require_current_source",
-        "pre_provider_mutation_hook=before_create",
-        "run_arena_native_control_vast"
       ]
     },
     {

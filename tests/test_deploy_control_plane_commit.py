@@ -641,17 +641,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     probe_runner_timer = unit_dir / "blueprint-rigid-robot-free-probe-runner.timer"
     probe_runner_timer.write_text(
         "[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
-    g1_service = unit_dir / "blueprint-native-g1-team-campaign-dispatcher.service"
-    g1_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-g1-team\n",
-        encoding="utf-8",
-    )
-    g1_timer = unit_dir / "blueprint-native-g1-team-campaign-dispatcher.timer"
-    g1_timer.write_text("[Timer]\nOnUnitInactiveSec=2min\n", encoding="utf-8")
-    g1_settlement_service = unit_dir / "blueprint-native-g1-team-campaign-settlement.service"
-    g1_settlement_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-g1-settlement\n", encoding="utf-8")
-    g1_settlement_timer = unit_dir / "blueprint-native-g1-team-campaign-settlement.timer"
-    g1_settlement_timer.write_text("[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
     discovery_service = unit_dir / "blueprint-scene-object-discovery.service"
     discovery_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-discover-scene-objects\n",
@@ -841,10 +830,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         probe_runner_service,
         probe_runner_path,
         probe_runner_timer,
-        g1_service,
-        g1_timer,
-        g1_settlement_service,
-        g1_settlement_timer,
         discovery_service,
         discovery_path,
         team_scene_service,
@@ -935,10 +920,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-rigid-robot-free-probe-runner.service",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-rigid-robot-free-probe-runner.timer",
-        "blueprint-native-g1-team-campaign-dispatcher.service",
-        "blueprint-native-g1-team-campaign-dispatcher.timer",
-        "blueprint-native-g1-team-campaign-settlement.service",
-        "blueprint-native-g1-team-campaign-settlement.timer",
         "blueprint-scene-object-discovery.service",
         "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.service",
@@ -1049,8 +1030,6 @@ def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
 
 
 PAUSED_LANE_UNITS = (
-    "blueprint-native-g1-team-campaign-dispatcher.timer",
-    "blueprint-native-g1-team-campaign-settlement.timer",
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-team-evaluation-runner.path",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
@@ -1199,7 +1178,7 @@ def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tm
     restore = deploy._restore_installed_path_units
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
     triggers = [unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))]
-    already_off = "blueprint-native-g1-team-campaign-settlement.timer"
+    already_off = "blueprint-embodiment-preparation.timer"
     states = {unit: {"enabled": "enabled", "state": "active"} for unit in triggers}
     states[already_off] = {"enabled": "disabled", "state": "inactive"}
     before = {unit: dict(state) for unit, state in states.items()}

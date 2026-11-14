@@ -9,7 +9,6 @@ from __future__ import annotations
 import dataclasses
 import fcntl
 import hashlib
-import inspect
 import json
 import os
 import sys
@@ -26,7 +25,6 @@ from blueprint_pipeline import native_g1_pi_tokenizer_assets as assets
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy" / "operator-door"))
 
-from operator_door import spool_runner  # noqa: E402
 from operator_door.secrets_guard import refused_name, scan_bytes  # noqa: E402
 
 Usage = namedtuple("Usage", "total used free")
@@ -108,47 +106,6 @@ def _verifies(world: dict[str, Any], directory: Path | None = None) -> bool:
     except ValueError:
         return False
     return True
-
-
-def test_production_pins_are_the_folder_screening_reads_and_the_authority_s_inventory() -> None:
-    from blueprint_pipeline import native_g1_beta_bundle, native_g1_provider_bundle
-    from blueprint_pipeline.control_plane_storage_roots import STORAGE_ROOTS
-    from blueprint_pipeline.native_g1_beta_authority import PI_AUXILIARY
-    from blueprint_pipeline.native_g1_beta_tokenizer import INVENTORY, RETAINED_TOKENIZER_DIR
-
-    pins = restore.PINS
-    assert pins.target_dir == RETAINED_TOKENIZER_DIR
-    assert pins.inventory_path == INVENTORY == ROOT / "configs/g1_paligemma_tokenizer_inventory.v1.json"
-    assert pins.inventory_sha256 == PI_AUXILIARY["inventory_file_sha256"]
-    assert "sha256:" + hashlib.sha256(INVENTORY.read_bytes()).hexdigest() == pins.inventory_sha256
-    assert restore.load_inventory(pins)["files"] == assets._inventory(INVENTORY)["files"]
-    assert restore.BUNDLE_NAMES == (native_g1_provider_bundle.BUNDLE_NAME, native_g1_beta_bundle.BUNDLE_NAME)
-    assert any(row.path == str(pins.source_root) for row in STORAGE_ROOTS)
-    for unit in ("blueprint-native-g1-team-campaign-dispatcher.service",
-                 "blueprint-native-g1-team-campaign-settlement.service"):
-        text = (ROOT / "deploy/systemd" / unit).read_text(encoding="utf-8")
-        assert f"BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_WORK_ROOT={pins.source_root}\n" in text
-    # The door's own spool runner names the only writable folder; the restore's parent lies inside it (the
-    # files sit in the retained folder's ``assets/`` directory, so the parent is that folder).
-    writable = Path(spool_runner._G1_PI_LANGUAGE_PARENT)
-    assert writable in (pins.parent, *pins.parent.parents)
-
-
-def test_the_archive_layout_is_the_one_both_bundle_builders_write(world: dict[str, Any]) -> None:
-    from blueprint_pipeline import native_g1_beta_bundle
-    from blueprint_pipeline.native_g1_provider_bundle import _verify_embedded_pi_tokenizer
-
-    # The provider bundle's own sealed-bundle check accepts a bundle built with this module's prefix.
-    staged = world["tmp"] / "staged"
-    staged.mkdir()
-    for name in assets.EXPECTED_FILES:
-        (staged / name).write_bytes(_content(name))
-    receipt = assets.verify_tokenizer_assets(inventory_path=world["inventory"], asset_dir=staged)
-    bundle = _bundle(world["tmp"] / "check.zip",
-                     extra={"configs/" + world["inventory"].name: world["inventory"].read_bytes()})
-    with zipfile.ZipFile(bundle) as archive:
-        _verify_embedded_pi_tokenizer(archive, {"pi_tokenizer_assets": receipt}, inventory_path=world["inventory"])
-    assert f'"{restore.ARCHIVE_PREFIX}" + row["path"]' in inspect.getsource(native_g1_beta_bundle.build_bundle)
 
 
 def test_no_name_the_door_reads_contains_the_refused_word() -> None:
