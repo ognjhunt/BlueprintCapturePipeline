@@ -685,7 +685,6 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
     # The capture's Atlas job is still running, so scene preparation waits on it.
     write_json(root / "pipeline/atlas/preview_job.json", {"state": "processing", "stage": "pose"})
     def held(**kwargs):
-        assert kwargs["pipeline_lane"] == "qualification" and kwargs["run_evaluation_prep"] is False
         assert kwargs["resume_completed_stages"] is True
         runner_calls.append(kwargs)
         result = prepare_website_scene_handoff(descriptor={"scene_id": owner["scene_id"], "capture_id": owner["capture_id"],
@@ -718,7 +717,7 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
                  "simulation": ["owned synthetic member fixture", "fake source download/staging", "fake owner/context HTTP", "local wakeup sink"],
                  "provider_calls": 0, "new_unique_case_credit": 0, "payload": payload,
                  "worker_flags": {"run_e2e_enabled": False, "stage_control_plane": True},
-                 "runner_lane": runner_calls[0]["pipeline_lane"], "website_manifest_source": "browser_self_capture",
+                 "website_manifest_source": "browser_self_capture",
                  "selectors": selected, "status": response.json(), "pending_delivery": pending,
                  "final_delivery": json.loads((root / status_reader.DELIVERY_FILE).read_text()),
                  "ledger": listener._read_job_ledger(root), "native_or_assessment_completion": False}

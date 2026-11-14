@@ -69,35 +69,15 @@ def test_run_e2e_logs_start_completion_and_preflight_failure(
     monkeypatch.setattr(
         run_e2e,
         "run_capture_pipeline",
-        lambda **kwargs: {"status": "completed", "lanes": [kwargs["lane"]]},
-    )
-    # The happy-path logging fixture needs a successful required supervisor;
-    # an empty synthetic capture correctly returns a blocked real supervisor.
-    monkeypatch.setattr(
-        run_e2e,
-        "run_capture_build_supervisor",
-        lambda **_kwargs: {
-            "status": "non_spend_complete",
-            "agent_harness": "openai_agents_sdk",
-            "capture_build_alone_can_start_run": True,
-        },
-    )
-    monkeypatch.setattr(
-        run_e2e,
-        "run_agent_review",
-        lambda **_kwargs: {
-            "artifacts": {"readiness_report": "ready.md"},
-            "final_memo_path": "memo.md",
-            "final_bundle_path": "bundle.zip",
-        },
+        lambda **kwargs: {"status": "completed", "lanes": [kwargs["lane"]], "results": [
+            {"lane": "qualification", "status": "completed", "native_execution_complete": False,
+             "website_scene_preparation": {"status": "prepared"}}]},
     )
 
     with caplog.at_level(logging.INFO, logger="blueprint_pipeline.run_e2e"):
         result = run_e2e.run_end_to_end(
             capture_root=str(capture_root),
             provider="openai",
-            pipeline_lane="all",
-            run_agent_review_stage=True,
         )
 
     assert result["pipeline_status"] == "completed"
@@ -106,7 +86,7 @@ def test_run_e2e_logs_start_completion_and_preflight_failure(
     assert completed.capture_root == str(capture_root)
     assert completed.provider == "openai"
     assert completed.pipeline_status == "completed"
-    assert completed.pipeline_lanes == ["all"]
+    assert completed.pipeline_lanes == ["qualification"]
 
     caplog.clear()
     monkeypatch.setattr(

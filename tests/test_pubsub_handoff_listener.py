@@ -262,7 +262,6 @@ def test_process_handoff_stages_capture_and_runs_e2e(tmp_path: Path) -> None:
         {
             "capture_root": str(capture_root),
             "provider": "openai",
-            "run_evaluation_prep": True,
             "resume_completed_stages": True,
         }
     ]
@@ -315,8 +314,7 @@ def test_process_handoff_retains_robot_eval_request_for_separate_action(
     assert result["queue_disposition"] == "retryable"
     assert staged_request.is_file()
     assert calls == [{
-        "capture_root": str(capture_root), "provider": "openai",
-        "run_evaluation_prep": True, "resume_completed_stages": True,
+        "capture_root": str(capture_root), "provider": "openai", "resume_completed_stages": True,
     }]
     ledger = json.loads(
         (capture_root / "pipeline_job_ledger.json").read_text(encoding="utf-8")
@@ -1325,8 +1323,6 @@ def test_website_upload_runs_preparation_before_legacy_robot_job_conversion(tmp_
     assert second["status"] == "skipped_already_processed"
     assert len(calls) == 1
     assert calls[0]["resume_completed_stages"] is True
-    assert calls[0]["pipeline_lane"] == "qualification"
-    assert calls[0]["run_evaluation_prep"] is False
     assert "robot_eval_job_request" not in calls[0]
 
 
@@ -1360,8 +1356,6 @@ def test_app_filmed_site_capture_runs_website_preparation_not_device_job_convers
     assert result["status"] == "processed"
     assert result["control_plane_staging"] is None
     assert len(calls) == 1
-    assert calls[0]["pipeline_lane"] == "qualification"
-    assert calls[0]["run_evaluation_prep"] is False
 
 
 def test_forged_site_marker_does_not_leave_the_device_lane(tmp_path: Path) -> None:

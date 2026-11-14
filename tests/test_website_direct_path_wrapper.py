@@ -24,7 +24,7 @@ def test_website_preparation_completes_through_real_wrapper_without_generic_repo
     """Run the actual qualification lane and wrapper, with only external work faked.
 
     The shared fixture replaces source/task grant reads and provider media/scene
-    preparation. Capture lane orchestration, supervisor (if called), required
+    preparation. Capture lane orchestration, required
     stage validation, and wrapper completion remain real. There are no network,
     inference, simulator, spend, or live WebApp calls in this rehearsal.
     """
@@ -53,9 +53,6 @@ def test_website_preparation_completes_through_real_wrapper_without_generic_repo
     result = run_e2e.run_end_to_end(
         capture_root=str(fx.capture),
         provider="openai",
-        pipeline_lane="qualification",
-        allow_live_supervisor_agents=False,
-        supervisor_inference_budget_usd=0.0,
     )
 
     assert result["pipeline_status"] == "completed"
@@ -86,9 +83,9 @@ def test_website_preparation_completes_through_real_wrapper_without_generic_repo
 
 
 @pytest.mark.parametrize(
-    "change", ["not_website", "native_execution_complete", "evaluation_requested"]
+    "change", ["not_website", "native_execution_complete"]
 )
-def test_wrapper_retains_required_supervisor_outside_website_preparation(
+def test_wrapper_refuses_a_result_outside_website_preparation(
     website_capture,
     monkeypatch,
     change,
@@ -122,19 +119,10 @@ def test_wrapper_retains_required_supervisor_outside_website_preparation(
         return result
 
     monkeypatch.setattr(run_e2e, "run_capture_pipeline", pipeline)
-    # The real supervisor reads the retained descriptor successfully, then
-    # refuses absent scientific inputs. The wrapper must retain that refusal
-    # for a non-preparation/full-evaluation call rather than claim completion.
+    # Anything but an admitted website preparation fails rather than claim completion.
     with pytest.raises(
-        PipelineError, match="required_stage_not_complete:task_evaluation_supervisor:blocked"
+        PipelineError, match="required_stage_not_complete:capture_pipeline:website_scene_preparation_missing"
     ):
-        run_e2e.run_end_to_end(
-            capture_root=str(fx.capture),
-            provider="openai",
-            pipeline_lane="qualification",
-            run_evaluation_prep=change == "evaluation_requested",
-            allow_live_supervisor_agents=False,
-            supervisor_inference_budget_usd=0.0,
-        )
+        run_e2e.run_end_to_end(capture_root=str(fx.capture), provider="openai")
     ledger = json.loads((fx.capture / "pipeline/run_e2e_stage_ledger.json").read_text())
     assert ledger["failed_stage"] == "task_evaluation_supervisor"
