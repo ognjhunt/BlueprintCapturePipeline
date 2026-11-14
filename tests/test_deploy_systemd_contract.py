@@ -433,7 +433,6 @@ HOST_MEMORY_KEPT = {
     # Not measured on the host yet: the duties it took from the trial's tick, which ran them under 5.5G.
     "blueprint-scene-stage-maintenance.service": ("200", "5.5G"),
     "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
-    "blueprint-agent-run-dispatcher.service": ("-200", "5.5G"),
     "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
     # The failure notifier carries a page; a run peaked at 27 MB locally.
     "blueprint-unit-failure@.service": ("-200", "256M"),
@@ -518,7 +517,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-scene-stage-maintenance.service",
-    "blueprint-agent-run-dispatcher.service",
     "blueprint-task-evaluation-episode-compilation.service",
     "blueprint-task-evaluation-episode-compilation-remote.service",
     "blueprint-agent-stage-replay.service",
@@ -583,7 +581,6 @@ UNIT_FAILURE_ROUTINE_EXIT_UNITS = {
 }
 #: Units that keep an independent GPU watchdog child alive past their own stop or timeout.
 KILL_MODE_PROCESS_UNITS = (
-    "blueprint-agent-run-dispatcher.service",
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-task-evaluation-launch-dispatcher.service",

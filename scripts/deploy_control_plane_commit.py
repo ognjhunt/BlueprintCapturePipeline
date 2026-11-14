@@ -437,8 +437,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-pubsub-handoff-listener.timer",
     "blueprint-agent-execution.service",
-    "blueprint-agent-run-dispatcher.service",
-    "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.service",
     "blueprint-agent-stage-replay.timer",
     "blueprint-agent-stage-replay.path",
@@ -628,8 +626,6 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
 #: outside this list.  Their unit files and code stay.  To re-arm a lane, move
 #: all its names back into the arm lists (a name in both refuses the release).
 DEFAULT_PAUSED_LANE_DISARM_UNITS = (
-    # Agent runs: founder stop since 2026-10-02. The door holds the dispatcher.
-    "blueprint-agent-run-dispatcher.timer",
     # Robot-team evaluation lanes, deleted by the owner (a deployment company
     # running its own software in our simulation is later). Their triggers stop
     # here before the WebApp routes they call are removed.
@@ -667,6 +663,9 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.timer",
     # Blueprint's own early trial of open robot software (owner, 2026-11-14).
     "blueprint-beta-policy-screening.timer",
+    # Agent runs (robot-team runs, deleted): founder stop since 2026-10-02. The
+    # door keeps holding the dispatcher timer; no release starts it.
+    "blueprint-agent-run-dispatcher.timer",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the

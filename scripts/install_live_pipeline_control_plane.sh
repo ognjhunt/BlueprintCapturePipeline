@@ -1436,12 +1436,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-unit-failure@.service" \
   "${SYSTEMD_DIR}/blueprint-unit-failure@.service"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.service" \
-  "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.timer" \
-  "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.timer"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-preview.service" \
   "${SYSTEMD_DIR}/blueprint-website-atlas-preview.service"
 run install -m 0644 \

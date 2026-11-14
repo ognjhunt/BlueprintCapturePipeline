@@ -167,14 +167,13 @@ _SAFETY_CRITICAL = re.compile(
     r"terminal-resource-release|storage-gc|capacity|replay-cache-gc|preflight"
 )
 _BASELINE_TRIGGER_SAFETY = re.compile(r"spend-guard|watchdog|teardown|reaper|provider-zero")
-DISPATCHER_HOLD_UNIT = "blueprint-agent-run-dispatcher.timer"
 # Triggers this repository no longer ships that a host may still have installed
 # and enabled. Removing a unit file from the repository does not stop the unit,
 # and only root can remove it from the host. Until then the door may hold
-# exactly these, also under the dispatcher-only profile, and like the
-# dispatcher's their hold may require an explicit release, so a retired unit
-# stays off past the deadline and across a reboot. None protects money or
-# cleanup; each kept its hold guard while it was shipped.
+# exactly these, also under the dispatcher-only profile, and their hold may
+# require an explicit release, so a retired unit stays off past the deadline
+# and across a reboot. No unit request starts or restarts one, nor its service.
+# None protects money or cleanup; each kept its hold guard while it was shipped.
 RETIRED_HOLD_UNITS = (
     "blueprint-pipeline-control-plane.timer",
     "blueprint-capture-reconstruction-dispatcher.timer",
@@ -191,8 +190,10 @@ RETIRED_HOLD_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-beta-policy-screening.timer",
+    "blueprint-agent-run-dispatcher.timer",
 )
-EXPLICIT_RELEASE_UNITS = (DISPATCHER_HOLD_UNIT, *RETIRED_HOLD_UNITS)
+EXPLICIT_RELEASE_UNITS = RETIRED_HOLD_UNITS
+_RETIRED_UNIT_STEMS = frozenset(unit.rsplit(".", 1)[0] for unit in RETIRED_HOLD_UNITS)
 _LOG_TAIL_LINES = 200
 
 
@@ -270,7 +271,7 @@ def _hold_unit(unit: Any) -> str:
         raise RequestRefused("unit_is_door")
     if _SAFETY_CRITICAL.search(unit):
         raise RequestRefused("unit_safety_critical")
-    if DISPATCHER_HOLD_ONLY and unit != DISPATCHER_HOLD_UNIT and unit not in RETIRED_HOLD_UNITS:
+    if DISPATCHER_HOLD_ONLY and unit not in RETIRED_HOLD_UNITS:
         raise RequestRefused("hold_unit_profile_refused")
     return unit
 
@@ -356,6 +357,8 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("unit_is_door")
         if action not in _UNIT_ACTIONS:
             raise RequestRefused("unit_action_invalid")
+        if action in ("start", "restart") and unit.rsplit(".", 1)[0] in _RETIRED_UNIT_STEMS:
+            raise RequestRefused("unit_retired")
         if action in _TRIGGER_ONLY_ACTIONS:
             # Pausing a trigger never kills a running job; stopping a service could.
             if not unit.endswith((".timer", ".path")):

@@ -108,7 +108,6 @@ WORKER_UNITS=(
   blueprint-team-scene-packet-remote.timer
   blueprint-scene-stage-maintenance.timer
   blueprint-task-evaluation-launch-reconciler.timer
-  blueprint-agent-run-dispatcher.timer
   blueprint-gpu-spend-guard.timer
   blueprint-website-atlas-preview.timer
   blueprint-website-atlas-provider-poll.timer
@@ -134,7 +133,6 @@ WORKER_UNITS=(
   blueprint-team-scene-packet-remote.service
   blueprint-scene-stage-maintenance.service
   blueprint-task-evaluation-launch-reconciler.service
-  blueprint-agent-run-dispatcher.service
   blueprint-gpu-spend-guard.service
   blueprint-website-atlas-preview.service
   blueprint-website-atlas-provider-poll.service

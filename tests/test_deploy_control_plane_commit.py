@@ -601,8 +601,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     for name in (
         "system-blueprintbatch.slice", "blueprint-unit-failure@.service",
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
-        "blueprint-agent-execution.service", "blueprint-agent-run-dispatcher.service",
-        "blueprint-agent-run-dispatcher.timer", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
+        "blueprint-agent-execution.service",
+        "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
@@ -632,7 +632,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
 
     expected = []
     for source in (
-        *additional_sources[:10],
+        *additional_sources[:8],
         service,
         path_unit,
         preparation_service,
@@ -652,7 +652,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         team_scene_path,
         *team_remote_units,
         *scene_stage_units,
-        *additional_sources[10:],
+        *additional_sources[8:],
         storage_gc_service,
         storage_gc_timer,
         *withdrawal_deletion_units,
@@ -699,8 +699,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-pubsub-handoff-listener.service",
         "blueprint-pubsub-handoff-listener.timer",
         "blueprint-agent-execution.service",
-        "blueprint-agent-run-dispatcher.service",
-        "blueprint-agent-run-dispatcher.timer",
         "blueprint-agent-stage-replay.service",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
@@ -825,7 +823,6 @@ def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
 
 
 PAUSED_LANE_UNITS = (
-    "blueprint-agent-run-dispatcher.timer",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-episode-compilation.timer",
 )
@@ -854,7 +851,7 @@ def test_paused_lanes_are_disarmed_and_never_armed_again_without_leaving_the_dis
 
 @pytest.mark.parametrize("arm_list", ["always_arm_units", "always_arm_authority_gated_units", "always_arm_timer_units"])
 def test_a_unit_both_armed_and_disarmed_refuses_before_any_host_action(monkeypatch, arm_list: str) -> None:
-    unit = "blueprint-agent-run-dispatcher.timer"
+    unit = "blueprint-task-evaluation-episode-compilation.timer"
     monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
     with pytest.raises(deploy.ControlPlaneDeployError, match="authority_ambiguous"):
         deploy._restore_installed_path_units(
@@ -877,7 +874,7 @@ def test_release_disarms_a_paused_lane_unit_idempotently(
     monkeypatch, case: str, before: tuple[str, str], returncode: int, final: tuple[str, str],
     preserve_controls: bool,
 ) -> None:
-    unit = "blueprint-agent-run-dispatcher.timer"
+    unit = "blueprint-task-evaluation-episode-compilation.timer"
     state = {"is-enabled": before[0], "is-active": before[1]}
     calls: list[tuple[str, ...]] = []
 
@@ -916,7 +913,7 @@ def test_release_disarms_a_paused_lane_unit_idempotently(
 
 
 def test_disarm_reports_a_unit_it_cannot_stop_without_failing_the_release(monkeypatch) -> None:
-    unit = "blueprint-agent-run-dispatcher.timer"
+    unit = "blueprint-task-evaluation-episode-compilation.timer"
 
     def completed(argv, **_kwargs):
         if argv[1] in {"stop", "disable"}:
@@ -935,7 +932,7 @@ def test_disarm_reports_a_unit_it_cannot_stop_without_failing_the_release(monkey
 
 
 def test_disarm_touches_no_unit_outside_its_list(monkeypatch) -> None:
-    paused, other = "blueprint-agent-run-dispatcher.timer", "blueprint-task-evaluation-terminal-resource-release.path"
+    paused, other = "blueprint-task-evaluation-episode-compilation.timer", "blueprint-task-evaluation-terminal-resource-release.path"
     calls: list[tuple[str, ...]] = []
 
     def completed(argv, **_kwargs):
@@ -956,7 +953,7 @@ def test_disarm_touches_no_unit_outside_its_list(monkeypatch) -> None:
     assert ("systemctl", "disable", other) not in calls and ("systemctl", "stop", other) not in calls
 
 
-@pytest.mark.parametrize("stuck", [None, "blueprint-agent-run-dispatcher.timer"])
+@pytest.mark.parametrize("stuck", [None, "blueprint-task-evaluation-episode-compilation.path"])
 def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tmp_path, monkeypatch, stuck) -> None:
     """End to end through deploy_control_plane_commit with the real restore and a fake systemd."""
 
@@ -1918,7 +1915,7 @@ def test_timer_restore_allows_hold_sweep_to_take_its_lock(tmp_path, monkeypatch,
     restore = deploy._restore_installed_path_units
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
     timer = "blueprint-pubsub-handoff-listener.timer"
-    held = "blueprint-agent-run-dispatcher.timer"
+    held = "blueprint-task-evaluation-scene-progression.timer"
     root = tmp_path / "holds"
     root.mkdir()
     record = {
