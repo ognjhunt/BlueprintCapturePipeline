@@ -308,7 +308,7 @@ def _attempt_directory(queue_root: Path, roots: set[Path], attempt: Mapping[str,
 
 
 def _retained(queue_root: Path, campaign_id: str, plan: Mapping[str, Any], attempt_ids: list[str]) -> list[str]:
-    from .beta_policy_screening_holds import HOLDS_DIRNAME, hold_id
+    from .scene_stage_holds import HOLDS_DIRNAME, hold_id
     from .website_candidate_selection import SELECTION_DIRECTORY
     intent = (plan.get("source") or {}).get("scene_intent_id") if isinstance(plan.get("source"), Mapping) else None
     paths = [queue_root / "plans" / f"{campaign_id}.json", queue_root / "inputs" / campaign_id,

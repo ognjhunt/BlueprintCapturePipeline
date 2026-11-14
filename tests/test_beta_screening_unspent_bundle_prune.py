@@ -132,7 +132,7 @@ def test_the_worker_prunes_before_it_launches_anything(monkeypatch, tmp_path):
     monkeypatch.setattr(coordinator, "process_screening_queue", lambda **_: order.append("launch") or {})
     monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_status.write_worker_status", lambda *a, **k: {})
     monkeypatch.setattr(worker, "backfill_runtime_diagnostics", lambda root: {})
-    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_holds.deliver_holds", lambda **_: {})
+    monkeypatch.setattr("blueprint_pipeline.scene_stage_holds.deliver_holds", lambda **_: {})
     monkeypatch.setattr("blueprint_pipeline.website_candidate_selection.retain_selections", lambda **_: {})
     monkeypatch.setattr("blueprint_pipeline.website_candidate_selection.deliver_selections", lambda **_: {})
     monkeypatch.setattr("blueprint_pipeline.beta_screening_review_video_backfill.backfill_review_videos",

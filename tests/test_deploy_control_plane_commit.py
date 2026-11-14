@@ -530,6 +530,12 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     screening_timer.write_text(
         "[Timer]\nOnUnitInactiveSec=1min\n", encoding="utf-8"
     )
+    scene_stage_units = []
+    for suffix, body in ((".service", "[Service]\nExecStart=/usr/bin/blueprint-scene-stage-maintenance\n"),
+                         (".timer", "[Timer]\nOnUnitInactiveSec=1min\n")):
+        scene_stage_unit = unit_dir / f"blueprint-scene-stage-maintenance{suffix}"
+        scene_stage_unit.write_text(body, encoding="utf-8")
+        scene_stage_units.append(scene_stage_unit)
     storage_gc_service = unit_dir / "blueprint-control-plane-storage-gc.service"
     storage_gc_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-reclaim-storage\n",
@@ -655,6 +661,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         *team_remote_units,
         screening_service,
         screening_timer,
+        *scene_stage_units,
         *additional_sources[10:],
         storage_gc_service,
         storage_gc_timer,
@@ -732,6 +739,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-team-scene-packet-remote.path",
         "blueprint-beta-policy-screening.service",
         "blueprint-beta-policy-screening.timer",
+        "blueprint-scene-stage-maintenance.service",
+        "blueprint-scene-stage-maintenance.timer",
         "blueprint-task-evaluation-scene-progression.service",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-launch-reconciler.service",
@@ -782,6 +791,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-beta-policy-screening.timer",
+        "blueprint-scene-stage-maintenance.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.timer",

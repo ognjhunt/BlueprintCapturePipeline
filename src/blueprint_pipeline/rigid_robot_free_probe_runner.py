@@ -843,7 +843,7 @@ def final_terminal(state: Mapping[str, Any], *, queue_root: str | Path | None = 
     Read only. A staging refusal, or an attempt budget our own runtime spent (``_runtime_redrive_due``), that a
     newly deployed release has not yet tried is not final: that release's pass sets it aside and stages again
     (``requeue_new_release``); nor is a staging refusal with a timed retry left (``_refusal_retry_left``).
-    Every other terminal is final, as it is without a known release. The screening pass names a final one to the website job (``beta_policy_screening_holds``).
+    Every other terminal is final, as it is without a known release. The screening pass names a final one to the website job (``scene_stage_holds``).
     """
 
     job = _job_dir(_queue_root(queue_root), state)

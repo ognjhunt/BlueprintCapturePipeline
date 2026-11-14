@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-from blueprint_pipeline import beta_policy_screening_holds as holds
+from blueprint_pipeline import scene_stage_holds as holds
 from blueprint_pipeline import beta_policy_screening_worker as worker
 from blueprint_pipeline.account_monthly_spend import LIMIT_REACHED, REPORT_INVALID, REPORT_STALE
 from tests.test_beta_policy_screening_coordinator import Backend, plan, publication
@@ -229,7 +229,7 @@ def test_a_reached_account_limit_is_a_money_stop_that_never_retries_and_is_held_
     assert budget["committed_upper_bound_usd"] == "0" and "spend_lock_retries" not in _row(tmp_path)
     # The campaign says why it stopped, for the hold protocol.
     assert coordinator.campaign_hold_detail("campaign-1", queue_root=tmp_path) == LIMIT_REACHED
-    assert holds.campaign_hold(LIMIT_REACHED) == (holds.STALL_HOLD_REASON, LIMIT_REACHED)
+    assert worker.campaign_hold(LIMIT_REACHED) == (holds.STALL_HOLD_REASON, LIMIT_REACHED)
     assert holds.STALL_HOLD_REASON in holds.REASONS
     # Nothing plans it again at this commit; a deploy does, once, as for any refusal that spent nothing.
     assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None

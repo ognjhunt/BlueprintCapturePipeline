@@ -107,6 +107,7 @@ WORKER_UNITS=(
   blueprint-team-scene-packet-remote.path
   blueprint-team-scene-packet-remote.timer
   blueprint-beta-policy-screening.timer
+  blueprint-scene-stage-maintenance.timer
   blueprint-task-evaluation-launch-reconciler.timer
   blueprint-agent-run-dispatcher.timer
   blueprint-gpu-spend-guard.timer
@@ -133,6 +134,7 @@ WORKER_UNITS=(
   blueprint-team-scene-packet.service
   blueprint-team-scene-packet-remote.service
   blueprint-beta-policy-screening.service
+  blueprint-scene-stage-maintenance.service
   blueprint-task-evaluation-launch-reconciler.service
   blueprint-agent-run-dispatcher.service
   blueprint-gpu-spend-guard.service

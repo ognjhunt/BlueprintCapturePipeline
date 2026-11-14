@@ -81,6 +81,8 @@ class DoorConfig:
         "blueprint-rigid-robot-free-probe-runner.service",
         "blueprint-beta-policy-screening.timer",
         "blueprint-beta-policy-screening.service",
+        "blueprint-scene-stage-maintenance.timer",
+        "blueprint-scene-stage-maintenance.service",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-scene-progression.service",
         "blueprint-task-evaluation-launch-activation.service",

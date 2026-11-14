@@ -1,8 +1,12 @@
-"""Automatically evaluate prepared website scenes and deliver each job's result.
+"""Drain Blueprint's own early trial: settle, reconcile and publish what it owes; start nothing.
 
-This worker consumes the existing scene-packet queue after compilation. The
-coordinator retains the site's budget across revisions and worker restarts;
-only the canonical allocator bridge can execute a selected candidate.
+The owner dropped the early trial (2026-11-14). The timer's tick settles finished
+attempts, reconciles active campaigns (the site's consent and window stop
+included), closes queued rows before they reserve money and publishes results
+already owed; it adopts no source, plans and enqueues no campaign and launches
+nothing (``DRAIN_MAX_LAUNCHES``). The scene stage's duties it once carried run in
+``scene_stage_maintenance``. ``enqueue_prepared_scenes`` (the trial's source
+pass) is no longer run by the unit; the downstream replay still drives it.
 """
 from __future__ import annotations
 
@@ -17,82 +21,25 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 
 from .decision_evidence_contracts import canonical_digest
+from .scene_stage_holds import STALL_HOLD_REASON, _code
+# The consent re-read, the cold-storage restore and the scene stage's hold helpers moved to the scene stage's
+# maintenance pass; the screening pass below (kept for its replay) and the trial's modules still use them.
+from .scene_stage_maintenance import (
+    _restore_source_run,
+    _scene_preparation_holds,
+    job_window_closed,
+    newest_intent_requests,
+    require_current_source,
+)
+
+#: The trial is drained (owner, 2026-11-14): this worker settles, reconciles and publishes what it owes,
+#: and never starts a new attempt, whatever ``--max-launches`` a unit file passes.
+DRAIN_MAX_LAUNCHES = 0
 
 
-def require_current_source(source: Mapping[str, Any], *, site_id: str) -> dict[str, Any]:
-    """Re-read current website task and consent before every paid attempt."""
-    from .team_scene_packet_worker import _read_json, resolve_capture_root
-    from .website_task_context import load_current_website_task_context
-
-    if not re.fullmatch(r"site-[A-Za-z0-9][A-Za-z0-9._:-]{0,191}", site_id):
-        raise ValueError("beta_screening_site_identity_invalid")
-    from .website_task_context_lineage import accepts_bound_digest
-
-    capture = resolve_capture_root(source)
-    retained = _read_json(capture / "pipeline" / "website_task_context.json") or {}
-    # The source binds its own context, or the unconfirmed parent of the retained confirmed successor:
-    # confirming a brief is consent state, not task content (website_task_context_lineage).
-    if (retained.get("scene_id") != site_id or retained.get("request_id") != site_id[5:]
-            or not accepts_bound_digest(retained, source.get("task_context_digest"))
-            or source.get("task_id") != "website-" + str(source.get("task_context_digest"))[7:27]):
-        raise ValueError("beta_screening_source_context_mismatch")
-    current = load_current_website_task_context(request_id=site_id[5:], scene_id=site_id,
-        capture_id=str(source["capture_id"]), purpose=retained.get("purpose"))
-    rights = current.get("capture_rights") or {}
-    if (rights.get("consent_status") != "granted" or rights.get("consent_revoked") is not False
-            or "robot_evaluation" not in rights.get("consent_scope", [])
-            or rights.get("derived_scene_generation_allowed") is not True):
-        raise ValueError("beta_screening_current_capture_consent_required")
-    if not accepts_bound_digest(current, source.get("task_context_digest")):
-        raise ValueError("beta_screening_current_task_context_changed")
-    return current
-
-
-def _restore_source_run(request: Mapping[str, Any], *, context: Mapping[str, Any] | None = None,
-                        packet_queue_root: str | Path | None = None) -> dict[str, Any]:
-    """Bring an open job's scene run back from cold storage (``scene_run_restore``); never raises.
-
-    Privacy: the job's withdrawal and its source (consent, rights) are read again before anything is fetched
-    and again under the deletion's lock before anything is placed.
-    """
-    from .scene_run_restore import restore_open_job_run
-    from .screening_site_withdrawal import site_withdrawal_state
-    from .team_scene_packet_worker import _read_json, resolve_capture_root
-
-    try:
-        retained = _read_json(resolve_capture_root(request) / "pipeline" / "website_task_context.json") or {}
-        source = {"scene_intent_id": request["intent_id"], "scene_intent_digest": request["intent_digest"],
-                  "capture_id": request["capture_id"], "task_id": request["task_id"],
-                  "task_context_digest": retained["context_digest"],
-                  "scene_revision_digest": request["scene_revision_digest"]}
-        if context is None:
-            context = require_current_source(source, site_id=retained["scene_id"])
-
-        def still_current() -> bool:
-            try:
-                require_current_source(source, site_id=retained["scene_id"])
-            except Exception:  # noqa: BLE001 - not current now (revoked, ended, unreadable): nothing lands
-                return False
-            return site_withdrawal_state(str(retained["scene_id"])) in {"not_withdrawn", "not_configured"}
-
-        return restore_open_job_run(Path(request["source_launch_root"]), window_open=not job_window_closed(context),
-                                    still_current=still_current, packet_queue_root=packet_queue_root)
-    except Exception as exc:  # noqa: BLE001 - an unread source restores nothing now; the next pass asks again
-        return {"status": "source_unavailable", "error_type": type(exc).__name__}
-
-
-def job_window_closed(context: Mapping[str, Any]) -> bool:
-    """Whether the current source says its job's window has ended (its execution deadline or its
-    consent's expiry). Unknown or unreadable is not closed: the launch preflight still decides."""
-    import time
-
-    from .beta_policy_screening_control import _deadline
-
-    try:
-        deadline = _deadline(context)
-    except ValueError:
-        return False
-    return deadline is not None and deadline <= time.time()
+def campaign_hold(detail: str) -> tuple[str, str | None]:
+    """The hold a planned campaign's own end stands for (``coordinator.campaign_hold_detail``)."""
+    return STALL_HOLD_REASON, _code(detail)
 
 
 def implementation_commit() -> str:
@@ -105,16 +52,18 @@ def implementation_commit() -> str:
 
 def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | Path,
                            max_sources: int = 32) -> dict[str, Any]:
-    """Adopt completed packet requests; blocked sources remain visible and retryable."""
+    """Adopt completed packet requests; blocked sources remain visible and retryable.
+
+    Not run by the drained unit (``main``): the downstream replay's ``screening_plan`` stage drives it.
+    """
     from .beta_policy_candidate_catalog import load_default_catalog
     from .beta_policy_screening_capabilities import build_planning_inputs
     from .beta_policy_screening_coordinator import (
         _lock, _read, _root, _write, campaign_hold_detail, close_self_replan, enqueue_screening_campaign,
         latest_campaign, replan_scope, supersede_campaign,
     )
-    from .beta_policy_screening_holds import (
-        RELEASE, WINDOW_CLOSED, blocked_since, campaign_hold, packet_hold, probe_hold, settle_hold,
-        stalled_source_hold,
+    from .scene_stage_holds import (
+        RELEASE, WINDOW_CLOSED, blocked_since, packet_hold, probe_hold, settle_hold, stalled_source_hold,
     )
     from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
     from .beta_policy_screening_scene_half import current_half
@@ -335,81 +284,6 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_screening_family_sources import enqueue_registered_family_scenes
     family = enqueue_registered_family_scenes(queue_root=root, max_sources=max_sources, packet_queue_root=packet_root)
     return {"sources": outcomes + family["sources"], "team_scene_packet_requeue": packet_requeue}
-
-
-_REQUEST_STATES = ("pending", "processing", "processed")
-
-
-def newest_intent_requests(packet_root: Path) -> dict[str, tuple[str, str]]:
-    """Each scene intent's newest request (its latest scene revision): ``(where, file name)``, by when it was queued.
-
-    A request is written once and moved by rename, so its modification time is when it was queued. The newest
-    of a team half's request and a held request of the same intent speaks for the intent's hold.
-    """
-    from .team_scene_packet_worker import HOLDS_DIRNAME, _read_json
-
-    newest: dict[str, tuple[int, str, str, str]] = {}
-    for where in (*_REQUEST_STATES, HOLDS_DIRNAME):
-        for path in (packet_root / where).glob("*.json"):
-            try:
-                if path.is_symlink():
-                    continue
-                stamp = path.stat().st_mtime_ns
-            except OSError:
-                continue
-            intent = str((_read_json(path) or {}).get("intent_id") or "")
-            if intent and (intent not in newest or (stamp, path.name) > newest[intent][:2]):
-                newest[intent] = (stamp, path.name, where, path.name)
-    return {intent: (row[2], row[3]) for intent, row in newest.items()}
-
-
-def _scene_preparation_holds(root: Path, packet_root: Path, *, max_sources: int,
-                             newest: Mapping[str, tuple[str, str]]) -> list[dict[str, Any]]:
-    """Hold each website job whose scene preparation retained a decided failed probe receipt.
-
-    Its team half is never compiled (``team_scene_packet_worker.enqueue_team_scene_request``), so no source
-    ever reaches the pass above. The receipt is re-read, never trusted from the request. The entries rotate
-    under their own cursor, so none waits behind the first ``max_sources``. An entry is set aside under
-    ``holds/settled/`` once the website acknowledged its hold, or under ``holds/superseded/`` once a newer
-    request of its intent exists; nothing is deleted.
-    """
-    from .beta_policy_screening_coordinator import _read, _write
-    from .beta_policy_screening_holds import scene_preparation_probe_failed, settle_hold
-    from .team_scene_packet_worker import HOLDS_DIRNAME, _read_json, request_key, validated_request
-
-    directory = packet_root / HOLDS_DIRNAME
-    cursor_path = root / "hold_request_cursor.json"
-    last = _read(cursor_path).get("last", "") if cursor_path.exists() else ""
-    paths = sorted(directory.glob("*.json"))
-    paths = [p for p in paths if p.name > last] + [p for p in paths if p.name <= last]
-
-    def set_aside(path: Path, where: str) -> None:
-        (directory / where).mkdir(exist_ok=True, mode=0o750)
-        os.replace(path, directory / where / path.name)
-
-    outcomes = []
-    for path in paths[:max_sources]:
-        outcome: dict[str, Any] = {"request_key": path.stem, "status": "held"}
-        try:
-            request = validated_request(_read_json(path))
-            if request_key(request) != path.stem or not scene_preparation_probe_failed(request):
-                raise ValueError("beta_screening_hold_request_invalid")
-            if newest.get(request["intent_id"]) != (HOLDS_DIRNAME, path.name):
-                # A newer scene revision of the intent speaks for its hold.
-                set_aside(path, "superseded")
-                outcome["status"] = "superseded"
-            else:
-                held = settle_hold(root, request, ("robot_free_probe_failed", "scene_preparation_receipt_failed"))
-                outcome["evaluation_hold"] = held
-                if held is not None and held.get("acknowledged") is True:
-                    set_aside(path, "settled")  # the website keeps it; nothing more to send
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            code = str(exc) if isinstance(exc, ValueError) else ""
-            outcome.update(status="blocked", blockers=[code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
-                                                       else "beta_screening_hold_request_unavailable"])
-        _write(cursor_path, {"last": path.name})
-        outcomes.append(outcome)
-    return outcomes
 
 
 class PublicationRefused(ValueError):
@@ -637,20 +511,55 @@ def alert_known_good_controls(root: Path) -> dict[str, Any]:
         return {"status": "failed", "error_type": type(exc).__name__}
 
 
+def close_queued_rows(*, queue_root: str | Path | None = None) -> int:
+    """Close every queued row of every campaign before it reserves money: the early trial is drained.
+
+    The owner dropped Blueprint's own early trial (2026-11-14), so no queued row will run. Each row that
+    never reserved money (``pending`` or ``waitlisted``, no attempt) closes ``unavailable`` with
+    ``candidate_disabled``, the existing path ``coordinator._switch_off_website_scripted`` closes a
+    switched-off row by. A row already preparing, launched or finished is left to its end: it is
+    reconciled and settled as before. Returns the number of rows closed.
+    """
+    from .beta_policy_screening_coordinator import QUEUED_STATUSES, _changed, _ledger, _lock, _root, _save
+    from .beta_policy_screening_plan import DISABLED_BLOCKER
+
+    root = _root(queue_root)
+    closed = 0
+    with _lock(root):
+        ledger = _ledger(root)
+        for state in ledger["campaigns"].values():
+            touched = False
+            for row in state["candidates"].values():
+                if row["status"] in QUEUED_STATUSES and "attempt" not in row:
+                    row.update(status="unavailable", blockers=[DISABLED_BLOCKER])
+                    touched = True
+                    closed += 1
+            if touched:
+                _changed(state)
+        if closed:
+            _save(root, ledger)
+    return closed
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    """One drained tick: settle, reconcile and publish what is owed; adopt, plan and launch nothing.
+
+    The scene stage's duties this tick once carried (recovery and requeue, the site's success-rule exchange,
+    held notices, cold-storage restore, probe queueing) run in ``scene_stage_maintenance``.
+    """
     from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV, _root, process_screening_queue
     from .beta_policy_screening_status import write_worker_status
-    from .team_scene_packet_worker import QUEUE_ROOT_ENV as PACKET_QUEUE_ENV
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--queue-root", default=os.getenv(QUEUE_ROOT_ENV))
-    parser.add_argument("--packet-queue-root", default=os.getenv(PACKET_QUEUE_ENV))
     parser.add_argument("--max-campaigns", type=int, default=2)
-    parser.add_argument("--max-launches", type=int, default=1)
-    parser.add_argument("--max-sources", type=int, default=32)
+    # Accepted so an older unit file still runs; any value but 0 is refused below, never used.
+    parser.add_argument("--max-launches", type=int, default=DRAIN_MAX_LAUNCHES)
     args = parser.parse_args(argv)
     root = _root(args.queue_root)
-    sources = enqueue_prepared_scenes(queue_root=root, packet_queue_root=args.packet_queue_root,
-        max_sources=args.max_sources) if args.packet_queue_root else {"status": "source_queue_not_configured"}
+    launch_refusal = ({"requested_max_launches": args.max_launches, "refused": "beta_screening_trial_drained"}
+                      if args.max_launches != DRAIN_MAX_LAUNCHES else None)
+    # No queued row will run: each closes before it could reserve money (``candidate_disabled``).
+    queued_closed = close_queued_rows(queue_root=root)
     from .beta_screening_unspent_bundle_prune import prune_unspent_bundles
 
     # Local and unpaid, before any launch, so a reservation sized against the work volume sees
@@ -664,8 +573,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Publish queued rows before a potentially long allocator attempt.
     before = deliver_publications(queue_root=root, refresh_startable=True)
     write_worker_status(root, publication_before=before)
+    # Finished attempts settle and every active campaign reconciles (its consent and window stop included);
+    # no new attempt starts.
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
-        max_launches=args.max_launches)
+        max_launches=DRAIN_MAX_LAUNCHES)
     after = deliver_publications(queue_root=root)
     from .open_job_testing_final import publish_testing_record
 
@@ -676,10 +587,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - the GC keeps runs without a record; the tick goes on
         open_job_testing = {"status": "failed", "error_type": type(exc).__name__}
     control_alerts = alert_known_good_controls(root)
-    from .beta_policy_screening_holds import deliver_holds
-
-    # A held evaluation (no campaign could start) reaches the website by name, like a campaign.
-    holds = deliver_holds(queue_root=root)
     from .beta_screening_disk_admission import alert_disk_waits
     from .control_plane_capacity_controller import WEBHOOK_URL_ENV
 
@@ -702,8 +609,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Unpaid and bounded: a run that completed before its videos were kept gets one retention pass.
     # Its publication goes out on the next tick, like any other progress.
     review_videos = backfill_review_videos(queue_root=root)
-    print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
-                      "publication_after": after, "holds": holds, "selections": selections,
+    print(json.dumps({"mode": "drain", "queued_rows_closed": queued_closed,
+                      **({"launch_refusal": launch_refusal} if launch_refusal else {}),
+                      "execution": execution, "publication_before": before,
+                      "publication_after": after, "selections": selections,
                       "runtime_diagnostics_backfill": diagnostics, "review_video_backfill": review_videos,
                       "unspent_bundle_prune": unspent_bundles, "open_job_testing": open_job_testing, "work_disk_wait_alert": disk_wait_alert, "worker_status": status,
                       "known_good_control_alerts": control_alerts},

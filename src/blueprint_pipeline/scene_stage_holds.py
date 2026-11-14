@@ -26,9 +26,10 @@ evaluation ended before the screening queue could plan a campaign kept reading
     The scene's team half could not be compiled, and nothing returns it to the
     queue under the running release (``team_scene_packet_worker.final_block``).
 
-The screening worker's source pass decides one hold per scene intent
-(``probe_hold``, ``packet_hold``) and keeps the latest under
-``<queue_root>/holds/``. ``deliver_holds`` posts it over the same signed
+The scene stage's maintenance pass (``scene_stage_maintenance``) decides one
+hold per scene intent (``probe_hold``, ``packet_hold``) and keeps the latest
+under ``<queue_root>/holds/`` (the screening queue root, where these holds have
+always been kept). ``deliver_holds`` posts it over the same signed
 Pipeline transport as campaign publications, with a revision and a self-digest,
 until the website acknowledges those exact bytes. A hold is never final here:
 when a later pass finds the evaluation moving again (a new release retried the
@@ -48,8 +49,9 @@ Three more ends used to say nothing for good, and are held the same way:
 - a planned campaign that ended with nothing scored on a reached account
   monthly limit, a money stop that is never retried here.
 
-The last two come from the coordinator (``campaign_hold_detail``) as a detail
-code (``campaign_hold``). The WebApp accepts a closed set of reasons
+The last two came from the early trial's campaigns (``campaign_hold_detail``,
+held by the trial worker's own ``campaign_hold``); the maintenance pass plans no
+campaign, so it never decides them. The WebApp accepts a closed set of reasons
 (``REASONS``, its ``betaPolicyScreeningHold.ts``) and none names these ends, so
 they are sent under ``STALL_HOLD_REASON``, the accepted reason the site is told
 as a problem on our side, with the real cause in ``detail_code``. Publishing a
@@ -153,11 +155,6 @@ def probe_hold(code: str, capture_root: str | Path, *, queue_root: str | Path | 
         if terminal is not None:
             return "robot_free_probe_not_completed", _code(terminal.get("status"))
     return None
-
-
-def campaign_hold(detail: str) -> tuple[str, str | None]:
-    """The hold a planned campaign's own end stands for (``coordinator.campaign_hold_detail``)."""
-    return STALL_HOLD_REASON, _code(detail)
 
 
 def blocked_since(previous: Mapping[str, Any] | None, blockers: list[str], *, now: datetime | None = None) -> str:
@@ -359,6 +356,6 @@ def deliver_holds(*, queue_root: str | Path, transport=None) -> dict[str, Any]:
 
 
 __all__ = ["HOLD_SCHEMA", "REASONS", "RELEASE", "ROUTE", "STALL_HOLD_AFTER_SECONDS", "STALL_HOLD_REASON",
-           "WINDOW_CLOSED", "acknowledge_hold", "blocked_since", "campaign_hold", "deliver_holds", "hold_id",
+           "WINDOW_CLOSED", "acknowledge_hold", "blocked_since", "deliver_holds", "hold_id",
            "packet_hold", "pending_holds", "probe_hold", "publish_hold", "scene_preparation_probe_failed",
            "settle_hold", "stalled_source_hold"]

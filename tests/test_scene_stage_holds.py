@@ -1,12 +1,15 @@
-"""A website job whose evaluation cannot start after scene publication is held by name, and released when it moves."""
+"""A website job whose scene stage cannot move is held by name, and released when it moves.
+
+The pass that decides the holds is the scene stage's maintenance pass (``scene_stage_maintenance``).
+"""
 import json
 
 import pytest
 
-from blueprint_pipeline import beta_policy_screening_holds as holds
-from blueprint_pipeline import beta_policy_screening_worker as worker
+from blueprint_pipeline import scene_stage_holds as holds
 from blueprint_pipeline import rigid_robot_free_probe_bundle as bundle
 from blueprint_pipeline import rigid_robot_free_probe_runner as runner
+from blueprint_pipeline import scene_stage_maintenance as maintenance
 from blueprint_pipeline import team_scene_packet_worker as packets
 from blueprint_pipeline.decision_evidence_contracts import (
     canonical_digest,
@@ -99,22 +102,19 @@ def test_a_team_half_block_is_held_only_once_nothing_returns_it_to_the_queue(sta
     assert holds.packet_hold(status, release=None) is None
 
 
-def test_worker_holds_a_failed_probe_by_name_and_releases_it_when_the_probe_later_passes(tmp_path, monkeypatch):
-    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
-
+def test_maintenance_holds_a_failed_probe_by_name_and_releases_it_when_the_probe_later_passes(tmp_path, monkeypatch):
     world = prepared_source_queue(tmp_path, monkeypatch)
-    planning = capabilities.build_planning_inputs
     monkeypatch.setattr(runner, "enqueue_rigid_robot_free_probe", lambda _capture: {"status": "already_queued"})
     monkeypatch.setattr(runner, "source_commit", lambda: RELEASE)
     state = {**_probe_state(tmp_path), "status": "receipt_decided", "receipt_status": "failed"}
     monkeypatch.setattr(bundle, "current_probe_state", lambda _root: dict(state))
 
-    def refused(**_kwargs):
+    def refused(*_args, **_kwargs):
         raise ValueError("team_evaluation_robot_free_probe_not_passed")
 
-    monkeypatch.setattr(capabilities, "build_planning_inputs", refused)
+    monkeypatch.setattr(maintenance, "probe_gate", refused)
     kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
-    [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [outcome] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert outcome["blockers"] == ["team_evaluation_robot_free_probe_not_passed"]
     assert outcome["evaluation_hold"] == {"status": "held", "reason_code": "robot_free_probe_failed", "revision": 1,
                                           "change": "recorded"}
@@ -129,39 +129,39 @@ def test_worker_holds_a_failed_probe_by_name_and_releases_it_when_the_probe_late
                                                                          "not_passed")
     assert held["hold_digest"] == cross_runtime_canonical_digest(held, digest_field="hold_digest")
     # The same decision on the next pass is the same bytes.
-    [again] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [again] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert again["evaluation_hold"]["change"] == "unchanged"
     sent = []
     assert holds.deliver_holds(queue_root=world["screening_queue"], transport=sent.append) == {
         "acknowledged": 1, "pending": 0}
     assert sent == [held] and not holds.pending_holds(queue_root=world["screening_queue"])
-    # A re-driven probe passes: the campaign is planned, and the same hold is published again as released.
-    monkeypatch.setattr(capabilities, "build_planning_inputs", planning)
-    [planned] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
-    assert planned["status"] == "enqueued"
+    # A re-driven probe passes: the scene stage moves on, and the same hold is published again as released.
+    monkeypatch.setattr(maintenance, "probe_gate", lambda _profile: {"receipt_digest": "sha256:" + "0" * 64})
+    [planned] = maintenance.scene_stage_pass(**kwargs)["sources"]
+    assert planned["status"] == "scene_stage_ready" and planned["scene_stage"] == maintenance.PROBE_PASSED
     assert planned["evaluation_hold"] == {"status": "released", "reason_code": None, "revision": 2,
                                           "change": "recorded"}
     [released] = holds.pending_holds(queue_root=world["screening_queue"])
     assert (released["hold_id"], released["status"], released["revision"]) == (held["hold_id"], "released", 2)
     # Released once: later passes publish nothing more.
     assert holds.deliver_holds(queue_root=world["screening_queue"], transport=sent.append)["acknowledged"] == 1
-    [later] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [later] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert "evaluation_hold" not in later and not holds.pending_holds(queue_root=world["screening_queue"])
 
 
-def test_worker_holds_a_team_half_no_pass_will_retry_and_lets_a_new_release_try_it_first(tmp_path, monkeypatch):
+def test_maintenance_holds_a_team_half_no_pass_will_retry_and_lets_a_new_release_try_it_first(tmp_path, monkeypatch):
     world = prepared_source_queue(tmp_path, monkeypatch)
     key = packets.request_key(world["requests"][0])
     (world["packet_queue"] / "status" / f"{key}.json").write_text(json.dumps(
         {"status": "blocked", "blockers": ["team_scene_packet_bundle_invalid"], "release_commit": RELEASE, **SPENT}))
     monkeypatch.setattr(packets, "current_release_commit", lambda: RELEASE)
     kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
-    [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [outcome] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert outcome["blockers"] == ["beta_screening_scene_packet_not_ready"]
     assert outcome["evaluation_hold"]["reason_code"] == "team_scene_packet_blocked"
     # A new release returns it to the queue on this pass, so the hold is released while it runs again.
     monkeypatch.setattr(packets, "current_release_commit", lambda: NEXT_RELEASE)
-    result = worker.enqueue_prepared_scenes(**kwargs)
+    result = maintenance.scene_stage_pass(**kwargs)
     assert result["team_scene_packet_requeue"]["requeued"][0]["reason"] == "new_release"
     [released] = holds.pending_holds(queue_root=world["screening_queue"])
     assert (released["status"], released["revision"]) == ("released", 2)
@@ -185,13 +185,13 @@ def test_scene_preparation_failed_receipt_is_kept_and_held_without_a_team_half(t
     assert not list((queue / "pending").glob("*.json"))
     kwargs = {"queue_root": tmp_path / "screening", "packet_queue_root": queue}
     # The receipt is re-read: without a decided failed receipt beside the launch, nothing is held.
-    [refused] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [refused] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert refused["blockers"] == ["beta_screening_hold_request_invalid"]
     receipt = {"schema_version": "task_evaluation_configured_scene_robot_free_readiness.v1", "status": "failed",
                "receipt_digest": ""}
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     (launch / "robot_free_readiness.v1.json").write_text(json.dumps(receipt))
-    [held] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [held] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert held["request_key"] == key and held["status"] == "held"
     assert held["evaluation_hold"]["reason_code"] == "robot_free_probe_failed"
     [publication] = holds.pending_holds(queue_root=tmp_path / "screening")
@@ -239,36 +239,34 @@ def _held_request(source, queue, launch, *, intent="scene-intent-0", revision=0,
 
 def test_an_error_or_unreadable_state_keeps_a_hold_and_never_releases_it(tmp_path, monkeypatch):
     """A failed probe stays held through a pass that cannot read it: no release, no re-hold, no lost email."""
-    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
-
     world = prepared_source_queue(tmp_path, monkeypatch)
     monkeypatch.setattr(runner, "enqueue_rigid_robot_free_probe", lambda _capture: {"status": "already_queued"})
     failed = {**_probe_state(tmp_path), "status": "receipt_decided", "receipt_status": "failed"}
     monkeypatch.setattr(bundle, "current_probe_state", lambda _root: dict(failed))
 
-    def refused(**_kwargs):
+    def refused(*_args, **_kwargs):
         raise ValueError("team_evaluation_robot_free_probe_not_passed")
 
-    monkeypatch.setattr(capabilities, "build_planning_inputs", refused)
+    monkeypatch.setattr(maintenance, "probe_gate", refused)
     kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
-    assert worker.enqueue_prepared_scenes(**kwargs)["sources"][0]["evaluation_hold"]["revision"] == 1
+    assert maintenance.scene_stage_pass(**kwargs)["sources"][0]["evaluation_hold"]["revision"] == 1
 
     def unreadable(_root):
         raise OSError(5, "Input/output error")
 
-    def transient(**_kwargs):
+    def transient(*_args, **_kwargs):
         raise OSError(28, "No space left on device")
 
     # probe_hold itself fails, then planning fails for a reason that is not the probe.
-    for patch in ((bundle, "current_probe_state", unreadable), (capabilities, "build_planning_inputs", transient)):
+    for patch in ((bundle, "current_probe_state", unreadable), (maintenance, "probe_gate", transient)):
         monkeypatch.setattr(*patch)
-        [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+        [outcome] = maintenance.scene_stage_pass(**kwargs)["sources"]
         assert "evaluation_hold" not in outcome
         [kept] = holds.pending_holds(queue_root=world["screening_queue"])
         assert (kept["status"], kept["revision"]) == ("held", 1)
     monkeypatch.setattr(bundle, "current_probe_state", lambda _root: dict(failed))
-    monkeypatch.setattr(capabilities, "build_planning_inputs", refused)
-    assert worker.enqueue_prepared_scenes(**kwargs)["sources"][0]["evaluation_hold"]["change"] == "unchanged"
+    monkeypatch.setattr(maintenance, "probe_gate", refused)
+    assert maintenance.scene_stage_pass(**kwargs)["sources"][0]["evaluation_hold"]["change"] == "unchanged"
     [kept] = holds.pending_holds(queue_root=world["screening_queue"])
     assert (kept["status"], kept["revision"]) == ("held", 1)
 
@@ -282,7 +280,7 @@ def test_a_newer_scene_revision_of_the_intent_supersedes_a_held_older_one_withou
     queue, screening = tmp_path / "packets", tmp_path / "screening"
     old = _held_request(source, queue, tmp_path / "launch-r1", revision=1)
     kwargs = {"queue_root": screening, "packet_queue_root": queue}
-    worker.enqueue_prepared_scenes(**kwargs)
+    maintenance.scene_stage_pass(**kwargs)
     [held] = holds.pending_holds(queue_root=screening)
     assert (held["status"], held["source"]["scene_revision_digest"]) == (
         "held", canonical_digest({"configured_scene_revision": 1}))
@@ -293,14 +291,14 @@ def test_a_newer_scene_revision_of_the_intent_supersedes_a_held_older_one_withou
     (queue / "status" / f"{key}.json").write_text(json.dumps({"status": "completed"}))
     stamp = (queue / "holds" / f"{old['hold_request_key']}.json").stat().st_mtime_ns
     os.utime(queue / "processed" / f"{key}.json", ns=(stamp + 10**9, stamp + 10**9))
-    worker.enqueue_prepared_scenes(**kwargs)
+    maintenance.scene_stage_pass(**kwargs)
     [released] = holds.pending_holds(queue_root=screening)
     assert (released["status"], released["revision"]) == ("released", 2)
     assert released["source"]["scene_revision_digest"] == canonical_digest({"configured_scene_revision": 2})
     assert (queue / "holds" / "superseded" / f"{old['hold_request_key']}.json").is_file()
     # Later passes add no revisions: no flipping between the two revisions.
     for _ in range(3):
-        worker.enqueue_prepared_scenes(**kwargs)
+        maintenance.scene_stage_pass(**kwargs)
     [again] = holds.pending_holds(queue_root=screening)
     assert again == released
 
@@ -312,12 +310,12 @@ def test_held_requests_rotate_under_a_cursor_and_are_set_aside_once_acknowledged
     queue, screening = tmp_path / "packets", tmp_path / "screening"
     keys = sorted(_held_request(source, queue, tmp_path / f"launch-{index}", intent=f"scene-intent-{index}",
                                 revision=index)["hold_request_key"] for index in range(3))
-    seen = [worker.enqueue_prepared_scenes(queue_root=screening, packet_queue_root=queue, max_sources=1)
+    seen = [maintenance.scene_stage_pass(queue_root=screening, packet_queue_root=queue, max_sources=1)
             ["sources"][0]["request_key"] for _ in range(3)]
     assert seen == keys
     assert holds.deliver_holds(queue_root=screening, transport=lambda _publication: None)["acknowledged"] == 3
     for _ in range(3):
-        worker.enqueue_prepared_scenes(queue_root=screening, packet_queue_root=queue, max_sources=1)
+        maintenance.scene_stage_pass(queue_root=screening, packet_queue_root=queue, max_sources=1)
     assert not list((queue / "holds").glob("*.json"))
     assert sorted(path.stem for path in (queue / "holds" / "settled").glob("*.json")) == keys
     assert not holds.pending_holds(queue_root=screening)

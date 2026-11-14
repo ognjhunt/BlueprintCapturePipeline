@@ -12,7 +12,7 @@ site's money, trimmed to nine rows and re-sealed). Nothing reaches the host, a p
 #   src/blueprint_pipeline/open_job_source_runs.py
 #   src/blueprint_pipeline/scene_run_cold_storage.py
 #   src/blueprint_pipeline/control_plane_storage_gc_reasons.py
-#   src/blueprint_pipeline/beta_policy_screening_holds.py
+#   src/blueprint_pipeline/scene_stage_holds.py
 #   src/blueprint_pipeline/rigid_robot_free_probe_bundle.py
 #   src/blueprint_pipeline/team_scene_packet_worker.py
 
@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-from blueprint_pipeline import beta_policy_screening_holds as holds
+from blueprint_pipeline import scene_stage_holds as holds
 from blueprint_pipeline import completed_replay_cache_retention as retention
 from blueprint_pipeline import open_job_source_runs as open_jobs
 from blueprint_pipeline import open_job_testing_final as testing
@@ -335,12 +335,14 @@ class _Restore:
         monkeypatch.setattr(offload, "restore_offloaded_evidence", restore)
 
 
-def test_an_open_jobs_run_comes_back_by_itself_and_the_screening_pass_releases_its_hold(tmp_path, monkeypatch):
-    from blueprint_pipeline import beta_policy_screening_worker as worker
+def test_an_open_jobs_run_comes_back_by_itself_and_the_maintenance_pass_releases_its_hold(tmp_path, monkeypatch):
+    from blueprint_pipeline import scene_stage_maintenance as maintenance
     from blueprint_pipeline import scene_run_restore
     from tests.test_beta_policy_screening_worker import prepared_source_queue
 
     queue = prepared_source_queue(tmp_path, monkeypatch)
+    # The fixture's profile names no probe root: its robot-free probe reads as passed.
+    monkeypatch.setattr(maintenance, "probe_gate", lambda _profile: {})
     run = Path(queue["requests"][0]["source_launch_root"])
     pointer = _fixture("launch_run.offloaded.v1.json")
     run.parent.mkdir(parents=True, exist_ok=True)
@@ -350,17 +352,17 @@ def test_an_open_jobs_run_comes_back_by_itself_and_the_screening_pass_releases_i
     fake = _Restore(monkeypatch, disk=False)
     kwargs = {"queue_root": queue["screening_queue"], "packet_queue_root": queue["packet_queue"]}
     # No room for the download and its extraction: nothing is restored or spent, the job is held by name.
-    [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [outcome] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert outcome["blockers"] == [cold.COLD_STORAGE] and fake.calls == 0
     assert outcome["scene_run_restore"]["status"] == "refused"
     [held] = holds.pending_holds(queue_root=queue["screening_queue"])
     assert (held["reason_code"], held["detail_code"]) == ("team_scene_packet_blocked", "scene_run_in_cold_storage")
-    # Room returns: the next pass restores it (no person), reads it, plans, and releases the hold.
+    # Room returns: the next pass restores it (no person), reads it, and releases the hold.
     fake.disk = True
-    [planned] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [planned] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert planned["scene_run_restore"]["status"] == "restored" and fake.calls == 1
     assert fake.reserved == [("evidence_offload", 2 * pointer["size_bytes"])]
-    assert planned["status"] == "enqueued" and planned["evaluation_hold"]["status"] == "released"
+    assert planned["status"] == "scene_stage_ready" and planned["evaluation_hold"]["status"] == "released"
     # Fresh: every restored file's time is now, so the clean-up's two-day rule does not take it again at once.
     assert min(path.stat().st_mtime for path in (run, *run.rglob("*"))) > time.time() - 60
 
@@ -462,7 +464,7 @@ def test_at_the_floor_a_run_whose_job_has_a_test_running_is_never_moved(world, m
 
 
 def test_a_team_half_refused_for_cold_storage_is_held_by_name_on_the_first_pass(tmp_path, monkeypatch):
-    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline import scene_stage_maintenance as maintenance
     from blueprint_pipeline import team_scene_packet_worker as packets
     from tests.test_beta_policy_screening_worker import prepared_source_queue
 
@@ -471,8 +473,8 @@ def test_a_team_half_refused_for_cold_storage_is_held_by_name_on_the_first_pass(
     (queue["packet_queue"] / "status" / f"{key}.json").write_text(json.dumps(
         {"status": "blocked", "blockers": [cold.COLD_STORAGE], "release_commit": "a" * 40}))
     monkeypatch.setattr(packets, "current_release_commit", lambda: "a" * 40)
-    [outcome] = worker.enqueue_prepared_scenes(queue_root=queue["screening_queue"],
-                                               packet_queue_root=queue["packet_queue"])["sources"]
+    [outcome] = maintenance.scene_stage_pass(queue_root=queue["screening_queue"],
+                                             packet_queue_root=queue["packet_queue"])["sources"]
     assert outcome["blockers"] == ["beta_screening_scene_packet_not_ready"]
     [held] = holds.pending_holds(queue_root=queue["screening_queue"])
     assert (held["reason_code"], held["detail_code"]) == ("team_scene_packet_blocked", "scene_run_in_cold_storage")
@@ -769,11 +771,13 @@ def test_the_site_is_told_restoring_only_while_a_restore_can_still_land(tmp_path
     """An archive that fails its own integrity is not being restored: the hold names that (the website's general
     "a problem on our side" sentence, which its ops alert reports to staff), never ``scene_run_in_cold_storage``;
     a transient failure keeps the cold-storage hold ("being restored")."""
-    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline import scene_stage_maintenance as maintenance
     from blueprint_pipeline import scene_run_restore
     from tests.test_beta_policy_screening_worker import prepared_source_queue
 
     queue = prepared_source_queue(tmp_path, monkeypatch)
+    # The fixture's profile names no probe root: its robot-free probe reads as passed.
+    monkeypatch.setattr(maintenance, "probe_gate", lambda _profile: {})
     run = Path(queue["requests"][0]["source_launch_root"])
     pointer = _fixture("launch_run.offloaded.v1.json")
     run.parent.mkdir(parents=True, exist_ok=True)
@@ -783,7 +787,7 @@ def test_the_site_is_told_restoring_only_while_a_restore_can_still_land(tmp_path
     _Restore(monkeypatch, transfer=fault != "transfer", intact=fault != "integrity")
     kwargs = {"queue_root": queue["screening_queue"], "packet_queue_root": queue["packet_queue"]}
     for _ in range(2):  # the second pass reads the record the first one wrote
-        [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+        [outcome] = maintenance.scene_stage_pass(**kwargs)["sources"]
     [held] = holds.pending_holds(queue_root=queue["screening_queue"])
     assert (held["reason_code"], held["detail_code"]) == ("team_scene_packet_blocked", detail)
     assert outcome["scene_run_restore"]["status"] == (

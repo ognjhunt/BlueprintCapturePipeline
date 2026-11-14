@@ -20,7 +20,7 @@ import pytest
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
 from blueprint_pipeline import website_capture_withdrawal_deletion as deletion
 from blueprint_pipeline import website_capture_withdrawal_screening as screening
-from blueprint_pipeline.beta_policy_screening_holds import HOLDS_DIRNAME, hold_id
+from blueprint_pipeline.scene_stage_holds import HOLDS_DIRNAME, hold_id
 from blueprint_pipeline.beta_policy_screening_settlement import SETTLEMENT_BASIS, SETTLEMENT_SCHEMA
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.provider_output_member_index import SCHEMA as INDEX_SCHEMA
