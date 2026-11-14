@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "restore-g1-runtime-source", "restore-g1-pi-language-assets", "retire-parked-delivery"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "restore-g1-runtime-source", "restore-g1-pi-language-assets", "reclaim-approved-folders", "retire-parked-delivery"}
 # The owner-approved, time-only scene window extension passes the fence.
 assert r.required_scope("extend-scene-execution-window") == "operate"
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
@@ -78,6 +78,14 @@ assert r.validate_request({"kind":"restore-g1-pi-language-assets", "apply":True}
 try: r.validate_request({"kind":"restore-g1-pi-language-assets", "apply":True, "bundle":"/var/lib/blueprint/x.zip"})
 except r.RequestRefused as e: assert e.code == "request_key_unknown:bundle"
 else: raise AssertionError("caller bundle admitted for the G1 language file restore")
+# So does the owner-approved folder reclaim ("option 1", 2026-11-08 CST), as plan and apply; it takes no path.
+assert r.required_scope("reclaim-approved-folders") == "operate"
+assert r.validate_request_id("20261108T000000Z-reclaim-approved-folders-0123abcd")
+assert r.validate_request({"kind":"reclaim-approved-folders"}) == {"kind":"reclaim-approved-folders", "apply":False}
+assert r.validate_request({"kind":"reclaim-approved-folders", "apply":True}) == {"kind":"reclaim-approved-folders", "apply":True}
+try: r.validate_request({"kind":"reclaim-approved-folders", "apply":True, "path":"/var/lib/blueprint/pipeline-control-plane/x"})
+except r.RequestRefused as e: assert e.code == "request_key_unknown:path"
+else: raise AssertionError("caller path admitted for the approved folder reclaim")
 # So does the owner-approved retirement of one parked preparation delivery, as plan and as apply.
 assert r.required_scope("retire-parked-delivery") == "operate"
 assert r.validate_request_id("20261106T000000Z-retire-parked-delivery-0123abcd")
