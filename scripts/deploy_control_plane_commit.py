@@ -680,6 +680,18 @@ DEFAULT_PAUSED_LANE_DISARM_UNITS = (
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-episode-compilation.timer",
 )
+#: Triggers this repository no longer ships that a host may still have
+#: installed and enabled (the same names as the operator door's
+#: RETIRED_HOLD_UNITS).  Removing a unit file from the repository does not stop
+#: the unit, so every release stops and disables each one that is installed,
+#: idempotently and without failing the release.  Only the trigger is touched:
+#: its service is not stopped and no file is deleted.  A name here must not be
+#: in an arm list, the disarm list or the deployed units (that refuses the release).
+DEFAULT_RETIRED_TRIGGER_UNITS = (
+    "blueprint-pipeline-control-plane.timer",
+    "blueprint-capture-reconstruction-dispatcher.timer",
+    "blueprint-capture-reconstruction-dispatcher.path",
+)
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the
 #: configuration files that name runtime paths.  Nothing is grepped.
@@ -3423,6 +3435,70 @@ def _paused_lane_disarm_summary(receipts: Sequence[Mapping[str, Any]]) -> dict[s
     }
 
 
+def _validate_retired_trigger_units(retired: Sequence[str] = DEFAULT_RETIRED_TRIGGER_UNITS) -> None:
+    """Refuse a release that would both ship or arm a trigger and retire it."""
+
+    shipped = {*DEFAULT_ALWAYS_ARM_PATH_UNITS, *DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS,
+               *DEFAULT_ALWAYS_ARM_TIMER_UNITS, *DEPLOY_EXEMPT_TRIGGER_UNITS,
+               *DEFAULT_PAUSED_LANE_DISARM_UNITS, *DEFAULT_DEPLOYED_SYSTEMD_UNITS}
+    for unit in retired:
+        if not unit.endswith((".path", ".timer")) or unit in shipped:
+            raise ControlPlaneDeployError(f"deploy_retired_trigger_still_shipped:{unit}")
+
+
+def _retire_unshipped_trigger(unit: str) -> dict[str, Any]:
+    """Stop and disable one trigger this repository no longer ships; never fails the release.
+
+    A unit the host does not have is ``absent`` and is left alone.  Its service
+    is not stopped (a running one-shot finishes) and no file is deleted.
+    """
+
+    row: dict[str, Any] = {"unit": unit, "requested_intent": "retire_unshipped_trigger"}
+    try:
+        load = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["systemctl", "show", "--property=LoadState", "--value", unit],
+            capture_output=True, text=True, check=False, timeout=15,
+        ).stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        load = "unknown"
+    if load == "not-found":
+        return {**row, "load_state": load, "outcome": "absent", "retired": True}
+    try:
+        before: dict[str, str] = _systemd_unit_state(unit)
+    except ControlPlaneDeployError:
+        before = {"enabled": "unknown", "state": "unknown"}
+    failed: list[str] = []
+    for verb in ("stop", "disable"):
+        try:
+            if _systemctl_verb(verb, unit, timeout=30).returncode != 0:
+                failed.append(verb)
+        except (OSError, subprocess.SubprocessError):
+            failed.append(verb)
+    try:
+        after: dict[str, str] = _systemd_unit_state(unit)
+    except ControlPlaneDeployError:
+        after = {"enabled": "unknown", "state": "unknown"}
+    retired = after["state"] == "inactive" and after["enabled"] not in {"enabled", "unknown"}
+    off = before["state"] == "inactive" and before["enabled"] not in {"enabled", "unknown"}
+    return {
+        **row, "load_state": load, "before": before, "after": after, "retired": retired,
+        "outcome": "failed" if not retired else "already_off" if off else "retired",
+        **({} if retired else {"retire_failed": failed or ["state_mismatch"]}),
+    }
+
+
+def _retire_unshipped_triggers(units: Sequence[str] = DEFAULT_RETIRED_TRIGGER_UNITS) -> list[dict[str, Any]]:
+    return [_retire_unshipped_trigger(unit) for unit in units]
+
+
+def _unshipped_trigger_retirement_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The release's account of the retired triggers: turned off, already off, absent, failed."""
+
+    by = {outcome: [row["unit"] for row in rows if row.get("outcome") == outcome]
+          for outcome in ("retired", "already_off", "absent", "failed")}
+    return {"status": "failed" if by["failed"] else "retired", **by}
+
+
 def _restore_installed_path_units(
     installed_units: Sequence[Mapping[str, Any]],
     *,
@@ -5313,6 +5389,7 @@ def deploy_control_plane_commit(
 
     if preserve_configured_controls_state and arm_path_units:
         raise ControlPlaneDeployError("deploy_conflicting_configured_controls_intent")
+    _validate_retired_trigger_units()
     source = Path(source_repo).expanduser().resolve()
     active = Path(active_link).expanduser()
     releases = Path(release_root).expanduser().resolve()
@@ -5780,6 +5857,9 @@ def deploy_control_plane_commit(
                 defer_start_verification=True,
                 disarm_units=DEFAULT_PAUSED_LANE_DISARM_UNITS,
             )
+            # Beside the paused-lane disarm: triggers this repository no
+            # longer ships are stopped and disabled if the host still has them.
+            unshipped_trigger_receipts = _retire_unshipped_triggers(DEFAULT_RETIRED_TRIGGER_UNITS)
         verification_warning = _verify_deferred_path_unit_starts(
             automation_unit_state_receipts, door_holds_dir=door_holds_dir,
         )
@@ -5854,6 +5934,10 @@ def deploy_control_plane_commit(
             configured_controls_autostart_registry
         ),
         "paused_lane_disarm": _paused_lane_disarm_summary(automation_unit_state_receipts),
+        "unshipped_trigger_retirement": _unshipped_trigger_retirement_summary(
+            unshipped_trigger_receipts
+        ),
+        "unshipped_trigger_states": unshipped_trigger_receipts,
         "path_unit_states": [
             row for row in automation_unit_state_receipts if row["unit"].endswith(".path")
         ],

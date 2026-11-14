@@ -1224,6 +1224,122 @@ def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tm
     assert summary["held"] == []
 
 
+def test_retired_triggers_match_the_door_and_are_never_shipped_or_armed() -> None:
+    """The release retires exactly the triggers the door names as retired."""
+
+    import ast
+
+    door = Path(__file__).resolve().parents[1] / "deploy" / "operator-door" / "operator_door" / "requests.py"
+    tree = ast.parse(door.read_text(encoding="utf-8"))
+    names = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                 and any(getattr(target, "id", None) == "RETIRED_HOLD_UNITS" for target in node.targets))
+    assert deploy.DEFAULT_RETIRED_TRIGGER_UNITS == names
+    systemd = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+    for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS:
+        assert unit not in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS
+        assert unit not in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+        assert not (systemd / unit).exists()
+    deploy._validate_retired_trigger_units()
+
+
+@pytest.mark.parametrize("arm_list", ["DEFAULT_ALWAYS_ARM_PATH_UNITS", "DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS",
+                                      "DEFAULT_ALWAYS_ARM_TIMER_UNITS", "DEPLOY_EXEMPT_TRIGGER_UNITS",
+                                      "DEFAULT_PAUSED_LANE_DISARM_UNITS", "DEFAULT_DEPLOYED_SYSTEMD_UNITS"])
+def test_a_retired_trigger_still_shipped_or_armed_refuses_the_release(tmp_path, monkeypatch, arm_list: str) -> None:
+    unit = "blueprint-pipeline-control-plane.timer"
+    monkeypatch.setattr(deploy, arm_list, (*getattr(deploy, arm_list), unit))
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", lambda _units: pytest.fail("host action"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match=f"deploy_retired_trigger_still_shipped:{unit}"):
+        deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+
+
+def _fake_retired_systemd(states: dict[str, dict[str, str] | None], *, failing: set[str] = frozenset()):
+    """A fake systemctl for retired triggers; None is a unit the host does not have."""
+
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(argv, **_kwargs):
+        calls.append(tuple(argv))
+        verb, unit = argv[1], argv[-1]
+        state = states[unit]
+        if verb == "show":
+            return subprocess.CompletedProcess(argv, 0, stdout="not-found\n" if state is None else "loaded\n", stderr="")
+        if state is None:
+            return subprocess.CompletedProcess(argv, 5, stdout="", stderr="Unit not loaded.")
+        if verb in {"is-enabled", "is-active"}:
+            value = state["enabled" if verb == "is-enabled" else "state"]
+            return subprocess.CompletedProcess(argv, 0, stdout=value + "\n", stderr="")
+        if unit in failing:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="busy")
+        if verb == "stop":
+            state["state"] = "inactive"
+        elif verb == "disable":
+            state["enabled"] = "disabled"
+        else:
+            raise AssertionError(f"Unexpected host operation: {verb}")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    return systemctl, calls
+
+
+def test_a_release_retires_unshipped_triggers_idempotently(tmp_path, monkeypatch) -> None:
+    """End to end: enabled and active is turned off, off stays off, absent is success."""
+
+    timer, path_on = deploy.DEFAULT_RETIRED_TRIGGER_UNITS[0], deploy.DEFAULT_RETIRED_TRIGGER_UNITS[2]
+    states: dict[str, dict[str, str] | None] = {
+        timer: {"enabled": "enabled", "state": "active"},
+        "blueprint-capture-reconstruction-dispatcher.timer": None,
+        path_on: {"enabled": "disabled", "state": "inactive"},
+    }
+    retire = deploy._retire_unshipped_triggers
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    systemctl, calls = _fake_retired_systemd(states)
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", retire)
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    receipt = deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+
+    assert receipt["status"] == "deployed"
+    assert receipt["unshipped_trigger_retirement"] == {
+        "status": "retired", "retired": [timer], "already_off": [path_on],
+        "absent": ["blueprint-capture-reconstruction-dispatcher.timer"], "failed": [],
+    }
+    assert states[timer] == {"enabled": "disabled", "state": "inactive"}
+    rows = {row["unit"]: row for row in receipt["unshipped_trigger_states"]}
+    assert rows[timer]["before"] == {"enabled": "enabled", "state": "active"}
+    assert rows[timer]["requested_intent"] == "retire_unshipped_trigger"
+    # Only the three triggers, only stop/disable and state probes; never a service, never an absent unit.
+    touched = {call[-1] for call in calls}
+    assert touched == set(deploy.DEFAULT_RETIRED_TRIGGER_UNITS)
+    assert {call[1] for call in calls} <= {"show", "is-enabled", "is-active", "stop", "disable"}
+    assert [call for call in calls if call[-1] == "blueprint-capture-reconstruction-dispatcher.timer"] == [
+        ("systemctl", "show", "--property=LoadState", "--value", "blueprint-capture-reconstruction-dispatcher.timer")]
+    # A second release finds every one already off or absent.
+    again = deploy._unshipped_trigger_retirement_summary(deploy._retire_unshipped_triggers())
+    assert again["status"] == "retired" and again["retired"] == [] and again["failed"] == []
+    assert again["already_off"] == [timer, path_on]
+
+
+def test_a_retired_trigger_systemctl_cannot_stop_is_reported_not_raised(monkeypatch) -> None:
+    timer = deploy.DEFAULT_RETIRED_TRIGGER_UNITS[0]
+    states = {unit: None for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS}
+    states[timer] = {"enabled": "enabled", "state": "active"}
+    systemctl, _calls = _fake_retired_systemd(states, failing={timer})
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    rows = deploy._retire_unshipped_triggers()
+    assert rows[0]["retired"] is False and rows[0]["retire_failed"] == ["stop", "disable"]
+    summary = deploy._unshipped_trigger_retirement_summary(rows)
+    assert summary["status"] == "failed" and summary["failed"] == [timer]
+
+    def broken(argv, **_kwargs):
+        raise OSError("systemctl missing")
+
+    monkeypatch.setattr(deploy.subprocess, "run", broken)
+    rows = deploy._retire_unshipped_triggers()
+    assert all(row["outcome"] == "failed" for row in rows)
+    assert rows[0]["after"] == {"enabled": "unknown", "state": "unknown"}
+
+
 @pytest.mark.parametrize("explicit", [False, True])
 def test_deploy_never_rearms_a_held_timer(tmp_path, monkeypatch, explicit) -> None:
     unit = "blueprint-agent-run-dispatcher.timer" if explicit else "blueprint-task-evaluation-scene-progression.timer"
@@ -1765,6 +1881,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_verify_intake_runtime": lambda *_args, **_kwargs: {"commit_proven": True},
         "_activate_agent_execution": lambda **_kwargs: {},
         "_restore_installed_path_units": lambda _installed, **_kwargs: [],
+        "_retire_unshipped_triggers": lambda _units: [],
     }
     for name, stub in stubs.items():
         monkeypatch.setattr(deploy, name, stub)
