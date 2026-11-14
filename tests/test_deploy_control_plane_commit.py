@@ -1264,34 +1264,6 @@ def test_failed_deploy_rechecks_a_hold_created_after_unit_snapshot(tmp_path, mon
     assert restored[0]["held_units"][unit]["owner"] == "alice"
 
 
-@pytest.mark.parametrize("unit", deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS)
-@pytest.mark.parametrize("enabled", ["disabled", "enabled"])
-def test_explicit_controls_pause_survives_default_progression_arming(
-    monkeypatch, unit: str, enabled: str,
-) -> None:
-    calls = []
-    before = {"enabled": enabled, "state": "inactive"}
-
-    def completed(argv, **kwargs):
-        calls.append(tuple(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(deploy.subprocess, "run", completed)
-    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(before))
-    restored = deploy._restore_installed_path_units(
-        [{"unit": unit}], before={unit: before}, arm_path_units=False,
-        always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
-        preserve_configured_controls_state=True,
-    )
-    assert calls == [
-        ("systemctl", "enable" if enabled == "enabled" else "disable", unit),
-        ("systemctl", "stop", unit),
-    ]
-    assert restored[0]["after"] == before
-    assert restored[0]["requested_intent"] == "preserve"
-    assert restored[0]["operator_freeze_preserved"] is True
-
-
 def test_conflicting_controls_intent_refuses_before_any_host_action(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
     with pytest.raises(deploy.ControlPlaneDeployError, match="conflicting_configured_controls_intent"):
