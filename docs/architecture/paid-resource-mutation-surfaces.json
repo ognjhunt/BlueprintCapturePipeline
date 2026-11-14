@@ -71,14 +71,6 @@
       ]
     },
     {
-      "path": "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
-      "classification": "hard_disabled_legacy_launcher",
-      "required_markers": [
-        "aws_provider_integration_removed",
-        "provider_mutations_performed"
-      ]
-    },
-    {
       "path": "scripts/postshot_windows_worker/launch_postshot_worker.py",
       "classification": "hard_disabled_legacy_launcher",
       "required_markers": [
