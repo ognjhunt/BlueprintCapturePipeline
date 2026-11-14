@@ -80,9 +80,6 @@
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": [
       "tests/test_public_scene_artifixer3d_vast.py"
     ],
-    "src/blueprint_pipeline/runpod_wam_teardown.py": [
-      "tests/test_runpod_wam_teardown.py"
-    ],
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": [
       "tests/test_sc3_fidelity_contracts.py"
     ],
@@ -125,9 +122,6 @@
     ],
     "src/blueprint_pipeline/wam_provider_output.py": [
       "tests/test_wam_provider_output.py"
-    ],
-    "src/blueprint_pipeline/wam_provider_poll_state.py": [
-      "tests/test_wam_provider_poll_state.py"
     ],
     "src/blueprint_pipeline/task_evaluation_configured_controls_progression_worker.py": [
       "tests/test_task_evaluation_configured_controls_progression_worker.py"

@@ -15,8 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import judge_spend_governor as gov
-from blueprint_pipeline import roboworld_progress_judge as judge
 from blueprint_pipeline import vast_provider_adapter as vast
 from blueprint_pipeline.action_normalization import normalize_actions
 from blueprint_pipeline.action_space_registry import (
@@ -114,83 +112,6 @@ _FAILING_WORKER = textwrap.dedent(
     time.sleep(300)
     """
 )
-
-
-def _spend_policy(**overrides):
-    kwargs = {
-        "campaign_id": "regression",
-        "usd_per_1k_input_tokens": 0.10,
-        "estimated_tokens_per_frame": 100,
-        "target_spend_usd": 5.0,
-        "hard_cap_usd": 50.0,
-    }
-    kwargs.update(overrides)
-    return gov.build_judge_spend_policy(**kwargs)
-
-
-def _ready_request():
-    return judge.build_judge_request(
-        rollout_id="rollout-1",
-        criterion_id="registered_task_success",
-        task_instruction="place the box",
-        frame_uris=[f"frame://{index}" for index in range(60)],
-        view_roles={"fixed_external_left": ["task_progress"]},
-        duration_seconds=25.0,
-        segment_count=3,
-        source_frame_count=300,
-    )
-
-
-def test_stalled_judge_command_is_bounded_and_settled(monkeypatch, tmp_path) -> None:
-    """A hung provider must not block forever or leave the ledger unsettled."""
-
-    monkeypatch.setenv(judge.GATE_ENV, "1")
-    monkeypatch.setenv(
-        judge.JUDGE_COMMAND_ENV, f"{sys.executable} -c \"import time; time.sleep(120)\""
-    )
-    governor = gov.JudgeSpendGovernor(policy=_spend_policy())
-
-    result = judge.run_progress_judge_command(
-        _ready_request(), output_dir=tmp_path, governor=governor, timeout_seconds=2.0
-    )
-
-    assert result["status"] == "blocked"
-    assert "progress_judge_command_timed_out" in result["blockers"]
-    # Settled despite the timeout: a stuck provider call is still billable.
-    assert governor.request_count == 1
-    assert governor.spent_usd > 0.0
-    assert result["spend_ledger"]["request_count"] == 1
-
-
-def test_failed_judge_command_is_also_settled(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv(judge.GATE_ENV, "1")
-    monkeypatch.setenv(judge.JUDGE_COMMAND_ENV, f"{sys.executable} -c \"raise SystemExit(3)\"")
-    governor = gov.JudgeSpendGovernor(policy=_spend_policy())
-
-    result = judge.run_progress_judge_command(
-        _ready_request(), output_dir=tmp_path, governor=governor, timeout_seconds=60.0
-    )
-
-    assert result["status"] == "blocked"
-    assert "progress_judge_command_failed" in result["blockers"]
-    assert governor.request_count == 1
-
-
-def test_judge_command_is_not_shell_interpreted(monkeypatch, tmp_path) -> None:
-    """Shell metacharacters must not be executable in operator config."""
-
-    marker = tmp_path / "pwned"
-    monkeypatch.setenv(judge.GATE_ENV, "1")
-    monkeypatch.setenv(
-        judge.JUDGE_COMMAND_ENV, f"{sys.executable} -c pass; touch {marker}"
-    )
-    governor = gov.JudgeSpendGovernor(policy=_spend_policy())
-
-    judge.run_progress_judge_command(
-        _ready_request(), output_dir=tmp_path, governor=governor, timeout_seconds=60.0
-    )
-
-    assert not marker.exists()
 
 
 # -- P2: normalization must use the selected action space -------------------

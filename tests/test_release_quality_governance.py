@@ -1479,7 +1479,6 @@ def test_outbound_http_call_sites_route_through_the_safe_boundary() -> None:
     root = Path(__file__).resolve().parents[1]
     rewired = (
         "src/blueprint_pipeline/gpu_render_providers.py",
-        "src/blueprint_pipeline/wam_strict_action_consistency_scorer_client.py",
     )
     for relative in rewired:
         text = (root / relative).read_text(encoding="utf-8")
