@@ -557,12 +557,10 @@ DEPLOY_EXEMPT_TRIGGER_UNITS = (
 #: ``--arm-path-units`` is explicitly supplied.
 DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-launch-preparation.path",
-    "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.path",
     # Starts the same no-spend activation oneshot hourly, so a claim a killed
     # worker left is retired on an idle queue too; a hold on the path stops it.
     "blueprint-task-evaluation-launch-activation.timer",
-    "blueprint-scene-object-discovery.path",
     # CPU compile of a prepared scene's team half, its derived registry row and a
     # signed offer republish (facts, never authority); it holds no provider path.
     "blueprint-team-scene-packet.path",
@@ -574,9 +572,6 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 #: itself.  It is separated from the no-spend watchers so deploy receipts do
 #: not blur that distinction.
 DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
-    # Only an explicit, exact-release, single-use operator batch grant can spend.
-    "blueprint-embodiment-preparation.path",
-    "blueprint-task-evaluation-policy-canary-dispatcher.path",
     # Records a queued rigid scene's robot-free probe while its enable setting
     # is on (the service default, with an operator opt-out), and
     # only under that capture's own website grant, $1.00 and 3600 s per attempt.
@@ -585,6 +580,8 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     # once the remote CPU config is there), with that config, the owner's
     # standing authority and the dispatcher credential; in host mode, which an
     # unset flag without a config is, its ExecCondition skips it except to drain.
+    # Its host half is paused, so it receives no new hand-off; it stays armed
+    # to finish and tear down one already in flight.
     "blueprint-task-evaluation-episode-compilation-remote.path",
     # Remote team-scene compilation under the same rule, for its own stage: a
     # config without team_scene_packet keeps it in host mode.
@@ -595,9 +592,6 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: the receipt names that authority instead of the no-spend watcher category.
 #: Paused lanes are not here: see DEFAULT_PAUSED_LANE_DISARM_UNITS below.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
-    # A door grant (its armed path) can start paid embodiment work; only this
-    # timer retries, promotes and reconciles it, so the lane stays armed whole.
-    "blueprint-embodiment-preparation.timer",
     "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-task-evaluation-launch-preparation.timer",
     # Owner-authorized beta screening has its own aggregate site allowance,
@@ -609,12 +603,8 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # carries the timer's authority rather than the no-spend watcher category.
     "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-scene-progression.timer",
-    # The armed launch-preparation lane stages reuse_configured_scene work here
-    # (operator and company runs) and the remote lane hands fallbacks back; this
-    # backstop finishes deferred rows no path event reaches, so it stays armed.
-    "blueprint-task-evaluation-episode-compilation.timer",
     # Follow, collect and tear down a remote compilation (compute-zero and
-    # provider-zero) that their armed path units can still dispatch: money.
+    # provider-zero) already handed off before its host half was paused: money.
     "blueprint-task-evaluation-episode-compilation-remote.timer",
     "blueprint-team-scene-packet-remote.timer",
     # The storage reaper is no-spend housekeeping. By default it removes
@@ -678,6 +668,26 @@ DEFAULT_PAUSED_LANE_DISARM_UNITS = (
     # (task_evaluation_scene_progression writes their launch itself).
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
+    # Robot-team evaluation lanes, deleted by the owner (a deployment company
+    # running its own software in our simulation is later). Their triggers stop
+    # here before the WebApp routes they call are removed.
+    # Policy-canary dispatch: the activation worker queues it only for an
+    # internal_policy_canary launch; a website job's launch is scene_configuration.
+    "blueprint-task-evaluation-policy-canary-dispatcher.path",
+    # Launch supervision: a read-only explainer that posts launch-supervision;
+    # it starts nothing and nothing waits on it.
+    "blueprint-task-evaluation-launch-supervisor.timer",
+    # Scene object discovery: no kept worker or website step writes its queue.
+    "blueprint-scene-object-discovery.path",
+    # Embodiment preparation: a door grant starts it, the timer retries it.
+    "blueprint-embodiment-preparation.path",
+    "blueprint-embodiment-preparation.timer",
+    # Episode compilation (host): launch preparation stages it only for a
+    # reuse_configured_scene request (policy and controls runs); a website job
+    # prepares as scene_configuration and never compiles episodes. Its remote
+    # half stays armed above, only to drain and tear down a hand-off in flight.
+    "blueprint-task-evaluation-episode-compilation.path",
+    "blueprint-task-evaluation-episode-compilation.timer",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the

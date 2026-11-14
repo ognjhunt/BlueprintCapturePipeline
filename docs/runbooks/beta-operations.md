@@ -781,7 +781,11 @@ Every release stops and disables the triggers in `DEFAULT_PAUSED_LANE_DISARM_UNI
 (`scripts/deploy_control_plane_commit.py`): the humanoid G1 campaign dispatcher and
 settlement, the agent-run dispatcher with the team-evaluation runner path, SAM 3.1
 preparation execution (`.timer` and `.path`), and configured-controls progression
-(`.timer` and `.path`). A lane is armed or disarmed whole. No website job needs them;
+(`.timer` and `.path`). Since the owner deleted the robot-team evaluation lanes, it
+also stops the policy-canary dispatcher path, the launch supervisor timer, the scene
+object discovery path, embodiment preparation (`.timer` and `.path`) and host episode
+compilation (`.timer` and `.path`); remote episode compilation stays armed only to
+drain a hand-off already in flight. A lane is armed or disarmed whole. No website job needs them;
 their unit files and code stay. A unit already stopped or absent is fine; one that
 will not stop does not fail the release and is named in the receipt's
 `paused_lane_disarm.failed`, which `door status` shows under `deploys.recent_receipts`. The stall

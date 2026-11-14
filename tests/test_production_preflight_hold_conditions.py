@@ -39,7 +39,7 @@ def test_a_paused_lanes_disarmed_trigger_is_not_a_blocker(monkeypatch) -> None:
     from blueprint_pipeline.control_plane_stall_alarm import read_deploy_paused_triggers
 
     sam = "blueprint-task-evaluation-sam31-preparation-execution"
-    compile_timer = "blueprint-task-evaluation-episode-compilation.timer"
+    compile_timer = "blueprint-task-evaluation-launch-preparation.timer"
     assert {f"{sam}.timer", f"{sam}.path"} <= read_deploy_paused_triggers()
     assert compile_timer not in read_deploy_paused_triggers()
     monkeypatch.setattr(preflight, "unit_properties", lambda _unit: {"ActiveState": ["inactive"]})
@@ -49,7 +49,7 @@ def test_a_paused_lanes_disarmed_trigger_is_not_a_blocker(monkeypatch) -> None:
                                "TriggeredBy": [" ".join(triggers)]}}
 
     rows = preflight.unit_health_checks({f"{sam}.service": props([f"{sam}.timer", f"{sam}.path"]),
-                                         "blueprint-task-evaluation-episode-compilation.service": props([compile_timer])})
+                                         "blueprint-task-evaluation-launch-preparation.service": props([compile_timer])})
     by_trigger = {row["trigger"]: (row["severity"], row["code"]) for row in rows}
     assert by_trigger[f"{sam}.timer"] == by_trigger[f"{sam}.path"] == ("info", "unit_trigger_not_required")
     # An armed lane's trigger left inactive is still a blocker.
