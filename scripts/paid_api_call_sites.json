@@ -326,58 +326,6 @@
       "entry_point": "src/blueprint_pipeline/palatial_physready.py::main",
       "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
     },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::run_canary::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator diagnostic CLI (and its matrix and transport-canary CLIs)"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::collect_pilot::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "not_paid",
-      "reason": "reads a submitted batch's results; billing happens at submission"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::submit_pilot::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_batch.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator diagnostic CLI"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::cleanup_matrix_media::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "not_paid",
-      "reason": "deletes uploaded media files; not billed"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::submit_matrix_batch::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "admitted",
-      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::_require_complete_graph_paid_admission",
-      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::require_paid_resource_admission"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::upload_matrix_media.upload_one::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "admitted",
-      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::_require_complete_graph_paid_admission",
-      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::require_paid_resource_admission"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::upload_matrix_media::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "admitted",
-      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::_require_complete_graph_paid_admission",
-      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py::require_paid_resource_admission"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::stage_transport_canary_media::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "admitted",
-      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::_require_transport_canary_paid_admission",
-      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::require_paid_resource_admission"
-    },
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::submit_transport_canary::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "admitted",
-      "via": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::_require_transport_canary_paid_admission",
-      "admission": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py::require_paid_resource_admission"
-    },
     "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::_scoped_review_model_provider::openai_agents_provider": {
       "provider": "openai",
       "class": "admitted",
@@ -404,12 +352,6 @@
       "class": "not_automatic",
       "entry_point": "scripts/run_isaac_g1_kitchen_parity_eval.py::main",
       "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator parity-evaluation script"
-    },
-    "src/blueprint_pipeline/rollout_vision_label_openai.py::_openai_label::openai_client_construction": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/rollout_vision_label_openai.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator labeling CLI"
     },
     "src/blueprint_pipeline/runpod_provider_adapter.py::<module>::runpod_serverless_api_url": {
       "provider": "runpod_serverless",

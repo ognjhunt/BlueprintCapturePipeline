@@ -10,17 +10,11 @@
       "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
-      "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
-      "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
-      "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
-      "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
-      "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/remote_cpu_job_allocator.py",
       "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
-      "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
-      "src/blueprint_pipeline/teleport_paid_allocator.py"
+      "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py"
     ],
     "require_paid_resource_admission": [
       "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
@@ -32,19 +26,13 @@
       "src/blueprint_pipeline/native_g1_beta_paid.py",
       "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
-      "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
-      "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
-      "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
-      "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
-      "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/remote_cpu_job_allocator.py",
       "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
       "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
       "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
       "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
       "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
-      "src/blueprint_pipeline/teleport_paid_allocator.py",
       "src/blueprint_pipeline/website_task_context.py"
     ]
   },
@@ -269,35 +257,6 @@
       ]
     },
     {
-      "path": "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "run_gpu_lane"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "require_paid_resource_admission_grant",
-        "PAID_RESOURCE_CLASS = \"evaluator_api\""
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "require_paid_resource_admission_grant",
-        "PAID_RESOURCE_CLASS"
-      ]
-    },
-    {
       "path": "src/blueprint_pipeline/native_g1_team_paid_policy.py",
       "classification": "canonical_adapter",
       "required_markers": [
@@ -326,15 +285,6 @@
         "require_current_source",
         "pre_provider_mutation_hook=before_create",
         "run_arena_native_control_vast"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "run_successor_gpu_lane"
       ]
     },
     {
@@ -448,25 +398,6 @@
         "build_paid_lane_admission",
         "require_paid_resource_admission",
         "run_scene_configuration_vast"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/teleport_paid_allocator.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "run_teleport_reconstruction"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/teleport_reconstruction_adapter.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": [
-        "require_paid_resource_admission_grant",
-        "TELEPORT_RESOURCE_CLASS = \"provider_reconstruction_api\"",
-        "TELEPORT_CREATE_CAPTURE_PATH",
-        "TELEPORT_DELETE_CAPTURE_PATH_TEMPLATE"
       ]
     },
     {

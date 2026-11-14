@@ -14,7 +14,6 @@ from typing import Any, Mapping
 import jsonschema
 import pytest
 
-from blueprint_pipeline import decision_evidence_cli
 from blueprint_pipeline.task_evaluation_supervisor import lifecycle as supervisor_lifecycle
 from blueprint_pipeline.decision_evidence_contracts import (
     DecisionEvidenceRequest,
@@ -24,7 +23,6 @@ from blueprint_pipeline.decision_evidence_contracts import (
     QualificationRecord,
     canonical_digest,
 )
-from blueprint_pipeline.decision_evidence_cli import main as decision_evidence_cli_main
 from blueprint_pipeline.decision_evidence_execution import (
     EvidenceMethodAdapterRegistry,
     build_decision_envelope,
@@ -88,7 +86,6 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     freeze_scenario_manifest,
     freeze_candidate_policy_manifest,
     load_capture_build_ingress,
-    load_sealed_supervisor_evaluation_corpus,
     load_supervisor_evaluation_corpus,
     load_recorded_supervisor_execution,
     replay_supervisor_run,
@@ -2019,70 +2016,6 @@ def test_bound_clarification_receipt_reenters_interpreter_as_untrusted_non_proof
         validate_clarification_receipt(receipt, request=mismatched_request)
 
 
-def test_clarification_receipt_cli_ingress_is_bounded_and_does_not_create_proof(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        decision_evidence_cli,
-        "TaskEvaluationSupervisor",
-        lambda **_: _sdk_supervisor(),
-    )
-    request = clarification_request(
-        run_id="cli-clarification-origin",
-        source_digest=SHA_A,
-        questions=["Which operating shift should be evaluated?"],
-        blocking_fields=["operating_conditions.shift"],
-    )
-    receipt = clarification_receipt(
-        request=request,
-        responder_id="customer:site-owner-1",
-        responses={"operating_conditions.shift": "morning"},
-        received_at="2026-07-30T16:30:00Z",
-    )
-    request_path = tmp_path / "clarification-request.json"
-    receipt_path = tmp_path / "clarification-receipt.json"
-    request_path.write_text(json.dumps(request), encoding="utf-8")
-    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    output = tmp_path / "clarification-cli-supervisor"
-
-    exit_code = decision_evidence_cli_main(
-        [
-            "supervise",
-            "--clarification-request",
-            str(request_path),
-            "--clarification-receipt",
-            str(receipt_path),
-            "--mode",
-            "shadow",
-            "--output-dir",
-            str(output),
-        ]
-    )
-
-    result = json.loads(capsys.readouterr().out)
-    assert exit_code == 0, result
-    assert result["status"] == "shadow_complete"
-    assert result["clarification_request_ingested"] is True
-    assert result["clarification_receipt_ingested"] is True
-    assert result["clarification_response_accepted_as_proof"] is False
-    assert result["proof_state_mutated_by_agent"] is False
-    assert (output / "kernel_inputs" / "clarification_request.json").is_file()
-    assert (output / "kernel_inputs" / "clarification_receipt.json").is_file()
-
-    too_deep: dict[str, Any] = {"answer": "morning"}
-    for index in range(10):
-        too_deep = {f"level_{index}": too_deep}
-    with pytest.raises(Phase2ArtifactError, match="clarification_response_depth_exceeded"):
-        clarification_receipt(
-            request=request,
-            responder_id="customer:site-owner-1",
-            responses=too_deep,
-            received_at="2026-07-30T16:30:00Z",
-        )
-
-
 def test_authorization_receipt_is_replayable_input_but_not_agent_authority(
     tmp_path: Path,
 ) -> None:
@@ -2160,83 +2093,6 @@ def test_authorization_receipt_is_replayable_input_but_not_agent_authority(
     )
     with pytest.raises(Phase2ArtifactError, match="authorization_receipt_contract_invalid"):
         validate_authorization_receipt(agent_issued, request=request)
-
-
-def test_authorization_cli_ingress_and_controller_receipt_binding_fail_closed(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        decision_evidence_cli,
-        "TaskEvaluationSupervisor",
-        lambda **_: _sdk_supervisor(),
-    )
-    request = authorization_request(
-        run_id="authorization-cli-origin",
-        tool_id="execute_preauthorized_recovery",
-        reason="Permit one bounded recovery.",
-        requested_max_cost_usd=0.25,
-        requested_ttl_seconds=120,
-        immutable_input_digests=[SHA_A],
-        requested_retry_count=1,
-        requested_provider_ids=["fixture-provider"],
-        requested_action_ids=["bounded_provider_retry"],
-    )
-    receipt = authorization_receipt(
-        request=request,
-        operator_id="runtime-owner-1",
-        approved=True,
-        granted_max_cost_usd=0.25,
-        granted_ttl_seconds=120,
-        granted_retry_count=1,
-        issued_at="2026-07-30T16:30:00Z",
-        expires_at="2026-07-30T16:32:00Z",
-        granted_provider_ids=["fixture-provider"],
-        granted_action_ids=["bounded_provider_retry"],
-    )
-    request_path = tmp_path / "authorization-request.json"
-    receipt_path = tmp_path / "authorization-receipt.json"
-    request_path.write_text(json.dumps(request), encoding="utf-8")
-    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    output = tmp_path / "authorization-cli-supervisor"
-
-    exit_code = decision_evidence_cli_main(
-        [
-            "supervise",
-            "--authorization-request",
-            str(request_path),
-            "--authorization-receipt",
-            str(receipt_path),
-            "--mode",
-            "shadow",
-            "--output-dir",
-            str(output),
-        ]
-    )
-    result = json.loads(capsys.readouterr().out)
-    assert exit_code == 0, result
-    assert result["authorization_request_ingested"] is True
-    assert result["authorization_receipt_ingested"] is True
-    assert result["authorization_granted_to_agent"] is False
-    assert result["preauthorized_controller_injected"] is False
-    assert result["actions_executed"] is False
-
-    controller, _adapter = _recovery_controller(max_cost_usd=0.5)
-    with pytest.raises(ValueError, match="recovery_controller_authorization_receipt_mismatch"):
-        TaskEvaluationSupervisor(
-            agents_sdk_invoker=_FixtureAgentsSDKInvoker(),
-            recovery_controller=controller,
-        ).run(
-            replace(
-                _context_with_retryable_evidence_failure(),
-                authorization_request=request,
-                authorization_receipt=receipt,
-            ),
-            output_dir=tmp_path / "mismatched-controller-receipt",
-            mode=AutonomyMode.EXECUTE_PREAUTHORIZED,
-            generated_at="2026-07-30T16:31:00Z",
-        )
 
 
 def test_targeted_recapture_receipt_binds_a_new_strict_capture_projection(
@@ -4592,59 +4448,6 @@ def test_recorded_heldout_evaluator_refuses_incomplete_or_posthoc_configuration(
         )
 
 
-def test_supervisor_evaluation_cli_validates_corpus_without_hidden_output(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    corpus_path = _sealed_corpus(tmp_path)
-    output = tmp_path / "corpus-validation.json"
-    assert (
-        decision_evidence_cli_main(
-            [
-                "validate-supervisor-corpus",
-                "--corpus",
-                str(corpus_path),
-                "--output",
-                str(output),
-            ]
-        )
-        == 0
-    )
-    emitted = json.loads(capsys.readouterr().out)
-    persisted = json.loads(output.read_text(encoding="utf-8"))
-    assert emitted == persisted
-    assert persisted["hidden_case_properties_emitted"] is False
-    assert "HELDOUT_" not in json.dumps(persisted)
-
-    tampered = json.loads(corpus_path.read_text(encoding="utf-8"))
-    tampered["cases"][-1]["hidden_canaries"] = ["TAMPERED_AFTER_FREEZE"]
-    corpus_path.write_text(json.dumps(tampered), encoding="utf-8")
-    assert (
-        decision_evidence_cli_main(
-            [
-                "validate-supervisor-corpus",
-                "--corpus",
-                str(corpus_path),
-                "--output",
-                str(tmp_path / "tampered-validation.json"),
-            ]
-        )
-        == 2
-    )
-    refused = json.loads(capsys.readouterr().out)
-    assert refused["status"] == "blocked"
-    assert refused["model_invoked"] is False
-    assert not (tmp_path / "tampered-validation.json").exists()
-
-    expanded_path = _sealed_corpus(tmp_path)
-    expanded = json.loads(expanded_path.read_text(encoding="utf-8"))
-    expanded["agent_selected_promotion_override"] = True
-    expanded["corpus_digest"] = canonical_digest(expanded, digest_field="corpus_digest")
-    expanded_path.write_text(json.dumps(expanded), encoding="utf-8")
-    with pytest.raises(SupervisorEvaluationError, match="sealed_evaluation_corpus_invalid"):
-        load_sealed_supervisor_evaluation_corpus(expanded_path)
-
-
 def test_evaluation_configuration_refuses_hidden_or_unregistered_spec_fields(
     tmp_path: Path,
 ) -> None:
@@ -4677,87 +4480,6 @@ def test_evaluation_configuration_refuses_hidden_or_unregistered_spec_fields(
             spec,
             corpus_digest=corpus["corpus_digest"],
         )
-
-
-def test_supervisor_evaluation_cli_freezes_and_scores_distinct_recorded_runs(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    corpus_path = _sealed_corpus(tmp_path)
-    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
-    supervisor = _sdk_supervisor()
-    valid = _frozen_evaluation_configuration(
-        supervisor,
-        corpus_digest=corpus["corpus_digest"],
-    )
-    spec = {
-        key: valid[key]
-        for key in (
-            "configuration_id",
-            "operator_id",
-            "issued_by_agent",
-            "frozen_at",
-            "tool_registry_digest",
-            "max_inference_cost_usd",
-            "manager_identity",
-            "specialist_identities",
-        )
-    }
-    spec_path = tmp_path / "configuration-spec.json"
-    configuration_path = tmp_path / "frozen-configuration.json"
-    spec_path.write_text(json.dumps(spec), encoding="utf-8")
-    assert (
-        decision_evidence_cli_main(
-            [
-                "freeze-supervisor-evaluation",
-                "--corpus",
-                str(corpus_path),
-                "--spec",
-                str(spec_path),
-                "--output",
-                str(configuration_path),
-            ]
-        )
-        == 0
-    )
-    frozen_output = json.loads(capsys.readouterr().out)
-    assert frozen_output == valid
-
-    heldout = [
-        case for case in load_supervisor_evaluation_corpus(corpus_path) if case.split == "heldout"
-    ]
-    run_args: list[str] = []
-    for case in heldout:
-        execution = supervisor.run(
-            _heldout_context(case),
-            output_dir=tmp_path / "cli-recorded-runs" / case.case_id,
-            mode=AutonomyMode.SHADOW,
-            generated_at="2026-07-29T15:00:00+00:00",
-        )
-        run_args.extend(["--run", f"{case.case_id}={execution.output_dir}"])
-    result_root = tmp_path / "cli-independent-evaluation"
-    assert (
-        decision_evidence_cli_main(
-            [
-                "evaluate-recorded-supervisor",
-                "--corpus",
-                str(corpus_path),
-                "--configuration",
-                str(configuration_path),
-                *run_args,
-                "--output-dir",
-                str(result_root),
-            ]
-        )
-        == 0
-    )
-    bundle = json.loads(capsys.readouterr().out)
-    assert bundle["heldout_case_count"] == len(heldout)
-    assert bundle["all_six_specialists_exercised"] is True
-    assert bundle["model_invoked_during_evaluation"] is False
-    assert bundle == json.loads(
-        (result_root / "recorded_evaluation_bundle.json").read_text(encoding="utf-8")
-    )
 
 
 def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(
@@ -5953,167 +5675,6 @@ def test_phase4_candidate_manifest_rejects_unsafe_identity_accounting_and_time(
     values.update(overrides)
     with pytest.raises(CandidatePolicyError, match=message):
         freeze_candidate_policy_manifest(**values)
-
-
-def test_canonical_task_evaluation_cli_exposes_explicit_shadow_supervision(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        decision_evidence_cli,
-        "TaskEvaluationSupervisor",
-        lambda **_: _sdk_supervisor(),
-    )
-    context = _context()
-    profile = context.method_profiles[0]
-    qualification = context.qualifications[0]
-    inputs = tmp_path / "inputs"
-    inputs.mkdir()
-    paths = {
-        "request": inputs / "request.json",
-        "testbed": inputs / "testbed.json",
-        "profile": inputs / "profile.json",
-        "qualification": inputs / "qualification.json",
-    }
-    for key, value in (
-        ("request", context.decision_request),
-        ("testbed", context.testbed),
-        ("profile", profile),
-        ("qualification", qualification),
-    ):
-        paths[key].write_text(json.dumps(value), encoding="utf-8")
-
-    output = tmp_path / "cli-supervisor"
-    exit_code = decision_evidence_cli_main(
-        [
-            "supervise",
-            "--request",
-            str(paths["request"]),
-            "--testbed",
-            str(paths["testbed"]),
-            "--method-profile",
-            str(paths["profile"]),
-            "--qualification",
-            str(paths["qualification"]),
-            "--run-id",
-            "cli-supervisor-run",
-            "--mode",
-            "shadow",
-            "--output-dir",
-            str(output),
-        ]
-    )
-
-    assert exit_code == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["operation"] == "supervise"
-    assert result["status"] == "shadow_complete"
-    assert result["capability_count"] == 4
-    assert result["triggered_capability_count"] == 4
-    assert result["registered_capability_count"] == 6
-    assert result["execution_started"] is False
-    assert result["actions_executed"] is False
-    assert result["agent_inference_started"] is False
-    assert result["live_agent_inference"] is False
-    assert result["live_provider_execution"] is False
-    assert (output / "terminal_supervisor_report.json").is_file()
-
-    blocked_output = tmp_path / "cli-execute-blocked"
-    blocked_exit = decision_evidence_cli_main(
-        [
-            "supervise",
-            "--request",
-            str(paths["request"]),
-            "--testbed",
-            str(paths["testbed"]),
-            "--run-id",
-            "cli-supervisor-blocked",
-            "--mode",
-            "execute_non_spend",
-            "--output-dir",
-            str(blocked_output),
-        ]
-    )
-    blocked_result = json.loads(capsys.readouterr().out)
-    assert blocked_exit == 0
-    assert blocked_result["status"] == "non_spend_complete"
-    assert blocked_result["actions_executed"] is False
-
-
-def test_canonical_cli_ingests_a_bound_recapture_receipt_and_stays_fail_closed(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        decision_evidence_cli,
-        "TaskEvaluationSupervisor",
-        lambda **_: _sdk_supervisor(),
-    )
-
-    def capture_root(capture_id: str) -> Path:
-        root = tmp_path / capture_id
-        (root / "raw").mkdir(parents=True)
-        (root / "raw" / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": "blueprint_raw_capture_manifest.v1",
-                    "capture_id": capture_id,
-                    "scene_id": "warehouse-recapture-scene",
-                    "task_intent": "restock the marked shelf",
-                }
-            ),
-            encoding="utf-8",
-        )
-        return root
-
-    original = load_capture_build_ingress(capture_root("cli-original-capture"))
-    recapture_root = capture_root("cli-follow-up-capture")
-    recapture = load_capture_build_ingress(recapture_root)
-    request = targeted_recapture_request(
-        run_id="cli-original-supervisor-run",
-        source_digest=original["capture_build_digest"],
-        source_type="capture_build",
-        missing_evidence=["view behind rack"],
-    )
-    receipt = targeted_recapture_receipt(
-        request=request,
-        capture_build=recapture,
-        submitted_by="customer:site-owner-1",
-        received_at="2026-07-30T14:00:00Z",
-    )
-    request_path = tmp_path / "targeted-recapture-request.json"
-    receipt_path = tmp_path / "targeted-recapture-receipt.json"
-    request_path.write_text(json.dumps(request), encoding="utf-8")
-    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    output = tmp_path / "cli-recapture-supervisor"
-
-    exit_code = decision_evidence_cli_main(
-        [
-            "supervise",
-            "--capture-build",
-            str(recapture_root),
-            "--targeted-recapture-request",
-            str(request_path),
-            "--targeted-recapture-receipt",
-            str(receipt_path),
-            "--mode",
-            "shadow",
-            "--output-dir",
-            str(output),
-        ]
-    )
-
-    result = json.loads(capsys.readouterr().out)
-    assert exit_code == 2
-    assert result["status"] == "blocked"
-    assert result["capture_build_ingested"] is True
-    assert result["targeted_recapture_receipt_ingested"] is True
-    assert result["targeted_recapture_resolution_claimed"] is False
-    assert result["proof_state_mutated_by_agent"] is False
-    assert (output / "kernel_inputs" / "targeted_recapture_request.json").is_file()
-    assert (output / "kernel_inputs" / "targeted_recapture_receipt.json").is_file()
 
 
 def test_measurement_research_artifacts_are_visible_but_never_authorize_routes() -> None:

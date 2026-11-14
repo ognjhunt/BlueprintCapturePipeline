@@ -94,8 +94,6 @@ UNSEALED_LANE_DEBT = {
     "measurement_chrono_dem_vast_canary.py": "shares_unsealed_canonical_allocator_write",
     "measurement_dlo_lab_vast_canary.py": "shares_unsealed_canonical_allocator_write",
     "measurement_isaac_vast_canary.py": "shares_unsealed_canonical_allocator_write",
-    "reconstruction_isaac_vast_operation.py": "shares_unsealed_canonical_allocator_write",
-    "reconstruction_vast_operation.py": "shares_unsealed_canonical_allocator_write",
     "single_g1_kitchen_episode_runpod.py": "frozen_program",
     "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
 }
@@ -661,11 +659,7 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
 #: allocator's imports.
 TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {
     "openpi_policy_ranking_gpu_admission.py": "new-site-diagnostic-canary + frozen openpi",
-    "policy_ranking_cosmos_reasoner_gpu_admission.py": "frozen_program",
-    "policy_ranking_successor_gpu_admission.py": "frozen_program",
     "reconstruction_gpu_admission.py": "reconstruction-worker-smoke",
-    "reconstruction_isaac_vast_operation.py": "reconstruction isaac operation",
-    "reconstruction_vast_operation.py": "reconstruction operation",
 }
 
 

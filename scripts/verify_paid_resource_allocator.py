@@ -59,12 +59,7 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/native_g1_beta_paid.py",
     "src/blueprint_pipeline/parallel_findall_admission.py",
     "src/blueprint_pipeline/policy_canary_allocator_lane.py",
-    "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
-    "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
-    "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/remote_cpu_job_allocator.py",
     "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
     "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
@@ -72,7 +67,6 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
-    "src/blueprint_pipeline/teleport_paid_allocator.py",
     "src/blueprint_pipeline/website_task_context.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
@@ -83,18 +77,12 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/parallel_findall_admission.py",
     "src/blueprint_pipeline/policy_canary_allocator_lane.py",
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
-    "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
-    "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
-    "src/blueprint_pipeline/reconstruction_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/remote_cpu_job_allocator.py",
     "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
     "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
     "src/blueprint_pipeline/sam31_paid_resource_allocator_lane.py",
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
-    "src/blueprint_pipeline/teleport_paid_allocator.py",
 }
 APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS: set[tuple[str, str]] = set()
 S3_TRANSPORT_CAPABILITIES = frozenset(

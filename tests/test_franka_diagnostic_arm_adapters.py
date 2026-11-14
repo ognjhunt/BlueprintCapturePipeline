@@ -6,10 +6,6 @@ from typing import Any
 
 import numpy as np
 
-from blueprint_pipeline.ctrl_world_droid_action_adapter import (
-    FrankaCtrlWorldJointPositionAdapter,
-    validate_ctrl_world_runtime_assets,
-)
 from blueprint_pipeline.droid_oscar_closed_loop_adapter import (
     EXTERIOR_VIEW,
     WRIST_VIEW,
@@ -19,7 +15,6 @@ from blueprint_pipeline.droid_oscar_closed_loop_adapter import (
 from blueprint_pipeline.franka_droid_skeleton_conditioning import (
     FrankaDroidSkeletonConditioningBuilder,
 )
-from blueprint_pipeline.policy_ranking_thesis import file_sha256
 from blueprint_pipeline.vast_provider_adapter import _probe_shell_script
 
 
@@ -159,37 +154,6 @@ def test_skeleton_only_arm_uses_conditioning_media_without_world_credit(tmp_path
     assert prediction["physical_future_observation_used"] is False
     assert set(prediction["generated_view_frames"]) == {EXTERIOR_VIEW, WRIST_VIEW}
     assert all(Path(path).is_file() for path in prediction["generated_view_frames"].values())
-
-
-def test_ctrl_world_joint_position_adapter_uses_fk_and_emits_exact_7d_shape() -> None:
-    action = np.zeros((10, 8), dtype=float)
-    action[:, 0] = np.linspace(0.0, 0.9, 10)
-    result = FrankaCtrlWorldJointPositionAdapter(_runtime()).adapt(
-        policy_action=action,
-        history_cartesian_pose_7d=np.zeros((6, 7), dtype=float),
-    )
-
-    assert result["action_conditioning_7d"].shape == (16, 7)
-    assert result["official_ctrl_world_learned_action_adapter_used"] is False
-    assert result["conversion"] == "deterministic_pinned_franka_forward_kinematics"
-    assert result["physical_future_observation_used"] is False
-    assert len(result["conditioning_sha256"]) == 64
-
-
-def test_ctrl_world_asset_admission_distinguishes_world_model_from_adapter(tmp_path: Path) -> None:
-    action_adapter = tmp_path / "action-adapter.pth"
-    action_adapter.write_bytes(b"small learned action adapter")
-    result = validate_ctrl_world_runtime_assets(
-        world_model_checkpoint=tmp_path / "missing-world-model.pt",
-        expected_world_model_sha256="0" * 64,
-        action_adapter_checkpoint=action_adapter,
-        expected_action_adapter_sha256=file_sha256(action_adapter),
-    )
-
-    assert result["status"] == "blocked"
-    assert result["blockers"] == ["ctrl_world_model_checkpoint_missing"]
-    assert result["action_adapter_sha256"] == file_sha256(action_adapter)
-    assert result["world_model_and_action_adapter_are_distinct_assets"] is True
 
 
 def test_wam_provider_script_uploads_small_terminal_diagnostic_before_full_archive() -> None:

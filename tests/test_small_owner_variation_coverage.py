@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import g1_controlled_proof_setup as g1_setup
-from blueprint_pipeline import owner_gpu_default_smoke_artifacts as smoke
 from blueprint_pipeline import scenario_variation_instantiator as variations
 
 
@@ -79,48 +78,6 @@ def test_g1_controlled_proof_setup_private_helper_edges(tmp_path: Path) -> None:
     assert g1_setup._job_context(route_only, "job-route")["job_request_source"] == (
         "webapp_route_forwarding_proof"
     )
-
-
-def test_owner_gpu_default_smoke_artifact_helper_edges(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    with pytest.raises(ValueError, match="policy_trace_path is required"):
-        smoke._path_from("", label="policy_trace_path")
-    assert smoke._read_existing_manifest(tmp_path / "missing.json") == {}
-    existing_manifest = tmp_path / "existing.json"
-    existing_manifest.write_text('{"artifacts":[]}', encoding="utf-8")
-    assert smoke._read_existing_manifest(existing_manifest) == {"artifacts": []}
-    assert smoke._merge_artifacts(
-        [
-            "ignored",
-            {"kind": "policy_trace", "path": "trace.json"},
-            {"kind": "policy_trace", "path": "trace.json"},
-        ],
-        [{"kind": "sim_robot_pov", "path": "pov.json"}],
-    ) == [
-        {"kind": "policy_trace", "path": "trace.json"},
-        {"kind": "sim_robot_pov", "path": "pov.json"},
-    ]
-
-    monkeypatch.setenv("BLUEPRINT_POLICY_EXECUTION_TRACE", str(tmp_path / "trace.json"))
-    assert smoke._env_default("BLUEPRINT_POLICY_EXECUTION_TRACE") == str(
-        tmp_path / "trace.json"
-    )
-    assert smoke.main(
-        [
-            "--policy-trace",
-            str(tmp_path / "policy.json"),
-            "--sim-robot-pov-evidence",
-            str(tmp_path / "pov.json"),
-            "--artifact-manifest",
-            str(tmp_path / "artifacts.json"),
-            "--sim-pov-frame",
-            "frame.png",
-        ]
-    ) == 0
-    assert "artifact_manifest=" in capsys.readouterr().out
 
 
 def test_scenario_variation_instantiator_helper_edges(tmp_path: Path) -> None:
