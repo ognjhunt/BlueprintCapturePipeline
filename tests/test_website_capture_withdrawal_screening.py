@@ -17,11 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+from blueprint_pipeline import screening_retained_ledger as coordinator
 from blueprint_pipeline import website_capture_withdrawal_deletion as deletion
 from blueprint_pipeline import website_capture_withdrawal_screening as screening
-from blueprint_pipeline.scene_stage_holds import HOLDS_DIRNAME, hold_id
-from blueprint_pipeline.beta_policy_screening_settlement import SETTLEMENT_BASIS, SETTLEMENT_SCHEMA
+from blueprint_pipeline.scene_stage_holds import HOLDS_DIRNAME, _write, hold_id
+from blueprint_pipeline.screening_retained_ledger import SETTLEMENT_BASIS, SETTLEMENT_SCHEMA
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.provider_output_member_index import SCHEMA as INDEX_SCHEMA
 from blueprint_pipeline.provider_output_promotion import LOCK_FILENAME
@@ -142,7 +142,7 @@ def _campaign(site: str, digest: str, candidates: dict) -> dict:
 def _save(queue: Path, ledger: dict) -> None:
     ledger.pop("ledger_digest", None)
     ledger["ledger_digest"] = canonical_digest(ledger, digest_field="ledger_digest")
-    coordinator._write(queue / coordinator.LEDGER_FILENAME, ledger)
+    _write(queue / coordinator.LEDGER_FILENAME, ledger)
 
 
 def _ledger(queue: Path) -> dict:
@@ -239,11 +239,9 @@ def test_withdrawal_deletes_finished_screening_attempts_and_archives_and_keeps_t
     # The active attempt and another site's attempt keep their directories and archives.
     for name in ("active", "other"):
         assert (dirs[name] / RECEIPT).is_file() and world["store"].present(archives[name]["uri"])
-    # Money: no ledger byte changed, the coordinator reads the same budgets and has nothing to settle.
+    # Money: no ledger byte changed and the ledger reads the same budgets.
     assert (queue / coordinator.LEDGER_FILENAME).read_bytes() == ledger_bytes
     assert _budgets(queue) == budgets
-    assert coordinator._settle_finished(queue) == 0
-    assert (queue / coordinator.LEDGER_FILENAME).read_bytes() == ledger_bytes
 
     report = receipt["deleted"]["beta_screening"]
     store = world["resolution"]["object_store"]

@@ -20,9 +20,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .beta_policy_screening_g1_catalog import CANDIDATES as G1_CANDIDATES
 from .decision_evidence_contracts import canonical_digest
+from .native_g1_beta_authority import CANDIDATE_DIGESTS
 from .native_g1_beta_authority import SOURCE_FIELDS as G1_SOURCE_FIELDS
+
+G1_CANDIDATES = tuple(CANDIDATE_DIGESTS)
 
 REGISTRY_ENV = "BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY"
 REGISTRY_SCHEMA = "blueprint.team_candidate_quick10_registry.v1"

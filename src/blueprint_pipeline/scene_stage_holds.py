@@ -60,11 +60,14 @@ reconciled, and nothing is released or settled.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -94,6 +97,73 @@ STALL_HOLD_AFTER_SECONDS = 6 * 3600
 STALL_HOLD_REASON = "team_scene_packet_blocked"
 #: A re-plan refused because the job's window closed: the job's own end, never a hold.
 WINDOW_CLOSED = "beta_screening_job_window_closed"
+
+#: The store these holds (and the early trial's frozen ledger, ``screening_retained_ledger``) are kept in.
+QUEUE_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"
+DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening"
+
+
+class ScreeningCoordinatorError(ValueError):
+    """A campaign cannot advance without weakening identity or cost controls."""
+
+
+def _root(value: str | Path | None) -> Path:
+    root = Path(value or os.environ.get(QUEUE_ROOT_ENV) or DEFAULT_QUEUE_ROOT)
+    if not root.is_absolute() or ".." in root.parts or any(path.is_symlink() for path in (root, *root.parents)):
+        raise ScreeningCoordinatorError("beta_screening_queue_root_unsafe")
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for name in ("plans", "attempts", "publications"):
+        target = root / name
+        if target.is_symlink():
+            raise ScreeningCoordinatorError("beta_screening_queue_root_unsafe")
+        target.mkdir(exist_ok=True, mode=0o700)
+    return root
+
+
+@contextmanager
+def _lock(root: Path, name: str = ".ledger.lock", *, nonblocking: bool = False) -> Iterator[None]:
+    descriptor = os.open(root / name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _write(path: Path, value: Mapping[str, Any]) -> None:
+    if path.is_symlink():
+        raise ScreeningCoordinatorError("beta_screening_state_path_unsafe")
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=".screening-", suffix=".tmp",
+                                     delete=False, encoding="utf-8") as stream:
+        temporary = Path(stream.name)
+        try:
+            json.dump(value, stream, sort_keys=True, allow_nan=False, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise ScreeningCoordinatorError("beta_screening_state_path_unsafe")
+    with path.open(encoding="utf-8") as stream:
+        value = json.load(stream)
+    if not isinstance(value, dict):
+        raise ScreeningCoordinatorError("beta_screening_state_invalid")
+    return value
 
 
 def hold_id(scene_intent_id: str) -> str:
@@ -206,8 +276,6 @@ def _source(request: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
 
 
 def _store(queue_root: str | Path) -> Path:
-    from .beta_policy_screening_coordinator import _root
-
     path = _root(queue_root) / HOLDS_DIRNAME
     if path.is_symlink():
         raise ValueError("beta_screening_hold_store_unsafe")
@@ -238,7 +306,6 @@ def settle_hold(queue_root: str | Path, request: Mapping[str, Any],
     release, is a new revision; the same decision again changes nothing.
     Nothing to record returns None. ``request`` must be the intent's newest.
     """
-    from .beta_policy_screening_coordinator import _lock, _read, _write
 
     try:
         if isinstance(decision, tuple) and decision[0] not in REASONS:
@@ -279,7 +346,6 @@ def settle_hold(queue_root: str | Path, request: Mapping[str, Any],
 
 def pending_holds(*, queue_root: str | Path) -> list[dict[str, Any]]:
     """Every hold whose latest bytes the website has not acknowledged."""
-    from .beta_policy_screening_coordinator import _lock, _read
 
     store = _store(queue_root)
     with _lock(store.parent, ".holds.lock"):
@@ -290,7 +356,6 @@ def pending_holds(*, queue_root: str | Path) -> list[dict[str, Any]]:
 
 def acknowledge_hold(publication: Mapping[str, Any], *, queue_root: str | Path) -> bool:
     """Acknowledge only the current bytes; a late answer never swallows a newer decision."""
-    from .beta_policy_screening_coordinator import _lock, _read, _write
 
     store = _store(queue_root)
     path = store / f"{publication['hold_id']}.json"
