@@ -249,14 +249,6 @@
       ]
     },
     {
-      "path": "src/blueprint_pipeline/runpod_wam_async_runner.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": [
-        "require_paid_resource_admission_grant",
-        "legacy_runpod_wam_create_cli_disabled"
-      ]
-    },
-    {
       "path": "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py",
       "classification": "metered_object_storage_data_plane",
       "required_markers": [
@@ -286,14 +278,6 @@
       "classification": "hard_disabled_legacy_launcher",
       "required_markers": [
         "legacy_vast_provider_mutation_cli_disabled"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/vast_wam_async_runner.py",
-      "classification": "grant_gated_legacy_adapter",
-      "required_markers": [
-        "require_paid_resource_admission_grant",
-        "legacy_vast_wam_create_cli_disabled"
       ]
     },
     {

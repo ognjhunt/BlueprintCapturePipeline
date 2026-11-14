@@ -86,9 +86,6 @@
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": [
       "tests/test_public_scene_artifixer3d_vast.py"
     ],
-    "src/blueprint_pipeline/runpod_wam_async_runner.py": [
-      "tests/test_runpod_wam_async_runner.py"
-    ],
     "src/blueprint_pipeline/runpod_wam_teardown.py": [
       "tests/test_runpod_wam_teardown.py"
     ],
@@ -194,7 +191,6 @@
     "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
     "src/blueprint_pipeline/post_training_data_package.py": 6727,
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
-    "src/blueprint_pipeline/runpod_wam_async_runner.py": 3682,
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
     "src/blueprint_pipeline/scene_asset_preflight.py": 2213,
     "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py": 2517,

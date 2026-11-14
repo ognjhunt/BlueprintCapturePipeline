@@ -31,8 +31,6 @@ HOT_LANE_MODULES = frozenset(
         "wam_compute_providers",
         "wam_generated_video_review",
         "vast_provider_adapter",
-        "vast_wam_async_runner",
-        "runpod_wam_async_runner",
         "runpod_provider_adapter",
         "lambda_provider_adapter",
         "provider_race",
@@ -93,7 +91,7 @@ def _transitive_local_modules(seeds: tuple[str, ...]) -> set[str]:
 def test_hot_lane_module_names_unique() -> None:
     # The literal list must stay a 19-name set; a typo collapsing two entries would
     # silently weaken the guard.
-    assert len(HOT_LANE_MODULES) == 16
+    assert len(HOT_LANE_MODULES) == 14
 
 
 def test_seed_modules_exist() -> None:
