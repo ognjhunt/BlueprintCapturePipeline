@@ -29,7 +29,6 @@ _SECRET_FRAGMENTS = ("password", "secret", "token", "private_key", "credential")
 KNOWN_USER_DATA_SECRET_DEBT = {
     ("vast_provider_adapter.py", "HF_TOKEN"),
     ("vast_provider_adapter.py", "HUGGING_FACE_HUB_TOKEN"),
-    ("isaac_g1_kitchen_parity_job.py", "BLUEPRINT_WARM_RENDER_BROKER_TOKEN"),
 }
 
 _ENV_ASSIGN = re.compile(r"""env\[\s*["']([A-Z0-9_]+)["']\s*\]\s*=""")

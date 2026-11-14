@@ -24,13 +24,6 @@ from blueprint_pipeline.decision_evidence_execution import (
 from blueprint_pipeline.physical_outcome_learning import join_physical_outcome
 from blueprint_pipeline.task_evaluation_evidence_use import determine_evidence_use
 from blueprint_pipeline.decision_evidence_handoff import verify as verify_webapp_handoff
-from blueprint_pipeline.evaluation_run import (
-    LegacyEvaluationPackSpec,
-    EvaluationRunSpec as LegacyAlias,
-    get_evaluation_pack,
-    legacy_evaluation_pack_to_leaf_spec,
-)
-from blueprint_pipeline.evaluation_run_contract import validate_evaluation_run_spec
 from blueprint_pipeline.task_site_measurement_routing import (
     ALL_CAPABILITY_FIELDS,
     validate_measurement_qualification,
@@ -454,34 +447,6 @@ def _registry() -> tuple[list[dict], list[dict]]:
         _qualification(profiles[5], "deployment_readiness"),
     ]
     return profiles, qualifications
-
-
-def test_legacy_pack_type_is_explicit_and_alias_remains_compatible() -> None:
-    pack = get_evaluation_pack("g1_kitchen")
-    assert isinstance(pack, LegacyEvaluationPackSpec)
-    assert LegacyAlias is LegacyEvaluationPackSpec
-
-
-def test_legacy_pack_translation_requires_runtime_identity_and_emits_canonical_leaf() -> None:
-    pack = get_evaluation_pack("g1_kitchen")
-    with pytest.raises(Exception, match="leaf_scene_content_digest_invalid"):
-        legacy_evaluation_pack_to_leaf_spec(
-            pack,
-            run_id="legacy-1",
-            scene_uri="fixture://scene",
-            scene_content_digest="missing",
-            robot_asset_ref="fixture://g1",
-        )
-    leaf = legacy_evaluation_pack_to_leaf_spec(
-        pack,
-        run_id="legacy-1",
-        scene_uri="fixture://scene",
-        scene_content_digest=SHA_A,
-        robot_asset_ref="fixture://g1",
-    )
-    assert leaf["schema_version"] == "evaluation_run.v1"
-    assert leaf["metadata"]["legacy_defaults_are_qualification_evidence"] is False
-    assert validate_evaluation_run_spec(leaf)["status"] == "passed"
 
 
 def test_contracts_reject_secret_values_before_digesting(

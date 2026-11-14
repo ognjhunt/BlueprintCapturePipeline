@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from blueprint_pipeline.evaluation_prep_stage import palatial_physready_evaluation_prep_surface
 from blueprint_pipeline.palatial_physready import build_palatial_physready_assets, main
 
 
@@ -262,35 +261,6 @@ def test_palatial_physready_materializes_provider_response_for_local_review(
     assert validation["status"] == "prepared_for_review"
     assert validation["simulator_execution_proven"] is False
     assert validation["rank_fidelity_result_proven"] is False
-
-
-def test_evaluation_prep_surfaces_existing_palatial_artifacts(tmp_path: Path) -> None:
-    capture_root = _build_capture_root(tmp_path)
-    eval_dir = capture_root / "pipeline" / "evaluation_prep"
-    eval_dir.mkdir(parents=True)
-
-    build_palatial_physready_assets(
-        capture_root=capture_root,
-        object_geometry_manifest=_object_geometry_manifest(),
-        task_anchor_manifest=_task_anchor_manifest(),
-        env={},
-    )
-
-    surface = palatial_physready_evaluation_prep_surface(
-        capture_root=capture_root,
-        eval_dir=eval_dir,
-    )
-
-    assert surface["status"] == "ready_for_manual_or_live_submission"
-    assert surface["live_provider_calls_performed"] is False
-    assert surface["rank_fidelity_result_proven"] is False
-    assert surface["public_claim_upgrade_allowed"] is False
-    assert surface["artifacts"]["palatial_physready_run_manifest"].endswith(
-        "../palatial_physready/palatial_physready_run_manifest.json"
-    )
-    assert surface["artifact_uris"]["palatial_physready_run_manifest_uri"].endswith(
-        "/pipeline/palatial_physready/palatial_physready_run_manifest.json"
-    )
 
 
 def test_palatial_physready_cli_writes_default_manifests(tmp_path: Path) -> None:

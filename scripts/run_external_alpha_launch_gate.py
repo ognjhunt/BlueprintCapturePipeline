@@ -122,7 +122,6 @@ def _pipeline_pytest_command() -> list[str]:
         sys.executable,
         "-m",
         "pytest",
-        "tests/test_alpha_readiness.py",
         "tests/test_qualification_alpha.py",
         "tests/test_site_world_packaging.py",
         "tests/test_storage_trigger.py",

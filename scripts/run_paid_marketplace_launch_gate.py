@@ -473,7 +473,6 @@ def default_specs(
                 "pytest",
                 "tests/test_webapp_sync.py",
                 "tests/test_qualification_alpha.py",
-                "tests/test_alpha_readiness.py",
                 "tests/test_run_e2e.py",
             ],
             source_tags=("iphone", "glasses", "android"),

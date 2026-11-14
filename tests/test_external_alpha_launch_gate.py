@@ -159,7 +159,6 @@ def test_pipeline_gate_uses_current_python_interpreter() -> None:
     command = gate._pipeline_pytest_command()
 
     assert command[:3] == [sys.executable, "-m", "pytest"]
-    assert "tests/test_alpha_readiness.py" in command
     assert "tests/test_webapp_sync.py" in command
 
 

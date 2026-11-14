@@ -372,31 +372,6 @@ def test_optional_circuit_breaker_requires_pybreaker() -> None:
 # ---------------------------------------------------------------- wiring
 
 
-def test_orchestrator_shadow_hook_is_gated_and_contained(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from blueprint_pipeline import robot_eval_job_orchestrator as orchestrator
-
-    disabled = orchestrator._maybe_shadow_publish_job_transport(
-        request=_request(), job_id="job-123", queue_root=tmp_path
-    )
-    assert disabled["status"] == "disabled"
-
-    monkeypatch.setenv("BLUEPRINT_JOB_TRANSPORT_SHADOW", "1")
-    published = orchestrator._maybe_shadow_publish_job_transport(
-        request=_request(), job_id="job-123", queue_root=tmp_path
-    )
-    assert published["status"] == "published"
-    assert (tmp_path / ".transport_shadow" / "shadow_publish_ledger.jsonl").is_file()
-
-    tainted = _request()
-    tainted["auth_token"] = "never"
-    contained = orchestrator._maybe_shadow_publish_job_transport(
-        request=tainted, job_id="job-123", queue_root=tmp_path
-    )
-    assert contained["status"] == "shadow_failed"
-
-
 def test_watchdogs_remain_transport_independent() -> None:
     watchdog_paths = (
         REPO_ROOT / "src/blueprint_pipeline/paid_lane_guard.py",

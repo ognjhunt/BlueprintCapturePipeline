@@ -15,18 +15,6 @@
     {
       "disposition": "accepted_risk",
       "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/city_launch_autonomy_harness.py",
-      "fingerprint": "39844462ae63eeff180f8e13f009bfc80888ff564168cc755f119c452d0174ce",
-      "line_number": 905,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/consent_takedown.py",
       "fingerprint": "6c9275824568ab20d22012c72fb653c5c78bb89982ea17cfa1f99a831e5a1b1f",
       "line_number": 606,
@@ -191,30 +179,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/robot_eval_worker.py",
-      "fingerprint": "8545948eaaa0e3764f0079057d58821805aa865513046921bcf7bef2421b61b0",
-      "line_number": 974,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/robot_eval_worker.py",
-      "fingerprint": "c3af90cc260be94c91cc46ca5af95974f870f5b371662ee5741698177d1d4a48",
-      "line_number": 1570,
-      "owner": "@ognjhunt",
-      "reason": "This fixed temporary workspace is used only in an isolated local or provider worker boundary; the exact site remains time-bounded and must be replaced or re-reviewed before expiry. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
     },
     {
       "disposition": "accepted_risk",

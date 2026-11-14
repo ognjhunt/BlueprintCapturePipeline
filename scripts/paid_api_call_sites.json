@@ -69,12 +69,6 @@
       "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
       "note": "every path from an automatic entry passes the account-wide monthly limit at the operator's start; a refusal is a RuntimeError its callers record as an advisory-ledger blocker, nothing sent"
     },
-    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/site_eval_director.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; called only by the site_eval_director and simulation_automation operator CLIs"
-    },
     "src/blueprint_pipeline/agent_runtime/openai_phase2.py::CodexOpenAIPhase2Runner.__call__::openai_codex_cli": {
       "provider": "openai",
       "class": "admitted",
@@ -359,18 +353,6 @@
       "class": "not_automatic",
       "entry_point": "src/blueprint_pipeline/scene_placement/target_resolver.py::<module>",
       "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; library default with no production caller"
-    },
-    "src/blueprint_pipeline/simulation_automation.py::CodexSdkSimulationAutomationAgentAdapter.build_ledger::openai_codex_cli": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/simulation_automation.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
-    },
-    "src/blueprint_pipeline/site_eval_director.py::CodexSdkCodeMaintainerAdapter.build_request_manifest::openai_codex_cli": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/site_eval_director.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
     },
     "src/blueprint_pipeline/task_evaluation_authoring_auth_recovery.py::authenticate_key::openai_api_url": {
       "provider": "openai",

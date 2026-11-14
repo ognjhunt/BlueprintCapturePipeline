@@ -131,24 +131,10 @@
       ]
     },
     {
-      "path": "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py",
-      "classification": "legacy_orchestrator_no_grant_issuer",
-      "required_markers": [
-        "._provider.launch("
-      ]
-    },
-    {
       "path": "src/blueprint_pipeline/isaac_particlefield_render_job.py",
       "classification": "legacy_orchestrator_no_grant_issuer",
       "required_markers": [
         "provider.launch("
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/isaac_supervised_startup_runtime.py",
-      "classification": "legacy_orchestrator_no_grant_issuer",
-      "required_markers": [
-        ".provider.launch("
       ]
     },
     {
@@ -248,27 +234,6 @@
     },
     {
       "path": "src/blueprint_pipeline/robot_eval_provider_input_setup.py",
-      "classification": "metered_object_storage_data_plane",
-      "required_markers": [
-        "upload_file"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/robot_eval_provider_launcher.py",
-      "classification": "hard_disabled_legacy_launcher",
-      "required_markers": [
-        "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/robot_eval_provider_race_launcher.py",
-      "classification": "hard_disabled_legacy_launcher",
-      "required_markers": [
-        "legacy_provider_race_launcher_disabled_use_paid_resource_allocator"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/robot_eval_worker.py",
       "classification": "metered_object_storage_data_plane",
       "required_markers": [
         "upload_file"

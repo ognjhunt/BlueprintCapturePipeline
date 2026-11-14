@@ -21,7 +21,6 @@ from blueprint_pipeline.action_normalization import (  # noqa: E402
     validate_action_stream,
     validate_chunk_alignment,
 )
-from blueprint_pipeline.sc3_eval_protocol import build_sc3_eval_protocol_artifact  # noqa: E402
 
 
 def _valid_episode(steps: int = 5) -> list[list[float]]:
@@ -274,24 +273,3 @@ def _sc3_kwargs() -> dict:
     }
 
 
-def test_sc3_action_chunks_blocked_without_normalization_manifest() -> None:
-    artifact = build_sc3_eval_protocol_artifact(**_sc3_kwargs())
-    requirement = artifact["data_requirements"]["action_chunks"]
-    assert requirement["status"] == "blocked"
-    assert "action_normalization_manifest_missing" in requirement["blockers"]
-
-
-def test_sc3_action_chunks_reviewable_with_validated_normalization(tmp_path: Path) -> None:
-    norm_manifest = build_action_normalization_manifest(
-        output_dir=tmp_path,
-        episodes={"good": _episode_payload()},
-        action_space=_action_space(),
-        corpus_provenance=_provenance(),
-    )
-    artifact = build_sc3_eval_protocol_artifact(
-        **_sc3_kwargs(), action_normalization_manifest=norm_manifest
-    )
-    requirement = artifact["data_requirements"]["action_chunks"]
-    assert requirement["status"] == "reviewable"
-    assert requirement["action_normalization_status"] == "validated"
-    assert requirement["blockers"] == []

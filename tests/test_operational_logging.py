@@ -5,8 +5,7 @@ import json
 import logging
 from http import HTTPStatus
 from pathlib import Path
-from types import MethodType, SimpleNamespace
-from urllib.error import HTTPError
+from types import MethodType
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,18 +14,10 @@ from blueprint_pipeline import (
     capture_orchestrator,
     privacy_runner_service,
     run_e2e,
-    runpod_provider_adapter,
     video_to_world_runner_service,
 )
 from blueprint_pipeline.common import PipelineError
-from blueprint_pipeline.paid_resource_admission import (
-    PAID_LANE_ADMISSION_SCHEMA_VERSION,
-    build_paid_lane_admission,
-    require_paid_resource_admission,
-)
 from blueprint_pipeline.runtime_service_app import create_runtime_app
-from blueprint_pipeline.robot_eval_provider_launcher import run_gpu_provider_launcher
-from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV, RUNPOD_API_KEY_ENV
 
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
@@ -463,92 +454,3 @@ def _ready_runpod_request(path: Path) -> Path:
     return path
 
 
-@pytest.mark.usefixtures("legacy_runpod_mechanics")
-def test_provider_adapters_log_blocked_completed_and_redacted_failures(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    provider_request = _ready_provider_launch_request(tmp_path / "provider_request.json")
-
-    with caplog.at_level(logging.INFO):
-        blocked = run_gpu_provider_launcher(
-            provider_launch_request_path=provider_request,
-            allow_provider_launch=False,
-        )
-
-    assert blocked["status"] == "blocked"
-    blocked_record = _records(caplog, "robot_eval_provider_launcher.blocked")[-1]
-    assert blocked_record.job_id == "launcher-job-1"
-    assert blocked_record.provider == "runpod"
-    assert blocked_record.blocker_count >= 1
-
-    caplog.clear()
-    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH", "true")
-    monkeypatch.setenv("RUNPOD_API_KEY", "secret-runpod-key")
-    side_effect = tmp_path / "legacy-launcher-ran"
-    with caplog.at_level(logging.INFO):
-        disabled = run_gpu_provider_launcher(
-            provider_launch_request_path=provider_request,
-            allow_provider_launch=True,
-            provider_launch_command=f"touch {side_effect}",
-        )
-
-    assert disabled["status"] == "blocked"
-    assert disabled["reason"] == "legacy_provider_command_launcher_disabled"
-    assert disabled["blockers"] == [
-        "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
-    ]
-    assert side_effect.exists() is False
-    disabled_record = _records(caplog, "robot_eval_provider_launcher.blocked")[-1]
-    assert disabled_record.reason == "legacy_provider_command_launcher_disabled"
-    assert "secret-runpod-key" not in caplog.text
-
-    caplog.clear()
-    runpod_request = _ready_runpod_request(tmp_path / "runpod_request.json")
-    with caplog.at_level(logging.INFO):
-        dry_run = runpod_provider_adapter.run_runpod_provider_adapter(
-            provider_launch_request_path=runpod_request,
-            mode="dry-run",
-            endpoint_id="endpoint-123",
-        )
-    assert dry_run["status"] == "dry_run_ready"
-    assert _records(caplog, "runpod_provider_adapter.completed")[-1].mode == "dry-run"
-
-    caplog.clear()
-    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
-    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
-
-    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
-        raise HTTPError(
-            request.full_url,
-            401,
-            "unauthorized secret-runpod-key",
-            hdrs=None,
-            fp=SimpleNamespace(read=lambda: b"bad secret-runpod-key"),
-        )
-
-    monkeypatch.setattr(
-        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
-    )
-    with caplog.at_level(logging.INFO):
-        failed = runpod_provider_adapter.run_runpod_provider_adapter(
-            provider_launch_request_path=runpod_request,
-            mode="serverless-run",
-            allow_runpod_api_call=True,
-            endpoint_id="endpoint-123",
-            paid_resource_admission_grant=require_paid_resource_admission(
-                build_paid_lane_admission(
-                    resource_class="runpod_provider_adapter",
-                    blockers=[],
-                ),
-                resource_class="runpod_provider_adapter",
-                expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
-            ),
-        )
-
-    assert failed["status"] == "failed"
-    failure = _records(caplog, "runpod_provider_adapter.failed")[-1]
-    assert failure.job_id == "runpod-job-1"
-    assert failure.http_status_code == 401
-    assert "secret-runpod-key" not in caplog.text

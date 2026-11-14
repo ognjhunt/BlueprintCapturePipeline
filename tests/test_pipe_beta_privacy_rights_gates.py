@@ -19,7 +19,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import blueprint_pipeline.evaluation_prep_stage as eps
 import blueprint_pipeline.site_package_orchestrator as qual
 
 
@@ -56,65 +55,6 @@ def _runtime_status_kwargs(**overrides: Any) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
-def test_pipe01_runtime_launchable_when_privacy_and_rights_cleared() -> None:
-    status = eps._canonical_site_world_runtime_status(**_runtime_status_kwargs())
-    assert status["launchable"] is True
-    assert status["blockers"] == []
-
-
-def test_pipe01_runtime_blocked_when_privacy_not_run() -> None:
-    status = eps._canonical_site_world_runtime_status(
-        **_runtime_status_kwargs(
-            rights_review={
-                "status": "needs_review",
-                "privacy": {"status": "needs_review", "pipeline_status": "not_run"},
-                "rights": {"status": "cleared"},
-            },
-            privacy_processing={"status": "not_run"},
-        )
-    )
-    assert status["launchable"] is False
-    assert any(blocker.startswith("privacy_processing") for blocker in status["blockers"])
-
-
-def test_pipe01_runtime_blocked_when_privacy_failed_closed() -> None:
-    status = eps._canonical_site_world_runtime_status(
-        **_runtime_status_kwargs(
-            rights_review={
-                "status": "blocked",
-                "privacy": {"status": "blocked", "pipeline_status": "failed_closed"},
-                "rights": {"status": "cleared"},
-            },
-            privacy_processing={"status": "failed_closed"},
-        )
-    )
-    assert status["launchable"] is False
-    assert any(blocker.startswith("privacy_processing") for blocker in status["blockers"])
-
-
-def test_pipe01_runtime_blocked_when_rights_needs_review() -> None:
-    status = eps._canonical_site_world_runtime_status(
-        **_runtime_status_kwargs(
-            rights_review={
-                "status": "needs_review",
-                "privacy": _CLEARED_PRIVACY_REVIEW,
-                "rights": {"status": "needs_review"},
-            },
-            privacy_processing={"status": "person_removed"},
-        )
-    )
-    assert status["launchable"] is False
-    assert any(blocker.startswith("rights_review") for blocker in status["blockers"])
-
-
-def test_pipe01_runtime_blocked_when_rights_review_missing() -> None:
-    status = eps._canonical_site_world_runtime_status(
-        **_runtime_status_kwargs(rights_review=None, privacy_processing={"status": "person_removed"})
-    )
-    assert status["launchable"] is False
-    assert any(blocker.startswith("rights_review") for blocker in status["blockers"])
-
-
 # --------------------------------------------------------------------------------------
 # PIPE-01: render descriptor / conditioning local_paths never expose raw walkthrough
 # --------------------------------------------------------------------------------------
@@ -139,50 +79,6 @@ def _eps_context(tmp_path: Path):
         capture_id="capture-1",
         capture_prefix="scenes/scene-1/captures/capture-1",
     )
-
-
-def test_pipe01_render_descriptor_ignores_raw_video_fallback() -> None:
-    # Even with poses+intrinsics present, a bare raw_video_path must not be treated as a
-    # runtime render source. Without a privacy-safe video ref, we degrade rather than
-    # embed the un-redacted walkthrough.
-    descriptor = eps._primary_runtime_render_descriptor(
-        conditioning_bundle={},
-        local_paths={
-            "raw_video_path": "/tmp/walkthrough.mov",
-            "arkit_poses_path": "/tmp/poses.jsonl",
-            "arkit_intrinsics_path": "/tmp/intrinsics.json",
-        },
-        canonical_world_model={
-            "status": "missing",
-            "world_model_backend": "site_world_runtime",
-            "scene_representation": "pending_world_model_service",
-            "render_source": "pending_world_model_service",
-        },
-    )
-    # The raw walkthrough must not become the "full capture" runtime render source.
-    assert descriptor["runtime_render_source"] != "site_world_runtime_full_capture"
-    assert descriptor["runtime_render_source"] == "pending_world_model_service"
-
-
-def test_pipe01_render_descriptor_accepts_privacy_safe_world_model_video() -> None:
-    descriptor = eps._primary_runtime_render_descriptor(
-        conditioning_bundle={"world_model_video_uri": "gs://bucket/privacy/final_walkthrough.mov"},
-        local_paths={
-            "arkit_poses_path": "/tmp/poses.jsonl",
-            "arkit_intrinsics_path": "/tmp/intrinsics.json",
-        },
-        canonical_world_model={"status": "missing", "world_model_backend": "site_world_runtime"},
-    )
-    assert descriptor["runtime_render_source"] == "site_world_runtime_full_capture"
-
-
-def test_pipe01_conditioning_local_paths_never_include_raw_video(tmp_path: Path) -> None:
-    context = _eps_context(tmp_path)
-    # Populate the un-redacted raw walkthrough on disk.
-    (context.raw_root / "walkthrough.mov").write_bytes(b"raw-capture")
-    local_paths = eps._conditioning_local_paths(context=context, conditioning_bundle={})
-    assert "raw_video_path" not in local_paths
-    assert "/walkthrough.mov" not in str(local_paths.values())
 
 
 # --------------------------------------------------------------------------------------

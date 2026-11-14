@@ -218,34 +218,6 @@ def test_website_native_profile_gap_finishes_preparation_without_native_executio
         assert "website_intake_outbox" not in result["website_scene_preparation"]
 
 
-def test_shared_task_constraints_survive_a_stored_task_scope_record(tmp_path: Path) -> None:
-    # The capture app's writer of task_scope_record.json was removed on 2026-11-11; a stored
-    # record is still read by evaluation preparation, so its task constraints must carry over.
-    from blueprint_pipeline.evaluation_prep_stage import _build_task_anchor_manifest
-
-    metadata = {
-        "assumptions": ["Dimensions estimated from video"],
-        "missing_measurements": ["door hinge torque", "rack travel force"],
-        "allowed_environmental_changes": {"dish_loading": False, "wash_cycle": False},
-        "starting_conditions": {"door": "closed"},
-        "success_criteria": {"door": "open to supplied target", "racks": "extend"},
-    }
-    scope = {
-        "task_statement": "Manipulate dishwasher door and upper/lower racks",
-        "tasks": [{"task_id": "door", "target_object_ids": ["door"]}],
-        "success_criteria_authority": "supplied_unverified_task_criteria",
-        **metadata,
-    }
-    anchors = _build_task_anchor_manifest(
-        capture_root=tmp_path / "scenes" / "scene-1" / "captures" / "capture-1",
-        handoff={}, scope_record=scope, task_run_entries=[], object_geometry_manifest={},
-    )
-    task = anchors["tasks"][0]
-    for key in metadata:
-        assert task[key] == metadata[key]
-    assert task["success_criteria_authority"] == "supplied_unverified_task_criteria"
-
-
 def test_a_descriptor_that_is_not_a_website_upload_ends_without_running_anything(tmp_path):
     storage_root = tmp_path / "gcs"
     descriptor_uri = _write_descriptor(storage_root, _descriptor(metadata={}))

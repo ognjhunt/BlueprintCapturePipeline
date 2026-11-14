@@ -32,7 +32,6 @@ ARMED_BY_THE_ALLOCATOR = frozenset({"semantic_teacher_image_edit_vast"})
 LANES_WITHOUT_AN_INDEPENDENT_WATCHDOG = frozenset(
     {
         "adp_aura_author_smoke_vast",
-        "robot_eval_provider_launcher",
         "unitree_groot_n17_sonic_vast_image_canary",
         "unitree_groot_n17_sonic_vast_policy_command",
         "vast_authorized_probe_runner",

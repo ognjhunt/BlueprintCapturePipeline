@@ -25,7 +25,6 @@ import pytest
 
 from blueprint_pipeline import success_claim_contracts as scc
 from blueprint_pipeline.proof_contracts import build_site_package_manifest
-from blueprint_pipeline.robot_eval_execution import _simulator_attempts_from_payload
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _RUNNER = REPO_ROOT / "scripts" / "run_isaac_g1_kitchen_parity_eval.py"
@@ -586,29 +585,6 @@ def _criterion_results(*, passed: bool = True) -> list[dict[str, object]]:
             "evidence_refs": ["v.mp4#frame=4"],
         }
     ]
-
-
-def test_completed_status_without_verdict_fails_closed() -> None:
-    attempts = _simulator_attempts_from_payload(
-        payload={"episodes": [{"status": "completed"}]},
-        simulator="mujoco",
-        generated_at="2026-07-04T00:00:00Z",
-    )
-    attempt = attempts[0]
-    assert attempt["task_success"] is False
-    assert attempt["task_success_explicit"] is False
-    assert "task_success_not_reported_failing_closed" in attempt["failure_mode_ids"]
-
-
-def test_explicit_task_success_still_accepted() -> None:
-    attempts = _simulator_attempts_from_payload(
-        payload={"episodes": [{"status": "completed", "task_success": True}]},
-        simulator="mujoco",
-        generated_at="2026-07-04T00:00:00Z",
-    )
-    attempt = attempts[0]
-    assert attempt["task_success"] is True
-    assert attempt["task_success_explicit"] is True
 
 
 # --------------------------------------------------------------------------------------
