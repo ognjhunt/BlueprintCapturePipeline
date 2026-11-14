@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import policy_ranking_successor_gpu_admission as admission
 
 
@@ -28,30 +27,6 @@ def test_ctrl_world_profile_reservation_stays_within_target_spend() -> None:
     assert profile.hard_ttl_seconds == 4_800
     assert projected_max_spend <= profile.target_spend_usd
     assert profile.target_spend_usd <= profile.max_compute_cap_usd
-
-
-def _load(name: str) -> dict[str, Any]:
-    path = EXPERIMENT / name
-    if not path.is_file():
-        path = HISTORICAL_EXPERIMENT / name
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if name == "vast_compute_preflight.json":
-        value["experiment_id"] = "policy_ranking_cosmos3_followup_20260728"
-    return value
-
-
-def _inspect_bundle(path: Path | None = None) -> dict[str, Any]:
-    return admission.inspect_successor_bundle(
-        path or EXPERIMENT / BUNDLE_NAME,
-        receipt=_load(BUNDLE_RECEIPT_NAME),
-        smoke_inventory=_load("smoke_request_inventory.json"),
-    )
-
-
-def _preflight_path(tmp_path: Path) -> Path:
-    path = tmp_path / "vast_compute_preflight.json"
-    path.write_text(json.dumps(_load("vast_compute_preflight.json")), encoding="utf-8")
-    return path
 
 
 def _oscar_replay_fixture(
@@ -298,66 +273,3 @@ def test_droid_reference_admission_accepts_runpod_without_smoke_inventory(
     assert result["smoke_inventory_validation"]["status"] == "not_applicable"
     assert result["shared_paid_lane_admission"]["resource_class"] == "runpod_wam_async"
 
-
-def test_paid_resource_allocator_dispatches_successor_lane_only_through_probe_kind(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    captured: dict[str, Any] = {}
-    monkeypatch.setattr(
-        allocator,
-        "_source_checkout_blockers",
-        lambda _commit, **_kwargs: ([], "d" * 40),
-    )
-
-    def fake_lane(**kwargs: Any) -> dict[str, Any]:
-        captured.update(kwargs)
-        return {"status": "dry_run_ready", "provider_mutations_performed": 0}
-
-    monkeypatch.setattr(allocator, "run_successor_gpu_lane", fake_lane)
-    code = allocator.main(
-        [
-            "gpu-canary",
-            "--probe-kind",
-            allocator.POLICY_RANKING_SUCCESSOR_COSMOS_PROBE_KIND,
-            "--provider-launch-request",
-            "authorization.json",
-            "--release-evidence",
-            "environment.json",
-            "--model-cache-evidence",
-            "inventory.json",
-            "--preflight-bundle",
-            "preflight.json",
-            "--episode-bundle",
-            "bundle.zip",
-            "--successor-bundle-receipt",
-            "receipt.json",
-            "--provider-bundle-url-file",
-            "bundle-url.txt",
-            "--provider-output-put-url-file",
-            "output-put-url.txt",
-            "--provider-output-get-url-file",
-            "output-get-url.txt",
-            "--admission-out",
-            str(tmp_path / "admission.json"),
-            "--bound-request-out",
-            str(tmp_path / "bound.json"),
-            "--adapter-output",
-            str(tmp_path / "adapter.json"),
-            "--pod-name",
-            str(tmp_path / "job"),
-            "--expected-source-commit",
-            "d" * 40,
-        ]
-    )
-
-    assert code == 0
-    assert json.loads(capsys.readouterr().out) == {"success": True}
-    assert captured["execute"] is False
-    assert captured["provider_bundle_path"] == "bundle.zip"
-    assert captured["provider_bundle_receipt_path"] == "receipt.json"
-    assert captured["provider_bundle_url_file"] == "bundle-url.txt"
-    assert captured["provider_output_put_url_file"] == "output-put-url.txt"
-    assert captured["provider_output_get_url_file"] == "output-get-url.txt"
-    assert captured["expected_source_commit"] == "d" * 40

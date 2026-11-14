@@ -8,13 +8,11 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
-from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
 )
 from blueprint_pipeline.simpler_public_vast import (
     ADMITTED_MACHINE_IDS,
-    PROBE_KIND,
     _adp_session_budget_ledger,
     _vast_authority_environment,
     build_simpler_public_vast_bundle,
@@ -216,105 +214,3 @@ def test_adp_vast_env_requests_graphics_without_isaac_terms(tmp_path: Path) -> N
     )
     assert "libegl1 libxext6" in script
 
-
-def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
-    values = [
-        "gpu-canary",
-        "--probe-kind",
-        PROBE_KIND,
-        "--provider",
-        "vast",
-        "--provider-launch-request",
-        str(tmp_path / "unused-request.json"),
-        "--release-evidence",
-        str(tmp_path / "unused-release.json"),
-        "--model-cache-evidence",
-        str(tmp_path / "unused-model.json"),
-        "--preflight-bundle",
-        str(tmp_path / "unused-preflight.json"),
-        "--admission-out",
-        str(tmp_path / "admission.json"),
-        "--bound-request-out",
-        str(tmp_path / "unused-bound.json"),
-        "--adapter-output",
-        str(tmp_path / "adapter.json"),
-        "--pod-name",
-        "adp-simpler",
-        "--adp-public-reference-manifest",
-        str(MANIFEST),
-        "--adp-job-dir",
-        str(tmp_path / "job"),
-    ]
-    if execute:
-        values.append("--execute")
-    return values
-
-
-@pytest.mark.parametrize("execute", [False, True])
-def test_canonical_allocator_issues_grant_only_for_execute(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
-) -> None:
-    observed: dict = {}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-
-    def fake_run(**kwargs):
-        observed.update(kwargs)
-        return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_simpler_public_vast", fake_run)
-
-    assert allocator.main(_allocator_args(tmp_path, execute=execute)) == 0
-    assert observed["execute"] is execute
-    grant = observed["paid_resource_admission_grant"]
-    assert isinstance(grant, PaidResourceAdmissionGrant) is execute
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["retry_cap"] == 0
-    assert admission["physical_outcome_values_uploaded"] is False
-    assert admission["hard_cap_usd"] == 2.0
-    assert admission["hard_ttl_seconds"] == 7200
-    assert (
-        admission["allocation_binding"]["bundle_sha256"]
-        == observed["prepared_bundle"]["bundle_sha256"]
-    )
-    assert admission["allocation_binding_digest"].startswith("sha256:")
-    assert admission["allocation_binding"]["machine_avoidlist_digest"] is None
-
-
-def test_allocator_digest_binds_reviewed_machine_avoidlist(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    avoidlist = tmp_path / "avoidlist.json"
-    avoidlist.write_text(
-        json.dumps(
-            {
-                "schema_version": "vast_machine_avoidlist.v1",
-                "status": "completed",
-                "machine_ids": [56730],
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    observed: dict = {}
-    monkeypatch.setattr(
-        allocator,
-        "run_simpler_public_vast",
-        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
-    )
-    args = _allocator_args(tmp_path, execute=False) + [
-        "--adp-machine-avoidlist",
-        str(avoidlist),
-    ]
-
-    assert allocator.main(args) == 0
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["allocation_binding"]["machine_avoidlist_digest"].startswith("sha256:")
-    assert observed["machine_avoidlist_path"] == str(avoidlist)

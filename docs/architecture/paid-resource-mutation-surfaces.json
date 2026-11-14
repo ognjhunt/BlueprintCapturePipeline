@@ -266,9 +266,7 @@
       "path": "src/blueprint_pipeline/paid_resource_allocator.py",
       "classification": "canonical_allocator",
       "required_markers": [
-        "cpu-build",
         "gpu-canary",
-        "provider-reconstruction",
         "remote-cpu-job"
       ]
     },

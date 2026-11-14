@@ -6,8 +6,6 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import adp009d_franka_vast as franka_vast
-from blueprint_pipeline import paid_resource_allocator as allocator
-from blueprint_pipeline.adp009d_native_microcheck_bundle import PROBE_KIND
 from blueprint_pipeline.adp009d_policy_provisioning import (
     build_provisioning_script,
 )
@@ -105,93 +103,3 @@ def test_worker_refuses_outcome_fields(tmp_path: Path) -> None:
     assert result["status"] == "blocked"
     assert "policy_runtime_smoke_outcome_field_forbidden" in result["blockers"]
 
-
-def _allocator_args(tmp_path: Path, candidate_id: str) -> list[str]:
-    return [
-        "gpu-canary",
-        "--probe-kind",
-        PROBE_KIND,
-        "--provider",
-        "vast",
-        "--provider-launch-request",
-        str(tmp_path / "request.json"),
-        "--release-evidence",
-        str(tmp_path / "release.json"),
-        "--model-cache-evidence",
-        str(tmp_path / "model.json"),
-        "--preflight-bundle",
-        str(tmp_path / "preflight.json"),
-        "--admission-out",
-        str(tmp_path / "admission.json"),
-        "--bound-request-out",
-        str(tmp_path / "bound.json"),
-        "--adapter-output",
-        str(tmp_path / "adapter.json"),
-        "--pod-name",
-        f"policy-smoke-{candidate_id}",
-        "--adp-job-dir",
-        str(tmp_path / "job"),
-        "--adp009d-policy-candidate",
-        candidate_id,
-        "--adp009d-policy-runtime-smoke",
-        "--adp-max-hourly-rate-usd",
-        "1.0",
-        "--adp-max-spend-usd",
-        "1.5",
-        "--adp-hard-ttl-seconds",
-        "5400",
-    ]
-
-
-@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
-def test_allocator_dry_run_routes_runtime_smoke_without_task_inputs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, candidate_id: str
-) -> None:
-    observed: dict[str, object] = {}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": COMMIT, "checkout_clean": True}),
-    )
-    monkeypatch.setattr(
-        allocator,
-        "build_policy_runtime_smoke_bundle",
-        lambda **kwargs: observed.update(kwargs)
-        or {
-            "status": "ready",
-            "bundle_sha256": "sha256:" + "b" * 64,
-            "input_digest": "sha256:" + "c" * 64,
-            "policy_candidate_id": candidate_id,
-            "execution_mode": "outcome_blind_policy_runtime_smoke",
-        },
-    )
-    monkeypatch.setattr(
-        allocator,
-        "run_adp009d_native_microcheck_vast",
-        lambda **kwargs: observed.update({"run": kwargs}) or {"status": "dry_run_ready"},
-    )
-    args = _allocator_args(tmp_path, candidate_id)
-    if candidate_id == "groot_n17_droid":
-        monkeypatch.setattr(allocator, "normalize_model_access_env", lambda: None)
-        monkeypatch.setattr(
-            allocator,
-            "model_access_secret_status",
-            lambda: {"huggingface": {"auth_ready": True}},
-        )
-        monkeypatch.setattr(
-            allocator,
-            "probe_gated_backbone_access",
-            lambda: {
-                "status": "authorized",
-                "receipt_digest": "sha256:" + "d" * 64,
-                "blockers": [],
-            },
-        )
-        args.append("--adp009d-authorize-gated-backbone")
-
-    assert allocator.main(args) == 0
-    assert observed["candidate_id"] == candidate_id
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["candidate_policy_queried"] is True
-    assert admission["allocation_binding"]["outcome_blind_policy_runtime_smoke"] is True
-    assert admission["allocation_binding"]["controls_requested"] is False

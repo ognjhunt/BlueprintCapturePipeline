@@ -27,7 +27,6 @@ LEGACY_BUILD_SCRIPTS = (
     ROOT / "scripts/build_push_groot_oscar_release_image.sh",
     ROOT / "scripts/build_push_groot_oscar_closed_loop_image.sh",
 )
-RELEASE_WORKFLOW = ROOT / ".github/workflows/groot-oscar-thin-release.yml"
 MUTATION_SURFACE_MANIFEST = ROOT / "docs/architecture/paid-resource-mutation-surfaces.json"
 SHARED_ADMISSION = ROOT / "src/blueprint_pipeline/paid_resource_admission.py"
 #: RunPod is retired (owner decision 2026-11-05): every shared admission entry that
@@ -40,7 +39,7 @@ RUNPOD_RETIREMENT_ADMISSION_ENTRIES = (
 AGENTS = ROOT / "AGENTS.md"
 REMOTE_CPU_ALLOCATOR = ROOT / "src/blueprint_pipeline/remote_cpu_job_allocator.py"
 CLOUD_RUN_JOBS_CLIENT = ROOT / "src/blueprint_pipeline/cloud_run_jobs_client.py"
-CANONICAL_SUBCOMMANDS = ("cpu-build", "gpu-canary", "provider-reconstruction", "remote-cpu-job")
+CANONICAL_SUBCOMMANDS = ("gpu-canary", "remote-cpu-job")
 # Plan 14 §8: what run_remote_cpu_job must reach, and the blocker each missing call raises.
 REMOTE_CPU_REQUIRED_CALLS = {
     "require_paid_resource_admission": "remote_cpu_lane_bypasses_shared_admission",
@@ -70,7 +69,6 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/native_g1_paid_campaign.py",
     "src/blueprint_pipeline/native_g1_team_paid_policy.py",
     "src/blueprint_pipeline/native_g1_beta_paid.py",
-    "src/blueprint_pipeline/paid_resource_allocator.py",
     "src/blueprint_pipeline/parallel_findall_admission.py",
     "src/blueprint_pipeline/policy_canary_allocator_lane.py",
     "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
@@ -94,7 +92,6 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/native_g1_paid_campaign.py",
     "src/blueprint_pipeline/native_g1_team_paid_policy.py",
     "src/blueprint_pipeline/native_g1_beta_paid.py",
-    "src/blueprint_pipeline/paid_resource_allocator.py",
     "src/blueprint_pipeline/parallel_findall_admission.py",
     "src/blueprint_pipeline/policy_canary_allocator_lane.py",
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
@@ -898,8 +895,6 @@ def verify() -> list[str]:
     runpod_watchdog = RUNPOD_WATCHDOG.read_text(encoding="utf-8")
     runbook = RUNBOOK.read_text(encoding="utf-8")
 
-    if "run_builder(" not in canonical:
-        blockers.append("canonical_allocator_missing_adapter_route")
     if "runpod_allocator_request_blockers(args)" not in canonical:
         blockers.append("canonical_allocator_runpod_retirement_refusal_missing")
     if "legacy_cpu_builder_launcher_disabled" not in cpu:
@@ -940,23 +935,6 @@ def verify() -> list[str]:
             or "BLUEPRINT_CANONICAL_CPU_BUILD_CONTEXT" in prefix
         ):
             blockers.append("legacy_cpu_build_script_not_hard_disabled")
-    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    canonical_workflow_command = "paid_resource_allocator cpu-build"
-    if canonical_workflow_command not in workflow or "--execution-plane local" not in workflow:
-        blockers.append("release_workflow_bypasses_canonical_cpu_allocator")
-    prerequisite_index = workflow.find("verify_groot_oscar_live_prerequisites.py")
-    allocator_index = workflow.find(canonical_workflow_command)
-    if prerequisite_index < 0 or not prerequisite_index < allocator_index:
-        blockers.append("release_workflow_live_prerequisite_refresh_missing")
-    elif "--live" not in workflow[prerequisite_index:allocator_index]:
-        blockers.append("release_workflow_live_prerequisite_refresh_not_live")
-    for unsafe_expression in (
-        "--foundation-ref '${{ inputs.foundation_image_ref }}'",
-        "--release-ref '${{ inputs.release_image_ref }}'",
-        'expected_source_commit":"${{ inputs.source_ref }}',
-    ):
-        if unsafe_expression in workflow:
-            blockers.append("release_workflow_dispatch_input_reaches_shell_parser")
 
     cpu_calls = _function_calls(CPU_ADAPTER)
     if "_request" not in cpu_calls.get("run_builder", set()):

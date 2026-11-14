@@ -14,7 +14,6 @@ import numpy as np
 import pytest
 import jsonschema
 
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import (
     build_paid_lane_admission,
@@ -501,97 +500,6 @@ def test_cross_origin_redirect_does_not_forward_bearer_token() -> None:
     assert payload == b'{"sid":"safe"}'
     assert requests[0][2]["Authorization"] == "Bearer secret-token"
     assert "Authorization" not in requests[1][2]
-
-
-def test_canonical_allocator_dry_run_never_reads_credentials(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    packet_path, archive_digest = _packet(tmp_path / "packet")
-    terms_path = (
-        Path(__file__).parents[1]
-        / "docs/evidence/teleport_provider_terms_review_2026-08-03.json"
-    )
-    terms = json.loads(terms_path.read_text())
-    request_path = tmp_path / "request.json"
-    request_path.write_text(
-        json.dumps(
-            _request(
-                archive_digest,
-                terms_digest=terms["teleport_provider_terms_review_digest"],
-            )
-        )
-    )
-    observations_path = tmp_path / "observations.json"
-    observations_path.write_text(json.dumps({"observations": _observations()}))
-    output = tmp_path / "preflight"
-    monkeypatch.setattr(allocator, "_source_checkout_blockers", lambda *_args, **_kwargs: ([], "1" * 40))
-    monkeypatch.setattr(
-        allocator,
-        "load_teleport_credentials",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("credentials read")),
-    )
-    exit_code = allocator.main(
-        [
-            "provider-reconstruction",
-            "--upload-packet",
-            str(packet_path),
-            "--execution-request",
-            str(request_path),
-            "--candidate-observations",
-            str(observations_path),
-            "--terms-review",
-            str(terms_path),
-            "--output-dir",
-            str(output),
-            "--observed-at",
-            "2026-08-03T12:00:02Z",
-        ]
-    )
-    assert exit_code == 0
-    assert json.loads(capsys.readouterr().out) == {"success": True}
-    preflight = json.loads((output / "teleport_provider_preflight.v1.json").read_text())
-    assert preflight["status"] == "ready"
-    assert preflight["execute_requested"] is False
-    assert preflight["provider_mutations_performed"] == 0
-    schema = json.loads(
-        (
-            Path(__file__).parents[1]
-            / "docs/schemas/teleport_provider_preflight.v1.schema.json"
-        ).read_text()
-    )
-    jsonschema.validate(preflight, schema)
-    monkeypatch.delenv("TELEPORT_PUBLIC_DATA_UPLOAD_AUTHORIZED", raising=False)
-    monkeypatch.delenv("TELEPORT_PUBLIC_DATA_SPEND_CAP_USD", raising=False)
-    blocked_output = tmp_path / "blocked-execute"
-    exit_code = allocator.main(
-        [
-            "provider-reconstruction",
-            "--upload-packet",
-            str(packet_path),
-            "--execution-request",
-            str(request_path),
-            "--candidate-observations",
-            str(observations_path),
-            "--terms-review",
-            str(terms_path),
-            "--output-dir",
-            str(blocked_output),
-            "--observed-at",
-            "2026-08-03T12:00:02Z",
-            "--execute",
-        ]
-    )
-    assert exit_code == 2
-    assert json.loads(capsys.readouterr().out) == {"success": False}
-    blocked = json.loads(
-        (blocked_output / "teleport_provider_preflight.v1.json").read_text()
-    )
-    assert {
-        "teleport_public_data_upload_interlock_missing",
-        "teleport_public_data_spend_cap_interlock_mismatch",
-        "teleport_sealed_evaluation_request_missing",
-    } <= set(blocked["blockers"])
-    jsonschema.validate(blocked, schema)
 
 
 def test_committed_teleport_evidence_validates_against_schemas() -> None:

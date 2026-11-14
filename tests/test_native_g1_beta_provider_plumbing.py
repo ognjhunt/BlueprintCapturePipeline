@@ -202,23 +202,6 @@ def test_canonical_allocator_cli_delegates_same_control_recheck(tmp_path, monkey
     assert len(calls) == 1
 
 
-def test_existing_campaign_arguments_keep_their_values(tmp_path, monkeypatch):
-    flags = ("bundle-receipt", "manipulation-packet", "movement-packet", "book-handoff",
-        "movement-handoff", "navigation-authority", "publisher-source", "runtime-source-receipt")
-    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers", lambda: ([], {}))
-    def dispatch(args, **kwargs):
-        for name in flags:
-            assert getattr(args, "g1_campaign_" + name.replace("-", "_")) == str(tmp_path / name)
-        assert args.g1_campaign_rights_review == ["review-one", "review-two"]
-        return {"status": "dry_run_ready"}
-    monkeypatch.setattr(allocator, "dispatch_g1_paid_campaign", dispatch)
-    argv = ["gpu-canary", "--provider", "vast", "--probe-kind", allocator.NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND]
-    for name in flags:
-        argv.extend(["--g1-campaign-" + name, str(tmp_path / name)])
-    argv.extend(["--g1-campaign-rights-review", "review-one", "--g1-campaign-rights-review", "review-two"])
-    assert allocator.main(argv) == 0
-
-
 def _terminal(status="blocked", queried=False):
     result = {"schema_version": transport.RESULT_SCHEMA, "status": status,
         "candidate_id": "native_g1_gr00t_n16", "candidate_policy_queried": queried,

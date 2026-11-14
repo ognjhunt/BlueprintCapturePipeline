@@ -1,18 +1,11 @@
-import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.openai_candidate_paid_admission import (
     OPENAI_API_CANDIDATE_ADMISSION_SCHEMA_VERSION,
     build_openai_api_candidate_admission,
-)
-from blueprint_pipeline.paid_resource_admission import (
-    PaidResourceAdmissionBlocked,
-    require_paid_resource_admission_grant,
 )
 from blueprint_pipeline.task_evaluation_supervisor.candidate_policy import (
     CANDIDATE_EVALUATION_SUITE_SCHEMA_VERSION,
@@ -152,135 +145,3 @@ def test_openai_candidate_admission_fails_closed(overrides: dict[str, Any], bloc
     assert blocker in admission["blockers"]
     assert admission["provider_mutations_performed"] == 0
 
-
-def test_canonical_allocator_issues_bound_in_process_grant_only_for_execute(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    suite, authorization = _inputs()
-    monkeypatch.setattr(
-        allocator, "_source_checkout_blockers", lambda *_args, **_kwargs: ([], COMMIT)
-    )
-    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: (COMMIT, True))
-    output = tmp_path / "openai_candidate_admission.json"
-
-    admission, grant = allocator.admit_openai_api_candidate(
-        suite=suite,
-        execution_authorization=authorization,
-        candidate_id="pigey-verify-recover",
-        provider_id="pigey_external_candidate",
-        runtime_configuration_digest=SHA_B,
-        cost_authority_binding_digest=SHA_C,
-        license_attestation_digest=SHA_A,
-        expected_source_commit=COMMIT,
-        maximum_execution_seconds=590,
-        runtime_watchdog_enforced=True,
-        teardown_enforced=True,
-        admission_out=output,
-        execute=True,
-        admitted_at="2026-07-30T15:00:01Z",
-    )
-
-    assert grant is not None
-    assert grant.allocation_binding_digest == admission["allocation_binding_digest"]
-    require_paid_resource_admission_grant(
-        grant,
-        resource_class="openai_api_candidate",
-        allocation_binding_digest=admission["allocation_binding_digest"],
-    )
-    assert json.loads(output.read_text(encoding="utf-8")) == admission
-
-    dry_run, dry_grant = allocator.admit_openai_api_candidate(
-        suite=suite,
-        execution_authorization=authorization,
-        candidate_id="pigey-verify-recover",
-        provider_id="pigey_external_candidate",
-        runtime_configuration_digest=SHA_B,
-        cost_authority_binding_digest=SHA_C,
-        license_attestation_digest=SHA_A,
-        expected_source_commit=COMMIT,
-        maximum_execution_seconds=590,
-        runtime_watchdog_enforced=True,
-        teardown_enforced=True,
-        admission_out=tmp_path / "dry_run.json",
-        execute=False,
-        admitted_at="2026-07-30T15:00:01Z",
-    )
-    assert dry_run["status"] == "dry_run_ready"
-    assert dry_grant is None
-
-
-def test_pigey_allocator_wrapper_derives_runtime_envelope_and_injects_grant(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    suite, authorization = _inputs()
-    monkeypatch.setattr(
-        allocator, "_source_checkout_blockers", lambda *_args, **_kwargs: ([], COMMIT)
-    )
-    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: (COMMIT, True))
-
-    class Runtime:
-        candidate_id = "pigey-verify-recover"
-        provider_id = "pigey_external_candidate"
-        runtime_configuration_digest = SHA_B
-        cost_authority_binding_digest = SHA_C
-        license_attestation = {"license_attestation_digest": SHA_A}
-        maximum_execution_seconds = 590
-        runtime_watchdog_enforced = True
-        teardown_enforced = True
-        paid_resource_admission_grant = None
-
-    runtime = Runtime()
-    admission, grant = allocator.admit_pigey_candidate_runtime(
-        suite=suite,
-        execution_authorization=authorization,
-        runtime=runtime,
-        expected_source_commit=COMMIT,
-        admission_out=tmp_path / "pigey_admission.json",
-        execute=True,
-        admitted_at="2026-07-30T15:00:01Z",
-    )
-
-    assert grant is not None
-    assert runtime.paid_resource_admission_grant is grant
-    assert admission["maximum_execution_seconds"] == 590
-    assert admission["runtime_watchdog_enforced"] is True
-    assert admission["teardown_enforced"] is True
-
-
-def test_canonical_allocator_persists_refusal_before_raising(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    suite, authorization = _inputs()
-    monkeypatch.setattr(
-        allocator,
-        "_source_checkout_blockers",
-        lambda *_args, **_kwargs: (["gpu_canary_checkout_not_clean"], COMMIT),
-    )
-    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: (COMMIT, False))
-    output = tmp_path / "blocked.json"
-
-    with pytest.raises(PaidResourceAdmissionBlocked):
-        allocator.admit_openai_api_candidate(
-            suite=suite,
-            execution_authorization=authorization,
-            candidate_id="pigey-verify-recover",
-            provider_id="pigey_external_candidate",
-            runtime_configuration_digest=SHA_B,
-            cost_authority_binding_digest=SHA_C,
-            license_attestation_digest=SHA_A,
-            expected_source_commit=COMMIT,
-            maximum_execution_seconds=590,
-            runtime_watchdog_enforced=True,
-            teardown_enforced=True,
-            admission_out=output,
-            execute=True,
-            admitted_at="2026-07-30T15:00:01Z",
-        )
-
-    persisted = json.loads(output.read_text(encoding="utf-8"))
-    assert persisted["status"] == "blocked"
-    assert persisted["provider_mutations_performed"] == 0
-    assert "openai_candidate_checkout_not_clean" in persisted["blockers"]

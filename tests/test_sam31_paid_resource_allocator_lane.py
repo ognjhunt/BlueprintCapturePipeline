@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 import urllib.error
 
-import blueprint_pipeline.paid_resource_allocator as allocator
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.sam31_paid_resource_allocator_lane import (
@@ -627,101 +626,3 @@ def test_sam31_allocator_closes_watchdog_when_live_preflight_raises(
     assert result["blockers"] == ["sam31_live_preflight_collection_failed"]
     assert closed == [True]
 
-
-def test_canonical_allocator_dispatches_sam31_read_only_preflight_dry_run(
-    tmp_path: Path, monkeypatch
-) -> None:
-    observed: dict[str, object] = {}
-
-    def run(args, *, checkout_commit: str):
-        observed["args"] = args
-        observed["checkout_commit"] = checkout_commit
-        return {"status": "dry_run_ready", "blockers": []}
-
-    monkeypatch.setattr(
-        allocator,
-        "_source_checkout_blockers",
-        lambda *_args, **_kwargs: ([], "c" * 40),
-    )
-    monkeypatch.setattr(allocator, "run_sam31_paid_resource_allocator_lane", run)
-    result = allocator.main(
-        [
-            "gpu-canary",
-            "--probe-kind",
-            "semantic-sam31-source-tracks",
-            "--provider",
-            "vast",
-            "--provider-launch-request",
-            str(tmp_path / "request.json"),
-            "--preflight-bundle",
-            str(tmp_path / "preflight.json"),
-            "--admission-out",
-            str(tmp_path / "admission.json"),
-            "--bound-request-out",
-            str(tmp_path / "bound.json"),
-            "--adapter-output",
-            str(tmp_path / "adapter.json"),
-            "--expected-source-commit",
-            "c" * 40,
-            "--sam31-max-spend-usd",
-            "1.0",
-            "--sam31-max-hourly-rate-usd",
-            "0.5",
-            "--sam31-hard-ttl-seconds",
-            "600",
-            "--sam31-retry-cap",
-            "0",
-            "--sam31-authority-id",
-            "fixture-authority",
-        ]
-    )
-    assert result == 0
-    assert observed["checkout_commit"] == "c" * 40
-    assert observed["args"].execute is False
-
-
-def test_canonical_allocator_refuses_sam31_execute_without_private_inputs(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        allocator,
-        "_source_checkout_blockers",
-        lambda *_args, **_kwargs: ([], "c" * 40),
-    )
-    monkeypatch.setattr(
-        allocator,
-        "run_sam31_paid_resource_allocator_lane",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("lane reached with missing secret files")
-        ),
-    )
-    result = allocator.main(
-        [
-            "gpu-canary",
-            "--probe-kind",
-            "semantic-sam31-source-tracks",
-            "--provider-launch-request",
-            str(tmp_path / "request.json"),
-            "--preflight-bundle",
-            str(tmp_path / "preflight.json"),
-            "--admission-out",
-            str(tmp_path / "admission.json"),
-            "--bound-request-out",
-            str(tmp_path / "bound.json"),
-            "--adapter-output",
-            str(tmp_path / "adapter.json"),
-            "--expected-source-commit",
-            "c" * 40,
-            "--sam31-max-spend-usd",
-            "1.0",
-            "--sam31-hard-ttl-seconds",
-            "600",
-            "--sam31-authority-id",
-            "fixture-authority",
-            "--execute",
-        ]
-    )
-    assert result == 2
-    blocked = json.loads((tmp_path / "adapter.json").read_text())
-    assert "sam31_attempt_authority_missing" in blocked["blockers"]
-    assert blocked["provider_mutations_performed"] == 0

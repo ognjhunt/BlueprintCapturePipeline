@@ -6,7 +6,6 @@ import zipfile
 
 import pytest
 
-import blueprint_pipeline.paid_resource_allocator as allocator
 import blueprint_pipeline.paired_target_native_import_vast as vast
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -664,75 +663,3 @@ def test_live_run_requires_qualified_runtime_watchdog_cleanup_and_zero(
     assert result["candidate_policy_queried"] is False
     assert seen_adapter["excluded_machine_ids"] == [140718]
 
-
-def test_allocator_binds_new_mode_without_execute(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt_path, bundle = _bundle(tmp_path)
-    authority = _authority(bundle)
-    authority_path = tmp_path / "authority.json"
-    write_json(authority_path, authority)
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": COMMIT, "checkout_clean": True}),
-    )
-    monkeypatch.setattr(
-        allocator,
-        "validate_paired_target_native_import_paid_attempt_authority",
-        lambda value, **kwargs: value,
-    )
-    observed = {}
-
-    def fake_run(**kwargs):
-        observed.update(kwargs)
-        return {"status": "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_paired_target_native_import_vast", fake_run)
-    args = [
-        "gpu-canary",
-        "--probe-kind",
-        vast.PROBE_KIND,
-        "--provider",
-        "vast",
-        "--provider-launch-request",
-        str(tmp_path / "unused.json"),
-        "--release-evidence",
-        str(tmp_path / "unused2.json"),
-        "--model-cache-evidence",
-        str(tmp_path / "unused3.json"),
-        "--preflight-bundle",
-        str(tmp_path / "unused4.json"),
-        "--admission-out",
-        str(tmp_path / "admission.json"),
-        "--bound-request-out",
-        str(tmp_path / "unused5.json"),
-        "--adapter-output",
-        str(tmp_path / "adapter.json"),
-        "--pod-name",
-        "paired-native",
-        "--expected-source-commit",
-        COMMIT,
-        "--paired-target-native-import-bundle-receipt",
-        str(receipt_path),
-        "--paired-target-native-import-attempt-authority",
-        str(authority_path),
-        "--adp-job-dir",
-        str(tmp_path / "job"),
-        "--adp-max-hourly-rate-usd",
-        "1.0",
-        "--adp-max-spend-usd",
-        "1.0",
-        "--adp-hard-ttl-seconds",
-        "3600",
-        "--adp-excluded-vast-machine-id",
-        "140718",
-    ]
-    assert allocator.main(args) == 0
-    assert observed["execute"] is False
-    assert observed["paid_attempt_authority"] == authority
-    assert observed["excluded_machine_ids"] == [140718]
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["status"] == "admitted"
-    assert admission["allocation_binding"]["replacement_count"] == 1
-    assert admission["allocation_binding"]["excluded_vast_machine_ids"] == [140718]

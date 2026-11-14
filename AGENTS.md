@@ -154,10 +154,7 @@ section 6.
 Paid resource allocation (the only supported launchers):
 
 ```bash
-python -m blueprint_pipeline.paid_resource_allocator cpu-build <arguments>
-python -m blueprint_pipeline.paid_resource_allocator model-volume <arguments>
 python -m blueprint_pipeline.paid_resource_allocator gpu-canary <arguments>
-python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <arguments>
 python -m blueprint_pipeline.paid_resource_allocator remote-cpu-job <arguments>
 ```
 
