@@ -54,8 +54,6 @@ BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     "native_g1_beta_bundle.py",
     # ADP-009D diagnostics.
     "adp009d_native_microcheck_bundle.py",
-    "articulated_isaac_bundle.py",
-    "articulated_native_diagnostic_bundle.py",
 }
 
 
