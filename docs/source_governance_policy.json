@@ -213,9 +213,6 @@
     "src/blueprint_pipeline/vast_wam_teardown.py": [
       "tests/test_vast_wam_teardown.py"
     ],
-    "src/blueprint_pipeline/wam_derived_observation_harness.py": [
-      "tests/test_wam_derived_observation_harness.py"
-    ],
     "src/blueprint_pipeline/wam_fixture_evaluator.py": [
       "tests/test_wam_fixture_evaluator.py"
     ],
@@ -321,7 +318,6 @@
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 4166,
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
     "src/blueprint_pipeline/vast_provider_adapter.py": 10420,
-    "src/blueprint_pipeline/wam_derived_observation_harness.py": 3066,
     "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
     "src/blueprint_pipeline/wam_generated_video_review.py": 2412,
     "src/blueprint_pipeline/task_evaluation_configured_controls_progression_worker.py": 2009,
