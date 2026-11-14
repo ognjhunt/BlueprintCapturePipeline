@@ -470,6 +470,10 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-team-scene-packet-remote.path",
     "blueprint-beta-policy-screening.service",
     "blueprint-beta-policy-screening.timer",
+    # The scene stage's no-spend maintenance pass: packet recovery and requeue, the site's
+    # success-rule exchange, held notices, cold-storage restore and probe queueing.
+    "blueprint-scene-stage-maintenance.service",
+    "blueprint-scene-stage-maintenance.timer",
     "blueprint-task-evaluation-scene-progression.service",
     "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-launch-reconciler.service",
@@ -573,10 +577,14 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-task-evaluation-launch-preparation.timer",
-    # Owner-authorized beta screening has its own aggregate site allowance,
-    # sealed admission and allocator. This does not release the paid agent
-    # dispatcher's existing explicit hold.
+    # The drained early trial: it settles, reconciles and publishes what it owes
+    # and launches nothing (beta_policy_screening_worker). This does not release
+    # the paid agent dispatcher's existing explicit hold.
     "blueprint-beta-policy-screening.timer",
+    # No-spend: the scene stage's maintenance pass (scene_stage_maintenance). It
+    # recovers and requeues team halves, runs the site's success-rule exchange,
+    # delivers held notices, restores an open job's run and only queues a probe.
+    "blueprint-scene-stage-maintenance.timer",
     "blueprint-agent-stage-replay.timer",
     # Wakes the same no-network offline replay oneshot as its timer, so it
     # carries the timer's authority rather than the no-spend watcher category.

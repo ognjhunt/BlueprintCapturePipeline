@@ -29,8 +29,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--team-scene-dir", type=Path, help="the team scene packet directory (team_scene_inputs.v1.json)")
     parser.add_argument("--configured-scene-dir", type=Path,
                         help="the configured scene publication directory (configured_scene_bundle.v1.zip, object USDZ)")
-    parser.add_argument("--screening-publication", type=Path, help="beta-policy-screening/publications/<campaign>.json")
-    parser.add_argument("--review-videos-dir", type=Path, help="pipeline/beta_screening_review_videos/<attempt>/")
     parser.add_argument("--video", type=Path, help="the job's video, when raw/ holds more than one")
     parser.add_argument("--blueprint-owned-capture", action="store_true")
     parser.add_argument("--capture-id", help="with --blueprint-owned-capture: the capture id on the allow-list")
@@ -46,9 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         owned = OwnedCaptureApproval(capture_id=args.capture_id, approved_by=args.approved_by,
                                      approval_evidence=args.approval_evidence, approved_on=args.approved_on)
     inputs = JobInputs(capture_dir=args.capture_dir, team_scene_dir=args.team_scene_dir,
-                       configured_scene_dir=args.configured_scene_dir,
-                       screening_publication=args.screening_publication, review_videos_dir=args.review_videos_dir,
-                       video=args.video, pull_root=args.pull_root)
+                       configured_scene_dir=args.configured_scene_dir, video=args.video, pull_root=args.pull_root)
     try:
         manifest = build_job_packet(inputs, output_root=args.output_root, owned=owned, operator=args.operator)
     except JobPacketRefused as exc:

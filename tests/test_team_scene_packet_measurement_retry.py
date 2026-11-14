@@ -4,7 +4,9 @@
 One WebApp 503, Gemini or SAM error, or timeout then held the job forever. A transient cause is now tried
 again once under the release that held it, after a wait, and any held measurement once under each newly
 deployed release; a refusal (the job's caps or window, a changed binding) waits for a new release. The queue,
-the run and the status are the worker's own; only the host reads and the paid measurement are stubbed.
+the run and the status are the worker's own; only the host reads and the retained measurement's reads are
+stubbed. No measurement is bought any more (the early trial it served was dropped): the worker only reads one
+already retained, and the same retry rules apply to that read.
 """
 from __future__ import annotations
 
@@ -72,11 +74,15 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *failures: BaseExcep
         "team_scene_inputs_path": "/halves/first/team_scene_inputs.v1.json", "release_commit": RELEASE_1}))
     calls: list[str] = []
     remaining = list(failures)
+    due = {"binding_digest": BINDING}
 
-    def run_measurement(scope: Any, *, binding_digest: str, revision_digest: str) -> dict[str, Any]:
-        calls.append(binding_digest)
+    def current_preparation(scope: Any) -> dict[str, Any]:
+        calls.append(due["binding_digest"])
         if remaining:
             raise remaining.pop(0)
+        return {}
+
+    def retained(path: Any, current: Any) -> dict[str, Any]:
         return {"sidecar_digest": canonical_digest({"sidecar": len(calls)}),
                 "analysis": {"reserved_cost_usd": 0.04}, "segmentation": {"reserved_cost_usd": 0.18}}
 
@@ -86,9 +92,12 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *failures: BaseExcep
         compiled.append(request["request_digest"])
         return {"outcome": "compiled", "team_scene_inputs_path": "/halves/second/team_scene_inputs.v1.json"}
 
-    due = {"binding_digest": BINDING}
     monkeypatch.setattr(measurement, "measurement_due", lambda path: dict(due) if path and "first" in path else None)
-    monkeypatch.setattr(measurement, "run_measurement", run_measurement)
+    monkeypatch.setattr(measurement, "current_preparation", current_preparation)
+    monkeypatch.setattr(measurement, "_sidecar_path", lambda current: Path("/retained/movable_furniture.v1.json"))
+    monkeypatch.setattr(measurement, "_valid_sidecar", retained)
+    monkeypatch.setattr(measurement, "run_measurement",
+                        lambda *a, **k: pytest.fail("the packet worker bought a furniture measurement"))
     monkeypatch.setattr(registry, "load_registry", lambda: {"profiles": []})
     monkeypatch.setattr(registry, "_derived_settings", lambda _registry: {"root": tmp_path / "profiles"})
     monkeypatch.setattr(registry, "profile_for_capture", lambda capture: {})
@@ -197,3 +206,16 @@ def test_a_held_measurement_of_a_binding_no_longer_due_is_not_tried_again(tmp_pa
     assert _reasons(run) == [("robot_access_measurement_due", None)]
     assert world["calls"] == [BINDING, "sha256:" + "5" * 64]
     assert worker.ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD not in _status(world)
+
+
+def test_no_measurement_is_bought_and_a_due_one_without_a_retained_sidecar_is_held(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    monkeypatch.setattr(measurement, "_valid_sidecar", lambda path, current: None)
+    _run(world, monkeypatch, minutes=0, release=RELEASE_1)
+    held = _status(world)["robot_access_measurement"]
+    assert held["status"] == "held" and held["cause"] == "refusal" and held["binding_digest"] == BINDING
+    assert held["hold"] == f"{worker.ROBOT_ACCESS_MEASUREMENT_HOLD}:{worker.PAID_MEASUREMENT_STOPPED}"
+    # The half is kept as it was; the site is never asked and nothing is compiled again.
+    assert _status(world)["status"] == "completed" and world["compiled"] == []
+    import inspect
+    assert "run_measurement" not in inspect.getsource(worker)

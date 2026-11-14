@@ -431,6 +431,8 @@ HOST_MEMORY_KEPT = {
     "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5.5G"),
     "blueprint-website-atlas-preview.service": ("-200", "5.5G"),
     "blueprint-beta-policy-screening.service": ("-200", "5.5G"),
+    # Not measured on the host yet: the duties it took from the trial's tick, which ran them under 5.5G.
+    "blueprint-scene-stage-maintenance.service": ("200", "5.5G"),
     "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
     "blueprint-agent-run-dispatcher.service": ("-200", "5.5G"),
     "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
@@ -517,6 +519,7 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
+    "blueprint-scene-stage-maintenance.service",
     "blueprint-agent-run-dispatcher.service",
     "blueprint-task-evaluation-episode-compilation.service",
     "blueprint-task-evaluation-episode-compilation-remote.service",
@@ -564,6 +567,8 @@ UNIT_FAILURE_NOTIFIED_UNITS = (
     "blueprint-team-scene-packet.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
+    # The site's held notices and success-rule exchange must not stop silently.
+    "blueprint-scene-stage-maintenance.service",
     # A privacy promise: a withdrawn site's deletion must not stop silently.
     "blueprint-website-withdrawal-deletion.service",
     # An incomplete backup, or a withdrawal purge that could not be proven, must not stop silently.

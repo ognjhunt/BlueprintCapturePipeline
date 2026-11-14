@@ -256,7 +256,7 @@ The rules live in `beta_policy_screening_failure_scope` and the coordinator.
   (`account_monthly_spend_limit_reached`) never retries: the row closes and
   only a deploy plans it again.
 - **A campaign that cannot move** is told to the website as a hold
-  (`beta_policy_screening_holds`): a row in `reconciliation_required` for six
+  (`scene_stage_holds`): a row in `reconciliation_required` for six
   hours (`beta_screening_reconciliation_stalled`), a campaign ended on the
   account limit, or a source whose planning failed the same way for six hours
   (for example `website_job_ceiling_unavailable`). The hold uses the reason

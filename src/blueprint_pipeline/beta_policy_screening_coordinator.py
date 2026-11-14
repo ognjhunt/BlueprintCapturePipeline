@@ -1589,7 +1589,7 @@ def campaign_hold_detail(campaign_id: str, *, queue_root: str | Path | None = No
     provider outcome stays unproven (``reconciliation_required``) past
     ``RECONCILIATION_HOLD_AFTER_SECONDS``, and a campaign that ended with nothing
     scored on a reached account limit (a money stop, never retried here). The
-    caller publishes the hold (``beta_policy_screening_holds``). This only reads:
+    caller publishes the hold (``scene_stage_holds``). This only reads:
     no row, reservation, settlement or publication changes, so an unproven
     reservation stays open exactly as before and reconciliation continues.
     """

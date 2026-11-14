@@ -79,19 +79,20 @@ def test_signed_delivery_requires_exact_publication_ack(monkeypatch):
 
 def test_worker_retains_operator_status_for_more_than_ten_candidates(tmp_path, monkeypatch, capsys):
     from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-    from blueprint_pipeline.team_scene_packet_worker import QUEUE_ROOT_ENV as PACKET_QUEUE_ENV
     from tests.test_beta_policy_screening_coordinator import plan
 
     coordinator.enqueue_screening_campaign(plan(count=12, cost="1.00"), queue_root=tmp_path)
-    monkeypatch.delenv(PACKET_QUEUE_ENV, raising=False)
     monkeypatch.setattr(worker, "publish_screening", lambda publication: None)
     assert worker.main(["--queue-root", str(tmp_path), "--max-launches", "0"]) == 0
     status = json.loads((tmp_path / "worker_status.json").read_text())
-    assert status["candidate_counts"]["pending"] == 12
+    # The drained trial closes every queued row before it reserves money (candidate_disabled).
+    assert status["candidate_counts"]["pending"] == 0
+    assert status["candidate_counts"]["unavailable"] == 12
     assert status["campaign_count"] == 1
     assert status["performs_live_actions"] is False
     result = json.loads(capsys.readouterr().out)
     assert result["worker_status"] == status
+    assert result["queued_rows_closed"] == 12
     assert result["execution"]["launches_started"] == 0
 
 
