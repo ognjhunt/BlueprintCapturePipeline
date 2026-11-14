@@ -224,7 +224,7 @@ def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
     authority_path = _write(tmp_path / "authority.json", authority)
     inventory = (
         REPO_PACKAGE.parents[1]
-        / "docs/experiments/policy_ranking_thesis_20260726/openpi_polaris_checkpoint_inventory.json"
+        / "config/trial/openpi_polaris_checkpoint_inventory.json"
     )
     return bundle.build_policy_canary_session_bundle(
         job_dir=tmp_path / "job",

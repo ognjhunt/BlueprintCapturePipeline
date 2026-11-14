@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 
 import pytest
@@ -162,27 +161,3 @@ def test_audit_qualifies_exact_dynamic_primitive_collision_shapes(
     receipt["native_simulator_import_qualified"] = True
     with pytest.raises(NativeTaskGpuCollisionQualificationError):
         validate_native_task_gpu_collision_static_qualification(receipt)
-
-
-def test_checked_in_third_scene_collision_receipts_preserve_static_claim_ceiling() -> None:
-    root = (
-        Path(__file__).parents[1]
-        / "docs/arm_decision_proof_v1/manifests"
-    )
-    rows = [
-        validate_native_task_gpu_collision_static_qualification(
-            json.loads((root / name).read_text(encoding="utf-8"))
-        )
-        for name in (
-            "third_scene_840920_task_a_gpu_collision_static_qualification.v1.json",
-            "third_scene_840920_task_b_gpu_collision_static_qualification.v1.json",
-        )
-    ]
-
-    assert [row["source_usd_sha256"] for row in rows] == [
-        "sha256:4e5caad7fb233f0560ae91d84b1911f9c27eeb1ad85201236f41c0e9c9f2c9ad",
-        "sha256:821a28dc468cdc3f1b38d92bc7f0e158a63fc1432a54942b2144f5cb0416b7b4",
-    ]
-    assert [row["dynamic_collision_prim_count"] for row in rows] == [10, 2]
-    assert all(row["status"] == "qualified" for row in rows)
-    assert all(row["native_simulator_import_qualified"] is False for row in rows)

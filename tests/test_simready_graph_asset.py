@@ -753,7 +753,8 @@ def test_third_scene_checked_in_graph_assets_retain_static_claim_boundary(
 ) -> None:
     manifest_root = (
         Path(__file__).resolve().parents[1]
-        / "docs"
+        / "tests"
+        / "fixtures"
         / "arm_decision_proof_v1"
         / "manifests"
     )

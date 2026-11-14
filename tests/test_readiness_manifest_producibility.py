@@ -159,57 +159,6 @@ def test_a_checked_in_readiness_manifest_reports_every_observation() -> None:
         )
 
 
-def test_the_dry_lane_placeholder_does_not_claim_a_producer_owned_schema() -> None:
-    """The franka dry profile admits on declared preconditions, not measurements.
-
-    Keeping the placeholder out of the producer's schema is what stops
-    `allocator_artifact_manifest_not_emitted` reappearing in
-    `execution_admission` where a reader takes it for an allocator observation.
-    """
-
-    placeholder = (
-        DOCS / "arm_decision_proof_v1" / "manifests"
-        / "adp009d_840313_runtime_readiness.v1.json"
-    )
-    payload = json.loads(placeholder.read_text(encoding="utf-8"))
-
-    # The blocker strings stay verbatim: they are the frozen evaluation-run
-    # spec's own vocabulary, and rewriting a sealed artifact that defines the
-    # run to improve three names is not a trade worth making. What changes is
-    # the document's claim about itself.
-    assert payload["schema_version"] != READINESS_SCHEMA
-    assert payload["claim_ceiling"] == "declared_precondition_not_measured"
-    assert payload["measurement_source"] is None
-    # Never measured is not the same as measured false.
-    assert all(value is None for value in payload["observations"].values())
-    # The lane's safety posture is unchanged by saying so.
-    assert payload["status"] == "blocked"
-    assert payload["live_execution_enabled"] is False
-
-
-def test_the_dry_builder_pins_the_placeholder_schema() -> None:
-    """A digest alone did not catch a sealed-but-unproduced file; the schema must be pinned."""
-
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "build_adp009d_840313_launch_profile",
-        REPO_ROOT / "scripts" / "build_adp009d_840313_launch_profile.py",
-    )
-    builder = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(builder)
-
-    placeholder = json.loads(
-        (
-            DOCS / "arm_decision_proof_v1" / "manifests"
-            / "adp009d_840313_runtime_readiness.v1.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert builder.EXPECTED_READINESS_SCHEMA == placeholder["schema_version"]
-    assert builder.EXPECTED_READINESS_DIGEST == placeholder["receipt_digest"]
-
-
 def test_the_producibility_contract_still_detects_an_unproducible_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

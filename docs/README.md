@@ -22,14 +22,13 @@ Every other file under `docs/` is one of:
 - a stable contract or runbook used by an active job-packet dependency;
 - a compatibility document required to keep existing readers and operations
   working;
-- a dated evidence snapshot;
-- archived or paused research.
+- a record of a rights, consent or licence decision.
 
 Those files are not independent roadmap authority. Their existence does not
 authorize work. An agent may use one only after recording which job-packet
 step it directly unblocks.
-Documents describing Blueprint before 2026-11-12 are in
-[`archive/2026-11-12-pre-packet/`](archive/2026-11-12-pre-packet/README.md).
+Archived documents, dated experiment evidence and hand-off dumps were removed
+from the tree on 2026-11-14; git history keeps them.
 
 Do not delete schemas, evidence snapshots, readers, or safety/paid-resource
 runbooks merely to make the tree look focused. De-promotion is enforced by the

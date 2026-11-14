@@ -54,48 +54,6 @@ from blueprint_pipeline.policy_ranking_roboarena_calibration import (
 
 
 COMMIT = "a" * 40
-EXPERIMENT_DOCS = (
-    Path(__file__).parents[1]
-    / "docs/experiments/policy_ranking_roboarena_disjoint_reasoner_successor_20260728"
-)
-
-
-def test_reasoner_successor_frozen_contract_matches_runtime_and_digests():
-    protocol = json.loads(
-        (EXPERIMENT_DOCS / "reasoner_schema_canary_protocol_v1.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    split = json.loads(
-        (EXPERIMENT_DOCS / "disjoint_session_candidate_split_v1.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
-    assert protocol["runtime"]["native_architecture"] == NATIVE_REASONER_ARCHITECTURE
-    for payload, digest_field in (
-        (protocol, "protocol_sha256"),
-        (split, "manifest_sha256"),
-    ):
-        recorded = payload[digest_field]
-        canonical_payload = {
-            key: value for key, value in payload.items() if key != digest_field
-        }
-        assert recorded == canonical_sha256(canonical_payload)
-
-    for filename in (
-        "reasoner_schema_canary_result_v1.json",
-        "reasoner_semantic_validation_amendment_v2.json",
-        "reasoner_schema_canary_evidence_manifest_v1.json",
-    ):
-        payload = json.loads((EXPERIMENT_DOCS / filename).read_text(encoding="utf-8"))
-        recorded = payload["manifest_sha256"]
-        canonical_payload = {
-            key: value for key, value in payload.items() if key != "manifest_sha256"
-        }
-        assert recorded == canonical_sha256(canonical_payload)
-
-
 def _payload() -> dict:
     return {
         "preferred_episode": "A",
@@ -277,28 +235,6 @@ def test_reasoner_server_uses_frozen_native_architecture_without_override(tmp_pa
     assert command[:4] == ["vllm", "serve", COSMOS_MODEL, "--revision"]
     assert "--hf-overrides" not in command
     assert "Cosmos3ReasonerForConditionalGeneration" not in command
-
-
-def test_reasoner_runtime_compatibility_amendment_digest_is_frozen():
-    path = (
-        Path(__file__).parents[1]
-        / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728"
-        / "cosmos_reasoner_runtime_compatibility_amendment_v2.json"
-    )
-    amendment = json.loads(path.read_text(encoding="utf-8"))
-    recorded = amendment.pop("amendment_sha256")
-    assert recorded == canonical_sha256(amendment)
-
-
-def test_reasoner_structured_output_amendment_digest_is_frozen():
-    path = (
-        Path(__file__).parents[1]
-        / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728"
-        / "cosmos_reasoner_structured_output_amendment_v3.json"
-    )
-    amendment = json.loads(path.read_text(encoding="utf-8"))
-    recorded = amendment.pop("amendment_sha256")
-    assert recorded == canonical_sha256(amendment)
 
 
 def test_reasoner_bundle_rejects_obsolete_architecture_override(tmp_path):

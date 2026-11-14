@@ -37,7 +37,7 @@ from blueprint_pipeline.simready_cad_agent_contract import (
 ROOT = Path(__file__).resolve().parents[1]
 TASK_A_FREEZE = (
     ROOT
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+    / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
 
 

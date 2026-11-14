@@ -40,7 +40,7 @@ SPEC = DreamLabsPolicySpec(policy_id="team-dream-exact", endpoint_url=ENDPOINT_U
                            camera_roles={"overhead": "overhead", "wrist_l": "left_wrist", "wrist_r": "right_wrist"})
 # A real, committed development-only review image exercises JPEG conversion;
 # the warehouse's .jpg is intentionally an ASCII placeholder, not image data.
-FIXTURE = (Path(__file__).parents[1] / "docs/experiments/policy_ranking_successor_experiment_20260727/"
+FIXTURE = (Path(__file__).parents[1] / "tests/fixtures/experiments/policy_ranking_successor_experiment_20260727/"
            "exact_main_attempt_v11/first_mid_last.png")
 
 

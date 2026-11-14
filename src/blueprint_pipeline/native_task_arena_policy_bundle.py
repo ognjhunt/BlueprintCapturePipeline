@@ -51,18 +51,15 @@ QUALIFIED_EXECUTION_AUTHORITY = "qualified_controls_evaluation"
 POLICY_ENDPOINT_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 OPENPI_CHECKPOINT_INVENTORY_PATH = (
     Path(__file__).resolve().parents[2]
-    / "docs/experiments/policy_ranking_thesis_20260726/"
-    "openpi_polaris_checkpoint_inventory.json"
+    / "config/trial/openpi_polaris_checkpoint_inventory.json"
 )
 ADP009D_POLICY_READINESS_PATH = (
     Path(__file__).resolve().parents[2]
-    / "docs/arm_decision_proof_v1/manifests/"
-    "adp009d_scene_840920_policy_readiness.v1.json"
+    / "config/trial/adp009d_scene_840920_policy_readiness.v1.json"
 )
 ADP009D_SCENARIO_SUITE_PATH = (
     Path(__file__).resolve().parents[2]
-    / "docs/arm_decision_proof_v1/manifests/"
-    "third_scene_840920_task_a_scenario_suite.v1.json"
+    / "config/trial/third_scene_840920_task_a_scenario_suite.v1.json"
 )
 
 

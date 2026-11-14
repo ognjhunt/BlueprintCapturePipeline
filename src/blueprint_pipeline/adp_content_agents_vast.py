@@ -900,7 +900,7 @@ def _resolve_paired_target_registered_input(
         "usd_source": usd_source,
         "config_sources": {
             f"{agent}_agent.yaml": repo
-            / "docs/arm_decision_proof_v1/assets"
+            / "config/content_agents"
             / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
             for agent in ("material", "texture", "physics")
         },
@@ -946,13 +946,14 @@ def _resolve_input_variant(
     reference_rights_authority_path: Path | None = None,
 ) -> dict[str, Any]:
     assets = repo / "docs" / "arm_decision_proof_v1" / "assets"
+    configs = repo / "config" / "content_agents"
     if variant == "control_v1":
         if _sha256(reference_source) != REFERENCE_IMAGE_SHA256:
             raise ValueError("adp_content_agents_reference_image_identity_mismatch")
         return {
             "usd_source": assets / "adp009a_840313_canned_beverage_control.usda",
             "config_sources": {
-                f"{agent}_agent.yaml": assets
+                f"{agent}_agent.yaml": configs
                 / f"adp009a_content_agents_{agent}.vast.yaml"
                 for agent in ("material", "texture", "physics")
             },
@@ -1014,7 +1015,7 @@ def _resolve_input_variant(
         return {
             "usd_source": usd_source,
             "config_sources": {
-                f"{agent}_agent.yaml": assets
+                f"{agent}_agent.yaml": configs
                 / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
                 for agent in ("material", "texture", "physics")
             },
@@ -1150,7 +1151,7 @@ def _resolve_input_variant(
         return {
             "usd_source": usd_source,
             "config_sources": {
-                f"{agent}_agent.yaml": assets
+                f"{agent}_agent.yaml": configs
                 / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
                 for agent in ("material", "texture", "physics")
             },
@@ -1265,7 +1266,7 @@ def _resolve_input_variant(
     return {
         "usd_source": usd_source,
         "config_sources": {
-            f"{agent}_agent.yaml": assets
+            f"{agent}_agent.yaml": configs
             / f"adp009a_content_agents_{agent}.vast.yaml"
             for agent in ("material", "texture", "physics")
         },
