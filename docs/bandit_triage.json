@@ -61,42 +61,6 @@
       "test_id": "B310"
     },
     {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/object_index_stage.py",
-      "fingerprint": "d3b080c8e26fcbba9d84deac1e66b58f47fc66b0a5be939f052f58fcee138be2",
-      "line_number": 635,
-      "owner": "@ognjhunt",
-      "reason": "These /tmp strings are inert container command-template placeholders, not host-side temporary files; execution uses the isolated container workspace. Re-review is required before expiry. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/object_index_stage.py",
-      "fingerprint": "1e4eeea20d7682fd072f76c4f8b2dce42e7fb8b46e34903a22e48316cb65e670",
-      "line_number": 636,
-      "owner": "@ognjhunt",
-      "reason": "These /tmp strings are inert container command-template placeholders, not host-side temporary files; execution uses the isolated container workspace. Re-review is required before expiry. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/object_index_stage.py",
-      "fingerprint": "9384c1dd861e205ade97e72f635937496f987fa183e9b101c56930e4c04fc415",
-      "line_number": 637,
-      "owner": "@ognjhunt",
-      "reason": "These /tmp strings are inert container command-template placeholders, not host-side temporary files; execution uses the isolated container workspace. Re-review is required before expiry. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
       "disposition": "accepted_risk",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/palatial_physready.py",
@@ -150,18 +114,6 @@
       "filename": "src/blueprint_pipeline/provider_worker_policy_command_adapter.py",
       "fingerprint": "a6ce4dac2f3e56dafbe5b5627ad36384dd6ee0a6499342284da9004715baf5b4",
       "line_number": 180,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/site_world_runtime_service_client.py",
-      "fingerprint": "4983040ab1c87b363f4799aa2c19f94f1135c5f807042be4c13c74b27b29aea9",
-      "line_number": 67,
       "owner": "@ognjhunt",
       "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
       "reviewed_on": "2026-11-06",

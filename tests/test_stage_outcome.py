@@ -7,11 +7,6 @@ from blueprint_pipeline.core.stage_outcome import (
     StageOutcome,
     stage_ledger_outcome_kind,
 )
-from blueprint_pipeline.stage_outcome import StageOutcome as CompatibilityStageOutcome
-
-
-def test_stage_outcome_compatibility_import_is_canonical_type() -> None:
-    assert CompatibilityStageOutcome is StageOutcome
 
 
 def test_stage_outcome_distinguishes_absence_from_failure() -> None:

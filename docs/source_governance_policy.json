@@ -62,9 +62,6 @@
     "src/blueprint_pipeline/native_task_construction_plan.py": [
       "tests/test_native_task_construction_plan.py"
     ],
-    "src/blueprint_pipeline/object_index_stage.py": [
-      "tests/test_object_index_stage.py"
-    ],
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": [
       "tests/test_oscar_wam_command_adapter.py"
     ],
@@ -182,7 +179,6 @@
     "src/blueprint_pipeline/native_task_arena_paid_authority.py": 2283,
     "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": 2297,
     "src/blueprint_pipeline/native_task_construction_plan.py": 2281,
-    "src/blueprint_pipeline/object_index_stage.py": 2369,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
     "src/blueprint_pipeline/post_training_data_package.py": 6727,

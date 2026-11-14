@@ -20,10 +20,6 @@ from blueprint_pipeline.signed_delivery_bundle import (
     build_delivery_bundle,
     verify_delivery_bundle,
 )
-from blueprint_pipeline.site_difficulty_profile import (
-    build_site_difficulty_profile,
-    compare_sites,
-)
 
 
 def _d(label: str) -> str:
@@ -194,99 +190,6 @@ def test_attach_integrity_surfaces_missing_digests_in_the_manifest() -> None:
 
 
 # -- 20: site difficulty profile -----------------------------------------
-
-
-def _profile(scene_id: str, *, hard: bool):
-    return build_site_difficulty_profile(
-        scene_id=scene_id,
-        capture_id=f"cap-{scene_id}",
-        scene_placement={
-            "min_obstacle_clearance_m": 0.2 if hard else 1.1,
-            "standoff_margin_m": 0.08 if hard else 0.7,
-        },
-        geometry_evidence={
-            "obstacle_density_per_m2": 0.5 if hard else 0.05,
-            "traversable_fraction": 0.3 if hard else 0.8,
-            "scene_extent_m2": 1500 if hard else 60,
-        },
-        visual_conditions={
-            "lighting_variance": 0.5 if hard else 0.08,
-            "reflective_surface_fraction": 0.4 if hard else 0.05,
-            "low_texture_fraction": 0.42 if hard else 0.1,
-        },
-        object_inventory={
-            "min_graspable_dimension_m": 0.03 if hard else 0.2,
-            "affordance_reach_margin_m": 0.02 if hard else 0.25,
-        },
-        shared_traffic_review={"findings": [1] * (10 if hard else 0)},
-        non_routine_review={"findings": [1] * (6 if hard else 0)},
-        task_scope={
-            "step_count": 32 if hard else 4,
-            "route_length_m": 90 if hard else 6,
-        },
-    )
-
-
-def test_difficulty_separates_an_easy_site_from_a_hard_one() -> None:
-    easy = _profile("s1", hard=False)
-    hard = _profile("s2", hard=True)
-
-    assert easy["status"] == "profiled" and hard["status"] == "profiled"
-    assert easy["overall_difficulty"] < hard["overall_difficulty"]
-    assert easy["overall_band"] == "low"
-    assert hard["overall_band"] == "very_high"
-    assert easy["coverage_fraction"] == 1.0
-
-
-def test_unmeasured_axes_are_reported_not_scored_as_easy() -> None:
-    sparse = build_site_difficulty_profile(
-        scene_id="s3", capture_id="c3", task_scope={"step_count": 10}
-    )
-    unmeasured = [row for row in sparse["axes"] if not row["measured"]]
-
-    assert unmeasured, "axes without inputs must be flagged unmeasured"
-    assert all(row["score"] is None for row in unmeasured)
-    assert sparse["coverage_fraction"] < 1.0
-    assert sparse["claim_boundary"]["unmeasured_axes_are_not_easy_axes"] is True
-
-
-def test_comparison_reports_spread_and_refuses_to_normalize() -> None:
-    comparison = compare_sites([_profile("s1", hard=False), _profile("s2", hard=True)])
-
-    assert comparison["status"] == "compared"
-    assert comparison["overall_spread"] > 0.5
-    assert comparison["per_axis"]["spatial_constraint"]["spread"] is not None
-    assert comparison["claim_boundary"]["comparison_does_not_normalize_policy_results"] is True
-    assert "never divided into it" in comparison["interpretation_note"]
-
-
-def test_single_site_comparison_is_blocked() -> None:
-    assert compare_sites([_profile("s1", hard=False)])["status"] == "blocked"
-
-
-def test_non_finite_measurements_are_treated_as_unmeasured() -> None:
-    """A NaN clearance is missing evidence, not a difficulty of zero."""
-
-    profile = build_site_difficulty_profile(
-        scene_id="s1",
-        capture_id="c1",
-        scene_placement={
-            "min_obstacle_clearance_m": float("nan"),
-            "standoff_margin_m": float("inf"),
-        },
-        task_scope={"step_count": 10, "route_length_m": 20},
-    )
-    spatial = next(row for row in profile["axes"] if row["axis"] == "spatial_constraint")
-
-    assert spatial["measured"] is False
-    assert spatial["score"] is None
-    assert sorted(spatial["inputs_missing"]) == ["min_clearance_m", "standoff_margin_m"]
-    # A booleans-are-not-numbers guard, so True cannot read as 1.0.
-    assert (
-        build_site_difficulty_profile(
-            scene_id="s1", capture_id="c1", task_scope={"step_count": True}
-        )["axes"][5]["inputs_missing"]
-    )
 
 
 # -- 21: generated media privacy -----------------------------------------
