@@ -636,7 +636,7 @@ def _allocator_transport_imports() -> set[str]:
 
     found = set()
     # The allocator hands each kept probe kind to a lane module; their transports count too.
-    lanes = ("paid_resource_allocator", "policy_canary_allocator_lane", "rigid_robot_free_probe_lane",
+    lanes = ("paid_resource_allocator", "rigid_robot_free_probe_lane",
              "task_evaluation_scene_configuration_allocator", "native_task_arena_allocator_dispatch")
     for name in lanes:
         source = (SOURCE_ROOT / f"{name}.py").read_text(encoding="utf-8")

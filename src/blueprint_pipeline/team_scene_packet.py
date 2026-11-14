@@ -1232,10 +1232,14 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                if access is not None else {})}
 
 
-def read_team_scene_inputs(path: str | Path) -> dict[str, Any]:
-    """The scene half a team run stages from (``team_candidate_quick10_staging.SCENE_INPUT_FIELDS``), or raise."""
+#: The fields of the scene half a run stages from (moved unchanged from the trial's Quick-10 staging).
+SCENE_INPUT_FIELDS = ("scene_revision_digest", "configuration_digest", "plan_digest", "task_success_contract",
+                      "task_success_contract_digest", "base_native_packet", "runtime_source", "construction_result",
+                      "execution_authority", "capture_contract")
 
-    from .team_candidate_quick10_staging import SCENE_INPUT_FIELDS
+
+def read_team_scene_inputs(path: str | Path) -> dict[str, Any]:
+    """The scene half a run stages from (``SCENE_INPUT_FIELDS``), or raise."""
 
     value = _read(Path(path), "team_scene_inputs_invalid")
     if (value.get("schema_version") != SCHEMA or value.get("claim_ceiling") != CLAIM_CEILING

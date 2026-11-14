@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -27,14 +26,13 @@ from blueprint_pipeline import beta_policy_screening_worker as worker
 from blueprint_pipeline import gpu_render_providers
 from blueprint_pipeline.beta_policy_screening_plan import validate_screening_plan
 from blueprint_pipeline.beta_policy_screening_publication_flags import (
-    DOWNGRADE_FIELD, FLAG_CODE, PUBLICATION_SCHEMA_V2, PUBLICATION_SCHEMA_V3, UNTYPED, as_v2, publication_flags_valid,
-    row_flags, scene_feasibility, typed_flags,
+    DOWNGRADE_FIELD, FLAG_CODE, PUBLICATION_SCHEMA_V2, PUBLICATION_SCHEMA_V3, UNTYPED, as_v2, row_flags, scene_feasibility, typed_flags,
 )
-from blueprint_pipeline.beta_policy_screening_result import PUBLICATION_SCHEMA, screening_publication
+from blueprint_pipeline.beta_policy_screening_result import screening_publication
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.website_candidate_feasibility import SCENE_CHECK_FLAGS, reach_rank, scene_check
 from tests.test_beta_policy_screening_coordinator import Backend, native_result, plan as make_plan, seal
-from tests.test_beta_policy_screening_partial_cells import Provider, _shape, _webapp_contract, run_campaign
+from tests.test_beta_policy_screening_partial_cells import Provider, _webapp_contract
 
 ROOT = Path(__file__).parents[1]
 FIXTURE = ROOT / "tests/fixtures/beta_policy_screening_flagged_publication.v3.json"
@@ -154,51 +152,6 @@ def test_only_typed_codes_are_published_and_an_empty_list_is_left_out():
     assert row_flags({"candidate_id": "g1", "execution_spec": {"setup_quality_flags": list(G1_FLAGS)}}, {}) == {
         "setup_quality_flags": G1_FLAGS}
     assert row_flags({"candidate_id": "plain"}, {"episodes_scored": 10}) == {}
-
-
-def test_a_run_with_observation_flags_in_a_flagged_scene_publishes_v3_carrying_both(tmp_path):
-    from tests.test_beta_screening_worker_control import REAL_GATE_BLOCKERS
-
-    value = flagged_plan(count=2)
-    first, second = (row["candidate_id"] for row in value["candidates"])
-    delivered, rows, _ = run_campaign(tmp_path / "queue", value, {
-        first: {"successes": 0, "flagged": True}, second: {"successes": 0}})
-    final = delivered[-1]
-    assert PUBLICATION_SCHEMA == PUBLICATION_SCHEMA_V3 == final["schema_version"]
-    assert final["status"] == "completed"
-    assert [(row["episodes_scored"], row["episodes_succeeded"]) for row in final["candidates"]] == [(10, 0), (10, 0)]
-    # Zero successes, and everything Blueprint's own checks knew about the scene, beside them.
-    assert final["scene_feasibility"] == {"status": "flagged", "flags": [CARRY, SCRIPTED_CARRY]}
-    assert final["candidates"][0]["observation_quality_flags"] == sorted(REAL_GATE_BLOCKERS)
-    assert final["candidates"][0]["scene_check_flags"] == [CARRY, SCRIPTED_CARRY]
-    assert final["candidates"][1]["setup_quality_flags"] == G1_FLAGS
-    assert "observation_quality_flags" not in final["candidates"][1] and "scene_check_flags" not in final["candidates"][1]
-    assert rows[first]["summary"]["observation_quality_flags"] == final["candidates"][0]["observation_quality_flags"]
-    # The plan's verdict is the same in every revision; a run's flags come with its result.
-    assert all(publication["scene_feasibility"] == final["scene_feasibility"] for publication in delivered)
-    assert "observation_quality_flags" not in delivered[0]["candidates"][0]
-    schema = json.loads((ROOT / "docs/schemas/beta_policy_screening_publication.v3.schema.json").read_text())
-    for publication in delivered:
-        Draft202012Validator(schema, format_checker=FormatChecker()).validate(publication)
-        _webapp_contract(publication)
-        assert publication_flags_valid(publication)
-        # The same result without the flags is the v2 a website that does not accept v3 yet is sent.
-        _webapp_contract(as_v2(publication))
-        assert as_v2(publication)["schema_version"] == PUBLICATION_SCHEMA_V2
-        assert "flags" not in json.dumps(as_v2(publication))
-    facts = ("candidate_id", "status", "episodes_scored", "episodes_succeeded", "episodes_failed", "success_rate")
-    assert [{key: row[key] for key in facts} for row in as_v2(final)["candidates"]] == [
-        {key: row[key] for key in facts} for row in final["candidates"]]
-    assert as_v2(final)["budget"] == final["budget"]
-
-    if os.environ.get("BLUEPRINT_WRITE_SCREENING_PUBLICATION_FIXTURES") == "1":
-        FIXTURE.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n")
-    retained = json.loads(FIXTURE.read_text())
-    assert _shape(retained) == _shape(final)
-    flag_fields = ("observation_quality_flags", "setup_quality_flags", "scene_check_flags")
-    assert retained["scene_feasibility"] == final["scene_feasibility"]
-    assert [{key: row.get(key) for key in (*facts, *flag_fields)} for row in retained["candidates"]] == [
-        {key: row.get(key) for key in (*facts, *flag_fields)} for row in final["candidates"]]
 
 
 def test_the_v3_fixture_shared_with_the_webapp_is_valid_and_unchanged():

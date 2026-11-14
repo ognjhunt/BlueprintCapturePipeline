@@ -55,14 +55,8 @@ def assumed_contact_advisories(reach: Mapping[str, Any] | None) -> list[str]:
 DEFAULT_PREGRASP_CLEARANCE_M = 0.10
 
 
-def enabled_robot_profiles() -> list[str]:
-    """The robot profiles of the sealed catalog's enabled screening candidates."""
-    from .beta_policy_candidate_catalog import load_default_catalog
-
-    return sorted({(row.get("interface") or {}).get("robot_profile_id")
-                   for row in load_default_catalog()["candidates"]
-                   if (row.get("eligibility") or {}).get("enabled")
-                   and (row.get("interface") or {}).get("robot_profile_id")})
+#: The robot profile a rigid task is assessed for by default: the one arm the scripted check's scene is built for.
+DEFAULT_ROBOT_PROFILES = ("droid_franka_panda_robotiq_2f85_v1",)
 
 
 def _grasps(lower: np.ndarray, upper: np.ndarray) -> list[dict[str, Any]]:
@@ -105,7 +99,7 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
                        robot_profiles: Sequence[str] | None = None) -> dict[str, Any]:
     """The station and carry verdict for a prepared rigid pick-and-place, from CPU geometry only.
 
-    ``robot_profiles`` defaults to the enabled candidates' (``enabled_robot_profiles``).
+    ``robot_profiles`` defaults to ``DEFAULT_ROBOT_PROFILES``.
     """
     import hashlib
 
@@ -132,7 +126,7 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     collision = Path(collision_path)
     with collision.open("rb") as stream:  # in blocks: a website collider is hundreds of MB of USDA text
         digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
-    profiles = sorted(enabled_robot_profiles() if robot_profiles is None else robot_profiles)
+    profiles = sorted(DEFAULT_ROBOT_PROFILES if robot_profiles is None else robot_profiles)
     arms = sorted({ROBOT_PROFILE_ARMS[p] for p in profiles if p in ROBOT_PROFILE_ARMS})
     unassessed = [p for p in profiles if p not in ROBOT_PROFILE_ARMS]
     # Evaluation's surface-target admission already refused this region in

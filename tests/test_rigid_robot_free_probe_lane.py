@@ -418,13 +418,10 @@ def test_worker_constants_are_pinned_to_their_control_plane_owners() -> None:
 
 
 def test_the_canonical_allocator_routes_only_this_probe_kind_to_its_isolated_lane() -> None:
-    from blueprint_pipeline import policy_canary_allocator_lane
     from blueprint_pipeline.native_task_arena_allocator_dispatch import isolated_native_task_arena_lane
 
     assert allocator.RIGID_ROBOT_FREE_PROBE_KIND == PROBE_KIND
     assert isolated_native_task_arena_lane(PROBE_KIND) is lane.run_rigid_robot_free_probe_allocator_lane
-    assert (isolated_native_task_arena_lane(policy_canary_allocator_lane.PROBE_KIND)
-            is policy_canary_allocator_lane.run_policy_canary_allocator_lane)
     with pytest.raises(ValueError, match="isolated_native_task_arena_lane_unknown"):
         isolated_native_task_arena_lane("native-task-arena-construction")
 
@@ -716,7 +713,6 @@ def test_a_queued_rigid_scene_is_probed_once_and_its_passed_receipt_admits_teams
     trace = json.loads(trace_path.read_text())
     assert trace["status"] == "recorded" and receipt["physics_probe_digest"] == trace["trace_digest"]
     assert trace_path.stat().st_mode & 0o777 == 0o440
-    assert world["published"] == [world["capture"].resolve()]
     # The GPU host built the scene once, left the robot idle, rendered nothing and loaded no policy.
     assert world["host"].resets == [0] and world["host"].closed is True
     attempt = runner._attempts(runner._job_dir(world["queue"], current_probe_state(world["capture"])))

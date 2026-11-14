@@ -151,64 +151,23 @@ def test_a_completed_website_scene_is_compiled_recorded_and_offered_without_a_pe
     # No team body is registered: the half is the Franka-only one, with no body stations and nothing named.
     assert "embodiment_stations" not in json.loads(Path(profile["team_scene_inputs_path"]).read_text())
     assert "embodiment_manifests_unreadable" not in status
-    # The offer was republished; a rigid scene stays unlisted, by name, until its probe passes.
-    assert status["offer"]["team_evaluation_listed"] is False
-    assert status["offer"]["team_candidate_offer_refused"] == "team_evaluation_robot_free_probe_receipt_missing"
+    # The offer was republished; this capture has no episode specs, so nothing is posted.
+    assert status["offer"]["status"] == "skipped"
     assert world["calls"] == []
     assert json.loads((queue / "status" / f"{key}.json").read_text()) == status
     assert not list((queue / "pending").iterdir()) and (queue / "processed" / f"{key}.json").is_file()
 
     # The probe lane passes on the compiled specification; delivering the same request again reuses the
-    # recorded half (no second compile, no rewritten row) and republishes the job's offer, now listed.
+    # recorded half (no second compile, no rewritten row).
     (world["run"] / gate.RECEIPT_FILENAME).write_text(json.dumps(_passed_rigid_probe(profile)))
     monkeypatch.setattr(team_scene_packet, "prepare_team_scene", lambda **_: pytest.fail("compiled twice"))
     shutil.copyfile(queue / "processed" / f"{key}.json", queue / "pending" / f"{key}.json")
     [again] = world["process"]()["results"]
     assert (again["status"], again["outcome"]) == ("completed", "already_compiled")
     assert again["team_scene_inputs_path"] == profile["team_scene_inputs_path"]
-    assert again["offer"]["status"] == "published" and again["offer"]["team_evaluation_listed"] is True
-    [call] = world["calls"]
-    assert (call["capture_id"], call["operation"]) == (CAPTURE_ID, "agent-execution-offer")
-    offer = call["payload"]["offer"]
-    assert (offer["scenario_id"], offer["capture_root"]) == ("nominal", str(world["capture"]))
-    assert offer["team_evaluation"]["contract"]["task_kind"] == "rigid_pick_place"
+    assert world["calls"] == []
     assert profile_for_capture(world["capture"]) == profile
     assert [path.name for path in world["halves"].iterdir()] == [Path(status["attempt_root"]).name]
-
-
-def test_every_registered_team_body_is_compiled_with_the_scene_at_its_own_station(tmp_path, monkeypatch):
-    from blueprint_pipeline import beta_policy_screening_launch as launch
-    from tests.test_team_scene_packet import bodies
-
-    world = _world(tmp_path, monkeypatch)
-    body = bodies(tmp_path)
-    records = {name: launch._record(launch._write(tmp_path / f"{name}.manifest.json", value))
-               for name, value in body.items()}
-    changed = {**records["short"], "sha256": "sha256:" + "0" * 64}
-    # The long arm's own model, as registered; the rover is registered with a model that is not its own.
-    arm = launch._record(tmp_path / "robot.usda")
-    _registry(world["operator"], packet_inputs=world["inputs"], defaults={"screening_candidates": {
-        "team_long": {"robot_policy": {"manifest": records["long"], "model": arm}},
-        "team_long_again": {"robot_policy": {"manifest": records["long"]}},
-        "team_rover": {"robot_policy": {"manifest": records["wheeled"], "model": arm}},
-        "team_changed": {"robot_policy": {"manifest": changed}},
-        "team_g1": {"native_g1": {"registered": "with its own scene packet"}}}})
-    [status] = world["process"]()["results"]
-    assert (status["status"], status["outcome"]) == ("completed", "compiled")
-    # A manifest whose bytes changed is named and left out; nothing is guessed for it.
-    assert status["embodiment_manifests_unreadable"] == ["team_changed"]
-    record = json.loads(Path(status["team_scene_inputs_path"]).read_text())
-    assert set(record["embodiment_stations"]) == {body["long"]["embodiment_digest"],
-                                                  body["wheeled"]["embodiment_digest"]}
-    assert read_team_scene_inputs(status["team_scene_inputs_path"])["scene_revision_digest"] == (
-        world["scene"]["revision"]["revision_digest"])
-    # Only the model that is the body's own is handed on: the long arm's station is also solved with its arm.
-    assert worker.registered_embodiment_models(json.loads((world["operator"] / "registry.json").read_text())) == {
-        body["long"]["embodiment_digest"]: tmp_path / "robot.usda"}
-    long = record["embodiment_stations"][body["long"]["embodiment_digest"]]
-    assert long["reach"]["own_arm"]["rule"] == "closest_clear_stance_own_arm_reaches_every_phase"
-    assert "reach" not in record["embodiment_stations"][body["wheeled"]["embodiment_digest"]] or (
-        record["embodiment_stations"][body["wheeled"]["embodiment_digest"]]["reach"] is None)
 
 
 @pytest.mark.parametrize("owner", ["operator_row", "frozen_pair"])

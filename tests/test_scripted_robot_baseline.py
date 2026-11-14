@@ -3,9 +3,7 @@
 These tests establish software wiring, not Isaac execution or task success.
 """
 import math
-from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -161,50 +159,3 @@ def test_task_driver_copies_actual_authored_geometry_without_reference_joint_tra
         runtime.build_task_plan({"task_kind": "articulated_open_close"}, policy, manifest)
 
 
-def test_actual_generic_loop_drives_one_arm_and_scores_independently(tmp_path, monkeypatch):
-    from blueprint_pipeline import adp_task_scoring, episode_visual_evidence, native_task_episode_environment
-    from blueprint_pipeline.team_embodiment import apply_team_embodiment, read_model_structure, team_embodiment_binding, validate_embodiment_manifest, verify_model_file
-    from blueprint_pipeline.team_embodiment_runtime import run_team_episode
-    from tests.test_team_arm_kinematics import CartesianRobot, named_inputs
-    from tests.test_team_embodiment import _Camera, _Scoring, station_plan
-
-    model, value = named_inputs(tmp_path)
-    manifest = validate_embodiment_manifest(value)
-    binding = team_embodiment_binding(manifest, model_record=verify_model_file(manifest, model),
-                                     structure=read_model_structure(model), scene_plan=station_plan())
-    scene = {**apply_team_embodiment(station_plan(), binding), "scenario": {"seed": 7}}
-    scene["cadence"].update(maximum_action_steps=120, settle_window_samples=0)
-    row = scene["robot"]
-    class Env:
-        def __init__(self):
-            self.robot, self.steps = CartesianRobot(row), []
-            self.unwrapped = SimpleNamespace(device="cpu", scene={"robot": self.robot,
-                **{name: _Camera() for name in ("team_camera_0", "team_camera_1", "team_camera_2", "external_camera_2")}})
-        def reset(self, seed):
-            self.robot.q = np.array([row["joint_reset_positions_rad"][name] for name in self.robot.joint_names])
-        def step(self, action):
-            order = [*row["joint_names"], *(joint["name"] for joint in row["gripper_joints"])]
-            self.steps.append(list(action[0]))
-            self.robot.q = np.array([action[0][order.index(name)] for name in self.robot.joint_names])
-    env = Env()
-    client = ScriptedRobotBaseline(plan=scripted_plan(scene_digest=scene["plan_digest"]), policy_id="development-only")
-    built = SimpleNamespace(env=env, camera_scene_names={**{f"team_camera_{i}": f"team_camera_{i}" for i in range(3)},
-                                                       "overview": "external_camera_2"})
-    monkeypatch.setattr(native_task_episode_environment, "NativeRigidScoringEnvironment", _Scoring)
-    monkeypatch.setattr(episode_visual_evidence, "finalize_multicamera_visual_evidence", lambda **_: ({"status": "complete"}, []))
-    samples = []
-    monkeypatch.setattr(adp_task_scoring, "score_task_episode_from_spec", lambda **kw: samples.extend(kw["samples"]) or {"task_succeeded": False})
-    progress = {}
-    result = run_team_episode(built=built, task_readback=None, policy=client, plan=scene, prompt="Fixture only",
-        max_policy_queries=120, open_loop_horizon=1, media_root=tmp_path / "episodes", episode_id="development-only-scripted",
-        progress=progress, to_action=lambda targets: [targets])
-    assert 0 < len(env.steps) <= 120
-    assert env.robot.q[env.robot.joint_names.index("left_joint_0")] > .07
-    assert env.robot.q[env.robot.joint_names.index("right_joint_0")] == 0.
-    assert result["score"]["task_succeeded"] is False  # Script's arrival cannot override native scorer.
-    assert samples and result["scripted_controller_calls"] > 0
-    assert result["policy_queries"] == 0 and progress["candidate_policy_queried"] is False
-    assert result["action_source"] == ACTION_SOURCE and result["policy_outcome_interpretable"] is False
-    assert progress["scripted_controller_invoked"] is True
-    assert result["policy_request_evidence_complete"] is False  # No network serialization exists.
-    assert result["scripted_request_evidence_complete"] is True

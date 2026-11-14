@@ -3,12 +3,12 @@
 Beta journey step: L3 website scene preparation. A job the robot fit precheck held before any spend
 (``website_task_context_contracts.retains_robot_fit_hold``) is a completed stage: a redelivery never
 reruns it, so it is never burnt through Pub/Sub's delivery limit, and the site reads it as waiting
-(``awaiting_inputs``), not failing. What held it is the screening catalog and the operator's team
-registry at the time, recorded beside the hold (``recheck_inputs``). When either changes, a candidate
-enabled or a team body registered, the existing drain tick replays the job's own handoff bytes, kept in
+(``awaiting_inputs``), not failing. What held it is the operator's team registry and the robot fit
+rule at the time, recorded beside the hold (``recheck_inputs``). When either changes, a team body
+registered or the rule replaced, the existing drain tick replays the job's own handoff bytes, kept in
 the job ledger at completion as a correction of its target is (``website_task_target_choice``). The
 website preparation stage then runs again from its retained outputs (its stage input binding includes
-the changed inputs, ``preparation_binding_digest``), so the precheck reads the new catalog: the job goes
+the changed inputs, ``preparation_binding_digest``), so it reads the new inputs: the job goes
 on to registration, or holds again against the new inputs. No new queue, publisher, credential or grant;
 a held job whose inputs did not change is never rerun, and each change is replayed a bounded number of
 times.
@@ -50,18 +50,12 @@ def team_registry_state() -> tuple[dict[str, Any] | None, str | None]:
 
 
 def recheck_inputs() -> dict[str, Any]:
-    """What a robot fit hold was decided against: the screening catalog and the team registry, as of now."""
-    from .beta_policy_candidate_catalog import load_default_catalog
-
-    try:
-        catalog = load_default_catalog()["catalog_digest"]
-    except (OSError, ValueError, KeyError, TypeError):
-        catalog = "unreadable"
+    """What a robot fit hold was decided against: the team registry and the rule in force, as of now."""
     # Since 2026-11-12 the precheck never holds a job (owner: the test runs even when no robot fits on
     # paper). Naming the rule makes every hold decided under the old one differ from now, so each such
-    # job is rechecked once (bounded by ``MAX_RECHECKS``) and goes on.
-    return {"catalog_digest": catalog, "team_registry_digest": team_registry_state()[1],
-            "robot_fit_rule": ROBOT_FIT_RULE}
+    # job is rechecked once (bounded by ``MAX_RECHECKS``) and goes on. The early trial's catalog left
+    # with the trial (2026-11-14); a hold recorded with its digest differs from now and is rechecked once.
+    return {"team_registry_digest": team_registry_state()[1], "robot_fit_rule": ROBOT_FIT_RULE}
 
 
 def _handoff(pipeline_root: Path) -> dict[str, Any] | None:
@@ -169,14 +163,20 @@ def _note(pipeline: Path, digest: str, now: float) -> None:
 
 
 def _rule_only(held: Mapping[str, Any] | None, inputs: Mapping[str, Any]) -> bool:
-    """A hold decided under the old rule whose robots and registry are unchanged: only the rule moved."""
-    return (isinstance(held, Mapping) and "robot_fit_rule" not in held
-            and {key: inputs.get(key) for key in held} == dict(held))
+    """A hold decided under the old rule whose registry is unchanged: only the rule moved.
+
+    The early trial's catalog a hold recorded (``catalog_digest``) is no input any more (2026-11-14), so
+    it never makes a hold read as changed.
+    """
+    if not isinstance(held, Mapping) or "robot_fit_rule" in held:
+        return False
+    kept = {key: value for key, value in held.items() if key != "catalog_digest"}
+    return {key: inputs.get(key) for key in kept} == kept
 
 
 def reconcile_robot_fit_holds(listener, *, storage_root: Path, process_args, limit=1,
                               now: float | None = None) -> dict[str, int]:
-    """Rerun each held job whose catalog or team registry changed since it was held; at most ``limit`` per tick."""
+    """Rerun each held job whose team registry or rule changed since it was held; at most ``limit`` per tick."""
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     from .website_assessment_resume import MAX_BYTES, _payload_bytes, _require
     from .website_preparation_status import _root

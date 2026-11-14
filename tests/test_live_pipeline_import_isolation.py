@@ -189,16 +189,6 @@ def test_shared_registry_and_effective_catalog_stay_off_the_hot_lane() -> None:
     assert "team_candidate_rights" in _transitive_local_modules(("beta_policy_effective_catalog",))
 
 
-def test_candidate_readiness_preview_reads_only_the_shared_catalog() -> None:
-    # The intake service serves the preview, so the seed guard above walks it too.
-    assert {"website_candidate_readiness", "beta_policy_effective_catalog",
-            "team_candidate_registry_reader"} <= _transitive_local_modules(SEED_MODULES)
-    for seed in ("website_candidate_readiness", "website_candidate_readiness_http"):
-        reachable = _transitive_local_modules((seed,))
-        assert {"beta_policy_effective_catalog", "team_candidate_registry_reader"} <= reachable, seed
-        assert not reachable & SHARED_CATALOG_FORBIDDEN, (seed, sorted(reachable & SHARED_CATALOG_FORBIDDEN))
-
-
 def test_withdrawal_g1_deletion_does_not_import_the_team_scene_worker() -> None:
     # The intake's withdrawal route imports it. It once took capture_key from the team scene
     # worker, which reaches the paid launch path (2026-11-06). Its own imports stay light; the
