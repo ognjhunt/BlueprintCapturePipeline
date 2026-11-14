@@ -205,3 +205,103 @@ def test_attempt_bound_setup_failure_names_its_blocker_without_a_score(attempt, 
     monkeypatch.setattr(closeout, "closeout_staged_objects", lambda _: {
         "absent": True, "blockers": ["policy_canary_provider_output_not_durable"]})
     assert closeout.scoped_setup_failure_blocker(inner=failed, receipt=receipt, **args) is None
+
+
+@pytest.fixture
+def g1_attempt(tmp_path, monkeypatch):
+    """A G1 screening attempt allocated before its launch lane was removed, closed out after it."""
+    from blueprint_pipeline import native_g1_beta_assets, native_g1_beta_authority
+    monkeypatch.setattr(native_g1_beta_assets, "selected_candidates", lambda ids: list(ids or []))
+    monkeypatch.setattr(native_g1_beta_authority, "validate_frozen_cell", lambda cell: cell)
+    monkeypatch.setattr(native_g1_beta_authority, "validate_beta_authority", lambda rights, **_: rights)
+    digest = "sha256:" + "a" * 64
+    run_id = "b" * 32
+    authority = {"schema_version": closeout.G1_AUTHORITY_SCHEMA, "run_kind": BETA_RUN_KIND,
+                 "candidate_ids": ["humanoidarena_dp_g1_dex3_sonic"], "cells": [{"cell_id": "cell-0"}],
+                 "episodes_per_policy": 1, "implementation_commit": "c" * 40, "run_id": run_id,
+                 "resource_name": closeout.G1_RESOURCE_PREFIX + run_id,
+                 "runtime_inputs_digest": digest, "task_success_contract_digest": digest,
+                 "beta_screening_admission": {"candidate_id": "humanoidarena_dp_g1_dex3_sonic", "maximum_cost_usd": "4.00",
+                                              **{key: digest for key in ("plan_digest", "configuration_digest",
+                                                 "admission_digest", "scene_revision_digest",
+                                                 "runtime_identity_digest", "scenario_plan_digest")}},
+                 "hard_cap_usd": "4.00", "max_hourly_rate_usd": "1.00", "hard_ttl_seconds": 3600,
+                 "rights_authority": {}, **closeout._G1_SCOPE}
+    seal(authority, "authority_digest")
+
+    def record(name, content):
+        path = tmp_path / name
+        path.write_text(json.dumps(content))
+        return _record(path)
+    bundle = {"schema_version": closeout.G1_BUNDLE_SCHEMA, "status": "ready",
+              "provider_bundle_kind": "native_g1_beta_screening", "authority_digest": authority["authority_digest"],
+              "candidate_ids": authority["candidate_ids"], "cell_ids": ["cell-0"],
+              **{key: authority[key] for key in ("implementation_commit", "runtime_inputs_digest",
+                                                 "task_success_contract_digest")}}
+    seal(bundle, "manifest_digest")
+    bundle.update(bundle_path=str(tmp_path / "bundle.zip"), bundle_size_bytes=1, bundle_sha256="sha256:" + "f" * 64)
+    prepared = {"authority": record("authority.json", authority), "bundle_receipt": record("bundle.json", bundle),
+                "candidate_id": authority["candidate_ids"][0], "run_id": run_id,
+                "plan_digest": digest, "configuration_digest": digest}
+    seal(prepared, "prepared_digest")
+    consumption = {"schema_version": "native_task_arena_policy_canary_session_consumption.v1", "status": "consumed",
+                   "authority_digest": authority["authority_digest"], "maximum_provider_allocations": 1, "retry_cap": 0}
+    seal(consumption, "consumption_digest")
+    adapter = {"vast_instance_ids": [7001], "bundle_sha256": bundle["bundle_sha256"],
+               "authorization_consumption": consumption, "continuing_spend_from_this_run": False,
+               "provider_closeout": {"provider_zero_confirmed": True, "warm_session_retained": False,
+                                     "all_staged_objects_absent": True,
+                                     "adapter_result": record("raw_adapter.json", {"vast_instance_ids": [7001]}),
+                                     "teardown_manifest": record("teardown.json", {"vast_instance_ids": [7001]})}}
+    return {"adapter": adapter, "prepared": prepared, "adapter_path": tmp_path / "allocator_result.json"}, authority
+
+
+def test_g1_attempt_allocated_before_its_lane_was_removed_still_closes_on_its_own_absence(g1_attempt):
+    args, authority = g1_attempt
+    provider = Provider()
+    receipt = closeout.collect_scoped_closeout(**args, provider=provider)
+    assert closeout.scoped_closeout_verified(receipt, **args)
+    assert receipt["resource_name"] == authority["resource_name"]
+    assert provider.reads == [("inspect", "7001"), ("inventory", "")]
+    live = closeout.collect_scoped_closeout(**args, provider=Provider([{"instance_id": "7001", "name": "x"}]))
+    assert not closeout.scoped_closeout_verified(live, **args)
+    assert "beta_screening_owned_resource_still_live" in live["blockers"]
+
+
+@pytest.mark.parametrize("change", ["authority", "bundle"])
+def test_a_tampered_retained_g1_record_is_refused_before_provider_reads(g1_attempt, change, tmp_path):
+    args, _authority = g1_attempt
+    key = "authority" if change == "authority" else "bundle_receipt"
+    path = tmp_path / ("authority.json" if change == "authority" else "bundle.json")
+    value = json.loads(path.read_text())
+    value["candidate_ids"] = ["other"]
+    path.write_text(json.dumps(value))
+    args["prepared"][key] = _record(path)
+    seal(args["prepared"], "prepared_digest")
+    provider = Provider()
+    with pytest.raises(ValueError):
+        closeout.collect_scoped_closeout(**args, provider=provider)
+    assert provider.reads == []
+
+
+@pytest.mark.parametrize("watchdog_closed", [True, False])
+def test_reconcile_settles_a_retained_g1_attempt_only_after_its_absence_and_watchdog_close(
+        g1_attempt, monkeypatch, tmp_path, watchdog_closed):
+    from functools import partial
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    args, _authority = g1_attempt
+    adapter = args["adapter"]
+    adapter["independent_watchdog_close"] = (
+        {"status": "provider_terminal", "provider_absence_confirmed": True, "instance_ids": [7001],
+         "watchdog_process_exit_code": 0} if watchdog_closed else {"status": "retained_until_hard_ttl"})
+    launch._write(tmp_path / "allocator_result.json", adapter)
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *a: None)
+    monkeypatch.setattr(closeout, "collect_scoped_closeout",
+                        partial(closeout.collect_scoped_closeout, provider=Provider()))
+    result = launch.reconcile_candidate(plan={}, candidate={"execution_spec": {"backend": "native_g1.v1"}},
+                                        attempt_dir=tmp_path, prepared=args["prepared"])
+    if watchdog_closed:
+        assert result["status"] == "blocked", result
+        assert result["provider_allocation_performed"] is True and result["provider_zero_verified"] is True
+    else:
+        assert result["status"] == "reconciliation_required" and result["provider_zero_verified"] is False

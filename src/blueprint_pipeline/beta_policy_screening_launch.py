@@ -621,7 +621,14 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
                          "provider_zero_verified": True, "no_allocation_proven": False,
                          "applicability": "historical_only", "blockers": [stopped["reason"]]})
         if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
-            # The G1 lane is removed: a session settled before that stays unscored, its spend already proven zero.
+            # The G1 lane is removed: an attempt allocated before that settles once its own instance is
+            # proven absent (above) and its watchdog closed on that instance; it stays unscored.
+            watchdog = adapter.get("independent_watchdog_close") or {}
+            if (watchdog.get("status") != "provider_terminal" or watchdog.get("provider_absence_confirmed") is not True
+                    or watchdog.get("instance_ids") != [absence["instance_id"]]
+                    or type(watchdog.get("watchdog_process_exit_code")) is not int):
+                return {"status": "reconciliation_required", "provider_zero_verified": False,
+                        "no_allocation_proven": False, "blockers": ["g1_beta_result_watchdog_not_terminal"]}
             return kept({"status": "blocked", "provider_allocation_performed": True,
                          "provider_zero_verified": True, "no_allocation_proven": False,
                          "blockers": _unscored_blockers(adapter, root, "g1_beta_native_result_missing_or_invalid")})
