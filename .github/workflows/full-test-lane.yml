@@ -300,6 +300,11 @@ jobs:
               exit 1
             fi
             echo "locked dependency install attempt ${attempt} did not complete"
+            # An attempt killed at its time limit can leave a package half-copied, and
+            # the next sync would take it as installed (run 43538993760, shard 7: a torch
+            # library was missing and 41 test modules failed to import). Start the next
+            # attempt from an empty environment; finished downloads stay in uv's cache.
+            uv venv --clear --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
           done
           # Noneditable policy CLIs resolve retained documents beside their
           # installed package. Preserve those exact committed bytes outside
