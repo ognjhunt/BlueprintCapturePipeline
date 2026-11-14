@@ -20,7 +20,7 @@ def _manifests() -> list[dict]:
         json.loads((root / name).read_text())
         for name in (
             "config/trial/third_scene_840920_task_a_scenario_suite.v1.json",
-            "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_scenario_suite.v1.json",
+            "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_b_scenario_suite.v1.json",
         )
     ]
 

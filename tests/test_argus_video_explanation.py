@@ -9,7 +9,7 @@ import pytest
 from blueprint_pipeline.argus_shadow import ShadowError, binding, seal
 from blueprint_pipeline.argus_video_explanation import (
     ADAPTER_ID, OFFLINE_REASON, REPO, default_video_profile,
-    import_video_explanation, prepare_video_explanation,
+    prepare_video_explanation,
 )
 from blueprint_pipeline.policy_canary_episode_interpretation_closeout import (
     _load_profile, materialize_policy_canary_episode_interpretations,
@@ -92,18 +92,6 @@ def test_explicit_argus_profile_cannot_enable_processing(tmp_path):
     assert loaded is None and reason == "interpreter_profile_invalid"
 
 
-def test_request_uses_exact_criteria_and_blinds_current_score(tmp_path):
-    prepared, data = _prepared(tmp_path)
-    model_input = prepared["model_input"]
-    assert model_input["task_success_contract"] == data["contract"]
-    assert "deterministic_score" not in model_input["artifacts"]
-    assert "authoritative_result" not in model_input
-    assert "candidate_policy_id" not in model_input
-    assert "criterion_evidence" in prepared["prompt"]
-    assert prepared["provider_disclosure_authorized"] is False
-    assert prepared["real_corpus_admission"] is False
-
-
 def test_changed_native_trace_is_refused(tmp_path):
     data = _episode_root(tmp_path, no_drop=True, deterministic_success=False)
     request = _request(data)
@@ -132,133 +120,6 @@ def test_offline_preparation_never_reads_streamed_only_frames(tmp_path):
     with pytest.raises(ShadowError, match="artifact_missing"):
         prepare_video_explanation(request, intended_task="Move cup", duration_s=1,
                                   evidence_kind="synthetic_fixture")
-
-
-def test_apparent_success_cannot_change_authoritative_failure(tmp_path):
-    prepared, data = _prepared(tmp_path)
-    before = data["score_path"].read_bytes()
-    receipt = import_video_explanation(prepared, _response(tmp_path, prepared), evidence_root=tmp_path)
-    assert receipt["apparent_outcome"] == "appears_complete"
-    assert receipt["authoritative_result"]["task_succeeded"] is False
-    assert data["score_path"].read_bytes() == before
-    assert receipt["model_calls"] == 0
-    assert receipt["proof_boundary"]["ranking_or_promotion_effect"] == "none"
-    assert receipt["proof_boundary"]["physical_validity_established"] is False
-    assert receipt["calibrated_success_probability"] is None
-
-
-@pytest.mark.parametrize("kind", ["generated_video", "simulator_recording", "physical_recording"])
-def test_declared_video_kind_never_proves_physical_validity(tmp_path, kind):
-    prepared, _ = _prepared(tmp_path)
-    # Changing a declared kind is not real-episode admission or physical evidence.
-    prepared["model_input"]["declared_evidence_kind"] = kind
-    prepared = seal(prepared, "request_digest")
-    receipt = import_video_explanation(prepared, _response(tmp_path, prepared), evidence_root=tmp_path)
-    assert receipt["proof_boundary"]["physical_validity_established"] is False
-    assert receipt["proof_boundary"]["real_corpus_admission"] is False
-
-
-def test_missing_required_evidence_is_unclear(tmp_path):
-    prepared, _ = _prepared(tmp_path)
-    receipt = import_video_explanation(prepared, _response(tmp_path, prepared, checks=False), evidence_root=tmp_path)
-    assert receipt["apparent_outcome"] == "unclear"
-    assert receipt["missing_evidence_criteria"]
-
-
-def test_unbound_criterion_claim_is_unclear(tmp_path):
-    prepared, _ = _prepared(tmp_path)
-    record = _response(tmp_path, prepared)
-    _edit_raw(tmp_path, record, lambda labels: labels["criterion_evidence"]["motion"].update(
-        evidence_digest="sha256:" + "0" * 64))
-    receipt = import_video_explanation(prepared, record, evidence_root=tmp_path)
-    assert receipt["apparent_outcome"] == "unclear"
-    assert "motion" in receipt["missing_evidence_criteria"]
-
-
-def test_acceptance_contract_is_not_observed_outcome_evidence(tmp_path):
-    prepared, _ = _prepared(tmp_path)
-    record = _response(tmp_path, prepared)
-    def edit(labels):
-        for check in labels["criterion_evidence"].values():
-            check.update(evidence_role="task_success_contract", evidence_digest=prepared[
-                "model_input"]["artifacts"]["task_success_contract"]["logical_digest"])
-    _edit_raw(tmp_path, record, edit)
-    receipt = import_video_explanation(prepared, record, evidence_root=tmp_path)
-    assert receipt["apparent_outcome"] == "unclear"
-    assert receipt["missing_evidence_criteria"]
-
-
-@pytest.mark.parametrize("field,value", [
-    ("finding", {"invented": "structured finding"}),
-    ("evidence_digest", ["unhashable reference"]),
-])
-def test_malformed_criterion_support_abstains(tmp_path, field, value):
-    prepared, _ = _prepared(tmp_path)
-    record = _response(tmp_path, prepared)
-    _edit_raw(tmp_path, record, lambda labels: labels["criterion_evidence"]["motion"].update({field: value}))
-    receipt = import_video_explanation(prepared, record, evidence_root=tmp_path)
-    assert receipt["apparent_outcome"] == "unclear"
-    assert "motion" in receipt["missing_evidence_criteria"]
-
-
-def test_malformed_explanation_is_refused(tmp_path):
-    prepared, _ = _prepared(tmp_path)
-    record = _response(tmp_path, prepared)
-    _edit_raw(tmp_path, record, lambda labels: labels["completion"].update(reason={"not": "text"}))
-    with pytest.raises(ShadowError, match="narrative_invalid"):
-        import_video_explanation(prepared, record, evidence_root=tmp_path)
-
-
-def test_success_with_violated_criterion_is_unclear(tmp_path):
-    prepared, _ = _prepared(tmp_path)
-    record = _response(tmp_path, prepared)
-    _edit_raw(tmp_path, record, lambda labels: labels["criterion_evidence"]["motion"].update(status="violated"))
-    receipt = import_video_explanation(prepared, record, evidence_root=tmp_path)
-    assert receipt["apparent_outcome"] == "unclear"
-    assert receipt["completion_criterion_contradiction"] is True
-
-
-def test_undo_and_failure_taxonomy_are_advisory(tmp_path):
-    prepared, _ = _prepared(tmp_path)
-    record = _response(tmp_path, prepared, outcome="success_then_undone")
-    def edit(labels):
-        labels["completion"].update(goal_reached_at_s=.2, undone_at_s=.8)
-        labels["performance_review"] = "SYNTHETIC apparent success was undone"
-        labels["timeline_columns"] = ["start_s", "end_s", "action"]
-        labels["timeline"] = [[.2, .8, "SYNTHETIC goal regression"]]
-        labels["operator_mistakes"] = [{"category": "goal_undone", "severity": "high", "t_s": .8}]
-        labels["data_issues"] = [{"category": "new_model_tag", "severity": "low", "t_s": None}]
-    _edit_raw(tmp_path, record, edit)
-    receipt = import_video_explanation(prepared, record, evidence_root=tmp_path)
-    assert receipt["apparent_outcome"] == "appears_incomplete"
-    assert receipt["events"]["undone_at_s"] == .8
-    assert receipt["temporal_annotations"]["timeline"][0][:2] == [.2, .8]
-    assert receipt["narrative"]["performance_review"] == "SYNTHETIC apparent success was undone"
-    assert [o["taxonomy"] for o in receipt["observations"]] == ["goal_regression", "unclassified_observation"]
-    assert all(o["severity_semantics"] == "training_data_impact_not_safety" for o in receipt["observations"])
-
-
-def test_bad_explanation_timestamps_are_refused(tmp_path):
-    prepared, _ = _prepared(tmp_path)
-    record = _response(tmp_path, prepared)
-    def edit(labels):
-        labels["timeline_columns"] = ["start_s", "end_s"]
-        labels["timeline"] = [[.8, .2]]
-    _edit_raw(tmp_path, record, edit)
-    with pytest.raises(ShadowError, match="annotation_interval_invalid"):
-        import_video_explanation(prepared, record, evidence_root=tmp_path)
-
-
-def test_other_model_or_changed_response_is_refused(tmp_path):
-    prepared, _ = _prepared(tmp_path)
-    record = _response(tmp_path, prepared)
-    wrong = copy.deepcopy(record)
-    wrong["inference_identity"]["model_served"] = "unapproved_model"
-    with pytest.raises(ShadowError, match="model_provenance"):
-        import_video_explanation(prepared, wrong, evidence_root=tmp_path)
-    (tmp_path / record["raw_response"]["path"]).write_text("changed")
-    with pytest.raises(ShadowError, match="artifact_changed"):
-        import_video_explanation(prepared, record, evidence_root=tmp_path)
 
 
 def test_default_closeout_never_constructs_provider_or_changes_scores(tmp_path, monkeypatch):

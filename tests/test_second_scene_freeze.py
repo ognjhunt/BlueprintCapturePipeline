@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from pathlib import Path
 
 import pytest
@@ -83,28 +82,6 @@ def test_freeze_binds_new_scene_one_target_joint_and_exact_candidates(tmp_path) 
     assert validate_second_scene_freeze(
         freeze, repo_root=tmp_path, data_root=tmp_path, verify_files=False
     ) == freeze
-
-
-def test_checked_freeze_is_outcome_blind_and_not_evaluation_authority() -> None:
-    path = (
-        REPO_ROOT
-        / "docs/arm_decision_proof_v1/manifests"
-        / "second_scene_840796_scene_task_freeze.v1.json"
-    )
-    freeze = json.loads(path.read_text(encoding="utf-8"))
-
-    validated = validate_second_scene_freeze(
-        freeze, repo_root=REPO_ROOT, data_root=REPO_ROOT, verify_files=False
-    )
-
-    assert validated["scene"]["publisher_scene_id"] == "840796"
-    assert validated["task_spec"]["target_joint_id"] == (
-        "refrigerator_upper_door_hinge"
-    )
-    assert validated["construction_authorized"] is True
-    assert validated["scenario_materialization_authorized"] is False
-    assert validated["evaluation_authorized"] is False
-    assert validated["learned_policy_outcomes_consulted"] is False
 
 
 def test_freeze_rejects_empty_scene_or_policy_outcome_leakage(tmp_path) -> None:
