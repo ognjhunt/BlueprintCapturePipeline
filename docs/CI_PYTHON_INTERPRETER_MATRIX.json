@@ -22,12 +22,6 @@
       "check": "Full Test Lane / Full pytest lane on CPU runner",
       "python_version": "3.12",
       "evidence_role": "full CPU pytest lane required for deploy evidence"
-    },
-    {
-      "path": ".github/workflows/sim-only-local-gate.yml",
-      "check": "Sim-Only Local Gate / Regenerate sim-only local gate artifact",
-      "python_version": "3.12",
-      "evidence_role": "sim-only local gate artifact regeneration"
     }
   ],
   "compatibility_ci": {
