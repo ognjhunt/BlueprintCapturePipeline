@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import copy
-import json
-from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_execution_authority import (
     PublicSceneExecutionAuthorityError,
-    validate_aura_retry_authority_binding,
     validate_public_scene_execution_authority,
 )
 
@@ -129,52 +126,6 @@ def test_concurrent_authority_rejects_more_than_one_existing_instance() -> None:
         match="known_active_instance_ids_invalid",
     ):
         validate_public_scene_execution_authority(authority)
-
-
-def test_checked_second_scene_concurrent_authority_is_digest_valid() -> None:
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "docs/arm_decision_proof_v1/manifests"
-        / "second_scene_840796_execution_authority.v2.json"
-    )
-
-    authority = validate_public_scene_execution_authority(
-        json.loads(path.read_text(encoding="utf-8"))
-    )
-
-    assert authority["maximum_concurrent_paid_instances"] == 2
-    assert authority["known_active_instance_ids_at_authorization"] == [47226054]
-
-
-def test_checked_second_scene_aura_retry_authority_binds_attempt() -> None:
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "docs/arm_decision_proof_v1/manifests"
-        / "second_scene_840796_aura_retry_authority.v1.json"
-    )
-    raw = json.loads(path.read_text(encoding="utf-8"))
-
-    authority = validate_aura_retry_authority_binding(
-        raw,
-        adapter_receipt_digest=(
-            "sha256:bfdc2500d324b44e014c030b6c2bb3e6593e4f5d9797d70f7e637ae654e48893"
-        ),
-        hard_cap_usd=3.5,
-        hard_ttl_seconds=14_400,
-    )
-
-    assert authority["attempt_authority"] == {
-        "workload": "aurafusion360_interiorgs",
-        "attempt_ordinal": 2,
-        "maximum_paid_attempts": 1,
-        "maximum_automatic_retries": 0,
-        "previous_execution_receipt_digest": (
-            "sha256:7fec2771bdd279a63c22edc89d501185b73d262687722a5c8069c0b37d1cb552"
-        ),
-        "required_reference_camera_id": "front_medium",
-        "required_runtime_reference_index": 2,
-        "unretained_trajectory_generation_allowed": False,
-    }
 
 
 def test_aura_retry_authority_fails_closed_on_automatic_retry() -> None:

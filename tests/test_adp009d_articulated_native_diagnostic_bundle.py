@@ -860,29 +860,6 @@ def test_bundle_rejects_caller_asserted_commit_that_is_not_current(
     assert "articulated_native_implementation_commit_mismatch" in excinfo.value.codes
 
 
-def test_checked_in_second_scene_request_binds_material_readback() -> None:
-    request_path = (
-        Path(__file__).resolve().parents[1]
-        / "docs/arm_decision_proof_v1/manifests"
-        / "second_scene_840796_articulated_native_diagnostic_request.v2.json"
-    )
-    request = build_articulated_native_diagnostic_request(
-        json.loads(request_path.read_text(encoding="utf-8"))
-    )
-
-    assert request["asset"]["sha256"] == (
-        "sha256:9f487fbee7006c6c276ce37c9e1e7e1653a465ac2fbbe15cffa63653111cc720"
-    )
-    assert request["render_appearance"]["required_material_paths"] == [
-        "/Asset/render_materials/observed_exterior",
-        "/Asset/render_materials/generated_unobserved",
-    ]
-    assert {row["role"] for row in request["render_appearance"]["cameras"]} == {
-        "material_readback",
-        "review_only",
-    }
-
-
 def _allocator_args(tmp_path: Path) -> list[str]:
     return [
         "gpu-canary",

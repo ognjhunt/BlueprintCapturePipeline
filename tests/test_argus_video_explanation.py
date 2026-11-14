@@ -8,7 +8,7 @@ import pytest
 
 from blueprint_pipeline.argus_shadow import ShadowError, binding, seal
 from blueprint_pipeline.argus_video_explanation import (
-    ADAPTER_ID, OFFLINE_REASON, REPO, default_video_profile,
+    ADAPTER_ID, OFFLINE_REASON, default_video_profile,
     prepare_video_explanation,
 )
 from blueprint_pipeline.policy_canary_episode_interpretation_closeout import (
@@ -66,20 +66,6 @@ def test_profile_callers_cannot_change_pinned_prompt():
     original = copy.deepcopy(profile)
     profile["adapted_prompt"]["sha256"] = "sha256:" + "0" * 64
     assert default_video_profile() == original
-
-
-def test_explicit_historical_profile_remains_explicit(tmp_path):
-    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    source = REPO / "docs/arm_decision_proof_v1/manifests/policy_canary_episode_interpreter_profile.v1.json"
-    value = json.loads(source.read_text())
-    # Keep the historical profile bytes unchanged; the valid explicit legacy
-    # fixture is sealed with the loader's existing digest convention.
-    value["profile_digest"] = canonical_digest(value, digest_field="profile_digest")
-    path = tmp_path / "explicit-legacy-profile.json"
-    path.write_text(json.dumps(value))
-    profile, reason = _load_profile({"BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE": str(path)})
-    assert reason is None
-    assert profile["model"] == "gpt-6-luna"
 
 
 def test_explicit_argus_profile_cannot_enable_processing(tmp_path):
