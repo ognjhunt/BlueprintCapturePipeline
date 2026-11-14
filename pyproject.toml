@@ -293,7 +293,6 @@ blueprint-run-unitree-groot-n17-sonic-policy-runtime = "blueprint_pipeline.unitr
 blueprint-run-unitree-groot-n17-sonic-policy-provider-smoke = "blueprint_pipeline.unitree_groot_n17_sonic_provider_smoke:main"
 blueprint-run-unitree-groot-n17-sonic-vast-image-canary = "blueprint_pipeline.unitree_groot_n17_sonic_vast_image_canary:main"
 blueprint-run-unitree-groot-n17-sonic-sim2sim-command = "blueprint_pipeline.unitree_groot_n17_sonic_sim2sim_command:main"
-blueprint-run-oscar-wam-command-adapter = "blueprint_pipeline.oscar_wam_command_adapter:main"
 blueprint-allocate-gpu-canary = "blueprint_pipeline.paid_resource_allocator:gpu_canary_main"
 # Primary honest name. The legacy local consistency entry point remains as a
 # compatibility alias, but emits the same visual-motion-only artifact and can
@@ -341,7 +340,6 @@ line-length = 100
 "tests/synthesis/test_synthesize.py" = ["E402"]
 "tests/test_native_runtime_service.py" = ["E402"]
 "tests/test_unitree_groot_n17_sonic_vast_persistent_session.py" = ["E402"]
-"tests/test_wam_generated_video_review.py" = ["E402"]
 
 [tool.uv]
 required-version = "==0.10.7"
