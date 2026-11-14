@@ -48,10 +48,7 @@ _KNOWN_UNITS = {
     'blueprint-task-evaluation-launch-dispatcher.service': 'task_evaluation_launch_dispatcher',
     'blueprint-task-evaluation-launch-reconciler.service': 'task_evaluation_launch_reconciler',
     'blueprint-task-evaluation-launch-supervisor.service': 'task_evaluation_launch_supervisor',
-    'blueprint-task-evaluation-policy-canary-dispatcher.service': 'task_evaluation_policy_canary_dispatcher',
     'blueprint-task-evaluation-terminal-resource-release.service': 'task_evaluation_terminal_resource_release',
-    'blueprint-existing-policy-canary-watchdog.service': 'operator_policy_canary_continuation',
-    'blueprint-existing-policy-canary-continuation.service': 'operator_policy_canary_continuation',
     'blueprint-task-evaluation-configured-controls-progression.service': 'task_evaluation_configured_controls_progression_worker',
 }
 _UNIT_PROPERTIES = frozenset(('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID',
@@ -1131,9 +1128,7 @@ _WORKERS = frozenset('blueprint_pipeline.' + name for name in (
     'task_evaluation_launch_dispatcher',
     'task_evaluation_launch_reconciler',
     'task_evaluation_launch_supervisor',
-    'task_evaluation_policy_canary_dispatcher',
     'task_evaluation_terminal_resource_release',
-    'operator_policy_canary_continuation',
     'task_evaluation_configured_controls_progression_worker',
 ))
 

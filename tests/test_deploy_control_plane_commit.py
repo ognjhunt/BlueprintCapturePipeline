@@ -603,21 +603,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     activation_timer = unit_dir / "blueprint-task-evaluation-launch-activation.timer"
     activation_timer.write_text("[Timer]\nOnUnitInactiveSec=1h\n", encoding="utf-8")
-    canary_service = (
-        unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.service"
-    )
-    canary_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-policy-canary\n",
-        encoding="utf-8",
-    )
-    canary_path = (
-        unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.path"
-    )
-    canary_path.write_text(
-        "[Path]\nPathChanged=/policy-canaries/pending\n"
-        "PathExistsGlob=/policy-canaries/pending/*.json\n",
-        encoding="utf-8",
-    )
     team_runner_service = unit_dir / "blueprint-team-evaluation-runner.service"
     team_runner_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-team-evaluation-runner\n",
@@ -822,8 +807,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         activation_service,
         activation_path,
         activation_timer,
-        canary_service,
-        canary_path,
         team_runner_service,
         team_runner_path,
         *embodiment_units,
@@ -910,8 +893,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-launch-activation.timer",
-        "blueprint-task-evaluation-policy-canary-dispatcher.service",
-        "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-team-evaluation-runner.service",
         "blueprint-team-evaluation-runner.path",
         "blueprint-embodiment-preparation.service",
@@ -1036,7 +1017,6 @@ PAUSED_LANE_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
-    "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-task-evaluation-launch-supervisor.timer",
     "blueprint-scene-object-discovery.path",
     "blueprint-embodiment-preparation.path",
@@ -1291,6 +1271,7 @@ def test_a_release_retires_unshipped_triggers_idempotently(tmp_path, monkeypatch
         timer: {"enabled": "enabled", "state": "active"},
         "blueprint-capture-reconstruction-dispatcher.timer": None,
         path_on: {"enabled": "disabled", "state": "inactive"},
+        **{unit: None for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS[3:]},
     }
     retire = deploy._retire_unshipped_triggers
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
@@ -1319,13 +1300,14 @@ def test_a_release_retires_unshipped_triggers_idempotently(tmp_path, monkeypatch
     calls[:] = [call for call in calls if len(call) > 1]
     assert receipt["unshipped_trigger_retirement"] == {
         "status": "retired", "retired": [timer], "already_off": [path_on],
-        "absent": ["blueprint-capture-reconstruction-dispatcher.timer"], "failed": [],
+        "absent": ["blueprint-capture-reconstruction-dispatcher.timer", *deploy.DEFAULT_RETIRED_TRIGGER_UNITS[3:]],
+        "failed": [],
     }
     assert states[timer] == {"enabled": "disabled", "state": "inactive"}
     rows = {row["unit"]: row for row in receipt["unshipped_trigger_states"]}
     assert rows[timer]["before"] == {"enabled": "enabled", "state": "active"}
     assert rows[timer]["requested_intent"] == "retire_unshipped_trigger"
-    # Only the three triggers, only stop/disable and state probes; never a service, never an absent unit.
+    # Only the retired triggers, only stop/disable and state probes; never a service, never an absent unit.
     touched = {call[-1] for call in calls}
     assert touched == set(deploy.DEFAULT_RETIRED_TRIGGER_UNITS)
     assert {call[1] for call in calls} <= {"show", "is-enabled", "is-active", "stop", "disable"}

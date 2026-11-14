@@ -373,12 +373,6 @@ def test_canary_sync_preserves_report_when_website_notification_fails(monkeypatc
         # the separate stored-publication/inbox/download readback.
         assert all(synced[key] == value for key, value in operator_binding.items())
         assert "operator_registration_digest" not in synced["response"]
-        from blueprint_pipeline.operator_policy_canary_terminal_delivery import _sync_matches
-        registration = {key:synced[key] for key in ('run_id','capture_session_id','intake_id','request_digest')}
-        registration['registration_digest'] = operator_binding['operator_registration_digest']
-        runtime = {'configuration_digest':result['configuration_digest'],
-                   'plan_digest':operator_binding['plan_digest']}
-        assert _sync_matches(synced, registration, runtime, delivery, result)
 
 
 def test_preprovider_blocked_sync_requires_terminal_email_readback(

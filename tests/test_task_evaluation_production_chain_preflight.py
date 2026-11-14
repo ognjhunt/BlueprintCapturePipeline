@@ -500,7 +500,7 @@ def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_cr
     key_file = tmp_path / "vast_api_key"
     key_file.write_text("k\n")
     dispatcher = "blueprint-task-evaluation-launch-dispatcher.service"
-    canary = "blueprint-task-evaluation-policy-canary-dispatcher.service"
+    canary = "blueprint-beta-policy-screening.service"
     units = {
         dispatcher: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file), credit.ENABLED_ENV: "true"}},
         canary: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file)}},

@@ -93,7 +93,6 @@ WORKER_UNITS=(
   blueprint-task-evaluation-launch-activation.path
   blueprint-task-evaluation-launch-activation.timer
   blueprint-task-evaluation-launch-dispatcher.path
-  blueprint-task-evaluation-policy-canary-dispatcher.path
   blueprint-team-evaluation-runner.path
   blueprint-rigid-robot-free-probe-runner.path
   blueprint-rigid-robot-free-probe-runner.timer
@@ -118,7 +117,6 @@ WORKER_UNITS=(
   blueprint-embodiment-preparation.timer
   blueprint-task-evaluation-launch-reconciler.timer
   blueprint-agent-run-dispatcher.timer
-  blueprint-existing-policy-canary-continuation.timer
   blueprint-gpu-spend-guard.timer
   blueprint-website-atlas-preview.timer
   blueprint-website-atlas-provider-poll.timer
@@ -129,7 +127,6 @@ WORKER_UNITS=(
   blueprint-task-evaluation-episode-compilation-remote.service
   blueprint-task-evaluation-launch-activation.service
   blueprint-task-evaluation-launch-dispatcher.service
-  blueprint-task-evaluation-policy-canary-dispatcher.service
   blueprint-team-evaluation-runner.service
   blueprint-rigid-robot-free-probe-runner.service
   blueprint-task-evaluation-configured-controls-progression.service
@@ -151,8 +148,6 @@ WORKER_UNITS=(
   blueprint-embodiment-preparation.service
   blueprint-task-evaluation-launch-reconciler.service
   blueprint-agent-run-dispatcher.service
-  blueprint-existing-policy-canary-continuation.service
-  blueprint-existing-policy-canary-watchdog.service
   blueprint-gpu-spend-guard.service
   blueprint-website-atlas-preview.service
   blueprint-website-atlas-provider-poll.service

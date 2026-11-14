@@ -86,7 +86,6 @@ CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-launch-supervisor.service",
-    "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-task-evaluation-terminal-resource-release.service",
     "blueprint-gpu-spend-guard.service",
     "blueprint-provider-billing-reconciler.service",
@@ -104,7 +103,6 @@ CHAIN_UNITS: tuple[str, ...] = (
 # before a dispatch rather than after a wrong or empty selection.
 OWNER_AUTHORITY_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-task-evaluation-configured-controls-progression.service",
 )
 CONTROLS_PROGRESSION_UNIT = "blueprint-task-evaluation-configured-controls-progression.service"
@@ -1565,7 +1563,7 @@ def _terminal_index_findings(units: Mapping[str, dict[str, Any]]) -> list[dict[s
 
 # Every unit that can allocate Vast (it reaches the adapter); a lane checks the ones it selects.
 PAID_ALLOCATION_UNITS: tuple[str, ...] = tuple(f"blueprint-{name}.service" for name in (
-    "task-evaluation-launch-dispatcher", "task-evaluation-policy-canary-dispatcher",
+    "task-evaluation-launch-dispatcher",
     "task-evaluation-sam31-preparation-execution", "rigid-robot-free-probe-runner", "beta-policy-screening",
     "pubsub-handoff-listener", "team-evaluation-runner",
     "embodiment-preparation", "agent-run-dispatcher"))

@@ -1526,12 +1526,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.timer"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.service" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-policy-canary-dispatcher.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.path" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-policy-canary-dispatcher.path"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-terminal-resource-release.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-terminal-resource-release.service"
 run install -m 0644 \
@@ -1794,7 +1788,6 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.timer
-  systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path
   systemctl enable --now blueprint-team-evaluation-runner.path
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
   systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
@@ -1813,7 +1806,6 @@ else
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable hourly recovery of interrupted activation claims with: systemctl enable --now blueprint-task-evaluation-launch-activation.timer"
-  echo "enable authority-gated paid policy canary queue with: systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path"
   echo "enable the staged robot-team evaluation runner with: systemctl enable --now blueprint-team-evaluation-runner.path"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
   echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"

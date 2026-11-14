@@ -461,8 +461,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
     "blueprint-task-evaluation-launch-activation.timer",
-    "blueprint-task-evaluation-policy-canary-dispatcher.service",
-    "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-team-evaluation-runner.service",
     "blueprint-team-evaluation-runner.path",
     "blueprint-embodiment-preparation.service",
@@ -662,9 +660,6 @@ DEFAULT_PAUSED_LANE_DISARM_UNITS = (
     # Robot-team evaluation lanes, deleted by the owner (a deployment company
     # running its own software in our simulation is later). Their triggers stop
     # here before the WebApp routes they call are removed.
-    # Policy-canary dispatch: the activation worker queues it only for an
-    # internal_policy_canary launch; a website job's launch is scene_configuration.
-    "blueprint-task-evaluation-policy-canary-dispatcher.path",
     # Launch supervision: a read-only explainer that posts launch-supervision;
     # it starts nothing and nothing waits on it.
     "blueprint-task-evaluation-launch-supervisor.timer",
@@ -691,6 +686,9 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     "blueprint-pipeline-control-plane.timer",
     "blueprint-capture-reconstruction-dispatcher.timer",
     "blueprint-capture-reconstruction-dispatcher.path",
+    # Robot-team policy-canary dispatch and the existing-canary continuation.
+    "blueprint-task-evaluation-policy-canary-dispatcher.path",
+    "blueprint-existing-policy-canary-continuation.timer",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the
