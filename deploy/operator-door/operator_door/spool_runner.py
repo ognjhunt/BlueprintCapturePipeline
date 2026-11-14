@@ -104,9 +104,6 @@ def _deploy_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str
 
 
 _PUBSUB_HANDOFFS = "/var/lib/blueprint/pubsub-handoffs"
-# The parent of the pi0.5 G1 language folder (native_g1_beta_tokenizer.RETAINED_TOKENIZER_DIR);
-# the restore writes only here: a staged sibling, the set-aside sibling and its receipt.
-_G1_PI_LANGUAGE_PARENT = "/var/lib/blueprint/task-evaluation-inputs/g1-841757-development"
 
 
 def _retire_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
@@ -252,13 +249,6 @@ def _public_policy_properties(config: DoorConfig, _request: dict[str, Any]) -> t
             "/var/lib/blueprint-operator-door/policy-registrations " + str(Path(config.spool_root) / "results"))
 
 
-def _native_g1_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
-    # Fixed production site-packet store, never a request-selected write path.
-    return tuple(value + " /var/lib/blueprint/task-evaluation-inputs/team-scene-halves"
-                 if value.startswith("ReadWritePaths=") else value
-                 for value in _public_policy_properties(config, request))
-
-
 def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
     writable = str(Path(config.spool_root) / "results")
     if request["mode"] in {"dispatch", "preparation-resume", "preparation-reissue"}:
@@ -332,49 +322,6 @@ def _output_resume_properties(config: DoorConfig, _request: dict[str, Any]) -> t
             f"ReadWritePaths={_canary_root(config)} {reservations} {results}")
 
 
-def _g1_runtime_source_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-              "DOOR_SERVICE_USER": "blueprint"}
-    if request["apply"]:
-        values["DOOR_APPLY"] = "1"
-    return values
-
-
-def _g1_runtime_source_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
-    """It downloads one retained object, so it keeps the network and the provider secrets
-    the object store needs; every other secret stays hidden. It writes the restored packet
-    under the work root, its disk hold in the ledger and its result."""
-    hidden = [path for path in config.hidden_paths if path != "/etc/blueprint/provider-secrets"]
-    reservations = str(Path(config.control_plane_state) / "disk-reservations")
-    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
-            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
-            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
-            "InaccessiblePaths=" + " ".join("-" + path for path in hidden),
-            f"ReadWritePaths=/mnt/blueprint-work {reservations} {Path(config.spool_root) / 'results'}")
-
-
-def _g1_pi_language_assets_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-              "DOOR_SERVICE_USER": "blueprint"}
-    if request["apply"]:
-        values["DOOR_APPLY"] = "1"
-    return values
-
-
-def _g1_pi_language_assets_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
-    """It reads retained bundles already on the host, so it gets no network and every secret stays
-    hidden. It writes only beside the folder, its disk hold in the ledger and its result."""
-    reservations = str(Path(config.control_plane_state) / "disk-reservations")
-    # "-": an absent parent is the module's refusal to report, not a unit that cannot start.
-    writable = " ".join((f"-{_G1_PI_LANGUAGE_PARENT}", reservations, str(Path(config.spool_root) / "results")))
-    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
-            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
-            "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
-            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
-            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
-            f"ReadWritePaths={writable}")
-
-
 def _parked_delivery_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
             "DOOR_SERVICE_USER": "blueprint",
@@ -410,10 +357,6 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
-    "install-native-g1-policies": _LaunchSpec(
-        "blueprint-operator-door-native-g1-policy", "door-install-public-piper-policy.sh", "15min",
-        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
-        _public_policy_environment, _native_g1_properties),
     "install-public-trlc-policy": _LaunchSpec(
         "blueprint-operator-door-public-trlc-policy", "door-install-public-piper-policy.sh", "5min",
         lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
@@ -499,17 +442,6 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         "blueprint-operator-door-owner-success", "door-confirm-owner-success-contract.sh", "5min",
         lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
         _owner_success_environment, _scene_budget_properties),
-    # Named by a hash of the mode: the request has no other field. One 4.6 GB download: at most 2 h.
-    "restore-g1-runtime-source": _LaunchSpec(
-        "blueprint-operator-door-g1-runtime-source", "door-restore-g1-runtime-source.sh", "2h",
-        lambda request: hashlib.sha256(("apply" if request["apply"] else "plan").encode("utf-8")).hexdigest()[:12],
-        _g1_runtime_source_environment, _g1_runtime_source_properties),
-    # Named by a hash of the mode: the request has no other field. Six small files read from at most
-    # 64 retained bundles on local disk: at most 15 min.
-    "restore-g1-pi-language-assets": _LaunchSpec(
-        "blueprint-operator-door-g1-pi-language-assets", "door-restore-g1-pi-language-assets.sh", "15min",
-        lambda request: hashlib.sha256(("apply" if request["apply"] else "plan").encode("utf-8")).hexdigest()[:12],
-        _g1_pi_language_assets_environment, _g1_pi_language_assets_properties),
     # Named by a hash of the capture and the mode; the approval text never reaches a unit name.
     "retire-parked-delivery": _LaunchSpec(
         "blueprint-operator-door-parked-delivery", "door-retire-parked-delivery.sh", "5min",

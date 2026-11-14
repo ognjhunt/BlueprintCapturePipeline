@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "restore-g1-runtime-source", "restore-g1-pi-language-assets", "retire-parked-delivery"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "retire-parked-delivery"}
 # The owner-approved, time-only scene window extension passes the fence.
 assert r.required_scope("extend-scene-execution-window") == "operate"
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
@@ -62,22 +62,6 @@ owner_success = {"kind":"confirm-owner-success-contract", "intent_id":"scene-"+"
 assert r.validate_request(owner_success) == owner_success
 owner_success_applied = {**owner_success, "apply":True, "apply_ack":"sha256:"+"c"*64}
 assert r.validate_request(owner_success_applied) == owner_success_applied
-# So does the owner-approved G1 runtime source restore, as plan and as apply; it takes no other field.
-assert r.required_scope("restore-g1-runtime-source") == "operate"
-assert r.validate_request_id("20261106T000000Z-restore-g1-runtime-source-0123abcd")
-assert r.validate_request({"kind":"restore-g1-runtime-source"}) == {"kind":"restore-g1-runtime-source", "apply":False}
-assert r.validate_request({"kind":"restore-g1-runtime-source", "apply":True}) == {"kind":"restore-g1-runtime-source", "apply":True}
-try: r.validate_request({"kind":"restore-g1-runtime-source", "apply":True, "path":"/mnt/blueprint-work"})
-except r.RequestRefused as e: assert e.code == "request_key_unknown:path"
-else: raise AssertionError("caller path admitted for the G1 runtime source restore")
-# So does the owner-approved pi0.5 G1 language file restore ("lets do option 2", 2026-11-07), as plan and apply.
-assert r.required_scope("restore-g1-pi-language-assets") == "operate"
-assert r.validate_request_id("20261107T000000Z-restore-g1-pi-language-assets-0123abcd")
-assert r.validate_request({"kind":"restore-g1-pi-language-assets"}) == {"kind":"restore-g1-pi-language-assets", "apply":False}
-assert r.validate_request({"kind":"restore-g1-pi-language-assets", "apply":True}) == {"kind":"restore-g1-pi-language-assets", "apply":True}
-try: r.validate_request({"kind":"restore-g1-pi-language-assets", "apply":True, "bundle":"/var/lib/blueprint/x.zip"})
-except r.RequestRefused as e: assert e.code == "request_key_unknown:bundle"
-else: raise AssertionError("caller bundle admitted for the G1 language file restore")
 # So does the owner-approved retirement of one parked preparation delivery, as plan and as apply.
 assert r.required_scope("retire-parked-delivery") == "operate"
 assert r.validate_request_id("20261106T000000Z-retire-parked-delivery-0123abcd")

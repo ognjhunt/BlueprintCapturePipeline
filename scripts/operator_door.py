@@ -19,8 +19,6 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py release-hold blueprint-scene-progression.timer
     python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
     python3 scripts/operator_door.py legacy-owner-census --wait
-    python3 scripts/operator_door.py restore-g1-runtime-source [--apply] --wait
-    python3 scripts/operator_door.py restore-g1-pi-language-assets [--apply] --wait
     python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
         --approval-evidence "<owner approval>" [--apply] --wait
     python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
@@ -415,7 +413,6 @@ def _terminal(state: dict[str, Any]) -> bool | None:
             "install-public-franka-policy": "public_policy_registered",
             "install-public-trlc-policy": "public_policy_registered",
             "install-scripted-robot-baselines": "public_policy_registered",
-            "install-native-g1-policies": "public_policy_registered",
         }.get(kind)
         if public_disposition is not None:
             # Only the bounded enqueue/registration completed, not a simulation.
@@ -737,12 +734,7 @@ def _embodiment_preparation_request(path: str, *, public_policy: str | None = No
                 "preparation_publication_digest", "candidate_id", "team_id", "checkpoint_id", "policy_profile",
                 "expected_registry_digest", "authorization_reference", "request_digest"}
             schema, id_key = "openwam_piper_policy_install_request.v1", "installation_id"
-            if public_policy == "g1":
-                schema = "native_g1_policy_install_request.v1"
-                fields = {"schema_version", "installation_id", "release_commit", "site_id", "source", "candidates",
-                    "publisher_source", "runtime_source", "shared_registry_digest", "expected_registry_digest",
-                    "authorization_reference", "request_digest"}
-            elif public_policy == "yam":
+            if public_policy == "yam":
                 schema = "molmoact2_yam_policy_install_request.v1"
             elif public_policy == "franka":
                 schema = "openwam_franka_policy_install_request.v1"
@@ -995,20 +987,6 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     _add_wait(confirmation, 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
-    g1_source = commands.add_parser(
-        "restore-g1-runtime-source",
-        help="plan the shared G1 runtime source packet's restore from its retained object-store copy; "
-             "--apply restores it",
-    )
-    g1_source.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
-    _add_wait(g1_source, 2 * 3600 + 600)
-    g1_language = commands.add_parser(
-        "restore-g1-pi-language-assets",
-        help="plan the pi0.5 G1 language files' restore from a verified retained bundle on the host; "
-             "--apply restores them",
-    )
-    g1_language.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
-    _add_wait(g1_language, 15 * 60 + 600)
     parked = commands.add_parser(
         "retire-parked-delivery",
         help="plan an owner-approved retirement of one parked website preparation delivery; --apply retires it",
@@ -1045,14 +1023,12 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
                                        ("install-public-yam-policy", "MolmoAct2 YAM"),
                                        ("install-public-franka-policy", "OpenWAM single-FR3"),
                                        ("install-public-trlc-policy", "community TRLC Pi0.5"),
-                                       ("install-scripted-robot-baselines", "Blueprint scripted robot baselines"),
-                                       ("install-native-g1-policies", "Native G1 site policy receipts")):
+                                       ("install-scripted-robot-baselines", "Blueprint scripted robot baselines")):
         policy_install = commands.add_parser(public_command,
             help=f"install the fixed public {public_name} registration from retained assets; launches no compute")
         policy_install.add_argument("--request-file", required=True,
             help="sealed request binding retained preparation, exact release, public policy identity and registry digest")
-        _add_wait(policy_install, 960 if public_command == "install-native-g1-policies" else
-                  660 if public_command == "install-scripted-robot-baselines" else 360)
+        _add_wait(policy_install, 660 if public_command == "install-scripted-robot-baselines" else 360)
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
     selected_modes = selected.add_mutually_exclusive_group()
@@ -1148,10 +1124,6 @@ def run(args: argparse.Namespace) -> int:
         return _submit(body, args)
     elif command == "legacy-owner-census":
         return _submit({"kind": "legacy-owner-census"}, args)
-    elif command == "restore-g1-runtime-source":
-        return _submit({"kind": "restore-g1-runtime-source", "apply": args.apply}, args)
-    elif command == "restore-g1-pi-language-assets":
-        return _submit({"kind": "restore-g1-pi-language-assets", "apply": args.apply}, args)
     elif command == "retire-parked-delivery":
         return _submit({"kind": "retire-parked-delivery", "capture": args.capture,
                         "approval_evidence": args.approval_evidence, "apply": args.apply}, args)
@@ -1161,12 +1133,12 @@ def run(args: argparse.Namespace) -> int:
         return _submit(_scene_budget_body(args), args)
     elif command == "confirm-owner-success-contract":
         return _submit(_owner_success_body(args), args)
-    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}:
+    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines"}:
         request = _embodiment_preparation_request(args.request_file,
             public_policy={"install-public-yam-policy": "yam", "install-public-piper-policy": "piper",
                            "install-public-franka-policy": "franka",
                            "install-public-trlc-policy": "trlc",
-                           "install-scripted-robot-baselines": "scripted", "install-native-g1-policies": "g1"}[command])
+                           "install-scripted-robot-baselines": "scripted"}[command])
         if not args.operation_key:
             args.operation_key = command + "-" + request["installation_id"]
         return _submit({"kind": command, "request": request}, args)
