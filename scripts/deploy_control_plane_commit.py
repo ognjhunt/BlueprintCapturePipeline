@@ -3491,6 +3491,33 @@ def _retire_unshipped_triggers(units: Sequence[str] = DEFAULT_RETIRED_TRIGGER_UN
     return [_retire_unshipped_trigger(unit) for unit in units]
 
 
+def _carry_unshipped_trigger_receipts(rows: Sequence[Mapping[str, Any]]) -> Callable[..., bool]:
+    """Attach the retirement rows to a failure raised after they ran, so its receipt shows them."""
+
+    def annotate(_type: Any, exc: BaseException | None, _traceback: Any) -> bool:
+        if exc is not None:
+            exc.unshipped_trigger_fields = {  # type: ignore[attr-defined]
+                "unshipped_trigger_retirement": _unshipped_trigger_retirement_summary(rows),
+                "unshipped_trigger_states": [dict(row) for row in rows],
+            }
+        return False
+
+    return annotate
+
+
+def _unshipped_trigger_fields(exc: BaseException | None) -> dict[str, Any]:
+    """The retirement rows a failure (or the failure it led to) carries, if any."""
+
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        fields = getattr(exc, "unshipped_trigger_fields", None)
+        if isinstance(fields, dict):
+            return dict(fields)
+        exc = exc.__cause__ or exc.__context__
+    return {}
+
+
 def _unshipped_trigger_retirement_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """The release's account of the retired triggers: turned off, already off, absent, failed."""
 
@@ -5727,6 +5754,13 @@ def deploy_control_plane_commit(
         agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
             expected_commit=source_commit
         )
+        # Every refusal has passed; nothing has switched yet. A legacy trigger
+        # left on would fire on the new code mid-release and fail, so triggers
+        # this repository no longer ships go off first. A rollback leaves them
+        # off (the previous release does not ship them either) and its failure
+        # carries their rows.
+        unshipped_trigger_receipts = _retire_unshipped_triggers(DEFAULT_RETIRED_TRIGGER_UNITS)
+        pause.push(_carry_unshipped_trigger_receipts(unshipped_trigger_receipts))
         _move_source_checkout(source, source_commit)
         # A termination here must not strand the new active link with old
         # services. The CLI defers SIGTERM until the release is proven live.
@@ -5857,9 +5891,6 @@ def deploy_control_plane_commit(
                 defer_start_verification=True,
                 disarm_units=DEFAULT_PAUSED_LANE_DISARM_UNITS,
             )
-            # Beside the paused-lane disarm: triggers this repository no
-            # longer ships are stopped and disabled if the host still has them.
-            unshipped_trigger_receipts = _retire_unshipped_triggers(DEFAULT_RETIRED_TRIGGER_UNITS)
         verification_warning = _verify_deferred_path_unit_starts(
             automation_unit_state_receipts, door_holds_dir=door_holds_dir,
         )
@@ -6416,6 +6447,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
         if isinstance(exc, UntrustedDeploySourceError):
             blocked["remedy"] = exc.remedy
+        blocked.update(_unshipped_trigger_fields(exc))
         if str(exc) == 'deploy_scene_retirement_store_unsafe':
             store_diagnostic = _scene_retirement_store_diagnostic(getattr(exc, 'store_diagnostic', None))
             if store_diagnostic is not None:

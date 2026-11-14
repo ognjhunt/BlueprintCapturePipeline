@@ -1295,11 +1295,28 @@ def test_a_release_retires_unshipped_triggers_idempotently(tmp_path, monkeypatch
     retire = deploy._retire_unshipped_triggers
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
     systemctl, calls = _fake_retired_systemd(states)
+    staged = {"source_commit": "d" * 40, "release_path": str(tmp_path / "release"), "created_release_checkout": True}
+
+    def stage(**kwargs):
+        if kwargs["activate"]:
+            calls.append(("release_switch",))
+        return staged
+
     monkeypatch.setattr(deploy, "_retire_unshipped_triggers", retire)
+    monkeypatch.setattr(deploy, "_move_source_checkout", lambda *_args: calls.append(("source_checkout_moved",)))
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release", stage)
+    monkeypatch.setattr(deploy, "_restore_installed_path_units",
+                        lambda _installed, **_kwargs: calls.append(("triggers_restored",)) or [])
     monkeypatch.setattr(deploy.subprocess, "run", systemctl)
     receipt = deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
 
     assert receipt["status"] == "deployed"
+    # Retired before the source checkout moves and the release link switches, once, never at the end.
+    order = [call[0] if len(call) == 1 else call[1] for call in calls]
+    assert order.index("disable") < order.index("source_checkout_moved") < order.index("release_switch")
+    assert max(i for i, verb in enumerate(order) if verb in {"stop", "disable"}) < order.index("release_switch")
+    assert order.count("disable") == 2 and order[-1] == "triggers_restored"
+    calls[:] = [call for call in calls if len(call) > 1]
     assert receipt["unshipped_trigger_retirement"] == {
         "status": "retired", "retired": [timer], "already_off": [path_on],
         "absent": ["blueprint-capture-reconstruction-dispatcher.timer"], "failed": [],
@@ -1318,6 +1335,42 @@ def test_a_release_retires_unshipped_triggers_idempotently(tmp_path, monkeypatch
     again = deploy._unshipped_trigger_retirement_summary(deploy._retire_unshipped_triggers())
     assert again["status"] == "retired" and again["retired"] == [] and again["failed"] == []
     assert again["already_off"] == [timer, path_on]
+
+
+def test_a_release_refused_before_the_switch_leaves_retired_triggers_alone(tmp_path, monkeypatch) -> None:
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", lambda _units: pytest.fail("retired on a refusal"))
+
+    def refuse(*_args, **_kwargs):
+        raise deploy.ControlPlaneDeployError("deploy_agent_execution_drain_refused")
+
+    monkeypatch.setattr(deploy, "_drain_agent_execution_before_release_switch", refuse)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="drain_refused") as raised:
+        deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+    assert deploy._unshipped_trigger_fields(raised.value) == {}
+
+
+def test_a_release_failing_after_the_switch_keeps_the_retired_triggers_off_and_reports_them(tmp_path, monkeypatch) -> None:
+    timer = deploy.DEFAULT_RETIRED_TRIGGER_UNITS[0]
+    states = {unit: None for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS}
+    states[timer] = {"enabled": "enabled", "state": "active"}
+    retire = deploy._retire_unshipped_triggers
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    systemctl, calls = _fake_retired_systemd(states)
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", retire)
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+
+    def unproven(*_args, **_kwargs):
+        raise deploy.ControlPlaneDeployError("deploy_intake_runtime_unproven")
+
+    monkeypatch.setattr(deploy, "_verify_intake_runtime", unproven)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="unproven") as raised:
+        deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+    fields = deploy._unshipped_trigger_fields(raised.value)
+    assert fields["unshipped_trigger_retirement"]["retired"] == [timer]
+    assert [row["unit"] for row in fields["unshipped_trigger_states"]] == list(deploy.DEFAULT_RETIRED_TRIGGER_UNITS)
+    assert states[timer] == {"enabled": "disabled", "state": "inactive"}
+    assert not [call for call in calls if call[1] in {"enable", "start", "restart"}]
 
 
 def test_a_retired_trigger_systemctl_cannot_stop_is_reported_not_raised(monkeypatch) -> None:
