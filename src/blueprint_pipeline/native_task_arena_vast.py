@@ -713,7 +713,11 @@ def run_native_task_arena_policy_canary_session_vast(
 
         pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
         groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
+        openwam = prepared_bundle.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}
         download_bytes, upload_bytes = pi_download + groot_download + witness_capacity, 8_000_000_000 + witness_capacity
+        if openwam:
+            from .team_local_policy import openwam_bundle_for_interface
+            download_bytes, upload_bytes = openwam_bundle_for_interface(prepared_bundle["team_policy_interface_id"]).transfer_byte_budget(prepared_bundle)
         with landing:
             result = run_arena_native_control_vast(
             **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
@@ -746,8 +750,8 @@ def run_native_task_arena_policy_canary_session_vast(
             ),
             vast_launch_lock_file=None,
             candidate_policy_query_expected=True,
-            forward_hf_token=True,
-            preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
+            forward_hf_token=not openwam,
+            preferred_gpu_keywords=(("A100", "H100", "H200") if openwam else ("L40S", "RTX 6000 Ada", "RTX A6000")),
             minimum_driver_version=MINIMUM_DRIVER_VERSION,
             require_independent_watchdog=True,
             allowed_geolocation_country_codes=(

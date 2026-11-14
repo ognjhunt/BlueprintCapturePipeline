@@ -102,10 +102,16 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
     minimum_gpu_ram_mb(payload)
     shape = _shape(payload)
     candidates = payload.get("candidate_ids")
+    openwam = payload.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}
     scripted = (payload.get("team_policy_interface_id") == "blueprint_scripted_pick_place.v1"
                 and payload.get("model_delivery") == "scripted_in_process"
                 and payload.get("learned_policy_rollout_count") == 0
                 and payload.get("scripted_rollout_count") == payload.get("episodes_per_policy"))
+    if openwam:
+        from .team_local_policy import openwam_bundle_for_interface
+        openwam_bundle_for_interface(payload["team_policy_interface_id"]).validate_runtime_contract(payload.get("openwam_runtime") or {})
+        if minimum_gpu_ram_mb(payload) < 80_000:
+            raise ValueError("openwam_gpu_memory_floor_invalid")
     if (SCRIPTED in candidate_execution_kinds(payload).values()) != scripted:
         raise ValueError("scripted_policy_manifest_execution_kind_mismatch")
     if shape is BETA_SHAPE:
@@ -122,7 +128,7 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
         ) if family else (
             (("team_credential_env" not in payload and isinstance(candidates, list) and candidates
               and candidates[0] in [*PAIR, *BETA_POLARIS_VARIANT_CANDIDATE_IDS])
-             or (scripted and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
+             or ((openwam or scripted) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
              or (payload.get("team_policy_interface_id") in {
                      "openpi_droid_https.v1", "blueprint_policy_https.v1", "dreamlabs_dream1.v1"}
                  and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
@@ -183,6 +189,15 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
         required = {f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json"}
         if manifest.get("team_policy_interface_id") == "blueprint_scripted_pick_place.v1":
             required.add("provider_runtime/blueprint_pipeline/policy_execution_evidence.py")
+        if manifest.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
+            from .team_local_policy import openwam_bundle_for_interface
+            selected = openwam_bundle_for_interface(manifest["team_policy_interface_id"])
+            contract = selected.validate_runtime_contract(manifest["openwam_runtime"])
+            required.update("provider_runtime/blueprint_pipeline/" + name for name in selected.RUNTIME_MODULES)
+            required.update("provider_runtime/" + name for name in contract["required_entries"])
+            required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
+                             "provider_runtime/adp009d_policy_server_worker.py",
+                             "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py"})
         if candidate in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
             from .adp009d_policy_provisioning import CHECKPOINT_INVENTORY_STAGED_NAME
             required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
@@ -230,6 +245,9 @@ def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: s
         valid = ("blueprint_beta_screening" in entrypoint_text
                  and "adp_arena_provider_runner.py" in entrypoint_text
                  and "trap teardown_servers EXIT INT TERM HUP" in entrypoint_text)
+        if manifest.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
+            valid = valid and ('openwam_client:$RUNTIME_DIR' in entrypoint_text
+                               and '--terminate-ready-server' in entrypoint_text)
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             valid = valid and 'export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"' in entrypoint_text
     elif _shape(manifest) is not TEAM_SHAPE:

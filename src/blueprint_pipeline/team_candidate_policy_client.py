@@ -43,9 +43,29 @@ def _bearer_token(credential_env: str) -> str | None:
 def canary_policy_client(spec: Mapping[str, Any], *,
                          groot_worker_identity_receipt: Mapping[str, Any] | None = None) -> Any:
     interface = resolve_policy_interface(spec)
+    if interface == "openwam_franka_eef10.v1":
+        from .openwam_piper_client_dependencies import activate_client_dependencies
+        from .openwam_franka_policy import OpenWAMFrankaPolicyClient
+        from .openwam_franka_runtime import policy_binding, validate_execution_spec
+
+        validate_execution_spec(spec)
+        activate_client_dependencies()
+        client = OpenWAMFrankaPolicyClient(binding=policy_binding(spec["policy_spec"]))
+        client.execution_binding_digest = spec["execution_spec_digest"]
+        return client
     if interface == "blueprint_scripted_pick_place.v1":
         from .scripted_robot_runtime_dispatch import client_for_spec
         client = client_for_spec(spec)
+        client.execution_binding_digest = spec["execution_spec_digest"]
+        return client
+    if interface == "openwam_piper_eef20.v1":
+        from .openwam_piper_client_dependencies import activate_client_dependencies
+        from .openwam_piper_policy import OpenWAMPiperPolicyClient
+        from .openwam_piper_runtime import policy_binding, validate_execution_spec
+
+        validate_execution_spec(spec)
+        activate_client_dependencies()
+        client = OpenWAMPiperPolicyClient(binding=policy_binding(spec["policy_spec"]))
         client.execution_binding_digest = spec["execution_spec_digest"]
         return client
     if interface == "task_family_policy_https.v1":

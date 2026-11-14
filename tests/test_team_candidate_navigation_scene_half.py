@@ -187,13 +187,14 @@ def test_build_planning_inputs_robot_free_gate_admits_the_navigation_receipt(inp
     assert scene["scene_revision_digest"] == record["scene_revision_digest"]
     sealed = json.loads(Path(scene["scene_inputs"]["path"]).read_text())
     assert sealed["beta_robot_free_probe_receipt"] == receipt and sealed["beta_task_kind"] == "goal_region_navigation"
-    # With no G1 registration in this profile, nothing is bound or quoted; the G1 rows say why.
+    # The G1 lane is removed: a walking job keeps its robot-free scene, nothing is bound or quoted,
+    # and the G1 rows say why.
     capabilities = planning["capabilities"]
     assert capabilities["candidate_bindings"] == {} and planning["cost_quotes"] == {}
     assert {key: value for key, value in capabilities["candidate_blockers"].items() if key.startswith("humanoidarena_")} \
         == dict.fromkeys(("humanoidarena_dp_g1_dex3_sonic", "humanoidarena_pi05_g1_dex3_sonic",
                           "humanoidarena_dp_g1_dex3_sonic_vision_navi", "humanoidarena_pi05_g1_dex3_sonic_vision_navi"),
-                         ["g1_beta_scene_packet_missing"])
+                         ["g1_beta_screening_lane_removed"])
 
 
 def test_build_planning_inputs_holds_a_navigation_scene_whose_probe_failed(inputs, tmp_path, monkeypatch) -> None:
