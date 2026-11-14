@@ -1,8 +1,8 @@
 # Blueprint Autonomous Organization Guide
 
 > **History moved, 2026-11-12.** The org description that was here (a mirror
-> of the WebApp file) is now `docs/archive/2026-11-12-pre-packet/AUTONOMOUS_ORG.md`. Read it only for
-> history.
+> of the WebApp file) is in git history (`docs/archive/2026-11-12-pre-packet/AUTONOMOUS_ORG.md`,
+> removed 2026-11-14). Read it only for history.
 
 ## What is current
 
