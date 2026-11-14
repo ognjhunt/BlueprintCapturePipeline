@@ -161,9 +161,6 @@
     "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py": [
       "tests/test_semantic_teacher_image_edit_vast.py"
     ],
-    "src/blueprint_pipeline/simready_cad_agent_host_import.py": [
-      "tests/test_simready_cad_agent_host_import.py"
-    ],
     "src/blueprint_pipeline/simulation_automation.py": [
       "tests/test_simulation_automation.py"
     ],
@@ -298,7 +295,6 @@
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
     "src/blueprint_pipeline/scene_asset_preflight.py": 2213,
     "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py": 2517,
-    "src/blueprint_pipeline/simready_cad_agent_host_import.py": 2217,
     "src/blueprint_pipeline/simulation_automation.py": 3804,
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py": 4378,
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4648,
