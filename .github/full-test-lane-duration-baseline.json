@@ -1,6 +1,6 @@
 {
   "default_seconds_per_test": 0.250656326,
-  "file_count": 2252,
+  "file_count": 2251,
   "files": [
     {
       "duration_seconds": 0.05,
@@ -5891,11 +5891,6 @@
       "duration_seconds": 6.31,
       "path": "tests/test_policy_evaluation_contracts.py",
       "test_count": 26
-    },
-    {
-      "duration_seconds": 0.428,
-      "path": "tests/test_policy_improvement_run.py",
-      "test_count": 12
     },
     {
       "duration_seconds": 0.545,
@@ -12362,6 +12357,6 @@
   "source_junit_sha256": "457d4512db4021477c9cdb91a801f5b639a4e48b43fe574ba3d527b60700251a",
   "source_repository_sha": "e9af5888afc5efa25dfcfc8742fcfed1e30e7ffd",
   "source_run_id": 38193701899,
-  "test_count": 34349,
-  "total_duration_seconds": 8643.698
+  "test_count": 34337,
+  "total_duration_seconds": 8643.27
 }
