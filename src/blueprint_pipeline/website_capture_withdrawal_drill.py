@@ -335,7 +335,7 @@ def run_drill(work: Path, *, vector_path: Path = DEFAULT_VECTOR) -> dict[str, An
 def _run_drill(work: Path, *, vector_path: Path) -> dict[str, Any]:
     from . import website_capture_withdrawal as withdrawal
     from . import website_capture_withdrawal_deletion as deletion
-    from .beta_policy_screening_worker import require_current_source
+    from .scene_stage_maintenance import require_current_source
     from .team_scene_capture_root import (
         CAPTURE_PARTITION_ENV,
         TeamScenePacketRequestRefused,

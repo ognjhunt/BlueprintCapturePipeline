@@ -317,48 +317,6 @@ def _qualified_world(tmp_path, monkeypatch):
     return world, receipt
 
 
-def test_qualified_team_run_rehearsal_carries_exact_evidence_from_admission_to_result(tmp_path, monkeypatch):
-    from tests.test_team_candidate_quick10_launch import _staged_run_reported
-    world, receipt = _qualified_world(tmp_path, monkeypatch)
-    staged, reported = _staged_run_reported(world)
-    assert staged["staged"] == reported["completed"] == 1, (staged, reported, world["client"].posted)
-    admission = json.loads((world["job_dir"] / "team_candidate_admission.json").read_text())
-    assert admission["evidence_scope"] == "simulation"
-    assert admission["site_task_qualification_receipt"] == receipt
-    result = world["client"].posted[0][1]
-    assert result["episodes_run"] == 200
-    assert result["scoring"]["claim_ceiling"] == "site_task_simulation"
-    assert result["scoring"]["site_task_qualification"] == receipt["qualification"]
-    # The inner worker's diagnostic scope is intentionally retained unchanged.
-    inputs = json.loads(next(world["job_dir"].glob("shards/*/stage-*/runtime_inputs/policy_canary_runtime_inputs.json")).read_text())
-    assert inputs["claim_ceiling"] == "diagnostic_policy_execution"
-
-
-def test_qualified_source_drift_refuses_before_releasing_credentials(tmp_path, monkeypatch):
-    from tests.test_team_candidate_quick10_launch import _Broker
-    from blueprint_pipeline import agent_run_executor as executor
-    world, _ = _qualified_world(tmp_path, monkeypatch)
-    (tmp_path / "qualification" / "capture.mp4").write_bytes(b"altered raw capture")
-    result = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert result["blocked"] == 1 and result["completed"] == 0
-    assert world["client"].blocked == ["site_task_qualification_capture_original_changed"]
-    assert not _Broker.leases and not world["allocator_calls"]
-
-
-def test_qualified_source_drift_at_closeout_cannot_report_recommendation_evidence(tmp_path, monkeypatch):
-    from blueprint_pipeline import agent_run_executor as executor
-    from blueprint_pipeline import team_candidate_quick10_launch as launch
-    world, _ = _qualified_world(tmp_path, monkeypatch)
-    staged = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert staged["staged"] == 1
-    (tmp_path / "qualification" / "capture.mp4").write_bytes(b"altered after admission")
-    launch.run_queue(world["queue"], hooks=world["runner"])
-    reported = executor.poll_once(client=world["client"], capture_root=world["capture"], team_launch_hooks=world["hooks"])
-    assert reported["completed"] == 0
-    assert not any(payload.get("scoring", {}).get("claim_ceiling") == "site_task_simulation"
-                   for _path, payload in world["client"].posted)
-
-
 def test_publication_is_explicit_and_requires_exact_acknowledgement(tmp_path):
     from blueprint_pipeline.site_task_simulation_qualification import publish_receipt
     receipt = qualify_from_profile(fixture(tmp_path), now=NOW)

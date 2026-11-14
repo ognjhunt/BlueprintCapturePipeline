@@ -840,7 +840,7 @@ def apply_withdrawal_deletion(*, capture_root: Path, expected_plan_digest: str,
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise WithdrawalDeletionError("website_withdrawal_deletion_company_simulation_busy") from None
-        from .beta_screening_review_videos import DIRNAME as REVIEW_VIDEOS, LOCK_NAME as REVIEW_LOCK
+        from .screening_retained_ledger import REVIEW_VIDEOS_DIRNAME as REVIEW_VIDEOS, REVIEW_VIDEOS_LOCK_NAME as REVIEW_LOCK
         for path in sorted(site.glob(f"captures/*/pipeline/{REVIEW_VIDEOS}/{REVIEW_LOCK}")):
             _require(not any(item.is_symlink() for item in (path, *path.parents)), "unsafe_entry")
             try:

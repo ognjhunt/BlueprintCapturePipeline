@@ -109,37 +109,6 @@ def _rigid_verdict_and_fit(*, preparation: Mapping[str, Any], collision_path: Pa
                                          collision_path=collision_path)
 
 
-def _robot_fit_precheck(*, preparation: Mapping[str, Any], verdict: Mapping[str, Any] | None,
-                        collision_path: Path, native_root: Path) -> dict[str, Any]:
-    """Whether a robot the screening catalog runs can do the task in this room (``website_robot_fit_precheck``).
-
-    It fails open: a failure is recorded as ``unknown`` and the handoff goes on, since only a ``no_fit``
-    the late checks would also make holds the job. A lost handoff lease stops it, as it stops every write.
-    """
-    try:
-        from .website_robot_fit_hold import team_registry_state
-        from .website_robot_fit_precheck import FILENAME, registered_team_bodies, robot_fit_precheck
-        registry, registry_digest = team_registry_state()
-        try:
-            bodies, flags = (registered_team_bodies(registry) if registry is not None else {}), []
-        except (OSError, ValueError, KeyError, TypeError):
-            bodies, registry_digest = {}, "unreadable"
-        if registry_digest == "unreadable":
-            # The operator's team registry did not read: its bodies stay unknown, never refused.
-            flags = ["team_registry_unreadable"]
-        value = robot_fit_precheck(preparation=preparation, collision_path=collision_path, verdict=verdict,
-                                   team_bodies=bodies, team_registry_digest=registry_digest)
-        write_json(native_root / FILENAME, value)
-        # What a hold was decided against rides on the handoff, so a change reruns it (website_robot_fit_hold).
-        return {"path": str(native_root / FILENAME), "digest": value["precheck_digest"], "status": value["status"],
-                "hold_reason": value["hold_reason"], "counts": value["counts"],
-                "recheck_inputs": value["recheck_inputs"], **({"flags": flags} if flags else {})}
-    except HandoffLeaseError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - unknown never holds a job; this is recorded
-        return {"status": "unknown", "hold_reason": None, "error": type(exc).__name__}
-
-
 def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
                             native_root: Path) -> dict[str, Any]:
     """Where a geometry-only job ends: the capability verdict and the robot fit table, CPU only.
@@ -295,14 +264,13 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
 
     Runtime inputs (unless the caller already made them), the collision and
     appearance stages, the construction inputs, the rights admission and the
-    capability verdict, with the informational robot fit table beside it, and
-    the robot fit precheck (``website_robot_fit_precheck``). The
+    capability verdict, with the informational robot fit table beside it. The
     handoff and a renewal re-issue
     (``website_preparation_renewal``) share it, so the inputs bound to a
     preparation's digest cannot drift between them. Records into ``result``
     and returns whether the preparation may be registered: intake ready,
-    appearance authored and no support hold. The capability verdict and the
-    robot fit precheck are recorded and never hold the job.
+    appearance authored and no support hold. The capability verdict is
+    recorded and never holds the job.
     """
     if runtime_inputs is None:
         runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base_scene,
@@ -356,14 +324,6 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
                 # An abstained verdict (no enabled arm, no clear stance found, or the object beyond reach
                 # from every stance it found) is a judgement about the outcome: recorded, never a stop. It
                 # travels as ``scene_estimate:capability_unassessed`` (``atlas_scene_estimates``).
-            # Before ARTISAN and the GPU scene build: whether a catalog robot can do the task here, on paper.
-            # Recorded for the site's first look; it never holds the job (below).
-            precheck = _robot_fit_precheck(preparation=preparation, verdict=verdict, collision_path=collision,
-                                           native_root=native_root)
-        # The precheck is recorded exactly as before (the site's first look reads it), and it never stops the
-        # job (owner, 2026-11-11: the test runs even when no robot fits on paper). A ``no_fit`` travels with
-        # the job as ``scene_estimate:robot_fit_none:<cause>`` (``atlas_scene_estimates.preparation_flags``).
-        result["robot_fit_precheck"] = precheck
         if isinstance(support_hold, str):
             # The object cannot rest where it is scored on the collider the scene would seal: no stage of it
             # can be scored, so nothing is registered, enqueued or paid for (``website_support_pad``).

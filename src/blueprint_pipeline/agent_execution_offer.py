@@ -23,15 +23,8 @@ nothing, so no self-serve run can be bought against it.
 Publishing is best-effort and never fails the simulation lane: a missing offer
 fails closed on the WebApp side (the plan stays unpayable).
 
-Beta L5: when the scene has a team evaluation profile, the offer instead lists
-the team evaluation (``team_evaluation_plan``): 200 hidden cells, listed only
-while :func:`team_candidate_quick10_registry.offer_eligibility` holds, with the
-reason when it does not. It also carries the public evaluation contract a team
-builds against: the instruction, the sealed success contract, the variation
-families and their bounds, and the policy interfaces. No scene geometry,
-footage or site identity is in it.
-Otherwise the ordinary offer is published, so a team listing never outlives
-its eligibility.
+The team evaluation listing of Blueprint's own early trial left with the trial
+(owner, 2026-11-14).
 """
 
 from __future__ import annotations
@@ -106,108 +99,6 @@ def build_agent_execution_offer(capture_root: Path, *, policy_execution_profiles
     }, None
 
 
-def _evaluation_contract(facts: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
-    """What a team is asked to do and how it is judged; nothing about the site's geometry."""
-    from .droid_https_policy_client import (
-        IMAGE_KEYS,
-        INTERFACE_ID,
-        STATE_KEYS,
-        SUPPORTED_ACTION_CHUNK_ROWS,
-    )
-    from .team_embodiment import BASE_MODES, CONTROL_HZ, FORMS, MAX_ACTION_CHUNK_ROWS
-    from .team_embodiment import ROBOT_ID as TEAM_ROBOT_ID
-    from .team_embodiment import SCHEMA as EMBODIMENT_SCHEMA
-    from .team_evaluation_plan import EPISODES, SCORED_FAMILY_SHARES, variation_bounds
-    from .team_policy_https_client import INTERFACE_ID as TEAM_ROBOT_INTERFACE
-    from .team_policy_https_client import METADATA_SCHEMA as TEAM_METADATA_SCHEMA
-    from .dreamlabs_policy_client import ENDPOINT_URL as DREAM_ENDPOINT, METADATA_URL as DREAM_METADATA
-    from .dreamlabs_policy_client import INTERFACE_ID as DREAM_INTERFACE, SDK_VERSION, SDK_WHEEL_SHA256
-
-    scene = facts["scene"]
-    task_spec = scene.get("task_spec") if isinstance(scene.get("task_spec"), Mapping) else {}
-    bounds = variation_bounds(task_spec, task_kind=str(task_spec.get("task_kind") or ""),
-                              nominal_dynamic_friction=profile.get("nominal_dynamic_friction"))
-    return {
-        "schema_version": "blueprint.team_evaluation_contract.v1",
-        "task_kind": task_spec.get("task_kind"), "instruction": facts["prompt"],
-        "task_success_contract": scene["task_success_contract"],
-        # Paused per-cell controls are disclosed, never dropped silently (team_candidate_quick10_registry).
-        **({"diagnostic_control_omission_authority": scene["diagnostic_control_omission_authority"]}
-           if scene.get("diagnostic_control_omission_authority") is not None else {}),
-        "scored": {"episodes": EPISODES["scored"], "cells_published": False,
-                   "families": [name for name, _ in SCORED_FAMILY_SHARES],
-                   "parameter_bounds": {name: list(value) for name, value in sorted(bounds.items())}},
-        # A team brings a policy for Blueprint's DROID Franka, or for its own robot and cameras.
-        "policy_interfaces": [
-            {"policy_interface_id": INTERFACE_ID, "embodiment_preset_id": scene["embodiment_preset_id"],
-             "observation": {"images": list(IMAGE_KEYS), "image_size": [224, 224],
-                             "state": list(STATE_KEYS), "prompt": True},
-             "action": {"space": "joint_position", "dimension": 8, "control_hz": 15,
-                        "chunk_rows": sorted(SUPPORTED_ACTION_CHUNK_ROWS)},
-             "request_timeout_seconds": 30, "authentication": "bearer"},
-            {"policy_interface_id": DREAM_INTERFACE, "embodiment_preset_id": TEAM_ROBOT_ID,
-             "embodiment_schema": "blueprint.robot_embodiment.v2", "forms": ["bimanual_arm"], "base_modes": ["fixed"],
-             "endpoint_url": DREAM_ENDPOINT, "metadata_url": DREAM_METADATA,
-             "model_identity_basis": "provider_metadata", "weights_identity_verified": False,
-             "required_policy_config": ["model_id", "camera_roles"],
-             "observation": {"camera_roles": ["overhead", "wrist_l", "wrist_r"],
-                             "encoding": "jpeg_base64", "image_size": [320, 176], "jpeg_quality": 85,
-                             "history_hz": 5, "history_frames_max": 9, "synthetic_history_padding": False,
-                             "state": "named_arm_tcp_in_each_arm_base", "prompt": True},
-             "action": {"space": "named_arm_pose", "frame": "arm_base", "arm_names": ["left", "right"],
-                        "action_hz": 20, "control_hz": 60, "chunk_rows": [1, 48], "grippers": "independent_closures"},
-             "sdk_contract_version": SDK_VERSION, "sdk_wheel_sha256": SDK_WHEEL_SHA256,
-             "sdk_recording_enabled": False, "provider_inference_retention": "not_established", "request_timeout_seconds": 15, "authentication": "bearer",
-             "task_kinds": ["rigid_pick_place"]},
-            {"policy_interface_id": TEAM_ROBOT_INTERFACE, "embodiment_preset_id": TEAM_ROBOT_ID,
-             "embodiment_schema": EMBODIMENT_SCHEMA, "forms": list(FORMS), "base_modes": list(BASE_MODES),
-             "robot_start": {"fixed": "scene_robot_station_declared_reach_must_cover_task",
-                             "free": "closest_clear_floor_stance_facing_task_falling_fails_episode"},
-             "observation": {"images": "one_png_per_declared_camera",
-                             "state": ["joint_position", "joint_velocity", "gripper_position", "base"],
-                             "prompt": True},
-             "action": {"space": "joint_targets",
-                        "row": "one_value_per_declared_joint_position_or_wheel_velocity_then_gripper_closure_0_to_1",
-                        "control_hz": list(CONTROL_HZ), "chunk_rows": [1, MAX_ACTION_CHUNK_ROWS]},
-             "metadata_schema": TEAM_METADATA_SCHEMA, "task_kinds": ["rigid_pick_place"],
-             "request_timeout_seconds": 30, "authentication": "bearer"},
-        ],
-    }
-
-
-def build_team_candidate_offer(capture_root: Path) -> tuple[dict[str, Any] | None, str | None]:
-    """The team evaluation offer (200 scored cells), or ``(None, reason)`` when it may not be listed."""
-    from .team_candidate_quick10_registry import offer_eligibility, profile_for_capture
-    from .team_evaluation_plan import EPISODES, PROFILES, PURPOSES, SCORED
-
-    root = Path(capture_root).resolve()
-    descriptor = _read_object(root / "capture_descriptor.json") or {}
-    scene_id = str(descriptor.get("scene_id") or "").strip()
-    capture_id = str(descriptor.get("capture_id") or "").strip()
-    if not scene_id or not capture_id or root.name != capture_id or root.parent.parent.name != scene_id:
-        return None, "capture_root_identity_mismatch"
-    try:
-        profile = profile_for_capture(root)
-    except (OSError, ValueError) as exc:
-        return None, str(exc) or "team_candidate_registry_invalid"
-    listing: dict[str, Any] = {}
-    facts = None
-    for purpose in PURPOSES:
-        purpose_facts, blockers = offer_eligibility(profile, purpose)
-        facts = facts or purpose_facts
-        listing[purpose] = {"profile": PROFILES[purpose], "episodes": EPISODES[purpose],
-                            "available": purpose_facts is not None, "reason": None if purpose_facts else blockers[0]}
-    if facts is None:
-        return None, listing[SCORED]["reason"]
-    return {
-        "schema_version": OFFER_SCHEMA_VERSION, "scene_id": scene_id, "capture_id": capture_id,
-        "capture_root": str(root), "scenario_id": str(profile["scenario_id"]), "episode_count": EPISODES[SCORED],
-        "episode_specs_sha256": facts["episode_specs_sha256"],
-        "policy_execution_profiles": [row["profile"] for row in listing.values() if row["available"]],
-        "team_evaluation": {**listing, "contract": _evaluation_contract(facts, profile)},
-    }, None
-
-
 def publish_agent_execution_offer(capture_root: Path, *, transport=None,
                                   policy_execution_profiles: tuple[str, ...] = ()) -> dict[str, Any]:
     """Post the offer for a website capture. Never raises; records the outcome."""
@@ -218,13 +109,7 @@ def publish_agent_execution_offer(capture_root: Path, *, transport=None,
     if not is_website_entry_source(metadata.get("capture_entry_source")) or not request_id:
         result: dict[str, Any] = {"status": "skipped", "reason": "not_a_website_capture"}
     else:
-        try:
-            offer, team_refusal = build_team_candidate_offer(root)
-        except Exception as exc:  # noqa: BLE001 - publishing must not fail the lane
-            offer, team_refusal = None, "team_candidate_offer_unavailable:" + type(exc).__name__
-        reason = None
-        if offer is None:
-            offer, reason = build_agent_execution_offer(root, policy_execution_profiles=policy_execution_profiles)
+        offer, reason = build_agent_execution_offer(root, policy_execution_profiles=policy_execution_profiles)
         if offer is None:
             result = {"status": "skipped", "reason": reason}
         else:
@@ -239,8 +124,6 @@ def publish_agent_execution_offer(capture_root: Path, *, transport=None,
                 result = {"status": "published", "offer": offer}
             except Exception as exc:  # noqa: BLE001 - publishing must not fail the lane
                 result = {"status": "failed", "reason": str(exc)[:500], "offer": offer}
-        if team_refusal is not None and team_refusal != "team_candidate_profile_missing":
-            result["team_candidate_offer_refused"] = team_refusal
     try:
         (root / PUBLICATION_RELATIVE).parent.mkdir(parents=True, exist_ok=True)
         (root / PUBLICATION_RELATIVE).write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")

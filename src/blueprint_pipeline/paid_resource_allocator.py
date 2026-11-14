@@ -29,7 +29,6 @@ from .paid_resource_admission import (
 from .paid_resource_cli_arguments import (
     add_adp_resource_arguments as _add_adp_resource_arguments,
 )
-from . import policy_canary_allocator_lane as policy_canary_lane
 from .native_task_arena_allocator_dispatch import (
     RIGID_ROBOT_FREE_PROBE_KIND, isolated_native_task_arena_lane,
 )
@@ -782,7 +781,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Native task-arena lanes whose allocator branch was removed; the
             # preparation graph still names them, and the allocator refuses them.
             *RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS,
-            policy_canary_lane.PROBE_KIND, RIGID_ROBOT_FREE_PROBE_KIND,
+            RIGID_ROBOT_FREE_PROBE_KIND,
             TASK_EVALUATION_SCENE_CONFIGURATION_PROBE_KIND,
         ),
         default="strict-policy-smoke",
@@ -812,7 +811,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--native-task-arena-construction-result",
     ):
         gpu.add_argument(retired_flag, help=argparse.SUPPRESS)
-    policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
     gpu.add_argument("--adp-job-dir")
     _add_adp_resource_arguments(gpu)
     gpu.add_argument("--scene-configuration-bundle-receipt")
@@ -913,7 +911,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 control_plane_identity_probe=_control_plane_checkout_blockers,
                 expected_source_commit_probe=_adp_expected_source_commit_blockers,
             )
-        if args.probe_kind in {policy_canary_lane.PROBE_KIND, RIGID_ROBOT_FREE_PROBE_KIND}:
+        if args.probe_kind == RIGID_ROBOT_FREE_PROBE_KIND:
             return isolated_native_task_arena_lane(args.probe_kind)(args, _control_plane_checkout_blockers())
         result = {
             "status": "blocked",

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import contextlib
-
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from .adp009d_gated_backbone import EXPECTED_TOTAL_BYTES as GROOT_BACKBONE_BYTES
-from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
 from .native_task_arena_construction_bundle import (
     PROVIDER_BUNDLE_KIND,
@@ -24,13 +21,6 @@ from .native_task_arena_destination_qualification_bundle import (
 from .native_task_arena_policy_bundle import RESULT_FILENAME as POLICY_RESULT_FILENAME
 from .native_task_arena_policy_diagnostic_bundle import (
     RESULT_FILENAME as POLICY_DIAGNOSTIC_RESULT_FILENAME,
-)
-from .native_task_arena_policy_canary_session import (
-    PROVIDER_RESULT_FILENAME as POLICY_CANARY_RESULT_FILENAME,
-    RESULT_SCHEMA_VERSION as POLICY_CANARY_RESULT_SCHEMA_VERSION,
-    consume_session_authority_once,
-    validate_provider_bundle as validate_policy_canary_provider_bundle,
-    validate_session_authority as validate_policy_canary_session_authority,
 )
 from .native_task_arena_runtime_preflight_bundle import (
     RESULT_FILENAME as RUNTIME_PREFLIGHT_RESULT_FILENAME,
@@ -106,6 +96,8 @@ def _validated_policy_provider_runtime_environment(
 def _policy_provider_transfer_byte_budget(
     candidate: str,
 ) -> tuple[int, int]:
+    from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
+
     expected = EXPECTED_CANDIDATES.get(candidate) or {}
     checkpoint_bytes = int(expected.get("checkpoint_total_bytes") or 0)
     if checkpoint_bytes <= 0:
@@ -575,220 +567,6 @@ def run_native_task_arena_policy_diagnostic_vast(
     )
 
 
-def run_native_task_arena_policy_canary_session_vast(
-    *,
-    job_dir: str | Path,
-    prepared_bundle: Mapping[str, Any],
-    session_authority: Mapping[str, Any] | None,
-    paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
-    execute: bool,
-    execution_deadline_epoch: float | None = None,
-    machine_avoidlist_path: str | Path | None = None,
-    max_hourly_rate_usd: float = 0.80,
-    hard_cap_usd: float = 4.00,
-    hard_ttl_seconds: int = 14_400,
-    allowed_active_instance_ids: Sequence[int] = (),
-    provider_runtime_environment: Mapping[str, str] | None = None,
-    pre_provider_create: Callable[[], Any] | None = None,
-) -> dict[str, Any]:
-    """Run the paired Quick-10 bundle through one canonical Vast allocation.
-
-    ``pre_provider_create`` runs inside the adapter's pre-create hook, after
-    every other check and immediately before the create request.
-    """
-
-    if session_authority is None:
-        if execute:
-            raise ValueError("policy_canary_session_authority_missing")
-        authority = None
-    else:
-        authority = validate_policy_canary_session_authority(session_authority)
-        validate_policy_canary_provider_bundle(prepared_bundle, authority=authority)
-        if (
-            float(authority["hard_cap_usd"]) != float(hard_cap_usd)
-            or int(authority["hard_ttl_seconds"]) != int(hard_ttl_seconds)
-        ):
-            raise ValueError("policy_canary_session_resource_bounds_mismatch")
-    if authority is None:
-        raise ValueError("policy_canary_session_authority_missing")
-    from .policy_canary_session_bundle_identity import minimum_gpu_ram_mb
-    memory_floor = minimum_gpu_ram_mb(prepared_bundle)
-    # Screening planning reads these same filters to refuse a floor this lane cannot rent.
-    hardware = policy_canary_session_offer_hardware(memory_floor)
-    validated_environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
-    from .beta_screening_control_delivery import runtime_control_ready_for_authority
-    runtime_control_ready = runtime_control_ready_for_authority(authority=authority, execute=execute)
-    from .native_task_arena_paired_witness_staging import build_paired_witness_binding
-    # A beta attempt contains one candidate. The paired intermediate-delivery
-    # slot reads both frozen specs and is only meaningful for the ADP pair.
-    witness_binding = (None if authority.get('run_kind') == 'blueprint_beta_screening'
-                       else build_paired_witness_binding(prepared_bundle, authority, validated_environment))
-    witness_capacity = witness_binding['maximum_archive_bytes'] if witness_binding else 0
-    # The output delivery mode is settled before the authority is consumed:
-    # an invalid mode, or streaming without the B2 store, allocates nothing.
-    # Unset is auto (stream only with a store promotion accepts and the host's
-    # needed-set measurement within budget), and every result from here on
-    # records the mode and why.
-    from . import policy_canary_output_members as output_members
-    screening = authority.get("run_kind") == "blueprint_beta_screening"
-    kept = output_members.resolved_for_attempt(job_dir) if screening else None
-    if screening and execute and kept is None:
-        # The pre-launch check's record is the only resolution a paid screening run uses: held by name, unspent.
-        return _unconsumed_policy_canary_refusal([output_members.RESOLUTION_MISSING])
-    try:
-        # A screening attempt's pre-launch check resolved it already: the same mode, never a second resolution
-        # (a dry run, which spends nothing, resolves for itself when it has no record).
-        resolved = kept or output_members.resolve_output_delivery()
-    except output_members.PolicyCanaryOutputDeliveryError as exc:
-        return _unconsumed_policy_canary_refusal([str(exc)])
-    delivery, recorded = resolved.mode, {output_members.RESOLUTION_FIELD: resolved.record()}
-    member_contract = output_hold = None
-    if delivery == output_members.STREAM:
-        # Auto streams only with the store; an explicit ``stream`` is refused here without it.
-        if not output_members.artifact_store_configured():
-            refusal = _unconsumed_policy_canary_refusal([output_members.ARTIFACT_STORE_NOT_CONFIGURED])
-            return {**refusal, **recorded}
-        member_contract = output_members.POLICY_CANARY_OUTPUT_CONTRACT
-        if execute:
-            # The needed members' forecast hold, taken before any spend (review I3).
-            from .arena_provider_output_streaming import reserve_forecast_hold
-            from .control_plane_disk_budget import ControlPlaneDiskBudgetError
-            try:
-                output_hold = reserve_forecast_hold(job_dir=job_dir, contract=member_contract)
-            except ControlPlaneDiskBudgetError as exc:
-                refusal = _unconsumed_policy_canary_refusal(["policy_canary_output_disk_admission_refused"])
-                return {**refusal, "provider_output_admission": {"status": "refused", "reason": str(exc)},
-                        **recorded}
-    elif execute and authority.get("run_kind") == "blueprint_beta_screening":
-        # A downloaded screening output's zip and expansion: room held from here, before any spend, until it
-        # lands or the run ends; the extraction's exact hold inside it does not count it twice.
-        from .beta_screening_disk_admission import reserve_landing_hold
-        from .control_plane_disk_budget import ControlPlaneDiskBudgetError
-        try:
-            output_hold = reserve_landing_hold(job_dir)
-        except ControlPlaneDiskBudgetError as exc:
-            refusal = _unconsumed_policy_canary_refusal(["policy_canary_output_disk_admission_refused"])
-            return {**refusal, "provider_output_admission": {"status": "refused", "reason": str(exc)}, **recorded}
-    outcome = "failed"
-    landing = contextlib.nullcontext()
-    if output_hold is not None and delivery != output_members.STREAM:
-        from .beta_screening_disk_admission import enclosing
-        landing = enclosing(output_hold.token)
-    try:
-        consumption = (
-            consume_session_authority_once(
-                authority,
-                consumption_path=Path(job_dir) / "policy_canary_session_consumption.json",
-            )
-            if execute
-            else None
-        )
-        if consumption is not None and consumption.get("status") != "consumed":
-            outcome = "blocked"
-            return {
-                "schema_version": POLICY_CANARY_RESULT_SCHEMA_VERSION,
-                "status": "blocked",
-                "provider_mutations_performed": 0,
-                "provider_allocations_observed": 0,
-                "retry_cap": 0,
-                "authorization_consumption": consumption,
-                "blockers": list(consumption.get("blockers") or []),
-                **recorded,
-            }
-        owner = authority.get("scene_execution_owner")
-        def owner_pre_create() -> dict[str, Any]:
-            from .task_evaluation_scene_execution_authority import require_scene_execution_authority
-            if not isinstance(owner, Mapping):
-                raise ValueError("policy_canary_scene_execution_owner_invalid")
-            require_scene_execution_authority(owner, maximum_spend_usd=hard_cap_usd, provider="vast")
-            return {"status": "consumed", "authority_digest": authority["authority_digest"],
-                    "scene_attempt_id": owner["scene_attempt_id"]}
-
-        def pre_create() -> dict[str, Any]:
-            consumed = (owner_pre_create() if "scene_execution_owner" in authority
-                        else {"status": "consumed", "authority_digest": authority["authority_digest"]})
-            if pre_provider_create is not None:
-                pre_provider_create()  # Last: a refused owner check leaves no create intent behind.
-            return consumed
-
-        pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
-        groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
-        openwam = prepared_bundle.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}
-        download_bytes, upload_bytes = pi_download + groot_download + witness_capacity, 8_000_000_000 + witness_capacity
-        if openwam:
-            from .team_local_policy import openwam_bundle_for_interface
-            download_bytes, upload_bytes = openwam_bundle_for_interface(prepared_bundle["team_policy_interface_id"]).transfer_byte_budget(prepared_bundle)
-        with landing:
-            result = run_arena_native_control_vast(
-            **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
-            pre_provider_mutation_hook=(pre_create if pre_provider_create is not None or "scene_execution_owner" in authority
-                                        else None),
-            approval_path=".",
-            job_dir=job_dir,
-            paid_resource_admission_grant=paid_resource_admission_grant,
-            execute=execute,
-            prepared_bundle=prepared_bundle,
-            machine_avoidlist_path=machine_avoidlist_path,
-            max_hourly_rate_usd=max_hourly_rate_usd,
-            hard_cap_usd=hard_cap_usd,
-            hard_ttl_seconds=hard_ttl_seconds,
-            **({"hard_deadline_epoch": execution_deadline_epoch} if execution_deadline_epoch is not None else {}),
-            expected_output_filename=POLICY_CANARY_RESULT_FILENAME,
-            container_image=str(prepared_bundle["container_image"]),
-            provider_bundle_kind=hardware["provider_bundle_kind"],
-            min_gpu_ram_mb=hardware["min_gpu_ram_mb"],
-            min_compute_cap=hardware["min_compute_cap"],
-            max_compute_cap=hardware["max_compute_cap"],
-            gpu_selection_policy=hardware["gpu_selection_policy"],
-            result_schema_version=POLICY_CANARY_RESULT_SCHEMA_VERSION,
-            object_store_key_prefix=f"{DEFAULT_KEY_PREFIX}/policy-canary-session",
-            instance_label_prefix="blueprint-native-task-policy-canary-",
-            instance_label_exact=str(authority["resource_name"]),
-            blocker_prefix="native_task_arena_policy_canary_session",
-            allowed_active_instance_ids=tuple(
-                sorted({int(value) for value in allowed_active_instance_ids})
-            ),
-            vast_launch_lock_file=None,
-            candidate_policy_query_expected=True,
-            forward_hf_token=not openwam,
-            preferred_gpu_keywords=(("A100", "H100", "H200") if openwam else ("L40S", "RTX 6000 Ada", "RTX A6000")),
-            minimum_driver_version=MINIMUM_DRIVER_VERSION,
-            require_independent_watchdog=True,
-            allowed_geolocation_country_codes=(
-                NATIVE_TASK_ARENA_ALLOWED_GEOLOCATION_COUNTRY_CODES
-            ),
-            authorization_consumption=consumption,
-            stale_offer_create_retry_limit=0,
-            expected_provider_download_bytes=download_bytes,
-            expected_provider_upload_bytes=upload_bytes,
-            provider_runtime_environment=validated_environment,
-            paired_witness_binding=witness_binding,
-            provider_output_delivery=delivery,
-            provider_output_delivery_resolution=resolved.record(),
-            provider_output_member_contract=member_contract,
-            provider_output_reservation=output_hold if delivery == output_members.STREAM else None,
-            )
-        outcome = "completed" if result.get("status") == "completed" else "blocked"
-        return result
-    finally:
-        if output_hold is not None:
-            # Released with the lane's outcome; its sample is the materialized needed set.
-            output_hold.release(outcome=outcome)
-
-
-def _unconsumed_policy_canary_refusal(blockers: list[str]) -> dict[str, Any]:
-    """A refusal before the session authority is consumed: nothing was allocated or mutated."""
-
-    return {
-        "schema_version": POLICY_CANARY_RESULT_SCHEMA_VERSION,
-        "status": "blocked",
-        "provider_mutations_performed": 0,
-        "provider_allocations_observed": 0,
-        "retry_cap": 0,
-        "blockers": blockers,
-    }
-
-
 def _run_native_task_arena_policy_vast(
     *,
     job_dir: str | Path,
@@ -934,5 +712,4 @@ __all__ = [
     "run_native_task_arena_controls_vast",
     "run_native_task_arena_policy_vast",
     "run_native_task_arena_policy_diagnostic_vast",
-    "run_native_task_arena_policy_canary_session_vast",
 ]

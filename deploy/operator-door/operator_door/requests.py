@@ -190,6 +190,7 @@ RETIRED_HOLD_UNITS = (
     "blueprint-team-evaluation-runner.path",
     "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
+    "blueprint-beta-policy-screening.timer",
 )
 EXPLICIT_RELEASE_UNITS = (DISPATCHER_HOLD_UNIT, *RETIRED_HOLD_UNITS)
 _LOG_TAIL_LINES = 200

@@ -482,7 +482,7 @@ def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_cr
     key_file = tmp_path / "vast_api_key"
     key_file.write_text("k\n")
     dispatcher = "blueprint-task-evaluation-launch-dispatcher.service"
-    canary = "blueprint-beta-policy-screening.service"
+    canary = "blueprint-pubsub-handoff-listener.service"
     units = {
         dispatcher: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file), credit.ENABLED_ENV: "true"}},
         canary: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file)}},
@@ -517,7 +517,7 @@ def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_cr
     ]
 
 
-def test_the_beta_rigid_lane_refuses_a_probe_or_screening_unit_without_the_credit_guard(tmp_path: Path) -> None:
+def test_the_beta_rigid_lane_refuses_a_probe_or_listener_unit_without_the_credit_guard(tmp_path: Path) -> None:
     """Both paid beta lanes reach the Vast adapter; the beta_rigid lane observes them, so each is checked."""
 
     from blueprint_pipeline import provider_credit_admission as credit
@@ -526,7 +526,7 @@ def test_the_beta_rigid_lane_refuses_a_probe_or_screening_unit_without_the_credi
     key_file = tmp_path / "vast_api_key"
     key_file.write_text("k\n")
     probe = "blueprint-rigid-robot-free-probe-runner.service"
-    screening = "blueprint-beta-policy-screening.service"
+    screening = "blueprint-pubsub-handoff-listener.service"
     assert {probe, screening} <= set(BETA_RIGID_UNITS) & set(preflight.PAID_ALLOCATION_UNITS)
     units = {probe: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file)}},
              screening: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file), credit.ENABLED_ENV: "false"}}}

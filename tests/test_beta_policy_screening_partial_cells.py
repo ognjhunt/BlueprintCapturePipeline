@@ -365,41 +365,6 @@ def test_run_stopped_part_way_counts_its_measured_cells_and_voids_the_rest(tmp_p
         _retained_fixture("partial", final)
 
 
-@pytest.mark.parametrize("stop, at", [("none", 10), ("timeout", 6)])
-def test_flagged_observation_gate_reaches_the_ledger_summary_and_the_v3_publication(tmp_path, stop, at):
-    from tests.test_beta_screening_worker_control import REAL_GATE_BLOCKERS
-    value = make_plan(count=1)
-    candidate = value["candidates"][0]
-    delivered, rows, executor = run_campaign(tmp_path / "queue", value, {
-        candidate["candidate_id"]: {"successes": 4, "stop": stop, "at": at, "flagged": True}})
-    observed = executor.observations[candidate["candidate_id"]]
-    flags = sorted(REAL_GATE_BLOCKERS)
-    # Reconciled through the real scoped closeout join and session validation.
-    assert observed["status"] == "completed" and observed["result"]["observation_quality_flags"] == flags
-    row = rows[candidate["candidate_id"]]
-    assert row["status"] == "completed" and row["blockers"] == []
-    summary = row["summary"]
-    assert summary["observation_quality_flags"] == flags
-    assert (summary["episodes_scored"], summary["episodes_succeeded"]) == (at, 4)  # The estimate is unchanged.
-    # Publication v3 carries the run's flags with its candidate; its v2 form carries the estimate without them.
-    for publication in delivered:
-        _webapp_contract(publication)
-        _webapp_contract(as_v2(publication))
-        assert "observation_quality_flags" not in json.dumps(as_v2(publication))
-    assert delivered[-1]["schema_version"] == "beta_policy_screening_publication.v3"
-    assert delivered[-1]["candidates"][0]["observation_quality_flags"] == flags
-    assert all("observation_quality_flags" not in row for publication in delivered[:-1]
-               for row in publication["candidates"])  # Only a finished run has them.
-    plain, plain_rows, _ = run_campaign(tmp_path / "plain", value, {
-        candidate["candidate_id"]: {"successes": 4, "stop": stop, "at": at}})
-    unflagged = plain[-1]
-    assert "observation_quality_flags" not in plain_rows[candidate["candidate_id"]]["summary"]
-    assert "observation_quality_flags" not in json.dumps(unflagged)  # No flag recorded, none published.
-    facts = ("status", "episodes_scored", "episodes_succeeded", "episodes_failed", "episodes_void", "success_rate")
-    assert [{key: item[key] for key in facts} for item in delivered[-1]["candidates"]] == [
-        {key: item[key] for key in facts} for item in unflagged["candidates"]]
-
-
 @pytest.mark.parametrize("stop", ["timeout", "setup"])
 def test_run_that_returned_no_cell_keeps_its_harness_failure(tmp_path, stop):
     value = make_plan(count=1)
@@ -453,69 +418,6 @@ def test_partial_summary_requires_exact_planned_cells(tmp_path, change):
         joined.update(episodes=[], episodes_per_policy=0, learned_policy_rollout_count=0)
     with pytest.raises((ValueError, PolicyCanarySessionError)):
         candidate_result_summary(seal(joined, "result_digest"), plan=value, candidate=candidate)
-
-
-@pytest.mark.parametrize("failure, reason", [
-    ("timeout", TIMEOUT),
-    ("timeout_after_sealing", TIMEOUT),
-    ("process_failed", "policy_canary_isolated_cell_process_failed"),
-])
-def test_actual_parent_seals_the_measured_prefix_of_a_beta_run_that_stopped(tmp_path, monkeypatch, failure, reason):
-    import subprocess
-    from tests.test_beta_screening_worker_control import _completed_parent_fixture_child, stage_beta_bundle
-
-    monkeypatch.delenv(worker._HARD_DEADLINE_ENV, raising=False)
-    runtime, output, inputs, *_ = stage_beta_bundle(tmp_path, monkeypatch)
-    stop_at, spawned = 3, []
-
-    def spawn(**kwargs):
-        index = kwargs["index"]
-        spawned.append(index)
-        child = _completed_parent_fixture_child(inputs, index)
-        if index == stop_at:
-            if failure == "process_failed":
-                raise OSError("cell process could not start")
-            if failure == "timeout_after_sealing":  # Isaac hung while closing after it sealed its cell.
-                (kwargs["child_root"] / PROVIDER_RESULT_FILENAME).write_text(json.dumps(child))
-            raise subprocess.TimeoutExpired("cell", timeout=5)
-        (kwargs["child_root"] / PROVIDER_RESULT_FILENAME).write_text(json.dumps(child))
-        return 0
-
-    if failure == "process_failed":
-        with pytest.raises(OSError):
-            worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn)
-    else:
-        assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn) == 1
-    assert spawned == list(range(stop_at + 1))
-    retained = json.loads((output / PROVIDER_RESULT_FILENAME).read_text())
-    measured = stop_at + (failure == "timeout_after_sealing")
-    assert retained["run_kind"] == BETA_RUN_KIND and retained["status"] == "blocked"
-    assert retained["candidate_ids"] == inputs["candidate_ids"]
-    assert retained["beta_screening_admission"] == inputs["beta_screening_admission"]
-    assert retained["plan_digest"] == inputs["plan_digest"]
-    assert retained["episodes_per_policy"] == len(retained["episodes"]) == retained["learned_policy_rollout_count"] == measured
-    assert [row["cell_id"] for row in retained["episodes"]] == [cell["cell_id"] for cell in inputs["cells"][:measured]]
-    assert retained["planned_episodes_per_policy"] == len(inputs["cells"])
-    assert retained["blockers"] == [reason] and retained["interrupted_cell_index"] == stop_at
-    assert retained["result_digest"] == canonical_digest(retained, digest_field="result_digest")
-
-
-def test_actual_parent_first_cell_timeout_seals_no_beta_prefix(tmp_path, monkeypatch):
-    import subprocess
-    from tests.test_beta_screening_worker_control import stage_beta_bundle
-
-    monkeypatch.delenv(worker._HARD_DEADLINE_ENV, raising=False)
-    runtime, output, *_ = stage_beta_bundle(tmp_path, monkeypatch)
-
-    def spawn(**kwargs):
-        raise subprocess.TimeoutExpired("cell", timeout=5)
-
-    try:
-        worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn)
-    except Exception:  # noqa: BLE001 - today's handling of a run with nothing measured is unchanged
-        pass
-    path = output / PROVIDER_RESULT_FILENAME
-    assert not path.exists() or not json.loads(path.read_text()).get("episodes")
 
 
 def test_a_void_episode_names_its_typed_failure_in_the_ledger_summary(tmp_path):

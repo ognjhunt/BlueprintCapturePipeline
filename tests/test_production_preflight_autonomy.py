@@ -35,7 +35,7 @@ def _report(*, observed: float | None = None) -> dict:
     return {"schema_version": preflight.SCHEMA_VERSION,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)),
             "active_sha": "a" * 40, "lane": "beta_rigid", "host_findings": [],
-            "units": {"blueprint-beta-policy-screening.service": {
+            "units": {"blueprint-scene-stage-maintenance.service": {
                 "configuration_sha256": "b" * 64,
                 "coverage": {"status": "selected_route_contract"},
                 "effective_environment": {"PRIVATE_VALUE": "not-for-publication"},
@@ -50,7 +50,7 @@ def _summary(report: dict) -> dict:
 
 def test_summary_projects_only_fixed_safe_fields_and_groups_causes() -> None:
     report = _report()
-    report["units"]["blueprint-beta-policy-screening.service"]["findings"].append(
+    report["units"]["blueprint-scene-stage-maintenance.service"]["findings"].append(
         {"severity": "blocker", "code": "required_path_access_refused", "url": "https://private.example"})
     summary = _summary(report)
     encoded = json.dumps(summary)
@@ -65,7 +65,7 @@ def test_summary_accepts_the_report_bytes_the_chain_actually_writes() -> None:
     # run_chain stores EnvironmentFiles as (path, ignore_errors) tuples. JSON
     # has no tuples, so the written bytes hold lists for the same document.
     report = _report()
-    report["units"]["blueprint-beta-policy-screening.service"]["environment_files"] = preflight.environment_files(
+    report["units"]["blueprint-scene-stage-maintenance.service"]["environment_files"] = preflight.environment_files(
         {"EnvironmentFiles": ["/etc/blueprint/pipeline-control-plane.env (ignore_errors=no)"]})
     raw = (json.dumps(report, indent=1, sort_keys=True) + "\n").encode()
     summary = build_safe_summary(report, raw_report_bytes=raw)
@@ -169,12 +169,12 @@ def _probe_args(tmp_path: Path) -> object:
     package = tmp_path / "release" / "src" / "blueprint_pipeline"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
-    (package / "beta_policy_screening_worker.py").write_text(
+    (package / "scene_stage_maintenance.py").write_text(
         'def unused():\n    from .legacy import OLD\n'
         'TEMPLATE = "/var/lib/blueprint/{root}"\n')
     (package / "legacy.py").write_text('OLD = "/var/lib/blueprint/unselected-legacy"\n')
-    return preflight.argparse.Namespace(unit="blueprint-beta-policy-screening.service",
-        module="blueprint_pipeline.beta_policy_screening_worker", release=str(tmp_path / "release"),
+    return preflight.argparse.Namespace(unit="blueprint-scene-stage-maintenance.service",
+        module="blueprint_pipeline.scene_stage_maintenance", release=str(tmp_path / "release"),
         active_sha="", read_write_paths="", read_only_paths="", lane="beta_rigid")
 
 
@@ -185,14 +185,14 @@ def test_scoped_probe_keeps_unused_templates_visible_without_write_probes(tmp_pa
     work.mkdir()
     inputs.mkdir()
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", str(queue))
-    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
+    monkeypatch.setenv("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     writes = []
     monkeypatch.setattr(preflight, "write_probe", lambda path: writes.append(path) or {"status": "writable"})
     report = preflight.run_probe(args)
-    # The screening pass writes its ledger queue and its attempts' work-volume root, and also returns
-    # transient team-half blocks to the packet queue, so all three are written.
-    assert writes == [queue, work, inputs]
+    # The maintenance pass writes its holds store, returns transient team-half blocks to the packet
+    # queue and queues a packet's probe, so all three are written.
+    assert writes == [queue, inputs, work]
     assert report["paths"][str(inputs)]["status"] == "writable"
     assert report["paths"]["/var/lib/blueprint/{root}"]["code"] == "path_template_unresolved"
     assert report["paths"]["/var/lib/blueprint/unselected-legacy"]["requirement"] == "static_candidate"
@@ -206,7 +206,7 @@ def test_required_output_denied_is_still_a_blocker(tmp_path: Path, monkeypatch: 
     work.mkdir()
     inputs.mkdir()
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", str(queue))
-    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
+    monkeypatch.setenv("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     monkeypatch.setattr(preflight, "write_probe", lambda _path: {"status": "read_only", "errno": 30})
     report = preflight.run_probe(args)
@@ -221,13 +221,13 @@ def test_required_queue_template_refuses_before_any_path_write(tmp_path: Path, m
     work.mkdir()
     template = "/var/lib/blueprint/{root}"
     monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", template)
-    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", str(work))
+    monkeypatch.setenv("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE", str(work))
     monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
     writes = []
     monkeypatch.setattr(preflight, "write_probe", lambda path: writes.append(path) or {"status": "read_only"})
     report = preflight.run_probe(args)
-    # The unresolved template is never probed; only the resolved work root and packet queue are.
-    assert writes == [work, inputs]
+    # The unresolved template is never probed; only the resolved packet and probe queues are.
+    assert writes == [inputs, work]
     assert report["coverage"]["status"] == "unknown"
     assert report["coverage"]["reason"] == "required_path_binding_unresolved"
     row = report["paths"][template]
@@ -240,7 +240,7 @@ def test_route_health_separates_held_unused_and_broken_required_trigger(monkeypa
         return {"ActiveState": ["inactive"]}
     monkeypatch.setattr(preflight, "unit_properties", properties)
     props = {"ActiveState": ["inactive"], "Result": ["success"], "LoadState": ["loaded"], "TriggeredBy": ["blueprint-x.timer"]}
-    unit = "blueprint-beta-policy-screening.service"
+    unit = "blueprint-scene-stage-maintenance.service"
     assert preflight.unit_health_checks({unit: {"properties": props}}, lane="beta_rigid")[0]["code"] == "unit_trigger_inactive"
     held = {**props, "Result": ["exec-condition"],
             "ExecCondition": ["{ path=/usr/bin/false ; argv[]=/usr/bin/false ; ignore_errors=no ; code=exited ; status=1 }"]}

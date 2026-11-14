@@ -63,8 +63,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import beta_policy_screening_coordinator as coordinator
-from .beta_policy_screening_result import ACTIVE_STATUSES
+from . import screening_retained_ledger as retained_ledger
 from .decision_evidence_contracts import canonical_digest
 from .provider_output_member_index import SCHEMA as INDEX_SCHEMA
 from .provider_output_member_index import ProviderOutputMemberIndexError, durable_reference_facts
@@ -83,8 +82,8 @@ from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PRE
 from .wam_provider_object_store import STAGING_BINDING_FILENAME
 
 # The units' values (deploy/systemd/blueprint-beta-policy-screening.service), unless set here too.
-DEFAULT_QUEUE_ROOT = Path(os.environ.get(coordinator.QUEUE_ROOT_ENV) or coordinator.DEFAULT_QUEUE_ROOT)
-DEFAULT_WORK_ROOT = Path(os.environ.get(coordinator.WORK_ROOT_ENV)
+DEFAULT_QUEUE_ROOT = Path(os.environ.get(retained_ledger.QUEUE_ROOT_ENV) or retained_ledger.DEFAULT_QUEUE_ROOT)
+DEFAULT_WORK_ROOT = Path(os.environ.get(retained_ledger.WORK_ROOT_ENV)
                          or "/mnt/blueprint-work/beta-policy-screening-work")
 _PREFIX = "website_withdrawal_deletion_"
 ACTIVE = _PREFIX + "screening_attempt_active"
@@ -107,7 +106,7 @@ def _attempts(row: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 def _money(status: str, attempt: Mapping[str, Any]) -> tuple[str | None, str | None]:
     """(how its money ended, None), or (None, why it must wait)."""
     state = attempt.get("reservation_status")
-    if status in ACTIVE_STATUSES:
+    if status in retained_ledger.ACTIVE_STATUSES:
         return None, ACTIVE
     if state == "reserved":
         return None, RESERVATION_OPEN
@@ -115,7 +114,7 @@ def _money(status: str, attempt: Mapping[str, Any]) -> tuple[str | None, str | N
         return "released", None
     if "settled_cost_usd" in attempt:
         return "settled", None
-    if coordinator.SETTLEMENT_HELD_FIELD in attempt:
+    if retained_ledger.SETTLEMENT_HELD_FIELD in attempt:
         return "held_at_maximum", None
     if attempt.get("provider_allocation_observed") is not True:
         return "committed_at_maximum", None  # never settled: nothing reads its directory for money
@@ -279,7 +278,7 @@ def _staged_unproven(directory: Path, relative_paths: list[str]) -> list[dict[st
 
 
 def _ledger(queue_root: Path, listed: list[Path], unresolved: list[dict[str, Any]]) -> dict[str, Any] | None:
-    path = queue_root / coordinator.LEDGER_FILENAME
+    path = queue_root / retained_ledger.LEDGER_FILENAME
     if not (path.exists() or path.is_symlink()):
         # An attempt directory, or a pointer naming one on the work root, without the ledger that records it.
         attempts = queue_root / "attempts"
@@ -287,8 +286,8 @@ def _ledger(queue_root: Path, listed: list[Path], unresolved: list[dict[str, Any
             unresolved.append({"path": str(path), "reason": _PREFIX + "screening_ledger_missing"})
         return None
     try:
-        return coordinator._ledger(queue_root)
-    except (coordinator.ScreeningCoordinatorError, OSError, ValueError, KeyError, TypeError):
+        return retained_ledger._ledger(queue_root)
+    except (retained_ledger.ScreeningCoordinatorError, OSError, ValueError, KeyError, TypeError):
         unresolved.append({"path": str(path), "reason": _PREFIX + "screening_ledger_unreadable"})
         return None
 
@@ -298,8 +297,8 @@ def _attempt_directory(queue_root: Path, roots: set[Path], attempt: Mapping[str,
     if not isinstance(attempt, Mapping) or not _ATTEMPT_ID.fullmatch(str(attempt.get("attempt_id") or "")):
         return None
     try:
-        directory = coordinator._attempt_path(queue_root, attempt)
-    except (coordinator.ScreeningCoordinatorError, TypeError):
+        directory = retained_ledger._attempt_path(queue_root, attempt)
+    except (retained_ledger.ScreeningCoordinatorError, TypeError):
         return None
     parent = directory.parent
     if parent not in roots or any(path.is_symlink() for path in (parent, *parent.parents)):
@@ -309,11 +308,10 @@ def _attempt_directory(queue_root: Path, roots: set[Path], attempt: Mapping[str,
 
 def _retained(queue_root: Path, campaign_id: str, plan: Mapping[str, Any], attempt_ids: list[str]) -> list[str]:
     from .scene_stage_holds import HOLDS_DIRNAME, hold_id
-    from .website_candidate_selection import SELECTION_DIRECTORY
     intent = (plan.get("source") or {}).get("scene_intent_id") if isinstance(plan.get("source"), Mapping) else None
     paths = [queue_root / "plans" / f"{campaign_id}.json", queue_root / "inputs" / campaign_id,
              queue_root / "publications" / f"{campaign_id}.json",
-             queue_root / SELECTION_DIRECTORY / f"{campaign_id}.json",
+             queue_root / retained_ledger.SELECTION_DIRECTORY / f"{campaign_id}.json",
              *([queue_root / HOLDS_DIRNAME / f"{hold_id(str(intent))}.json"] if intent else []),
              *(queue_root / "attempts" / f"{attempt_id}.attempt_dir.json" for attempt_id in attempt_ids)]
     return [str(path) for path in paths if path.exists()]
@@ -447,7 +445,7 @@ def ledger_lock(queue_root: Path | None) -> Iterator[None]:
     if queue_root is None:
         yield
         return
-    ledger = Path(queue_root) / coordinator.LEDGER_FILENAME
+    ledger = Path(queue_root) / retained_ledger.LEDGER_FILENAME
     try:
         descriptor = os.open(Path(queue_root) / ".ledger.lock", os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
@@ -591,7 +589,7 @@ def remaining(section: Mapping[str, Any]) -> list[dict[str, Any]]:
                                "staged copy only it named cannot be found from here"})
     if section["campaigns"]:
         rows.append({"holder": "beta_screening_money_and_plan_records", "campaigns": list(section["campaigns"]),
-                     "paths": [str(Path(section["queue_root"]) / coordinator.LEDGER_FILENAME),
+                     "paths": [str(Path(section["queue_root"]) / retained_ledger.LEDGER_FILENAME),
                                *section["retained_records"]],
                      "reason": "the ledger keeps every attempt's spend and settlement so the site budget still "
                                "reconciles; plans, planning inputs, publications, selections, holds and attempt "

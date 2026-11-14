@@ -718,9 +718,6 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                 return emit("awaiting_execution", "configured_controls_adoption")
     if config.get("supported_source_kinds") is not None and intent["request"]["source"]["kind"] not in config["supported_source_kinds"]:
         return emit("needs_input", "source", ["source_kind_not_supported_by_progression"])
-    from .task_evaluation_scene_policy_capability import policy_capability_blockers
-    if capability_blockers := policy_capability_blockers(intent["request"]):
-        return emit("needs_input", "policy_capability", capability_blockers)
     source_bootstrap = (config.get("public_source_bootstrap_enabled") is True
         and intent["request"]["source"]["kind"] == "public_scene"
         and not (Path(config["public_source_binding_root"]) / (intent["request"]["source"]["binding_id"] + ".json")).is_file())

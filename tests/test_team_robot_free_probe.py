@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from blueprint_pipeline import agent_execution_offer
 from blueprint_pipeline import robot_free_probe_gate as gate
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_readback import _compose_pose_xyzw
@@ -46,16 +45,12 @@ def test_the_first_cell_records_the_probe_and_its_pass_opens_the_scene(tmp_path,
     assert probe_status(request=request, trace=trace) == "passed"
     assert probe_status(request={**request, "task_spec": {**spec, "task_id": "other"}}, trace=trace) == (
         "probe_request_invalid")
-    published: list[Path] = []
-    monkeypatch.setattr(agent_execution_offer, "publish_agent_execution_offer",
-                        lambda root: published.append(root) or {"status": "published"})
     probe_root, capture = tmp_path / "source-launch", tmp_path / "capture"
     probe_root.mkdir()
     facts = {"scene": {"task_spec": spec, "scene_revision_digest": REVISION}}
     outcome = retain_recorded_probe(profile={"robot_free_probe_root": str(probe_root), "capture_root": str(capture)},
                                     facts=facts, trace=trace)
     assert outcome["receipt_status"] == "passed" and outcome["write"] == "written", outcome
-    assert published == [capture] and outcome["offer_status"] == "published"
     # The gate now admits a scored run bound to the exact specification and contract teams are scored with.
     receipt = gate.retained_probe_receipt(probe_root)
     gate.require_robot_free_probe(
@@ -72,7 +67,6 @@ def test_the_first_cell_records_the_probe_and_its_pass_opens_the_scene(tmp_path,
 def test_a_scene_that_holds_no_goal_fails_and_a_failed_recording_stays_undecided(tmp_path, monkeypatch) -> None:
     spec = _scored_spec(tmp_path / "case")
     request = probe_request(task_spec=spec, scene_revision_digest=REVISION)
-    monkeypatch.setattr(agent_execution_offer, "publish_agent_execution_offer", lambda root: {"status": "published"})
     # The goal lies beyond the support's edge: released there, the object falls.
     fell = record_rigid_robot_free_probe(scene=FlatSupport(spec["start_pose_world"], support_max_xy=(3.05, -1.4)),
                                          plan=request["plan"], binding=request["binding"])
