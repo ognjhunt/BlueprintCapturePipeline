@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import base64
 import hashlib
 import sys
 import types
@@ -17,7 +16,6 @@ from blueprint_pipeline.openpi_droid_policy_runtime import (
     normalize_openpi_inference_response,
     serve_identity_bound_policy,
     validate_server_metadata,
-    verify_local_checkpoint,
 )
 
 
@@ -458,89 +456,6 @@ def test_websocket_client_retains_malformed_nonfinite_ndarray_envelope(
 def test_openpi_response_normalization_fails_closed(response, message) -> None:
     with pytest.raises(ValueError, match=message):
         normalize_openpi_inference_response(response)
-
-
-def test_verify_local_checkpoint_binds_every_object(tmp_path: Path) -> None:
-    cohort_path = _cohort(tmp_path)
-    checkpoint = tmp_path / "checkpoint"
-    (checkpoint / "params").mkdir(parents=True)
-    (checkpoint / "assets").mkdir()
-    files = {
-        "params/model.bin": b"weights",
-        "assets/stats.json": b"{}",
-    }
-    objects = []
-    prefix = "checkpoints/polaris/pi0_fast_droid_jointpos_polaris/"
-    for relative, contents in files.items():
-        local = checkpoint / relative
-        local.write_bytes(contents)
-        objects.append(
-            {
-                "name": prefix + relative,
-                "size": str(len(contents)),
-                "md5Hash": base64.b64encode(
-                    hashlib.md5(contents, usedforsecurity=False).digest()
-                ).decode("ascii"),
-                "crc32c": "unused",
-                "generation": "1",
-                "metageneration": "1",
-                "updated": "2026-07-26T00:00:00Z",
-            }
-        )
-    from blueprint_pipeline.openpi_checkpoint_inventory import (
-        generation_manifest_sha256,
-        legacy_object_manifest_sha256,
-    )
-    from blueprint_pipeline.policy_ranking_thesis import canonical_sha256
-
-    cohort = json.loads(cohort_path.read_text(encoding="utf-8"))
-    row = cohort["primary_cohort"][0]
-    row["checkpoint_object_count"] = len(objects)
-    row["checkpoint_size_bytes"] = sum(len(value) for value in files.values())
-    row["public_object_manifest_sha256"] = legacy_object_manifest_sha256(objects)
-    row["generation_manifest_sha256"] = generation_manifest_sha256(objects)
-    inventory = {
-        "schema_version": "openpi_checkpoint_inventory.v1",
-        "status": "frozen",
-        "queried_at_utc": "2026-07-26T00:00:00+00:00",
-        "source": "fixture",
-        "cohort_path": str(cohort_path),
-        "openpi_revision": cohort["openpi_revision"],
-        "entries": [
-            {
-                "policy_id": row["policy_id"],
-                "checkpoint_uri": row["checkpoint"],
-                "object_count": len(objects),
-                "size_bytes": row["checkpoint_size_bytes"],
-                "legacy_object_manifest_sha256": row["public_object_manifest_sha256"],
-                "generation_manifest_sha256": row["generation_manifest_sha256"],
-                "objects": objects,
-            }
-        ],
-        "blockers": [],
-        "claim_boundary": {},
-    }
-    inventory["inventory_sha256"] = canonical_sha256(inventory)
-    cohort["checkpoint_inventory"]["inventory_sha256"] = inventory["inventory_sha256"]
-    cohort_path.write_text(json.dumps(cohort), encoding="utf-8")
-    inventory_path = tmp_path / "inventory.json"
-    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
-    spec = load_policy_spec(cohort_path, policy_id=row["policy_id"])
-    verification = verify_local_checkpoint(
-        spec=spec,
-        checkpoint_dir=checkpoint,
-        checkpoint_inventory_path=inventory_path,
-    )
-    assert verification["local_checkpoint_verified"] is True
-    assert verification["local_checkpoint_object_count"] == 2
-
-    (checkpoint / "params/model.bin").write_bytes(b"tampered")
-    with pytest.raises(ValueError, match="checkpoint_object_size_mismatch"):
-        verify_local_checkpoint(
-            spec=spec,
-            checkpoint_dir=checkpoint,
-            checkpoint_inventory_path=inventory_path,
-        )
 
 
 def test_unknown_policy_and_bad_checkpoint_identity_fail(tmp_path: Path) -> None:

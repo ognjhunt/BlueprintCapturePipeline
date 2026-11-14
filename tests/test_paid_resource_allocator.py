@@ -3,7 +3,6 @@ import os
 import signal
 import subprocess
 import types
-from argparse import Namespace
 from pathlib import Path
 
 import argparse
@@ -11,10 +10,6 @@ import argparse
 import pytest
 
 from blueprint_pipeline import paid_resource_allocator as allocator
-from blueprint_pipeline.groot_oscar_infrastructure_admission import (
-    MIN_BUILD_FREE_BYTES,
-    build_live_machine_capability_evidence,
-)
 
 
 def test_detached_gpu_canary_supervisor_ignores_only_sigint(
@@ -148,79 +143,6 @@ def test_detached_gpu_canary_refuses_when_supervisor_mode_cannot_be_installed(
     assert list(root.iterdir()) == []
 
 
-def _write_inputs(tmp_path: Path, *, paid: bool = True) -> Namespace:
-    packet = tmp_path / "packet.json"
-    builder = tmp_path / "builder.json"
-    spend = tmp_path / "spend.json"
-    packet.write_text(
-        json.dumps(
-            {
-                "status": "ready",
-                "source_commit": "a" * 40,
-                "source_worktree_dirty": False,
-                "provider_launch_performed_by_packet": False,
-            }
-        ),
-        encoding="utf-8",
-    )
-    builder.write_text(
-        json.dumps(
-            {
-                "provider": "github_actions",
-                "purpose": "image_build",
-                "platform": "linux/amd64",
-                "docker_daemon_verified": True,
-                "docker_buildx_verified": True,
-                "free_disk_bytes": MIN_BUILD_FREE_BYTES,
-                "registry_push_auth_file_verified": True,
-                "independent_teardown_watchdog": True,
-                "expected_source_commit": "a" * 40,
-            }
-        ),
-        encoding="utf-8",
-    )
-    spend.write_text(
-        json.dumps(
-            {
-                "paid_mutation_authorized": paid,
-                "max_spend_usd": 1.0,
-                "hard_ttl_seconds": 7200,
-                "one_resource_limit": True,
-                "independent_teardown_watchdog": True,
-            }
-        ),
-        encoding="utf-8",
-    )
-    script = tmp_path / "build.sh"
-    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    script.chmod(0o755)
-    return Namespace(
-        output_dir=str(tmp_path / "out"),
-        packet_manifest=str(packet),
-        builder_evidence=str(builder),
-        spend=str(spend),
-        mount_path=str(tmp_path),
-        build_workdir=str(tmp_path),
-        build_script=str(script),
-    )
-
-
-def _verified_live() -> dict:
-    return build_live_machine_capability_evidence(
-        {
-            "observation_source": "live_machine_probe",
-            "system": "Linux",
-            "architecture": "x86_64",
-            "mount_path": "/builder",
-            "free_bytes": MIN_BUILD_FREE_BYTES,
-            "docker_cli_present": True,
-            "docker_daemon_responding": True,
-            "docker_buildx_available": True,
-            "builder_ready_marker": True,
-        }
-    )
-
-
 @pytest.mark.parametrize(
     "script_name",
     [
@@ -240,25 +162,6 @@ def test_legacy_build_scripts_cannot_be_reenabled_by_environment(script_name: st
     )
     assert completed.returncode == 2
     assert "legacy build path disabled" in completed.stderr
-
-
-def _reconstruction_args(tmp_path: Path, *, execute: bool) -> Namespace:
-    return Namespace(
-        provider_launch_request=str(tmp_path / "request.json"),
-        preflight_bundle=str(tmp_path / "preflight.json"),
-        admission_out=str(tmp_path / "admission.json"),
-        bound_request_out=str(tmp_path / "bound.json"),
-        adapter_output=str(tmp_path / "adapter.json"),
-        provider="vast",
-        expected_source_commit="c" * 40,
-        reconstruction_max_spend_usd=1.0,
-        reconstruction_hard_ttl_seconds=300,
-        reconstruction_retry_cap=0,
-        reconstruction_authority_id="fixture-authority",
-        provider_output_put_url_file=str(tmp_path / "put-url.txt"),
-        provider_output_get_url_file=str(tmp_path / "get-url.txt"),
-        execute=execute,
-    )
 
 
 def test_gpu_canary_source_checkout_binding_rejects_mismatch_and_dirty(

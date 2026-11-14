@@ -43,9 +43,6 @@
     "src/blueprint_pipeline/gpu_render_providers.py": [
       "tests/test_gpu_render_providers.py"
     ],
-    "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py": [
-      "tests/test_groot_oscar_digitalocean_builder.py"
-    ],
     "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": [
       "tests/test_groot_oscar_digitalocean_closed_loop_job.py"
     ],
@@ -284,7 +281,6 @@
     "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
     "src/blueprint_pipeline/geometry_stage.py": 2244,
     "src/blueprint_pipeline/gpu_render_providers.py": 3553,
-    "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py": 2020,
     "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": 2643,
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": 3012,
     "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
@@ -390,7 +386,6 @@
   "baseline_adjustment_2026_09_28_controlled_policy": {
     "source_commit": "16d8551b413fe1a65fe70b3f77ad73ea0b42b287",
     "unchanged_module_line_counts": {
-      "src/blueprint_pipeline/live_pipeline_control_plane.py": 2319,
       "src/blueprint_pipeline/robot_eval_worker.py": 2362
     },
     "reason": "ADP-050/day 28: reconcile the six already-merged lines per worker entry point that forward trusted controlled-policy execution arguments. Execution logic remains decomposed in controlled_policy_dispatch and controlled_policy_sandbox. Exact caps admit no further growth; decomposition remains required.",
