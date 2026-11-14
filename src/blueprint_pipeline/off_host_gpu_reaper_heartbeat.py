@@ -60,7 +60,6 @@ DEADLINE_CEILINGS = (
     ("deployment_embodiment_preparation_contract", "MAX_TTL_SECONDS"),
     ("canonical_3dgs_admission", "MAX_TTL_SECONDS"),
     ("beta_policy_screening_capabilities", "DEFAULT_HARD_TTL_SECONDS"),
-    ("policy_ranking_successor_gpu_admission", "HARD_TTL_SECONDS"),
     ("sam31_gpu_admission", "MAX_TTL_SECONDS"),
     ("paired_target_native_import_vast", "MAX_TTL_SECONDS"),
     ("rigid_robot_free_probe_lane", "HARD_TTL_SECONDS"),
