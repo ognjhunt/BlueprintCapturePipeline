@@ -117,8 +117,6 @@ stack:
 - `site_task_testbed_compiler.py` for maintained testbed artifacts;
 - `evaluation_run_contract.py` and `evaluation_run_execution.py` for stable
   scene/robot/task/policy/runtime/proof seams;
-- `new_site_task_evaluation_matrix.py` and existing runtime adapters for
-  condition execution;
 - `rank_fidelity_statistics.py` for power and uncertainty discipline;
 - `physical_outcome_learning.py` for immutable physical outcome joins;
 - raw-capture, rights, privacy, provenance, paid-resource, watchdog, teardown,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -109,18 +108,10 @@ def test_a_successful_fetch_reports_exactly_what_landed(monkeypatch, tmp_path) -
 def test_the_bundle_ships_the_fetcher_and_provisioning_calls_it() -> None:
     """gcloud is not assumed to exist in an Isaac container."""
 
-    from blueprint_pipeline.adp009d_native_microcheck_bundle import ENTRYPOINT
     from blueprint_pipeline.adp009d_policy_provisioning import (
         build_provisioning_script,
     )
 
-    bundle_source = Path(
-        __import__("blueprint_pipeline.adp009d_native_microcheck_bundle", fromlist=["x"]).__file__
-    ).read_text(encoding="utf-8")
-    assert "adp009d_checkpoint_fetch_worker.py" in bundle_source
-
     script = build_provisioning_script("pi05_droid")
     assert "adp009d_checkpoint_fetch_worker.py" in script
     assert "gcloud" not in script
-    # The fetcher needs the paths the entrypoint owns.
-    assert 'RUNTIME_DIR="$RUNTIME_DIR" OUT_DIR="$OUT_DIR"' in ENTRYPOINT

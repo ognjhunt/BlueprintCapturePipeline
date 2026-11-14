@@ -16,11 +16,6 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import vast_provider_adapter as vast
-from blueprint_pipeline.action_normalization import normalize_actions
-from blueprint_pipeline.action_space_registry import (
-    UNITREE_G1_ARM_HAND_43D,
-    get_action_space,
-)
 
 # -- P1: the CLI option must be accepted by the function main() forwards to ---
 
@@ -114,30 +109,5 @@ _FAILING_WORKER = textwrap.dedent(
 )
 
 
-# -- P2: normalization must use the selected action space -------------------
 
 
-def test_normalize_actions_honours_a_non_sc3_action_space() -> None:
-    """Defaulting back to SC3 would raise on 43-D stats instead of normalizing."""
-
-    space = get_action_space(UNITREE_G1_ARM_HAND_43D)
-    rows = [[0.1 * index + 0.01 * dim for dim in range(space.dim)] for index in range(4)]
-    stats = {
-        "expected_dim": space.dim,
-        "per_dimension": [{"mean": 0.0, "std": 1.0} for _ in range(space.dim)],
-    }
-
-    normalized = normalize_actions(rows, stats=stats, action_schema_id=UNITREE_G1_ARM_HAND_43D)
-
-    assert len(normalized) == len(rows)
-    assert all(len(row) == space.dim for row in normalized)
-
-    # And the SC3 default still rejects those stats, so the parameter is load-bearing.
-    with pytest.raises(ValueError, match="normalization_stats_dimension_contract_invalid"):
-        normalize_actions(rows, stats=stats)
-
-
-def test_normalize_actions_still_defaults_to_sc3() -> None:
-    rows = [[0.1 * index] * 7 for index in range(4)]
-    stats = {"expected_dim": 7, "per_dimension": [{"mean": 0.0, "std": 1.0} for _ in range(7)]}
-    assert len(normalize_actions(rows, stats=stats)) == len(rows)

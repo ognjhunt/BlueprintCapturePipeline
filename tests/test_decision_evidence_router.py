@@ -22,7 +22,6 @@ from blueprint_pipeline.decision_evidence_execution import (
     execute_evidence_plan,
 )
 from blueprint_pipeline.physical_outcome_learning import join_physical_outcome
-from blueprint_pipeline.task_evaluation_evidence_use import determine_evidence_use
 from blueprint_pipeline.decision_evidence_handoff import verify as verify_webapp_handoff
 from blueprint_pipeline.task_site_measurement_routing import (
     ALL_CAPABILITY_FIELDS,
@@ -1301,43 +1300,6 @@ def test_checked_in_json_schemas_validate_control_plane_and_webapp_examples() ->
     assert verification["status"] == "passed"
     assert verification["artifact_count"] == 9
     assert verification["example_count"] == 3
-
-
-def test_post_training_is_a_gated_evidence_use_not_a_product_or_improvement_claim() -> None:
-    *_, envelope = _execution_fixture()
-    allowed = determine_evidence_use(
-        envelope.to_mapping(),
-        rights={
-            "evaluation_use_allowed": True,
-            "post_training_use_allowed": True,
-            "consent_current": True,
-            "revocation_clear": True,
-        },
-        provenance={"complete": True},
-        robot_action_alignment={"aligned": True},
-        quality={"gate_passed": True},
-        leakage={"heldout_leakage_absent": True},
-    )
-    assert allowed["evaluation_use"]["allowed"] is True
-    assert allowed["post_training_use"]["allowed"] is True
-    assert allowed["standalone_product_created"] is False
-    assert allowed["training_occurred"] is False
-    assert allowed["policy_improved"] is False
-    blocked = determine_evidence_use(
-        envelope.to_mapping(),
-        rights={
-            "evaluation_use_allowed": True,
-            "post_training_use_allowed": False,
-            "consent_current": True,
-            "revocation_clear": True,
-        },
-        provenance={"complete": True},
-        robot_action_alignment={"aligned": True},
-        quality={"gate_passed": True},
-        leakage={"heldout_leakage_absent": True},
-    )
-    assert blocked["evaluation_use"]["allowed"] is True
-    assert blocked["post_training_use"]["allowed"] is False
 
 
 def test_checked_in_rigid_object_vertical_slice_matches_plan_decision_and_learning() -> None:

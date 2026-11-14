@@ -22,7 +22,6 @@ from blueprint_pipeline.adp009d_policy_server_worker import (
 )
 from blueprint_pipeline.beta_policy_candidate_catalog import catalog_candidate, load_default_catalog
 from blueprint_pipeline.beta_policy_screening_capabilities import _interface_matches
-from blueprint_pipeline.franka_inspection_learned_policy_lane import OFFICIAL_OPENPI_DROID_BASELINES
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     OPENPI_CHECKPOINT_INVENTORY_PATH,
     _candidate_runtime_binding,
@@ -108,8 +107,13 @@ def test_unservable_public_droid_checkpoints_stay_visible_with_exact_reasons():
     openpi_rows = {row["candidate_id"] for row in catalog["candidates"]
                    if row["policy"]["source"].startswith("gs://openpi-assets/")}
     assert openpi_rows == {"pi05_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS, *HELD}
-    roboarena = {row["checkpoint_uri"]: row["checkpoint_generation_manifest_sha256"]
-                 for row in OFFICIAL_OPENPI_DROID_BASELINES}
+    roboarena = {
+        "gs://openpi-assets/checkpoints/roboarena/paligemma_binning_droid": "ae42d454bebb66b0084d72f43bceb4a0f55c637148f99134c3d3bad255c97dc1",
+        "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_droid": "d7e0f2e9671576d7904135e39034bf45dd7f11f3ae8f20754395633f9d8df140",
+        "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_specialist_droid": "3b0e00fdb6e681e27bd59e3259b3b89577ec983b9ee5e3a527ed92e729a60808",
+        "gs://openpi-assets/checkpoints/roboarena/paligemma_vq_droid": "90e80a19ae9b579d03823835549fa3a8267f8916b520a862cbe8305e76a868e9",
+        "gs://openpi-assets/checkpoints/roboarena/paligemma_diffusion_droid": "c6a6a08597ec496bc0cf4cedbb23fb0cf87365f88f9f16190a3dd9e2f7e2802e",
+    }
     for key, (path, blockers) in HELD.items():
         row = catalog_candidate(catalog, key)
         assert row["policy"]["source"] == "gs://openpi-assets/" + path

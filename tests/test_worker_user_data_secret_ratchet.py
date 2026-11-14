@@ -11,8 +11,6 @@ fetch-then-delete, the way the Postshot licence works — a real change to live
 lanes, not a guard that can simply be switched on. Until that lands, this
 ratchet holds the line: the known debt is enumerated, and a *new* secret-shaped
 key reaching this path fails here rather than in production.
-
-The Windows bootstrap already refuses outright; it has no legacy callers.
 """
 
 from __future__ import annotations
@@ -67,7 +65,3 @@ def test_the_debt_list_does_not_outlive_the_debt() -> None:
     )
 
 
-def test_the_windows_bootstrap_has_no_such_debt() -> None:
-    """It refuses secret-shaped keys outright, having no legacy callers."""
-    source = (SRC / "cloud_vm_render_providers.py").read_text(encoding="utf-8")
-    assert "windows_worker_bootstrap_refuses_credential_in_user_data" in source

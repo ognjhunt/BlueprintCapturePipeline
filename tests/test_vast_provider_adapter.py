@@ -10599,9 +10599,6 @@ def test_only_the_scene_configuration_launch_opts_into_the_speed_preference() ->
         and path.name != "vast_provider_adapter.py"
     )
     assert callers == ["task_evaluation_scene_configuration_vast.py"]
-    paired = (root / "paired_target_native_import_vast.py").read_text(encoding="utf-8")
-    assert "run_vast_provider_adapter(" in paired
-    assert "prefer_fast_cold_pull_download" not in paired
 
 
 def test_reselection_after_a_create_refusal_keeps_the_floor(

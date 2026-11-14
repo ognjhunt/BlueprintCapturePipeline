@@ -26,11 +26,9 @@ from .dual_task_rehearsal_contract import (
     validate_scene_freeze,
     validate_task_freeze,
 )
-from .simready_graph_asset_static_qualification import (
-    SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
-)
 
 
+STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION = "simready_graph_asset_static_qualification.v1"
 SCHEMA_VERSION = "simready_replacement_native_qualification.v1"
 NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION = "simready_replacement_native_import_receipt.v1"
 NATIVE_IMPORT_EXECUTION_SCHEMA_VERSION = (

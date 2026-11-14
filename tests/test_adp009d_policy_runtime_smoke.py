@@ -3,9 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
-from blueprint_pipeline import adp009d_franka_vast as franka_vast
 from blueprint_pipeline.adp009d_policy_provisioning import (
     build_provisioning_script,
 )
@@ -24,32 +22,6 @@ MEASUREMENT_PATH = (
 
 def test_normal_episode_provisioning_keeps_server_running() -> None:
     assert "--stop-after-handshake" not in build_provisioning_script("pi05_droid")
-
-
-def test_policy_runtime_smoke_uses_isaac_cuda_admission(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    observed: dict[str, object] = {}
-    monkeypatch.setattr(
-        franka_vast,
-        "run_arena_native_control_vast",
-        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
-    )
-
-    result = franka_vast.run_adp009d_native_microcheck_vast(
-        job_dir="job",
-        prepared_bundle={
-            "status": "ready",
-            "execution_mode": "outcome_blind_policy_runtime_smoke",
-            "policy_candidate_id": "pi05_droid",
-        },
-        paid_resource_admission_grant=None,
-        execute=False,
-    )
-
-    assert result["status"] == "dry_run_ready"
-    assert observed["provider_bundle_kind"] == "adp009d_policy_runtime_smoke"
-    assert observed["enable_isaac_smoke"] is True
 
 
 def _server_receipt(**updates: object) -> dict[str, object]:

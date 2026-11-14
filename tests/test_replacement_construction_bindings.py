@@ -17,12 +17,10 @@ from blueprint_pipeline.replacement_construction_bindings import (
     validate_materialized_replacement_construction_bindings,
     validate_replacement_construction_bindings,
 )
-from blueprint_pipeline.simready_graph_asset_static_qualification import (
-    SCHEMA_VERSION as STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
-)
 from blueprint_pipeline.simready_replacement_native_qualification import (
     NATIVE_IMPORT_PROBE_RESULT_SCHEMA_VERSION,
     NATIVE_IMPORT_RECEIPT_SCHEMA_VERSION,
+    STATIC_GRAPH_ASSET_QUALIFICATION_SCHEMA_VERSION,
     SimReadyReplacementNativeQualificationError,
     materialize_simready_replacement_native_import_execution,
     materialize_simready_replacement_native_import_receipt,
