@@ -21,7 +21,6 @@ UNITS = {
     'blueprint-task-evaluation-launch-preparation': 'task_evaluation_launch_preparation_worker',
     'blueprint-task-evaluation-launch-activation': 'task_evaluation_launch_activation_worker',
     'blueprint-task-evaluation-episode-compilation': 'task_evaluation_episode_compilation_worker',
-    'blueprint-task-evaluation-sam31-preparation-execution': 'task_evaluation_sam31_preparation_execution',
     'blueprint-task-evaluation-launch-dispatcher': 'task_evaluation_launch_dispatcher',
     'blueprint-task-evaluation-launch-reconciler': 'task_evaluation_launch_reconciler',
     'blueprint-task-evaluation-terminal-resource-release': 'task_evaluation_terminal_resource_release',

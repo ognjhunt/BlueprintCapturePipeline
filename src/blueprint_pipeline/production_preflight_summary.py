@@ -29,7 +29,7 @@ _DIGEST = re.compile(r"[0-9a-f]{64}")
 _UNIT = re.compile(r"blueprint-[a-z0-9-]{1,100}\.(?:service|timer|path)")
 _PUBLIC_UNITS = frozenset(BETA_RIGID_UNITS) | frozenset(
     "blueprint-" + name + ".service" for name in (
-        "task-evaluation-launch-preparation", "task-evaluation-sam31-preparation-execution",
+        "task-evaluation-launch-preparation",
         "task-evaluation-episode-compilation", "task-evaluation-episode-compilation-remote",
         "task-evaluation-launch-activation", "task-evaluation-configured-controls-progression",
         "task-evaluation-launch-dispatcher", "task-evaluation-launch-reconciler",

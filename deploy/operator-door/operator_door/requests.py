@@ -214,6 +214,8 @@ RETIRED_HOLD_UNITS = (
     "blueprint-scene-object-discovery.path",
     "blueprint-embodiment-preparation.path",
     "blueprint-embodiment-preparation.timer",
+    "blueprint-task-evaluation-sam31-preparation-execution.path",
+    "blueprint-task-evaluation-sam31-preparation-execution.timer",
 )
 EXPLICIT_RELEASE_UNITS = (DISPATCHER_HOLD_UNIT, *RETIRED_HOLD_UNITS)
 _LOG_TAIL_LINES = 200

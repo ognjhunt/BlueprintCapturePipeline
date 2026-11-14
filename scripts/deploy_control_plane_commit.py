@@ -447,9 +447,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-preparation.service",
     "blueprint-task-evaluation-launch-preparation.path",
     "blueprint-task-evaluation-launch-preparation.timer",
-    "blueprint-task-evaluation-sam31-preparation-execution.service",
-    "blueprint-task-evaluation-sam31-preparation-execution.path",
-    "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-episode-compilation.service",
     "blueprint-task-evaluation-episode-compilation.path",
     # Plan 14 §1: backstops the path unit for fallback markers and deferred handed-back rows.
@@ -640,12 +637,6 @@ DEFAULT_PAUSED_LANE_DISARM_UNITS = (
     # evaluations and reads their terminal results; the runner path runs them.
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-team-evaluation-runner.path",
-    # SAM 3.1 preparation execution: a website job segments inside the hand-off
-    # (website_task_masks); a website recipe never asks for a SAM child. Only
-    # the timer polls waiting_external and wake-pending, so the path goes too.
-    # A non-website parent that asks waits; the child is what spends.
-    "blueprint-task-evaluation-sam31-preparation-execution.timer",
-    "blueprint-task-evaluation-sam31-preparation-execution.path",
     # Configured-controls progression: website jobs have no controls plan
     # (task_evaluation_scene_progression writes their launch itself).
     "blueprint-task-evaluation-configured-controls-progression.timer",
@@ -680,6 +671,8 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     # Embodiment preparation (a door grant started it, the timer retried it).
     "blueprint-embodiment-preparation.path",
     "blueprint-embodiment-preparation.timer",
+    "blueprint-task-evaluation-sam31-preparation-execution.path",
+    "blueprint-task-evaluation-sam31-preparation-execution.timer",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the

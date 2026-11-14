@@ -125,7 +125,6 @@ def test_preflight_accepts_content_registry_without_per_scene_file(tmp_path, mon
     registry.mkdir()
     units = {name: {"effective_environment": {REGISTRY_ENV: str(registry)}} for name in (
         "blueprint-task-evaluation-launch-preparation.service",
-        "blueprint-task-evaluation-sam31-preparation-execution.service",
         "blueprint-task-evaluation-configured-controls-progression.service")}
     findings = preflight.binding_checks(units, "a" * 40, (os.getuid(), os.getgid()))
     assert not any(row["code"] == "sam31_profile_unbound" for row in findings)

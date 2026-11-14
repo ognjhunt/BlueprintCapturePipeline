@@ -440,7 +440,6 @@ HOST_MEMORY_KEPT = {
     "blueprint-team-evaluation-runner.service": ("-200", "5.5G"),
     "blueprint-beta-policy-screening.service": ("-200", "5.5G"),
     "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
-    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "5.5G"),
     "blueprint-agent-run-dispatcher.service": ("-200", "5.5G"),
     "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
     # The failure notifier carries a page; a run peaked at 27 MB locally.
@@ -526,7 +525,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
-    "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-team-evaluation-runner.service",
     "blueprint-agent-run-dispatcher.service",
     "blueprint-task-evaluation-episode-compilation.service",
@@ -598,7 +596,6 @@ KILL_MODE_PROCESS_UNITS = (
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-team-evaluation-runner.service",
 )
 

@@ -44,7 +44,6 @@ _KNOWN_UNITS = {
     'blueprint-task-evaluation-launch-preparation.service': 'task_evaluation_launch_preparation_worker',
     'blueprint-task-evaluation-launch-activation.service': 'task_evaluation_launch_activation_worker',
     'blueprint-task-evaluation-episode-compilation.service': 'task_evaluation_episode_compilation_worker',
-    'blueprint-task-evaluation-sam31-preparation-execution.service': 'task_evaluation_sam31_preparation_execution',
     'blueprint-task-evaluation-launch-dispatcher.service': 'task_evaluation_launch_dispatcher',
     'blueprint-task-evaluation-launch-reconciler.service': 'task_evaluation_launch_reconciler',
     'blueprint-task-evaluation-terminal-resource-release.service': 'task_evaluation_terminal_resource_release',

@@ -77,7 +77,6 @@ GIB = 1024**3
 CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-pipeline-intake.service",
     "blueprint-task-evaluation-launch-preparation.service",
-    "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-task-evaluation-episode-compilation.service",
     # Plan 14 §1: the paid remote-compilation unit (its ExecCondition skips it while the effective mode is host).
     "blueprint-task-evaluation-episode-compilation-remote.service",
@@ -1005,7 +1004,6 @@ def binding_checks(units: Mapping[str, dict[str, Any]], active_sha: str, ids: tu
     # before the content registry it never received a per-scene PROFILE_ENV
     # drop-in and refused with sam31_server_profile_missing.
     for unit_name in ("blueprint-task-evaluation-launch-preparation.service",
-                      "blueprint-task-evaluation-sam31-preparation-execution.service",
                       "blueprint-task-evaluation-configured-controls-progression.service"):
         unit = units.get(unit_name, {})
         registry = unit.get("effective_environment", {}).get("BLUEPRINT_TASK_EVALUATION_SAM31_PREPARATION_PROFILE_DIR")
@@ -1563,7 +1561,7 @@ def _terminal_index_findings(units: Mapping[str, dict[str, Any]]) -> list[dict[s
 # Every unit that can allocate Vast (it reaches the adapter); a lane checks the ones it selects.
 PAID_ALLOCATION_UNITS: tuple[str, ...] = tuple(f"blueprint-{name}.service" for name in (
     "task-evaluation-launch-dispatcher",
-    "task-evaluation-sam31-preparation-execution", "rigid-robot-free-probe-runner", "beta-policy-screening",
+    "rigid-robot-free-probe-runner", "beta-policy-screening",
     "pubsub-handoff-listener", "team-evaluation-runner",
     "agent-run-dispatcher"))
 
