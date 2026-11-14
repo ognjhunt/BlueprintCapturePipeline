@@ -10,14 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.adp_founder_sim_protocol import (
     build_founder_approval_receipt,
     expected_founder_approval_statement,
 )
 from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     DEFAULT_IMAGE,
-    PROBE_KIND,
     _bounded_spend_gate_open,
     _candidate_policy_query_blocker,
     _next_attempt_root,
@@ -27,7 +25,6 @@ from blueprint_pipeline.adp_isaac_lab_arena_vast import (
 )
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
 )
@@ -45,6 +42,7 @@ def _isolate_supervisor_context(monkeypatch: pytest.MonkeyPatch) -> None:
     # The CI runner's service is not the mocked provider launcher's supervisor.
     # Watchdog contract tests set their own systemd context explicitly.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+
 
 
 def _approval_path(tmp_path: Path) -> Path:
@@ -1069,76 +1067,6 @@ def test_live_transport_blocks_before_watchdog_storage_or_compute_on_spend_lock_
     assert teardown["continuing_spend_from_this_run"] is False
     manifest = json.loads(Path(result["artifact_manifest_path"]).read_text())
     assert manifest["status"] == "completed"
-
-
-def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:
-    values = [
-        "gpu-canary",
-        "--probe-kind",
-        PROBE_KIND,
-        "--provider",
-        "vast",
-        "--provider-launch-request",
-        str(tmp_path / "unused-request.json"),
-        "--release-evidence",
-        str(tmp_path / "unused-release.json"),
-        "--model-cache-evidence",
-        str(tmp_path / "unused-model.json"),
-        "--preflight-bundle",
-        str(tmp_path / "unused-preflight.json"),
-        "--admission-out",
-        str(tmp_path / "admission.json"),
-        "--bound-request-out",
-        str(tmp_path / "unused-bound.json"),
-        "--adapter-output",
-        str(tmp_path / "adapter.json"),
-        "--pod-name",
-        "adp-arena",
-        "--adp-arena-approval",
-        str(approval),
-        "--adp-job-dir",
-        str(tmp_path / "job"),
-        "--adp-max-hourly-rate-usd",
-        "1.0",
-        "--adp-max-spend-usd",
-        "4.0",
-        "--adp-hard-ttl-seconds",
-        "14400",
-    ]
-    if execute:
-        values.append("--execute")
-    return values
-
-
-@pytest.mark.parametrize("execute", [False, True])
-def test_canonical_allocator_issues_arena_grant_only_for_execute(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
-) -> None:
-    approval = _approval_path(tmp_path)
-    observed: dict = {}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-
-    def fake_run(**kwargs):
-        observed.update(kwargs)
-        return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_arena_native_control_vast", fake_run)
-
-    assert allocator.main(_allocator_args(tmp_path, approval, execute=execute)) == 0
-    assert observed["execute"] is execute
-    assert observed["require_independent_watchdog"] is True
-    assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is (
-        execute
-    )
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["retry_cap"] == 0
-    assert admission["candidate_policy_queried"] is False
-    assert admission["hard_cap_usd"] == 4.0
-    assert admission["hard_ttl_seconds"] == 14400
 
 
 def test_avoidlist_already_in_the_job_directory_does_not_abort_the_launch(

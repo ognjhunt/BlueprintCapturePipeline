@@ -12,13 +12,13 @@ def test_allocator_refuses_controls_before_bundle_or_provider(tmp_path, monkeypa
     monkeypatch.setattr(allocator, "_control_plane_checkout_blockers",
                         lambda: pytest.fail("controls reached launch admission"))
     output = tmp_path / "result.json"
-    result = allocator.main(["gpu-canary", "--probe-kind", "native-task-arena-controls",
+    result = allocator.main(["gpu-canary", "--provider", "vast", "--probe-kind", "native-task-arena-controls",
                              "--adapter-output", str(output)])
     assert result == 2
     value = json.loads(output.read_bytes())
-    assert value["blockers"] == ["task_evaluation_controls_paused_by_owner"]
-    assert value["provider_allocations_performed"] == 0
-    assert value["continuing_spend_from_this_run"] is False
+    # The allocator no longer has a controls lane at all: the request is refused outright.
+    assert value["blockers"] == ["native_task_arena_allocator_lane_removed"]
+    assert value["provider_mutations_performed"] == 0
 
 
 def test_warm_controls_refused_before_runtime_access():

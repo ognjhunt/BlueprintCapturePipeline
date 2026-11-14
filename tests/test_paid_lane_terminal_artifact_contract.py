@@ -64,7 +64,6 @@ PAID_LANE_MODULES = (
     # terminal `result.json` on every non-execute-ready path, so it is a
     # terminal write into the same contract and is verified as one.
     "sam31_gpu_admission.py",
-    "sam31_paid_resource_allocator_lane.py",
     "semantic_teacher_image_edit_vast.py",
     "simpler_public_vast.py",
     "task_evaluation_scene_configuration_vast.py",
@@ -78,7 +77,6 @@ PAID_LANE_MODULES = (
 #: but only while the named wrapper really does seal, so the test below checks
 #: both halves rather than taking the claim on trust.
 SEALED_BY_ALLOCATOR_CALLER = {
-    "sam31_vast_source_track_canary.py": "sam31_paid_resource_allocator_lane.py",
 }
 
 #: Lanes that run a paid attempt and seal nothing, with why. These all reach the
@@ -91,12 +89,6 @@ SEALED_BY_ALLOCATOR_CALLER = {
 #: The tests below refuse a stale entry, refuse an entry that has quietly
 #: started sealing, and cap the total so the ledger cannot absorb a new lane.
 UNSEALED_LANE_DEBT = {
-    "groot_oscar_runpod_s3_model_cache.py": "frozen_program",
-    "measurement_chrono_dem_vast_canary.py": "shares_unsealed_canonical_allocator_write",
-    "measurement_dlo_lab_vast_canary.py": "shares_unsealed_canonical_allocator_write",
-    "measurement_isaac_vast_canary.py": "shares_unsealed_canonical_allocator_write",
-    "reconstruction_isaac_vast_operation.py": "shares_unsealed_canonical_allocator_write",
-    "reconstruction_vast_operation.py": "shares_unsealed_canonical_allocator_write",
     "single_g1_kitchen_episode_runpod.py": "frozen_program",
     "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
 }
@@ -220,11 +212,11 @@ def test_the_widened_discovery_still_sees_the_lanes_it_used_to() -> None:
 
     discovered = _discovered_paid_lanes()
 
-    assert "reconstruction_vast_worker_smoke.py" in discovered
+    assert "task_evaluation_scene_configuration_vast.py" in discovered
     assert {module for module in PAID_LANE_MODULES if module.endswith("_vast.py")} <= discovered
     # The runpod family, invisible here until a live canary depended on it.
     assert "openpi_policy_ranking_runpod.py" in discovered
-    assert sum(1 for module in discovered if "_runpod" in module) >= 3
+    assert sum(1 for module in discovered if "_runpod" in module) >= 2
 
 
 def test_a_lane_sealed_by_its_caller_really_is_sealed_by_that_caller() -> None:
@@ -388,7 +380,6 @@ def test_no_paid_lane_reads_a_bundle_path_off_an_unresolved_receipt() -> None:
         "use _host_resident_bundle(receipt_path, blockers) so the receipt's "
         "bundle_path is the one that resolved here"
     )
-    assert "_host_resident_bundle" in allocator
 
 
 def test_the_content_agents_preflight_resolves_its_bundle_host_side() -> None:
@@ -663,11 +654,7 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
 #: allocator's imports.
 TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {
     "openpi_policy_ranking_gpu_admission.py": "new-site-diagnostic-canary + frozen openpi",
-    "policy_ranking_cosmos_reasoner_gpu_admission.py": "frozen_program",
-    "policy_ranking_successor_gpu_admission.py": "frozen_program",
     "reconstruction_gpu_admission.py": "reconstruction-worker-smoke",
-    "reconstruction_isaac_vast_operation.py": "reconstruction isaac operation",
-    "reconstruction_vast_operation.py": "reconstruction operation",
 }
 
 
@@ -685,12 +672,17 @@ def _allocator_transport_imports() -> set[str]:
     covered the moment the allocator can dispatch to it, whatever it is named.
     """
 
-    source = (SOURCE_ROOT / "paid_resource_allocator.py").read_text(encoding="utf-8")
     found = set()
-    for match in re.finditer(r"^from \.([a-z0-9_]+) import", source, re.MULTILINE):
-        module = match.group(1)
-        if module.endswith(("_vast", "_gpu_admission", "_allocator_lane", "_vast_operation")):
-            found.add(f"{module}.py")
+    # The allocator hands each kept probe kind to a lane module; their transports count too.
+    lanes = ("paid_resource_allocator", "policy_canary_allocator_lane", "rigid_robot_free_probe_lane",
+             "task_evaluation_scene_configuration_allocator", "native_task_arena_allocator_dispatch")
+    for name in lanes:
+        source = (SOURCE_ROOT / f"{name}.py").read_text(encoding="utf-8")
+        for match in re.finditer(r"^\s*from \.([a-z0-9_]+) import", source, re.MULTILINE):
+            module = match.group(1)
+            if module.endswith(("_vast", "_gpu_admission", "_allocator_lane", "_vast_operation")):
+                found.add(f"{module}.py")
+    found -= {f"{name}.py" for name in lanes}
     assert found, "no transport imports discovered in the allocator"
     return found
 

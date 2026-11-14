@@ -324,28 +324,3 @@ def test_the_new_runtime_admits_its_supported_driver_without_widening_the_older_
         assert _select_offer([{**offer, "driver_version": "580.159.04"}], **kwargs) is None
     assert _select_offer([offer], **kwargs) is None
 
-
-@pytest.mark.parametrize("execute", [False, True])
-def test_native_continuation_cli_preserves_the_canonical_paid_admission(tmp_path, monkeypatch, execute):
-    from blueprint_pipeline import paid_resource_allocator as allocator
-    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
-    from tests.test_adp009d_native_microcheck_bundle import _allocator_args
-    observed = {}
-    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers", lambda:
-        ([], {"orchestrator_source_commit": "b" * 40, "checkout_clean": True}))
-    monkeypatch.setattr(continuation, "build_native_continuation_bundle", lambda **kwargs:
-        {"status": "ready", "bundle_sha256": "sha256:" + "c" * 64, "input_digest": "sha256:" + "d" * 64,
-         "diagnostic_kind": continuation.BUNDLE_KIND})
-    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", lambda **kwargs:
-        observed.update(kwargs) or {"status": "completed" if execute else "dry_run_ready"})
-    argv = _allocator_args(tmp_path, execute=execute)
-    for key in ("--adp009d-approved-can", "--adp009d-sage-collision", "--adp009d-harness-manifest"):
-        i = argv.index(key)
-        del argv[i:i+2]
-    argv.extend(["--adp009d-diagnostic-only", "--adp009d-native-continuation-inputs", str(tmp_path / "inputs.json")])
-    assert allocator.main(argv) == 0
-    assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is execute
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["private_data_uploaded"] is True
-    assert admission["allocation_binding"]["native_continuation_requested"] is True
-    assert admission["allocation_binding"]["retry_cap"] == 0

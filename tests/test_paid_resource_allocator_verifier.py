@@ -11,10 +11,6 @@ assert SPEC is not None and SPEC.loader is not None
 verifier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verifier)
 
-GEMINI_EVALUATOR_PAID_SURFACES = {
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
-}
 SCENE_CONFIGURATION_ALLOCATOR = (
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py"
 )
@@ -187,25 +183,6 @@ blueprint-run-runpod-provider-adapter --request x --mode on-demand-pod
     }
     canonical = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary --execute"
     assert verifier._forbidden_operator_doc_commands(canonical) == set()
-
-
-def test_gemini_evaluator_paid_paths_are_registered_as_canonical_surfaces() -> None:
-    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
-    issuer_allowlist = manifest["issuer_allowlist"]
-    assert GEMINI_EVALUATOR_PAID_SURFACES <= verifier.APPROVED_ADMISSION_ISSUERS
-    assert GEMINI_EVALUATOR_PAID_SURFACES <= verifier.APPROVED_LANE_ADMISSION_BUILDERS
-    assert GEMINI_EVALUATOR_PAID_SURFACES <= set(
-        issuer_allowlist["require_paid_resource_admission"]
-    )
-    assert GEMINI_EVALUATOR_PAID_SURFACES <= set(issuer_allowlist["build_paid_lane_admission"])
-    surfaces = {row["path"]: row for row in manifest["surfaces"]}
-    for path in GEMINI_EVALUATOR_PAID_SURFACES:
-        assert surfaces[path]["classification"] == "canonical_adapter"
-        assert {
-            "build_paid_lane_admission",
-            "require_paid_resource_admission",
-            "require_paid_resource_admission_grant",
-        } <= set(surfaces[path]["required_markers"])
 
 
 def test_scene_configuration_paid_surfaces_are_exactly_classified() -> None:

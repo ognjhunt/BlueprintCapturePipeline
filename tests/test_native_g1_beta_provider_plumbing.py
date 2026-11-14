@@ -8,12 +8,11 @@ import os
 import re
 import subprocess
 import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 import zipfile
 
 import pytest
 
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import provider_runtime_bundle_contract as contract
 from blueprint_pipeline import vast_provider_adapter as vast
 from blueprint_pipeline import vast_provider_output_recovery as recovery
@@ -177,46 +176,6 @@ def test_recovery_cannot_exceed_session_output_quote(tmp_path, monkeypatch):
     assert result["status"] == "blocked"
     assert len(calls) == 1
     assert not (tmp_path / "retained.zip").exists()
-
-
-def test_canonical_allocator_cli_delegates_same_control_recheck(tmp_path, monkeypatch):
-    module = ModuleType("blueprint_pipeline.native_g1_beta_paid")
-    identity = {"orchestrator_source_commit": "a" * 40}
-    def recheck():
-        return ["development_only_test"], identity
-    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers", recheck)
-    calls = []
-    def dispatch(args, *, control_recheck):
-        calls.append(args)
-        assert control_recheck is recheck
-        assert control_recheck() == (["development_only_test"], identity)
-        assert args.g1_beta_session_authority == str(tmp_path / "authority.json")
-        assert args.g1_beta_session_bundle_receipt == str(tmp_path / "bundle.json")
-        assert args.execute is False
-        return 2
-    module.dispatch_g1_beta_allocator_cli = dispatch
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    assert allocator.main(["gpu-canary", "--provider", "vast", "--probe-kind", "native-g1-beta-screening",
-        "--g1-beta-session-authority", str(tmp_path / "authority.json"),
-        "--g1-beta-session-bundle-receipt", str(tmp_path / "bundle.json")]) == 2
-    assert len(calls) == 1
-
-
-def test_existing_campaign_arguments_keep_their_values(tmp_path, monkeypatch):
-    flags = ("bundle-receipt", "manipulation-packet", "movement-packet", "book-handoff",
-        "movement-handoff", "navigation-authority", "publisher-source", "runtime-source-receipt")
-    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers", lambda: ([], {}))
-    def dispatch(args, **kwargs):
-        for name in flags:
-            assert getattr(args, "g1_campaign_" + name.replace("-", "_")) == str(tmp_path / name)
-        assert args.g1_campaign_rights_review == ["review-one", "review-two"]
-        return {"status": "dry_run_ready"}
-    monkeypatch.setattr(allocator, "dispatch_g1_paid_campaign", dispatch)
-    argv = ["gpu-canary", "--provider", "vast", "--probe-kind", allocator.NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND]
-    for name in flags:
-        argv.extend(["--g1-campaign-" + name, str(tmp_path / name)])
-    argv.extend(["--g1-campaign-rights-review", "review-one", "--g1-campaign-rights-review", "review-two"])
-    assert allocator.main(argv) == 0
 
 
 def _terminal(status="blocked", queried=False):

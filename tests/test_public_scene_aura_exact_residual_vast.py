@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.public_scene_aura_exact_residual_vast import (
     GPU_SELECTION_POLICY,
     PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION,
@@ -525,88 +524,6 @@ def test_second_manual_attempt_chains_the_first_spend_and_zero_closeout(
         hard_ttl_seconds=7200,
         allowed_active_instance_ids=[47373597],
     )["prior_goal_spend_usd"] == 0.848734
-
-
-def _allocator_args(
-    tmp_path: Path, *, bundle_receipt: Path, attempt_authority: Path | None = None
-) -> list[str]:
-    """Canonical allocator arguments for the exact residual specialization."""
-
-    args = [
-        "gpu-canary",
-        "--probe-kind",
-        "adp-aurafusion360-exact-residual",
-        "--provider",
-        "vast",
-        "--admission-out",
-        str(tmp_path / "admission.json"),
-        "--adapter-output",
-        str(tmp_path / "adapter.json"),
-        "--expected-source-commit",
-        "f" * 40,
-        "--experimental-branch-diagnostic",
-        "--adp-aura-exact-residual-bundle-receipt",
-        str(bundle_receipt),
-        "--adp-job-dir",
-        str(tmp_path / "job"),
-        "--adp-max-hourly-rate-usd",
-        "3.0",
-        "--adp-max-spend-usd",
-        "6.0",
-        "--adp-hard-ttl-seconds",
-        "7200",
-        "--adp-allowed-active-vast-instance-id",
-        "47373597",
-        "--execute",
-    ]
-    if attempt_authority is not None:
-        args.extend(["--adp-aura-attempt-authority", str(attempt_authority)])
-    return args
-
-
-def test_canonical_allocator_requires_and_binds_manual_corrected_attempt_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The only paid branch passes the exact authority to the provider adapter."""
-
-    authority, bundle = _corrected_attempt_authority(tmp_path)
-    receipt = _write(tmp_path / "bundle-receipt.json", {"fixture": "bound by validator"})
-    authority_path = _write(tmp_path / "attempt-authority.json", authority)
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "f" * 40, "checkout_clean": True}),
-    )
-    monkeypatch.setattr(allocator, "validate_aura_exact_residual_bundle", lambda _path: bundle)
-    granted = object()
-    monkeypatch.setattr(allocator, "require_paid_resource_admission", lambda *_args, **_kwargs: granted)
-    observed: dict[str, object] = {}
-
-    def fake_run(**kwargs: object) -> dict[str, str]:
-        observed.update(kwargs)
-        return {"status": "completed"}
-
-    monkeypatch.setattr(allocator, "run_aura_exact_residual_vast", fake_run)
-
-    assert allocator.main(_allocator_args(tmp_path, bundle_receipt=receipt)) == 2
-    blocked = json.loads((tmp_path / "adapter.json").read_text(encoding="utf-8"))
-    assert "aura_exact_residual_paid_attempt_authority_missing" in blocked["blockers"]
-
-    assert (
-        allocator.main(
-            _allocator_args(
-                tmp_path, bundle_receipt=receipt, attempt_authority=authority_path
-            )
-        )
-        == 0
-    )
-    assert observed["execute"] is True
-    assert observed["paid_resource_admission_grant"] is granted
-    assert observed["paid_attempt_authority"] == authority
-    admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
-    binding = admission["allocation_binding"]
-    assert binding["paid_attempt_authority_digest"] == authority["authorization_digest"]
-    assert binding["paid_attempt_authority_file_sha256"] == _record(authority_path)["sha256"]
 
 
 def test_runtime_abstention_reopens_file_backed_bundle_and_closeout(

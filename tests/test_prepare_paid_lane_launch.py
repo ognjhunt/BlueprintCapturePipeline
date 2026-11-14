@@ -1614,6 +1614,14 @@ def test_every_native_preparation_command_passes_its_real_cli_parser(monkeypatch
         observed.append(parsed)
         raise ParsedWithoutExecution
 
+    from blueprint_pipeline.paid_resource_allocator import RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS
+
+    def retired_allocator_lane(argv):
+        return "blueprint_pipeline.paid_resource_allocator" in argv and any(
+            kind in argv for kind in RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS
+        )
+
+    refused = 0
     monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parse_only)
     for lane, steps in prep.LANES.items():
         if not lane.startswith("native_task_arena_"):
@@ -1630,6 +1638,18 @@ def test_every_native_preparation_command_passes_its_real_cli_parser(monkeypatch
                 arguments = argv[2:]
             with pytest.raises(ParsedWithoutExecution):
                 module.main(arguments)
+            if retired_allocator_lane(argv):
+                # The allocator branch for this lane was removed: its argv still passes the
+                # real parser, and the request is refused before any provider call.
+                refusals = []
+                with monkeypatch.context() as real_parser:
+                    real_parser.setattr(argparse.ArgumentParser, "parse_args", original)
+                    real_parser.setattr(module, "write_json", lambda path, value: refusals.append(value))
+                    assert module.main(arguments) == 2
+                assert [value["blockers"] for value in refusals] == [["native_task_arena_allocator_lane_removed"]]
+                assert refusals[0]["provider_mutations_performed"] == 0
+                refused += 1
+    assert refused > 0
     assert len(observed) == sum(len(steps) for lane, steps in prep.LANES.items() if lane.startswith("native_task_arena_"))
 
 

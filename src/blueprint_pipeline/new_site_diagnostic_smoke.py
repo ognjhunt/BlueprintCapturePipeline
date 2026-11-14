@@ -166,12 +166,6 @@ def build_protocol(
                     ),
                 },
                 {
-                    "path": "src/blueprint_pipeline/ctrl_world_droid_action_adapter.py",
-                    "sha256": file_sha256(
-                        root / "src/blueprint_pipeline/ctrl_world_droid_action_adapter.py"
-                    ),
-                },
-                {
                     "path": "src/blueprint_pipeline/new_site_diagnostic_canary_gpu.py",
                     "sha256": file_sha256(
                         root

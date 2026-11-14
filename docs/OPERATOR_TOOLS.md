@@ -30,7 +30,6 @@ The description is the first line of each module's own docstring.
 | `decision_evidence_handoff` | Verify the versioned Pipeline-to-WebApp Decision/Evidence handoff | `python -m blueprint_pipeline.decision_evidence_handoff` | no |
 | `gear_sonic_container_smoke` | Container smoke for the pinned GEAR-SONIC WBC tree and real robot model XML | `python -m blueprint_pipeline.gear_sonic_container_smoke` | no |
 | `groot_oscar_cached_footprint` | Audit measured host-image plus external-model cached worker footprint | `python -m blueprint_pipeline.groot_oscar_cached_footprint` | no |
-| `isaac_api_contract` | Check our calls into Isaac Lab and Arena against the sources production runs | `python -m blueprint_pipeline.isaac_api_contract` | no |
 | `nvidia_siggraph_completion` | Requirement-to-evidence matrix for the SIGGRAPH 2026 implementation memo | `python -m blueprint_pipeline.nvidia_siggraph_completion` | no |
 | `omniverse_library_preflight` | Fail-closed ovrtx and ovphysx external-worker preflight contracts | `python -m blueprint_pipeline.omniverse_library_preflight` | no |
 | `openai_prompt_cache_canary` | Bounded five-call GPT-6.1 Sol explicit prompt-cache mechanics canary | `python -m blueprint_pipeline.openai_prompt_cache_canary` | yes |

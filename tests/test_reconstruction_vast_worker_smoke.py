@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import time
 import urllib.error
 from itertools import count
 from pathlib import Path
@@ -651,85 +649,6 @@ def test_teardown_failure_keeps_pending_record_and_lane_lease(tmp_path: Path):
     pending = list((tmp_path / "pending_teardowns").glob("*.json"))
     assert json.loads(pending[0].read_text(encoding="utf-8"))["status"] == "open"
     assert list((tmp_path / "leases").glob("*.lease.json"))
-
-
-def test_the_canonical_allocator_writes_a_result_its_launch_profile_accepts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """The seam the defect actually lived at.
-
-    A launch reads `{run_root}/allocator/result.json`, which is whatever the
-    canonical allocator wrote -- so a lane that seals correctly and an allocator
-    that drops the fields on the way out are indistinguishable from the profile's
-    side. The allocator's own test stubs the lane out entirely and would keep
-    passing either way, which is how a result no real lane could produce came to
-    stand in for one.
-
-    So this drives the real lane through the real allocator entrypoint, faking
-    only the two things that would cost money or leave the host: the provider,
-    and the HTTP fetch of the worker's envelope.
-    """
-
-    from argparse import Namespace
-
-    from blueprint_pipeline import paid_resource_allocator as allocator
-
-    args = Namespace(
-        provider_launch_request=str(tmp_path / "request.json"),
-        preflight_bundle=str(tmp_path / "preflight.json"),
-        admission_out=str(tmp_path / "admission.json"),
-        bound_request_out=str(tmp_path / "bound.json"),
-        adapter_output=str(tmp_path / "allocator" / "result.json"),
-        provider="vast",
-        expected_source_commit=SHA,
-        reconstruction_max_spend_usd=1.0,
-        reconstruction_hard_ttl_seconds=300,
-        reconstruction_retry_cap=0,
-        reconstruction_authority_id="fixture-authority",
-        provider_output_put_url_file=str(tmp_path / "put-url.txt"),
-        provider_output_get_url_file=str(tmp_path / "get-url.txt"),
-        execute=True,
-    )
-    preflight = _preflight()
-    # The real watchdog validator runs here, so it needs a live process and a
-    # deadline beyond this attempt's TTL rather than the fixture's constants.
-    preflight["watchdog"]["pid"] = os.getpid()
-    preflight["watchdog"]["deadline_epoch"] = time.time() + 100_000
-    Path(args.preflight_bundle).write_text(json.dumps(preflight), encoding="utf-8")
-
-    def fake_prepare(**kwargs):
-        Path(str(kwargs["bound_request_out"])).write_text(
-            json.dumps(_bound_request()), encoding="utf-8"
-        )
-        return {"status": "execute_ready", "blockers": [], "operation": "worker_smoke"}
-
-    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
-    monkeypatch.setattr(
-        "blueprint_pipeline.paid_resource_transport.read_sensitive_url_file",
-        lambda _path, *, label: (f"https://objects.example/{label}", {"mode_is_0600": True}),
-    )
-    monkeypatch.setattr(allocator, "get_render_provider", lambda _name: _Provider())
-
-    class _Response:
-        status = 200
-        body = json.dumps(_runtime_result()).encode("utf-8")
-
-    monkeypatch.setattr(
-        "blueprint_pipeline.reconstruction_vast_worker_smoke.safe_http_request",
-        lambda *_args, **_kwargs: _Response(),
-    )
-
-    allocator._run_reconstruction_gpu_canary(args, checkout_commit=SHA)
-
-    written = json.loads(Path(args.adapter_output).read_text(encoding="utf-8"))
-    terminal = shared_control_surface()["terminal_contract"]
-    assert written["status"] in terminal["success_statuses"]
-    for field, expected in terminal["required_values"].items():
-        assert written.get(field) == expected, f"terminal required_value unmet: {field}"
-    for field in terminal["required_path_fields"]:
-        named = str(written.get(field) or "").strip()
-        assert named, f"terminal required_path_field never set: {field}"
-        assert Path(named).is_file(), f"terminal required_path_field names no file: {field}"
 
 
 def test_missing_opaque_grant_refuses_before_provider_access(tmp_path: Path):

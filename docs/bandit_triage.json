@@ -39,54 +39,6 @@
     {
       "disposition": "mitigated_by_control",
       "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
-      "fingerprint": "061f200e09ad2b19f2e802c57e4ad1b346c16252b47b7088fbfd3fbb13b0e29a",
-      "line_number": 420,
-      "owner": "@ognjhunt",
-      "reason": "The checkpoint URL comes from a permission-checked secret file, is required to use HTTPS, and the range probe is followed by exact size and SHA-256 verification before the checkpoint is used. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
-      "fingerprint": "d352d02a8bdf14f498d27aa24d6b0643fbef3792cec399620bd5ea31086f4145",
-      "line_number": 468,
-      "owner": "@ognjhunt",
-      "reason": "The checkpoint URL comes from a permission-checked secret file, is required to use HTTPS, and every downloaded part is constrained by the signed manifest size and SHA-256 digest. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
-      "fingerprint": "da9573f4015dc4f76e1d7d3f868009e4935cc2ab842ad5dc5e2efe96d7bc2cb7",
-      "line_number": 751,
-      "owner": "@ognjhunt",
-      "reason": "The checkpoint URL comes from a permission-checked secret file, is required to use HTTPS, and every downloaded part is constrained by the signed manifest size and SHA-256 digest. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
-      "fingerprint": "3548147fb592fbfdef77e8a703bf676154f179667d8efdd4c6f8339a10302d72",
-      "line_number": 818,
-      "owner": "@ognjhunt",
-      "reason": "The output URL comes from a permission-checked secret file, is required to use HTTPS, and its download and extracted ZIP contents are bounded before the worker report is accepted. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/oscar_runtime_asset_contract.py",
       "fingerprint": "71395dd4ddc5bee0e2418ce1258f3aee4fc16ce4df5475b550d7a4db03c21c33",
       "line_number": 636,
@@ -419,18 +371,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B614"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/unitree_unifolm_vla_server_bridge.py",
-      "fingerprint": "ec50cf71826e0427b2fb7487fad288c14b5ee9436302e3a863c57ee0c81d65f9",
-      "line_number": 213,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
     },
     {
       "disposition": "accepted_risk",

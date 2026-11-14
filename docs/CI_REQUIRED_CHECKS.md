@@ -256,9 +256,7 @@ plan and never wait for the test lanes. Each runs whole, as on `main`: none of
 them is the slow part of a run, and the Bandit policy gate needs the whole scan
 (a partial report reads every triaged finding outside it as orphaned). On `main`
 the gate does not check them; `lint`, `typecheck`, `sast` and `source-governance`
-stay `supply-chain`'s prerequisites there, as before. `foundation-prerequisites`
-stays after merge, on push only, because it reads external hosts and an outage
-there would hold every pull request.
+stay `supply-chain`'s prerequisites there, as before.
 
 A test that asserts a complete set runs, by test node, in the bounded lane
 whenever a member can change, even when its file went to the wide or full lane

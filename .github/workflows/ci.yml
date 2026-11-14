@@ -584,8 +584,7 @@ jobs:
   # request as well as on main, and the gate below fails a pull request unless each
   # passes. They used to run only after merge: a Bandit finding merged on 2026-11-08
   # left main red and every deploy blocked until 2026-11-10. They need nothing, so
-  # they start with the impact plan and never wait for tests. foundation-prerequisites
-  # stays push-only: it reads external hosts, so an outage would hold every PR.
+  # they start with the impact plan and never wait for tests.
   lint:
     name: Ruff and claim lint
     runs-on: ubuntu-latest
@@ -609,30 +608,6 @@ jobs:
           uv run ruff check src/blueprint_pipeline scripts tests
           uv run python scripts/lint_public_scientific_claims.py
           uv run python scripts/verify_paid_resource_allocator.py
-          uv run python scripts/verify_groot_oscar_thin_architecture.py
-
-  foundation-prerequisites:
-    name: GR00T OSCAR external prerequisite pins
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Verify paid-build prerequisites without allocating a builder
-        run: |
-          python3 scripts/verify_groot_oscar_live_prerequisites.py \
-            --live \
-            --output "${{ runner.temp }}/blueprint-ci/groot_oscar_live_prerequisites.json"
-
-      - name: Upload prerequisite evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: groot-oscar-prerequisites-${{ github.sha }}
-          path: ${{ runner.temp }}/blueprint-ci/groot_oscar_live_prerequisites.json
-          if-no-files-found: error
-          retention-days: 7
 
   typecheck:
     name: Typed release contract core

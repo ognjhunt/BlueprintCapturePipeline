@@ -1632,18 +1632,6 @@ def test_each_predecessor_result_is_pinned_by_digest(lane) -> None:
         assert inputs[name]["digest"] == expected
 
 
-def test_the_allocator_still_demands_the_predecessors_this_builder_carries() -> None:
-    """Guards the ordering itself, not just this profile's rendering."""
-
-    source = (
-        REPO_ROOT / "src" / "blueprint_pipeline" / "paid_resource_allocator.py"
-    ).read_text(encoding="utf-8")
-
-    assert "native_task_arena_construction_result" in source
-    assert "native_task_arena_control_result" in source
-    assert "native_task_arena_policy_execution_spec" in source
-
-
 def test_no_profile_is_built_for_a_packet_the_runtime_would_refuse(lane) -> None:
     """The chokepoint: no profile, no authority consumed, no provider.
 
@@ -1679,7 +1667,6 @@ def test_a_scene_plan_that_cannot_be_read_blocks_rather_than_passes(lane) -> Non
         _build(lane, "construction")
 
     assert "native_task_arena_scene_plan" in str(excinfo.value)
-
 
 
 def test_every_link_defaults_to_the_durable_machine_avoidlist() -> None:
