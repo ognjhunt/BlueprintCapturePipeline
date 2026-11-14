@@ -55,7 +55,6 @@ attempt completed. Production proof additionally requires:
 | `native-task-arena-policy-diagnostic` | `build_native_task_arena_live_profile.py` |
 | `new-site-diagnostic-canary` | `build_new_site_diagnostic_canary_live_profile.py` |
 | `new-site-native-camera` | `build_new_site_native_camera_live_profile.py` |
-| `reconstruction-worker-smoke` | `build_reconstruction_worker_smoke_live_profile.py` |
 | `semantic-sam31-source-tracks` | `build_sam31_source_tracks_live_profile.py` |
 | `semantic-teacher-image-edit` | `build_semantic_teacher_image_edit_live_profile.py` |
 | `task-evaluation-scene-configuration` | `build_task_evaluation_scene_configuration_live_profile.py` |
@@ -182,23 +181,3 @@ Do not report a lane as "working in production" from builder reachability, a
 CPU test, simulator startup, or provider allocation alone. That claim requires
 the exact deployed commit plus a terminal launch record satisfying the six
 production-proof conditions above.
-
-The scene-level strict ledger is produced with
-`scripts/supervise_scene_strict_family_ledger.py`. It derives the governed
-denominator from this live inventory, groups the three ordered Native Task
-Arena probes and the ArtiFixer3D -> paired-native-import probes into their two
-families, and adds the non-probe production OpenAI visual-review family. It
-counts a family only after reopening the exact launch/profile/admission,
-terminal result, artifact manifest and its bytes, teardown, official billing,
-post-teardown provider-zero, WebApp binding, and one-use authority evidence.
-Its output is an append-only, self-digested checkpoint chain with the honest
-numerator and the next unproven checkpoint; the command has no allocation,
-publication, or authority-issuance interface.
-
-The supplied scene evidence root identifies the canonical task-input namespace;
-it is not a containment claim. Terminal launch bytes remain under the launch
-state root, while later exact-digest billing or predecessor receipts may live
-in a different lane's scene/task input root. The supervisor follows only
-canonical launch-profile digest edges and sibling roots whose scene and task
-identifiers are admitted by the requested audit. An arbitrary other directory,
-even if it contains a plausible receipt, is not part of the evidence catalog.

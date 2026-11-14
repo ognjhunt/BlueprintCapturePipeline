@@ -995,21 +995,17 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
-        "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-launch-activation.timer",
-        "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
-        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-beta-policy-screening.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-episode-compilation.timer",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-team-scene-packet-remote.timer",
         "blueprint-control-plane-storage-gc.timer",
@@ -1024,8 +1020,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-website-atlas-preview.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
-        "blueprint-embodiment-preparation.path",
-        "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-task-evaluation-episode-compilation-remote.path",
         "blueprint-team-scene-packet-remote.path",
@@ -1063,6 +1057,13 @@ PAUSED_LANE_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
+    "blueprint-task-evaluation-policy-canary-dispatcher.path",
+    "blueprint-task-evaluation-launch-supervisor.timer",
+    "blueprint-scene-object-discovery.path",
+    "blueprint-embodiment-preparation.path",
+    "blueprint-embodiment-preparation.timer",
+    "blueprint-task-evaluation-episode-compilation.path",
+    "blueprint-task-evaluation-episode-compilation.timer",
 )
 
 
@@ -2379,7 +2380,7 @@ def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(
     monkeypatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
-    unit = "blueprint-task-evaluation-policy-canary-dispatcher.path"
+    unit = "blueprint-rigid-robot-free-probe-runner.path"
     enabled = "enabled"
     active = "inactive"
 

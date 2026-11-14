@@ -7,7 +7,6 @@ import pytest
 from blueprint_pipeline.g1_proprioception_map import (
     G1_CANONICAL_DOF_ALIASES,
     G1_CANONICAL_DOF_GROUPS,
-    G1_SONIC_PROPRIOCEPTION_STATE_DIMS,
     resolve_g1_proprioception_map,
     validate_g1_sonic_state_dims,
 )
@@ -192,25 +191,6 @@ def test_nonfinite_observed_position_blocks():
         "g1_proprioception_observed_position_invalid:left_hip_pitch_joint"
         in resolution["blockers"]
     )
-
-
-def test_dims_match_unitree_g1_sonic_state_contract():
-    from blueprint_pipeline.oscar_isaac_closed_loop_eval import UNITREE_G1_SONIC_STATE_DIMS
-
-    assert G1_SONIC_PROPRIOCEPTION_STATE_DIMS == UNITREE_G1_SONIC_STATE_DIMS
-
-
-def test_groups_match_repo_canonical_joint_groups():
-    from blueprint_pipeline.mujoco_g1_wam_vla_policy_endpoint_eval import (
-        UNITREE_G1_SONIC_STATE_JOINT_GROUPS,
-    )
-
-    assert {
-        group: tuple(names) for group, names in G1_CANONICAL_DOF_GROUPS.items()
-    } == {
-        group: tuple(names)
-        for group, names in UNITREE_G1_SONIC_STATE_JOINT_GROUPS.items()
-    }
 
 
 def test_alias_table_targets_are_canonical():

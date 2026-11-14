@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.isaac_worker_image_manifest import (
-    derive_worker_build_identity,
-    derive_required_cuda_version,
-    _inspect_local_image,
-    _runnable_child_digest,
-    inspect_image_manifest,
-    summarize_manifest,
-)
 from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
     CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
+)
+from blueprint_pipeline.isaac_worker_image_manifest import (
+    _inspect_local_image,
+    _runnable_child_digest,
+    derive_required_cuda_version,
+    derive_worker_build_identity,
+    inspect_image_manifest,
+    summarize_manifest,
 )
 
 
@@ -390,9 +390,3 @@ def test_isaac_build_script_keeps_digest_pinned_base_default() -> None:
         "blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission" in script
     )
     assert "build-release" in script
-    dockerfile = (
-        Path(__file__).resolve().parents[1]
-        / "deploy/docker/robot_eval_worker/isaac/Dockerfile"
-    ).read_text(encoding="utf-8")
-    assert "blueprint_pipeline.reconstruction_isaac_bootstrap" in dockerfile
-    assert "blueprint_pipeline.reconstruction_isaac_output_bundle" in dockerfile

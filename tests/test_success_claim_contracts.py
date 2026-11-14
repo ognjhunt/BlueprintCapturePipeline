@@ -24,7 +24,6 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import success_claim_contracts as scc
-from blueprint_pipeline.oscar_cosmos_wam_evaluator import _normalize_wam_success_labels
 from blueprint_pipeline.proof_contracts import build_site_package_manifest
 from blueprint_pipeline.robot_eval_execution import _simulator_attempts_from_payload
 
@@ -587,122 +586,6 @@ def _criterion_results(*, passed: bool = True) -> list[dict[str, object]]:
             "evidence_refs": ["v.mp4#frame=4"],
         }
     ]
-
-
-def test_wam_label_media_validity_alone_is_not_authoritative() -> None:
-    payload = {
-        "status": "completed",
-        "labels": [
-            {
-                "rollout_id": "r1",
-                "success": None,
-                "confidence": 0.9,
-                "visual_evidence_used": True,
-                "criterion_results": _criterion_results(),
-            }
-        ],
-    }
-    labels = _normalize_wam_success_labels(
-        command_payload=payload,
-        rollouts=_wam_rollout(),
-        generated_at="2026-07-04T00:00:00Z",
-        visual_smoke_status="passed",
-        visual_rollout_useful=True,
-    )
-    row = labels["labels"][0]
-    assert row["authoritative_task_success_label"] is False
-    assert row["reviewer_verdict_strict_boolean"] is False
-    assert labels["review_grade_success_labels"] is False
-    assert "wam_success_label_verdict_not_strict_boolean" in labels["blockers"]
-
-
-def test_wam_label_boolean_verdict_without_calibrated_episode_proof_is_not_review_grade() -> None:
-    payload = {
-        "status": "completed",
-        "labels": [
-            {
-                "rollout_id": "r1",
-                "success": True,
-                "confidence": 0.9,
-                "visual_evidence_used": True,
-                "criterion_results": _criterion_results(),
-            }
-        ],
-    }
-    labels = _normalize_wam_success_labels(
-        command_payload=payload,
-        rollouts=_wam_rollout(),
-        generated_at="2026-07-04T00:00:00Z",
-        visual_smoke_status="passed",
-        visual_rollout_useful=True,
-    )
-    row = labels["labels"][0]
-    assert row["authoritative_task_success_label"] is False
-    assert row["review_task_success"] is False
-    assert labels["review_grade_success_labels"] is False
-    assert labels["status"] == "blocked"
-    assert "wam_success_label_calibration_artifact_missing" in labels["blockers"]
-    assert "wam_success_label_criterion_subresults_missing_or_invalid" in labels["blockers"]
-    assert "wam_success_label_full_episode_order_not_verified" in labels["blockers"]
-    # Review-grade never upgrades to real-world proof.
-    assert (
-        labels["claim_boundary"]["success_label_is_from_generated_video_not_physical_robot"] is True
-    )
-
-
-def test_wam_label_degraded_media_blocks_review_grade() -> None:
-    payload = {
-        "status": "completed",
-        "labels": [
-            {
-                "rollout_id": "r1",
-                "success": True,
-                "confidence": 0.9,
-                "visual_evidence_used": True,
-                "criterion_results": _criterion_results(),
-            }
-        ],
-    }
-    labels = _normalize_wam_success_labels(
-        command_payload=payload,
-        rollouts=_wam_rollout(),
-        generated_at="2026-07-04T00:00:00Z",
-        visual_smoke_status="failed",
-        visual_rollout_useful=False,
-    )
-    assert labels["review_grade_success_labels"] is False
-    assert labels["labels"][0]["authoritative_task_success_label"] is False
-
-
-def test_wam_label_low_confidence_or_missing_criteria_abstains() -> None:
-    labels = _normalize_wam_success_labels(
-        command_payload={
-            "status": "completed",
-            "labels": [
-                {
-                    "rollout_id": "r1",
-                    "success": True,
-                    "confidence": 0.01,
-                    "visual_evidence_used": True,
-                }
-            ],
-        },
-        rollouts=_wam_rollout(),
-        generated_at="2026-07-04T00:00:00Z",
-        visual_smoke_status="passed",
-        visual_rollout_useful=True,
-    )
-
-    assert labels["status"] == "blocked"
-    assert labels["review_grade_success_labels"] is False
-    assert labels["labels"][0]["review_task_success"] is False
-    assert "wam_success_label_confidence_below_calibrated_floor" in labels["blockers"]
-    assert "wam_success_label_criterion_subresults_missing_or_invalid" in labels["blockers"]
-
-
-# --------------------------------------------------------------------------------------
-# Simulator attempt ingest — status strings never become task success
-# --------------------------------------------------------------------------------------
 
 
 def test_completed_status_without_verdict_fails_closed() -> None:

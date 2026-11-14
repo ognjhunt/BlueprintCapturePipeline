@@ -43,9 +43,6 @@
     "src/blueprint_pipeline/gpu_render_providers.py": [
       "tests/test_gpu_render_providers.py"
     ],
-    "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": [
-      "tests/test_groot_oscar_digitalocean_closed_loop_job.py"
-    ],
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": [
       "tests/test_isaac_g1_kitchen_parity_job.py"
     ],
@@ -64,14 +61,8 @@
     "src/blueprint_pipeline/materialization.py": [
       "tests/test_materialization_edges.py"
     ],
-    "src/blueprint_pipeline/mujoco_eval_media.py": [
-      "tests/test_mujoco_eval_media.py"
-    ],
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": [
       "tests/test_mujoco_g1_simulator_command.py"
-    ],
-    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": [
-      "tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py"
     ],
     "src/blueprint_pipeline/native_task_arena_construction_worker.py": [
       "tests/test_native_task_arena_construction_worker.py"
@@ -104,17 +95,8 @@
     "src/blueprint_pipeline/official_g1_policy_handoff.py": [
       "tests/test_official_g1_policy_handoff.py"
     ],
-    "src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py": [
-      "tests/test_oscar_cosmos_wam_evaluator.py"
-    ],
-    "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": [
-      "tests/test_oscar_isaac_closed_loop_eval.py"
-    ],
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": [
       "tests/test_oscar_wam_command_adapter.py"
-    ],
-    "src/blueprint_pipeline/oscar_wam_provider_bundle.py": [
-      "tests/test_oscar_wam_provider_bundle.py"
     ],
     "src/blueprint_pipeline/paid_resource_allocator.py": [
       "tests/test_paid_resource_allocator.py"
@@ -130,12 +112,6 @@
     ],
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": [
       "tests/test_public_scene_artifixer3d_vast.py"
-    ],
-    "src/blueprint_pipeline/public_scene_replacement_occlusion.py": [
-      "tests/test_adp009d_replacement_occlusion.py"
-    ],
-    "src/blueprint_pipeline/public_scene_suite_admission.py": [
-      "tests/test_public_scene_suite_admission.py"
     ],
     "src/blueprint_pipeline/robot_eval_dataset.py": [
       "tests/test_robot_eval_dataset.py"
@@ -167,17 +143,8 @@
     "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py": [
       "tests/test_semantic_teacher_image_edit_vast.py"
     ],
-    "src/blueprint_pipeline/simready_cad_agent_host_import.py": [
-      "tests/test_simready_cad_agent_host_import.py"
-    ],
     "src/blueprint_pipeline/simulation_automation.py": [
       "tests/test_simulation_automation.py"
-    ],
-    "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py": [
-      "tests/test_single_g1_kitchen_episode_runpod.py"
-    ],
-    "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": [
-      "tests/test_single_g1_kitchen_qualification_session.py"
     ],
     "src/blueprint_pipeline/site_eval_director.py": [
       "tests/test_site_eval_director.py"
@@ -201,9 +168,6 @@
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": [
       "tests/test_task_evaluation_supervisor.py"
     ],
-    "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": [
-      "tests/test_unitree_groot_n17_sonic_vast_persistent_session.py"
-    ],
     "src/blueprint_pipeline/vast_provider_adapter.py": [
       "tests/test_vast_provider_adapter.py"
     ],
@@ -212,9 +176,6 @@
     ],
     "src/blueprint_pipeline/vast_wam_teardown.py": [
       "tests/test_vast_wam_teardown.py"
-    ],
-    "src/blueprint_pipeline/wam_derived_observation_harness.py": [
-      "tests/test_wam_derived_observation_harness.py"
     ],
     "src/blueprint_pipeline/wam_fixture_evaluator.py": [
       "tests/test_wam_fixture_evaluator.py"
@@ -272,7 +233,6 @@
     "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
     "src/blueprint_pipeline/geometry_stage.py": 2244,
     "src/blueprint_pipeline/gpu_render_providers.py": 3553,
-    "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": 2643,
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": 3012,
     "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
@@ -280,7 +240,6 @@
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2200,
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6063,
-    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12110,
     "src/blueprint_pipeline/native_franka_pose_servo.py": 2845,
     "src/blueprint_pipeline/native_runtime_backend.py": 2970,
     "src/blueprint_pipeline/native_task_arena_actuator_sweep.py": 2551,
@@ -291,15 +250,10 @@
     "src/blueprint_pipeline/native_task_construction_plan.py": 2281,
     "src/blueprint_pipeline/object_index_stage.py": 2369,
     "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,
-    "src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py": 6607,
-    "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 8183,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
-    "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5872,
     "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
     "src/blueprint_pipeline/post_training_data_package.py": 6727,
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
-    "src/blueprint_pipeline/public_scene_replacement_occlusion.py": 2004,
-    "src/blueprint_pipeline/public_scene_suite_admission.py": 2066,
     "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,
     "src/blueprint_pipeline/robot_eval_job_orchestrator.py": 12558,
@@ -309,19 +263,14 @@
     "src/blueprint_pipeline/sc3_fidelity_contracts.py": 2321,
     "src/blueprint_pipeline/scene_asset_preflight.py": 2213,
     "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py": 2517,
-    "src/blueprint_pipeline/simready_cad_agent_host_import.py": 2217,
     "src/blueprint_pipeline/simulation_automation.py": 3804,
-    "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py": 4378,
-    "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4648,
     "src/blueprint_pipeline/site_eval_director.py": 2152,
     "src/blueprint_pipeline/site_package_orchestrator.py": 5697,
     "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2085,
     "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py": 2109,
     "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py": 2662,
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 4166,
-    "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
     "src/blueprint_pipeline/vast_provider_adapter.py": 10420,
-    "src/blueprint_pipeline/wam_derived_observation_harness.py": 3066,
     "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
     "src/blueprint_pipeline/wam_generated_video_review.py": 2412,
     "src/blueprint_pipeline/task_evaluation_configured_controls_progression_worker.py": 2009,

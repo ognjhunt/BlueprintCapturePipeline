@@ -44,7 +44,6 @@ BUNDLE_BUILT_BY_SCRIPT = {
 #: means giving that module a `main()`.
 BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     # Frozen or retired lanes -- no launch path is wanted.
-    "public_scene_aura_exact_residual_bundle.py",
     "cosmos_edge_closed_loop_provider_bundle.py",
     # Generic Arena bundle is a shared library, not a launch entry point.
     "native_task_arena_bundle.py",
@@ -55,8 +54,6 @@ BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     "native_g1_beta_bundle.py",
     # ADP-009D diagnostics.
     "adp009d_native_microcheck_bundle.py",
-    "articulated_isaac_bundle.py",
-    "articulated_native_diagnostic_bundle.py",
 }
 
 
@@ -180,14 +177,7 @@ def test_a_bundle_module_has_an_entrypoint_or_is_a_named_gap(path: Path) -> None
 
 
 #: Authority materializers with no command line. Named, not skipped.
-#:
-#: `public_scene_aura_exact_residual_vast` is retired: no launch profile will
-#: be built for it and no attempt will be authorized, so it wants no entry
-#: point. Its *historical* receipts remain this campaign's spend anchor, which
-#: is a reason to keep the artifacts, not a reason to keep the path.
-AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT = {
-    "public_scene_aura_exact_residual_vast.py",
-}
+AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT: set[str] = set()
 
 
 def _authority_materializers() -> list[tuple[Path, str]]:
@@ -257,7 +247,6 @@ def test_an_authority_can_be_minted_from_a_command_line(path: Path, function: st
 CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED: dict[str, str] = {
     "deployment_embodiment_preparation_bundle.materialize": "test-injected callable; CLI uses the pinned public-source materializer",
     "deployment_embodiment_preparation_bundle.wheel_get": "test-injected callable; CLI uses the protected HTTP client and SHA-pinned wheels",
-    "oscar_wam_provider_bundle.generated_at": "receipt timestamp defaults to now",
     "public_scene_simready_isaac_bundle.generated_at": "receipt timestamp defaults to now",
     "task_evaluation_scene_configuration_bundle.stat_only_toolchain_host_validation": (
         "owner-decided host setting, off by default: unset, the builder reads "

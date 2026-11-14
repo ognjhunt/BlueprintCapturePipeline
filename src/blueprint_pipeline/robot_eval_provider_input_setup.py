@@ -96,7 +96,6 @@ LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS = {
     "build_new_site_diagnostic_canary_live_profile.py": "content_addressed_full_readback",
     "build_new_site_native_camera_live_profile.py": "content_addressed_full_readback",
     "build_paired_target_native_import_live_profile.py": "content_addressed_full_readback",
-    "build_reconstruction_worker_smoke_live_profile.py": "content_addressed_full_readback",
     "build_retained_scene_render_live_profile.py": "content_addressed_full_readback",
     "build_sam31_source_tracks_live_profile.py": "content_addressed_full_readback",
     "build_semantic_teacher_image_edit_live_profile.py": "content_addressed_full_readback",

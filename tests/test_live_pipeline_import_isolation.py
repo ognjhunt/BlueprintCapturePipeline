@@ -25,15 +25,9 @@ SEED_MODULES = ("live_pipeline_intake_service",)
 # as a failure here rather than as a heavy CPU-host import at runtime.
 HOT_LANE_MODULES = frozenset(
     {
-        "oscar_isaac_closed_loop_eval",
-        "oscar_wam_provider_bundle",
-        "oscar_wam_provider_command_adapter",
         "oscar_wam_command_adapter",
-        "oscar_cosmos_wam_evaluator",
-        "unitree_groot_n17_sonic_vast_persistent_session",
         "unitree_groot_n17_sonic_provider_smoke",
         "unitree_groot_n17_sonic_policy_runtime",
-        "persistent_wam_short_visual_sanity",
         "wam_compute_providers",
         "wam_generated_video_review",
         "vast_provider_adapter",
@@ -48,7 +42,6 @@ HOT_LANE_MODULES = frozenset(
         "isaac_g1_policy",
         "isaac_g1_kitchen_parity_job",
         "isaac_particlefield_render_job",
-        "mujoco_g1_wam_vla_policy_endpoint_eval",
         "mujoco_g1_simulator_command",
         "mujoco_worker_runtime_preflight",
     }
@@ -101,9 +94,9 @@ def _transitive_local_modules(seeds: tuple[str, ...]) -> set[str]:
 
 
 def test_hot_lane_module_names_unique() -> None:
-    # The literal list must stay a 26-name set; a typo collapsing two entries would
+    # The literal list must stay a 19-name set; a typo collapsing two entries would
     # silently weaken the guard.
-    assert len(HOT_LANE_MODULES) == 26
+    assert len(HOT_LANE_MODULES) == 19
 
 
 def test_seed_modules_exist() -> None:

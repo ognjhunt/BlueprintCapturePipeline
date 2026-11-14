@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
 from blueprint_pipeline.public_scene_calibrated_object_masks import materialize_calibrated_object_mask_set
 from blueprint_pipeline.public_scene_sam31_track_selection_review import (
     materialize_sam31_track_selection_inputs, load_validated_sam31_track_selection_inputs,
@@ -26,8 +27,22 @@ from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration 
 from tests.test_public_scene_calibrated_object_masks import (
     _fixture, _review, _task_packets_for_fixture, _run_production_ai_review,
 )
-from tests.test_adp009d_replacement_occlusion import _source_splat
 from tests.test_adp_retained_scene_render_packet import _absolute_record, _relative_record, _write_json
+
+
+def _source_splat(path: Path, *, count: int = 6) -> Path:
+    values = np.arange(count, dtype=np.float32)
+    splat = SplatData(
+        count=count,
+        xyz=np.stack((values, values + 10, values + 20), axis=1),
+        opacity=values + 30,
+        f_dc=np.stack((values + 40, values + 50, values + 60), axis=1),
+        scales=np.stack((values + 70, values + 80, values + 90), axis=1),
+        quats=np.stack((values + 100, values + 110, values + 120, values + 130), axis=1),
+        properties=(),
+        sh_rest=None,
+    )
+    return write_standard_3dgs_ply(splat, path)
 
 
 def _seal(path, value, field="receipt_digest"):

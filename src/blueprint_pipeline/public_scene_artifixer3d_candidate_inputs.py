@@ -32,14 +32,12 @@ from .artifixer_source_geometry_admission import admit_source_geometry
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .dual_task_rehearsal_contract import MAX_REPLACEMENT_OBJECTS
 from .gaussian_splat_decode import read_standard_3dgs_ply
-from .public_scene_repair_preflight_contract import (
-    CALIBRATED_RESIDUAL_PREFLIGHT_SCHEMA_VERSION as CALIBRATED_RESIDUAL_PREFLIGHT_SCHEMA,
-)
 from .public_scene_segment_mask_repair_preflight import (
     SCHEMA_VERSION as CALIBRATED_SEGMENT_REPAIR_PREFLIGHT_SCHEMA,
 )
 
 
+CALIBRATED_RESIDUAL_PREFLIGHT_SCHEMA = "public_scene_aura_exact_residual_preflight.v1"
 SCHEMA_VERSION = "public_scene_artifixer3d_candidate_inputs.v3"
 OBJECT_ABSENT_REFERENCE_SCHEMA = "public_scene_object_absent_reference_candidates.v1"
 CAMERA_INDEX_SCHEMA = "public_scene_artifixer3d_camera_index.v1"

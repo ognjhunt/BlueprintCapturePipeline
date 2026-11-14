@@ -1051,12 +1051,11 @@ def _lightweight_qualification_manifest_binding(
     *,
     launched_id: str,
 ) -> bool:
-    """Conservatively recognize a live owner when the full runtime cannot import.
+    """Conservatively recognize a live qualification owner.
 
-    This is a protection-only fallback, not a release/admission validator. It repeats
-    the immutable identity fields needed to avoid reaping live work from a lightweight
-    ops environment. Any uncertainty returns ``False``; the normal runtime validator
-    remains authoritative whenever it is importable.
+    This is a protection-only check, not a release/admission validator. It repeats
+    the immutable identity fields needed to avoid reaping live work. Any uncertainty
+    returns ``False``.
     """
 
     if (
@@ -1204,17 +1203,6 @@ def _validated_qualification_manifest(
 ) -> tuple[Path, Path, str, str] | None:
     """Return an adjacent, fully bound live Vast qualification manifest."""
 
-    # Import lazily so ordinary render-owner scans do not load the qualification
-    # runtime and its provider adapters.
-    validator = None
-    try:
-        from blueprint_pipeline.single_g1_kitchen_qualification_session import (
-            _validate_manifest_binding,
-        )
-        validator = _validate_manifest_binding
-    except Exception:  # noqa: BLE001 - use protection-only lightweight binding below
-        pass
-
     for manifest_path in sorted(id_path.parent.glob("*.json")):
         encoded = _read_bounded_regular_text(
             manifest_path,
@@ -1235,18 +1223,12 @@ def _validated_qualification_manifest(
             source = manifest_path.parent.resolve(strict=True) / manifest_path.name
         except OSError:
             source = manifest_path.expanduser().absolute()
-        if validator is None:
-            if not _lightweight_qualification_manifest_binding(
-                source,
-                manifest,
-                launched_id=launched_id,
-            ):
-                continue
-        else:
-            try:
-                validator(source, manifest)
-            except Exception:  # noqa: BLE001 - invalid binding is never an owner
-                continue
+        if not _lightweight_qualification_manifest_binding(
+            source,
+            manifest,
+            launched_id=launched_id,
+        ):
+            continue
         watchdog_deadline_value = manifest.get("watchdog_deadline_epoch")
         if isinstance(watchdog_deadline_value, bool) or not isinstance(
             watchdog_deadline_value, (str, int, float)

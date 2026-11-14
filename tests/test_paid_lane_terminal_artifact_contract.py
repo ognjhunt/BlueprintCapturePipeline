@@ -39,10 +39,8 @@ PAID_LANE_MODULES = (
     "adp009d_franka_vast.py",
     "adp009d_ovrtx_vast.py",
     "adp_aura_author_smoke_vast.py",
-    "adp_aura_interiorgs_vast.py",
     "adp_content_agents_vast.py",
     "adp_gaussian_excision_vast.py",
-    "adp_inpaint360_interiorgs_vast.py",
     "adp_joint_agent_vast.py",
     "adp_retained_scene_render_vast.py",
     "native_task_arena_vast.py",
@@ -56,10 +54,8 @@ PAID_LANE_MODULES = (
     # `new-site-diagnostic-canary` #544 made reachable share this runner.
     "openpi_policy_ranking_runpod.py",
     "paired_target_native_import_vast.py",
-    "public_scene_aura_exact_residual_vast.py",
     "public_scene_artifixer3d_vast.py",
     "public_scene_simready_isaac_vast.py",
-    "reconstruction_vast_worker_smoke.py",
     # Not a `*_vast*.py` transport at all: it writes the launch profile's
     # terminal `result.json` on every non-execute-ready path, so it is a
     # terminal write into the same contract and is verified as one.
@@ -88,10 +84,7 @@ SEALED_BY_ALLOCATOR_CALLER = {
 #: admission that the lane is not launchable, not an exemption from fixing it.
 #: The tests below refuse a stale entry, refuse an entry that has quietly
 #: started sealing, and cap the total so the ledger cannot absorb a new lane.
-UNSEALED_LANE_DEBT = {
-    "single_g1_kitchen_episode_runpod.py": "frozen_program",
-    "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
-}
+UNSEALED_LANE_DEBT: dict[str, str] = {}
 
 VALID_DEBT_REASONS = {"shares_unsealed_canonical_allocator_write", "frozen_program"}
 
@@ -216,7 +209,7 @@ def test_the_widened_discovery_still_sees_the_lanes_it_used_to() -> None:
     assert {module for module in PAID_LANE_MODULES if module.endswith("_vast.py")} <= discovered
     # The runpod family, invisible here until a live canary depended on it.
     assert "openpi_policy_ranking_runpod.py" in discovered
-    assert sum(1 for module in discovered if "_runpod" in module) >= 2
+    assert sum(1 for module in discovered if "_runpod" in module) >= 1
 
 
 def test_a_lane_sealed_by_its_caller_really_is_sealed_by_that_caller() -> None:
@@ -654,7 +647,6 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
 #: allocator's imports.
 TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {
     "openpi_policy_ranking_gpu_admission.py": "new-site-diagnostic-canary + frozen openpi",
-    "reconstruction_gpu_admission.py": "reconstruction-worker-smoke",
 }
 
 

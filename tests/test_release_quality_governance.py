@@ -114,21 +114,6 @@ def test_content_agents_vast_stays_under_its_source_governance_budget() -> None:
     ).is_file()
 
 
-def test_simready_host_import_stays_under_its_source_governance_budget() -> None:
-    root = Path(__file__).resolve().parents[1]
-    policy = json.loads(
-        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
-    )
-    relative = "src/blueprint_pipeline/simready_cad_agent_host_import.py"
-    importer_source = (root / relative).read_text(encoding="utf-8")
-    line_count = len(importer_source.splitlines())
-    assert line_count <= policy["grandfathered_module_line_limits"][relative]
-    assert "from .simready_cad_agent_host_ownership import (" in importer_source
-    assert (
-        root / "src/blueprint_pipeline/simready_cad_agent_host_ownership.py"
-    ).is_file()
-
-
 def test_vast_adapter_stays_under_its_source_governance_budget() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = json.loads(
@@ -1517,7 +1502,6 @@ def test_outbound_http_call_sites_route_through_the_safe_boundary() -> None:
     root = Path(__file__).resolve().parents[1]
     rewired = (
         "src/blueprint_pipeline/gpu_render_providers.py",
-        "src/blueprint_pipeline/isaac_persistent_task_completion_client.py",
         "src/blueprint_pipeline/wam_strict_action_consistency_scorer_client.py",
         "scripts/run_isaac_g1_kitchen_parity_eval.py",
     )

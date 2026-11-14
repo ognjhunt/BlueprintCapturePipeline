@@ -62,8 +62,6 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/remote_cpu_job_allocator.py",
     "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
     "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
-    "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
-    "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
     "src/blueprint_pipeline/website_task_context.py",
 }
