@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor, build_capture_bundle_constraints
-from blueprint_pipeline.retrieval_index_stage import run_retrieval_index_stage
 
 import pytest
 
@@ -89,19 +86,3 @@ def test_capture_descriptor_preserves_android_xr_video_only_and_strips_false_cla
     assert "quoted_payout_cents" not in constraints
 
 
-def test_retrieval_index_skips_android_xr_video_only_until_new_geometry_contract(tmp_path: Path) -> None:
-    capture_root = tmp_path / "bucket" / "scenes" / "scene-xr" / "captures" / "capture-xr"
-    capture_root.mkdir(parents=True)
-    (capture_root / "capture_descriptor.json").write_text(
-        json.dumps(_android_xr_descriptor_payload()),
-        encoding="utf-8",
-    )
-
-    result = run_retrieval_index_stage(capture_root=capture_root, embedding_model=object())
-
-    assert result == {
-        "status": "skipped",
-        "reason": "android_xr_video_only_requires_explicit_geometry_contract",
-        "capture_id": "capture-xr",
-    }
-    assert not (capture_root / "pipeline" / "geometry" / "geometry_summary.json").exists()

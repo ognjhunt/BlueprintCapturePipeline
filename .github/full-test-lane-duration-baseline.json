@@ -1,6 +1,6 @@
 {
   "default_seconds_per_test": 0.250656326,
-  "file_count": 2268,
+  "file_count": 2256,
   "files": [
     {
       "duration_seconds": 0.05,
@@ -1773,24 +1773,9 @@
       "test_count": 3
     },
     {
-      "duration_seconds": 0.11,
-      "path": "tests/test_cosmos3_readiness.py",
-      "test_count": 9
-    },
-    {
       "duration_seconds": 0.136,
       "path": "tests/test_cosmos3_wam_command_adapter.py",
       "test_count": 11
-    },
-    {
-      "duration_seconds": 0.164,
-      "path": "tests/test_cosmos_benchmark.py",
-      "test_count": 7
-    },
-    {
-      "duration_seconds": 0.036,
-      "path": "tests/test_cosmos_capture_bootstrap.py",
-      "test_count": 2
     },
     {
       "duration_seconds": 0.363,
@@ -1816,11 +1801,6 @@
       "duration_seconds": 0.135,
       "path": "tests/test_cosmos_lora_training.py",
       "test_count": 4
-    },
-    {
-      "duration_seconds": 1.881,
-      "path": "tests/test_cosmos_training_export.py",
-      "test_count": 8
     },
     {
       "duration_seconds": 0.01,
@@ -2398,11 +2378,6 @@
       "test_count": 7
     },
     {
-      "duration_seconds": 0.205,
-      "path": "tests/test_frame_alignment_stage.py",
-      "test_count": 9
-    },
-    {
       "duration_seconds": 0.101,
       "path": "tests/test_frames_layout.py",
       "test_count": 7
@@ -2496,11 +2471,6 @@
       "duration_seconds": 0.162,
       "path": "tests/test_full_lane_sharding.py",
       "test_count": 7
-    },
-    {
-      "duration_seconds": 0.037,
-      "path": "tests/test_future_anchor_regrounding.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 0.079,
@@ -7253,11 +7223,6 @@
       "test_count": 35
     },
     {
-      "duration_seconds": 0.198,
-      "path": "tests/test_reference_selection.py",
-      "test_count": 7
-    },
-    {
       "duration_seconds": 2.629,
       "path": "tests/test_registered_arena_experiments.py",
       "test_count": 19
@@ -7586,21 +7551,6 @@
       "duration_seconds": 50.963,
       "path": "tests/test_retained_source_calibration_lifecycle.py",
       "test_count": 47
-    },
-    {
-      "duration_seconds": 0.386,
-      "path": "tests/test_retrieval_index_geometry_source.py",
-      "test_count": 4
-    },
-    {
-      "duration_seconds": 0.311,
-      "path": "tests/test_retrieval_index_stage_coverage.py",
-      "test_count": 4
-    },
-    {
-      "duration_seconds": 0.088,
-      "path": "tests/test_retrieval_model_download_gate.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 0.079,
@@ -9086,11 +9036,6 @@
       "duration_seconds": 1.498,
       "path": "tests/test_source_calibration_vast_preflight.py",
       "test_count": 7
-    },
-    {
-      "duration_seconds": 0.108,
-      "path": "tests/test_sparse_view_interpolation.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 0.611,
@@ -10591,11 +10536,6 @@
       "duration_seconds": 0.352,
       "path": "tests/test_torchvision_rendered_scene_analyzer.py",
       "test_count": 6
-    },
-    {
-      "duration_seconds": 0.124,
-      "path": "tests/test_trajectory_augmentation.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 1.191,
@@ -12442,6 +12382,6 @@
   "source_junit_sha256": "457d4512db4021477c9cdb91a801f5b639a4e48b43fe574ba3d527b60700251a",
   "source_repository_sha": "e9af5888afc5efa25dfcfc8742fcfed1e30e7ffd",
   "source_run_id": 38193701899,
-  "test_count": 34429,
-  "total_duration_seconds": 8647.484
+  "test_count": 34367,
+  "total_duration_seconds": 8643.836
 }
