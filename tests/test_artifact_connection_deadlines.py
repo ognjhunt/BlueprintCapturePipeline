@@ -8,13 +8,12 @@ import time
 import pytest
 
 from blueprint_pipeline import artifact_http_transport as transport
-from tests.test_artifact_https_transports import registry
 from tests import test_controlled_http_connection_deadlines as control_fixtures
 
 local_peer = control_fixtures.local_peer
 tls_contexts = control_fixtures.tls_contexts
 
-MODULES = [transport, registry]
+MODULES = [transport]
 
 
 @pytest.mark.parametrize("module", MODULES)

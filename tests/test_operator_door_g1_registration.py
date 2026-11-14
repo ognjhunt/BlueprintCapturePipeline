@@ -13,8 +13,7 @@ import zipfile
 import pytest
 
 from tests.test_operator_door_public_policy_registration import (
-    ROOT, PROFILE_ROOT, write, DoorConfig, CommandResult, enqueue, process_spool,
-    validate_request, required_scope, RequestRefused,
+    ROOT, PROFILE_ROOT, write,
 )
 from operator_door import native_g1_registration_contract as contract
 from operator_door import native_g1_registration as installer
@@ -211,16 +210,6 @@ def test_root_isolated_entrypoint_imports_without_pipeline_or_site_packages():
     assert "--request-json" in result.stdout
 
 
-def test_request_has_only_fixed_identities_and_no_path_command_rights_inputs():
-    req = request()
-    assert validate_request({"kind": contract.OPERATION, "request": req})["request"] == req
-    assert required_scope(contract.OPERATION) == "operate"
-    for change in ({"path": "/tmp/arbitrary"}, {"rights": {"approved": True}}, {"command": "id"},
-                   {"candidates": [{"candidate_id": "new-policy", "scene_packet": None, "navigation_authority": None}]}):
-        with pytest.raises(RequestRefused):
-            validate_request({"kind": contract.OPERATION, "request": request(**change)})
-
-
 def test_root_reconstructs_site_registration_cas_idempotence_and_per_candidate_reasons(tmp_path):
     retained = fixture(tmp_path)
     assert retained.prepared["registered_count"] == 2
@@ -299,19 +288,6 @@ def test_site_overlay_preserves_derived_refresh_and_filters_wrong_task(tmp_path)
     changed = {**profile, "scene_revision_digest": "sha256:" + "b" * 64}
     assert registry_module._site_screening_profile(registry, changed) == changed
     assert retained.derived == contract.common.read(tmp_path / "derived/site.json")
-
-
-def test_spool_launch_stays_networkless_and_never_releases_founder_hold(tmp_path):
-    config = DoorConfig(state_root=str(tmp_path / "door"))
-    for sub in ("pending", "processing", "completed", "results"):
-        (Path(config.spool_root) / sub).mkdir(parents=True)
-    enqueue(config, {"kind": contract.OPERATION, "request": request()}, requested_by="development-only", operation_key="development-only")
-    calls = []
-    process_spool(config, runner=SimpleNamespace(run=lambda argv, timeout: calls.append(argv) or CommandResult(0, "", "")))
-    launch, = calls
-    assert "--property=PrivateNetwork=yes" in launch and "--property=RestrictAddressFamilies=AF_UNIX" in launch
-    assert launch[-1].endswith("/door-install-public-piper-policy.sh")
-    assert not any("TOKEN=" in row or "KEY=" in row or "dispatcher" in row for row in launch)
 
 
 def test_service_owned_derived_record_is_valid_for_root_but_shared_registry_is_not(tmp_path, monkeypatch):

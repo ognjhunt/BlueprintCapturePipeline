@@ -1,9 +1,7 @@
 """The content-addressed object key one cached WAM provider dependency lives under.
 
 ``wam_provider_object_store.stage_cached_runtime_dependency_object_store`` writes
-an immutable dependency once under this key and reuses it after; the G1 runtime
-source restore (``native_g1_runtime_source_restore``) reads a retained copy back
-by the same key.
+an immutable dependency once under this key and reuses it after.
 """
 
 from __future__ import annotations

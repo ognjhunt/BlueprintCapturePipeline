@@ -24,9 +24,7 @@ pinned OpenPI revision, or a config that does not name its checkpoint).
 That does not establish a completed simulation on
 the current task. The native G1 candidates use their dedicated whole-body
 worker and require an exact current-task G1 scene packet. Missing scene, policy,
-rights, adapter or credentials remain individual reasons. See
-[native G1 screening](native-g1-beta-screening.md) for the internal-development
-authority and result boundaries.
+rights, adapter or credentials remain individual reasons.
 Catalog entries alone never authorize a run.
 
 A new website campaign plans only the rows that can run on a website job
