@@ -594,12 +594,15 @@ def test_without_a_screening_queue_the_deletion_says_so(world, screened):
     assert screened["dirs"]["settled"].is_dir()
 
 
-def test_default_roots_are_the_screening_unit_roots():
-    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-beta-policy-screening.service").read_text()
+def test_default_roots_are_the_ones_the_withdrawal_unit_may_write():
+    """The trial's unit is gone (2026-11-14); its retained roots are what withdrawal deletion still reaches."""
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-website-withdrawal-deletion.service").read_text()
+    writable = {token.removeprefix("-") for line in unit.splitlines() if line.startswith("ReadWritePaths=")
+                for token in line.removeprefix("ReadWritePaths=").split()}
     for variable, default in ((coordinator.QUEUE_ROOT_ENV, screening.DEFAULT_QUEUE_ROOT),
                               (coordinator.WORK_ROOT_ENV, screening.DEFAULT_WORK_ROOT)):
         if not os.environ.get(variable):
-            assert f"Environment={variable}={default}\n" in unit
+            assert str(default) in writable, variable
 
 
 @pytest.mark.parametrize("gated", [False, True])

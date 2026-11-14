@@ -430,7 +430,6 @@ HOST_MEMORY_KEPT = {
     "blueprint-off-host-reaper-heartbeat.service": ("-200", "256M"),
     "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5.5G"),
     "blueprint-website-atlas-preview.service": ("-200", "5.5G"),
-    "blueprint-beta-policy-screening.service": ("-200", "5.5G"),
     # Not measured on the host yet: the duties it took from the trial's tick, which ran them under 5.5G.
     "blueprint-scene-stage-maintenance.service": ("200", "5.5G"),
     "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
@@ -518,7 +517,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet.service",
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
-    "blueprint-beta-policy-screening.service",
     "blueprint-scene-stage-maintenance.service",
     "blueprint-agent-run-dispatcher.service",
     "blueprint-task-evaluation-episode-compilation.service",
@@ -566,7 +564,6 @@ UNIT_FAILURE_NOTIFIED_UNITS = (
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-team-scene-packet.service",
     "blueprint-rigid-robot-free-probe-runner.service",
-    "blueprint-beta-policy-screening.service",
     # The site's held notices and success-rule exchange must not stop silently.
     "blueprint-scene-stage-maintenance.service",
     # A privacy promise: a withdrawn site's deletion must not stop silently.
@@ -587,7 +584,6 @@ UNIT_FAILURE_ROUTINE_EXIT_UNITS = {
 #: Units that keep an independent GPU watchdog child alive past their own stop or timeout.
 KILL_MODE_PROCESS_UNITS = (
     "blueprint-agent-run-dispatcher.service",
-    "blueprint-beta-policy-screening.service",
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
@@ -656,8 +652,7 @@ def test_batch_units_are_in_the_slice_and_always_on_and_money_units_are_not() ->
                  "blueprint-task-evaluation-launch-dispatcher.service",
                  "blueprint-task-evaluation-launch-activation.service",
                  "blueprint-task-evaluation-launch-preparation.service",
-                 "blueprint-team-scene-packet.service", "blueprint-rigid-robot-free-probe-runner.service",
-                 "blueprint-beta-policy-screening.service"):
+                 "blueprint-team-scene-packet.service", "blueprint-rigid-robot-free-probe-runner.service"):
         assert unit in BATCH_SLICE_UNITS, unit
     # The five money-safety units that keep 8G say that it never acts.
     capped_above_the_host = sorted(
@@ -939,9 +934,8 @@ def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read
     from blueprint_pipeline.task_evaluation_production_chain_preflight import PAID_ALLOCATION_UNITS
 
     flag = "Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true"
-    # The two paid lanes website jobs use, which once ran with the guard off.
-    assert {"blueprint-rigid-robot-free-probe-runner.service",
-            "blueprint-beta-policy-screening.service"} <= set(PAID_ALLOCATION_UNITS)
+    # The paid lane website jobs use, which once ran with the guard off.
+    assert "blueprint-rigid-robot-free-probe-runner.service" in PAID_ALLOCATION_UNITS
     for name in PAID_ALLOCATION_UNITS:
         text = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
         assert flag in text, name
@@ -967,7 +961,6 @@ def test_probe_and_screening_attempts_stage_on_the_work_volume_and_stay_watched(
     stay on the root disk; the spend guard still finds the attempts' owner records; the deploy
     provisions both roots; the storage table classifies them."""
 
-    from blueprint_pipeline.beta_policy_screening_coordinator import WORK_ROOT_ENV as SCREENING_WORK_ENV
     from blueprint_pipeline.control_plane_storage_roots import classify_path
     from blueprint_pipeline.rigid_robot_free_probe_runner import WORK_ENV as PROBE_WORK_ENV
     from tests.test_deploy_control_plane_commit import deploy
@@ -978,10 +971,6 @@ def test_probe_and_screening_attempts_stage_on_the_work_volume_and_stay_watched(
          "/mnt/blueprint-work/rigid-robot-free-probe-work",
          "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE=/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes",
          "work"),
-        ("blueprint-beta-policy-screening.service", SCREENING_WORK_ENV,
-         "/mnt/blueprint-work/beta-policy-screening-work",
-         "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/beta-policy-screening",
-         "evidence_hot"),
     ):
         text = _read(unit)
         assert f"Environment={env}={root}\n" in text, unit
@@ -993,6 +982,14 @@ def test_probe_and_screening_attempts_stage_on_the_work_volume_and_stay_watched(
         assert root in deploy._WORK_VOLUME_PROVISIONABLE
         classified = classify_path(root + "/attempts/x")
         assert classified is not None and classified.path == root and classified.storage_class == storage_class
+    # The early trial's unit is gone (2026-11-14); its retained attempts stay watched by the spend guard,
+    # provisioned, classified and reachable by withdrawal deletion until the owner's purge.
+    root = "/mnt/blueprint-work/beta-policy-screening-work"
+    assert f"--output-root {root} " in guard and f"ReadOnlyPaths=-{root}\n" in guard
+    assert root in deploy._WORK_VOLUME_PROVISIONABLE
+    classified = classify_path(root + "/attempts/x")
+    assert classified is not None and classified.path == root and classified.storage_class == "evidence_hot"
+    assert root in _read("blueprint-website-withdrawal-deletion.service")
 
 
 def test_launch_activation_unit_outlasts_its_preparation_command(tmp_path, monkeypatch):

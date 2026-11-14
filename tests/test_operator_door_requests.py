@@ -51,6 +51,7 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
         "blueprint-team-evaluation-runner.path",
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-task-evaluation-configured-controls-progression.timer",
+        "blueprint-beta-policy-screening.timer",
     )
     for unit in RETIRED_HOLD_UNITS:
         plain = {"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",
