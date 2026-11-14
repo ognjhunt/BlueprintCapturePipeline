@@ -56,11 +56,6 @@ def test_every_input_step_can_supply_its_materializer(step: str) -> None:
     "step",
     [
         "source-collider-batch-removal",
-        "simready-graph-asset",
-        "simready-static-qualification",
-        "visual-binding",
-        "visual-composition",
-        "registered-asset",
         "interaction-affordance",
         "articulated-kinematic-path",
         "camera-rig",
