@@ -32,7 +32,6 @@ ARMED_BY_THE_ALLOCATOR = frozenset({"semantic_teacher_image_edit_vast"})
 LANES_WITHOUT_AN_INDEPENDENT_WATCHDOG = frozenset(
     {
         "adp_aura_author_smoke_vast",
-        "adp_inpaint360_interiorgs_vast",
         "openvla_policy_provider_smoke",
         "robot_eval_provider_launcher",
         "simpler_public_vast",
@@ -121,9 +120,6 @@ def test_every_lane_that_arms_one_binds_it_to_the_names_it_creates() -> None:
             offenders.append(f"{module.stem}: armed={sorted(armed)} labelled={sorted(labelled)}")
 
     #: Known drifted lanes, listed so the set cannot grow silently.
-    #: `adp_aura_interiorgs_vast` is a retired appearance method with no launch
-    #: profile, so its drift cannot reach a provider; it is recorded rather
-    #: than repaired.
-    known = {"adp_aura_interiorgs_vast"}
+    known: set[str] = set()
 
     assert {item.split(":", 1)[0] for item in offenders} == known, offenders
