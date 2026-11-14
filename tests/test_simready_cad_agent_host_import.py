@@ -44,9 +44,9 @@ from blueprint_pipeline.simready_cad_agent_host_import import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FREEZES = {
     "task_a_washer_door_open": REPO_ROOT
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json",
+    / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json",
     "task_b_notebook_relocation": REPO_ROOT
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json",
+    / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json",
 }
 ASSETS = {
     "task_a_washer_door_open": "840920_simready_washer_candidate",

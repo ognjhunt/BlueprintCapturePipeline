@@ -34,7 +34,8 @@ from blueprint_pipeline.vast_provider_adapter import (
 ROOT = Path(__file__).parents[1]
 MANIFEST = (
     ROOT
-    / "docs"
+    / "tests"
+    / "fixtures"
     / "arm_decision_proof_v1"
     / "manifests"
     / "simpler_google_robot_pick_coke_can.v1.json"

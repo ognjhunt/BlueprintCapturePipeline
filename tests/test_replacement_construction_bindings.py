@@ -198,7 +198,7 @@ def _path_backed_packet(
     force_batch_collider_receipt: bool = False,
 ) -> tuple[Path, list[dict[str, str]]]:
     root = Path(__file__).resolve().parents[1]
-    manifests = root / "docs/arm_decision_proof_v1/manifests"
+    manifests = root / "tests/fixtures/arm_decision_proof_v1/manifests"
     scene_path = manifests / "third_scene_840920_dual_task_scene_freeze.v1.json"
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
     base_task_paths = [

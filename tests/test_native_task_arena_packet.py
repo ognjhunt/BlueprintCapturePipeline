@@ -1169,7 +1169,7 @@ def test_existing_output_is_never_overwritten(tmp_path: Path) -> None:
 def test_checked_second_scene_packet_v3_binding_is_canonical() -> None:
     path = (
         Path(__file__).parents[1]
-        / "docs/arm_decision_proof_v1/manifests"
+        / "tests/fixtures/arm_decision_proof_v1/manifests"
         / "second_scene_840796_native_arena_packet_v3_binding.v1.json"
     )
     binding = json.loads(path.read_text(encoding="utf-8"))
@@ -1205,7 +1205,7 @@ def test_forged_construction_context_fails_before_copy(tmp_path: Path) -> None:
 
 def test_checked_second_scene_request_and_receipt_are_self_consistent() -> None:
     manifest_root = (
-        Path(__file__).parents[1] / "docs/arm_decision_proof_v1/manifests"
+        Path(__file__).parents[1] / "tests/fixtures/arm_decision_proof_v1/manifests"
     )
     request = json.loads(
         (

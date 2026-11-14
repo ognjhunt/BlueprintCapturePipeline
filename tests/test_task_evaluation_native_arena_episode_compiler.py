@@ -1038,7 +1038,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         receipt_path = _write_json(inputs, "appearance-receipt.json", receipt)
         registry_path = (
             Path(__file__).resolve().parents[1]
-            / "docs/arm_decision_proof_v1/manifests/"
+            / "tests/fixtures/arm_decision_proof_v1/manifests/"
             "franka_robotiq_policy_camera_mount_registry.v1.json"
         )
         observation_refs = {

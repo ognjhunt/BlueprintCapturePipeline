@@ -26,7 +26,7 @@ from tests.test_native_task_arena_packet import (
 
 TASK_FREEZE = (
     Path(__file__).resolve().parents[1]
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+    / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
 AUTHORIZED_AT = "2026-08-20T22:00:00Z"
 

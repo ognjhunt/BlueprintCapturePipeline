@@ -26,7 +26,7 @@ from blueprint_pipeline.paired_target_native_manipulation_preflight import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MANIFESTS = REPO_ROOT / "docs/arm_decision_proof_v1/manifests"
+MANIFESTS = REPO_ROOT / "tests/fixtures/arm_decision_proof_v1/manifests"
 TRIAL_CONFIG = REPO_ROOT / "config/trial"
 TASKS = (
     ("task_a_washer_door_open", "a", "washer_asset"),
