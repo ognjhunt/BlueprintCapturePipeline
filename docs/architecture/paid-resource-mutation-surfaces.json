@@ -206,13 +206,6 @@
       ]
     },
     {
-      "path": "src/blueprint_pipeline/provider_race.py",
-      "classification": "legacy_orchestrator_no_grant_issuer",
-      "required_markers": [
-        "provider.launch("
-      ]
-    },
-    {
       "path": "src/blueprint_pipeline/remote_cpu_job_allocator.py",
       "classification": "canonical_adapter",
       "required_markers": [

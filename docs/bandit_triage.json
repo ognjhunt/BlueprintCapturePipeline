@@ -266,18 +266,6 @@
     },
     {
       "disposition": "mitigated_by_control",
-      "expires_on": "2026-12-06",
-      "filename": "scripts/serve_company_policy_sandbox_bridge.py",
-      "fingerprint": "0fa80e68cff9e7f0044917693e7ea440a75de1944da35ed09b8187f9af4b5422",
-      "line_number": 121,
-      "owner": "@ognjhunt",
-      "reason": "Intentional listener secured by TLS>=1.2 and unchanged constant-time bearer/closed-route/job/source/qualification checks. Accept thread no longer blocks on TLS; 8 total TLS+handler slots,5s handshake limit, one absolute10s header/body read deadline, cancellation and slot cleanup, no progress renewal. No observed host group membership, enrollment or exact operating-system deployment state claim. No claim that manager ingress/firewall/IP allowlist has been deployed or independently observed. Source mitigations do not prove CI or live runtime deployment. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md. Accepted by the owner on 2026-11-06. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B104"
-    },
-    {
-      "disposition": "mitigated_by_control",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/task_evaluation_result_artifact_store.py",
       "fingerprint": "2924bd09212ab6e3ecfc1740b407d6eca91acc856f64cb5ef3a6fd49c0403072",
@@ -359,18 +347,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B103"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/company_policy_sandbox_manager.py",
-      "fingerprint": "720fa7aa156789b88c47684fe190ec8141db1c308540304a1c20b75300442a53",
-      "line_number": 374,
-      "owner": "@ognjhunt",
-      "reason": "Intentional listener secured by TLS>=1.2 and unchanged constant-time bearer/closed-route/job/source/qualification checks. Accept thread no longer blocks on TLS; 8 total TLS+handler slots,5s handshake limit, one absolute10s header/body read deadline, cancellation and slot cleanup, no progress renewal. No observed host group membership, enrollment or exact operating-system deployment state claim. No claim that manager ingress/firewall/IP allowlist has been deployed or independently observed. Source mitigations do not prove CI or live runtime deployment. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md. Accepted by the owner on 2026-11-06. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B104"
     },
     {
       "disposition": "mitigated_by_control",
