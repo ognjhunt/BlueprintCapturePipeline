@@ -423,7 +423,6 @@ HOST_MEMORY = {
 HOST_MEMORY_KEPT = {
     "blueprint-pubsub-handoff-listener.service": ("200", "5.5G"),
     "blueprint-task-evaluation-launch-activation.service": ("200", "5.5G"),
-    "blueprint-embodiment-preparation.service": ("200", "5.5G"),
     "blueprint-control-plane-preflight.service": ("200", "1G"),
     "blueprint-control-plane-capacity.service": ("200", "512M"),
     "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
@@ -527,7 +526,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
-    "blueprint-embodiment-preparation.service",
     "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-team-evaluation-runner.service",
     "blueprint-agent-run-dispatcher.service",
@@ -597,7 +595,6 @@ UNIT_FAILURE_ROUTINE_EXIT_UNITS = {
 KILL_MODE_PROCESS_UNITS = (
     "blueprint-agent-run-dispatcher.service",
     "blueprint-beta-policy-screening.service",
-    "blueprint-embodiment-preparation.service",
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-task-evaluation-launch-dispatcher.service",

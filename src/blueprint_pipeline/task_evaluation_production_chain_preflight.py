@@ -1565,7 +1565,7 @@ PAID_ALLOCATION_UNITS: tuple[str, ...] = tuple(f"blueprint-{name}.service" for n
     "task-evaluation-launch-dispatcher",
     "task-evaluation-sam31-preparation-execution", "rigid-robot-free-probe-runner", "beta-policy-screening",
     "pubsub-handoff-listener", "team-evaluation-runner",
-    "embodiment-preparation", "agent-run-dispatcher"))
+    "agent-run-dispatcher"))
 
 
 def _env_usd(name: str, default: float, *environments: Mapping[str, Any]) -> float:

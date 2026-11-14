@@ -765,7 +765,7 @@ def test_workload_names_are_always_valid_labels():
 # result_artifact_download by the long-running intake service (no start timeout),
 # and handoff_staging by the long-running listener (no start timeout).
 ROLE_WORKER_UNITS = {
-    "embodiment_preparation": ("blueprint-embodiment-preparation.service",),
+    "embodiment_preparation": (),  # its unit, embodiment preparation, is retired
     "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
                            "blueprint-task-evaluation-scene-progression.service"),
     "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",

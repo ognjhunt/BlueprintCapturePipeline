@@ -611,11 +611,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     team_runner_path = unit_dir / "blueprint-team-evaluation-runner.path"
     team_runner_path.write_text(
         "[Path]\nPathExistsGlob=/team-evaluations/pending/*.json\n", encoding="utf-8")
-    embodiment_units = []
-    for suffix in ("service", "path", "timer"):
-        source = unit_dir / f"blueprint-embodiment-preparation.{suffix}"
-        source.write_text("[Unit]\nDescription=Exact asset preparation fixture\n")
-        embodiment_units.append(source)
     probe_runner_service = unit_dir / "blueprint-rigid-robot-free-probe-runner.service"
     probe_runner_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-rigid-robot-free-probe-runner\n",
@@ -797,7 +792,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         activation_timer,
         team_runner_service,
         team_runner_path,
-        *embodiment_units,
         probe_runner_service,
         probe_runner_path,
         probe_runner_timer,
@@ -881,9 +875,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-activation.timer",
         "blueprint-team-evaluation-runner.service",
         "blueprint-team-evaluation-runner.path",
-        "blueprint-embodiment-preparation.service",
-        "blueprint-embodiment-preparation.path",
-        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.service",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-rigid-robot-free-probe-runner.timer",
@@ -999,8 +990,6 @@ PAUSED_LANE_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
-    "blueprint-embodiment-preparation.path",
-    "blueprint-embodiment-preparation.timer",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-episode-compilation.timer",
 )
@@ -1138,7 +1127,7 @@ def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tm
     restore = deploy._restore_installed_path_units
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
     triggers = [unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))]
-    already_off = "blueprint-embodiment-preparation.timer"
+    already_off = "blueprint-task-evaluation-sam31-preparation-execution.timer"
     states = {unit: {"enabled": "enabled", "state": "active"} for unit in triggers}
     states[already_off] = {"enabled": "disabled", "state": "inactive"}
     before = {unit: dict(state) for unit, state in states.items()}

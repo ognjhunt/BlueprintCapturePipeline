@@ -463,9 +463,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-activation.timer",
     "blueprint-team-evaluation-runner.service",
     "blueprint-team-evaluation-runner.path",
-    "blueprint-embodiment-preparation.service",
-    "blueprint-embodiment-preparation.path",
-    "blueprint-embodiment-preparation.timer",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-rigid-robot-free-probe-runner.path",
     "blueprint-rigid-robot-free-probe-runner.timer",
@@ -656,9 +653,6 @@ DEFAULT_PAUSED_LANE_DISARM_UNITS = (
     # Robot-team evaluation lanes, deleted by the owner (a deployment company
     # running its own software in our simulation is later). Their triggers stop
     # here before the WebApp routes they call are removed.
-    # Embodiment preparation: a door grant starts it, the timer retries it.
-    "blueprint-embodiment-preparation.path",
-    "blueprint-embodiment-preparation.timer",
     # Episode compilation (host): launch preparation stages it only for a
     # reuse_configured_scene request (policy and controls runs); a website job
     # prepares as scene_configuration and never compiles episodes. Its remote
@@ -683,6 +677,9 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     # Launch supervision (a read-only explainer) and scene object discovery.
     "blueprint-task-evaluation-launch-supervisor.timer",
     "blueprint-scene-object-discovery.path",
+    # Embodiment preparation (a door grant started it, the timer retried it).
+    "blueprint-embodiment-preparation.path",
+    "blueprint-embodiment-preparation.timer",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the

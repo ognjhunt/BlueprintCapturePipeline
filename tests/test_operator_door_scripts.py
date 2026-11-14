@@ -1075,7 +1075,6 @@ def test_hold_expiry_script_releases_only_matching_active_expired_generation(tmp
     assert log.read_text().splitlines() == [f"enable -- {unit}", f"--no-block start -- {unit}"], "expiry is idempotent"
 
 
-
 # --- provider-output-resume ---------------------------------------------------------------------
 
 RESUME_ID = "20260929T120000Z-provider-output-resume-0000abcd"
@@ -1086,41 +1085,6 @@ shift
 { echo "setpriv ${options[*]} --"; echo "umask $(umask)"; } >> "$STUB_LOG"
 exec "$@"
 """
-
-
-@pytest.mark.parametrize("helper_rc", [0, 2])
-def test_public_asset_shell_only_enqueues_as_service_user_with_literal_grant(env, tmp_path, helper_rc):
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    _write_stub(tmp_path / "stubs/setpriv", SETPRIV_STUB)
-    _write_stub(tmp_path / "stubs/chgrp", "#!/bin/bash\nexit 0\n")
-    helper = tmp_path / "preparation-python"
-    _write_stub(helper, '''#!/bin/bash
-printf '%s\\n' "$@" > "$STUB_DIR/preparation-argv"
-printf '%s\\n' "$GIT_CONFIG_COUNT" "$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0" > "$STUB_DIR/preparation-git-config"
-: > "$STUB_DIR/preparation-private"
-printf '%s\\n' '{"status":"grant_queued","claim_ceiling":"development_only"}'
-exit "$FAKE_HELPER_RC"
-''')
-    grant = json.dumps({"authorization_reference": "development_only $(touch must-not-exist) `false` %n", "request_digest": "sealed"})
-    request_id = "20261029T154718Z-public-embodiment-preparation-0000abcd"
-    arguments = dict(DOOR_REQUEST_ID=request_id, DOOR_VENV_PYTHON=str(helper),
-        DOOR_CONTROL_PLANE_REPO=str(repository), DOOR_SERVICE_USER="blueprint",
-        DOOR_EMBODIMENT_PREPARATION_REQUEST=grant, FAKE_HELPER_RC=str(helper_rc))
-    rc, outcome, calls = _run("door-public-embodiment-preparation.sh", env, **arguments)
-    assert rc == helper_rc
-    assert outcome["status"] == ("completed" if helper_rc == 0 else "failed")
-    assert (tmp_path / "preparation-argv").read_text().splitlines() == ["-m",
-        "blueprint_pipeline.deployment_embodiment_preparation_controller", "enqueue", "--request-json", grant]
-    assert (tmp_path / "preparation-git-config").read_text().splitlines() == ["1", "safe.directory", str(repository.resolve())]
-    assert any("--reuid=blueprint --regid=blueprint" in call for call in calls)
-    assert not any("systemctl" in call or "git " in call for call in calls)
-    assert not (repository / "must-not-exist").exists()
-    assert stat.S_IMODE((tmp_path / "preparation-private").stat().st_mode) == 0o600
-    result = Path(env["DOOR_RESULTS_DIR"]) / f"{request_id}.public-embodiment-preparation.json"
-    assert stat.S_IMODE(result.stat().st_mode) == 0o640
-    rc, outcome, _ = _run("door-public-embodiment-preparation.sh", env, **{**arguments, "DOOR_SERVICE_USER": "root"})
-    assert rc == 2 and outcome["code"] == "embodiment_preparation_user_invalid"
 
 
 @pytest.mark.parametrize("helper_rc", [0, 2])

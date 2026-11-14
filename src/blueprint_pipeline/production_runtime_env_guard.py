@@ -87,7 +87,6 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.team_scene_packet_collector",
     "blueprint_pipeline.team_scene_packet_remote_condition",
     "blueprint_pipeline.beta_policy_screening_worker",
-    "blueprint_pipeline.deployment_embodiment_preparation_controller",
     "blueprint_pipeline.rigid_robot_free_probe_runner",
     "blueprint_pipeline.task_evaluation_launch_activation_worker",
     "blueprint_pipeline.task_evaluation_episode_compilation_worker",
