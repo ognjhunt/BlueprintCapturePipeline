@@ -2,12 +2,6 @@
   "schema_version": "paid_api_call_sites.v1",
   "description": "Every API-priced call site (OpenAI incl. Codex CLI and Agents SDK, Gemini, World Labs, hosted SAM, Anthropic, NVIDIA NIM, DeepInfra, DreamLabs, Palatial, RunPod serverless) found by scripts/verify_paid_resource_allocator.py. Keys are path::enclosing scope::signal. admitted: via (where the path reaches it) and admission (the admission, reservation or ledger function), both path::name. not_paid: reason. unadmitted: can_spend_on, and the key must be named in UNADMITTED_API_CALL_SITES, which tests/test_paid_resource_allocator_verifier.py pins (adding one needs an explicit edit to that test). admitted means the admission, reservation or ledger call runs before the paid request on every path.",
   "sites": {
-    "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>::openai_codex_cli": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; an ADP evidence-program constant read by its own module only"
-    },
     "src/blueprint_pipeline/agent_execution/openai_transport.py::OpenAIAgentsHTTP.request::openai_api_url": {
       "provider": "openai",
       "class": "admitted",

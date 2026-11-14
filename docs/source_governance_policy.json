@@ -4,9 +4,6 @@
     "src/blueprint_pipeline/adp009d_control_episode.py": [
       "tests/test_adp009d_control_episode.py"
     ],
-    "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py": [
-      "tests/test_adp009d_franka_evaluation_harness.py"
-    ],
     "src/blueprint_pipeline/adp009d_isaac_runtime.py": [
       "tests/test_adp009d_native_microcheck_bundle.py"
     ],
@@ -166,7 +163,6 @@
   ],
   "grandfathered_module_line_limits": {
     "src/blueprint_pipeline/adp009d_control_episode.py": 3352,
-    "src/blueprint_pipeline/adp009d_franka_evaluation_harness.py": 2047,
     "src/blueprint_pipeline/adp009d_isaac_runtime.py": 4647,
     "src/blueprint_pipeline/adp009d_physics_backend_comparison.py": 2041,
     "src/blueprint_pipeline/adp_task_scoring.py": 2130,
@@ -212,7 +208,6 @@
     "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_b_simready_graph_asset_receipt.v1.json",
     "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_b_simready_graph_asset_static_qualification.v1.json",
     "tests/test_gaussian_suppression_render.py",
-    "tests/test_gaussian_suppression_volume.py",
     "tests/test_host_resident_launch_inputs.py",
     "tests/test_issue_retained_scene_render_paid_attempt_authority.py",
     "tests/test_nurec_volume_codec.py",
