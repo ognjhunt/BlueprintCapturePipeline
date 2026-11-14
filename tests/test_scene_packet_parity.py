@@ -6,7 +6,7 @@ Case A replays the committed synthetic record ``rigid-pick-place-1080p-short`` t
 (``task_evaluation_downstream_replay`` until ``team_packet``) and, from a second copy stopped right
 after the request is queued, through the NEW queue. Case B compiles the real ``proposal_only`` job of
 the owner-confirmation tests with both stages, assumed thresholds. Case C compiles the articulated
-drawer fixture. Each new half is handed to the real readers: the scripted check's reader
+drawer fixture; the real download publishes the new half with its open/close success rule. Each new half is handed to the real readers: the scripted check's reader
 (``rigid_robot_free_probe_bundle.current_probe_state`` / ``probe_inputs``) and the company download
 (``website_company_simulation`` with the fakes of its own tests). Hermetic: no network, nothing paid.
 """
@@ -220,12 +220,22 @@ def test_case_b_an_assumed_proposal_only_job_compiles_the_same_contract_and_succ
 # ------------------------------------------------------------------------------------------------- case C
 
 
-def test_case_c_an_articulated_job_carries_its_success_rule_in_the_plan(tmp_path):
+def _articulated_halves(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     scene = _articulated_scene(tmp_path)
     inputs = {key: scene[key] for key in ("revision", "documents", "configured_scene_bundle_path",
                                           "droid_profile_path", "droid_profile_digest", "runtime_source_receipt_path")}
-    old = materialize_team_scene(**inputs, output_root=tmp_path / "old" / "scene")
-    compiled = new.compile_half(**inputs, output_root=tmp_path / "new" / "scene")
+    return (materialize_team_scene(**inputs, output_root=tmp_path / "old" / "scene"),
+            new.compile_half(**inputs, output_root=tmp_path / "new" / "scene"))
+
+
+def _object_row(plan: dict[str, Any]) -> dict[str, Any]:
+    return next(row for row in plan["objects"] if row["semantic_role"] == "task_object")
+
+
+def test_case_c_an_articulated_job_carries_its_success_rule_in_the_plan_and_is_published(tmp_path):
+    from pxr import Sdf
+
+    old, compiled = _articulated_halves(tmp_path)
     old_plan, new_plan = _plan(old["path"]), _plan(compiled["path"])
     contract = _json(compiled["path"])["task_success_contract"]
     assert contract == _json(old["path"])["task_success_contract"]
@@ -233,13 +243,79 @@ def test_case_c_an_articulated_job_carries_its_success_rule_in_the_plan(tmp_path
     # The old plan left the articulated contract out, so the download refused the job; the new plan carries it.
     assert "task_success_contract" not in old_plan["task_spec"]
     assert new_plan["task_spec"]["task_success_contract"] == contract
-    assert _plan_fields(new_plan) == _plan_fields(old_plan)
-    # Not yet shipped: an articulated plan states no lift axis, so the download refuses both halves before the
-    # rule (``scene_package_stage.up_axis``). That is the download's to fix; this stage invents no axis.
-    for name, half in (("dl-old", old["path"]), ("dl-new", compiled["path"])):
-        refused, _, _ = _download(tmp_path / name, half)
-        assert refused == {"status": "refused", "reason": "website_company_simulation_up_axis_not_stated",
-                           "detail": ""}
+    # The object file differs only by the line flattening wrote into its documentation, naming the host file.
+    packets = [Path(path).parent / "native-task-packet" for path in (old["path"], compiled["path"])]
+    layers = [Sdf.Layer.FindOrOpen(str(packet / _object_row(plan)["usd_path"]))
+              for packet, plan in ((packets[0], old_plan), (packets[1], new_plan))]
+    assert "Generated from Composed Stage of root layer " in layers[0].documentation
+    assert layers[1].documentation == layers[0].documentation.split("\n\nGenerated from")[0]
+    layers[1].documentation = layers[0].documentation
+    assert layers[1].ExportToString() == layers[0].ExportToString()
+    unchanged = [{**row, "sha256": None, "size_bytes": None} if row["semantic_role"] == "task_object" else row
+                 for row in _plan_fields(old_plan)["objects"]]
+    assert [{**row, "sha256": None, "size_bytes": None} if row["semantic_role"] == "task_object" else row
+            for row in _plan_fields(new_plan)["objects"]] == unchanged
+    assert {**_plan_fields(new_plan), "objects": None} == {**_plan_fields(old_plan), "objects": None}
+    # The plan states no lift direction; the room's files declare Z, so the real download publishes the new half
+    # with the open/close goal in its success rule. The old half still has no rule in its plan, so it is refused.
+    assert "lift_unit_world" not in new_plan["task_spec"]["interaction_affordance"]
+    refused, _, _ = _download(tmp_path / "dl-old", old["path"])
+    assert refused["status"] == "refused" and refused["reason"] == "website_company_simulation_success_rule_missing"
+    result, rule, names = _download(tmp_path / "dl-new", compiled["path"])
+    assert result["status"] == "published", result
+    assert rule["up_axis"] == "Z" and rule["units"] == "metres, radians, seconds"
+    assert rule["criteria"]["opening"] == {"mode": "required", "success_interval": [0.216, 0.36],
+                                           "joint_hard_limits": [0.0, 0.36], "reset_position": 0.0}
+    assert rule["criteria"]["hold"] == {"mode": "required", "window_samples": 15,
+                                        "maximum_settled_target_speed": 0.02}
+    assert rule["criteria"]["motion"] == {"movement_epsilon": 0.0036}
+    assert rule["criteria"]["safety"] == {"mode": "required"}
+    assert "object_start" in rule and rule["timing"]
+    assert "success_rule.json" in names and "scene.usda" in names
+    text = json.dumps(rule)
+    assert "drawer" not in text and "joint_id" not in text
+
+
+def test_an_articulated_plan_whose_room_states_no_up_axis_is_still_refused(tmp_path):
+    from pxr import Sdf
+
+    _, compiled = _articulated_halves(tmp_path)
+    packet = Path(compiled["path"]).parent / "native-task-packet"
+    for row in _plan(compiled["path"])["objects"]:
+        if row["semantic_role"] in {"scene_collision", "scene_appearance"}:
+            path = packet / row["usd_path"]
+            layer = Sdf.Layer.OpenAsAnonymous(str(path))
+            layer.pseudoRoot.ClearInfo("upAxis")
+            text = layer.ExportToString()
+            path.unlink()  # the packet's files are read-only links; this half gets its own
+            path.write_text(text)
+    refused, _, _ = _download(tmp_path / "dl", compiled["path"])
+    assert refused == {"status": "refused", "reason": "website_company_simulation_up_axis_not_stated",
+                       "detail": ""}
+
+
+def test_the_up_axis_is_never_assumed(tmp_path):
+    from blueprint_pipeline.scene_package_stage import StageRefused, up_axis
+
+    def room(name: str, axis: str | None) -> dict[str, Any]:
+        header = f'#usda 1.0\n(\n    upAxis = "{axis}"\n)\n' if axis else "#usda 1.0\n"
+        (tmp_path / name).write_text(header + 'def Xform "World"\n{\n}\n')
+        return {"semantic_role": "scene_collision" if name.startswith("c") else "scene_appearance", "usd_path": name}
+
+    def plan(*rows: dict[str, Any], lift: Any = None) -> dict[str, Any]:
+        affordance = {} if lift is None else {"lift_unit_world": lift}
+        return {"task_spec": {"interaction_affordance": affordance}, "objects": list(rows)}
+
+    assert up_axis(plan(room("c.usda", "Z"), room("a.usda", None)), packet=tmp_path) == "Z"
+    assert up_axis(plan(room("c.usda", "Y")), packet=tmp_path) == "Y"
+    for refused in (plan(room("c.usda", None), room("a.usda", None)),       # nothing stated
+                    plan(room("c.usda", "Z"), room("a.usda", "Y")),         # the room disagrees with itself
+                    plan(room("c.usda", "Z"), lift=[1.0, 0.0, 0.0]),        # the plan's own lift says X
+                    plan()):                                                 # no room
+        with pytest.raises(StageRefused, match="scene_stage_up_axis_not_stated"):
+            up_axis(refused, packet=tmp_path)
+    with pytest.raises(StageRefused, match="scene_stage_up_axis_not_stated"):
+        up_axis(plan(room("c.usda", "Z")))                                  # no files to read
 
 
 # ------------------------------------------------------------------------------------------------ hard stops
