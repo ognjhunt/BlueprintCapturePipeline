@@ -200,31 +200,6 @@ authority remaining absent.
 
 ## Strict ARKit reconstruction export
 
-### Canonical V3.2 appearance reconstruction service
-
-`canonical_3dgs_pipeline.py` composes the strict V3.2 adapter, captured-depth
-surface compiler, and candidate-only COLMAP exporter into one deterministic
-preparation command. It uses the frozen candidate split, raw ARKit camera
-bindings, and confidence-filtered LiDAR depth initialization. It reopens and
-rehashes every referenced artifact and never exposes evaluator-hidden pixels.
-
-The resulting `canonical_3dgs_execution_plan.v1` precommits Postshot Splat3 as
-the primary appearance trainer and Nerfstudio Splatfacto 1.1.5 / gsplat 1.4.0
-as the reproducible comparison. `canonical_3dgs_worker.py` implements both
-platform-specific commands. Postshot credentials exist only in the worker
-environment and are redacted from its receipt. Splatfacto must produce exactly
-one config and one exported Gaussian PLY. Each worker revalidates the entire
-input dataset against the plan before execution.
-
-The workers may run on separate admitted hosts. Their returned directories are
-normalized by `python -m blueprint_pipeline.canonical_3dgs_cli finalize`, which rehashes inputs and
-outputs and writes a shared campaign result. The result binds both standard
-PLYs into the existing `appearance_fidelity_qualification.v1` lane; that gate
-requires exact-camera SSIM, PSNR, and LPIPS under site/task-specific thresholds.
-Candidate generation does not choose a quality winner or establish metric,
-collision, Isaac, physical, or deployment claims. See
-`docs/CANONICAL_V32_TO_3DGS.md` for exact commands.
-
 The strict V3.2 ARKit/LiDAR adapter now feeds the frozen frame kernel into
 `arkit_reconstruction_dataset.py`. That compiler binds candidate-only RGB
 observations to the exact encoded-frame index, decoded PTS, capture timestamp,

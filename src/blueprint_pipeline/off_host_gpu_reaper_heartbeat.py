@@ -54,7 +54,6 @@ DEADLINE_CEILINGS = (
     ("team_candidate_quick10_admission", "MAX_TTL_SECONDS"),
     ("native_task_arena_paid_authority", "MAX_TTL_SECONDS"),
     ("deployment_embodiment_preparation_contract", "MAX_TTL_SECONDS"),
-    ("canonical_3dgs_admission", "MAX_TTL_SECONDS"),
     ("beta_policy_screening_capabilities", "DEFAULT_HARD_TTL_SECONDS"),
     ("sam31_gpu_admission", "MAX_TTL_SECONDS"),
     ("rigid_robot_free_probe_lane", "HARD_TTL_SECONDS"),
