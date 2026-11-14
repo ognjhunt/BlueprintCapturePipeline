@@ -217,24 +217,9 @@ def _orchestrator_lane_stubs(monkeypatch, descriptor_path: Path, calls: dict[str
             "pipeline_prefix": "scenes/scene-1/captures/capture-1/pipeline",
         }
 
-    def _evaluation_prep(**_kwargs):
-        calls["evaluation_prep"] = calls.get("evaluation_prep", 0) + 1
-        manifest_path = descriptor_path.parent / "pipeline" / "evaluation_prep_manifest.json"
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text("{}", encoding="utf-8")
-        return {"manifest_path": str(manifest_path)}
-
-    monkeypatch.setattr(
-        "blueprint_pipeline.capture_orchestrator.resolve_requested_lanes",
-        lambda **_kwargs: ["qualification", "evaluation_prep"],
-    )
     monkeypatch.setattr(
         "blueprint_pipeline.capture_orchestrator.run_qualification_pipeline",
         _qualification,
-    )
-    monkeypatch.setattr(
-        "blueprint_pipeline.capture_orchestrator.run_evaluation_prep_stage",
-        _evaluation_prep,
     )
     monkeypatch.setattr(
         "blueprint_pipeline.capture_orchestrator.resolve_gs_uri_to_path",
@@ -254,7 +239,7 @@ def test_orchestrator_retry_skips_completed_lanes(monkeypatch, tmp_path: Path) -
         config=PipelineConfig(gcs_root=tmp_path),
     )
     assert first["status"] == "completed"
-    assert calls == {"qualification": 1, "evaluation_prep": 1}
+    assert calls == {"qualification": 1}
 
     retry = run_capture_pipeline(
         descriptor_gcs_uri=descriptor_gcs_uri,
@@ -262,8 +247,8 @@ def test_orchestrator_retry_skips_completed_lanes(monkeypatch, tmp_path: Path) -
     )
     assert retry["status"] == "completed"
     # Retry with an unchanged capture input must not redo completed lanes.
-    assert calls == {"qualification": 1, "evaluation_prep": 1}
-    assert [item["lane"] for item in retry["results"]] == ["qualification", "evaluation_prep"]
+    assert calls == {"qualification": 1}
+    assert [item["lane"] for item in retry["results"]] == ["qualification"]
     assert all(item.get("resumed_from_lane_ledger") is True for item in retry["results"])
 
 
@@ -284,7 +269,7 @@ def test_orchestrator_kill_switch_bypasses_lane_ledger(monkeypatch, tmp_path: Pa
         descriptor_gcs_uri=descriptor_gcs_uri,
         config=PipelineConfig(gcs_root=tmp_path),
     )
-    assert calls == {"qualification": 2, "evaluation_prep": 2}
+    assert calls == {"qualification": 2}
 
 
 def test_orchestrator_changed_input_reruns_lanes(monkeypatch, tmp_path: Path) -> None:
@@ -303,7 +288,7 @@ def test_orchestrator_changed_input_reruns_lanes(monkeypatch, tmp_path: Path) ->
         descriptor_gcs_uri=descriptor_gcs_uri,
         config=PipelineConfig(gcs_root=tmp_path),
     )
-    assert calls == {"qualification": 2, "evaluation_prep": 2}
+    assert calls == {"qualification": 2}
 
 
 def test_orchestrator_stage_binding_reruns_lanes_a_marker_recorded_under_another(monkeypatch, tmp_path: Path) -> None:
@@ -322,13 +307,13 @@ def test_orchestrator_stage_binding_reruns_lanes_a_marker_recorded_under_another
 
     run()                                                    # first run: no binding
     run(input_binding_digest="sha256:" + "a" * 64)           # a replay binds the stage: the lanes rerun
-    assert calls == {"qualification": 2, "evaluation_prep": 2}
+    assert calls == {"qualification": 2}
     retry = run(input_binding_digest="sha256:" + "a" * 64)   # a retry of that same run skips them
-    assert calls == {"qualification": 2, "evaluation_prep": 2}
+    assert calls == {"qualification": 2}
     assert all(item.get("resumed_from_lane_ledger") is True for item in retry["results"])
     run(input_binding_digest="sha256:" + "b" * 64)           # the next fact reruns them again
     run()                                                    # and so does a run without a binding
-    assert calls == {"qualification": 4, "evaluation_prep": 4}
+    assert calls == {"qualification": 4}
 
 
 def test_lane_ledger_fingerprint_without_a_binding_is_unchanged(tmp_path: Path) -> None:

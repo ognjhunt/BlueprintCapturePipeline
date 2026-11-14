@@ -1,12 +1,9 @@
 """Authenticated HTTP facade for Blueprint WebApp-to-Pipeline control traffic.
 
-The service is a thin wrapper around ``build_live_pipeline_input_intake``. It
-accepts a WebApp ``robot_eval_job_request.v1`` payload or queue envelope, accepts
-job-specific policy packages, real robot POV evidence, deployment outcomes, and live closure evidence,
-stages validated files into the configured control-plane paths, accepts
-short-lived grants for immutable capture intake, executes only explicitly
-authorized hermetic local methods, and optionally runs configured asynchronous
-trigger units. Paid launch requests are only durably queued here; the separate
+It accepts signed WebApp requests for website scene preparation, launch
+preparation/activation/launch queues, short-lived grants for immutable capture
+intake and capture lifecycle evidence, and optionally runs configured
+asynchronous trigger units. Paid launch requests are only durably queued here; the separate
 dispatcher is the sole bridge to the canonical allocator. This service never
 executes a paid provider in the HTTP request or promotes proof claims.
 """
@@ -52,12 +49,8 @@ from .capture_lifecycle import (
     record_external_revocation_evidence,
     record_provider_deletion_evidence,
 )
-from .live_pipeline_control_plane import (
-    CONTROL_PLANE_OUTPUT_PATH_ENV,
-    WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
-    WEBAPP_JOB_REQUEST_SCHEMA_VERSION,
-)
 from .live_pipeline_intake_runtime_controls import (
+    CONTROL_PLANE_OUTPUT_PATH_ENV,
     DEFAULT_INTAKE_MAX_BODY_BYTES as DEFAULT_INTAKE_MAX_BODY_BYTES,
     DEFAULT_INTAKE_MAX_CONCURRENT as DEFAULT_INTAKE_MAX_CONCURRENT,
     DEFAULT_INTAKE_MAX_JSON_DEPTH as DEFAULT_INTAKE_MAX_JSON_DEPTH,
@@ -66,7 +59,6 @@ from .live_pipeline_intake_runtime_controls import (
     DEFAULT_INTAKE_MAX_STORAGE_BYTES as DEFAULT_INTAKE_MAX_STORAGE_BYTES,
     DEFAULT_INTAKE_RATE_LIMIT_PER_MINUTE as DEFAULT_INTAKE_RATE_LIMIT_PER_MINUTE,
     DEFAULT_MANIFEST_PATH,
-    INTAKE_ALLOW_TRIGGER_ENV as INTAKE_ALLOW_TRIGGER_ENV,
     INTAKE_MAX_BODY_BYTES_ENV as INTAKE_MAX_BODY_BYTES_ENV,
     INTAKE_MAX_CONCURRENT_ENV as INTAKE_MAX_CONCURRENT_ENV,
     INTAKE_MAX_JSON_DEPTH_ENV as INTAKE_MAX_JSON_DEPTH_ENV,
@@ -74,8 +66,6 @@ from .live_pipeline_intake_runtime_controls import (
     INTAKE_MAX_QUEUE_FILES_ENV as INTAKE_MAX_QUEUE_FILES_ENV,
     INTAKE_MAX_STORAGE_BYTES_ENV as INTAKE_MAX_STORAGE_BYTES_ENV,
     INTAKE_RATE_LIMIT_PER_MINUTE_ENV as INTAKE_RATE_LIMIT_PER_MINUTE_ENV,
-    INTAKE_TRIGGER_ENV as INTAKE_TRIGGER_ENV,
-    INTAKE_TRIGGER_SYSTEMD_UNIT_ENV as INTAKE_TRIGGER_SYSTEMD_UNIT_ENV,
     INTAKE_WORK_DIR_ENV,
     TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV as TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV,
     TASK_EVALUATION_LAUNCH_PATH_UNIT as TASK_EVALUATION_LAUNCH_PATH_UNIT,
@@ -88,7 +78,6 @@ from .live_pipeline_intake_runtime_controls import (
     _claim_intake_admission as _claim_intake_admission,
     _release_intake_admission as _release_intake_admission,
     _string as _string,
-    _trigger_control_plane,
     _trigger_task_evaluation_launch_dispatcher,
     _trigger_task_evaluation_terminal_resource_release_dispatcher,
     build_require_admission,
@@ -96,11 +85,6 @@ from .live_pipeline_intake_runtime_controls import (
 from .public_scene_artifixer3d_bundle import (
     DEFAULT_REMOVAL_PIPELINE_POLICY,
     DUAL_TARGET_PIPELINE_MODE,
-)
-from .live_pipeline_input_intake import (
-    DECISION_EVIDENCE_QUEUE_CONTRACT,
-    build_live_pipeline_input_intake,
-    translate_decision_evidence_envelope_to_legacy_execution_request,
 )
 from .core.security_controls import strict_identifier
 from .decision_evidence_contracts import canonical_digest
@@ -110,30 +94,8 @@ from .control_plane_disk_budget import (
     parse_role_targets,
 )
 from .control_plane_capacity_evidence import CHAIN_ROLES
-from .scene_placement.robot_profile import default_robot_id_for_embodiment
-from .scene_object_discovery_contract import SceneObjectDiscoveryContractError
-from .scene_object_discovery_queue import (
-    SceneObjectDiscoveryQueueError,
-    scene_object_discovery_status,
-    select_scene_object_candidate,
-    stage_scene_object_discovery_request,
-)
-from .task_candidate_control_plane import (
-    TaskCandidateControlPlaneError,
-    process_task_candidate_decision_submission,
-)
 from .live_pipeline_reconstruction_testbed_routes import (
     register_reconstruction_testbed_routes,
-)
-from .task_evaluation_run_control_plane import (
-    TaskEvaluationRunControlPlaneError,
-    authorize_task_evaluation_run,
-    execute_and_aggregate_task_evaluation_run,
-    prepare_task_evaluation_run,
-)
-from .task_evaluation_run_state import (
-    TaskEvaluationRunStateError,
-    TaskEvaluationRunStateStore,
 )
 from .live_pipeline_result_artifact_response import result_artifact_response
 from .live_pipeline_result_artifact_resolution import (
@@ -143,17 +105,10 @@ from .task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError,
     read_configured_scene_object,
 )
-from .task_evaluation_method_catalog import (
-    TaskEvaluationMethodCatalogError,
-    load_task_evaluation_method_catalog,
-)
 from .task_evaluation_supervisor import (
     capture_supervisor_execution_options_from_env,
     capture_supervisor_health_status,
     run_capture_build_supervisor,
-)
-from .task_evaluation_run_webapp_sync import (
-    TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV,
 )
 from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
@@ -189,12 +144,7 @@ from .task_evaluation_terminal_resource_release_contract import (
 # This constant names an environment variable; it is not a credential value.
 INTAKE_TOKEN_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN"  # nosec B105
 INTAKE_ALLOW_LEGACY_BEARER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER"
-INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV = (
-    "BLUEPRINT_LIVE_PIPELINE_ALLOW_LEGACY_WEBAPP_HMAC_WITHOUT_CLIENT_ID"
-)
 INTAKE_MAX_CLOCK_SKEW_SECONDS_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_MAX_CLOCK_SKEW_SECONDS"
-INTAKE_OVERWRITE_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE"
-INTAKE_ALLOW_PER_REQUEST_CAPTURE_ROOT_ENV = "BLUEPRINT_LIVE_PIPELINE_ALLOW_PER_REQUEST_CAPTURE_ROOT"
 INTAKE_CAPTURE_ROOT_BY_SITE_ENV = "BLUEPRINT_LIVE_PIPELINE_CAPTURE_ROOT_BY_SITE_JSON"
 INTAKE_CLIENT_SECRETS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_SECRETS_JSON"
 INTAKE_CLIENT_ROOTS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON"
@@ -204,7 +154,6 @@ SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV = "BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_
 TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
 )
-TASK_EVALUATION_LAUNCH_EXECUTE_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE"
 TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT"
 )
@@ -224,7 +173,6 @@ TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_STATE_ROOT_ENV = (
 INTAKE_SCHEMA_VERSION = "blueprint_live_pipeline_intake_service.v1"
 PIPELINE_SOURCE_COMMIT_ENV = "BLUEPRINT_SOURCE_COMMIT"
 DEPLOYMENT_IDENTITY_SCHEMA_VERSION = "blueprint_pipeline_deployment_identity.v1"
-CAPTURE_HANDOFF_SOURCE_KIND = "capture_pipeline_handoff"
 DEFAULT_INTAKE_MAX_CLOCK_SKEW_SECONDS = 5 * 60
 # Retained as an inert compatibility surface for older tests/importers. Replay
 # authority is the shared filesystem store below, never this process-local map.
@@ -248,10 +196,6 @@ def _work_dir(manifest_path: Path) -> Path:
     if configured:
         return Path(configured).expanduser()
     return manifest_path.parent / "incoming_webapp_job_requests"
-
-
-def _task_candidate_control_plane_root(manifest_path: Path) -> Path:
-    return _work_dir(manifest_path).expanduser().resolve() / "task_candidate_control_plane"
 
 
 def _task_evaluation_run_root(manifest_path: Path) -> Path:
@@ -295,25 +239,6 @@ def _safe_stem(value: str) -> str:
     return stem[:120] or "webapp-job-request"
 
 
-def _request_from_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-    if payload.get("queue_contract") == WEBAPP_JOB_REQUEST_QUEUE_CONTRACT:
-        return _mapping(payload.get("job_request"))
-    if payload.get("queue_contract") == DECISION_EVIDENCE_QUEUE_CONTRACT:
-        return _mapping(payload.get("decision_request"))
-    if payload.get("schema_version") == WEBAPP_JOB_REQUEST_SCHEMA_VERSION:
-        return payload
-    return {}
-
-
-def _candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
-    request = _request_from_payload(payload)
-    job_id = _string(request.get("job_id") or payload.get("job_id"))
-    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[
-        :12
-    ]
-    return work_dir / f"{_safe_stem(job_id or digest)}-{digest}.json"
-
-
 def _capture_handoff_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
     scene_id = _string(payload.get("scene_id") or payload.get("sceneId"))
     capture_id = _string(payload.get("capture_id") or payload.get("captureId"))
@@ -322,45 +247,6 @@ def _capture_handoff_candidate_path(payload: Mapping[str, Any], work_dir: Path) 
     ]
     stem = "-".join(part for part in (scene_id, capture_id, digest) if part)
     return work_dir / "capture_handoffs" / f"{_safe_stem(stem or digest)}.json"
-
-
-def _closure_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
-    job_id = _string(
-        payload.get("job_id")
-        or payload.get("jobId")
-        or payload.get("robot_eval_job_id")
-        or payload.get("robotEvalJobId")
-    )
-    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[
-        :12
-    ]
-    return work_dir / "live_closure_evidence" / f"{_safe_stem(job_id or digest)}-{digest}.json"
-
-
-def _deployment_outcome_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
-    job_id = _string(
-        payload.get("job_id")
-        or payload.get("jobId")
-        or payload.get("robot_eval_job_id")
-        or payload.get("robotEvalJobId")
-    )
-    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[
-        :12
-    ]
-    return work_dir / "deployment_outcomes" / f"{_safe_stem(job_id or digest)}-{digest}.json"
-
-
-def _policy_package_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
-    job_id = _string(
-        payload.get("job_id")
-        or payload.get("jobId")
-        or payload.get("robot_eval_job_id")
-        or payload.get("robotEvalJobId")
-    )
-    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[
-        :12
-    ]
-    return work_dir / "policy_packages" / f"{_safe_stem(job_id or digest)}-{digest}.json"
 
 
 def _read_mapping_file(path: Path) -> Dict[str, Any]:
@@ -438,14 +324,6 @@ def _strip_sha256_prefix(value: str) -> str:
 def _valid_intake_nonce(value: str) -> bool:
     nonce = _string(value)
     return bool(8 <= len(nonce) <= 160 and re.fullmatch(r"[A-Za-z0-9_.:-]+", nonce))
-
-
-def _positive_int_env(name: str, default: int) -> int:
-    try:
-        value = int(_string(os.getenv(name)))
-    except ValueError:
-        return default
-    return value if value > 0 else default
 
 
 def _client_secrets() -> Dict[str, str]:
@@ -706,9 +584,8 @@ def _client_root_map() -> Dict[str, Dict[str, Path]]:
 
 
 def _request_scope_keys(payload: Mapping[str, Any]) -> list[str]:
-    request = _request_from_payload(payload) or payload
-    site_package = _mapping(request.get("site_package") or request.get("sitePackage"))
-    source = _mapping(request.get("source"))
+    site_package = _mapping(payload.get("site_package") or payload.get("sitePackage"))
+    source = _mapping(payload.get("source"))
     selection = _mapping(source.get("selection_state") or source.get("selectionState"))
     values = [
         site_package.get("site_slug") or site_package.get("siteSlug"),
@@ -750,164 +627,6 @@ def _server_capture_root_for_client(
     return manifest_capture_root
 
 
-def _bind_payload_to_server_capture_root(
-    *,
-    payload: Mapping[str, Any],
-    client_id: str,
-    manifest_capture_root: Path | None,
-) -> Dict[str, Any]:
-    """Replace every caller root with the authenticated server-side mapping."""
-
-    bound = json.loads(json.dumps(dict(payload)))
-    if bound.get("queue_contract") == DECISION_EVIDENCE_QUEUE_CONTRACT:
-        root = _server_capture_root_for_client(
-            payload=bound,
-            client_id=client_id,
-            manifest_capture_root=manifest_capture_root,
-        )
-        translated = translate_decision_evidence_envelope_to_legacy_execution_request(
-            bound,
-            expected_capture_root=root,
-        )
-        if translated is None:
-            return bound
-        return {
-            "queue_contract": WEBAPP_JOB_REQUEST_QUEUE_CONTRACT,
-            "source_kind": "decision_evidence_request_legacy_execution_adapter",
-            "job_request": translated,
-        }
-    request = _request_from_payload(bound)
-    if not request:
-        return bound
-    root = _server_capture_root_for_client(
-        payload=bound,
-        client_id=client_id,
-        manifest_capture_root=manifest_capture_root,
-    )
-    if root is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="server capture-root mapping is not configured",
-        )
-    request_payload = dict(request)
-    request_payload.pop("capture_root", None)
-    request_payload.pop("captureRoot", None)
-    site_package = dict(
-        _mapping(request_payload.get("site_package") or request_payload.get("sitePackage"))
-    )
-    site_package.pop("captureRoot", None)
-    site_package["capture_root"] = str(root)
-    site_package["capture_root_source"] = "authenticated_server_mapping"
-    request_payload.pop("sitePackage", None)
-    request_payload["site_package"] = site_package
-    request_payload["authenticated_client_scope"] = {
-        "client_id": client_id,
-        "server_capture_root_mapped": True,
-        "caller_capture_root_authoritative": False,
-    }
-    if bound.get("queue_contract") == WEBAPP_JOB_REQUEST_QUEUE_CONTRACT:
-        bound["job_request"] = request_payload
-    else:
-        bound = request_payload
-    return bound
-
-
-def _capture_root_from_handoff_payload(
-    *,
-    payload: Mapping[str, Any],
-    client_id: str,
-    manifest_capture_root: Path | None,
-) -> Path | None:
-    scoped = _server_capture_root_for_client(
-        payload=payload,
-        client_id=client_id,
-        manifest_capture_root=manifest_capture_root,
-    )
-    if scoped is not None:
-        return scoped
-    roots = _capture_root_map()
-    lookup_keys = [
-        _first_string(payload.get("site_submission_id"), payload.get("siteSubmissionId")),
-        _first_string(payload.get("buyer_request_id"), payload.get("buyerRequestId")),
-        _first_string(payload.get("capture_job_id"), payload.get("captureJobId")),
-        _first_string(payload.get("scene_id"), payload.get("sceneId")),
-        _first_string(payload.get("capture_id"), payload.get("captureId")),
-        _first_string(payload.get("site_slug"), payload.get("siteSlug")),
-    ]
-    for key in lookup_keys:
-        if key and key in roots:
-            return roots[key]
-    return None
-
-
-def _select_dataset_task(capture_root: Path) -> tuple[Dict[str, Any] | None, list[str]]:
-    dataset_dir = capture_root / "pipeline" / "robot_eval_dataset"
-    task_cards_path = dataset_dir / "task_cards.json"
-    scenario_cards_path = dataset_dir / "scenario_cards.json"
-    upload_freshness = _capture_upload_complete_freshness(capture_root)
-    blockers: list[str] = []
-    if not task_cards_path.is_file():
-        blockers.append("robot_eval_task_cards_missing")
-    if not scenario_cards_path.is_file():
-        blockers.append("robot_eval_scenario_cards_missing")
-    if blockers:
-        return None, blockers
-    task_cards = _cards_from_file(task_cards_path)
-    scenario_cards = _cards_from_file(scenario_cards_path)
-    if upload_freshness.get("present"):
-        upload_timestamp = float(upload_freshness.get("timestamp") or 0.0)
-        stale_paths = [
-            path.name
-            for path in (task_cards_path, scenario_cards_path)
-            if path.stat().st_mtime + 0.001 < upload_timestamp
-        ]
-        if stale_paths:
-            blockers.append("robot_eval_dataset_stale_for_capture_upload_complete")
-    if not task_cards:
-        blockers.append("robot_eval_task_cards_empty")
-    if not scenario_cards:
-        blockers.append("robot_eval_scenario_cards_empty")
-    if blockers:
-        return None, blockers
-    for task in task_cards:
-        task_id = _string(task.get("task_id") or task.get("taskId"))
-        if not task_id:
-            continue
-        scenario = next(
-            (
-                card
-                for card in scenario_cards
-                if _string(card.get("task_id") or card.get("taskId")) == task_id
-                and _string(card.get("scenario_id") or card.get("scenarioId"))
-            ),
-            None,
-        )
-        if scenario is None:
-            continue
-        return {
-            "task_id": task_id,
-            "scenario_id": _string(scenario.get("scenario_id") or scenario.get("scenarioId")),
-            "robot_profile_id": _string(
-                scenario.get("robot_profile_id")
-                or scenario.get("robotProfileId")
-                or scenario.get("robot_profile")
-            )
-            or default_robot_id_for_embodiment(
-                _string(scenario.get("embodiment_type") or scenario.get("embodimentType"))
-            ),
-            "task_cards_uri": str(task_cards_path),
-            "scenario_cards_uri": str(scenario_cards_path),
-            "task_cards_sha256": _file_sha256(task_cards_path),
-            "scenario_cards_sha256": _file_sha256(scenario_cards_path),
-            "capture_upload_complete": upload_freshness,
-            "dataset_fresh_for_capture_upload_complete": not upload_freshness.get("present")
-            or "robot_eval_dataset_stale_for_capture_upload_complete" not in blockers,
-            "task_card_count": len(task_cards),
-            "scenario_card_count": len(scenario_cards),
-        }, []
-    return None, ["robot_eval_no_task_scenario_pair"]
-
-
 def _capture_handoff_preparation_audit(
     *, payload: Mapping[str, Any], capture_root: Path,
 ) -> Dict[str, Any]:
@@ -932,177 +651,6 @@ def _capture_handoff_preparation_audit(
         "capture_root": str(capture_root),
         "converted_to_job_request": False,
         "blockers": blockers,
-    }
-
-
-def _real_robot_pov_candidate_path(payload: Mapping[str, Any], work_dir: Path) -> Path:
-    job_id = _string(
-        payload.get("job_id")
-        or payload.get("jobId")
-        or payload.get("robot_eval_job_id")
-        or payload.get("robotEvalJobId")
-    )
-    digest = sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[
-        :12
-    ]
-    return work_dir / "real_robot_pov" / f"{_safe_stem(job_id or digest)}-{digest}.json"
-
-
-def _redacted_intake_response(
-    *,
-    candidate_path: Path,
-    intake: Mapping[str, Any],
-    trigger: Mapping[str, Any],
-) -> Dict[str, Any]:
-    webapp = _mapping(intake.get("webapp_job_request"))
-    staging = _mapping(intake.get("webapp_staging"))
-    staged_inputs = _mapping(intake.get("staged_inputs"))
-    return {
-        "schema_version": INTAKE_SCHEMA_VERSION,
-        "status": intake.get("status"),
-        "accepted": intake.get("status") == "staged_for_control_plane",
-        "generated_at": utc_now_iso(),
-        "candidate": {
-            "path": str(candidate_path),
-            "sha256": webapp.get("sha256"),
-        },
-        "webapp_job_request": {
-            "status": webapp.get("status"),
-            "job_id": webapp.get("job_id"),
-            "fields_present": webapp.get("fields_present"),
-            "missing_fields": webapp.get("missing_fields"),
-            "capture_root_matches_control_plane": webapp.get(
-                "request_capture_root_matches_control_plane"
-            ),
-            "blockers": webapp.get("blockers", []),
-        },
-        "webapp_staging": {
-            "status": staging.get("status"),
-            "performed": bool(staging.get("performed")),
-            "target_path": staging.get("target_path"),
-            "blockers": staging.get("blockers", []),
-        },
-        "staged_inputs": {
-            "status": staged_inputs.get("status"),
-            "performed": bool(staged_inputs.get("performed")),
-            "path": staged_inputs.get("path"),
-            "blockers": staged_inputs.get("blockers", []),
-        },
-        "input_blockers": list(intake.get("input_blockers") or []),
-        "trigger": dict(trigger),
-        "proof_boundary": {
-            "intake_performs_simulator_execution": False,
-            "intake_sets_proof_booleans": False,
-            "public_claim_upgrade_allowed": False,
-        },
-    }
-
-
-def _redacted_policy_package_response(
-    *,
-    candidate_path: Path,
-    intake: Mapping[str, Any],
-    trigger: Mapping[str, Any],
-) -> Dict[str, Any]:
-    policy = _mapping(intake.get("policy_package"))
-    staging = _mapping(intake.get("policy_package_staging"))
-    staged_inputs = _mapping(intake.get("staged_inputs"))
-    return {
-        "schema_version": INTAKE_SCHEMA_VERSION,
-        "status": intake.get("status"),
-        "accepted": intake.get("status") == "staged_for_control_plane",
-        "generated_at": utc_now_iso(),
-        "candidate": {
-            "path": str(candidate_path),
-            "sha256": policy.get("sha256"),
-        },
-        "policy_package": {
-            "status": policy.get("status"),
-            "job_id": policy.get("job_id"),
-            "selected_modalities": policy.get("selected_modalities"),
-            "blockers": policy.get("blockers", []),
-        },
-        "policy_package_staging": {
-            "status": staging.get("status"),
-            "performed": bool(staging.get("performed")),
-            "target_path": staging.get("target_path"),
-            "blockers": staging.get("blockers", []),
-        },
-        "staged_inputs": {
-            "status": staged_inputs.get("status"),
-            "performed": bool(staged_inputs.get("performed")),
-            "path": staged_inputs.get("path"),
-            "blockers": staged_inputs.get("blockers", []),
-        },
-        "input_blockers": list(intake.get("input_blockers") or []),
-        "trigger": dict(trigger),
-        "proof_boundary": {
-            "intake_performs_policy_execution": False,
-            "intake_sets_proof_booleans": False,
-            "robot_policy_execution_proven": False,
-            "public_claim_upgrade_allowed": False,
-        },
-    }
-
-
-def _redacted_real_robot_pov_response(
-    *,
-    candidate_path: Path,
-    intake: Mapping[str, Any],
-    trigger: Mapping[str, Any],
-) -> Dict[str, Any]:
-    pov = _mapping(intake.get("real_robot_pov"))
-    staging = _mapping(intake.get("real_robot_pov_staging"))
-    staged_inputs = _mapping(intake.get("staged_inputs"))
-    return {
-        "schema_version": INTAKE_SCHEMA_VERSION,
-        "status": intake.get("status"),
-        "accepted": intake.get("status") == "staged_for_control_plane",
-        "generated_at": utc_now_iso(),
-        "candidate": {
-            "path": str(candidate_path),
-            "sha256": pov.get("sha256"),
-        },
-        "real_robot_pov": {
-            "status": pov.get("status"),
-            "job_id": pov.get("job_id"),
-            "record_count": pov.get("record_count"),
-            "record_ids": pov.get("record_ids"),
-            "exact_key_record_count": pov.get("exact_key_record_count"),
-            "camera_video_record_count": pov.get("camera_video_record_count"),
-            "action_log_record_count": pov.get("action_log_record_count"),
-            "timestamp_alignment_record_count": pov.get("timestamp_alignment_record_count"),
-            "evidence_record_count": pov.get("evidence_record_count"),
-            "missing_exact_key_record_ids": pov.get("missing_exact_key_record_ids"),
-            "missing_camera_video_record_ids": pov.get("missing_camera_video_record_ids"),
-            "missing_action_log_record_ids": pov.get("missing_action_log_record_ids"),
-            "missing_timestamp_alignment_record_ids": pov.get(
-                "missing_timestamp_alignment_record_ids"
-            ),
-            "missing_evidence_record_ids": pov.get("missing_evidence_record_ids"),
-            "blockers": pov.get("blockers", []),
-        },
-        "real_robot_pov_staging": {
-            "status": staging.get("status"),
-            "performed": bool(staging.get("performed")),
-            "target_path": staging.get("target_path"),
-            "blockers": staging.get("blockers", []),
-        },
-        "staged_inputs": {
-            "status": staged_inputs.get("status"),
-            "performed": bool(staged_inputs.get("performed")),
-            "path": staged_inputs.get("path"),
-            "blockers": staged_inputs.get("blockers", []),
-        },
-        "input_blockers": list(intake.get("input_blockers") or []),
-        "trigger": dict(trigger),
-        "proof_boundary": {
-            "intake_performs_robot_execution": False,
-            "intake_sets_proof_booleans": False,
-            "robot_pov_evidence_proven": False,
-            "rank_fidelity_result_proven": False,
-            "public_claim_upgrade_allowed": False,
-        },
     }
 
 
@@ -1157,103 +705,6 @@ def stage_capture_handoff_for_control_plane(
     }
 
 
-def _redacted_deployment_outcome_response(
-    *,
-    candidate_path: Path,
-    intake: Mapping[str, Any],
-    trigger: Mapping[str, Any],
-) -> Dict[str, Any]:
-    outcomes = _mapping(intake.get("deployment_outcomes"))
-    staging = _mapping(intake.get("deployment_outcomes_staging"))
-    staged_inputs = _mapping(intake.get("staged_inputs"))
-    return {
-        "schema_version": INTAKE_SCHEMA_VERSION,
-        "status": intake.get("status"),
-        "accepted": intake.get("status") == "staged_for_control_plane",
-        "generated_at": utc_now_iso(),
-        "candidate": {
-            "path": str(candidate_path),
-            "sha256": outcomes.get("sha256"),
-        },
-        "deployment_outcomes": {
-            "status": outcomes.get("status"),
-            "job_id": outcomes.get("job_id"),
-            "record_count": outcomes.get("record_count"),
-            "record_ids": outcomes.get("record_ids"),
-            "owner_evidence_ready": bool(outcomes.get("owner_evidence_ready")),
-            "owner_evidence_record_count": outcomes.get("owner_evidence_record_count"),
-            "missing_owner_evidence_record_ids": outcomes.get("missing_owner_evidence_record_ids"),
-            "blockers": outcomes.get("blockers", []),
-        },
-        "deployment_outcomes_staging": {
-            "status": staging.get("status"),
-            "performed": bool(staging.get("performed")),
-            "target_path": staging.get("target_path"),
-            "blockers": staging.get("blockers", []),
-        },
-        "staged_inputs": {
-            "status": staged_inputs.get("status"),
-            "performed": bool(staged_inputs.get("performed")),
-            "path": staged_inputs.get("path"),
-            "blockers": staged_inputs.get("blockers", []),
-        },
-        "input_blockers": list(intake.get("input_blockers") or []),
-        "trigger": dict(trigger),
-        "proof_boundary": {
-            "intake_performs_simulator_execution": False,
-            "intake_sets_proof_booleans": False,
-            "real_world_outcome_proven": False,
-            "public_claim_upgrade_allowed": False,
-        },
-    }
-
-
-def _redacted_closure_evidence_response(
-    *,
-    candidate_path: Path,
-    intake: Mapping[str, Any],
-    trigger: Mapping[str, Any],
-) -> Dict[str, Any]:
-    evidence = _mapping(intake.get("live_closure_evidence"))
-    staging = _mapping(intake.get("live_closure_evidence_staging"))
-    staged_inputs = _mapping(intake.get("staged_inputs"))
-    return {
-        "schema_version": INTAKE_SCHEMA_VERSION,
-        "status": intake.get("status"),
-        "accepted": intake.get("status") == "staged_for_control_plane",
-        "generated_at": utc_now_iso(),
-        "candidate": {
-            "path": str(candidate_path),
-            "sha256": evidence.get("sha256"),
-        },
-        "live_closure_evidence": {
-            "status": evidence.get("status"),
-            "job_id": evidence.get("job_id"),
-            "sections": evidence.get("sections"),
-            "blockers": evidence.get("blockers", []),
-        },
-        "live_closure_evidence_staging": {
-            "status": staging.get("status"),
-            "performed": bool(staging.get("performed")),
-            "target_path": staging.get("target_path"),
-            "blockers": staging.get("blockers", []),
-        },
-        "staged_inputs": {
-            "status": staged_inputs.get("status"),
-            "performed": bool(staged_inputs.get("performed")),
-            "path": staged_inputs.get("path"),
-            "blockers": staged_inputs.get("blockers", []),
-        },
-        "input_blockers": list(intake.get("input_blockers") or []),
-        "trigger": dict(trigger),
-        "proof_boundary": {
-            "intake_performs_simulator_execution": False,
-            "intake_sets_proof_booleans": False,
-            "public_claim_upgrade_allowed": False,
-        },
-    }
-
-
 async def _require_token(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -1279,52 +730,6 @@ async def _require_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="intake signature requires timestamp, signature, and nonce headers",
             )
-        if (
-            not _string(x_blueprint_pipeline_client_id)
-            and _truthy(os.getenv(INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV))
-            and (request.method, request.url.path)
-            in {
-                ("GET", "/api/live-pipeline/intake-audit"),
-                ("POST", "/api/live-pipeline/job-requests"),
-            }
-            and shared_secret
-            and not client_secrets
-        ):
-            parsed_timestamp = _parse_timestamp(timestamp_header)
-            now = time.time()
-            if (
-                parsed_timestamp is None
-                or abs(now - parsed_timestamp) > _intake_max_clock_skew_seconds()
-                or not _valid_intake_nonce(nonce_header)
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="invalid legacy intake audit signature metadata",
-                )
-            body = await request.body()
-            expected_legacy = hmac.new(
-                shared_secret.encode("utf-8"),
-                f"{timestamp_header}.{nonce_header}.".encode("utf-8") + body,
-                "sha256",
-            ).hexdigest()
-            if not hmac.compare_digest(_strip_sha256_prefix(signature_header), expected_legacy):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="invalid legacy intake audit signature",
-                )
-            legacy_client_id = "legacy-webapp"
-            if not _claim_intake_nonce(
-                client_id=legacy_client_id,
-                nonce=nonce_header,
-                now=now,
-                max_age_seconds=_intake_max_clock_skew_seconds(),
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="replayed intake signature nonce",
-                )
-            request.state.intake_client_id = legacy_client_id
-            return legacy_client_id
         try:
             client_id = strict_identifier(
                 x_blueprint_pipeline_client_id,
@@ -1846,213 +1251,6 @@ def create_app() -> FastAPI:
         )
 
     @app.post(
-        "/api/live-pipeline/scene-object-discoveries",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def intake_scene_object_discovery(request: Request) -> JSONResponse:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        deployment = deployment_identity_payload()
-        if deployment.get("commit_proven") is not True:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "schema_version": "scene_object_discovery_intake_receipt.v1",
-                    "status": "blocked",
-                    "accepted": False,
-                    "blockers": ["scene_object_discovery_production_commit_not_proven"],
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        expected_commit = str(payload.get("expected_production_commit") or "")
-        if expected_commit and expected_commit != deployment.get("source_commit"):
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "schema_version": "scene_object_discovery_intake_receipt.v1",
-                    "status": "rejected",
-                    "accepted": False,
-                    "blockers": ["scene_object_discovery_production_commit_mismatch"],
-                    "expected_production_commit": expected_commit,
-                    "observed_production_commit": deployment.get("source_commit"),
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        queue_root = _string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))
-        if not queue_root:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "schema_version": "scene_object_discovery_intake_receipt.v1",
-                    "status": "blocked",
-                    "accepted": False,
-                    "blockers": ["scene_object_discovery_queue_not_configured"],
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        try:
-            receipt = await run_in_threadpool(
-                stage_scene_object_discovery_request,
-                value=payload,
-                queue_root=queue_root,
-                submitted_by=_string(getattr(request.state, "intake_client_id", "")),
-            )
-        except SceneObjectDiscoveryContractError as exc:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "schema_version": "scene_object_discovery_intake_receipt.v1",
-                    "status": "rejected",
-                    "accepted": False,
-                    "blockers": [str(exc)],
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        except SceneObjectDiscoveryQueueError as exc:
-            blocker = str(exc)
-            return JSONResponse(
-                status_code=(
-                    409 if blocker == "scene_object_discovery_id_immutable_conflict" else 503
-                ),
-                content={
-                    "schema_version": "scene_object_discovery_intake_receipt.v1",
-                    "status": "blocked",
-                    "accepted": False,
-                    "blockers": [blocker],
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        return JSONResponse(status_code=202, content=receipt)
-
-    @app.get(
-        "/api/live-pipeline/scene-object-discoveries/{discovery_id}",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def get_scene_object_discovery_status(discovery_id: str) -> JSONResponse:
-        try:
-            normalized_id = strict_identifier(discovery_id, field="discovery_id", max_length=192)
-        except ValueError:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "schema_version": "scene_object_discovery_status.v1",
-                    "status": "blocked",
-                    "discovery_id": "invalid",
-                    "blockers": ["scene_object_discovery_id_invalid"],
-                    "provider_mutation_performed_by_status_read": False,
-                },
-            )
-        queue_root = _string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))
-        if not queue_root:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "schema_version": "scene_object_discovery_status.v1",
-                    "status": "blocked",
-                    "discovery_id": normalized_id,
-                    "blockers": ["scene_object_discovery_queue_not_configured"],
-                    "provider_mutation_performed_by_status_read": False,
-                },
-            )
-        try:
-            result = await run_in_threadpool(
-                scene_object_discovery_status,
-                discovery_id=normalized_id,
-                queue_root=queue_root,
-            )
-        except SceneObjectDiscoveryQueueError as exc:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "schema_version": "scene_object_discovery_status.v1",
-                    "status": "blocked",
-                    "discovery_id": normalized_id,
-                    "blockers": [str(exc)],
-                    "provider_mutation_performed_by_status_read": False,
-                },
-            )
-        return JSONResponse(
-            status_code=404 if result["status"] == "not_found" else 200,
-            content=result,
-        )
-
-    @app.post(
-        "/api/live-pipeline/scene-object-discoveries/{discovery_id}/selection",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def intake_scene_object_discovery_selection(
-        discovery_id: str, request: Request
-    ) -> JSONResponse:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping) or payload.get("discovery_id") != discovery_id:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "schema_version": "scene_object_discovery_selection_receipt.v1",
-                    "status": "rejected",
-                    "blockers": ["scene_object_discovery_selection_input_invalid"],
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        deployment = deployment_identity_payload()
-        if deployment.get("commit_proven") is not True or payload.get(
-            "expected_production_commit"
-        ) != deployment.get("source_commit"):
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "schema_version": "scene_object_discovery_selection_receipt.v1",
-                    "status": "rejected",
-                    "blockers": ["scene_object_discovery_selection_production_commit_mismatch"],
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        queue_root = _string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))
-        if not queue_root:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "schema_version": "scene_object_discovery_selection_receipt.v1",
-                    "status": "blocked",
-                    "blockers": ["scene_object_discovery_queue_not_configured"],
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        try:
-            receipt = await run_in_threadpool(
-                select_scene_object_candidate,
-                value=payload,
-                queue_root=queue_root,
-            )
-        except (SceneObjectDiscoveryQueueError, ValueError) as exc:
-            return JSONResponse(
-                status_code=409,
-                content={
-                    "schema_version": "scene_object_discovery_selection_receipt.v1",
-                    "status": "blocked",
-                    "blockers": [str(exc)],
-                    "provider_mutation_performed_inside_http_request": False,
-                    "paid_execution_requested": False,
-                },
-            )
-        return JSONResponse(status_code=202, content=receipt)
-
-    @app.post(
         "/api/live-pipeline/task-evaluation-launch-activations",
         dependencies=[Depends(_require_admission)],
     )
@@ -2452,64 +1650,6 @@ def create_app() -> FastAPI:
     from .beta_screening_review_videos_http import register_beta_screening_review_video_routes
     register_beta_screening_review_video_routes(app, require_admission=_require_admission)
 
-    @app.post("/api/live-pipeline/job-requests", dependencies=[Depends(_require_admission)])
-    async def intake_job_request(request: Request) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        manifest_path = _manifest_path().resolve()
-        if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail=f"control-plane manifest missing: {manifest_path}",
-            )
-        manifest_payload = read_json_any(manifest_path)
-        if not isinstance(manifest_payload, Mapping):
-            raise HTTPException(
-                status_code=503,
-                detail="control-plane manifest is not JSON object",
-            )
-        manifest_capture_root_text = _string(manifest_payload.get("capture_root"))
-        manifest_capture_root = (
-            Path(manifest_capture_root_text).resolve() if manifest_capture_root_text else None
-        )
-        payload = _bind_payload_to_server_capture_root(
-            payload=payload,
-            client_id=_string(getattr(request.state, "intake_client_id", "")),
-            manifest_capture_root=manifest_capture_root,
-        )
-        work_dir = _work_dir(manifest_path).resolve()
-        ensure_dir(work_dir)
-        candidate_path = _candidate_path(payload, work_dir)
-        write_json(candidate_path, dict(payload))
-        intake = build_live_pipeline_input_intake(
-            manifest_path=manifest_path,
-            webapp_job_request=candidate_path,
-            stage_webapp_request=True,
-            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
-            allow_request_capture_root=True,
-        )
-        trigger = (
-            _trigger_control_plane()
-            if intake.get("status") == "staged_for_control_plane"
-            else {
-                "status": "not_run",
-                "performed": False,
-                "reason": "intake_not_staged_for_control_plane",
-            }
-        )
-        response = _redacted_intake_response(
-            candidate_path=candidate_path,
-            intake=intake,
-            trigger=trigger,
-        )
-        if intake.get("input_blockers"):
-            return JSONResponse(status_code=202, content=response)
-        return response
-
     @app.post(
         "/api/live-pipeline/task-evaluation-launches",
         dependencies=[Depends(_require_admission)],
@@ -2679,149 +1819,6 @@ def create_app() -> FastAPI:
         }
         return JSONResponse(status_code=202, content=response)
 
-    @app.post(
-        "/api/live-pipeline/task-decisions",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def intake_task_decision(request: Request) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        manifest_path = _manifest_path().resolve()
-        if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail=f"control-plane manifest missing: {manifest_path}",
-            )
-        try:
-            return process_task_candidate_decision_submission(
-                state_root=_task_candidate_control_plane_root(manifest_path),
-                submission=payload,
-            )
-        except TaskCandidateControlPlaneError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
-
-    @app.post(
-        "/api/live-pipeline/task-evaluation-runs/plan",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def plan_task_evaluation_run(request: Request) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        plan_schema = payload.get("schema_version")
-        if plan_schema not in {
-            "task_evaluation_run_plan_submission.v1",
-            "task_evaluation_run_plan_submission.v2",
-        }:
-            raise HTTPException(status_code=422, detail="run plan schema version mismatch")
-        manifest_path = _manifest_path().resolve()
-        if not manifest_path.is_file():
-            raise HTTPException(status_code=503, detail="control-plane manifest missing")
-        catalog = None
-        if plan_schema == "task_evaluation_run_plan_submission.v2":
-            if "method_profiles" in payload or "qualifications" in payload:
-                raise HTTPException(
-                    status_code=422,
-                    detail="v2 plan submission cannot select methods or qualifications",
-                )
-            try:
-                catalog = load_task_evaluation_method_catalog()
-            except TaskEvaluationMethodCatalogError as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            methods = catalog["method_profiles"]
-            qualifications = catalog["qualifications"]
-        else:
-            methods = payload.get("method_profiles")
-            qualifications = payload.get("qualifications")
-            if not isinstance(methods, list) or not isinstance(qualifications, list):
-                raise HTTPException(
-                    status_code=422,
-                    detail="method profiles and qualifications must be lists",
-                )
-        try:
-            return prepare_task_evaluation_run(
-                state_root=_task_evaluation_run_root(manifest_path),
-                run_id=str(payload.get("run_id") or ""),
-                capture_session_id=str(payload.get("capture_session_id") or ""),
-                intake_id=str(payload.get("intake_id") or ""),
-                request_value=_mapping(payload.get("decision_evidence_request")),
-                testbed_value=_mapping(payload.get("testbed")),
-                method_values=[dict(row) for row in methods if isinstance(row, Mapping)],
-                qualification_values=[
-                    dict(row) for row in qualifications if isinstance(row, Mapping)
-                ],
-                idempotency_key=str(payload.get("idempotency_key") or ""),
-                method_catalog_value=catalog,
-            )
-        except (TaskEvaluationRunControlPlaneError, TaskEvaluationRunStateError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    @app.post(
-        "/api/live-pipeline/task-evaluation-runs/{run_id}/authorize",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def authorize_task_evaluation_run_execution(
-        run_id: str, request: Request
-    ) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        if payload.get("schema_version") != "task_evaluation_run_authorization_submission.v1":
-            raise HTTPException(status_code=422, detail="run authorization schema version mismatch")
-        manifest_path = _manifest_path().resolve()
-        references = payload.get("authorized_adapter_references")
-        actor = payload.get("actor")
-        if not isinstance(references, list) or not isinstance(actor, Mapping):
-            raise HTTPException(status_code=422, detail="authorization references or actor invalid")
-        try:
-            return authorize_task_evaluation_run(
-                state_root=_task_evaluation_run_root(manifest_path),
-                run_id=run_id,
-                plan_digest=str(payload.get("plan_digest") or ""),
-                authorized_adapter_references=[str(row) for row in references],
-                actor=dict(actor),
-                idempotency_key=str(payload.get("idempotency_key") or ""),
-            )
-        except (TaskEvaluationRunControlPlaneError, TaskEvaluationRunStateError, ValueError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    @app.post(
-        "/api/live-pipeline/task-evaluation-runs/{run_id}/execute",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def execute_task_evaluation_run(run_id: str) -> Dict[str, Any]:
-        manifest_path = _manifest_path().resolve()
-        try:
-            result = execute_and_aggregate_task_evaluation_run(
-                state_root=_task_evaluation_run_root(manifest_path),
-                run_id=run_id,
-            )
-        except (TaskEvaluationRunControlPlaneError, TaskEvaluationRunStateError, ValueError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        webapp_sync = _mapping(result.get("webapp_sync"))
-        if (
-            _truthy(os.getenv(TASK_EVALUATION_RUN_WEBAPP_SYNC_REQUIRED_ENV))
-            and webapp_sync.get("status") != "succeeded"
-        ):
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "task_evaluation_run_webapp_sync_required:"
-                    f"{webapp_sync.get('reason') or webapp_sync.get('status')}"
-                ),
-            )
-        return result
-
     @app.get(
         "/api/live-pipeline/task-evaluation-runs/{run_id}/artifacts/{artifact_id}",
         dependencies=[Depends(_require_admission)],
@@ -2857,271 +1854,6 @@ def create_app() -> FastAPI:
                 "X-Blueprint-Artifact-SHA256": str(reference["digest"]),
             },
         )
-
-    @app.get(
-        "/api/live-pipeline/task-evaluation-runs/{run_id}",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def inspect_task_evaluation_run(run_id: str) -> Dict[str, Any]:
-        manifest_path = _manifest_path().resolve()
-        try:
-            state = TaskEvaluationRunStateStore(_task_evaluation_run_root(manifest_path)).inspect(
-                run_id
-            )
-        except TaskEvaluationRunStateError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {
-            "schema_version": "task_evaluation_run_inspection.v1",
-            **state,
-        }
-
-    @app.post("/api/live-pipeline/capture-handoffs", dependencies=[Depends(_require_admission)])
-    async def intake_capture_handoff(request: Request) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        manifest_path = _manifest_path().resolve()
-        if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail=f"control-plane manifest missing: {manifest_path}",
-            )
-        manifest_payload = read_json_any(manifest_path)
-        if not isinstance(manifest_payload, Mapping):
-            raise HTTPException(status_code=503, detail="control-plane manifest is not JSON object")
-        manifest_capture_root_text = _string(manifest_payload.get("capture_root"))
-        manifest_capture_root = (
-            Path(manifest_capture_root_text).resolve() if manifest_capture_root_text else None
-        )
-        capture_root = _capture_root_from_handoff_payload(
-            payload=payload,
-            client_id=_string(getattr(request.state, "intake_client_id", "")),
-            manifest_capture_root=manifest_capture_root,
-        )
-        if capture_root is None:
-            raise HTTPException(status_code=503, detail="control-plane capture_root missing")
-        if not capture_root.is_dir():
-            raise HTTPException(
-                status_code=503,
-                detail=f"capture_root missing for handoff: {capture_root}",
-            )
-        response = stage_capture_handoff_for_control_plane(
-            payload=payload, capture_root=capture_root, manifest_path=manifest_path,
-        )
-        if response["input_blockers"]:
-            return JSONResponse(status_code=202, content=response)
-        return response
-
-    @app.post(
-        "/api/live-pipeline/policy-packages",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def intake_policy_package(request: Request) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        manifest_path = _manifest_path().resolve()
-        if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail=f"control-plane manifest missing: {manifest_path}",
-            )
-        work_dir = _work_dir(manifest_path).resolve()
-        ensure_dir(work_dir)
-        candidate_path = _policy_package_candidate_path(payload, work_dir)
-        write_json(candidate_path, dict(payload))
-        intake = build_live_pipeline_input_intake(
-            manifest_path=manifest_path,
-            policy_package=candidate_path,
-            stage_policy_package=True,
-            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
-        )
-        trigger = (
-            _trigger_control_plane()
-            if intake.get("status") == "staged_for_control_plane"
-            else {
-                "status": "not_run",
-                "performed": False,
-                "reason": "intake_not_staged_for_control_plane",
-            }
-        )
-        response = _redacted_policy_package_response(
-            candidate_path=candidate_path,
-            intake=intake,
-            trigger=trigger,
-        )
-        if intake.get("input_blockers"):
-            return JSONResponse(status_code=202, content=response)
-        return response
-
-    @app.post(
-        "/api/live-pipeline/real-robot-pov",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def intake_real_robot_pov(request: Request) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        manifest_path = _manifest_path().resolve()
-        if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail=f"control-plane manifest missing: {manifest_path}",
-            )
-        work_dir = _work_dir(manifest_path).resolve()
-        ensure_dir(work_dir)
-        candidate_path = _real_robot_pov_candidate_path(payload, work_dir)
-        write_json(candidate_path, dict(payload))
-        intake = build_live_pipeline_input_intake(
-            manifest_path=manifest_path,
-            real_robot_pov=candidate_path,
-            stage_real_robot_pov=True,
-            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
-        )
-        trigger = (
-            _trigger_control_plane()
-            if intake.get("status") == "staged_for_control_plane"
-            else {
-                "status": "not_run",
-                "performed": False,
-                "reason": "intake_not_staged_for_control_plane",
-            }
-        )
-        response = _redacted_real_robot_pov_response(
-            candidate_path=candidate_path,
-            intake=intake,
-            trigger=trigger,
-        )
-        if intake.get("input_blockers"):
-            return JSONResponse(status_code=202, content=response)
-        return response
-
-    @app.post(
-        "/api/live-pipeline/deployment-outcomes",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def intake_deployment_outcomes(request: Request) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        manifest_path = _manifest_path().resolve()
-        if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail=f"control-plane manifest missing: {manifest_path}",
-            )
-        work_dir = _work_dir(manifest_path).resolve()
-        ensure_dir(work_dir)
-        candidate_path = _deployment_outcome_candidate_path(payload, work_dir)
-        write_json(candidate_path, dict(payload))
-        intake = build_live_pipeline_input_intake(
-            manifest_path=manifest_path,
-            deployment_outcomes=candidate_path,
-            stage_deployment_outcomes=True,
-            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
-        )
-        trigger = (
-            _trigger_control_plane()
-            if intake.get("status") == "staged_for_control_plane"
-            else {
-                "status": "not_run",
-                "performed": False,
-                "reason": "intake_not_staged_for_control_plane",
-            }
-        )
-        response = _redacted_deployment_outcome_response(
-            candidate_path=candidate_path,
-            intake=intake,
-            trigger=trigger,
-        )
-        if intake.get("input_blockers"):
-            return JSONResponse(status_code=202, content=response)
-        return response
-
-    @app.post(
-        "/api/live-pipeline/live-closure-evidence",
-        dependencies=[Depends(_require_admission)],
-    )
-    async def intake_live_closure_evidence(request: Request) -> Dict[str, Any]:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=400, detail="expected JSON object")
-        manifest_path = _manifest_path().resolve()
-        if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=503,
-                detail=f"control-plane manifest missing: {manifest_path}",
-            )
-        work_dir = _work_dir(manifest_path).resolve()
-        ensure_dir(work_dir)
-        candidate_path = _closure_candidate_path(payload, work_dir)
-        write_json(candidate_path, dict(payload))
-        intake = build_live_pipeline_input_intake(
-            manifest_path=manifest_path,
-            live_closure_evidence=candidate_path,
-            stage_live_closure_evidence=True,
-            overwrite=_truthy(os.getenv(INTAKE_OVERWRITE_ENV)),
-        )
-        trigger = (
-            _trigger_control_plane()
-            if intake.get("status") == "staged_for_control_plane"
-            else {
-                "status": "not_run",
-                "performed": False,
-                "reason": "intake_not_staged_for_control_plane",
-            }
-        )
-        response = _redacted_closure_evidence_response(
-            candidate_path=candidate_path,
-            intake=intake,
-            trigger=trigger,
-        )
-        if intake.get("input_blockers"):
-            return JSONResponse(status_code=202, content=response)
-        return response
-
-    @app.get("/api/live-pipeline/intake-audit", dependencies=[Depends(_require_token)])
-    def latest_intake_audit() -> Dict[str, Any]:
-        manifest_path = _manifest_path().resolve()
-        audit_path = manifest_path.parent / "live_pipeline_input_intake_audit.json"
-        if not audit_path.is_file():
-            raise HTTPException(status_code=404, detail="intake audit not found")
-        payload = read_json_any(audit_path)
-        if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=500, detail="intake audit is not a JSON object")
-        return {
-            "schema_version": INTAKE_SCHEMA_VERSION,
-            "audit_path": str(audit_path),
-            "status": payload.get("status"),
-            "input_blockers": list(payload.get("input_blockers") or []),
-            "webapp_job_request": _mapping(payload.get("webapp_job_request")),
-            "webapp_staging": _mapping(payload.get("webapp_staging")),
-            "policy_package": _mapping(payload.get("policy_package")),
-            "policy_package_staging": _mapping(payload.get("policy_package_staging")),
-            "real_robot_pov": _mapping(payload.get("real_robot_pov")),
-            "real_robot_pov_staging": _mapping(payload.get("real_robot_pov_staging")),
-            "deployment_outcomes": _mapping(payload.get("deployment_outcomes")),
-            "deployment_outcomes_staging": _mapping(payload.get("deployment_outcomes_staging")),
-            "live_closure_evidence": _mapping(payload.get("live_closure_evidence")),
-            "live_closure_evidence_staging": _mapping(payload.get("live_closure_evidence_staging")),
-            "staged_inputs": _mapping(payload.get("staged_inputs")),
-            "proof_boundary": payload.get("proof_boundary"),
-        }
 
     return app
 

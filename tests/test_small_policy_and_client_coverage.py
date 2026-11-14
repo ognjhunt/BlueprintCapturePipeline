@@ -6,8 +6,6 @@ from urllib import error as urllib_error
 
 import pytest
 
-from blueprint_pipeline.agent_runtime.providers.claude import ClaudeAgentProvider
-from blueprint_pipeline.agent_runtime.providers.openai import OpenAIAgentProvider
 from blueprint_pipeline import launch_proof_policy, safe_env, site_world_runtime_service_client
 from blueprint_pipeline import world_model_policy as wmp
 
@@ -24,26 +22,6 @@ class _SkillRunner:
 
     def skill_metadata(self, skill_name: str) -> dict[str, object]:
         return {"skill_name": skill_name, "skill_runner": "custom"}
-
-
-def test_agent_provider_metadata_and_invocation_edges(tmp_path: Path) -> None:
-    openai = OpenAIAgentProvider(skill_runner=_SkillRunner("echo"), repo_root=tmp_path)
-    assert openai.runtime_metadata()["runner"] == "custom"
-    assert openai.runtime_metadata()["skills_root"].endswith(".agents/skills")
-    assert openai.skill_metadata("review")["skill_runner"] == "custom"
-    assert openai.invoke_skill("review", {"a": 1}) == {
-        "skill_name": "review",
-        "payload": {"a": 1},
-    }
-    assert OpenAIAgentProvider().invoke_skill("review", {}) is None
-    assert OpenAIAgentProvider(skill_runner=_SkillRunner(["bad"])).invoke_skill("review", {}) is None
-
-    claude = ClaudeAgentProvider(skill_runner=_SkillRunner({"ok": True}), repo_root=tmp_path)
-    assert claude.runtime_metadata()["skills_root"].endswith(".claude/skills")
-    assert claude.skill_metadata("review")["allowed_tools"] == ["Skill"]
-    assert claude.invoke_skill("review", {"a": 1}) == {"ok": True}
-    assert ClaudeAgentProvider().invoke_skill("review", {}) is None
-    assert ClaudeAgentProvider(skill_runner=_SkillRunner(["bad"])).invoke_skill("review", {}) is None
 
 
 def test_launch_proof_policy_and_world_model_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

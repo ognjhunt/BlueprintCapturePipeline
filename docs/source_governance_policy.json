@@ -61,9 +61,6 @@
     "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": [
       "tests/test_lightwheel_kitchen_isaac_scenarios.py"
     ],
-    "src/blueprint_pipeline/live_pipeline_control_plane.py": [
-      "tests/test_live_pipeline_control_plane.py"
-    ],
     "src/blueprint_pipeline/live_pipeline_intake_service.py": [
       "tests/test_live_pipeline_intake_service.py"
     ],
@@ -151,9 +148,6 @@
     ],
     "src/blueprint_pipeline/public_scene_suite_admission.py": [
       "tests/test_public_scene_suite_admission.py"
-    ],
-    "src/blueprint_pipeline/retrieval_index_stage.py": [
-      "tests/test_retrieval_index_stage_coverage.py"
     ],
     "src/blueprint_pipeline/robot_eval_dataset.py": [
       "tests/test_robot_eval_dataset.py"
@@ -296,7 +290,6 @@
     "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
     "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3216,
-    "src/blueprint_pipeline/live_pipeline_control_plane.py": 2319,
     "src/blueprint_pipeline/live_pipeline_intake_service.py": 3374,
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2200,
@@ -323,7 +316,6 @@
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
     "src/blueprint_pipeline/public_scene_replacement_occlusion.py": 2004,
     "src/blueprint_pipeline/public_scene_suite_admission.py": 2066,
-    "src/blueprint_pipeline/retrieval_index_stage.py": 2215,
     "src/blueprint_pipeline/robot_eval_dataset.py": 4959,
     "src/blueprint_pipeline/robot_eval_execution.py": 6252,
     "src/blueprint_pipeline/robot_eval_job_orchestrator.py": 12558,

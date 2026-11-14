@@ -492,14 +492,8 @@ from local file deletion.
 
 Signed intake headers are required by default. Temporary legacy bearer support
 exists only when `BLUEPRINT_LIVE_PIPELINE_INTAKE_ALLOW_LEGACY_BEARER=true` is
-set on the Pipeline service. The POST body can be either a direct
-`robot_eval_job_request.v1` or a `robot_eval_job_request_inbox.v1` queue
-envelope. A staged request is still only handoff proof; the control plane must
-process it and the proof audit must remain clean. Keep the service bound to
-localhost unless a reverse proxy/TLS layer owns public exposure. The one-shot
-`blueprint-pipeline-control-plane` loop that used to process staged requests was
-retired on 2026-11-06 (P-RT-06), so the intake's optional post-staging trigger
-has no target; leave `BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER` unset.
+set on the Pipeline service. Keep the service bound to
+localhost unless a reverse proxy/TLS layer owns public exposure.
 
 For capture-bridge Pub/Sub handoffs, the deployed
 `blueprint-pubsub-handoff-listener.timer` repeatedly drains

@@ -1,6 +1,6 @@
 {
   "default_seconds_per_test": 0.250656326,
-  "file_count": 2276,
+  "file_count": 2251,
   "files": [
     {
       "duration_seconds": 0.05,
@@ -518,16 +518,6 @@
       "test_count": 4
     },
     {
-      "duration_seconds": 0.027,
-      "path": "tests/test_agent_review_cli.py",
-      "test_count": 8
-    },
-    {
-      "duration_seconds": 0.006,
-      "path": "tests/test_agent_review_recapture_planner.py",
-      "test_count": 2
-    },
-    {
       "duration_seconds": 0.938,
       "path": "tests/test_agent_run_executor.py",
       "test_count": 42
@@ -538,19 +528,9 @@
       "test_count": 11
     },
     {
-      "duration_seconds": 0.007,
-      "path": "tests/test_agent_runtime_artifacts.py",
-      "test_count": 1
-    },
-    {
       "duration_seconds": 0.123,
       "path": "tests/test_agent_runtime_comparison.py",
       "test_count": 3
-    },
-    {
-      "duration_seconds": 0.098,
-      "path": "tests/test_agent_runtime_orchestrator_coverage.py",
-      "test_count": 7
     },
     {
       "duration_seconds": 5.946,
@@ -1268,11 +1248,6 @@
       "test_count": 21
     },
     {
-      "duration_seconds": 0.036,
-      "path": "tests/test_capture_orchestrator_coverage_edges.py",
-      "test_count": 3
-    },
-    {
       "duration_seconds": 0.434,
       "path": "tests/test_capture_original_owner_observer.py",
       "test_count": 13
@@ -1778,24 +1753,9 @@
       "test_count": 3
     },
     {
-      "duration_seconds": 0.11,
-      "path": "tests/test_cosmos3_readiness.py",
-      "test_count": 9
-    },
-    {
       "duration_seconds": 0.136,
       "path": "tests/test_cosmos3_wam_command_adapter.py",
       "test_count": 11
-    },
-    {
-      "duration_seconds": 0.164,
-      "path": "tests/test_cosmos_benchmark.py",
-      "test_count": 7
-    },
-    {
-      "duration_seconds": 0.036,
-      "path": "tests/test_cosmos_capture_bootstrap.py",
-      "test_count": 2
     },
     {
       "duration_seconds": 0.363,
@@ -1821,11 +1781,6 @@
       "duration_seconds": 0.135,
       "path": "tests/test_cosmos_lora_training.py",
       "test_count": 4
-    },
-    {
-      "duration_seconds": 1.881,
-      "path": "tests/test_cosmos_training_export.py",
-      "test_count": 8
     },
     {
       "duration_seconds": 0.01,
@@ -2403,11 +2358,6 @@
       "test_count": 7
     },
     {
-      "duration_seconds": 0.205,
-      "path": "tests/test_frame_alignment_stage.py",
-      "test_count": 9
-    },
-    {
       "duration_seconds": 0.101,
       "path": "tests/test_frames_layout.py",
       "test_count": 7
@@ -2501,11 +2451,6 @@
       "duration_seconds": 0.162,
       "path": "tests/test_full_lane_sharding.py",
       "test_count": 7
-    },
-    {
-      "duration_seconds": 0.037,
-      "path": "tests/test_future_anchor_regrounding.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 0.079,
@@ -3643,16 +3588,6 @@
       "test_count": 7
     },
     {
-      "duration_seconds": 0.485,
-      "path": "tests/test_live_pipeline_control_plane.py",
-      "test_count": 14
-    },
-    {
-      "duration_seconds": 0.251,
-      "path": "tests/test_live_pipeline_control_plane_coverage_edges.py",
-      "test_count": 10
-    },
-    {
       "duration_seconds": 0.121,
       "path": "tests/test_live_pipeline_forwarding_secret_setup.py",
       "test_count": 5
@@ -3661,11 +3596,6 @@
       "duration_seconds": 7.594,
       "path": "tests/test_live_pipeline_import_isolation.py",
       "test_count": 5
-    },
-    {
-      "duration_seconds": 2.308,
-      "path": "tests/test_live_pipeline_input_intake.py",
-      "test_count": 28
     },
     {
       "duration_seconds": 9.79,
@@ -3688,19 +3618,9 @@
       "test_count": 13
     },
     {
-      "duration_seconds": 1.845,
-      "path": "tests/test_live_pipeline_proof_audit.py",
-      "test_count": 15
-    },
-    {
       "duration_seconds": 1.804,
       "path": "tests/test_live_pipeline_result_artifact_api.py",
       "test_count": 15
-    },
-    {
-      "duration_seconds": 0.291,
-      "path": "tests/test_live_pipeline_scene_object_discovery_api.py",
-      "test_count": 2
     },
     {
       "duration_seconds": 0.4,
@@ -5973,11 +5893,6 @@
       "test_count": 26
     },
     {
-      "duration_seconds": 0.428,
-      "path": "tests/test_policy_improvement_run.py",
-      "test_count": 12
-    },
-    {
       "duration_seconds": 0.545,
       "path": "tests/test_policy_integration_canary.py",
       "test_count": 9
@@ -7283,11 +7198,6 @@
       "test_count": 35
     },
     {
-      "duration_seconds": 0.198,
-      "path": "tests/test_reference_selection.py",
-      "test_count": 7
-    },
-    {
       "duration_seconds": 2.629,
       "path": "tests/test_registered_arena_experiments.py",
       "test_count": 19
@@ -7616,21 +7526,6 @@
       "duration_seconds": 50.963,
       "path": "tests/test_retained_source_calibration_lifecycle.py",
       "test_count": 47
-    },
-    {
-      "duration_seconds": 0.386,
-      "path": "tests/test_retrieval_index_geometry_source.py",
-      "test_count": 4
-    },
-    {
-      "duration_seconds": 0.311,
-      "path": "tests/test_retrieval_index_stage_coverage.py",
-      "test_count": 4
-    },
-    {
-      "duration_seconds": 0.088,
-      "path": "tests/test_retrieval_model_download_gate.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 0.079,
@@ -8868,19 +8763,9 @@
       "test_count": 15
     },
     {
-      "duration_seconds": 0.464,
-      "path": "tests/test_sim_only_beta_deployment_parity_proof.py",
-      "test_count": 12
-    },
-    {
       "duration_seconds": 0.432,
       "path": "tests/test_sim_only_beta_local_gate.py",
       "test_count": 7
-    },
-    {
-      "duration_seconds": 0.495,
-      "path": "tests/test_sim_only_beta_release_gate.py",
-      "test_count": 11
     },
     {
       "duration_seconds": 0.756,
@@ -9126,11 +9011,6 @@
       "duration_seconds": 1.498,
       "path": "tests/test_source_calibration_vast_preflight.py",
       "test_count": 7
-    },
-    {
-      "duration_seconds": 0.108,
-      "path": "tests/test_sparse_view_interpolation.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 0.611,
@@ -10631,11 +10511,6 @@
       "duration_seconds": 0.352,
       "path": "tests/test_torchvision_rendered_scene_analyzer.py",
       "test_count": 6
-    },
-    {
-      "duration_seconds": 0.124,
-      "path": "tests/test_trajectory_augmentation.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 1.191,
@@ -12482,6 +12357,6 @@
   "source_junit_sha256": "457d4512db4021477c9cdb91a801f5b639a4e48b43fe574ba3d527b60700251a",
   "source_repository_sha": "e9af5888afc5efa25dfcfc8742fcfed1e30e7ffd",
   "source_run_id": 38193701899,
-  "test_count": 34524,
-  "total_duration_seconds": 8653.659
+  "test_count": 34337,
+  "total_duration_seconds": 8643.27
 }

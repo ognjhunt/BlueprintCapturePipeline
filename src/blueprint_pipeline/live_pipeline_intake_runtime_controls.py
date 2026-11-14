@@ -17,16 +17,13 @@ from fastapi import Depends, HTTPException, Request, status
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
 from .core.security_controls import json_shape_within_limits
-from .live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
 
 
+CONTROL_PLANE_OUTPUT_PATH_ENV = "BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH"
 DEFAULT_MANIFEST_PATH = (
     "/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json"
 )
 INTAKE_WORK_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_WORK_DIR"
-INTAKE_TRIGGER_ENV = "BLUEPRINT_LIVE_PIPELINE_INTAKE_TRIGGER_COMMAND"
-INTAKE_ALLOW_TRIGGER_ENV = "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER"
-INTAKE_TRIGGER_SYSTEMD_UNIT_ENV = "BLUEPRINT_LIVE_PIPELINE_TRIGGER_SYSTEMD_UNIT"
 TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR"
 TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT"
@@ -91,54 +88,6 @@ def _work_root() -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return (manifest_path.parent / "incoming_webapp_job_requests").resolve()
-
-
-def _trigger_control_plane() -> Dict[str, Any]:
-    unit = _string(os.getenv(INTAKE_TRIGGER_SYSTEMD_UNIT_ENV))
-    allowed = _truthy(os.getenv(INTAKE_ALLOW_TRIGGER_ENV))
-    if not unit:
-        return {
-            "status": "not_configured",
-            "performed": False,
-            "allowed": allowed,
-            "systemd_unit_configured": False,
-        }
-    if not allowed:
-        return {
-            "status": "blocked",
-            "performed": False,
-            "allowed": False,
-            "systemd_unit_configured": True,
-            "blockers": [f"missing_env_{INTAKE_ALLOW_TRIGGER_ENV}"],
-        }
-    if not re.fullmatch(r"[A-Za-z0-9@_.-]+\.service", unit):
-        return {
-            "status": "blocked",
-            "performed": False,
-            "allowed": True,
-            "systemd_unit_configured": True,
-            "blockers": ["intake_trigger_systemd_unit_invalid"],
-        }
-    command_argv = ["systemctl", "start", "--no-block", unit]
-    completed = subprocess.run(  # nosec B603
-        command_argv,
-        shell=False,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    return {
-        "status": "triggered" if completed.returncode == 0 else "failed",
-        "performed": completed.returncode == 0,
-        "allowed": True,
-        "systemd_unit_configured": True,
-        "systemd_unit": unit,
-        "command_argv_count": len(command_argv),
-        "returncode": completed.returncode,
-        "stdout_tail": completed.stdout[-2000:],
-        "stderr_tail": completed.stderr[-2000:],
-    }
 
 
 def _trigger_task_evaluation_launch_dispatcher() -> Dict[str, Any]:

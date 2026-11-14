@@ -13,9 +13,9 @@ POSTCHECK = Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-cont
 
 
 @pytest.mark.parametrize("shared_venv", [True, False])
-@pytest.mark.parametrize("audit_rc,alert_rc,expected_rc", [(0, 3, 3), (7, 0, 7)])
+@pytest.mark.parametrize("alert_rc", [0, 3])
 def test_postchecks_use_selected_release_and_preserve_failure_signals(
-    tmp_path: Path, shared_venv: bool, audit_rc: int, alert_rc: int, expected_rc: int
+    tmp_path: Path, shared_venv: bool, alert_rc: int
 ) -> None:
     selected = tmp_path / "release"
     stale = tmp_path / "stale"
@@ -23,13 +23,12 @@ def test_postchecks_use_selected_release_and_preserve_failure_signals(
         package = root / "src/blueprint_pipeline"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("")
-        for role, code in (("proof_audit", audit_rc), ("manifest_alert", alert_rc)):
-            (package / f"live_pipeline_{role}.py").write_text(
-                "import os\n"
-                "with open(os.environ['POSTCHECK_LOG'], 'a') as stream:\n"
-                f"    stream.write({(origin + ':' + role + chr(10))!r})\n"
-                f"raise SystemExit({code})\n"
-            )
+        (package / "live_pipeline_manifest_alert.py").write_text(
+            "import os\n"
+            "with open(os.environ['POSTCHECK_LOG'], 'a') as stream:\n"
+            f"    stream.write({(origin + ':manifest_alert' + chr(10))!r})\n"
+            f"raise SystemExit({alert_rc})\n"
+        )
     # The shared interpreter carries an older editable checkout in production.
     # Give this subprocess an explicit stale import root to reproduce that risk.
     shim = "#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n'
@@ -51,7 +50,7 @@ def test_postchecks_use_selected_release_and_preserve_failure_signals(
                PATH=str(tools) + os.pathsep + os.environ["PATH"])
     result = subprocess.run(["bash", str(POSTCHECK)], env=env, capture_output=True,
                             text=True, timeout=10, check=False)
-    assert result.returncode == expected_rc, result.stderr
-    assert log.read_text().splitlines() == ["release:proof_audit", "release:manifest_alert"]
+    assert result.returncode == alert_rc, result.stderr
+    assert log.read_text().splitlines() == ["release:manifest_alert"]
 
 

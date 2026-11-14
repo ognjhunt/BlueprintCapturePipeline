@@ -11,11 +11,6 @@ from blueprint_pipeline.g1_controlled_run_evidence import (
     assemble_g1_controlled_run_evidence,
     main,
 )
-from blueprint_pipeline.live_pipeline_control_plane import (
-    JOB_REQUEST_INBOX_ENV,
-    LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
-)
-from blueprint_pipeline.live_pipeline_input_intake import build_live_pipeline_input_intake
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -559,105 +554,6 @@ def test_g1_evidence_assembly_blocks_unsigned_attestations(tmp_path: Path) -> No
     )
     assert manifest["attestations_signed"]["operator"] is False
     assert manifest["owner_evidence_ready_for_physical_claim"] is False
-
-
-def test_g1_evidence_assembly_outputs_live_intake_ready_manifests(tmp_path: Path) -> None:
-    capture_root = tmp_path / "capture"
-    job_id = "robot-eval-test"
-    job_request_path = _seed_job_request(capture_root, job_id)
-    evidence_dir = tmp_path / "evidence"
-    _seed_evidence_drop(evidence_dir)
-    _write_json(evidence_dir / "g1_controlled_run_inputs.json", _ready_config(job_id))
-
-    manifest = assemble_g1_controlled_run_evidence(
-        capture_root=capture_root,
-        evidence_dir=evidence_dir,
-        job_id=job_id,
-    )
-
-    assert manifest["status"] == "ready_for_live_input_staging"
-    assert manifest["required_exact_join_keys"] == [
-        "scenario_eval_run_id",
-        "policy_id",
-        "task_id",
-        "scenario_variation_instance_id",
-    ]
-    assert manifest["anchor_join_key"] == {
-        "scenario_eval_run_id": "robot-eval-test-site-a_walk_to_target_pose",
-        "policy_id": "unitree_rl_gym_g1_mujoco_policy_candidate",
-        "task_id": "walk_to_target",
-        "scenario_variation_instance_id": "site-a_walk_to_target_pose",
-    }
-    assert manifest["loose_or_inferred_matches_allowed_for_calibration"] is False
-    output_dir = Path(manifest["output_dir"])
-    request_packet = _read_json(output_dir / "controlled_field_anchor_request_packet.json")
-    assert request_packet["status"] == "ready_for_calibration_intake"
-    assert request_packet["anchor_join_key"] == manifest["anchor_join_key"]
-    assert request_packet["allowed_task_set"][0]["allowed"] is True  # type: ignore[index]
-    deployment = _read_json(output_dir / "deployment_outcome_manifest.json")
-    record = deployment["records"][0]  # type: ignore[index]
-    assert record["policy_id"] == "unitree_rl_gym_g1_mujoco_policy_candidate"
-    assert record["anchor_schema_version"] == "accepted_real_world_anchor.v1"
-    assert record["anchor_join_key"] == manifest["anchor_join_key"]
-    assert record["review_status"] == "accepted"
-    assert record["owner_evidence_present"] is True
-    assert record["attestations_signed"] == {
-        "operator": True,
-        "hardware_owner": True,
-        "safety_reviewer": True,
-        "robot_team_reviewer": True,
-    }
-    assert set(record["required_owner_evidence"]) == {
-        "robot_camera_video",
-        "action_log",
-        "timestamp_alignment",
-        "hardware_validation",
-        "contact_collision_log",
-        "policy_metrics",
-        "robot_team_review",
-    }
-    assert record["reviewer_decision"]["accepted_for_calibration"] is True
-    assert record["artifact_provenance"]["physical_robot_run_manifest"].endswith(  # type: ignore[index]
-        "physical_robot_run_manifest.json"
-    )
-    pov = _read_json(output_dir / "real_robot_pov_manifest.json")
-    assert pov["records"][0]["robot_camera_video_uri"].endswith("robot_camera_video.mp4")  # type: ignore[index]
-    assert pov["records"][0]["scenario_eval_run_id"]  # type: ignore[index]
-    assert pov["proof_boundary"]["real_robot_pov_evidence_proven"] is False  # type: ignore[index]
-    policy = _read_json(output_dir / "robot_team_policy_package.json")
-    assert policy["policy_package"]["recorded_action_trace"]["trace_manifest_uri"].endswith(  # type: ignore[index]
-        "policy_execution_trace.jsonl"
-    )
-    closure = _read_json(output_dir / "live_eval_closure_evidence.json")
-    assert closure["safety_contact_physics"]["rank_fidelity_result_proven"] is False
-    assert manifest["owner_evidence_ready_for_physical_claim"] is True
-
-    control_plane_manifest = capture_root / "pipeline" / "live_pipeline_control_plane" / "live_pipeline_control_plane_manifest.json"
-    _write_json(
-        control_plane_manifest,
-        {
-            "schema_version": LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
-            "capture_root": str(capture_root),
-            "job_request_inbox": str(capture_root / "pipeline" / "live_job_request_inbox"),
-            "env": {JOB_REQUEST_INBOX_ENV: str(capture_root / "pipeline" / "live_job_request_inbox")},
-        },
-    )
-
-    intake = build_live_pipeline_input_intake(
-        manifest_path=control_plane_manifest,
-        webapp_job_request=job_request_path,
-        policy_package=output_dir / "robot_team_policy_package.json",
-        real_robot_pov=output_dir / "real_robot_pov_manifest.json",
-        deployment_outcomes=output_dir / "deployment_outcome_manifest.json",
-        live_closure_evidence=output_dir / "live_eval_closure_evidence.json",
-        output_path=output_dir / "live_pipeline_input_intake_audit.json",
-    )
-
-    assert intake["status"] == "ready_for_control_plane"
-    assert intake["proof_boundary"]["policy_package_ready_for_robot_eval_job"] is True
-    assert intake["proof_boundary"]["real_robot_pov_ready_for_job_ingest"] is True
-    assert intake["proof_boundary"]["deployment_outcomes_ready_for_real_world_validation"] is True
-    assert intake["proof_boundary"]["live_closure_evidence_ready_for_closure_audit"] is True
 
 
 def test_g1_evidence_template_cli_writes_inputs(tmp_path: Path, capsys) -> None:

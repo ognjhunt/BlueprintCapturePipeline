@@ -3,7 +3,6 @@ from __future__ import annotations
 import hmac
 import json
 import os
-import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
@@ -12,10 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blueprint_pipeline import live_pipeline_intake_service as service
-from blueprint_pipeline.live_pipeline_control_plane import (
-    CONTROL_PLANE_OUTPUT_PATH_ENV,
-    run_live_pipeline_control_plane,
-)
+from blueprint_pipeline.live_pipeline_intake_runtime_controls import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.live_pipeline_intake_service import (
     INTAKE_TOKEN_ENV,
     create_app,
@@ -70,20 +66,6 @@ def _signed_intake_headers(
         "x-blueprint-pipeline-timestamp": resolved_timestamp,
         "x-blueprint-pipeline-nonce": nonce,
         "x-blueprint-pipeline-client-id": client_id,
-        "x-blueprint-pipeline-signature": f"sha256={signature}",
-    }
-
-
-def _legacy_webapp_headers(token: str, *, nonce: str, body: str = "") -> dict[str, str]:
-    timestamp = datetime.now(timezone.utc).isoformat()
-    signature = hmac.new(
-        token.encode("utf-8"),
-        f"{timestamp}.{nonce}.{body}".encode("utf-8"),
-        "sha256",
-    ).hexdigest()
-    return {
-        "x-blueprint-pipeline-timestamp": timestamp,
-        "x-blueprint-pipeline-nonce": nonce,
         "x-blueprint-pipeline-signature": f"sha256={signature}",
     }
 
@@ -168,46 +150,6 @@ def _capture_root(tmp_path: Path) -> Path:
     return capture_root
 
 
-def _control_manifest(tmp_path: Path, capture_root: Path) -> Path:
-    output_path = tmp_path / "control" / "live_pipeline_control_plane_manifest.json"
-    run_live_pipeline_control_plane(
-        capture_root=capture_root,
-        job_request_inbox=tmp_path / "webapp-inbox",
-        load_local_env=False,
-        output_path=output_path,
-    )
-    return output_path
-
-
-def _seed_robot_eval_dataset_cards(capture_root: Path) -> None:
-    dataset_dir = capture_root / "pipeline" / "robot_eval_dataset"
-    _write_json(
-        dataset_dir / "task_cards.json",
-        {
-            "schema_version": "robot_eval_task_cards.v1",
-            "cards": [
-                {
-                    "task_id": "scene_anchor_geometry_0",
-                    "task_card_id": "task-card-1",
-                }
-            ],
-        },
-    )
-    _write_json(
-        dataset_dir / "scenario_cards.json",
-        {
-            "schema_version": "robot_eval_scenario_cards.v1",
-            "cards": [
-                {
-                    "scenario_id": "scenario_scene_anchor_geometry_0_unitree_g1",
-                    "task_id": "scene_anchor_geometry_0",
-                    "robot_profile_id": "unitree_g1",
-                }
-            ],
-        },
-    )
-
-
 def _task_evaluation_launch_request() -> dict[str, object]:
     source_bundle = {
         "bundle_id": "interiorgs-sage-new-scene-001",
@@ -286,160 +228,15 @@ def _public_task_evaluation_launch_profile() -> dict[str, object]:
     }
 
 
-def _webapp_request(capture_root: Path, *, job_id: str = "webapp-job-1") -> dict[str, object]:
-    buyer_request_id = "buyer-request-1"
-    return {
-        "queue_contract": "robot_eval_job_request_inbox.v1",
-        "status": "queued_for_pipeline",
-        "job_id": job_id,
-        "job_request": {
-            "schema_version": "robot_eval_job_request.v1",
-            "job_id": job_id,
-            "buyer_request_id": buyer_request_id,
-            "site_package": {
-                "capture_root": str(capture_root),
-                "site_submission_id": "site-submission-1",
-                "capture_job_id": "capture-job-1",
-                "buyer_request_id": buyer_request_id,
-                "package_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline",
-            },
-            "owner_system": {
-                "name": "Blueprint-WebApp",
-                "request_id": job_id,
-                "buyer_request_id": buyer_request_id,
-                "site_submission_id": "site-submission-1",
-                "capture_job_id": "capture-job-1",
-            },
-            "source": {
-                "system": "Blueprint-WebApp",
-                "selection_state": {
-                    "buyer_request_id": buyer_request_id,
-                    "site_submission_id": "site-submission-1",
-                    "capture_job_id": "capture-job-1",
-                },
-            },
-        },
-    }
-
-
-def _decision_evidence_envelope() -> dict[str, object]:
-    return {
-        "queue_contract": "blueprint.decision_evidence_request_inbox.v1",
-        "request_id": "decision-request-1",
-        "decision_id": "buyer-decision-1",
-        "decision_request": {
-            "schema_version": "blueprint.decision_evidence_request.v1",
-            "request_id": "decision-request-1",
-            "decision_id": "buyer-decision-1",
-            "testbed": {"manifest_uri": "gs://local-blueprint/testbed.json"},
-            "site_task": {
-                "site_id": "site-1",
-                "site_name": "site-one",
-                "task_id": "task-a",
-            },
-            "candidates": [{"candidate_id": "policy-a", "kind": "policy"}],
-            "routing_authority": {
-                "system": "BlueprintCapturePipeline",
-                "webapp_backend_selection_allowed": False,
-            },
-            "authorization": {"access_state": "provisioned"},
-        },
-    }
-
-
-def _capture_handoff() -> dict[str, object]:
-    return {
-        "schema_version": "blueprint_capture_pipeline_handoff.v1",
-        "scene_id": "scene-1",
-        "capture_id": "capture-1",
-        "site_submission_id": "site-submission-1",
-        "buyer_request_id": "buyer-request-1",
-        "capture_job_id": "capture-job-1",
-        "requested_outputs": ["robot_eval_dataset", "task_evaluation_run"],
-        "requested_lanes": ["evaluation_prep", "robot_eval_dataset", "task_evaluation_run"],
-        "robot_eval_dataset_requested": True,
-        "capture_descriptor_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/capture_descriptor.json",
-        "pipeline_handoff_uri": "gs://local-blueprint/scenes/scene-1/captures/capture-1/pipeline_handoff.json",
-    }
-
-
-def _live_closure_evidence(job_id: str = "webapp-job-1") -> dict[str, object]:
-    return {
-        "schema_version": "live_robot_eval_closure_evidence.v1",
-        "job_id": job_id,
-        "review_acceptance": {"accepted": True, "reviewer": "owner-reviewer"},
-        "delivery": {
-            "storage_upload_performed": True,
-            "signed_urls": ["https://delivery.example/signed/package-1"],
-            "entitlement_verified": True,
-            "buyer_access_check": {
-                "buyer_access_checked": True,
-                "buyer_accessible": True,
-                "status": "ok",
-            },
-        },
-        "safety_contact_physics": {
-            "physics_contact_validated": True,
-            "non_ranking_operational_claim_validated": True,
-            "rank_fidelity_result_proven": True,
-            "methodology_uri_or_path": "owner://methodology",
-            "contact_validation_uri_or_path": "owner://contact",
-            "non_ranking_operational_claim_uri_or_path": "owner://safety",
-            "operator_attestation": {
-                "attested_by": "safety-owner",
-                "attestation": "Owner accepted contact, physics, and safety evidence.",
-            },
-        },
-    }
-
-
 def test_live_pipeline_intake_service_helper_edges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest_path = tmp_path / "control" / "manifest.json"
     monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "custom-work"))
     assert service._work_dir(manifest_path) == tmp_path / "custom-work"
-    assert (
-        service._request_from_payload({"schema_version": "robot_eval_job_request.v1"})[
-            "schema_version"
-        ]
-        == "robot_eval_job_request.v1"
-    )
-    assert service._request_from_payload({"schema_version": "other"}) == {}
     assert service._first_string("", None) == ""
     assert service._list_from_payload(("a", "b")) == ["a", "b"]
     assert service._list_from_payload("bad") == []
-    cards_path = tmp_path / "cards.json"
-    _write_json(cards_path, [{"task_id": "task-1"}, "bad"])
-    assert service._cards_from_file(cards_path) == [{"task_id": "task-1"}]
-
-    missing_root = tmp_path / "missing-cards"
-    assert service._select_dataset_task(missing_root) == (
-        None,
-        ["robot_eval_task_cards_missing", "robot_eval_scenario_cards_missing"],
-    )
-    empty_root = tmp_path / "empty-cards"
-    _write_json(empty_root / "pipeline" / "robot_eval_dataset" / "task_cards.json", {"cards": []})
-    _write_json(
-        empty_root / "pipeline" / "robot_eval_dataset" / "scenario_cards.json", {"cards": []}
-    )
-    assert service._select_dataset_task(empty_root) == (
-        None,
-        ["robot_eval_task_cards_empty", "robot_eval_scenario_cards_empty"],
-    )
-    unmatched_root = tmp_path / "unmatched-cards"
-    _write_json(
-        unmatched_root / "pipeline" / "robot_eval_dataset" / "task_cards.json",
-        {"cards": [{}, {"task_id": "task-1"}]},
-    )
-    _write_json(
-        unmatched_root / "pipeline" / "robot_eval_dataset" / "scenario_cards.json",
-        {"cards": [{"task_id": "other", "scenario_id": "scenario-1"}]},
-    )
-    assert service._select_dataset_task(unmatched_root) == (
-        None,
-        ["robot_eval_no_task_scenario_pair"],
-    )
 
 
 def test_capture_handoff_blocker_edges(tmp_path: Path) -> None:
@@ -452,70 +249,6 @@ def test_capture_handoff_blocker_edges(tmp_path: Path) -> None:
     assert "capture_handoff_capture_id_mismatch" in audit["blockers"]
     assert "capture_handoff_missing_site_submission_id" in audit["blockers"]
     assert audit["converted_to_job_request"] is False
-
-
-def test_trigger_control_plane_edges(monkeypatch: pytest.MonkeyPatch) -> None:
-    # No subprocess may be spawned while the trigger is gated/unconfigured.
-    def _no_subprocess(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("subprocess.run must not be invoked when trigger is gated")
-
-    monkeypatch.setattr(service.subprocess, "run", _no_subprocess)
-
-    # unit set but allow-env unset -> blocked, no spawn, exact missing-env blocker.
-    monkeypatch.setenv(
-        service.INTAKE_TRIGGER_SYSTEMD_UNIT_ENV,
-        "blueprint-pipeline-control-plane.service",
-    )
-    monkeypatch.delenv(service.INTAKE_ALLOW_TRIGGER_ENV, raising=False)
-    blocked = service._trigger_control_plane()
-    assert blocked["status"] == "blocked"
-    assert blocked["performed"] is False
-    assert blocked["systemd_unit_configured"] is True
-    assert blocked["blockers"] == [f"missing_env_{service.INTAKE_ALLOW_TRIGGER_ENV}"]
-    assert service.INTAKE_ALLOW_TRIGGER_ENV == "BLUEPRINT_ALLOW_LIVE_PIPELINE_INTAKE_TRIGGER"
-
-    # no unit configured -> not_configured, no spawn.
-    monkeypatch.delenv(service.INTAKE_TRIGGER_SYSTEMD_UNIT_ENV, raising=False)
-    monkeypatch.setenv(service.INTAKE_ALLOW_TRIGGER_ENV, "true")
-    not_configured = service._trigger_control_plane()
-    assert not_configured["status"] == "not_configured"
-    assert not_configured["performed"] is False
-    assert not_configured["systemd_unit_configured"] is False
-
-    class Completed:
-        returncode = 0
-        stdout = "x" * 2100
-        stderr = "err"
-
-    monkeypatch.setenv(
-        service.INTAKE_TRIGGER_SYSTEMD_UNIT_ENV,
-        "blueprint-pipeline-control-plane.service",
-    )
-    monkeypatch.setenv(service.INTAKE_ALLOW_TRIGGER_ENV, "true")
-    seen: dict[str, object] = {}
-
-    def _safe_run(command: object, **kwargs: object) -> Completed:
-        seen["command"] = command
-        seen["kwargs"] = kwargs
-        return Completed()
-
-    monkeypatch.setattr(service.subprocess, "run", _safe_run)
-    triggered = service._trigger_control_plane()
-    assert triggered["status"] == "triggered"
-    assert triggered["performed"] is True
-    assert len(triggered["stdout_tail"]) == 2000
-    assert seen["command"] == [
-        "systemctl",
-        "start",
-        "--no-block",
-        "blueprint-pipeline-control-plane.service",
-    ]
-    assert seen["kwargs"]["shell"] is False  # type: ignore[index]
-
-    monkeypatch.setenv(service.INTAKE_TRIGGER_SYSTEMD_UNIT_ENV, "bad;unit.service")
-    invalid = service._trigger_control_plane()
-    assert invalid["status"] == "blocked"
-    assert invalid["blockers"] == ["intake_trigger_systemd_unit_invalid"]
 
 
 def test_deployment_identity_fails_closed_without_exact_source_commit(
@@ -661,20 +394,12 @@ def test_live_pipeline_intake_service_error_edges(
     assert "endpoints" not in health
     assert (
         client.post(
-            "/api/live-pipeline/job-requests", json={}, headers={"x-blueprint-intake-token": "bad"}
+            "/api/live-pipeline/capture-upload-intakes", json={}, headers={"x-blueprint-intake-token": "bad"}
         ).status_code
         == 401
     )
 
-    endpoints = [
-        "/api/live-pipeline/job-requests",
-        "/api/live-pipeline/capture-upload-intakes",
-        "/api/live-pipeline/capture-handoffs",
-        "/api/live-pipeline/policy-packages",
-        "/api/live-pipeline/real-robot-pov",
-        "/api/live-pipeline/deployment-outcomes",
-        "/api/live-pipeline/live-closure-evidence",
-    ]
+    endpoints = ["/api/live-pipeline/capture-upload-intakes"]
     for endpoint in endpoints:
         assert (
             client.post(
@@ -684,23 +409,6 @@ def test_live_pipeline_intake_service_error_edges(
         )
         assert client.post(endpoint, json=[], headers=headers).status_code == 400
         assert client.post(endpoint, json={}, headers=headers).status_code == 503
-
-    manifest_path = tmp_path / "control" / "live_pipeline_control_plane_manifest.json"
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    _write_json(manifest_path, ["bad"])
-    assert (
-        client.post("/api/live-pipeline/capture-handoffs", json={}, headers=headers).status_code
-        == 503
-    )
-    _write_json(manifest_path, {})
-    assert (
-        client.post("/api/live-pipeline/capture-handoffs", json={}, headers=headers).status_code
-        == 503
-    )
-
-    assert client.get("/api/live-pipeline/intake-audit", headers=headers).status_code == 404
-    _write_json(manifest_path.parent / "live_pipeline_input_intake_audit.json", ["bad"])
-    assert client.get("/api/live-pipeline/intake-audit", headers=headers).status_code == 500
 
 
 @pytest.mark.parametrize('constraints, expected_live', [
@@ -1009,117 +717,12 @@ def test_live_pipeline_capture_upload_intake_returns_typed_fail_closed_blockers(
     }
 
 
-def test_capture_handoff_does_not_use_evaluation_conversion_and_main(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    _seed_robot_eval_dataset_cards(capture_root)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
-    monkeypatch.setattr(
-        service,
-        "build_live_pipeline_input_intake",
-        lambda **_kwargs: {"status": "blocked", "input_blockers": ["blocked_after_conversion"]},
-    )
-
-    response = TestClient(create_app()).post(
-        "/api/live-pipeline/capture-handoffs",
-        json=_capture_handoff(),
-        headers={"x-blueprint-intake-token": "token"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["capture_handoff"]["converted_to_job_request"] is False
-
-    calls: dict[str, object] = {}
-    monkeypatch.setitem(
-        sys.modules,
-        "uvicorn",
-        SimpleNamespace(
-            run=lambda app, host, port: calls.update({"app": app, "host": host, "port": port})
-        ),
-    )
-    assert service.main(["--host", "0.0.0.0", "--port", "9999"]) == 0
-    assert calls == {
-        "app": "blueprint_pipeline.live_pipeline_intake_service:app",
-        "host": "0.0.0.0",
-        "port": 9999,
-    }
-
-
-def _deployment_outcomes(
-    job_id: str = "webapp-job-1",
-    *,
-    include_evidence: bool = True,
-) -> dict[str, object]:
-    record: dict[str, object] = {
-        "outcome_id": "pilot-outcome-1",
-        "task_id": "place_return_in_bin",
-        "scenario_id": "scenario_place_return_in_bin_mobile",
-        "actual_success": False,
-        "failure_mode_ids": ["missed_blocked_path"],
-    }
-    if include_evidence:
-        record["evidence_refs"] = {"pilot_log": "owner://pilot/pilot-outcome-1"}
-    return {
-        "schema_version": "deployment_outcome_manifest.v1",
-        "job_id": job_id,
-        "records": [record],
-    }
-
-
-def _policy_package(job_id: str = "webapp-job-1") -> dict[str, object]:
-    return {
-        "schema_version": "robot_team_policy_package.v1",
-        "job_id": job_id,
-        "policy_package": {
-            "policy_api_endpoint": {
-                "endpoint_url": "https://robot-team.example/policy",
-                "observation_schema_ref": "schemas/obs-v1.json",
-                "action_schema_ref": "schemas/action-v1.json",
-            }
-        },
-    }
-
-
-def _real_robot_pov_manifest(job_id: str = "webapp-job-1") -> dict[str, object]:
-    return {
-        "schema_version": "real_robot_pov_manifest.v1",
-        "job_id": job_id,
-        "owner_system": "robot-team-owner-system",
-        "records": [
-            {
-                "evidence_id": "real-pov-1",
-                "task_id": "place_return_in_bin",
-                "scenario_id": "scenario_place_return_in_bin_mobile",
-                "scenario_eval_run_id": "scenario-run-1",
-                "scenario_variation_instance_id": "scenario-variation-1",
-                "robot_camera_video_uri": "owner://pov/scenario-run-1.mp4",
-                "action_log_uri": "owner://actions/scenario-run-1.jsonl",
-                "timestamp_alignment": "aligned_to_scenario_eval_run",
-                "owner_evidence_refs": {
-                    "camera": "owner://pov/scenario-run-1.mp4",
-                    "action_log": "owner://actions/scenario-run-1.jsonl",
-                },
-                "operator_attestation": {
-                    "attested_by": "robot-team-ops",
-                    "attestation": "Robot POV and action logs are aligned to this eval run.",
-                },
-            }
-        ],
-    }
-
-
 def test_live_pipeline_intake_service_requires_token(tmp_path: Path, monkeypatch) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "missing-manifest.json"))
     monkeypatch.delenv(INTAKE_TOKEN_ENV, raising=False)
     client = TestClient(create_app())
 
-    response = client.post("/api/live-pipeline/job-requests", json=_webapp_request(capture_root))
+    response = client.post("/api/live-pipeline/capture-upload-intakes", json={})
 
     assert response.status_code == 503
 
@@ -1134,7 +737,7 @@ def test_live_pipeline_intake_service_rejects_legacy_bearer_by_default(
     client = TestClient(create_app())
 
     response = client.post(
-        "/api/live-pipeline/job-requests",
+        "/api/live-pipeline/capture-upload-intakes",
         json={},
         headers={"authorization": "Bearer test-intake-token"},
     )
@@ -1154,8 +757,8 @@ def test_live_pipeline_intake_service_accepts_signed_request_and_rejects_replay(
     body = "{}"
     headers = _signed_intake_headers("test-intake-token", body, nonce="nonce-valid-2")
 
-    first = client.post("/api/live-pipeline/job-requests", data=body, headers=headers)
-    replay = client.post("/api/live-pipeline/job-requests", data=body, headers=headers)
+    first = client.post("/api/live-pipeline/capture-upload-intakes", data=body, headers=headers)
+    replay = client.post("/api/live-pipeline/capture-upload-intakes", data=body, headers=headers)
 
     assert first.status_code == 503
     assert replay.status_code == 401
@@ -1214,52 +817,6 @@ def test_configured_scene_thumbnail_readback_returns_exact_private_bytes(
     assert observed == reference
 
 
-def test_legacy_webapp_hmac_compatibility_is_explicit_scoped_and_replay_safe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV, "true")
-    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "incoming"))
-    client = TestClient(create_app())
-    headers = _legacy_webapp_headers("test-intake-token", nonce="legacy-audit-nonce-1")
-    first = client.get("/api/live-pipeline/intake-audit", headers=headers)
-    replay = client.get("/api/live-pipeline/intake-audit", headers=headers)
-    # Authentication succeeded and the endpoint executed; no audit has been
-    # staged in this isolated app, so its expected application response is 404.
-    assert first.status_code == 404
-    assert replay.status_code == 401
-    assert "replayed intake signature nonce" in replay.text
-
-    body = json.dumps({}, separators=(",", ":"))
-    post = client.post(
-        "/api/live-pipeline/job-requests",
-        content=body,
-        headers={
-            **_legacy_webapp_headers("test-intake-token", nonce="legacy-post-nonce-1", body=body),
-            "content-type": "application/json",
-        },
-    )
-    assert post.status_code != 401
-
-    # The opt-in does not authorize unrelated intake endpoints.
-    unrelated = client.post(
-        "/api/live-pipeline/capture-handoffs",
-        content=body,
-        headers={
-            **_legacy_webapp_headers("test-intake-token", nonce="legacy-post-nonce-2", body=body),
-            "content-type": "application/json",
-        },
-    )
-    assert unrelated.status_code == 401
-
-    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_WEBAPP_HMAC_ENV)
-    rejected = client.get(
-        "/api/live-pipeline/intake-audit",
-        headers=_legacy_webapp_headers("test-intake-token", nonce="legacy-audit-nonce-2"),
-    )
-    assert rejected.status_code == 401
-
-
 def test_signed_nonce_replay_is_rejected_across_app_instances_and_cache_reset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1271,11 +828,11 @@ def test_signed_nonce_replay_is_rejected_across_app_instances_and_cache_reset(
     headers = _signed_intake_headers("test-intake-token", body, nonce="nonce-cross-process-1")
 
     first = TestClient(create_app()).post(
-        "/api/live-pipeline/job-requests", data=body, headers=headers
+        "/api/live-pipeline/capture-upload-intakes", data=body, headers=headers
     )
     service._INTAKE_NONCE_CACHE.clear()
     replay_after_restart = TestClient(create_app()).post(
-        "/api/live-pipeline/job-requests", data=body, headers=headers
+        "/api/live-pipeline/capture-upload-intakes", data=body, headers=headers
     )
 
     assert first.status_code == 503
@@ -1303,7 +860,6 @@ def test_task_evaluation_launch_is_immutably_queued_before_async_dispatch(
         "blueprint-task-evaluation-launch-dispatcher.service",
     )
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
-    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, raising=False)
     monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
     systemctl_calls: list[list[str]] = []
     binding_checks: list[dict[str, object]] = []
@@ -1607,7 +1163,6 @@ def test_task_evaluation_launch_systemd_path_mode_checks_read_only_active_state(
     profile_dir.mkdir()
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_PROFILE_DIR_ENV, str(profile_dir))
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_ALLOW_TRIGGER_ENV, "true")
-    monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_EXECUTE_ENV, raising=False)
     monkeypatch.setenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_MODE_ENV, "systemd_path")
     monkeypatch.delenv(service.TASK_EVALUATION_LAUNCH_TRIGGER_SYSTEMD_UNIT_ENV, raising=False)
     calls: list[list[str]] = []
@@ -1675,47 +1230,6 @@ def test_task_evaluation_launch_systemd_path_mode_refuses_inactive_watcher(
     }
 
 
-def test_signed_client_scope_cannot_select_another_tenant_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root_a = _capture_root(tmp_path / "tenant-a")
-    root_b = _capture_root(tmp_path / "tenant-b")
-    manifest_path = _control_manifest(tmp_path, root_a)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(
-        service.INTAKE_CLIENT_SECRETS_ENV,
-        json.dumps({"client-a": "secret-a", "client-b": "secret-b"}),
-    )
-    monkeypatch.setenv(
-        service.INTAKE_CLIENT_ROOTS_ENV,
-        json.dumps(
-            {
-                "client-a": {"site-a": str(root_a)},
-                "client-b": {"site-b": str(root_b)},
-            }
-        ),
-    )
-    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
-    payload = _webapp_request(root_b)
-    payload["job_request"]["site_package"]["site_slug"] = "site-b"  # type: ignore[index]
-    body = json.dumps(payload, separators=(",", ":"))
-
-    response = TestClient(create_app()).post(
-        "/api/live-pipeline/job-requests",
-        data=body,
-        headers=_signed_intake_headers(
-            "secret-a",
-            body,
-            nonce="tenant-scope-nonce-1",
-            client_id="client-a",
-        ),
-    )
-
-    assert response.status_code == 403
-    assert "outside authenticated client scope" in response.text
-    assert not (root_b / "pipeline" / "robot_eval_job_requests").exists()
-
-
 def test_intake_admission_enforces_body_rate_concurrency_and_storage_quotas(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1727,7 +1241,7 @@ def test_intake_admission_enforces_body_rate_concurrency_and_storage_quotas(
 
     monkeypatch.setenv(service.INTAKE_MAX_BODY_BYTES_ENV, "8")
     oversized = client.post(
-        "/api/live-pipeline/job-requests",
+        "/api/live-pipeline/capture-upload-intakes",
         data='{"payload":"too-large"}',
         headers={**headers, "content-type": "application/json"},
     )
@@ -1735,8 +1249,8 @@ def test_intake_admission_enforces_body_rate_concurrency_and_storage_quotas(
 
     monkeypatch.setenv(service.INTAKE_MAX_BODY_BYTES_ENV, "4096")
     monkeypatch.setenv(service.INTAKE_RATE_LIMIT_PER_MINUTE_ENV, "1")
-    first = client.post("/api/live-pipeline/job-requests", json={}, headers=headers)
-    limited = client.post("/api/live-pipeline/job-requests", json={}, headers=headers)
+    first = client.post("/api/live-pipeline/capture-upload-intakes", json={}, headers=headers)
+    limited = client.post("/api/live-pipeline/capture-upload-intakes", json={}, headers=headers)
     assert first.status_code == 503
     assert limited.status_code == 429
 
@@ -1746,7 +1260,7 @@ def test_intake_admission_enforces_body_rate_concurrency_and_storage_quotas(
     monkeypatch.setenv(service.INTAKE_MAX_CONCURRENT_ENV, "1")
     lease_id = service._claim_intake_admission("manual-client")
     try:
-        concurrent = client.post("/api/live-pipeline/job-requests", json={}, headers=headers)
+        concurrent = client.post("/api/live-pipeline/capture-upload-intakes", json={}, headers=headers)
     finally:
         service._release_intake_admission(lease_id)
     assert concurrent.status_code == 503
@@ -1756,7 +1270,7 @@ def test_intake_admission_enforces_body_rate_concurrency_and_storage_quotas(
     work_dir.mkdir(parents=True, exist_ok=True)
     (work_dir / "quota.bin").write_bytes(b"quota")
     monkeypatch.setenv(service.INTAKE_MAX_STORAGE_BYTES_ENV, "1")
-    storage = client.post("/api/live-pipeline/job-requests", json={}, headers=headers)
+    storage = client.post("/api/live-pipeline/capture-upload-intakes", json={}, headers=headers)
     assert storage.status_code == 503
     assert "storage quota" in storage.text
 
@@ -1772,7 +1286,7 @@ def test_live_pipeline_intake_service_rejects_stale_signed_request(
     body = "{}"
 
     response = client.post(
-        "/api/live-pipeline/job-requests",
+        "/api/live-pipeline/capture-upload-intakes",
         data=body,
         headers=_signed_intake_headers(
             "test-intake-token",
@@ -1797,7 +1311,7 @@ def test_live_pipeline_intake_service_rejects_tampered_signed_body(
     signed_body = "{}"
 
     response = client.post(
-        "/api/live-pipeline/job-requests",
+        "/api/live-pipeline/capture-upload-intakes",
         data='{"tampered":true}',
         headers=_signed_intake_headers(
             "test-intake-token",
@@ -1808,517 +1322,6 @@ def test_live_pipeline_intake_service_rejects_tampered_signed_body(
 
     assert response.status_code == 401
     assert "invalid intake signature" in response.text
-
-
-def test_live_pipeline_intake_service_stages_webapp_request(tmp_path: Path, monkeypatch) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/job-requests",
-        json=_webapp_request(capture_root),
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] == "staged_for_control_plane"
-    assert payload["accepted"] is True
-    assert payload["webapp_job_request"]["missing_fields"] == []
-    assert payload["webapp_staging"]["performed"] is True
-    assert Path(payload["webapp_staging"]["target_path"]).is_file()
-    assert payload["trigger"]["status"] == "not_configured"
-    assert payload["proof_boundary"]["intake_sets_proof_booleans"] is False
-
-
-def test_live_pipeline_intake_service_translates_and_idempotently_retries_decision_request(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE", "true")
-    client = TestClient(create_app())
-
-    responses = [
-        client.post(
-            "/api/live-pipeline/job-requests",
-            json=_decision_evidence_envelope(),
-            headers={"authorization": "Bearer test-intake-token"},
-        )
-        for _ in range(2)
-    ]
-
-    assert [response.status_code for response in responses] == [200, 200]
-    payload = responses[-1].json()
-    assert payload["status"] == "staged_for_control_plane"
-    assert (
-        responses[0].json()["webapp_staging"]["target_path"]
-        == payload["webapp_staging"]["target_path"]
-    )
-    staged_path = Path(payload["webapp_staging"]["target_path"])
-    staged = json.loads(staged_path.read_text(encoding="utf-8"))
-    request = staged["job_request"]
-    assert request["job_id"] == "decision-request-1"
-    assert request["site_package"]["capture_root"] == str(capture_root)
-    assert request["decision_evidence_request"]["decision_id"] == "buyer-decision-1"
-    assert request["proof_boundary"]["translation_proves_decision"] is False
-
-
-def test_capture_handoff_records_preparation_without_evaluation_dispatch(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    _seed_robot_eval_dataset_cards(capture_root)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    monkeypatch.setattr(service, "_trigger_control_plane",
-                        lambda: pytest.fail("capture must not trigger evaluation"))
-    monkeypatch.setattr(service, "build_live_pipeline_input_intake",
-                        lambda **kwargs: pytest.fail("capture must not stage evaluation"))
-    response = TestClient(create_app()).post(
-        "/api/live-pipeline/capture-handoffs", json=_capture_handoff(),
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] == "preparation_recorded"
-    assert payload["accepted"] is True
-    assert payload["capture_handoff"]["converted_to_job_request"] is False
-    assert payload["trigger"]["performed"] is False
-    assert "webapp_staging" not in payload
-    assert json.loads(Path(payload["candidate"]["path"]).read_text()) == _capture_handoff()
-
-
-def test_capture_handoff_dataset_selection_defaults_unspecified_robot_to_franka(
-    tmp_path: Path,
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    dataset_dir = capture_root / "pipeline" / "robot_eval_dataset"
-    _write_json(dataset_dir / "task_cards.json", {"cards": [{"task_id": "pick_cup"}]})
-    _write_json(
-        dataset_dir / "scenario_cards.json",
-        {"cards": [{"task_id": "pick_cup", "scenario_id": "pick_cup_counter"}]},
-    )
-
-    selection, blockers = service._select_dataset_task(capture_root)
-
-    assert blockers == []
-    assert selection is not None
-    assert selection["robot_profile_id"] == "franka_panda"
-
-
-def test_capture_handoff_can_stage_per_request_capture_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest_capture_root = _capture_root(tmp_path)
-    request_capture_root = (
-        tmp_path / "storage" / "bucket" / "scenes" / "scene-2" / "captures" / "capture-2"
-    )
-    _write_json(
-        request_capture_root / "capture_descriptor.json",
-        {"scene_id": "scene-2", "capture_id": "capture-2"},
-    )
-    _write_json(request_capture_root / "raw" / "manifest.json", {"scene_id": "scene-2"})
-    _seed_robot_eval_dataset_cards(request_capture_root)
-    manifest_path = _control_manifest(tmp_path, manifest_capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_INTAKE_OVERWRITE", "true")
-    monkeypatch.setenv(
-        service.INTAKE_CLIENT_ROOTS_ENV,
-        json.dumps({"legacy-bearer": {"capture-2": str(request_capture_root)}}),
-    )
-    client = TestClient(create_app())
-    handoff = {
-        **_capture_handoff(),
-        "scene_id": "scene-2",
-        "capture_id": "capture-2",
-        "capture_root": str(request_capture_root),
-    }
-
-    response = client.post(
-        "/api/live-pipeline/capture-handoffs",
-        json=handoff,
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] == "preparation_recorded"
-    assert payload["capture_handoff"]["capture_root"] == str(request_capture_root)
-    assert payload["capture_handoff"]["scene_id"] == "scene-2"
-    assert "webapp_staging" not in payload
-
-
-def test_capture_handoff_preparation_does_not_require_a_robot_eval_request(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    _seed_robot_eval_dataset_cards(capture_root)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-    handoff = {
-        **_capture_handoff(),
-        "requested_outputs": ["qualification"],
-        "requested_lanes": ["qualification"],
-        "robot_eval_dataset_requested": False,
-    }
-
-    response = client.post(
-        "/api/live-pipeline/capture-handoffs",
-        json=handoff,
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] == "preparation_recorded"
-    assert payload["accepted"] is True
-    assert payload["robot_evaluation_performed"] is False
-    assert payload["input_blockers"] == []
-
-
-def test_live_pipeline_intake_service_ignores_caller_root_and_uses_server_mapping(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    other_capture_root = (
-        tmp_path / "storage" / "bucket" / "scenes" / "scene-2" / "captures" / "capture-2"
-    )
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/job-requests",
-        json=_webapp_request(other_capture_root),
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] == "staged_for_control_plane"
-    assert payload["accepted"] is True
-    assert payload["webapp_job_request"]["capture_root_matches_control_plane"] is True
-    assert payload["webapp_staging"]["performed"] is True
-    candidate = json.loads(Path(payload["candidate"]["path"]).read_text(encoding="utf-8"))
-    site_package = candidate["job_request"]["site_package"]
-    assert site_package["capture_root"] == str(capture_root)
-    assert site_package["capture_root_source"] == "authenticated_server_mapping"
-    assert (
-        candidate["job_request"]["authenticated_client_scope"]["caller_capture_root_authoritative"]
-        is False
-    )
-
-
-def test_live_pipeline_intake_service_exposes_latest_audit(tmp_path: Path, monkeypatch) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-    client.post(
-        "/api/live-pipeline/job-requests",
-        json=_webapp_request(capture_root),
-        headers={"x-blueprint-intake-token": "test-intake-token"},
-    )
-
-    response = client.get(
-        "/api/live-pipeline/intake-audit",
-        headers={"x-blueprint-intake-token": "test-intake-token"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["status"] == "staged_for_control_plane"
-    assert payload["webapp_staging"]["performed"] is True
-
-
-def test_live_pipeline_intake_service_stages_deployment_outcomes(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/deployment-outcomes",
-        json=_deployment_outcomes(),
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    target_path = Path(payload["deployment_outcomes_staging"]["target_path"])
-    assert payload["status"] == "staged_for_control_plane"
-    assert payload["accepted"] is True
-    assert payload["deployment_outcomes"]["status"] == "ready_for_real_world_validation"
-    assert payload["deployment_outcomes"]["record_count"] == 1
-    assert payload["deployment_outcomes"]["owner_evidence_ready"] is True
-    assert payload["deployment_outcomes"]["owner_evidence_record_count"] == 1
-    assert payload["deployment_outcomes"]["missing_owner_evidence_record_ids"] == []
-    assert payload["deployment_outcomes_staging"]["performed"] is True
-    assert target_path == (
-        capture_root
-        / "pipeline"
-        / "robot_eval_inputs"
-        / "webapp-job-1"
-        / "deployment_outcomes"
-        / "inbox"
-        / "pilot-outcome-1.json"
-    )
-    assert target_path.is_file()
-    assert payload["proof_boundary"]["real_world_outcome_proven"] is False
-
-
-def test_live_pipeline_intake_service_accepts_outcome_records_without_owner_evidence(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/deployment-outcomes",
-        json=_deployment_outcomes(include_evidence=False),
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] == "staged_for_control_plane"
-    assert payload["accepted"] is True
-    assert payload["deployment_outcomes"]["status"] == "ready_for_real_world_validation"
-    assert payload["deployment_outcomes"]["record_count"] == 1
-    assert payload["deployment_outcomes"]["owner_evidence_ready"] is False
-    assert payload["deployment_outcomes"]["owner_evidence_record_count"] == 0
-    assert payload["deployment_outcomes"]["missing_owner_evidence_record_ids"] == [
-        "pilot-outcome-1"
-    ]
-    assert payload["deployment_outcomes_staging"]["performed"] is True
-
-
-def test_live_pipeline_intake_service_stages_policy_package(tmp_path: Path, monkeypatch) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/policy-packages",
-        json=_policy_package(),
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    target_path = Path(payload["policy_package_staging"]["target_path"])
-    assert payload["status"] == "staged_for_control_plane"
-    assert payload["accepted"] is True
-    assert payload["policy_package"]["status"] == "ready_for_robot_eval_job"
-    assert payload["policy_package"]["selected_modalities"] == ["policy_api_endpoint"]
-    assert payload["policy_package_staging"]["performed"] is True
-    assert target_path == (
-        capture_root / "pipeline" / "robot_eval_inputs" / "webapp-job-1" / "policy_package.json"
-    )
-    assert target_path.is_file()
-    assert payload["proof_boundary"]["robot_policy_execution_proven"] is False
-
-
-def test_live_pipeline_intake_service_records_blocked_policy_package(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/policy-packages",
-        json={
-            "schema_version": "robot_team_policy_package.v1",
-            "job_id": "../escape",
-            "policy_package": {"docker_container": {"image_ref": "registry.example/policy:latest"}},
-        },
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 202, response.text
-    payload = response.json()
-    assert payload["status"] == "blocked"
-    assert payload["accepted"] is False
-    assert "policy_package:policy_package_job_id_unsafe" in payload["input_blockers"]
-    assert "policy_package:policy_package.docker_container.digest" in payload["input_blockers"]
-    assert payload["policy_package_staging"]["performed"] is False
-
-
-def test_live_pipeline_intake_service_stages_real_robot_pov_manifest(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/real-robot-pov",
-        json=_real_robot_pov_manifest(),
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    target_path = Path(payload["real_robot_pov_staging"]["target_path"])
-    assert payload["status"] == "staged_for_control_plane"
-    assert payload["accepted"] is True
-    assert payload["real_robot_pov"]["status"] == "ready_for_robot_eval_job"
-    assert payload["real_robot_pov"]["record_count"] == 1
-    assert payload["real_robot_pov"]["missing_exact_key_record_ids"] == []
-    assert payload["real_robot_pov"]["missing_evidence_record_ids"] == []
-    assert payload["real_robot_pov_staging"]["performed"] is True
-    assert target_path == (
-        capture_root / "pipeline" / "robot_eval_inputs" / "real_robot_pov_manifest.json"
-    )
-    assert target_path.is_file()
-    assert payload["proof_boundary"]["robot_pov_evidence_proven"] is False
-
-
-def test_live_pipeline_intake_service_records_blocked_real_robot_pov_manifest(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/real-robot-pov",
-        json={
-            "schema_version": "real_robot_pov_manifest.v1",
-            "job_id": "../escape",
-            "records": [
-                {
-                    "evidence_id": "real-pov-1",
-                    "scenario_eval_run_id": "scenario-run-1",
-                    "robot_camera_video_uri": "owner://pov/scenario-run-1.mp4",
-                }
-            ],
-        },
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 202, response.text
-    payload = response.json()
-    assert payload["status"] == "blocked"
-    assert payload["accepted"] is False
-    assert "real_robot_pov:real_robot_pov_job_id_unsafe" in payload["input_blockers"]
-    assert "real_robot_pov:real_robot_pov_missing_exact_keys" in payload["input_blockers"]
-    assert "real_robot_pov:real_robot_pov_missing_action_logs" in payload["input_blockers"]
-    assert payload["real_robot_pov_staging"]["performed"] is False
-
-
-def test_live_pipeline_intake_service_records_blocked_deployment_outcomes(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/deployment-outcomes",
-        json={
-            "schema_version": "deployment_outcome_manifest.v1",
-            "job_id": "../escape",
-            "records": [{"task_id": "task-only"}],
-        },
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 202, response.text
-    payload = response.json()
-    assert payload["status"] == "blocked"
-    assert payload["accepted"] is False
-    assert "deployment_outcomes:deployment_outcomes_job_id_unsafe" in payload["input_blockers"]
-    assert payload["deployment_outcomes_staging"]["performed"] is False
-
-
-def test_live_pipeline_intake_service_stages_live_closure_evidence(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/live-closure-evidence",
-        json=_live_closure_evidence(),
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    target_path = Path(payload["live_closure_evidence_staging"]["target_path"])
-    assert payload["status"] == "staged_for_control_plane"
-    assert payload["accepted"] is True
-    assert payload["live_closure_evidence"]["status"] == "ready_for_closure_audit"
-    assert payload["live_closure_evidence_staging"]["performed"] is True
-    assert target_path == (
-        capture_root
-        / "pipeline"
-        / "robot_eval_inputs"
-        / "webapp-job-1"
-        / "live_eval_closure_evidence.json"
-    )
-    assert target_path.is_file()
-    assert payload["proof_boundary"]["intake_sets_proof_booleans"] is False
-
-
-def test_live_pipeline_intake_service_records_blocked_closure_evidence(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
-    monkeypatch.setenv(INTAKE_TOKEN_ENV, "test-intake-token")
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/live-pipeline/live-closure-evidence",
-        json={
-            "schema_version": "live_robot_eval_closure_evidence.v1",
-            "job_id": "../escape",
-        },
-        headers={"authorization": "Bearer test-intake-token"},
-    )
-
-    assert response.status_code == 202, response.text
-    payload = response.json()
-    assert payload["status"] == "blocked"
-    assert payload["accepted"] is False
-    assert "live_closure_evidence:live_closure_evidence_job_id_unsafe" in payload["input_blockers"]
-    assert payload["live_closure_evidence_staging"]["performed"] is False
 
 
 def _release_worktree(tmp_path, commit: str):
