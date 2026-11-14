@@ -61,30 +61,6 @@
       "test_id": "B310"
     },
     {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/palatial_physready.py",
-      "fingerprint": "c4615fd4639d744a578de37aeda630343cfd412ea6a9fb44b8d39ce273d6e044",
-      "line_number": 729,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/palatial_physready.py",
-      "fingerprint": "5881759e944a457719fe59cdc90d0450a7165ce4ca6b938dc0152c02ad329c32",
-      "line_number": 829,
-      "owner": "@ognjhunt",
-      "reason": "The URL or its content comes from a third-party provider's API response; host and size are not yet fully bounded, and the tightening is tracked. Owner re-review 2026-11-06. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
       "disposition": "mitigated_by_control",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/privacy_runner_service.py",

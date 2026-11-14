@@ -275,12 +275,6 @@
       "class": "not_paid",
       "reason": "GET of the organization Costs API (a spend read); not billed"
     },
-    "src/blueprint_pipeline/palatial_physready.py::<module>::palatial_api_url": {
-      "provider": "palatial",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/palatial_physready.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
-    },
     "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::_scoped_review_model_provider::openai_agents_provider": {
       "provider": "openai",
       "class": "admitted",

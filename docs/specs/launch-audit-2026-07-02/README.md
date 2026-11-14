@@ -37,7 +37,6 @@ Reference papers the service is based on:
 | Spec | Title | Priority | Status |
 |------|-------|----------|--------|
 | [SPEC-01](SPEC-01-geometry-truth-no-fabricated-fallbacks.md) | Stop fabricating geometry (fallback + `local_sfm` relabel) | P0 | **Implemented** |
-| [SPEC-04](SPEC-04-action-normalization-and-validation.md) | Action normalization & validation for SC3-style eval | P0 | **Implemented** (`action_normalization.py`; sc3 protocol + export fail-closed) |
 | [SPEC-05](SPEC-05-real-wam-backend-cosmos3-nano-adapter.md) | Real WAM backend: Cosmos3-Nano adapter + fixture truth labeling | P0 | **Implemented** (adapter + backbone verification + fixture claim boundaries; needs real checkpoint to leave `aspirational`) |
 | [SPEC-06](SPEC-06-sc3-consistency-scorer.md) | SC3 forward/inverse consistency scorer + uncertainty gating | P1 | Proposed |
 | [SPEC-07](SPEC-07-camera-calibration-estimation-and-validation.md) | Camera calibration: estimate, validate, fail closed | P1 | Partially implemented (export paths fail closed; estimator lane still proposed) |
