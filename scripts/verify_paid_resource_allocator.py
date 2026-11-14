@@ -51,7 +51,6 @@ PRODUCTION_SCAN_EXCLUSIONS = {
     "scripts/verify_paid_resource_allocator.py",
 }
 APPROVED_ADMISSION_ISSUERS = {
-    "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
     "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
     "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
     "src/blueprint_pipeline/native_g1_paid_campaign.py",

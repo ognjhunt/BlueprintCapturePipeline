@@ -55,9 +55,6 @@
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": [
       "tests/test_isaac_runtime_task_backend_live_state.py"
     ],
-    "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": [
-      "tests/test_lightwheel_kitchen_isaac_scenarios.py"
-    ],
     "src/blueprint_pipeline/live_pipeline_intake_service.py": [
       "tests/test_live_pipeline_intake_service.py"
     ],
@@ -279,7 +276,6 @@
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": 3012,
     "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
-    "src/blueprint_pipeline/lightwheel_kitchen_isaac_scenarios.py": 3216,
     "src/blueprint_pipeline/live_pipeline_intake_service.py": 3374,
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2200,

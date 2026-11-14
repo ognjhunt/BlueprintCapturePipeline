@@ -17,7 +17,6 @@
     ],
     "require_paid_resource_admission": [
       "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
-      "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
       "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
       "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
       "src/blueprint_pipeline/native_g1_paid_campaign.py",
@@ -120,14 +119,6 @@
         "put_object",
         "delete_object",
         "list_object_versions"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "require_paid_resource_admission",
-        "run_finetune_job"
       ]
     },
     {
