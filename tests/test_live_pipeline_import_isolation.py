@@ -25,11 +25,9 @@ SEED_MODULES = ("live_pipeline_intake_service",)
 # as a failure here rather than as a heavy CPU-host import at runtime.
 HOT_LANE_MODULES = frozenset(
     {
-        "oscar_wam_command_adapter",
         "unitree_groot_n17_sonic_provider_smoke",
         "unitree_groot_n17_sonic_policy_runtime",
         "wam_compute_providers",
-        "wam_generated_video_review",
         "vast_provider_adapter",
         "runpod_provider_adapter",
         "lambda_provider_adapter",
@@ -88,7 +86,7 @@ def _transitive_local_modules(seeds: tuple[str, ...]) -> set[str]:
 def test_hot_lane_module_names_unique() -> None:
     # The literal list must stay a 19-name set; a typo collapsing two entries would
     # silently weaken the guard.
-    assert len(HOT_LANE_MODULES) == 11
+    assert len(HOT_LANE_MODULES) == 9
 
 
 def test_seed_modules_exist() -> None:

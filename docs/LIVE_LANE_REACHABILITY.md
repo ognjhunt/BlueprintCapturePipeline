@@ -40,7 +40,6 @@ attempt completed. Production proof additionally requires:
 | Probe kind | Live profile builder |
 | --- | --- |
 | `adp-gaussian-excision` | `build_gaussian_excision_live_profile.py` |
-| `adp-isaac-lab-arena-native-control` | `build_arena_native_control_live_profile.py` |
 | `adp-retained-scene-gpu-render` | `build_retained_scene_render_live_profile.py` |
 | `adp-usd-content-agents` | `build_content_agents_live_profile.py` |
 | `adp-usd-joint-agent` | `build_joint_agent_live_profile.py` |

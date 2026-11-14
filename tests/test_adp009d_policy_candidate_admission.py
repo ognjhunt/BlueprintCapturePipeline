@@ -126,38 +126,3 @@ def test_pi05_checkpoint_identity_satisfies_the_spec_that_refused_the_stock_one(
     assert spec.checkpoint_size_bytes == record["checkpoint_total_bytes"]
     assert len(spec.server_metadata()) == 14
 
-
-def test_the_pi05_candidates_openpi_revision_is_the_one_its_checkpoint_is_bound_to(
-) -> None:
-    """Two different pins shared a name; the candidate takes the policy one.
-
-    `ARENA_OPENPI_REVISION` is the openpi source revision IsaacLab-Arena pins
-    for its own tree, alongside arena_source and isaac_lab_source. The frozen
-    inventory that binds these checkpoint bytes, the cohort that names them, the
-    candidate admission record, and `OpenPIDroidPolicySpec.validate()` all name
-    the other one -- so labelling the baseline with Arena's pin made the
-    baseline undescribable.
-    """
-
-    import json
-
-    from blueprint_pipeline.adp_founder_sim_protocol import (
-        ARENA_OPENPI_REVISION,
-        build_founder_sim_protocol,
-    )
-    from blueprint_pipeline.droid_policy_bridge import OPENPI_SOURCE_REVISION
-
-    inventory = json.loads(_FROZEN_INVENTORY.read_text(encoding="utf-8"))
-    assert inventory["openpi_revision"] == OPENPI_SOURCE_REVISION
-    assert EXPECTED_CANDIDATES["pi05_droid"]["source_revision"] == (
-        OPENPI_SOURCE_REVISION
-    )
-    assert ARENA_OPENPI_REVISION != OPENPI_SOURCE_REVISION
-
-    protocol = build_founder_sim_protocol()
-    baseline = next(
-        row
-        for row in protocol["candidates"]
-        if row.get("role") == "baseline"
-    )
-    assert baseline["openpi_revision"] == OPENPI_SOURCE_REVISION

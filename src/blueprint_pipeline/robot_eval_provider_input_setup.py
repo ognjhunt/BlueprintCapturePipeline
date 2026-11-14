@@ -52,7 +52,6 @@ FILE_ENV_VAR_ALIASES: Mapping[str, tuple[str, ...]] = {
 # content-addressed, full-byte-readback publication contract.
 LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS = {
     LEGACY_LIVE_PROFILE_BUILDER: "exact_commit_raw_github",
-    "build_arena_native_control_live_profile.py": "content_addressed_full_readback",
     "build_content_agents_live_profile.py": "content_addressed_full_readback",
     "build_gaussian_excision_live_profile.py": "content_addressed_full_readback",
     "build_joint_agent_live_profile.py": "content_addressed_full_readback",

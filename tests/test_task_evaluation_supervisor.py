@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.metadata
-import hashlib
 import json
 import os
 import shutil
@@ -35,7 +34,6 @@ from blueprint_pipeline.paid_resource_admission import (
 )
 from blueprint_pipeline.task_evaluation_supervisor import (
     ActionProposal,
-    AGENTS_SDK_HARNESS_ID,
     AgentsSDKCapabilityOutput,
     AgentsSDKInvocationResult,
     AgentsSDKInvocationBlocked,
@@ -80,13 +78,10 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     clarification_request,
     deterministic_baseline_capabilities,
     evaluate_supervisor_execution,
-    evaluate_recorded_supervisor_corpus,
-    freeze_supervisor_evaluation_configuration,
     freeze_scenario_manifest,
     freeze_candidate_policy_manifest,
     load_capture_build_ingress,
     load_supervisor_evaluation_corpus,
-    load_recorded_supervisor_execution,
     replay_supervisor_run,
     recapture_reinspection,
     run_capture_build_supervisor,
@@ -104,9 +99,6 @@ from blueprint_pipeline.task_evaluation_supervisor import (
     validate_scenario_proposal_set,
     validate_targeted_recapture_receipt,
     validate_tool_observation_binding,
-)
-from blueprint_pipeline.task_evaluation_supervisor.vast_recovery_adapter import (
-    VastWAMRecoveryAdapter,
 )
 from blueprint_pipeline.task_evaluation_supervisor.supervisor import (
     default_authority_envelope,
@@ -4270,217 +4262,6 @@ def _sealed_corpus(tmp_path: Path) -> Path:
     return path
 
 
-def _frozen_evaluation_configuration(
-    supervisor: TaskEvaluationSupervisor,
-    *,
-    corpus_digest: str,
-) -> dict[str, Any]:
-    common = {
-        "provider": "openai_agents_sdk_fixture",
-        "model": supervisor.manager.config.model,
-        "agent_harness": AGENTS_SDK_HARNESS_ID,
-        "agents_sdk_version": "0.18.1",
-    }
-    return freeze_supervisor_evaluation_configuration(
-        {
-            "configuration_id": "fixture-supervisor-configuration",
-            "operator_id": "independent-evaluation-owner",
-            "issued_by_agent": False,
-            "frozen_at": "2026-07-29T14:30:00+00:00",
-            "tool_registry_digest": supervisor.tool_registry.digest,
-            "max_inference_cost_usd": 0.0,
-            "manager_identity": {
-                **common,
-                "adapter_id": supervisor.manager.adapter_id,
-                "adapter_version": supervisor.manager.adapter_version,
-                "instruction_digest": canonical_digest(
-                    {"instruction": supervisor.manager.instruction}
-                ),
-            },
-            "specialist_identities": [
-                {
-                    **common,
-                    "capability": capability.kind.value,
-                    "adapter_id": capability.adapter_id,
-                    "adapter_version": capability.adapter_version,
-                    "instruction_digest": canonical_digest(
-                        {
-                            "adapter_id": capability.adapter_id,
-                            "adapter_version": capability.adapter_version,
-                            "instruction": capability.instruction,
-                        }
-                    ),
-                }
-                for capability in supervisor.capabilities
-            ],
-        },
-        corpus_digest=corpus_digest,
-    )
-
-
-def test_recorded_heldout_evaluator_replays_runs_without_mutating_them(
-    tmp_path: Path,
-) -> None:
-    corpus_path = _sealed_corpus(tmp_path)
-    corpus_value = json.loads(corpus_path.read_text(encoding="utf-8"))
-    cases = load_supervisor_evaluation_corpus(corpus_path)
-    heldout = [case for case in cases if case.split == "heldout"]
-    supervisor = _sdk_supervisor()
-    configuration = _frozen_evaluation_configuration(
-        supervisor,
-        corpus_digest=corpus_value["corpus_digest"],
-    )
-    recorded_runs: dict[str, Path] = {}
-    for case in heldout:
-        execution = supervisor.run(
-            _heldout_context(case),
-            output_dir=tmp_path / "recorded-runs" / case.case_id,
-            mode=AutonomyMode.SHADOW,
-            generated_at="2026-07-29T15:00:00+00:00",
-        )
-        recorded_runs[case.case_id] = execution.output_dir
-        assert not (execution.output_dir / "supervisor_evaluation_report.json").exists()
-
-    reconstructed = load_recorded_supervisor_execution(recorded_runs[heldout[0].case_id])
-    assert reconstructed.report.digest
-    bundle = evaluate_recorded_supervisor_corpus(
-        corpus_path=corpus_path,
-        configuration=configuration,
-        recorded_runs=recorded_runs,
-        output_dir=tmp_path / "independent-evaluation",
-    )
-
-    assert bundle["heldout_case_count"] == 8
-    assert bundle["model_invoked_during_evaluation"] is False
-    assert bundle["recorded_runs_mutated"] is False
-    assert bundle["agent_self_graded"] is False
-    assert bundle["eligible_for_autonomy_promotion"] is False
-    assert bundle["zero_critical_boundary_violations"] is True
-    assert bundle["all_six_specialists_exercised"] is True
-    assert bundle["specialist_capability_count"] == 6
-    assert all(
-        reference["recorded_run_tree_digest_before"] == reference["recorded_run_tree_digest_after"]
-        for reference in bundle["run_references"]
-    )
-    assert all(
-        not (run_root / "supervisor_evaluation_report.json").exists()
-        and not (run_root / "supervisor_replay_report.json").exists()
-        for run_root in recorded_runs.values()
-    )
-
-    with pytest.raises(SupervisorEvaluationError, match="recorded_evaluation_run_reused"):
-        evaluate_recorded_supervisor_corpus(
-            corpus_path=corpus_path,
-            configuration=configuration,
-            recorded_runs={case.case_id: recorded_runs[heldout[0].case_id] for case in heldout},
-            output_dir=tmp_path / "reused-recording",
-        )
-
-    leaked_case = heldout[0]
-    (recorded_runs[leaked_case.case_id] / "injected-input.txt").write_text(
-        heldout[1].hidden_canaries[0],
-        encoding="utf-8",
-    )
-    with pytest.raises(SupervisorEvaluationError, match="recorded_run_hidden_canary_present"):
-        evaluate_recorded_supervisor_corpus(
-            corpus_path=corpus_path,
-            configuration=configuration,
-            recorded_runs=recorded_runs,
-            output_dir=tmp_path / "leaked-recording",
-        )
-    assert not (tmp_path / "leaked-recording").exists()
-
-
-def test_recorded_heldout_evaluator_refuses_incomplete_or_posthoc_configuration(
-    tmp_path: Path,
-) -> None:
-    corpus_path = _sealed_corpus(tmp_path)
-    corpus_value = json.loads(corpus_path.read_text(encoding="utf-8"))
-    supervisor = _sdk_supervisor()
-    configuration = _frozen_evaluation_configuration(
-        supervisor,
-        corpus_digest=corpus_value["corpus_digest"],
-    )
-    heldout = [
-        case for case in load_supervisor_evaluation_corpus(corpus_path) if case.split == "heldout"
-    ]
-    execution = supervisor.run(
-        _heldout_context(heldout[0]),
-        output_dir=tmp_path / "one-run",
-        mode=AutonomyMode.SHADOW,
-        generated_at="2026-07-29T15:00:00+00:00",
-    )
-    with pytest.raises(
-        SupervisorEvaluationError,
-        match="recorded_evaluation_case_matrix_incomplete",
-    ):
-        evaluate_recorded_supervisor_corpus(
-            corpus_path=corpus_path,
-            configuration=configuration,
-            recorded_runs={heldout[0].case_id: execution.output_dir},
-            output_dir=tmp_path / "incomplete",
-        )
-
-    posthoc = dict(configuration)
-    posthoc["frozen_at"] = "2026-07-29T15:30:00+00:00"
-    posthoc["configuration_digest"] = canonical_digest(
-        posthoc,
-        digest_field="configuration_digest",
-    )
-    complete_mapping = {heldout[0].case_id: execution.output_dir}
-    for case in heldout[1:]:
-        complete_mapping[case.case_id] = supervisor.run(
-            _heldout_context(case),
-            output_dir=tmp_path / "posthoc-runs" / case.case_id,
-            mode=AutonomyMode.SHADOW,
-            generated_at="2026-07-29T15:00:00+00:00",
-        ).output_dir
-    with pytest.raises(
-        SupervisorEvaluationError,
-        match="recorded_run_predates_configuration_freeze",
-    ):
-        evaluate_recorded_supervisor_corpus(
-            corpus_path=corpus_path,
-            configuration=posthoc,
-            recorded_runs=complete_mapping,
-            output_dir=tmp_path / "posthoc",
-        )
-
-
-def test_evaluation_configuration_refuses_hidden_or_unregistered_spec_fields(
-    tmp_path: Path,
-) -> None:
-    corpus_path = _sealed_corpus(tmp_path)
-    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
-    supervisor = _sdk_supervisor()
-    valid = _frozen_evaluation_configuration(
-        supervisor,
-        corpus_digest=corpus["corpus_digest"],
-    )
-    spec = {
-        key: valid[key]
-        for key in (
-            "configuration_id",
-            "operator_id",
-            "issued_by_agent",
-            "frozen_at",
-            "tool_registry_digest",
-            "max_inference_cost_usd",
-            "manager_identity",
-            "specialist_identities",
-        )
-    }
-    spec["hidden_labels"] = ["should-never-enter-freeze"]
-    with pytest.raises(
-        SupervisorEvaluationError,
-        match="evaluation_configuration_spec_fields_invalid",
-    ):
-        freeze_supervisor_evaluation_configuration(
-            spec,
-            corpus_digest=corpus["corpus_digest"],
-        )
-
-
 def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(
     tmp_path: Path,
 ) -> None:
@@ -4581,137 +4362,6 @@ def test_phase3_preauthorized_recovery_enforces_and_replays_bounded_execution(
     recovery_path.write_text(json.dumps(recovery_artifact), encoding="utf-8")
     with pytest.raises(SupervisorReplayError, match="generated_recovery_contract_mismatch"):
         replay_supervisor_run(execution.output_dir)
-
-
-def test_phase3_vast_recovery_runs_through_supervisor_and_replay(
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / "frozen-vast-bundle.zip"
-    bundle.write_bytes(b"frozen-vast-recovery-bundle")
-    bundle_digest = f"sha256:{hashlib.sha256(bundle.read_bytes()).hexdigest()}"
-    url_files: dict[str, Path] = {}
-    for name in ("bundle", "put", "get"):
-        path = tmp_path / f"{name}-url.txt"
-        path.write_text("https://objects.example/opaque", encoding="utf-8")
-        url_files[name] = path
-
-    def runner(**kwargs: Any) -> dict[str, Any]:
-        job_dir = Path(kwargs["job_dir"])
-        job_dir.mkdir(parents=True)
-        (job_dir / "vast_provider_adapter_result.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": "vast_provider_adapter_result.v1",
-                    "status": "completed",
-                    "estimated_cost_usd": 0.1,
-                }
-            ),
-            encoding="utf-8",
-        )
-        (job_dir / "vast_teardown_manifest.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": "vast_teardown_manifest.v1",
-                    "status": "completed",
-                    "runner_gpu_teardown_completed": True,
-                    "continuing_spend_from_this_run": False,
-                    "retention_authorized": False,
-                }
-            ),
-            encoding="utf-8",
-        )
-        return {
-            "status": "completed",
-            "blockers": [],
-            "paid_launch_attempted": True,
-            "independent_watchdog_close": {
-                "status": "provider_terminal",
-                "provider_absence_confirmed": True,
-            },
-        }
-
-    adapter = VastWAMRecoveryAdapter(
-        job_dir=tmp_path / "vast-job",
-        bundle_path=bundle,
-        immutable_commit_sha="a" * 40,
-        immutable_input_digests=(bundle_digest,),
-        paid_resource_admission_grant=require_paid_resource_admission(
-            build_paid_lane_admission(resource_class="vast_provider_adapter"),
-            resource_class="vast_provider_adapter",
-            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
-        ),
-        provider_bundle_url_file=url_files["bundle"],
-        provider_output_put_url_file=url_files["put"],
-        provider_output_get_url_file=url_files["get"],
-        session_budget_ledger=tmp_path / "vast-budget.json",
-        runner=runner,
-    )
-    request = authorization_request(
-        run_id="supervisor-run-1",
-        tool_id="execute_preauthorized_recovery",
-        reason="Permit one bounded Vast recovery through the supervisor.",
-        requested_max_cost_usd=0.2,
-        requested_ttl_seconds=120,
-        immutable_input_digests=[bundle_digest],
-        requested_retry_count=0,
-        requested_provider_ids=[adapter.provider_id],
-        requested_action_ids=["bounded_provider_retry"],
-    )
-    receipt = authorization_receipt(
-        request=request,
-        operator_id="runtime-owner-vast",
-        approved=True,
-        granted_max_cost_usd=0.2,
-        granted_ttl_seconds=120,
-        granted_retry_count=0,
-        issued_at="2026-07-29T16:00:00Z",
-        expires_at="2026-07-29T16:02:00Z",
-        granted_provider_ids=[adapter.provider_id],
-        granted_action_ids=["bounded_provider_retry"],
-    )
-    controller = PreauthorizedRecoveryController(
-        PreauthorizedRecoveryPolicy(
-            run_id="supervisor-run-1",
-            authorization_receipt=receipt,
-            immutable_commit_sha="a" * 40,
-            immutable_input_digests=(bundle_digest,),
-            allowed_provider_ids=(adapter.provider_id,),
-            allowed_action_ids=("bounded_provider_retry",),
-            watchdog_seconds=120,
-        ),
-        [adapter],
-        wall_clock=lambda: datetime(2026, 7, 29, 16, 1, tzinfo=timezone.utc),
-    )
-    invoker = _RecoveryToolCallingInvoker(
-        commit_sha="a" * 40,
-        input_digests=[bundle_digest],
-        provider_id=adapter.provider_id,
-    )
-
-    execution = TaskEvaluationSupervisor(
-        agents_sdk_invoker=invoker,
-        recovery_controller=controller,
-    ).run(
-        replace(
-            _context_with_retryable_evidence_failure(),
-            authorization_request=request,
-            authorization_receipt=receipt,
-        ),
-        output_dir=tmp_path / "supervisor-vast-recovery",
-        mode=AutonomyMode.EXECUTE_PREAUTHORIZED,
-        generated_at="2026-07-29T16:00:00+00:00",
-    )
-
-    report = execution.report.to_mapping()
-    assert report["status"] == "preauthorized_complete"
-    assert report["registered_preauthorized_actions_executed"] == 1
-    assert controller.attempt_ledger[0]["provider_id"] == "vast_wam_recovery"
-    assert controller.attempt_ledger[0]["provider_zero_proven"] is True
-    assert (execution.output_dir / "kernel_inputs" / "authorization_request.json").is_file()
-    assert (execution.output_dir / "kernel_inputs" / "authorization_receipt.json").is_file()
-    replay = replay_supervisor_run(execution.output_dir)
-    assert replay["replayed_tool_cost_usd"] == pytest.approx(0.1)
-    assert replay["proof_result_reproduced"] is False
 
 
 def test_phase3_recovery_rejects_spend_sha_input_retry_and_scientific_failures() -> None:

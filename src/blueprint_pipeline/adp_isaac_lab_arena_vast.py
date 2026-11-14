@@ -15,8 +15,6 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Any, Mapping, Callable
 
-from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
-from .adp_isaac_lab_arena_request import build_arena_worker_request
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .native_task_arena_execution_contract import (
     native_task_arena_execution_transport_completed,
@@ -74,37 +72,6 @@ _ADP009D_GATED_BACKBONE_AUTH_ENV = (
 )
 
 
-ENTRYPOINT = r"""#!/usr/bin/env bash
-set +e
-RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
-mkdir -p "$OUT_DIR"
-/isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
-runner_rc=$?
-if [ $runner_rc -ne 0 ] && [ ! -f "$OUT_DIR/adp_arena_native_canary.json" ]; then
-/isaac-sim/python.sh - "$OUT_DIR" <<'PY'
-import json
-import sys
-from pathlib import Path
-out = Path(sys.argv[1])
-out.mkdir(parents=True, exist_ok=True)
-(out / "adp_arena_native_canary.json").write_text(json.dumps({
-    "schema_version": "adp_arena_native_canary.v1",
-    "status": "blocked",
-    "blockers": [
-        "adp_arena_runner_failed_without_runtime_result",
-        "blocked_adp_arena_process_exited_without_result"
-    ],
-    "candidate_policy_queried": False,
-    "candidate_outcomes_accessed": False,
-    "provider_zero_required_after_return": True
-}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-PY
-fi
-exit $runner_rc
-"""
-
-
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -136,11 +103,6 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
     value = json.loads(path.read_text(encoding="utf-8"))
     return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _write_executable(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _vast_credential_file_present() -> bool:
@@ -317,76 +279,6 @@ def _vast_authority_environment(*, gated_backbone_authorized: bool = False):
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
-
-
-def build_arena_native_control_bundle(
-    *, approval_path: str | Path, job_dir: str | Path, generated_at: str | None = None
-) -> dict[str, Any]:
-    """Build a deterministic public-source bundle after exact digest approval."""
-
-    approval_source = Path(approval_path).expanduser().resolve()
-    approval = _read_json(approval_source)
-    protocol = build_founder_sim_protocol()
-    execution_admission = admit_founder_sim_execution(protocol, approval)
-    worker_request = build_arena_worker_request(protocol)
-    job = Path(job_dir).expanduser().resolve()
-    if job.exists():
-        shutil.rmtree(job)
-    runtime = job / "provider_runtime"
-    ensure_dir(runtime)
-    generated = generated_at or utc_now_iso()
-    worker_source = Path(__file__).with_name("adp_arena_native_canary_worker.py")
-    shutil.copy2(worker_source, runtime / "adp_arena_provider_runner.py")
-    _write_executable(runtime / "run_adp_arena_provider_runtime.sh", ENTRYPOINT)
-    write_json(runtime / "founder_sim_protocol.json", protocol)
-    write_json(runtime / "founder_sim_approval_receipt.json", approval)
-    write_json(runtime / "founder_sim_execution_admission.json", execution_admission)
-    write_json(runtime / "arena_worker_request.json", worker_request)
-    readiness = {
-        "schema_version": "adp_arena_provider_bundle.v1",
-        "generated_at": generated,
-        "status": "ready",
-        "protocol_id": protocol["protocol_id"],
-        "protocol_digest": protocol["protocol_digest"],
-        "schedule_digest": protocol["schedule"]["schedule_digest"],
-        "worker_request_digest": worker_request["worker_request_digest"],
-        "approval_receipt_digest": approval.get("approval_receipt_digest"),
-        "container_image": DEFAULT_IMAGE,
-        "control_id": "arena_zero_action_negative",
-        "candidate_policy_queried": False,
-        "candidate_outcomes_accessed": False,
-        "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
-        "expected_output_filename": "adp_arena_native_canary.json",
-        "local_bundle_ready_for_remote_staging": True,
-        "provider_zero_required_after_return": True,
-        "retry_cap": 0,
-        "blockers": [],
-        "raw_secret_values_recorded": False,
-    }
-    write_json(runtime / "adp_arena_provider_manifest.json", readiness)
-    bundle_path = job / "adp_arena_provider_runtime_bundle.zip"
-    with zipfile.ZipFile(bundle_path, "w") as archive:
-        for path in sorted(runtime.rglob("*")):
-            if path.is_file():
-                info = zipfile.ZipInfo(
-                    path.relative_to(job).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
-                )
-                info.create_system = 3
-                info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-                archive.writestr(
-                    info,
-                    path.read_bytes(),
-                    compress_type=zipfile.ZIP_DEFLATED,
-                    compresslevel=9,
-                )
-    receipt = {
-        **readiness,
-        "bundle_path": str(bundle_path),
-        "bundle_sha256": _file_sha256(bundle_path),
-        "bundle_size_bytes": bundle_path.stat().st_size,
-    }
-    write_json(job / "adp_arena_bundle_receipt.json", receipt)
-    return receipt
 
 
 def _cleanup_downloaded_provider_objects(*, staging_dir: Path, output_zip: Path,
@@ -630,13 +522,7 @@ def run_arena_native_control_vast(
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
     generated = utc_now_iso()
-    bundle = (
-        dict(prepared_bundle)
-        if prepared_bundle is not None
-        else build_arena_native_control_bundle(
-            approval_path=approval_path, job_dir=job / "bundle", generated_at=generated
-        )
-    )
+    bundle = dict(prepared_bundle or {})
     bundle_path = Path(str(bundle.get("bundle_path") or "")).expanduser().resolve()
     if (
         bundle.get("status") != "ready"
@@ -1394,49 +1280,5 @@ def run_arena_native_control_vast(
 __all__ = [
     "DEFAULT_IMAGE",
     "PROBE_KIND",
-    "build_arena_native_control_bundle",
     "run_arena_native_control_vast",
 ]
-
-def main(argv: list[str] | None = None) -> int:
-    """Build the immutable Isaac Lab Arena native-control bundle.
-
-    Added because the allocator refuses a bundle whose `blueprint_commit` is not
-    the commit the control plane is running, and every deploy moves that commit.
-    A lane whose bundle can only be produced by calling a Python function is
-    launchable exactly once and then never again -- which is the state this lane
-    was in, reading as `ready` everywhere while being unbuildable.
-
-    Performs no provider mutation and rents nothing.
-    """
-
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Build the immutable Isaac Lab Arena native-control bundle.")
-    parser.add_argument("--approval", required=True)
-    parser.add_argument("--job-dir", required=True)
-    args = parser.parse_args(argv)
-    try:
-        receipt = build_arena_native_control_bundle(
-            approval_path=args.approval,
-            job_dir=args.job_dir,
-        )
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(
-            json.dumps(
-                {
-                    "status": "blocked",
-                    "blockers": [str(exc)],
-                    "provider_mutation_performed": False,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-    print(json.dumps(receipt, indent=2, sort_keys=True))
-    return 0 if receipt.get("status") in {"ready", "sealed"} else 2
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
