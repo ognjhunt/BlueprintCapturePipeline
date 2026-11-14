@@ -597,14 +597,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     activation_timer = unit_dir / "blueprint-task-evaluation-launch-activation.timer"
     activation_timer.write_text("[Timer]\nOnUnitInactiveSec=1h\n", encoding="utf-8")
-    team_runner_service = unit_dir / "blueprint-team-evaluation-runner.service"
-    team_runner_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-team-evaluation-runner\n",
-        encoding="utf-8",
-    )
-    team_runner_path = unit_dir / "blueprint-team-evaluation-runner.path"
-    team_runner_path.write_text(
-        "[Path]\nPathExistsGlob=/team-evaluations/pending/*.json\n", encoding="utf-8")
     probe_runner_service = unit_dir / "blueprint-rigid-robot-free-probe-runner.service"
     probe_runner_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-rigid-robot-free-probe-runner\n",
@@ -781,8 +773,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         activation_service,
         activation_path,
         activation_timer,
-        team_runner_service,
-        team_runner_path,
         probe_runner_service,
         probe_runner_path,
         probe_runner_timer,
@@ -861,8 +851,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-launch-activation.timer",
-        "blueprint-team-evaluation-runner.service",
-        "blueprint-team-evaluation-runner.path",
         "blueprint-rigid-robot-free-probe-runner.service",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-rigid-robot-free-probe-runner.timer",
@@ -973,7 +961,6 @@ def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
 
 PAUSED_LANE_UNITS = (
     "blueprint-agent-run-dispatcher.timer",
-    "blueprint-team-evaluation-runner.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-task-evaluation-episode-compilation.path",

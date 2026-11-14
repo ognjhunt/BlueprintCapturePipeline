@@ -48,6 +48,7 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
         "blueprint-embodiment-preparation.timer",
         "blueprint-task-evaluation-sam31-preparation-execution.path",
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
+        "blueprint-team-evaluation-runner.path",
     )
     for unit in RETIRED_HOLD_UNITS:
         plain = {"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",

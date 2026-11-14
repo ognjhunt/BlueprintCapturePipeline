@@ -437,7 +437,6 @@ HOST_MEMORY_KEPT = {
     "blueprint-off-host-reaper-heartbeat.service": ("-200", "256M"),
     "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5.5G"),
     "blueprint-website-atlas-preview.service": ("-200", "5.5G"),
-    "blueprint-team-evaluation-runner.service": ("-200", "5.5G"),
     "blueprint-beta-policy-screening.service": ("-200", "5.5G"),
     "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
     "blueprint-agent-run-dispatcher.service": ("-200", "5.5G"),
@@ -525,7 +524,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
-    "blueprint-team-evaluation-runner.service",
     "blueprint-agent-run-dispatcher.service",
     "blueprint-task-evaluation-episode-compilation.service",
     "blueprint-task-evaluation-episode-compilation-remote.service",
@@ -596,7 +594,6 @@ KILL_MODE_PROCESS_UNITS = (
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-team-evaluation-runner.service",
 )
 
 

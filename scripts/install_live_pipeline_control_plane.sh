@@ -1457,12 +1457,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-provider-poll.path" \
   "${SYSTEMD_DIR}/blueprint-website-atlas-provider-poll.path"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.service" \
-  "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.path" \
-  "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.path"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-intake.service" \
   "${SYSTEMD_DIR}/blueprint-pipeline-intake.service"
 run install -m 0644 \
@@ -1775,7 +1769,6 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.timer
-  systemctl enable --now blueprint-team-evaluation-runner.path
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
 else
   echo "installed"
@@ -1791,7 +1784,6 @@ else
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable hourly recovery of interrupted activation claims with: systemctl enable --now blueprint-task-evaluation-launch-activation.timer"
-  echo "enable the staged robot-team evaluation runner with: systemctl enable --now blueprint-team-evaluation-runner.path"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"
 fi

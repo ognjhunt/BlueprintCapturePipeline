@@ -91,7 +91,6 @@ WORKER_UNITS=(
   blueprint-task-evaluation-launch-activation.path
   blueprint-task-evaluation-launch-activation.timer
   blueprint-task-evaluation-launch-dispatcher.path
-  blueprint-team-evaluation-runner.path
   blueprint-rigid-robot-free-probe-runner.path
   blueprint-rigid-robot-free-probe-runner.timer
   blueprint-task-evaluation-configured-controls-progression.timer
@@ -121,7 +120,6 @@ WORKER_UNITS=(
   blueprint-task-evaluation-episode-compilation-remote.service
   blueprint-task-evaluation-launch-activation.service
   blueprint-task-evaluation-launch-dispatcher.service
-  blueprint-team-evaluation-runner.service
   blueprint-rigid-robot-free-probe-runner.service
   blueprint-task-evaluation-configured-controls-progression.service
   blueprint-task-evaluation-terminal-resource-release.service

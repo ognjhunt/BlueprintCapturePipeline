@@ -458,8 +458,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
     "blueprint-task-evaluation-launch-activation.timer",
-    "blueprint-team-evaluation-runner.service",
-    "blueprint-team-evaluation-runner.path",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-rigid-robot-free-probe-runner.path",
     "blueprint-rigid-robot-free-probe-runner.timer",
@@ -633,10 +631,8 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
 #: outside this list.  Their unit files and code stay.  To re-arm a lane, move
 #: all its names back into the arm lists (a name in both refuses the release).
 DEFAULT_PAUSED_LANE_DISARM_UNITS = (
-    # Agent runs: founder stop since 2026-10-02. The dispatcher stages team
-    # evaluations and reads their terminal results; the runner path runs them.
+    # Agent runs: founder stop since 2026-10-02. The door holds the dispatcher.
     "blueprint-agent-run-dispatcher.timer",
-    "blueprint-team-evaluation-runner.path",
     # Configured-controls progression: website jobs have no controls plan
     # (task_evaluation_scene_progression writes their launch itself).
     "blueprint-task-evaluation-configured-controls-progression.timer",
@@ -673,6 +669,7 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     "blueprint-embodiment-preparation.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
+    "blueprint-team-evaluation-runner.path",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the
