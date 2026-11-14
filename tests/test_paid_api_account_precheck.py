@@ -27,27 +27,6 @@ def limit(monkeypatch):
     return state
 
 
-def test_launch_supervisor_waits_uncached_and_asks_again(tmp_path, limit, monkeypatch):
-    from blueprint_pipeline import task_evaluation_launch_supervisor as supervisor
-
-    calls = []
-
-    class Invoker:
-        def invoke(self, spec, prompt):
-            calls.append(prompt)
-            return SimpleNamespace(output={"summary": "ok", "recommended_profile_id": None,
-                                           "human_decision_request": None, "blockers": []},
-                                   provider="openai", model="m", sdk_version="x", trace_id="t")
-
-    snapshot = {"snapshot_digest": "sha256:" + "a" * 64, "admissible_profile_ids": []}
-    waiting = supervisor.run_launch_supervisor(snapshot=snapshot, output_dir=tmp_path, invoker=Invoker(), enabled=True)
-    assert waiting["status"] == supervisor.ACCOUNT_LIMIT_WAIT_STATUS and waiting["blockers"] == [REACHED]
-    assert calls == [] and not list(tmp_path.glob("*.json"))  # nothing invoked, nothing cached
-    limit["blockers"] = []
-    later = supervisor.run_launch_supervisor(snapshot=snapshot, output_dir=tmp_path, invoker=Invoker(), enabled=True)
-    assert later["status"] != supervisor.ACCOUNT_LIMIT_WAIT_STATUS and len(calls) == 1
-
-
 def test_agent_task_is_not_started_while_refused_and_starts_on_a_later_pass(limit, monkeypatch):
     from blueprint_pipeline.agent_execution import production
     from blueprint_pipeline.agent_execution import supervision

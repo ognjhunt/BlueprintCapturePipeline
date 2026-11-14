@@ -69,7 +69,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import DoorConfig
-from .embodiment_preparation import validate_request as validate_embodiment_preparation
 from .public_policy_registration_contract import validate_request as validate_public_policy_registration
 from .native_g1_registration_contract import validate_request as validate_native_g1_registration
 from .admitted_controls import DISPATCHER_HOLD_ONLY
@@ -99,7 +98,6 @@ _SCOPES = {
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
     "selected-handoff": "operate",
-    "public-embodiment-preparation": "operate",
     "install-public-piper-policy": "operate",
     "install-public-yam-policy": "operate",
     "install-public-franka-policy": "operate",
@@ -158,7 +156,7 @@ if DISPATCHER_HOLD_ONLY:
     # network, starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
+                           "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
                            "confirm-owner-success-contract", "restore-g1-runtime-source",
                            "restore-g1-pi-language-assets", "retire-parked-delivery"}}
@@ -210,6 +208,12 @@ RETIRED_HOLD_UNITS = (
     "blueprint-pipeline-control-plane.timer",
     "blueprint-capture-reconstruction-dispatcher.timer",
     "blueprint-capture-reconstruction-dispatcher.path",
+    "blueprint-task-evaluation-policy-canary-dispatcher.path",
+    "blueprint-existing-policy-canary-continuation.timer",
+    "blueprint-task-evaluation-launch-supervisor.timer",
+    "blueprint-scene-object-discovery.path",
+    "blueprint-embodiment-preparation.path",
+    "blueprint-embodiment-preparation.timer",
 )
 EXPLICIT_RELEASE_UNITS = (DISPATCHER_HOLD_UNIT, *RETIRED_HOLD_UNITS)
 _LOG_TAIL_LINES = 200
@@ -318,13 +322,6 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         _only(body, ("kind", "request"))
         try:
             request = validate_public_policy_registration(body.get("request"), operation=kind)
-        except ValueError as error:
-            raise RequestRefused(str(error)) from error
-        return {"kind": kind, "request": request}
-    if kind == "public-embodiment-preparation":
-        _only(body, ("kind", "request"))
-        try:
-            request = validate_embodiment_preparation(body.get("request"))
         except ValueError as error:
             raise RequestRefused(str(error)) from error
         return {"kind": kind, "request": request}

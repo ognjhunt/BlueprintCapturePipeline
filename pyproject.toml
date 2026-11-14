@@ -303,7 +303,6 @@ blueprint-alert-live-pipeline-manifest = "blueprint_pipeline.live_pipeline_manif
 blueprint-live-pipeline-intake-service = "blueprint_pipeline.live_pipeline_intake_service:main"
 blueprint-dispatch-task-evaluation-launches = "blueprint_pipeline.task_evaluation_launch_dispatcher:main"
 blueprint-reconcile-task-evaluation-launches = "blueprint_pipeline.task_evaluation_launch_reconciler:main"
-blueprint-supervise-task-evaluation-launches = "blueprint_pipeline.task_evaluation_launch_supervisor:main"
 blueprint-setup-live-pipeline-forwarding = "blueprint_pipeline.live_pipeline_forwarding_secret_setup:main"
 blueprint-validate-provider-preview-packet = "blueprint_pipeline.provider_preview_qa:main"
 blueprint-run-production-gpu-worker-agent = "blueprint_pipeline.production_gpu_worker_agent:main"

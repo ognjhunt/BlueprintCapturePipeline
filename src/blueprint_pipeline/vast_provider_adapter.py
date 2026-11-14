@@ -2965,15 +2965,6 @@ def _blueprint_bundle_preflight(
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
                     retained_render_manifest = read_render_manifest(archive, provider_bundle_kind)
-                    if provider_bundle_kind == "embodiment_asset_preparation":
-                        from .deployment_embodiment_preparation_bundle import MANIFEST_PATH, validate_archive
-                        readiness_member = MANIFEST_PATH
-                        readiness_source = "immutable_bundle_member"
-                        try:
-                            readiness = validate_archive(archive)
-                            readiness["local_bundle_ready_for_remote_staging"] = True
-                        except (KeyError, TypeError, ValueError, OSError):
-                            blockers.append("embodiment_asset_preparation_provider_manifest_invalid")
                     if provider_bundle_kind == "native_task_arena_policy_canary_session":
                         readiness_member = (
                             "provider_runtime/adp_arena_provider_manifest.json"

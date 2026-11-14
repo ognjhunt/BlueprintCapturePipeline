@@ -358,15 +358,12 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         text = unit.read_text(encoding="utf-8")
         for control in required_controls:
             assert control in text, (unit.name, control)
-        task_limit = {"blueprint-existing-policy-canary-watchdog.service": 64,
-                      "blueprint-existing-policy-canary-continuation.service": 128}.get(unit.name, 512)
-        assert f"TasksMax={task_limit}" in text, unit.name
+        assert "TasksMax=512" in text, unit.name
         # Each unit's cap is in HOST_MEMORY (test_every_control_plane_unit_is_capped_below_the_host); a guard's
         # and a unit this host does not run keep the cap they had.
         memory_limit = (
             HOST_MEMORY[unit.name][2] if unit.name in HOST_MEMORY
             else HOST_MEMORY_KEPT[unit.name][1] if unit.name in HOST_MEMORY_KEPT
-            else "1G" if unit.name == "blueprint-existing-policy-canary-watchdog.service"
             else "8G"
         )
         assert f"MemoryMax={memory_limit}" in text, unit.name
@@ -385,13 +382,11 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
 
 #: Money safety, and the door to the host (#3329): the OOM killer passes them over. Never weakened: no
 #: throttle, no pressure kill, the memory cap each had before. G1 campaign settlement settles money too.
-#: Five of them keep 8G, which is above the host and never acts; each file says so. Their peaks are not
+#: Three of them keep 8G, which is above the host and never acts; each file says so. Their peaks are not
 #: measured on the host and a guessed cap must not kill a money-safety unit. They are outside BATCH_SLICE.
 HOST_SAFETY_GUARD_UNITS = (
     "blueprint-gpu-spend-guard.service",
     "blueprint-operator-door.service",
-    "blueprint-existing-policy-canary-watchdog.service",
-    "blueprint-task-evaluation-launch-supervisor.service",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-terminal-resource-release.service",
 )
@@ -428,8 +423,6 @@ HOST_MEMORY = {
 HOST_MEMORY_KEPT = {
     "blueprint-pubsub-handoff-listener.service": ("200", "5.5G"),
     "blueprint-task-evaluation-launch-activation.service": ("200", "5.5G"),
-    "blueprint-embodiment-preparation.service": ("200", "5.5G"),
-    "blueprint-scene-object-discovery.service": ("200", "5.5G"),
     "blueprint-control-plane-preflight.service": ("200", "1G"),
     "blueprint-control-plane-capacity.service": ("200", "512M"),
     "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
@@ -447,9 +440,7 @@ HOST_MEMORY_KEPT = {
     "blueprint-team-evaluation-runner.service": ("-200", "5.5G"),
     "blueprint-beta-policy-screening.service": ("-200", "5.5G"),
     "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
-    "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "5.5G"),
     "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "5.5G"),
-    "blueprint-existing-policy-canary-continuation.service": ("-200", "5.5G"),
     "blueprint-agent-run-dispatcher.service": ("-200", "5.5G"),
     "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
     # The failure notifier carries a page; a run peaked at 27 MB locally.
@@ -510,8 +501,7 @@ def test_every_control_plane_unit_is_capped_below_the_host() -> None:
         values = _directives(unit)
         assert values["OOMScoreAdjust"] == ["-500"], unit
         assert not {"MemoryHigh", "ManagedOOMMemoryPressure", "ManagedOOMSwap"} & set(values), unit
-        assert values["MemoryMax"] == (["1G"] if unit in {"blueprint-operator-door.service",
-                                                          "blueprint-existing-policy-canary-watchdog.service"}
+        assert values["MemoryMax"] == (["1G"] if unit == "blueprint-operator-door.service"
                                        else ["8G"]), unit
 
 
@@ -536,11 +526,7 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
-    "blueprint-embodiment-preparation.service",
-    "blueprint-scene-object-discovery.service",
     "blueprint-task-evaluation-sam31-preparation-execution.service",
-    "blueprint-task-evaluation-policy-canary-dispatcher.service",
-    "blueprint-existing-policy-canary-continuation.service",
     "blueprint-team-evaluation-runner.service",
     "blueprint-agent-run-dispatcher.service",
     "blueprint-task-evaluation-episode-compilation.service",
@@ -562,9 +548,7 @@ OUTSIDE_BATCH_SLICE = {
     "blueprint-provider-billing-reconciler.service": "money safety: the billing feed the guard reads",
     "blueprint-scene-project-spend-refresh.service": "money safety: the scene spend ledger's refresh",
     "blueprint-task-evaluation-launch-reconciler.service": "money safety: the provider-zero proof",
-    "blueprint-task-evaluation-launch-supervisor.service": "money safety: launch supervision",
     "blueprint-task-evaluation-terminal-resource-release.service": "money safety: releases paid resources",
-    "blueprint-existing-policy-canary-watchdog.service": "money safety: a paid canary's watchdog",
     "blueprint-control-plane-capacity.service": "the pager: capacity, stall and spend alerts",
     NOTIFIER_UNIT: "the failure notifier: it must run while the batch units are at their bound",
     "blueprint-control-plane-storage-gc.service": "housekeeping that frees the disk batch units wait for",
@@ -611,11 +595,9 @@ UNIT_FAILURE_ROUTINE_EXIT_UNITS = {
 KILL_MODE_PROCESS_UNITS = (
     "blueprint-agent-run-dispatcher.service",
     "blueprint-beta-policy-screening.service",
-    "blueprint-embodiment-preparation.service",
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-team-evaluation-runner.service",
 )
@@ -692,7 +674,7 @@ def test_batch_units_are_in_the_slice_and_always_on_and_money_units_are_not() ->
     )
     assert capped_above_the_host == sorted(
         unit for unit in HOST_SAFETY_GUARD_UNITS
-        if unit not in {"blueprint-operator-door.service", "blueprint-existing-policy-canary-watchdog.service"}
+        if unit != "blueprint-operator-door.service"
     )
     for unit in capped_above_the_host:
         assert "this cap never acts" in _read(unit), unit
@@ -1020,23 +1002,6 @@ def test_probe_and_screening_attempts_stage_on_the_work_volume_and_stay_watched(
         assert root in deploy._WORK_VOLUME_PROVISIONABLE
         classified = classify_path(root + "/attempts/x")
         assert classified is not None and classified.path == root and classified.storage_class == storage_class
-
-
-def test_streamed_canary_units_bind_the_b2_artifact_store() -> None:
-    """Review I4: promotion and the member view refuse, rather than borrow the staging store's
-    credentials, unless the dedicated B2 store is configured. The canary dispatcher (whose
-    allocator child promotes and ingests) and the existing-run continuation (which promotes
-    before cleanup) bind it explicitly, exactly as the intake service does."""
-    intake = (SYSTEMD_DIR / "blueprint-pipeline-intake.service").read_text(encoding="utf-8")
-    bindings = [line for line in intake.splitlines()
-                if line.startswith("Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_")]
-    assert len(bindings) == 6 and any("_EXPECTED_BUCKET=" in line for line in bindings)
-    for name in ("blueprint-task-evaluation-policy-canary-dispatcher.service",
-                 "blueprint-existing-policy-canary-continuation.service"):
-        unit = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
-        lines = unit.splitlines()
-        assert [line for line in lines if line in bindings] == bindings, name
-        assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in lines, name
 
 
 def test_launch_activation_unit_outlasts_its_preparation_command(tmp_path, monkeypatch):

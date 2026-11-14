@@ -40,8 +40,6 @@ from .capture_upload_intake import (
 )
 from .capture_audio_minimization import media_tool_blockers
 from .capture_qa_webapp_sync import build_capture_qa_webapp_publication
-from .company_policy_container_http import register_company_policy_container_routes
-from .company_policy_container_admission import default_company_policy_container_admission_root
 from .capture_lifecycle import (
     CaptureLifecycleError,
     apply_capture_lifecycle_action,
@@ -150,7 +148,6 @@ INTAKE_CLIENT_SECRETS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_SECRETS_JSON"
 INTAKE_CLIENT_ROOTS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON"
 INTAKE_NONCE_STORE_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_NONCE_STORE_DIR"
 TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT"
-SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV = "BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT"
 TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
 )
@@ -1019,13 +1016,6 @@ def create_app() -> FastAPI:
                 "asynchronous_no_spend_preparation_only": True,
                 "accepts_host_paths_or_commands": False,
             },
-            "scene_object_discovery_queue": {
-                "supported": True,
-                "configured": bool(_string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))),
-                "asynchronous_preparation_only": True,
-                "provider_execution_requires_separate_activation": True,
-                "accepts_host_paths_or_commands": False,
-            },
             "task_evaluation_launch_activation_queue": {
                 "supported": True,
                 "configured": bool(
@@ -1771,11 +1761,6 @@ def create_app() -> FastAPI:
             "canonical_allocator_required": True,
         }
         return JSONResponse(status_code=202, content=response)
-
-    register_company_policy_container_routes(
-        app, require_admission=_require_admission,
-        admission_root=lambda: default_company_policy_container_admission_root(_work_dir(_manifest_path().resolve())),
-    )
 
     @app.post(
         "/api/live-pipeline/task-evaluation-terminal-resource-releases",

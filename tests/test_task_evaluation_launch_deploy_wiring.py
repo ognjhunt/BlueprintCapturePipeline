@@ -20,7 +20,6 @@ def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
     units_and_directives = (
         ("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service", "ExecStart"),
         ("deploy/systemd/blueprint-task-evaluation-launch-reconciler.service", "ExecStart"),
-        ("deploy/systemd/blueprint-task-evaluation-launch-supervisor.service", "ExecStart"),
         ("deploy/systemd/blueprint-provider-billing-reconciler.service", "ExecStart"),
         ("deploy/systemd/blueprint-gpu-spend-guard.service", "ExecStart"),
         ("deploy/systemd/blueprint-gpu-spend-guard.service", "ExecStopPost"),
@@ -40,7 +39,6 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     dispatcher = _text("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service")
     path_unit = _text("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.path")
     reconciler = _text("deploy/systemd/blueprint-task-evaluation-launch-reconciler.service")
-    supervisor = _text("deploy/systemd/blueprint-task-evaluation-launch-supervisor.service")
 
     assert "task_evaluation_launch_dispatcher" in dispatcher
     assert "--execute" in dispatcher
@@ -107,7 +105,7 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "EnvironmentFile values override Environment=" in dispatcher
     assert "blueprint-gpu-spend-guard.service" in dispatcher
     assert "GIT_CONFIG_KEY_0=safe.directory" in dispatcher
-    for unit in (dispatcher, reconciler, supervisor):
+    for unit in (dispatcher, reconciler):
         assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=" in unit
         assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=" in unit
         assert "BLUEPRINT_PIPELINE_REPO" not in unit
@@ -162,11 +160,6 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     ):
         assert f'{flag} "$${{{variable}}}"' in reconciler
         assert f"Environment={variable}={path}" in reconciler
-    canary = _text("deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.service")
-    assert ("Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_DISPATCH_ROOT="
-            "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries") in canary
-
-    assert "task_evaluation_launch_supervisor" in supervisor
 
 
 def test_canonical_environment_binds_scene_configuration_runtime_secret_paths() -> None:

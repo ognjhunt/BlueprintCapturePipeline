@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "restore-g1-runtime-source", "restore-g1-pi-language-assets", "retire-parked-delivery"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "restore-g1-runtime-source", "restore-g1-pi-language-assets", "retire-parked-delivery"}
 # The owner-approved, time-only scene window extension passes the fence.
 assert r.required_scope("extend-scene-execution-window") == "operate"
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
@@ -87,8 +87,6 @@ assert r.validate_request({**parked, "apply":True}) == {**parked, "apply":True}
 try: r.validate_request({**parked, "capture":"bucket/scenes/site-a/captures/walkthrough-a/../../../x"})
 except r.RequestRefused as e: assert e.code == "parked_delivery_capture_invalid"
 else: raise AssertionError("an unsafe capture path admitted for a parked delivery retirement")
-assert r.required_scope("public-embodiment-preparation") == "operate"
-assert r.validate_request_id("20261029T000000Z-public-embodiment-preparation-0123abcd")
 commit = "a" * 40
 payload = json.dumps({"schema_version":"blueprint.deploy_release_provenance.v1",
     "status":"verified", "git_sha":commit, "workflow_name":"Full Test Lane",

@@ -56,7 +56,6 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/remote_cpu_job_allocator.py",
     "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
-    "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
     "src/blueprint_pipeline/website_task_context.py",
 }
@@ -66,7 +65,6 @@ APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/remote_cpu_job_allocator.py",
     "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",
-    "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
 }
 APPROVED_S3_TRANSPORT_CAPABILITY_CALLERS: set[tuple[str, str]] = set()

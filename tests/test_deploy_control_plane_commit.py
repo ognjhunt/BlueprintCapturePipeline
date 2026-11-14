@@ -603,21 +603,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     activation_timer = unit_dir / "blueprint-task-evaluation-launch-activation.timer"
     activation_timer.write_text("[Timer]\nOnUnitInactiveSec=1h\n", encoding="utf-8")
-    canary_service = (
-        unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.service"
-    )
-    canary_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-policy-canary\n",
-        encoding="utf-8",
-    )
-    canary_path = (
-        unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.path"
-    )
-    canary_path.write_text(
-        "[Path]\nPathChanged=/policy-canaries/pending\n"
-        "PathExistsGlob=/policy-canaries/pending/*.json\n",
-        encoding="utf-8",
-    )
     team_runner_service = unit_dir / "blueprint-team-evaluation-runner.service"
     team_runner_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-team-evaluation-runner\n",
@@ -626,11 +611,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     team_runner_path = unit_dir / "blueprint-team-evaluation-runner.path"
     team_runner_path.write_text(
         "[Path]\nPathExistsGlob=/team-evaluations/pending/*.json\n", encoding="utf-8")
-    embodiment_units = []
-    for suffix in ("service", "path", "timer"):
-        source = unit_dir / f"blueprint-embodiment-preparation.{suffix}"
-        source.write_text("[Unit]\nDescription=Exact asset preparation fixture\n")
-        embodiment_units.append(source)
     probe_runner_service = unit_dir / "blueprint-rigid-robot-free-probe-runner.service"
     probe_runner_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-rigid-robot-free-probe-runner\n",
@@ -641,17 +621,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     probe_runner_timer = unit_dir / "blueprint-rigid-robot-free-probe-runner.timer"
     probe_runner_timer.write_text(
         "[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
-    discovery_service = unit_dir / "blueprint-scene-object-discovery.service"
-    discovery_service.write_text(
-        "[Service]\nExecStart=/usr/bin/blueprint-discover-scene-objects\n",
-        encoding="utf-8",
-    )
-    discovery_path = unit_dir / "blueprint-scene-object-discovery.path"
-    discovery_path.write_text(
-        "[Path]\nPathChanged=/scene-object-discoveries/pending\n"
-        "PathExistsGlob=/scene-object-discoveries/pending/*.json\n",
-        encoding="utf-8",
-    )
     team_scene_service = unit_dir / "blueprint-team-scene-packet.service"
     team_scene_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-team-scene-packet\n", encoding="utf-8"
@@ -778,7 +747,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "blueprint-agent-run-dispatcher.timer", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-launch-supervisor.service", "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-provider-billing-reconciler.service", "blueprint-provider-billing-reconciler.timer",
         "blueprint-task-evaluation-terminal-resource-release.service", "blueprint-task-evaluation-terminal-resource-release.path",
@@ -822,16 +790,11 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         activation_service,
         activation_path,
         activation_timer,
-        canary_service,
-        canary_path,
         team_runner_service,
         team_runner_path,
-        *embodiment_units,
         probe_runner_service,
         probe_runner_path,
         probe_runner_timer,
-        discovery_service,
-        discovery_path,
         team_scene_service,
         team_scene_path,
         *team_remote_units,
@@ -910,18 +873,11 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-launch-activation.timer",
-        "blueprint-task-evaluation-policy-canary-dispatcher.service",
-        "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-team-evaluation-runner.service",
         "blueprint-team-evaluation-runner.path",
-        "blueprint-embodiment-preparation.service",
-        "blueprint-embodiment-preparation.path",
-        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.service",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-rigid-robot-free-probe-runner.timer",
-        "blueprint-scene-object-discovery.service",
-        "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.service",
         "blueprint-team-scene-packet.path",
         "blueprint-team-scene-packet-remote.service",
@@ -934,8 +890,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-task-evaluation-scene-progression.service",
         "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-launch-supervisor.service",
-        "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service",
         "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-provider-billing-reconciler.service",
@@ -1036,11 +990,6 @@ PAUSED_LANE_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
-    "blueprint-task-evaluation-policy-canary-dispatcher.path",
-    "blueprint-task-evaluation-launch-supervisor.timer",
-    "blueprint-scene-object-discovery.path",
-    "blueprint-embodiment-preparation.path",
-    "blueprint-embodiment-preparation.timer",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-episode-compilation.timer",
 )
@@ -1178,7 +1127,7 @@ def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tm
     restore = deploy._restore_installed_path_units
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
     triggers = [unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))]
-    already_off = "blueprint-embodiment-preparation.timer"
+    already_off = "blueprint-task-evaluation-sam31-preparation-execution.timer"
     states = {unit: {"enabled": "enabled", "state": "active"} for unit in triggers}
     states[already_off] = {"enabled": "disabled", "state": "inactive"}
     before = {unit: dict(state) for unit, state in states.items()}
@@ -1291,6 +1240,7 @@ def test_a_release_retires_unshipped_triggers_idempotently(tmp_path, monkeypatch
         timer: {"enabled": "enabled", "state": "active"},
         "blueprint-capture-reconstruction-dispatcher.timer": None,
         path_on: {"enabled": "disabled", "state": "inactive"},
+        **{unit: None for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS[3:]},
     }
     retire = deploy._retire_unshipped_triggers
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
@@ -1319,13 +1269,14 @@ def test_a_release_retires_unshipped_triggers_idempotently(tmp_path, monkeypatch
     calls[:] = [call for call in calls if len(call) > 1]
     assert receipt["unshipped_trigger_retirement"] == {
         "status": "retired", "retired": [timer], "already_off": [path_on],
-        "absent": ["blueprint-capture-reconstruction-dispatcher.timer"], "failed": [],
+        "absent": ["blueprint-capture-reconstruction-dispatcher.timer", *deploy.DEFAULT_RETIRED_TRIGGER_UNITS[3:]],
+        "failed": [],
     }
     assert states[timer] == {"enabled": "disabled", "state": "inactive"}
     rows = {row["unit"]: row for row in receipt["unshipped_trigger_states"]}
     assert rows[timer]["before"] == {"enabled": "enabled", "state": "active"}
     assert rows[timer]["requested_intent"] == "retire_unshipped_trigger"
-    # Only the three triggers, only stop/disable and state probes; never a service, never an absent unit.
+    # Only the retired triggers, only stop/disable and state probes; never a service, never an absent unit.
     touched = {call[-1] for call in calls}
     assert touched == set(deploy.DEFAULT_RETIRED_TRIGGER_UNITS)
     assert {call[1] for call in calls} <= {"show", "is-enabled", "is-active", "stop", "disable"}

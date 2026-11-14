@@ -22,7 +22,6 @@ STORE_ENV_FILE = "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progress
 CONFIG_ENV_FILE = "EnvironmentFile=-/etc/blueprint/task-evaluation-controls-autoprovision.env"
 UNITS = (
     "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-task-evaluation-configured-controls-progression.service",
 )
 

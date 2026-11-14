@@ -33,7 +33,6 @@ _PUBLIC_UNITS = frozenset(BETA_RIGID_UNITS) | frozenset(
         "task-evaluation-episode-compilation", "task-evaluation-episode-compilation-remote",
         "task-evaluation-launch-activation", "task-evaluation-configured-controls-progression",
         "task-evaluation-launch-dispatcher", "task-evaluation-launch-reconciler",
-        "task-evaluation-launch-supervisor", "task-evaluation-policy-canary-dispatcher",
         "task-evaluation-terminal-resource-release", "gpu-spend-guard",
         "provider-billing-reconciler", "control-plane-storage-gc", "scene-project-spend-refresh",
     )

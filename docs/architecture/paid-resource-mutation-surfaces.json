@@ -2,7 +2,6 @@
   "schema_version": "paid_resource_mutation_surfaces.v1",
   "issuer_allowlist": {
     "build_paid_lane_admission": [
-      "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
       "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
@@ -11,7 +10,6 @@
       "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py"
     ],
     "require_paid_resource_admission": [
-      "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
       "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/qualification_control_admission.py",

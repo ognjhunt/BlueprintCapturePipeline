@@ -410,7 +410,6 @@ def _terminal(state: dict[str, Any]) -> bool | None:
     if outcome:
         kind = (state.get("request") or {}).get("kind")
         public_disposition = {
-            "public-embodiment-preparation": "grant_queued",
             "install-public-piper-policy": "public_policy_registered",
             "install-public-yam-policy": "public_policy_registered",
             "install-public-franka-policy": "public_policy_registered",
@@ -1042,12 +1041,6 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         elif action == "renew":
             sub.add_argument("--for", dest="ttl_seconds", type=_scratch_duration, required=True)
         _add_wait(sub, 120)
-    preparation = commands.add_parser("public-embodiment-preparation",
-        help="enqueue one explicitly funded public robot asset batch; its worker may spend within the sealed grant")
-    preparation.add_argument("--request-file", required=True,
-        help="JSON containing exact release, ordered public IDs, budget, expiry and stable authorization ID/digest")
-    _add_wait(preparation, 180)
-    preparation.description = "Wait observes durable grant enqueue only; inspect retained batch results for simulation preparation outcomes."
     for public_command, public_name in (("install-public-piper-policy", "OpenWAM PiPER"),
                                        ("install-public-yam-policy", "MolmoAct2 YAM"),
                                        ("install-public-franka-policy", "OpenWAM single-FR3"),
@@ -1168,11 +1161,6 @@ def run(args: argparse.Namespace) -> int:
         return _submit(_scene_budget_body(args), args)
     elif command == "confirm-owner-success-contract":
         return _submit(_owner_success_body(args), args)
-    elif command == "public-embodiment-preparation":
-        request = _embodiment_preparation_request(args.request_file)
-        if not args.operation_key:
-            args.operation_key = "public-embodiment-preparation-" + request["authorization_id"]
-        return _submit({"kind": command, "request": request}, args)
     elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}:
         request = _embodiment_preparation_request(args.request_file,
             public_policy={"install-public-yam-policy": "yam", "install-public-piper-policy": "piper",
