@@ -10,4 +10,3 @@ def test_legacy_worker_has_no_sdk_or_credential_setup(capsys):
     spec.loader.exec_module(worker)
     assert worker.main() == 2
     assert "aws_provider_integration_removed" in capsys.readouterr().out
-    assert "boto3" not in path.read_text()

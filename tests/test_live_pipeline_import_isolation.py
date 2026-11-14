@@ -3,7 +3,7 @@ GPU/provider hot lane.
 
 The control plane and intake service run on CPU-only hosts (FastAPI ingest, manifest
 emission) and must stay importable without dragging in provider adapters, Isaac/MuJoCo
-runtimes, or async GPU runners. This test ast-parses the three entrypoint modules,
+runtimes, or async GPU runners. This test ast-parses the intake entrypoint module,
 follows every relative / ``blueprint_pipeline``-prefixed import transitively, and asserts
 the reachable module set is disjoint from the hardcoded hot-lane module names.
 """
@@ -18,11 +18,7 @@ import blueprint_pipeline
 PKG_DIR = Path(blueprint_pipeline.__file__).resolve().parent
 
 # CPU-only entrypoints under guard.
-SEED_MODULES = (
-    "live_pipeline_control_plane",
-    "live_pipeline_input_intake",
-    "live_pipeline_intake_service",
-)
+SEED_MODULES = ("live_pipeline_intake_service",)
 
 # GPU / provider / simulator hot-lane modules that must remain unreachable from the
 # control-plane import graph. Kept as a literal list so a new accidental import shows up

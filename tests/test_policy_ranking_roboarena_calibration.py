@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import math
 from pathlib import Path
 
@@ -164,33 +163,6 @@ def test_protocol_rejects_mismatched_derived_prefix_duration() -> None:
     mutated["protocol_sha256"] = canonical_sha256(mutated_without_hash)
     with pytest.raises(CalibrationContractError, match="derived_duration_mismatch"):
         validate_preregistered_protocol(mutated)
-
-
-def test_protocol_lock_matches_executable_protocol() -> None:
-    root = Path(__file__).resolve().parents[1]
-    lock = json.loads(
-        (
-            root
-            / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728/protocol_lock_v2.json"
-        ).read_text(encoding="utf-8")
-    )
-    protocol = preregistered_protocol()
-    assert lock["protocol_sha256"] == protocol["protocol_sha256"]
-    assert lock["frozen_endpoint_gates"] == protocol["endpoint_gates"]
-    assert lock["phase_order"] == [row["phase"] for row in protocol["phases"]]
-    assert lock["paid_execution_admitted"] is False
-
-    preflight = json.loads(
-        (
-            root
-            / "docs/experiments/policy_ranking_roboarena_full_stack_calibration_20260728/phase_a_inventory_preflight_v2.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert preflight["protocol_sha256"] == protocol["protocol_sha256"]
-    assert preflight["matrix"]["full_episode_request_count"] == 63 * 7
-    assert preflight["provider_called"] is False
-    assert preflight["data_uploaded"] is False
-    assert preflight["credential"]["secure_key_destination_approved"] is False
 
 
 def test_phase_a_inventory_requires_complete_full_episode_matrix(tmp_path: Path) -> None:

@@ -326,7 +326,7 @@ def _policy_observation(inputs: Path, value: dict[str, Any], references: dict[st
         "receipt_digest": ""}
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     registry = inputs / "franka_robotiq_policy_camera_mount_registry.v1.json"
-    registry.write_bytes((Path(__file__).resolve().parents[1] / "docs/arm_decision_proof_v1/manifests"
+    registry.write_bytes((Path(__file__).resolve().parents[1] / "tests/fixtures/arm_decision_proof_v1/manifests"
                           / "franka_robotiq_policy_camera_mount_registry.v1.json").read_bytes())
     prefix = "execution_adapter.policy_observation_setup."
     records = {"appearance_asset": _record(appearance, prefix + "appearance_asset"),

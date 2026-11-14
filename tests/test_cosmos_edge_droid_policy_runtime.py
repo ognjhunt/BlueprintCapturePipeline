@@ -146,7 +146,8 @@ def test_local_snapshot_verification_hashes_every_frozen_file(tmp_path: Path) ->
 def test_committed_protocol_and_snapshot_manifest_digests_are_frozen() -> None:
     root = (
         Path(__file__).resolve().parents[1]
-        / "docs"
+        / "tests"
+        / "fixtures"
         / "experiments"
         / "policy_ranking_cosmos3_edge_closed_loop_20260729"
     )

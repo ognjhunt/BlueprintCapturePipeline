@@ -73,12 +73,3 @@ def test_installer_refuses_linked_stores_before_any_mutation(tmp_path, link):
     assert result.returncode != 0
     assert 'COMMAND' not in result.stdout
     assert b'preserve-this' in [p.read_bytes() for p in foreign.resolve().iterdir()]
-
-
-def test_authority_store_is_outside_recursive_service_migration_and_before_units():
-    source = SCRIPT.read_text()
-    block()
-    assert source.index('# BEGIN scene retirement stores') > source.index('run chown -R --no-dereference')
-    assert source.index('# END scene retirement stores') < source.index('systemctl daemon-reload')
-    assert 'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE=' not in block()
-    assert 'BLUEPRINT_CONTROL_PLANE_GC_SCENE' not in block()

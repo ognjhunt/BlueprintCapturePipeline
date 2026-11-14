@@ -20,7 +20,7 @@ def _checked_freeze() -> dict:
     return json.loads(
         (
             REPO_ROOT
-            / "docs/arm_decision_proof_v1/manifests"
+            / "tests/fixtures/arm_decision_proof_v1/manifests"
             / "second_scene_840796_scene_task_freeze.v1.json"
         ).read_text(encoding="utf-8")
     )

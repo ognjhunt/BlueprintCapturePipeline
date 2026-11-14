@@ -550,7 +550,7 @@ def test_controller_configuration_is_rebound_to_the_scene_and_its_quick10_matrix
     from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import _quick_cells
 
     document = handoff.rebind_policy_controller_configuration_to_scene(
-        template_path=REPO_ROOT / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_controller_configuration.v1.json",
+        template_path=REPO_ROOT / "config/trial/scene839873_policy_canary_controller_configuration.v1.json",
         scene_id=scene_id,
         task_id=TASK_ID,
         scene_revision_digest=REVISION_DIGEST,

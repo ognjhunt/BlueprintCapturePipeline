@@ -31,7 +31,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REAL_SPEC = (
     REPO_ROOT
-    / "docs/arm_decision_proof_v1/manifests"
+    / "tests/fixtures/arm_decision_proof_v1/manifests"
     / "third_scene_840920_task_a_simready_graph_asset_spec.v1.json"
 )
 

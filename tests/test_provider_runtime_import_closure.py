@@ -15,8 +15,7 @@ import zipfile
 
 import pytest
 
-# Dotted import on purpose: a bundle-only change must select this suite (pinned
-# in tests/test_impacted_test_selection.py).
+# Dotted import on purpose: a bundle-only change must select this suite.
 import blueprint_pipeline.native_task_arena_policy_canary_bundle as bundle
 from blueprint_pipeline import vast_provider_adapter
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -225,7 +224,7 @@ def _build_real_canary_bundle(tmp_path: Path) -> dict[str, object]:
     authority_path = _write(tmp_path / "authority.json", authority)
     inventory = (
         REPO_PACKAGE.parents[1]
-        / "docs/experiments/policy_ranking_thesis_20260726/openpi_polaris_checkpoint_inventory.json"
+        / "config/trial/openpi_polaris_checkpoint_inventory.json"
     )
     return bundle.build_policy_canary_session_bundle(
         job_dir=tmp_path / "job",

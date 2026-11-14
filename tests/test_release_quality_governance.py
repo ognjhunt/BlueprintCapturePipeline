@@ -1561,14 +1561,3 @@ def test_archive_cli_requires_explicit_compatible_transport_and_private_files(tm
     secret.chmod(0o644)
     assert archive.main(args) == 1
     assert calls == []
-
-
-def test_retention_workflow_has_no_aws_account_binding_or_implicit_endpoint():
-    text = (Path(__file__).parents[1] / ".github/workflows/release-evidence-retention.yml").read_text()
-    assert "BLUEPRINT_RELEASE_EVIDENCE_AWS_" not in text
-    assert "AWS_ACCESS_KEY_ID:" not in text
-    assert "AWS_SESSION_TOKEN:" not in text
-    for argument in ("--endpoint-url", "--access-key-file", "--secret-key-file"):
-        assert argument in text
-    assert "s3_compatible_archive_configuration_unavailable" in text
-    assert "require_compatible_endpoint" in text

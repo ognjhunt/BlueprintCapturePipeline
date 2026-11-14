@@ -94,8 +94,8 @@ def tick(*, state_root: Path, capture_store_root: Path, now: Callable[[], float]
 
 def _roots_from_environment() -> tuple[Path, Path] | None:
     from .capture_upload_intake import CAPTURE_UPLOAD_STORE_ROOT_ENV
-    from .live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
-    from .live_pipeline_intake_runtime_controls import DEFAULT_MANIFEST_PATH, INTAKE_WORK_DIR_ENV
+    from .live_pipeline_intake_runtime_controls import (
+        CONTROL_PLANE_OUTPUT_PATH_ENV, DEFAULT_MANIFEST_PATH, INTAKE_WORK_DIR_ENV)
     capture_store = os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV, "").strip()
     manifest = Path(os.getenv(CONTROL_PLANE_OUTPUT_PATH_ENV) or DEFAULT_MANIFEST_PATH).expanduser()
     if not capture_store or not manifest.is_file():

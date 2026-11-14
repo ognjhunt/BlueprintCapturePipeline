@@ -532,7 +532,9 @@ def provider_state_from_inspect(inspect_result: Mapping[str, Any]) -> dict[str, 
 def _default_provider_client(provider: str):
     from .gpu_render_providers import get_render_provider
 
-    return get_render_provider(provider)
+    # A pending-teardown record that names no provider was written when RunPod was the only
+    # one. Teardown must still reach it; only a launch requires an explicit provider name.
+    return get_render_provider(provider or "runpod")
 
 
 @_serialized_pending_update

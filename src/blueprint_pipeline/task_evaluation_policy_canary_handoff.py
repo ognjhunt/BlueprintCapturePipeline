@@ -83,21 +83,19 @@ NOTIFY_ON = ("completed", "blocked", "cancelled")
 EPISODE_INTERPRETATION = dict(scene_policy.INTERPRETATION_DEFAULT)
 MANIFESTS = {
     "policy_controller_template": (
-        "docs/arm_decision_proof_v1/manifests/"
-        "scene839873_policy_canary_controller_configuration.v1.json"
+        "config/trial/scene839873_policy_canary_controller_configuration.v1.json"
     ),
     "native_controller_configuration": (
-        "docs/arm_decision_proof_v1/manifests/"
-        "scene839873_policy_canary_native_controller_configuration.v1.json"
+        "config/trial/scene839873_policy_canary_native_controller_configuration.v1.json"
     ),
     "model_rights_template": (
-        "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_model_rights.v1.json"
+        "config/trial/scene839873_policy_canary_model_rights.v1.json"
     ),
     "historical_policy_readiness": (
-        "docs/arm_decision_proof_v1/manifests/adp009d_scene_840920_policy_readiness.v1.json"
+        "config/trial/adp009d_scene_840920_policy_readiness.v1.json"
     ),
     "pi05_checkpoint_inventory": (
-        "docs/experiments/policy_ranking_thesis_20260726/openpi_polaris_checkpoint_inventory.json"
+        "config/trial/openpi_polaris_checkpoint_inventory.json"
     ),
 }
 _STAGES = ("canary_presubmitted", "canary_profile_published", "canary_launch_submitted")

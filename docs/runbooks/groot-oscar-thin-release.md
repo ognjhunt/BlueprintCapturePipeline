@@ -97,7 +97,7 @@ launch-time recheck.
 
 ## 1. Build the stable foundation
 
-The build plane is not the RunPod serve plane. A normal RunPod Pod is not an
+The build plane is not the GPU serve plane. A rented GPU pod is not an
 approved Docker builder: its container-disk ceiling, volume semantics, and
 privilege model do not satisfy this build. Use a verified native linux/amd64
 Docker host with at least 120 GiB free, `docker buildx`, file-based registry
@@ -146,99 +146,6 @@ Mount the provider volume at `/models`. Preparation is asynchronous and may
 use the network and a file-based Hugging Face token. Customer requests may not
 run this step.
 
-For RunPod, use the canonical guarded allocator rather than creating or
-populating a volume in the console:
-
-```bash
-python -m blueprint_pipeline.paid_resource_allocator model-volume \
-  --output-dir <evidence-dir> \
-  --data-center-id '<capacity-verified-dc>' \
-  --volume-size-gib 50 \
-  --storage-hourly-rate-usd '<provider-verified-rate>' \
-  --storage-ttl-seconds 14400 \
-  --max-storage-spend-usd 0.05 \
-  --builder-evidence <digitalocean-builder-evidence.json> \
-  --builder-spend <digitalocean-builder-spend.json> \
-  --login-private-key <digitalocean-login-private-key> \
-  --host-private-key <pinned-builder-host-private-key> \
-  --ssh-key-id <digitalocean-ssh-key-id> \
-  --allow-paid
-```
-
-For the bounded persistent carrier lane, the same allocator can populate the
-verified model cache and an allowlisted runtime archive onto one fresh 120 GiB
-volume without allocating a GPU. Both images must be immutable digest refs.
-The source release supplies the exact `/opt` runtime roots. The separately
-deployable RunPod carrier includes the compatible CUDA 12.6/TensorRT and
-Isaac system-link surface, but it does not contain the Blueprint runtime roots
-or model cache:
-
-```bash
-python -m blueprint_pipeline.paid_resource_allocator model-volume \
-  --output-dir <persistent-volume-evidence-dir> \
-  --data-center-id '<capacity-verified-s3-dc>' \
-  --volume-size-gib 120 \
-  --runtime-source-release-image-ref '<release>@sha256:<digest>' \
-  --runtime-source-release-evidence <groot_oscar_thin_remote_build_result.json> \
-  --carrier-image-ref 'docker.io/nijelhunt/blueprint-groot-oscar-carrier@sha256:71eb4a0a6bf8fefd13520dc6fb6af420de2580b8701eeddce0e073abcd989fe9' \
-  --storage-hourly-rate-usd '<provider-verified-rate>' \
-  --storage-ttl-seconds 28800 \
-  --max-storage-spend-usd '<bounded-eight-hour-volume-cost>' \
-  --builder-evidence <digitalocean-builder-evidence.json> \
-  --builder-spend <digitalocean-builder-spend.json> \
-  --login-private-key <digitalocean-login-private-key> \
-  --host-private-key <pinned-builder-host-private-key> \
-  --ssh-key-id <digitalocean-ssh-key-id> \
-  --allow-paid
-```
-
-Runtime-bearing volumes require at least eight hours of bounded retention and
-must also cover the builder TTL, transfer margin, and the 18,600-second GPU
-watchdog. Before any detached supervisor or provider mutation, the allocator
-requires the completed thin-release build result to bind the exact source
-digest, Linux/amd64 platform, CUDA 12.8 contract, externalized-model claim, and
-thin release delta. A sealed or mismatched image ref is rejected at the CLI or
-pre-allocation evidence gate. The allocator pulls both images on the admitted CPU builder, records
-their resolved repo digests, copies only the declared runtime roots from the
-source release, rejects unsafe archive members, uploads the runtime archive and
-manifest beside the model cache through RunPod S3, fully redownload-verifies all
-bytes, and emits `carrier_volume_admission.json`. The GPU lane will not accept a
-plain model-cache result in place of this combined admission.
-
-Before upload, the CPU builder scans every ELF file across all declared runtime
-roots for unresolved linkage inside the exact carrier. It also runs GR00T,
-OSCAR, Isaac, and serverless import matrices and records every failed check in
-one compatibility audit instead of stopping at the first missing dependency.
-The same exhaustive scan first records the unresolved-linkage baseline as root
-inside the exact digest-pinned source release, matching the root-owned archive
-extraction and carrier validation. An unresolved dependency may remain in
-the extracted carrier only when the exact source release already shipped that
-same unresolved name; this inherited baseline is recorded separately and does
-not prove the optional component usable. Any carrier-introduced dependency gap
-still blocks, and all required import and executable checks remain mandatory.
-NVIDIA host-driver SONAMEs such as `libcuda.so.1` are the only deferred linkage
-class. The CPU audit records their exact names and, when `ldd` supplied an
-absolute path under an allowlisted system-driver root, the normalized exact
-path in the runtime manifest. The GPU bootstrap must load every recorded name
-and exact path through driver injection before policy or simulator code can
-run. CUDA runtime, TensorRT, graphics-loader, and other carrier-owned libraries
-are not covered by that exception.
-These checks do not prove a CUDA driver, Isaac rendering, policy execution, or
-semantic task success.
-
-Use the current provider-confirmed total hourly price for the selected volume
-as `--storage-hourly-rate-usd`; the allocator rejects a TTL whose maximum cost
-exceeds `--max-storage-spend-usd`. The admitted builder evidence and spend
-files bind this operation to the one authorized DigitalOcean CPU builder.
-
-It arms an independent name-scoped watchdog before creating anything, creates
-one storage-only RunPod volume and no GPU Pod, prepares and fully hashes the
-pinned allowlist on the admitted DigitalOcean CPU builder, uploads and
-redownload-verifies it through RunPod S3, and emits the verified volume ID for
-the GPU canary while the original deadline watchdog remains responsible for
-the volume. On failure it deletes the volume too. Hugging Face and RunPod S3
-credentials remain file-backed and raw secret values are never persisted.
-
 The second command in the script re-reads and hashes every model byte under
 `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. Preserve the emitted
 `manifest_digest` as part of worker readiness evidence. File presence, total
@@ -249,27 +156,8 @@ then atomically replaces the active cache. A failed or interrupted preparation
 leaves the previous cache in place; customer-serving workers never consume a
 partially downloaded replacement.
 
-RunPod exposes its network volume at `/workspace`, so prepare the same cache at
-`/workspace/.blueprint-model-cache/blueprint-groot-oscar-v1` and set the
-provider request cache path `groot_oscar_models` to that exact directory. VM
-providers mount the host cache root `/var/lib/blueprint/models` read-only at
+VM providers mount the host cache root `/var/lib/blueprint/models` read-only at
 `/models`; cloud-init refuses to start the thin worker if its manifest is absent.
-The RunPod readiness artifact must be produced while that exact volume is
-mounted, and must bind both its provider ID and mounted cache root:
-
-```bash
-python -m blueprint_pipeline.groot_oscar_model_cache verify \
-  --root /workspace/.blueprint-model-cache/blueprint-groot-oscar-v1 \
-  --provider-volume-id '<existing-volume-id>' \
-  --out model-cache-verification.json
-```
-
-The canary admission rejects verification from a different volume or path.
-It also rejects a provider volume whose reported capacity is smaller than the
-cache's byte total established by full offline file verification.
-It also injects the admitted `model_manifest_digest` into the container as
-`BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST`; the thin entrypoint
-compares that exact digest before worker code starts.
 
 ## 3. Build the thin release
 
@@ -315,160 +203,7 @@ This is the 30 GiB target gate. Registry-compressed image bytes cannot be
 substituted for local Docker image size, and unhashed model-directory sizes
 cannot be substituted for the verified model-cache total.
 
-## 4. RunPod canary preflight and admission
-
-RunPod is the GPU serve/canary plane only. Before a create call, start the
-name-bound watchdog in a separate process and wait until its evidence says
-`armed`. It enumerates and deletes every matching canary resource at the hard
-deadline, so even an ambiguous create response cannot orphan spend:
-
-```bash
-deadline="$(( $(date +%s) + 480 ))"
-python -m blueprint_pipeline.groot_oscar_runpod_watchdog \
-  --out-dir <canary-dir> \
-  --pod-name-prefix blueprint-groot-oscar-canary-<attempt> \
-  --deadline-epoch "$deadline" &
-```
-
-Then run the read-only provider preflight with the same name prefix:
-
-```bash
-python -m blueprint_pipeline.groot_oscar_runpod_preflight \
-  --network-volume-id '<existing-volume-id>' \
-  --model-cache-path /workspace/.blueprint-model-cache/blueprint-groot-oscar-v1 \
-  --gpu-type-id 'NVIDIA A40' \
-  --required-cuda-version 12.8 \
-  --name-prefix blueprint-groot-oscar-canary-<attempt> \
-  --watchdog-evidence <canary-dir>/groot_oscar_runpod_canary_watchdog.json \
-  --model-volume-watchdog-handoff <model-volume-dir>/watchdog_handoff.json \
-  --max-spend-usd 1.00 \
-  --paid-mutation-authorized \
-  --out <canary-dir>/runpod_preflight.json
-```
-
-The command makes only read-only calls. It requires RunPod's exact network
-volume response (ID, size, and datacenter), a one-GPU stock row with an hourly
-rate, provider-confirmed account-global zero billable resources, and a live independent
-watchdog whose deadline is already counting down. It binds the canary create
-request to the volume datacenter through `dataCenterIds` and to the image CUDA
-family through `allowedCudaVersions`. The stock and price query itself is
-filtered by both that exact volume datacenter and the release's required CUDA
-version; global stock or stock on an incompatible CUDA host cannot satisfy
-admission. Unknown stock, a missing volume, a
-datacenter mismatch, an unverified cache, a tag instead of a digest, an absent
-rate, a TTL above 30 minutes, a TTL whose maximum cost exceeds the cap, or an
-unarmed watchdog all reject before allocation. A release/source mismatch, a
-preflight observation older than five minutes, or a missing/non-`0600` HTTPS
-signed output URL file also rejects before the provider adapter is reachable.
-The allocator derives `HEAD` from its own source checkout, requires it to equal
-`--expected-source-commit`, local `origin/main`, and the live remote `main`, and
-rejects tracked worktree changes. A PR branch or stale remote-tracking ref
-therefore cannot allocate before protected-main merge.
-
-Run the admission/launcher first without `--execute` to inspect the exact bound
-request. Add `--execute` only for the single authorized canary; the generic
-adapter remains behind its separate `BLUEPRINT_ALLOW_RUNPOD_API_CALLS=true`
-gate:
-
-```bash
-python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
-  --provider-launch-request <provider-launch-request.json> \
-  --release-evidence <groot_oscar_thin_remote_build_result.json> \
-  --model-cache-evidence <model-cache-verification.json> \
-  --preflight-bundle <canary-dir>/runpod_preflight.json \
-  --expected-source-commit "$(git rev-parse HEAD)" \
-  --provider-output-put-url-file <private-runtime-output-put-url.txt> \
-  --admission-out <canary-dir>/runpod_admission.json \
-  --bound-request-out <canary-dir>/bound_provider_request.json \
-  --adapter-output <canary-dir>/runpod_adapter_result.json \
-  --pod-name blueprint-groot-oscar-canary-<attempt> \
-  --probe-kind strict-policy-smoke \
-  --campaign-budget-ledger <durable-campaign-budget.json> \
-  --campaign-initial-spent-usd 14.557003 \
-  --campaign-initial-used-gpu-seconds 15624 \
-  --campaign-total-spend-cap-usd 20.00 \
-  --campaign-wall-cap-seconds 21000 \
-  --campaign-reservation-seconds 480 \
-  --future-campaign-allowance-seconds 3500 \
-  --authorize-reduced-canary-timeout \
-  --campaign-max-hourly-rate-usd '<capacity-verified-rate-at-or-below-3.50>'
-```
-
-The `14.557003` USD and `15624` GPU-second values are the latest conservative
-reconciled campaign baselines, not a fresh allowance. The USD baseline includes
-the latest cache builder's measured cost and the retained volume's full bounded
-pre-handoff exposure. The strict policy probe
-reserves at most 480 GPU-seconds while preserving a separately bounded
-3,500-second future campaign allowance; the combined remaining plan is 3,980
-seconds against the authorized 21,000-second cumulative campaign ceiling. The
-strict work/startup deadline is 420 seconds and the independent watchdog is 480
-seconds, preserving 60 seconds for teardown and control-plane closure. The
-explicit reduced-timeout flag records the operator's authorization for this
-staged plan; 21,000 cumulative seconds is not permission for a single
-cap-sized job.
-After inspecting the dry-run evidence, rerun this exact command with
-`--execute`; omitting any ledger identity/rate or staged-plan authorization
-argument fails before provider mutation.
-
-After startup-only evidence passes, the same canonical command may run the
-fixed learned-action probe by adding `--probe-kind strict-policy-smoke`. That
-mode ignores request-supplied commands, hard-bounds the probe to three fresh
-GR00T/SONIC actions, and retains the same budget, handoff, pending-teardown, and
-watchdog contracts. Its PASS is policy-model execution evidence only, not Isaac
-task success or authority to run general paid episodes.
-
-For the exact persistent carrier campaign, arm a fresh 18,600-second watchdog
-and generate a fresh read-only preflight using the carrier volume's ID,
-datacenter, handoff, and the same pod-name prefix. Then inspect this allocator
-command without `--execute` before authorizing the one paid run:
-
-```bash
-python -m blueprint_pipeline.paid_resource_allocator gpu-canary \
-  --probe-kind persistent-policy-wam-loop \
-  --provider-launch-request <provider-launch-request.json> \
-  --release-evidence <groot_oscar_thin_remote_build_result.json> \
-  --model-cache-evidence <model-cache-verification.json> \
-  --carrier-volume-admission <persistent-volume-evidence-dir>/carrier_volume_admission.json \
-  --preflight-bundle <persistent-canary-dir>/runpod_preflight.json \
-  --expected-source-commit "$(git rev-parse HEAD)" \
-  --policy-observation <fresh-policy-observation.json> \
-  --persistent-job-dir <persistent-canary-dir>/job \
-  --admission-out <persistent-canary-dir>/runpod_admission.json \
-  --bound-request-out <persistent-canary-dir>/bound_provider_request.json \
-  --adapter-output <persistent-canary-dir>/persistent_carrier_result.json \
-  --pod-name blueprint-groot-oscar-canary-persistent-<attempt> \
-  --campaign-budget-ledger <durable-campaign-budget.json> \
-  --campaign-initial-spent-usd '<current-reconciled-spend>' \
-  --campaign-initial-used-gpu-seconds '<current-reconciled-gpu-seconds>' \
-  --campaign-total-spend-cap-usd 20.00 \
-  --campaign-wall-cap-seconds 36000 \
-  --campaign-max-hourly-rate-usd '<capacity-verified-non-h100-rate>'
-```
-
-After the dry-run admission and bound request are reviewed, rerun the exact
-command with `--authorize-persistent-carrier-campaign --execute`. This lane
-rejects H100, binds a 240 GiB container disk and the exact 120 GiB volume, and
-reserves one 18,600-second watchdog window against the unchanged USD 20 total
-cap. Completion requires one Pod to produce exactly five fresh policy calls,
-four learned WAM generations, five distinct actions, no replay or resume, and
-21 media files, followed by verified GPU teardown and provider-lane return.
-Those facts prove the technical loop only; semantic task success, physical
-robot readiness, and generated-world rank fidelity remain separate claims.
-
-The launcher refuses to rewrite a tag into an admitted digest or silently pick
-another GPU. On live submission, before the provider adapter is reachable, it
-reruns every mutable read-only check and writes
-`runpod_preflight_launch_refresh.json`. This refresh revalidates the volume,
-datacenter/CUDA-filtered capacity, account-global zero billable resources, and the live
-watchdog process with its remaining deadline. The watchdog PID is accepted only
-when its live process argv (Linux `/proc` or the fail-closed macOS `ps -ww`
-fallback) is the canonical name-bound watchdog with the
-exact admitted pod prefix and deadline; any changed, forged, or expired evidence
-rejects without a create call. It then records `warm_serve_pod.json` beside the
-watchdog evidence so the independent watchdog can terminate the exact pod and
-prove inventory absence at its hard deadline.
-
-## 5. Warm-worker admission
+## 4. Warm-worker admission
 
 Start the release with the already-populated volume mounted at
 `/models/blueprint-groot-oscar-v1`. The entrypoint fails before worker code if

@@ -39,14 +39,3 @@ def test_reference_selection_requires_current_installed_queue_pin_and_run_roots(
         _reference_settings(_SourceFiles(unit.replace(b"BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS", b"OTHER"), b""), config)
     with pytest.raises(LegacyOwnerError, match="legacy_owner_references_incomplete"):
         _reference_settings(_SourceFiles(unit, b"BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS=relative\n"), config)
-
-
-def test_installer_provisions_only_external_root_owned_registry():
-    source = (Path(__file__).resolve().parents[1] / "deploy/operator-door/install.sh").read_text()
-    block = source.split("# LEGACY OWNER REVIEW PROVISIONING BEGIN", 1)[1].split(
-        "# LEGACY OWNER REVIEW PROVISIONING END", 1)[0]
-    assert 'legacy_owner_store="$state_root/requests/legacy-owner-registrations"' in block
-    assert "install -d -o root -g root -m 0700" in block
-    assert 'legacy_owner_lock="$legacy_owner_store/.legacy-owner.lock"' in block
-    assert "legacy_owner_provisioning_unsafe" in block
-    assert "rm -" not in block and "chown -R" not in block

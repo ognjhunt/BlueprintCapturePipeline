@@ -9,7 +9,6 @@ import pytest
 
 from blueprint_pipeline import industrial_ontology, local_capture, model_access_env
 from blueprint_pipeline import wam_vision_success_judge
-from blueprint_pipeline.agent_runtime import artifacts, contracts
 from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.synthesis import plucker_rays
 
@@ -127,70 +126,6 @@ def test_local_capture_error_branches_and_root_layout(tmp_path: Path) -> None:
     assert context.bucket == "/"
     assert context.capture_prefix == "scenes/scene-1/captures/capture-1"
     assert context.descriptor_uri == "gs:////scenes/scene-1/captures/capture-1/capture_descriptor.json"
-
-
-def test_agent_runtime_contract_and_artifact_helpers(tmp_path: Path) -> None:
-    context = local_capture.LocalCaptureContext(
-        capture_root=tmp_path / "capture",
-        raw_root=tmp_path / "capture" / "raw",
-        pipeline_root=tmp_path / "capture" / "pipeline",
-        descriptor_path=tmp_path / "capture" / "capture_descriptor.json",
-        raw_complete_path=tmp_path / "capture" / "raw" / "capture_upload_complete.json",
-        storage_root=tmp_path,
-        bucket="bucket",
-        scene_id="scene",
-        capture_id="capture",
-    )
-    bundle = artifacts.PipelineReviewArtifacts(
-        context=context,
-        descriptor=types.SimpleNamespace(),
-        qa_report={},
-        site_intake={},
-        capture_package_manifest={},
-        capture_qa_scorecard={},
-        task_scope_record={},
-        qualification_record={},
-        qualification_brief={},
-        scene_graph={},
-        route_graph={},
-        geometry_evidence={},
-        supplemental_geometry=[],
-        capability_checks={},
-        blocker_register={},
-        readiness_decision={},
-        readiness_report="",
-        opportunity_handoff={},
-        human_actions_required={},
-        task_hypothesis_report={},
-        normalized_task_hypothesis={},
-    )
-    assert bundle.pipeline_dir == context.pipeline_root
-    with pytest.raises(PipelineError, match="Missing required pipeline artifact"):
-        artifacts._read_required_json(tmp_path / "missing.json", "missing")
-
-    output = contracts.ReviewOutputFile(name="memo", path="memo.md")
-    step = contracts.ReviewStepResult(
-        skill_name="skill",
-        output_path="out.json",
-        source="fixture",
-        provider_metadata={"model": "fake"},
-    )
-    review = contracts.AgentReviewBundle(
-        scene_id="scene",
-        capture_id="capture",
-        provider="openai",
-        readiness_state="review_required",
-        final_memo_path="memo.md",
-        final_bundle_path="bundle.json",
-        human_actions_required_path="actions.json",
-        outputs=[output],
-        steps=[step],
-        runtime={"provider": "fixture"},
-    ).to_dict()
-    assert review["outputs"] == [{"name": "memo", "path": "memo.md"}]
-    assert review["steps"][0]["provider_metadata"] == {"model": "fake"}
-    assert contracts.ensure_mapping({"a": 1}) == {"a": 1}
-    assert contracts.ensure_mapping(None) == {}
 
 
 def test_plucker_tensor_and_zero_moment_normalization(monkeypatch) -> None:  # type: ignore[no-untyped-def]

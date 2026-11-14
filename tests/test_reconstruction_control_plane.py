@@ -17,7 +17,7 @@ from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.capture_intake import validate_capture_intake_envelope
 from blueprint_pipeline.capture_upload_intake import process_capture_upload_submission
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
+from blueprint_pipeline.live_pipeline_intake_runtime_controls import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.local_reconstruction_adapters import (
     LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
     LOCAL_DECODED_OBSERVATION_ADAPTER,

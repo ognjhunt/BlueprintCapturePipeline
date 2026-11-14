@@ -103,8 +103,10 @@ def test_the_capability_verdict_and_fit_table_read_a_text_room_once(tmp_path, mo
         text_only.setattr(cache, "LAZY_COPY_BYTES", NEVER)
         parsed = collider_reads(text_only, room)
         from_text = run("text")
-    # Each search opened the file afresh: three whole-text parses of a 292 MB room, 3.6 GB each.
-    assert parsed["openusd"] == ["ground_stance", "collision_kept_loaded", "ground_stance"]
+    # Each search opened the file afresh: four whole-text parses of a 292 MB room, 3.6 GB each
+    # (the verdict's stance and carry searches, the table's station search, and the table's floor
+    # search added on 2026-11-12).
+    assert parsed["openusd"] == ["ground_stance", "collision_kept_loaded", "ground_stance", "ground_stance"]
     reads = collider_reads(monkeypatch, room)
     from_copy = run("copy")
     assert reads == {"openusd": [], "numpy": ["binary_copy"]}

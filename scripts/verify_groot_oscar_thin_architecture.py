@@ -23,7 +23,6 @@ HEALTHCHECK = IMAGE_ROOT / "groot_oscar_closed_loop_image_healthcheck.py"
 ENTRYPOINT = IMAGE_ROOT / "thin_release_entrypoint.sh"
 MODEL_CACHE = ROOT / "src/blueprint_pipeline/groot_oscar_model_cache.py"
 ADMISSION = ROOT / "src/blueprint_pipeline/groot_oscar_infrastructure_admission.py"
-CANARY = ROOT / "src/blueprint_pipeline/groot_oscar_runpod_canary.py"
 
 
 def _assigned_literal(module: Path, name: str) -> object:
@@ -186,7 +185,6 @@ def verify() -> list[str]:
         blockers.append("thin_release_model_manifest_digest_not_enforced")
 
     admission = ADMISSION.read_text(encoding="utf-8")
-    canary = CANARY.read_text(encoding="utf-8")
     for fragment in (
         "runpod_model_cache_verification_path_mismatch",
         "runpod_model_cache_verification_volume_mismatch",
@@ -196,14 +194,6 @@ def verify() -> list[str]:
     ):
         if fragment not in admission:
             blockers.append(f"runpod_model_cache_admission_binding_missing:{fragment}")
-    for fragment in (
-        "groot_oscar_models",
-        "BLUEPRINT_GROOT_OSCAR_EXPECTED_MODEL_MANIFEST_DIGEST",
-        "refresh_runpod_preflight",
-        "runpod_preflight_launch_refresh.json",
-    ):
-        if fragment not in canary:
-            blockers.append(f"runpod_bound_request_model_cache_binding_missing:{fragment}")
 
     try:
         schema = _assigned_literal(MODEL_CACHE, "SCHEMA_VERSION")

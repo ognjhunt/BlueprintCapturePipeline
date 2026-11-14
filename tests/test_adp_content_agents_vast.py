@@ -57,7 +57,7 @@ from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_outp
 ROOT = Path(__file__).resolve().parents[1]
 TASK_A_FREEZE = (
     ROOT
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+    / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
 AGENT_CAD_CONTENT_BUNDLE_MATRIX = (
     ROOT
@@ -682,7 +682,7 @@ def test_match_v2_variant_rejects_changed_approved_snapshot(tmp_path: Path) -> N
 
 
 def test_match_v2_configs_remove_unproven_aluminum_assertion(tmp_path: Path) -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         "material_agent.yaml": assets / "adp009a_content_agents_material.vast.yaml",
         "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
@@ -2117,111 +2117,6 @@ def test_agent_cad_variant_rejects_changed_projection_usd(
         )
 
 
-def test_checked_in_agent_cad_content_agents_bundle_matrix_is_claim_bounded() -> None:
-    manifest = json.loads(AGENT_CAD_CONTENT_BUNDLE_MATRIX.read_text(encoding="utf-8"))
-
-    assert manifest["receipt_digest"] == canonical_digest(
-        manifest, digest_field="receipt_digest"
-    )
-    assert manifest["schema_version"] == (
-        "third_scene_agent_cad_content_agents_bundle_matrix.v1"
-    )
-    assert manifest["replacement_object_capacity"] == {
-        "minimum": 1,
-        "maximum": 5,
-        "sealed_slots": 2,
-    }
-    assert manifest["candidate_count"] == 4
-    assert {
-        (row["replacement_slot"], row["cad_agent_backend_id"])
-        for row in manifest["items"]
-    } == {
-        (1, "earthtojake_text_to_cad"),
-        (1, "pan_chera_multi_agent_cad"),
-        (2, "earthtojake_text_to_cad"),
-        (2, "pan_chera_multi_agent_cad"),
-    }
-    assert {row["mesh_count"] for row in manifest["items"]} == {15, 40, 79, 135}
-    assert all(
-        row["exact_bundle_entrypoint_rehearsal_status"] == "passed"
-        and row["blockers"] == []
-        and row["agent_output_is_simready_authority"] is False
-        and row["canonical_simready_construction_unresolved"] is True
-        for row in manifest["items"]
-    )
-    assert manifest["claim_boundary"] == {
-        "content_agents_bundles_built": True,
-        "exact_entrypoint_rehearsed": True,
-        "content_agents_executed": False,
-        "simready_qualified": False,
-        "native_simulator_import_qualified": False,
-        "physical_equivalence": False,
-    }
-
-
-def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = _fake_source(tmp_path, monkeypatch)
-    reference = _reference_image(tmp_path, monkeypatch)
-    first = content_agents.build_content_agents_vast_bundle(
-        repo_root=ROOT,
-        content_agents_root=source,
-        reference_image_path=reference,
-        job_dir=tmp_path / "first",
-        generated_at="fixed",
-        historical_replay_only=True,
-    )
-    second = content_agents.build_content_agents_vast_bundle(
-        repo_root=ROOT,
-        content_agents_root=source,
-        reference_image_path=reference,
-        job_dir=tmp_path / "second",
-        generated_at="fixed",
-        historical_replay_only=True,
-    )
-
-    assert first["blockers"] == []
-    assert first["status"] == "ready"
-    assert first["bundle_sha256"] == second["bundle_sha256"]
-    assert first["container_image"] == content_agents.DEFAULT_IMAGE
-    assert first["input_usd_normalization"]["default_purpose_bbox_nonempty"] is True
-    assert (
-        first["input_usd_normalization"]["source_input_usd_sha256"]
-        != first["input_usd_sha256"]
-    )
-    assert first["remote_config_contract_validated"] is True
-    assert first["retry_cap"] == 0
-    assert first["execution_role"] == "optional_construction_enrichment"
-    assert first["failure_blocks_native_simulator_qualification"] is False
-    assert first["agent_output_is_simready_authority"] is False
-    assert first["runtime_input_binding"]["relative_path"] == (
-        "input/source_asset.usda"
-    )
-    assert first["joint_agent_plan"] == {
-        "planned": False,
-        "executed_by_content_agents_bundle": False,
-        "reason": "single_rigid_body_has_no_articulation_task",
-        "input_variant": "control_v1",
-        "input_joint_count": 0,
-        "input_rigid_body_count": 1,
-        "input_articulation_root_count": 0,
-        "joint_agent_inapplicable_single_rigid_body": True,
-    }
-    preflight = _blueprint_bundle_preflight(
-        job_dir=tmp_path / "preflight",
-        generated_at="fixed",
-        enable_blueprint_bundle=True,
-        enable_isaac_smoke=False,
-        provider_bundle_kind="adp_content_agents",
-        bundle_path=Path(first["bundle_path"]),
-        provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
-        provider_output_put_url="https://example.com/output.zip?signature=redacted",
-    )
-    assert preflight["status"] == "passed"
-    assert preflight["blockers"] == []
-
-
 def test_bundle_rejects_changed_reference_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2264,7 +2159,7 @@ def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
     after: str,
 ) -> None:
     source = _fake_source(tmp_path, monkeypatch)
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     config_sources = {}
     for name in ("material_agent.yaml", "texture_agent.yaml", "physics_agent.yaml"):
         source_name = "adp009a_content_agents_" + name.removesuffix("_agent.yaml") + ".vast.yaml"
@@ -2284,7 +2179,7 @@ def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
 
 
 def test_remote_configs_freeze_successor_models_for_both_scene_fixtures() -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     for prefix in ("adp009a_content_agents_", "adp009d_content_agents_articulated_"):
         material = yaml.safe_load((assets / f"{prefix}material.vast.yaml").read_text())
         physics = yaml.safe_load((assets / f"{prefix}physics.vast.yaml").read_text())
@@ -4062,7 +3957,7 @@ def test_articulated_variant_rejects_unadmitted_candidate(tmp_path: Path) -> Non
 def test_articulated_configs_preserve_articulation() -> None:
     """No SimReady pass may re-derive geometry or rebuild the articulation."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     for name in ("material", "texture", "physics"):
         text = (
             assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
@@ -4084,7 +3979,7 @@ def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
 ) -> None:
     """Scene-specific config inputs are normalized at the reusable seam."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets
         / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
@@ -4107,7 +4002,7 @@ def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
 def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) -> None:
     """A movable scene replacement must not reach PhysX as a triangle mesh."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
         for agent in ("material", "texture", "physics")
@@ -4133,7 +4028,7 @@ def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) ->
 
 def test_scene_configuration_forwards_object_identity_and_image_conditioning(tmp_path: Path) -> None:
     """The image generator consumes texture.reference_image_uris, not input references."""
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
         for agent in ("material", "texture", "physics")
@@ -4162,7 +4057,7 @@ def test_scene_configuration_forwards_object_identity_and_image_conditioning(tmp
 def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
     tmp_path: Path,
 ) -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets
         / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
@@ -4181,7 +4076,7 @@ def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
 
 
 def _articulated_runtime_configs(tmp_path: Path) -> dict:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     destination = tmp_path / "configs"
     destination.mkdir()
     sources = {
@@ -4560,18 +4455,6 @@ def test_local_preflight_image_admission_is_recipe_bound(monkeypatch) -> None:
         bundle_preflight._inspect_image(docker="docker", image="stray")
 
 
-def test_local_preflight_image_recipe_matches_checked_in_dockerfile() -> None:
-    dockerfile = (
-        ROOT
-        / "docs/arm_decision_proof_v1/assets"
-        / "adp009a_usd_content_agents_linux_arm64.Dockerfile"
-    )
-    observed = "sha256:" + hashlib.sha256(dockerfile.read_bytes()).hexdigest()
-    for recipe in bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS.values():
-        assert recipe["dockerfile_sha256"] == observed
-        assert recipe["content_agents_source_tree"] == content_agents.SOURCE_TREE
-
-
 def test_usd_bbox_probe_script_is_derived_from_the_bundle_input() -> None:
     script = bundle_preflight.usd_bbox_script(
         "adp009d_840796_articulated_refrigerator_candidate.usda"
@@ -4749,7 +4632,7 @@ def test_articulated_agent_configs_describe_the_articulated_object() -> None:
     answering the question it was given.
     """
 
-    assets = ROOT / "docs/arm_decision_proof_v1/assets"
+    assets = ROOT / "config" / "content_agents"
     foreign = ("beverage", "canned", "green can", "soda")
     for name in ("material", "texture", "physics"):
         text = (
@@ -4766,7 +4649,7 @@ def test_articulated_texture_config_targets_a_real_render_material() -> None:
 
     text = (
         ROOT
-        / "docs/arm_decision_proof_v1/assets"
+        / "config/content_agents"
         / "adp009d_content_agents_articulated_texture.vast.yaml"
     ).read_text(encoding="utf-8")
 

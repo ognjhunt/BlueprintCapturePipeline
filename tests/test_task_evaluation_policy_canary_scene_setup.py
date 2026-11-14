@@ -323,9 +323,9 @@ def _kwargs(tmp_path: Path) -> dict:
         "packet_receipt_path": inputs["packet"],
         "runtime_source_receipt_path": inputs["runtime"],
         "historical_policy_readiness_path": root
-        / "docs/arm_decision_proof_v1/manifests/adp009d_scene_840920_policy_readiness.v1.json",
+        / "config/trial/adp009d_scene_840920_policy_readiness.v1.json",
         "pi05_checkpoint_inventory_path": root
-        / "docs/experiments/policy_ranking_thesis_20260726/openpi_polaris_checkpoint_inventory.json",
+        / "config/trial/openpi_polaris_checkpoint_inventory.json",
         "activation_release_window_template": activation_ref("release-window-template", "1"),
         "activation_lineage": {
             "kind": "predecessor",
@@ -859,13 +859,13 @@ def test_controller_and_rights_source_artifacts_are_exact_and_self_digesting(tmp
     controller = json.loads(
         (
             root
-            / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_controller_configuration.v1.json"
+            / "config/trial/scene839873_policy_canary_controller_configuration.v1.json"
         ).read_text(encoding="utf-8")
     )
     rights = json.loads(
         (
             root
-            / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_model_rights.v1.json"
+            / "config/trial/scene839873_policy_canary_model_rights.v1.json"
         ).read_text(encoding="utf-8")
     )
     assert controller["configuration_digest"] == canonical_digest(
@@ -897,7 +897,7 @@ def test_controller_and_rights_source_artifacts_are_exact_and_self_digesting(tmp
     # The historical Scene839873 document is preserved. Current adapter bytes
     # belong in a new exact-commit binding, not retroactively in old evidence.
     current = materialize_policy_canary_model_rights(
-        template_path=root / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_model_rights.v1.json",
+        template_path=root / "config/trial/scene839873_policy_canary_model_rights.v1.json",
         repo_root=root, source_commit=source_commit, scene_id="841757", task_id="scene-841757-book-to-tray",
         output_path=tmp_path / "current-model-rights.json")
     assert current["source_template"]["rights_digest"] == rights["rights_digest"]

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 
@@ -20,7 +19,6 @@ from blueprint_pipeline.policy_ranking_successor_cosmos import (
     validate_droid_camera_metadata,
     validate_droid_action_stream,
     validate_droid_timestamps,
-    validate_smoke_inventory_manifest,
 )
 
 
@@ -250,15 +248,3 @@ def test_artifacts_cannot_escape_successor_namespace(tmp_path: Path) -> None:
     assert validate_artifact_path(root / "report.json", root) == (root / "report.json").resolve()
     with pytest.raises(SuccessorContractError, match="outside"):
         validate_artifact_path(tmp_path / "historical" / "report.json", root)
-
-
-def test_frozen_smoke_inventory_is_complete_and_hash_bound() -> None:
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "docs/experiments/policy_ranking_successor_experiment_20260727/smoke_request_inventory.json"
-    )
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    assert validate_smoke_inventory_manifest(manifest)["request_count"] == 10
-    manifest["requests"][0]["seed"] = 1
-    with pytest.raises(SuccessorContractError, match="invalid"):
-        validate_smoke_inventory_manifest(manifest)

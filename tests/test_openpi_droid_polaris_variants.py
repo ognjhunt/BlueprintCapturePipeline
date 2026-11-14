@@ -39,7 +39,7 @@ from blueprint_pipeline.openpi_droid_policy_runtime import (
 )
 
 COHORT = (Path(__file__).resolve().parents[1]
-          / "docs/experiments/policy_ranking_thesis_20260726/warehouse_policy_cohort_v2_joint_position.json")
+          / "tests/fixtures/experiments/policy_ranking_thesis_20260726/warehouse_policy_cohort_v2_joint_position.json")
 VELOCITY = "openpi_droid_runtime_action_space_unsupported:joint_velocity"
 PREFIX = "openpi_droid_runtime_requires_polaris_checkpoint_prefix"
 NOT_FROZEN = "checkpoint_not_in_frozen_openpi_polaris_inventory"

@@ -40,24 +40,6 @@ from .groot_oscar_infrastructure_admission import (
     build_build_plane_admission,
     build_cpu_build_execution_admission,
 )
-from .groot_oscar_runpod_canary import run_canary
-from .groot_oscar_runpod_persistent_carrier import (
-    PERSISTENT_CARRIER_PROBE_KIND,
-    PERSISTENT_WATCHDOG_MAX_TTL_SECONDS,
-)
-from .groot_oscar_runpod_persistent_carrier_campaign import run_persistent_carrier_campaign
-from .groot_oscar_runpod_serverless import (
-    DEFAULT_MAX_HOURLY_RATE_USD,
-    DEFAULT_RESERVATION_SECONDS,
-    run_active_worker,
-)
-from .groot_oscar_runpod_storage_volume import (
-    launch_detached as launch_detached_model_volume,
-)
-from .groot_oscar_runpod_storage_volume import (
-    retain_verified_model_cache,
-    run_storage_model_volume,
-)
 from .g1_microwave_finetune_provider_job import (
     PROBE_KIND as G1_MICROWAVE_FINETUNE_PROBE_KIND,
     run_finetune_job as run_g1_microwave_finetune_job,
@@ -71,6 +53,8 @@ from .openai_candidate_paid_admission import (
 from .openai_api_geography import OPENAI_API_SUPPORTED_COUNTRY_CODES
 from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    RUNPOD_ONLY_ALLOCATOR_COMMANDS,
+    RUNPOD_RETIRED_BLOCKER,
     PaidResourceAdmissionBlocked,
     PaidResourceAdmissionGrant,
     build_paid_lane_admission,
@@ -411,14 +395,7 @@ CONTROL_PLANE_RELEASE_STATE_ROOT = Path(
 ).expanduser()
 DEPLOY_RELEASE_PROVENANCE_NAME = "deploy-release-provenance.json"
 CPU_BUILD_PREREQUISITE_EVIDENCE = "groot_oscar_live_prerequisites.json"
-MIN_RECONCILED_CAMPAIGN_SPEND_USD = 14.557003
-MIN_RECONCILED_GPU_SECONDS = 15_624
-GPU_CANARY_RESERVATION_SECONDS = 1_200
-STRICT_POLICY_SMOKE_RESERVATION_SECONDS = 480
 FUTURE_CAMPAIGN_ALLOWANCE_SECONDS = 3_500
-COMBINED_GPU_PLAN_SECONDS = GPU_CANARY_RESERVATION_SECONDS + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
-PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS = 36_000
-DETACHED_MODEL_VOLUME_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_MODEL_VOLUME_SUPERVISOR"
 DETACHED_GPU_CANARY_SUPERVISOR_ENV = "BLUEPRINT_DETACHED_GPU_CANARY_SUPERVISOR"
 LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR_ENV = (
     "BLUEPRINT_LAUNCH_DETACHED_GPU_CANARY_SUPERVISOR_DIR"
@@ -1109,16 +1086,13 @@ def _configure_detached_supervisor_signal_policy(command: str) -> bool:
     remain bounded by their independent deadline watchdogs.
     """
 
-    detached_model_volume = (
-        command == "model-volume-run" and os.getenv(DETACHED_MODEL_VOLUME_SUPERVISOR_ENV) == "1"
-    )
     detached_cpu_build = (
         command == "cpu-build-run" and os.getenv(DETACHED_CPU_BUILD_SUPERVISOR_ENV) == "1"
     )
     detached_gpu_canary = (
         command == "gpu-canary" and os.getenv(DETACHED_GPU_CANARY_SUPERVISOR_ENV) == "1"
     )
-    if not (detached_model_volume or detached_cpu_build or detached_gpu_canary):
+    if not (detached_cpu_build or detached_gpu_canary):
         return False
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -1642,7 +1616,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "startup",
             "strict-policy-smoke",
             "persistent-host-bake",
-            PERSISTENT_CARRIER_PROBE_KIND,
+            "persistent-policy-wam-loop",
             SINGLE_KITCHEN_EPISODE_PROBE_KIND,
             SINGLE_KITCHEN_QUALIFICATION_PROBE_KIND,
             G1_MICROWAVE_FINETUNE_PROBE_KIND,
@@ -1686,12 +1660,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         default="strict-policy-smoke",
     )
-    gpu.add_argument("--carrier-volume-admission")
     for option in ("request", "bundle", "job-dir"):
         gpu.add_argument("--embodiment-preparation-" + option)
-    gpu.add_argument("--policy-observation")
-    gpu.add_argument("--persistent-job-dir")
-    gpu.add_argument("--task-prompt")
     gpu.add_argument("--episode-bundle")
     gpu.add_argument("--provider-bundle-url-file")
     gpu.add_argument("--provider-output-put-url-file")
@@ -2050,8 +2020,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=FUTURE_CAMPAIGN_ALLOWANCE_SECONDS,
     )
-    gpu.add_argument("--authorize-reduced-canary-timeout", action="store_true")
-    gpu.add_argument("--authorize-persistent-carrier-campaign", action="store_true")
     gpu.add_argument("--campaign-max-hourly-rate-usd", type=float)
     gpu.add_argument(
         "--digitalocean-token-file",
@@ -2081,86 +2049,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=DIGITALOCEAN_PREBAKE_DEFAULT_VOLUME_GIB,
     )
-    warm = commands.add_parser("gpu-warm-worker")
-    warm.add_argument("--output-dir", required=True)
-    warm.add_argument("--release-evidence", required=True)
-    warm.add_argument("--model-cache-evidence", required=True)
-    warm.add_argument("--watchdog-handoff-evidence", required=True)
-    warm.add_argument(
-        "--runpod-api-key-file",
-        default="~/.blueprint-secrets/runpod_api_key",
-    )
-    warm.add_argument("--resource-name-prefix", required=True)
-    warm.add_argument("--expected-source-commit", required=True)
-    warm.add_argument("--campaign-budget-ledger", required=True)
-    warm.add_argument("--campaign-initial-spent-usd", required=True, type=float)
-    warm.add_argument("--campaign-initial-used-gpu-seconds", required=True, type=int)
-    warm.add_argument(
-        "--campaign-reservation-seconds",
-        type=int,
-        default=DEFAULT_RESERVATION_SECONDS,
-    )
-    warm.add_argument(
-        "--campaign-max-hourly-rate-usd",
-        type=float,
-        default=DEFAULT_MAX_HOURLY_RATE_USD,
-    )
-    warm.add_argument("--campaign-io-evidence", required=True)
-    warm.add_argument("--carrier-volume-admission")
-    warm.add_argument(
-        "--gpu-type-id",
-        action="append",
-        dest="gpu_type_ids",
-        default=None,
-    )
-    warm.add_argument(
-        "--runpod-s3-access-key-file",
-        default="~/.blueprint-secrets/runpod_s3_access_key",
-    )
-    warm.add_argument(
-        "--runpod-s3-secret-key-file",
-        default="~/.blueprint-secrets/runpod_s3_secret_key",
-    )
-    warm.add_argument("--execute", action="store_true")
-    for name, hidden in (("model-volume", False), ("model-volume-run", True)):
-        model = commands.add_parser(name, help=argparse.SUPPRESS if hidden else None)
-        model.add_argument("--output-dir", required=True)
-        model.add_argument("--repo-root", default=str(ROOT))
-        model.add_argument("--data-center-id")
-        model.add_argument("--volume-size-gib", type=int, default=50)
-        model.add_argument("--runtime-source-release-image-ref", default="")
-        model.add_argument("--runtime-source-release-evidence")
-        model.add_argument("--carrier-image-ref", default="")
-        model.add_argument("--replacement-source-output")
-        model.add_argument("--storage-hourly-rate-usd", type=float, required=True)
-        model.add_argument("--storage-ttl-seconds", type=int, default=14_400)
-        model.add_argument("--max-storage-spend-usd", type=float, default=0.05)
-        model.add_argument("--builder-evidence")
-        model.add_argument("--builder-spend")
-        model.add_argument(
-            "--digitalocean-token-file",
-            default="~/.blueprint-secrets/digitalocean_api_token",
-        )
-        model.add_argument("--hf-token-file", default="~/.blueprint-secrets/hf_token")
-        model.add_argument(
-            "--runpod-s3-access-key-file",
-            default="~/.blueprint-secrets/runpod_s3_access_key",
-        )
-        model.add_argument(
-            "--runpod-s3-secret-key-file",
-            default="~/.blueprint-secrets/runpod_s3_secret_key",
-        )
-        model.add_argument("--login-private-key")
-        model.add_argument("--host-private-key")
-        model.add_argument("--ssh-key-id", type=int)
-        model.add_argument("--region", default="sfo3")
-        model.add_argument("--allow-paid", action="store_true")
-        model.add_argument("--retain-existing-output")
-        model.add_argument("--retention-ttl-seconds", type=int, default=7 * 24 * 60 * 60)
-        model.add_argument("--retention-max-spend-usd", type=float, default=1.0)
-        model.add_argument("--campaign-spent-to-date-usd", type=float)
-        model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
-    args = parser.parse_args(argv)
+    for name in sorted(RUNPOD_ONLY_ALLOCATOR_COMMANDS):
+        commands.add_parser(name, help=argparse.SUPPRESS)
+    # A retired RunPod-only command is registered without its old arguments so it can be
+    # refused below; every other command is parsed strictly, as before.
+    args, _unrecognized = parser.parse_known_args(argv)
+    if args.command not in RUNPOD_ONLY_ALLOCATOR_COMMANDS:
+        args = parser.parse_args(argv)
     retired_aws = getattr(args, "provider", None) == "aws"
     if args.command == "gpu-canary" and getattr(args, "probe_kind", None) == RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND and getattr(args, "provider_launch_request", None) and Path(args.provider_launch_request).expanduser().is_file():
         retired_aws = retired_aws or _load(args.provider_launch_request).get("requested_execution_adapter_id") in WINDOWS_TRAINER_ADAPTER_IDS
@@ -2194,30 +2089,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if detached_exit is not None:
         return detached_exit
-    if args.command in {"model-volume", "model-volume-run"} and not (
-        args.command == "model-volume" and args.retain_existing_output
-    ):
-        missing_model_volume_inputs = [
-            name
-            for name in (
-                "data_center_id",
-                "builder_evidence",
-                "builder_spend",
-                "login_private_key",
-                "host_private_key",
-                "ssh_key_id",
-            )
-            if getattr(args, name, None) in {None, ""}
-        ]
-        if missing_model_volume_inputs:
-            print(json.dumps({"success": False}, sort_keys=True))
-            return 2
-        runtime_bundle_requested = bool(
-            args.runtime_source_release_image_ref or args.carrier_image_ref
-        )
-        if runtime_bundle_requested and not args.runtime_source_release_evidence:
-            print(json.dumps({"success": False}, sort_keys=True))
-            return 2
     if args.command == "provider-reconstruction":
         result = run_teleport_provider(
             args,
@@ -7050,389 +6921,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
-        if args.provider != "runpod":
-            result = {
-                "status": "blocked",
-                "blockers": ["digitalocean_gpu_canary_requires_persistent_host_bake"],
-                "provider_mutations_performed": 0,
-            }
-            write_json(Path(args.adapter_output), result)
-            print(json.dumps({"success": False}, sort_keys=True))
-            return 2
-        if args.probe_kind == PERSISTENT_CARRIER_PROBE_KIND:
-            missing = [
-                name
-                for name in (
-                    "carrier_volume_admission",
-                    "policy_observation",
-                    "persistent_job_dir",
-                    "expected_source_commit",
-                )
-                if not getattr(args, name, None)
-            ]
-            budget_arguments = (
-                args.campaign_budget_ledger,
-                args.campaign_initial_spent_usd,
-                args.campaign_initial_used_gpu_seconds,
-                args.campaign_max_hourly_rate_usd,
-            )
-            if args.execute and any(value is None for value in budget_arguments):
-                missing.append("persistent_campaign_budget_arguments")
-            if args.execute and not args.authorize_persistent_carrier_campaign:
-                missing.append("persistent_campaign_authorization")
-            checkout_commit = ""
-            if not missing:
-                source_blockers, checkout_commit = _source_checkout_blockers(
-                    args.expected_source_commit or "",
-                    allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
-                )
-                if source_blockers:
-                    result = {
-                        "status": "blocked",
-                        "blockers": source_blockers,
-                        "provider_mutations_performed": 0,
-                    }
-                    write_json(Path(args.admission_out), result)
-                    print(json.dumps({"success": False}, sort_keys=True))
-                    return 2
-            if missing:
-                result = {
-                    "status": "blocked",
-                    "blockers": [
-                        "persistent_carrier_required_arguments_missing:" + ",".join(sorted(missing))
-                    ],
-                    "provider_mutations_performed": 0,
-                }
-                write_json(Path(args.admission_out), result)
-            else:
-                result = run_persistent_carrier_campaign(
-                    provider_launch_request=args.provider_launch_request,
-                    release_evidence=args.release_evidence,
-                    model_cache_evidence=args.model_cache_evidence,
-                    preflight_bundle=args.preflight_bundle,
-                    carrier_volume_admission=args.carrier_volume_admission,
-                    policy_observation_path=args.policy_observation,
-                    persistent_job_dir=args.persistent_job_dir,
-                    admission_out=args.admission_out,
-                    bound_request_out=args.bound_request_out,
-                    adapter_output=args.adapter_output,
-                    pod_name=args.pod_name,
-                    execute=args.execute,
-                    expected_source_commit=checkout_commit,
-                    task_prompt=args.task_prompt,
-                    campaign_budget=(
-                        {
-                            "ledger_path": args.campaign_budget_ledger,
-                            "initial_spent_usd": args.campaign_initial_spent_usd,
-                            "initial_used_gpu_seconds": (args.campaign_initial_used_gpu_seconds),
-                            "total_spend_cap_usd": args.campaign_total_spend_cap_usd,
-                            "combined_gpu_wall_cap_seconds": (
-                                args.campaign_wall_cap_seconds
-                                if args.campaign_wall_cap_seconds is not None
-                                else PERSISTENT_CAMPAIGN_WALL_CAP_SECONDS
-                            ),
-                            "reservation_gpu_seconds": (PERSISTENT_WATCHDOG_MAX_TTL_SECONDS),
-                            "campaign_stage": "persistent_carrier_campaign",
-                            "maximum_canary_reservation_gpu_seconds": (
-                                PERSISTENT_WATCHDOG_MAX_TTL_SECONDS
-                            ),
-                            "future_campaign_allowance_gpu_seconds": 0,
-                            "maximum_future_campaign_allowance_gpu_seconds": 0,
-                            "maximum_combined_plan_gpu_seconds": (
-                                PERSISTENT_WATCHDOG_MAX_TTL_SECONDS
-                            ),
-                            "reduced_canary_timeout_acknowledged": (
-                                args.authorize_persistent_carrier_campaign
-                            ),
-                            "max_hourly_rate_usd": args.campaign_max_hourly_rate_usd,
-                            "minimum_reconciled_spend_usd": (MIN_RECONCILED_CAMPAIGN_SPEND_USD),
-                            "minimum_reconciled_gpu_seconds": (MIN_RECONCILED_GPU_SECONDS),
-                        }
-                        if args.execute
-                        else None
-                    ),
-                )
-            success = result.get("status") in {"dry_run_ready", "completed"}
-            print(json.dumps({"success": success}, sort_keys=True))
-            return 0 if success else 2
-        generic_canary_missing = [
-            name
-            for name in (
-                "expected_source_commit",
-                "provider_output_put_url_file",
-            )
-            if not getattr(args, name, None)
-        ]
-        if generic_canary_missing:
-            result = {
-                "status": "blocked",
-                "blockers": [
-                    "gpu_canary_required_arguments_missing:"
-                    + ",".join(sorted(generic_canary_missing))
-                ],
-                "provider_mutations_performed": 0,
-            }
-            write_json(Path(args.admission_out), result)
-            print(json.dumps({"success": False}, sort_keys=True))
-            return 2
-        generic_missing = [
-            name
-            for name in (
-                "provider_launch_request",
-                "release_evidence",
-                "model_cache_evidence",
-                "preflight_bundle",
-                "bound_request_out",
-                "pod_name",
-            )
-            if not getattr(args, name, None)
-        ]
-        if generic_missing:
-            result = {
-                "status": "blocked",
-                "blockers": [
-                    "generic_gpu_canary_required_arguments_missing:"
-                    + ",".join(sorted(generic_missing))
-                ],
-                "provider_mutations_performed": 0,
-            }
-            write_json(Path(args.admission_out), result)
-            write_json(Path(args.adapter_output), result)
-            print(json.dumps({"success": False}, sort_keys=True))
-            return 2
-        source_blockers, checkout_commit = _source_checkout_blockers(
-            args.expected_source_commit or "",
-            allow_pushed_branch_diagnostic=args.experimental_branch_diagnostic,
-        )
-        if source_blockers:
-            result = {
-                "status": "blocked",
-                "blockers": source_blockers,
-                "provider_mutations_performed": 0,
-            }
-            write_json(Path(args.admission_out), result)
-            print(json.dumps({"success": False}, sort_keys=True))
-            return 2
-        strict_policy_smoke = args.probe_kind == "strict-policy-smoke"
-        maximum_canary_reservation_seconds = (
-            STRICT_POLICY_SMOKE_RESERVATION_SECONDS
-            if strict_policy_smoke
-            else GPU_CANARY_RESERVATION_SECONDS
-        )
-        reservation_seconds = (
-            args.campaign_reservation_seconds
-            if args.campaign_reservation_seconds is not None
-            else maximum_canary_reservation_seconds
-        )
-        budget_arguments = (
-            args.campaign_budget_ledger,
-            args.campaign_initial_spent_usd,
-            args.campaign_initial_used_gpu_seconds,
-            args.campaign_max_hourly_rate_usd,
-        )
-        if args.execute and any(value is None for value in budget_arguments):
-            result = {
-                "status": "blocked",
-                "blockers": ["gpu_canary_cumulative_budget_arguments_missing"],
-                "provider_mutations_performed": 0,
-            }
-            write_json(Path(args.admission_out), result)
-        else:
-            result = run_canary(
-                provider_launch_request=args.provider_launch_request,
-                release_evidence=args.release_evidence,
-                model_cache_evidence=args.model_cache_evidence,
-                preflight_bundle=args.preflight_bundle,
-                admission_out=args.admission_out,
-                bound_request_out=args.bound_request_out,
-                adapter_output=args.adapter_output,
-                pod_name=args.pod_name,
-                execute=args.execute,
-                expected_source_commit=checkout_commit,
-                provider_output_put_url_file=args.provider_output_put_url_file,
-                probe_kind=args.probe_kind,
-                campaign_budget=(
-                    {
-                        "ledger_path": args.campaign_budget_ledger,
-                        "initial_spent_usd": args.campaign_initial_spent_usd,
-                        "initial_used_gpu_seconds": args.campaign_initial_used_gpu_seconds,
-                        "total_spend_cap_usd": args.campaign_total_spend_cap_usd,
-                        "combined_gpu_wall_cap_seconds": (
-                            args.campaign_wall_cap_seconds
-                            if args.campaign_wall_cap_seconds is not None
-                            else 21_000
-                        ),
-                        "reservation_gpu_seconds": reservation_seconds,
-                        "campaign_stage": "gpu_canary",
-                        "maximum_canary_reservation_gpu_seconds": (
-                            maximum_canary_reservation_seconds
-                        ),
-                        "future_campaign_allowance_gpu_seconds": (
-                            args.future_campaign_allowance_seconds
-                        ),
-                        "maximum_future_campaign_allowance_gpu_seconds": (
-                            FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
-                        ),
-                        "maximum_combined_plan_gpu_seconds": (
-                            STRICT_POLICY_SMOKE_RESERVATION_SECONDS
-                            + FUTURE_CAMPAIGN_ALLOWANCE_SECONDS
-                            if strict_policy_smoke
-                            else COMBINED_GPU_PLAN_SECONDS
-                        ),
-                        "reduced_canary_timeout_acknowledged": (
-                            args.authorize_reduced_canary_timeout
-                        ),
-                        "max_hourly_rate_usd": args.campaign_max_hourly_rate_usd,
-                        "minimum_reconciled_spend_usd": MIN_RECONCILED_CAMPAIGN_SPEND_USD,
-                        "minimum_reconciled_gpu_seconds": MIN_RECONCILED_GPU_SECONDS,
-                    }
-                    if args.execute
-                    else None
-                ),
-            )
-        success = result.get("status") in {"dry_run_ready", "submitted"}
-    elif args.command == "gpu-warm-worker":
-        result = run_active_worker(
-            output_dir=args.output_dir,
-            release_evidence=args.release_evidence,
-            model_cache_evidence=args.model_cache_evidence,
-            watchdog_handoff_evidence=args.watchdog_handoff_evidence,
-            api_key_file=args.runpod_api_key_file,
-            campaign_io_evidence=args.campaign_io_evidence,
-            runpod_s3_access_key_file=args.runpod_s3_access_key_file,
-            runpod_s3_secret_key_file=args.runpod_s3_secret_key_file,
-            resource_name_prefix=args.resource_name_prefix,
-            expected_source_commit=args.expected_source_commit,
-            execute=args.execute,
-            campaign_budget_ledger=args.campaign_budget_ledger,
-            initial_spent_usd=args.campaign_initial_spent_usd,
-            initial_gpu_seconds=args.campaign_initial_used_gpu_seconds,
-            reservation_seconds=args.campaign_reservation_seconds,
-            max_hourly_rate_usd=args.campaign_max_hourly_rate_usd,
-            carrier_volume_admission=args.carrier_volume_admission,
-            gpu_type_ids=(
-                tuple(args.gpu_type_ids) if args.gpu_type_ids else ("NVIDIA A40", "NVIDIA L40S")
+        result = {
+            "status": "blocked",
+            "blockers": (
+                [RUNPOD_RETIRED_BLOCKER]
+                if args.provider == "runpod"
+                else ["digitalocean_gpu_canary_requires_persistent_host_bake"]
             ),
-        )
-        success = result.get("status") in {
-            "dry_run_ready",
-            "completed",
+            "provider_mutations_performed": 0,
         }
-    elif args.command == "model-volume":
-        if args.retain_existing_output:
-            if args.campaign_spent_to_date_usd is None:
-                result = {
-                    "status": "blocked",
-                    "blockers": ["bounded_cache_retention_campaign_spend_missing"],
-                }
-            else:
-                result = retain_verified_model_cache(
-                    output_dir=Path(args.output_dir),
-                    source_output_dir=Path(args.retain_existing_output),
-                    retention_ttl_seconds=args.retention_ttl_seconds,
-                    storage_hourly_rate_usd=args.storage_hourly_rate_usd,
-                    max_retention_spend_usd=args.retention_max_spend_usd,
-                    campaign_spent_to_date_usd=args.campaign_spent_to_date_usd,
-                    campaign_total_spend_cap_usd=args.campaign_total_spend_cap_usd,
-                    runpod_s3_access_key_file=Path(args.runpod_s3_access_key_file),
-                    runpod_s3_secret_key_file=Path(args.runpod_s3_secret_key_file),
-                    allow_paid=args.allow_paid,
-                )
-            success = result.get("status") == "retained"
-            print(json.dumps({"success": success}, sort_keys=True))
-            return 0 if success else 2
-        vector = [
-            "--output-dir",
-            args.output_dir,
-            "--repo-root",
-            args.repo_root,
-            "--data-center-id",
-            args.data_center_id,
-            "--volume-size-gib",
-            str(args.volume_size_gib),
-            "--storage-hourly-rate-usd",
-            str(args.storage_hourly_rate_usd),
-            "--storage-ttl-seconds",
-            str(args.storage_ttl_seconds),
-            "--max-storage-spend-usd",
-            str(args.max_storage_spend_usd),
-            "--builder-evidence",
-            args.builder_evidence,
-            "--builder-spend",
-            args.builder_spend,
-            "--digitalocean-token-file",
-            args.digitalocean_token_file,
-            "--hf-token-file",
-            args.hf_token_file,
-            "--runpod-s3-access-key-file",
-            args.runpod_s3_access_key_file,
-            "--runpod-s3-secret-key-file",
-            args.runpod_s3_secret_key_file,
-            "--login-private-key",
-            args.login_private_key,
-            "--host-private-key",
-            args.host_private_key,
-            "--ssh-key-id",
-            str(args.ssh_key_id),
-            "--region",
-            args.region,
-        ]
-        if args.allow_paid:
-            vector.append("--allow-paid")
-        if args.runtime_source_release_image_ref:
-            vector.extend(
-                [
-                    "--runtime-source-release-image-ref",
-                    args.runtime_source_release_image_ref,
-                ]
-            )
-        if args.runtime_source_release_evidence:
-            vector.extend(
-                [
-                    "--runtime-source-release-evidence",
-                    args.runtime_source_release_evidence,
-                ]
-            )
-        if args.carrier_image_ref:
-            vector.extend(["--carrier-image-ref", args.carrier_image_ref])
-        if args.replacement_source_output:
-            vector.extend(["--replacement-source-output", args.replacement_source_output])
-        result = launch_detached_model_volume(
-            output_dir=Path(args.output_dir), run_arguments=vector
-        )
-        success = result.get("status") == "supervisor_started"
-    else:
-        result = run_storage_model_volume(
-            output_dir=Path(args.output_dir),
-            repo_root=Path(args.repo_root),
-            data_center_id=args.data_center_id,
-            volume_size_gib=args.volume_size_gib,
-            storage_ttl_seconds=args.storage_ttl_seconds,
-            storage_hourly_rate_usd=args.storage_hourly_rate_usd,
-            max_storage_spend_usd=args.max_storage_spend_usd,
-            builder_evidence_path=Path(args.builder_evidence),
-            builder_spend_path=Path(args.builder_spend),
-            digitalocean_token_file=Path(args.digitalocean_token_file),
-            hf_token_file=Path(args.hf_token_file),
-            runpod_s3_access_key_file=Path(args.runpod_s3_access_key_file),
-            runpod_s3_secret_key_file=Path(args.runpod_s3_secret_key_file),
-            login_private_key=Path(args.login_private_key),
-            host_private_key=Path(args.host_private_key),
-            ssh_key_id=args.ssh_key_id,
-            region=args.region,
-            allow_paid=args.allow_paid,
-            runtime_source_release_image_ref=args.runtime_source_release_image_ref,
-            carrier_image_ref=args.carrier_image_ref,
-            runtime_source_release_evidence_path=(
-                Path(args.runtime_source_release_evidence)
-                if args.runtime_source_release_evidence
-                else None
-            ),
-            replacement_source_output_dir=(
-                Path(args.replacement_source_output) if args.replacement_source_output else None
-            ),
-        )
-        success = result.get("status") == "completed"
+        write_json(Path(args.adapter_output), result)
+        print(json.dumps({"success": False}, sort_keys=True))
+        return 2
     # Provider results can contain credential-bearing request fields. Persisted
     # evidence remains in the explicitly selected output paths; stdout exposes
     # only the derived success bit so CI and operators cannot leak the payload.
@@ -7446,10 +6946,6 @@ def cpu_build_main(argv: Sequence[str] | None = None) -> int:
 
 def gpu_canary_main(argv: Sequence[str] | None = None) -> int:
     return main(["gpu-canary", *(list(argv) if argv is not None else sys.argv[1:])])
-
-
-def model_volume_main(argv: Sequence[str] | None = None) -> int:
-    return main(["model-volume", *(list(argv) if argv is not None else sys.argv[1:])])
 
 
 if __name__ == "__main__":

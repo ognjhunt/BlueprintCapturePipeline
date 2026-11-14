@@ -885,7 +885,7 @@ def test_generic_candidate_feeds_existing_semantic_teacher_packet(tmp_path: Path
         candidate_path=candidate_path,
         registry_path=(
             Path(__file__).resolve().parents[1]
-            / "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
+            / "config/image_editor_backends.v1.json"
         ),
         configuration=configuration,
         publisher_scene_id=scene_id,
@@ -1251,7 +1251,7 @@ def test_semantic_request_names_the_object_when_the_configuration_describes_it(t
         calibrated_residual_preflight_path=preflight_path, output_root=candidate_root)
     packet_root = _semantic_rights_and_request(
         candidate=candidate, candidate_path=candidate_root / "public_scene_artifixer3d_candidate_inputs.v3.json",
-        registry_path=Path(__file__).resolve().parents[1] / "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json",
+        registry_path=Path(__file__).resolve().parents[1] / "config/image_editor_backends.v1.json",
         configuration=configuration, publisher_scene_id=scene_id, output_root=tmp_path)
     packet = json.loads((packet_root / "fresh_scene_semantic_teacher_image_edit_packet.v1.json").read_text(encoding="utf-8"))
     assert packet["backend"]["prompt_policy"] == driver.NAMED_PROMPT_POLICY

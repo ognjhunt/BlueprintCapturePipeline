@@ -150,12 +150,11 @@ Run only the smallest deterministic tests covering a change. The repository fast
 lane and full suite are integration/promotion tools, not default build-loop
 commands. See [`AGENTS.md`](AGENTS.md).
 
-Paid CPU, model-volume, GPU, and provider reconstruction paths remain behind the
+Paid CPU, GPU, and provider reconstruction paths remain behind the
 canonical allocator:
 
 ```bash
 python -m blueprint_pipeline.paid_resource_allocator cpu-build <arguments>
-python -m blueprint_pipeline.paid_resource_allocator model-volume <arguments>
 python -m blueprint_pipeline.paid_resource_allocator gpu-canary <arguments>
 python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <arguments>
 ```

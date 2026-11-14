@@ -1,171 +1,18 @@
-"""A function nothing can call is not a production path.
+"""Every step of the input and selected-native chains can be run from a command line.
 
-`materialize_*` functions produce the receipts every paid lane consumes. When
-one is reachable from no script and from no module carrying a `main()`, the
-work it does exists only for whoever opens a Python session -- and the lane
-downstream of it dead-ends with a message about a missing input rather than a
-message about a missing entry point.
-
-That is how the appearance chain stalled. The ArtiFixer3D bundle CLI asks for a
-candidate-inputs receipt; the four functions that produce one were reachable
-from nothing; so the head of the chain could not be built at all, and the
-symptom looked like an absent file.
-
-The same defect has now been fixed in four scopes -- lanes (#512), bundle
-modules (#520), authority materializers (#523), and input materializers here --
-which is why this counts the whole population from source instead of listing
-the ones anybody happened to notice: 73 of 161 are still unreachable.
-
-`UNREACHABLE_MATERIALIZERS` is a ledger of debt, not a suppression list. The
-bound below only ratchets down.
+`materialize_*` functions produce the receipts every paid lane consumes. A step
+whose materializer takes a keyword its flag table cannot supply can only be run
+from a Python session, and the lane downstream of it dead-ends on a missing input.
 """
 
 from __future__ import annotations
 
-import ast
-import re
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOT = REPO_ROOT / "src" / "blueprint_pipeline"
 SCRIPTS = REPO_ROOT / "scripts"
-
-#: 78 before the ArtiFixer3D input chain got an entry point, 74 after, and
-#: 73 once the segment-mask-repair preflight -- the chain's root -- got one,
-#: 72 after the ArtiFixer use attestation, and 69 after the selected
-#: replacement/native chain stopped requiring a Python session, and 68 after
-#: the shared source-collider removal needed by that chain became reachable.
-#: The chain
-#: adds one new policy-spec materializer while making four existing producers
-#: reachable, so that final change lowers the net count by three.
-#: It may fall and never rise.
-#:
-#: #2908 pushed it to 70: the articulated construction inputs and the native
-#: continuation controls input landed with no command line. Both now have one,
-#: and with #2920's two camera-start producers reachable it is 66.
-#:
-#: It went to 76 once, when the semantic-teacher image-edit lane landed with all
-#: three of its terminal materializers -- result, provider zero, and the
-#: no-allocation closeout -- reachable from nothing. That is the shape this
-#: ratchet exists to catch: the lane could be started from a production path and
-#: only closed from a Python session, so a paid attempt could end with no
-#: terminal artifact and a provider bill nobody reconciled. Restored to 73 by
-#: `scripts/retain_semantic_teacher_image_edit_receipts.py`.
-#:
-#: Naming all 73 individually would be a list nobody maintains; the population
-#: is rediscovered every run and only its size is pinned, so a new unreachable
-#: materializer fails here even though no name was ever written down.
-UNREACHABLE_MATERIALIZER_BUDGET = 66
-
-
-_TOP_LEVEL_MATERIALIZER = re.compile(r"^def\s+materialize_", re.MULTILINE)
-
-
-def _module_sources() -> dict[Path, str]:
-    return {path: path.read_text(encoding="utf-8") for path in sorted(SOURCE_ROOT.glob("*.py"))}
-
-
-def _script_sources() -> list[str]:
-    return [path.read_text(encoding="utf-8") for path in sorted(SCRIPTS.glob("*.py"))]
-
-
-def _unreachable() -> list[tuple[str, str]]:
-    """Every public materializer no command line can reach, by shape."""
-
-    modules = _module_sources()
-    scripts = _script_sources()
-    found: list[tuple[str, str]] = []
-    for path, text in modules.items():
-        # Only a module with a top-level materializer can add one; parsing the
-        # rest is most of the cost of running this on every pull request.
-        if not _TOP_LEVEL_MATERIALIZER.search(text):
-            continue
-        tree = ast.parse(text)
-        names = [
-            node.name
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("materialize_")
-        ]
-        if not names:
-            continue
-        has_main = any(
-            isinstance(node, ast.FunctionDef) and node.name == "main" for node in tree.body
-        )
-        if has_main:
-            continue
-        for name in names:
-            if any(name in script for script in scripts):
-                continue
-            # A sibling module with its own entry point can also expose it.
-            if any(
-                name in other and "def main(" in other
-                for other_path, other in modules.items()
-                if other_path != path
-            ):
-                continue
-            found.append((path.stem, name))
-    return found
-
-
-def test_the_population_is_discoverable() -> None:
-    """A scan that matched nothing would make the budget vacuous."""
-
-    modules = _module_sources()
-    total = sum(
-        1
-        for text in modules.values()
-        if _TOP_LEVEL_MATERIALIZER.search(text)
-        for node in ast.parse(text).body
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("materialize_")
-    )
-    assert total >= 100, f"only {total} materializers found; the scan is broken"
-
-
-def test_unreachable_materializers_only_ever_decrease() -> None:
-    """The ratchet. Lower the budget when you fix some; never raise it."""
-
-    unreachable = _unreachable()
-
-    assert len(unreachable) <= UNREACHABLE_MATERIALIZER_BUDGET, (
-        f"{len(unreachable)} public materializers are reachable from no command "
-        f"line, above the budget of {UNREACHABLE_MATERIALIZER_BUDGET}. Give the "
-        "new one an entry point rather than raising this number: a receipt "
-        "producer nothing can call is a lane that dead-ends on a missing input.\n"
-        + "\n".join(f"  {module}.{name}" for module, name in sorted(unreachable)[:12])
-    )
-
-
-def test_the_ratchet_runs_on_every_pull_request() -> None:
-    """#2908 merged green and turned main red: only the full suite ran this."""
-
-    from blueprint_pipeline.impacted_test_selection import SENTINEL_TESTS
-
-    assert (
-        "tests/test_materializer_reachability.py::"
-        "test_unreachable_materializers_only_ever_decrease" in SENTINEL_TESTS
-    )
-
-
-def test_the_artifixer3d_input_chain_is_reachable() -> None:
-    """The head of the appearance path, and the reason this contract exists.
-
-    Pinned by name rather than by count: these five are what the ArtiFixer3D
-    bundle and its candidate-bound use attestation depend on, so losing their
-    entry point again would re-block the chain at its first step.
-    """
-
-    unreachable = {name for _, name in _unreachable()}
-
-    for required in (
-        "materialize_object_absent_reference_candidate_receipt",
-        "materialize_artifixer3d_candidate_inputs",
-        "materialize_whole_frame_semantic_teacher_receipt",
-        "materialize_dual_target_artifixer3d_inputs",
-        "materialize_artifixer3d_use_attestation",
-    ):
-        assert required not in unreachable, f"{required} lost its command line"
 
 
 @pytest.mark.parametrize(

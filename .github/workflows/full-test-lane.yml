@@ -207,19 +207,6 @@ jobs:
           echo "renderer package install failed after two bounded attempts"
           exit 1
 
-      # The full collection includes actual SDK-object serialization and its
-      # collector join. Provision the pinned package before that collection;
-      # the tests forbid client construction, authentication and network I/O.
-      - name: Install pinned SDK for offline native reader proof
-        working-directory: tools/autonomy_native_reader
-        timeout-minutes: 3
-        run: |
-          set -euo pipefail
-          timeout --kill-after=10s 140s npm ci --ignore-scripts --no-audit --no-fund
-          node -e 'if (require("./node_modules/@google-cloud/firestore/package.json").version !== "7.11.6") process.exit(1)'
-          printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_SDK=$PWD/node_modules/@google-cloud/firestore" >> "${GITHUB_ENV}"
-          printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_NODE=$(command -v node)" >> "${GITHUB_ENV}"
-
       - name: Resolve installed Playwright version
         id: playwright-version
         working-directory: tools/splat_render
@@ -313,14 +300,20 @@ jobs:
               exit 1
             fi
             echo "locked dependency install attempt ${attempt} did not complete"
+            # An attempt killed at its time limit can leave a package half-copied, and
+            # the next sync would take it as installed (run 43538993760, shard 7: a torch
+            # library was missing and 41 test modules failed to import). Start the next
+            # attempt from an empty environment; finished downloads stay in uv's cache.
+            uv venv --clear --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
           done
           # Noneditable policy CLIs resolve retained documents beside their
           # installed package. Preserve those exact committed bytes outside
           # runner home, where the different-UID child can read them safely.
           native_resource_root="$(/var/lib/blueprint-native-test-venv/bin/python -c 'from pathlib import Path; import blueprint_pipeline; print(Path(blueprint_pipeline.__file__).resolve().parents[2])')"
           test "$native_resource_root" = /var/lib/blueprint-native-test-venv/lib/python3.12
-          git archive HEAD docs | tar -x -C "$native_resource_root"
+          git archive HEAD docs config | tar -x -C "$native_resource_root"
           diff -rq -- docs "$native_resource_root/docs"
+          diff -rq -- config "$native_resource_root/config"
           # The actual different-UID child has ProtectHome=yes. Its interpreter
           # and imported dependencies must be protected outside /home/runner.
           sudo chown -hR root:root /var/lib/blueprint-native-test-venv

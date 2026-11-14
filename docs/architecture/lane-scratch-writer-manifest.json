@@ -77,8 +77,6 @@
       "output_class": "container",
       "admission_method": "mounted volume preflight then bounded install -d",
       "characterization_tests": [
-        "tests/test_lane_scratch_install_wiring.py",
-        "tests/test_production_compile_runtime_pins.py",
         "tests/test_scene_retirement_source_attestation.py",
         "tests/test_release_source_manifest.py"
       ],

@@ -160,7 +160,7 @@ def main() -> None:
     selectors.update(completion_marker_generation=marker["generation"], producer_delivery_key=producer["delivery_key"],
                      source_payload_sha256=listener.payload_sha256(payload), task_context_digest=context["context_digest"])
     def held(**kwargs):
-        assert kwargs["pipeline_lane"] == "qualification" and kwargs["run_evaluation_prep"] is False
+        assert set(kwargs) == {"capture_root", "provider", "resume_completed_stages"}
         write_json(root / "pipeline/website_task_context.json", context)
         result = prepare_website_scene_handoff(descriptor={"scene_id": owner["scene_id"], "capture_id": owner["capture_id"], "metadata": {"site_task_context": context}},
             clean_plate={"privacy_verified": True, "status": "noop"}, capture_root=root, now=0)

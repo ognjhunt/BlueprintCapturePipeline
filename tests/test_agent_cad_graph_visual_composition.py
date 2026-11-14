@@ -50,7 +50,7 @@ from blueprint_pipeline.simready_cad_agent_contract import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NATIVE_INPUTS_CLI = REPO_ROOT / "scripts/materialize_paired_target_native_inputs.py"
 FREEZE_A = (
-    REPO_ROOT / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+    REPO_ROOT / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
 TASK_ID = "task_a_washer_door_open"
 ASSET_ID = "840920_simready_washer_candidate"
@@ -534,7 +534,7 @@ def test_native_inputs_cli_static_qualification_reopens_registered_asset_bytes(
     graph_spec = json.loads(
         (
             REPO_ROOT
-            / "docs/arm_decision_proof_v1/manifests/"
+            / "tests/fixtures/arm_decision_proof_v1/manifests/"
             "third_scene_840920_task_a_simready_graph_asset_spec.v1.json"
         ).read_text()
     )

@@ -11,12 +11,6 @@ import hashlib
 import pytest
 
 from blueprint_pipeline import generated_media_privacy as gmp
-from blueprint_pipeline.anchor_return_kit import (
-    build_anchor_return_kit,
-    parse_returned_csv,
-    render_kit_csv,
-    validate_returned_anchors,
-)
 from blueprint_pipeline.post_training_holdout_split import (
     build_holdout_split,
     check_package_against_split,
@@ -37,102 +31,6 @@ def _d(label: str) -> str:
 
 
 # -- 16: anchor return kit ------------------------------------------------
-
-
-def _predictions(count: int = 3):
-    return [
-        {
-            "scenario_eval_run_id": "run-1",
-            "policy_id": f"policy-{index}",
-            "task_id": "task-1",
-            "scenario_variation_instance_id": "variation-1",
-            "predicted_success_rate": 0.5,
-        }
-        for index in range(count)
-    ]
-
-
-def test_kit_prepopulates_every_join_key() -> None:
-    kit = build_anchor_return_kit(kit_id="k1", predictions=_predictions(), trials_per_condition=2)
-
-    assert kit["status"] == "issued"
-    assert kit["row_count"] == 6
-    header = render_kit_csv(kit).splitlines()[0].split(",")
-    for key in kit["join_keys"]:
-        assert key in header
-    # The operator fills outcomes; the keys arrive already filled.
-    first = parse_returned_csv(render_kit_csv(kit))[0]
-    assert first["scenario_eval_run_id"] == "run-1"
-    assert first["observed_success"] == ""
-
-
-def test_a_mistyped_key_is_caught_before_ingest_not_after() -> None:
-    """The whole point: discover the mismatch while the robot is still available."""
-
-    kit = build_anchor_return_kit(kit_id="k1", predictions=_predictions(1))
-    returned = [
-        {
-            **{key: kit["rows"][0][key] for key in kit["join_keys"]},
-            "task_id": "task-1-TYPO",
-            "trial_index": 1,
-            "observed_success": "true",
-            "observed_at": "2026-07-24T00:00:00Z",
-            "operator_id": "op-1",
-        }
-    ]
-
-    report = validate_returned_anchors(kit=kit, returned_rows=returned)
-
-    assert report["status"] == "blocked"
-    assert "returned_rows_do_not_join_to_issued_kit" in report["blockers"]
-    assert report["unmatched_rows"][0]["join_key"][2] == "task-1-TYPO"
-    assert report["missing_rows"], "the un-returned trial must be reported"
-
-
-def test_complete_return_is_ready_for_ingest() -> None:
-    kit = build_anchor_return_kit(kit_id="k1", predictions=_predictions(2))
-    returned = [
-        {
-            **{key: row[key] for key in kit["join_keys"]},
-            "trial_index": row["trial_index"],
-            "observed_success": "true" if index % 2 else "false",
-            "observed_at": "2026-07-24T00:00:00Z",
-            "operator_id": "op-1",
-        }
-        for index, row in enumerate(kit["rows"])
-    ]
-
-    report = validate_returned_anchors(kit=kit, returned_rows=returned)
-
-    assert report["status"] == "ready_for_ingest"
-    assert report["coverage_fraction"] == 1.0
-    assert report["matched_rows"][0]["observed_success"] in {True, False}
-    assert report["claim_boundary"]["ready_for_ingest_is_not_accepted_anchor_status"] is True
-
-
-def test_kit_reports_predictions_that_cannot_be_joined() -> None:
-    broken = [{"scenario_eval_run_id": "run-1", "policy_id": "p1"}]
-    kit = build_anchor_return_kit(kit_id="k1", predictions=broken)
-
-    assert kit["status"] == "blocked"
-    assert any(item.startswith("prediction_missing_join_keys") for item in kit["blockers"])
-
-
-def test_duplicate_and_incomplete_returns_are_separated() -> None:
-    kit = build_anchor_return_kit(kit_id="k1", predictions=_predictions(1))
-    base = {**{key: kit["rows"][0][key] for key in kit["join_keys"]}, "trial_index": 1}
-    report = validate_returned_anchors(
-        kit=kit,
-        returned_rows=[
-            {**base, "observed_success": "true", "observed_at": "t", "operator_id": "op"},
-            {**base, "observed_success": "true", "observed_at": "t", "operator_id": "op"},
-        ],
-    )
-    assert report["duplicate_rows"]
-    assert "returned_rows_contain_duplicate_trials" in report["blockers"]
-
-    incomplete = validate_returned_anchors(kit=kit, returned_rows=[{**base}])
-    assert incomplete["incomplete_rows"]
 
 
 # -- 17: frozen held-out split -------------------------------------------

@@ -238,7 +238,7 @@ def Xform "Asset"
         json.loads(
             (
                 Path(__file__).parents[1]
-                / "docs/arm_decision_proof_v1/manifests"
+                / "tests/fixtures/arm_decision_proof_v1/manifests"
                 / "second_scene_840796_scene_task_freeze.v1.json"
             ).read_text(encoding="utf-8")
         )["task_spec"]
@@ -651,7 +651,7 @@ def test_graph_articulation_plan_binds_complete_joint_and_body_topology(
     freeze = json.loads(
         (
             Path(__file__).parents[1]
-            / "docs/arm_decision_proof_v1/manifests"
+            / "tests/fixtures/arm_decision_proof_v1/manifests"
             / "third_scene_840920_task_a_freeze.v1.json"
         ).read_text(encoding="utf-8")
     )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import subprocess
 from pathlib import Path
@@ -12,10 +11,7 @@ from blueprint_pipeline.adp_task_evaluation_abstention import (
     TaskEvaluationAbstentionError,
     VAST_PROVIDER_ZERO_API_CALL,
     collect_vast_provider_zero_receipt,
-    materialize_gaussian_contribution_authority_abstention,
     materialize_gaussian_heldout_ownership_abstention,
-    materialize_native_gate_task_evaluation_abstention,
-    materialize_task_evaluation_abstention,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -57,63 +53,6 @@ def _gaussian_authority_inputs() -> tuple[dict, dict, dict, dict]:
         )
     )
     return attempt, recovery, task_freeze, removal_binding
-
-
-def test_repaired_gaussian_attempt_seals_current_authority_gap_not_old_failure() -> None:
-    attempt, recovery, task_freeze, removal_binding = _gaussian_authority_inputs()
-    receipt = materialize_gaussian_contribution_authority_abstention(
-        gaussian_excision_attempt=attempt,
-        recovery_readiness=recovery,
-        task_freeze=task_freeze,
-        removal_binding=removal_binding,
-        scene_id="840920",
-    )
-
-    assert receipt["smallest_missing_capability"] == (
-        "fresh_paid_authority_for_qualified_gaussian_contribution_missing"
-    )
-    assert receipt["historical_attempt_blockers"] == attempt["execution_blockers"]
-    assert attempt["execution_blockers"][0] not in receipt["all_terminal_blockers"]
-    assert receipt["repaired_bundle"]["gpu_runtime_executed"] is False
-    assert receipt["gaussian_ownership_qualified"] is False
-    assert receipt["receipt_digest"] == canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda attempt, recovery: recovery.update(
-            {"canonical_paid_admission_dry_run_passed": False}
-        ),
-        lambda attempt, recovery: recovery["proof_boundaries"].update(
-            {"gpu_runtime_executed": True}
-        ),
-        lambda attempt, recovery: attempt.update({"provider_absence_confirmed": False}),
-    ],
-)
-def test_gaussian_authority_abstention_refuses_unready_or_live_attempt(
-    mutation,
-) -> None:
-    attempt, recovery, task_freeze, removal_binding = _gaussian_authority_inputs()
-    mutation(attempt, recovery)
-    if "receipt_digest" in attempt:
-        attempt["receipt_digest"] = canonical_digest(
-            attempt, digest_field="receipt_digest"
-        )
-    recovery["receipt_digest"] = canonical_digest(
-        recovery, digest_field="receipt_digest"
-    )
-
-    with pytest.raises(TaskEvaluationAbstentionError):
-        materialize_gaussian_contribution_authority_abstention(
-            gaussian_excision_attempt=attempt,
-            recovery_readiness=recovery,
-            task_freeze=task_freeze,
-            removal_binding=removal_binding,
-            scene_id="840920",
-        )
 
 
 def _gaussian_heldout_inputs() -> tuple[dict, dict, dict, dict, dict, dict]:
@@ -305,57 +244,6 @@ def _run(freeze: dict) -> dict:
     return value
 
 
-def test_seals_pre_episode_completion_path_b_with_exact_candidates() -> None:
-    freeze = _freeze()
-    receipt = materialize_task_evaluation_abstention(
-        construction_run=_run(freeze), scene_task_freeze=freeze
-    )
-
-    assert receipt["status"] == "typed_evidence_backed_abstention"
-    assert receipt["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
-    assert receipt["controls_executed"] is False
-    assert receipt["learned_candidate_episodes_executed"] is False
-    assert receipt["research_preview_agents_are_nonblocking_enrichment"] is True
-    assert receipt["receipt_digest"] == canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
-
-
-def test_optional_joint_agent_receipt_is_not_required_for_terminal_evidence() -> None:
-    freeze = _freeze()
-    run = _run(freeze)
-    run["stage_receipts"].pop("joint_agent_execution")
-    run["stage_status"]["joint_agent_execution_attempted"] = False
-    run["stage_status"]["joint_agent_execution_abstained"] = False
-    run["run_digest"] = canonical_digest(run, digest_field="run_digest")
-
-    receipt = materialize_task_evaluation_abstention(
-        construction_run=run, scene_task_freeze=freeze
-    )
-    assert receipt["research_preview_agents_are_nonblocking_enrichment"] is True
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda run: run["stage_receipts"].update({"aura_execution": None}),
-        lambda run: run["stage_status"].update({"controls_executed": True}),
-        lambda run: run.update({"blockers": ["joint_agent_topology_execution_missing"]}),
-    ],
-)
-def test_refuses_unobserved_or_post_episode_abstention(mutation) -> None:
-    freeze = _freeze()
-    run = _run(freeze)
-    mutation(run)
-    run["smallest_blocker"] = run["blockers"][0]
-    run["run_digest"] = canonical_digest(run, digest_field="run_digest")
-
-    with pytest.raises(TaskEvaluationAbstentionError):
-        materialize_task_evaluation_abstention(
-            construction_run=copy.deepcopy(run), scene_task_freeze=freeze
-        )
-
-
 def _write_native_gate_files(root: Path) -> tuple[str, str, str]:
     construction = {
         "schema_version": "articulated_excision_join.v1",
@@ -408,38 +296,6 @@ def _write_native_gate_files(root: Path) -> tuple[str, str, str]:
     }
     adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
     return construction_path.name, adapter_path.name, teardown_path.name
-
-
-def test_native_gate_abstention_is_derived_from_null_teardown_and_api_zero(
-    tmp_path: Path,
-) -> None:
-    construction, adapter, teardown = _write_native_gate_files(tmp_path)
-    provider_zero = collect_vast_provider_zero_receipt(
-        command_runner=lambda argv: subprocess.CompletedProcess(
-            argv, returncode=0, stdout="[]\n", stderr=""
-        )
-    )
-
-    receipt = materialize_native_gate_task_evaluation_abstention(
-        scene_task_freeze=_freeze(),
-        evidence_root=tmp_path,
-        construction_join_relative_path=construction,
-        native_adapter_relative_path=adapter,
-        teardown_relative_path=teardown,
-        provider_zero_receipt=provider_zero,
-    )
-
-    assert receipt["smallest_missing_capability"] == (
-        "native_articulated_asset_diagnostic_unobserved:"
-        "vast_heartbeat_container_missing"
-    )
-    assert receipt["native_asset_opened"] is False
-    assert receipt["controls_executed"] is False
-    assert receipt["paid_attempt"]["estimated_cost_usd"] == pytest.approx(0.007044)
-    assert receipt["provider_zero"]["provider_zero"] is True
-    assert receipt["receipt_digest"] == canonical_digest(
-        receipt, digest_field="receipt_digest"
-    )
 
 
 def test_provider_zero_uses_hardened_vast_api_without_cli() -> None:
@@ -503,29 +359,3 @@ def test_provider_zero_module_cli_writes_exclusive_receipt(
     assert json.loads(output.read_text()) == receipt
     with pytest.raises(FileExistsError):
         abstention.main(["--collect-vast-provider-zero", str(output)])
-
-
-def test_native_gate_abstention_refuses_policy_or_control_result(tmp_path: Path) -> None:
-    construction, adapter, teardown = _write_native_gate_files(tmp_path)
-    adapter_path = tmp_path / adapter
-    value = json.loads(adapter_path.read_text(encoding="utf-8"))
-    value["native_control_result_path"] = "results/native_control.json"
-    adapter_path.write_text(json.dumps(value), encoding="utf-8")
-    provider_zero = collect_vast_provider_zero_receipt(
-        command_runner=lambda argv: subprocess.CompletedProcess(
-            argv, returncode=0, stdout="[]", stderr=""
-        )
-    )
-
-    with pytest.raises(
-        TaskEvaluationAbstentionError,
-        match="native_gate_adapter_not_infrastructure_null",
-    ):
-        materialize_native_gate_task_evaluation_abstention(
-            scene_task_freeze=_freeze(),
-            evidence_root=tmp_path,
-            construction_join_relative_path=construction,
-            native_adapter_relative_path=adapter,
-            teardown_relative_path=teardown,
-            provider_zero_receipt=provider_zero,
-        )

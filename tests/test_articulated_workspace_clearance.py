@@ -128,26 +128,6 @@ def test_vertical_separation_does_not_false_positive() -> None:
     assert result["status"] == "clearance_candidate_only"
 
 
-def test_checked_rejection_binds_both_chairs_and_resumes_candidate_order() -> None:
-    rejection = json.loads(REJECTION.read_text(encoding="utf-8"))
-
-    validate_articulated_workspace_clearance(rejection["right_door_sweep"])
-    validate_articulated_workspace_clearance(rejection["left_door_sweep"])
-    assert rejection["status"] == "rejected_before_task_freeze"
-    assert rejection["selection_effect"] == "resume_frozen_candidate_order_at_840796"
-    assert rejection["learned_policy_outcomes_accessed"] is False
-    exact = rejection["right_door_exact_sage_mesh_sweep"]
-    assert exact["bound_interiorgs_obstacle_instance_id"] == "227"
-    assert exact["first_collision_angle_degrees"] == 26.75
-    assert exact["first_collision_angle_degrees"] < exact[
-        "required_open_angle_degrees"
-    ]
-    assert exact["triangle_prism_intersection_tested"] is True
-    assert rejection["record_digest"] == canonical_digest(
-        rejection, digest_field="record_digest"
-    )
-
-
 def _mesh(stage, path: str, minimum, maximum, *, collision: bool = True) -> None:
     from pxr import UsdGeom, UsdPhysics
 

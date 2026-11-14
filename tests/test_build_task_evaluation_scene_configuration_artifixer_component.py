@@ -42,7 +42,7 @@ def test_packages_released_artifixer_source_for_every_scene(tmp_path: Path, monk
         "scripts/run_task_evaluation_scene_configuration_artifixer_component.sh",
         "scripts/run_public_scene_artifixer3d.sh",
         "scripts/public_scene_artifixer3d_runner.py",
-        "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json",
+        "config/image_editor_backends.v1.json",
         *(f"src/blueprint_pipeline/{name}" for name in RUNTIME_BLUEPRINT_MODULES),
     ]
     for name in names:

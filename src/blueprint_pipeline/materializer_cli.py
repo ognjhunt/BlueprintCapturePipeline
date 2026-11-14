@@ -1,7 +1,7 @@
 """One flag-table-to-materializer skeleton, shared by the entry-point scripts.
 
-`tests/test_materializer_reachability.py` counts the `materialize_*` functions
-no command line can reach, and the fix for each is the same shape: a table
+A `materialize_*` function no command line can reach dead-ends its lane, and
+the fix for each is the same shape: a table
 mapping the materializer's keyword-only parameters to flags, so the table *is*
 the call and a keyword with no flag fails a test instead of failing an operator.
 

@@ -343,9 +343,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                     **({"expected_purpose": expected_preparation_purpose} if expected_preparation_purpose else {})))
             raw_manifest = _listener._read_optional_json_object(staged_capture_root / 'raw' / 'manifest.json')
             website_capture = _listener.is_website_capture_manifest(raw_manifest)
-            run_kwargs: dict[str, Any] = {'capture_root': str(staged_capture_root), 'provider': provider, 'run_evaluation_prep': run_evaluation_prep, 'resume_completed_stages': True}
-            if website_capture:
-                run_kwargs.update(pipeline_lane='qualification', run_evaluation_prep=False)
+            run_kwargs: dict[str, Any] = {'capture_root': str(staged_capture_root), 'provider': provider, 'resume_completed_stages': True}
             if producer_delivery_key is not None:
                 from .website_assessment_resume import admit_browser_preparation, safe_to_arm
                 failure_stage = 'website_assessment_preparation'

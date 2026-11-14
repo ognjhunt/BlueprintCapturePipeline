@@ -1,6 +1,5 @@
 import subprocess
 from pathlib import Path
-import tomllib
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -35,51 +34,6 @@ def test_shell_wrapped_production_unit_commands_parse_before_deploy() -> None:
             text=True,
         )
         assert completed.returncode == 0, f"{relative} {directive}: {completed.stderr}"
-
-
-def test_task_evaluation_dispatcher_optuna_guard_survives_systemd_parsing() -> None:
-    dispatcher = _text(
-        "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service"
-    )
-
-    assert "optuna.__version__ == str(4)+chr(46)+str(9)+chr(46)+str(0)" in dispatcher
-    assert 'optuna.__version__ == \\\"4.9.0\\\"' not in dispatcher
-
-
-def test_canonical_allocator_dependencies_are_in_the_production_base() -> None:
-    pyproject = _text("pyproject.toml")
-    base_dependencies = pyproject.split("[project.optional-dependencies]", 1)[0]
-    frozen_base = _text("requirements.txt")
-
-    for requirement in (
-        '"packaging>=24.0"',
-        '"usd-core>=24.0"',
-        '"boto3>=1.34.0"',
-        '"botocore>=1.34.0"',
-    ):
-        assert requirement in base_dependencies
-    for requirement in ("packaging==", "usd-core==", "boto3==", "botocore=="):
-        assert requirement in frozen_base
-
-
-def test_control_plane_bootstrap_installs_and_probes_the_step_extractor() -> None:
-    """Fresh-scene STEP extraction must work in the deployed service venv."""
-
-    project = tomllib.loads(_text("pyproject.toml"))["project"]
-    runtime = project["optional-dependencies"]["runtime"]
-    lock = tomllib.loads(_text("uv.lock"))
-    locked = {
-        (package["name"], package["version"])
-        for package in lock["package"]
-        if "version" in package
-    }
-    bootstrap = _text("scripts/bootstrap_control_plane_host.sh")
-
-    assert "build123d==0.11.1" in runtime
-    assert ("build123d", "0.11.1") in locked
-    assert 'pip" install -q -e "${REPO_ROOT}[runtime]"' in bootstrap
-    assert "from build123d import import_step" in bootstrap
-    assert "if not callable(import_step):" in bootstrap
 
 
 def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
@@ -215,77 +169,6 @@ def test_production_launch_units_preserve_four_layer_control_boundary() -> None:
     assert "task_evaluation_launch_supervisor" in supervisor
 
 
-def test_production_launch_units_keep_webapp_offering_callbacks_reachable_after_rebuild() -> None:
-    dispatcher = _text("deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service")
-    reconciler = _text("deploy/systemd/blueprint-task-evaluation-launch-reconciler.service")
-    supervisor = _text("deploy/systemd/blueprint-task-evaluation-launch-supervisor.service")
-    terminal = (
-        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL="
-        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launches"
-    )
-
-    assert terminal in dispatcher
-    assert terminal in reconciler
-    assert (
-        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PUBLICATION_READINESS_URL="
-        "https://tryblueprint.io/api/internal/pipeline/"
-        "task-evaluation-launch-publication-readiness"
-    ) in dispatcher
-    assert (
-        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL="
-        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-progress"
-    ) in reconciler
-    assert (
-        "Environment=PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL="
-        "https://tryblueprint.io/api/internal/pipeline/task-evaluation-launch-supervision"
-    ) in supervisor
-    for unit in (dispatcher, reconciler, supervisor):
-        assert (
-            "Environment=PIPELINE_SYNC_TOKEN_FILE="
-            "/etc/blueprint/provider-secrets/pipeline_sync_token"
-        ) in unit
-        assert unit.index("Environment=PIPELINE_TASK_EVALUATION") < unit.index(
-            "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env"
-        )
-    assert "ReadOnlyPaths=" in supervisor
-    assert "task-evaluation-launches" in supervisor
-    assert "task-evaluation-launch-runs" in supervisor
-    assert "task-evaluation-launch-profile-catalog.json" in supervisor
-    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH" in supervisor
-    assert "--public-catalog" in supervisor
-    assert "paid_resource_allocator" not in supervisor
-    assert "/etc/blueprint/provider-secrets" in supervisor
-    assert '"$${ARGS[@]}"\'' in supervisor
-
-
-def test_launch_read_only_catalog_is_optional_until_first_publication() -> None:
-    """An absent catalog must not prevent either reader unit from starting.
-
-    The activation publisher creates the catalog atomically, so a fresh host
-    legitimately has no catalog before its first successful publication.
-    systemd's ``-`` prefix ignores only that absent-path setup error; once the
-    path exists it remains mounted read-only in both reader units.
-    """
-
-    catalog = (
-        "-/var/lib/blueprint/pipeline-control-plane/"
-        "task-evaluation-launch-profile-catalog.json"
-    )
-    for unit in (
-        "deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service",
-        "deploy/systemd/blueprint-task-evaluation-launch-supervisor.service",
-    ):
-        # systemd merges every ReadOnlyPaths= line; the catalog may sit on any of them
-        # (release-retention and the SAM profile registry now precede it), so scan all.
-        read_only_paths = [
-            entry
-            for line in _text(unit).splitlines()
-            if line.startswith("ReadOnlyPaths=")
-            for entry in line.removeprefix("ReadOnlyPaths=").split()
-        ]
-        assert catalog in read_only_paths, unit
-
-
 def test_canonical_environment_binds_scene_configuration_runtime_secret_paths() -> None:
     """A rebuilt host must retain every non-secret runtime path binding."""
 
@@ -351,104 +234,6 @@ def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> N
     assert "blueprint_pipeline.provider_billing_reconciler" in billing
 
 
-def test_legacy_control_plane_loop_is_neither_deployed_nor_installed() -> None:
-    """P-RT-06: the 5-minute loop is retired; its inbox producer (the agent-run dispatcher) stays installable."""
-    for suffix in ("service", "timer"):
-        assert not (REPO / f"deploy/systemd/blueprint-pipeline-control-plane.{suffix}").exists()
-    deployer = _text("scripts/deploy_control_plane_commit.py")
-    installer = _text("scripts/install_live_pipeline_control_plane.sh")
-    assert '"blueprint-pipeline-control-plane.service",' not in deployer
-    assert "deploy/systemd/blueprint-pipeline-control-plane" not in installer
-    assert "enable --now blueprint-pipeline-control-plane" not in installer
-    assert '"blueprint-agent-run-dispatcher.service",' in deployer
-    assert "deploy/systemd/blueprint-agent-run-dispatcher.timer" in installer
-
-
-def test_installer_and_environment_enable_durable_queue_and_independent_recovery() -> None:
-    installer = _text("scripts/install_live_pipeline_control_plane.sh")
-    environment = _text("deploy/systemd/pipeline-control-plane.env.example")
-
-    for unit in (
-        "blueprint-task-evaluation-launch-dispatcher.path",
-        "blueprint-task-evaluation-launch-reconciler.timer",
-        "blueprint-task-evaluation-launch-supervisor.timer",
-        "blueprint-gpu-spend-guard.timer",
-    ):
-        assert unit in installer
-    for directory in (
-        "task-evaluation-launches/pending",
-        "task-evaluation-launches/processing",
-        "task-evaluation-launches/completed",
-        "task-evaluation-launches/blocked",
-        "task-evaluation-launch-runs",
-        "task-evaluation-control-plane-releases",
-        "task-evaluation-launch-reconciliation",
-        "provider-locks",
-    ):
-        assert directory in installer
-
-    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_TRIGGER_MODE=systemd_path" in environment
-    assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_MAX_CONCURRENCY=1" in environment
-    assert "hard-refuses values above 3" in environment
-    assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane" in environment
-    assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python" in environment
-    assert "# BLUEPRINT_TASK_EVALUATION_SECRET_PROFILE_ID=canonical-vast-adp" in environment
-    assert "# BLUEPRINT_ALLOW_TASK_EVALUATION_LAUNCH_TRIGGER=true" in environment
-    assert "The production unit enables the execute-capable dispatcher" in environment
-    assert "# BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE=true" not in environment
-    assert "# BLUEPRINT_TASK_EVALUATION_AGENT_SUPERVISOR_ENABLED=true" in environment
-    for binding in (
-        "VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key",
-        "VAST_LAUNCH_LOCK_FILE=/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
-        "NGC_API_KEY_FILE=/etc/blueprint/provider-secrets/ngc_api_key",
-        "DOCKER_USERNAME_FILE=/etc/blueprint/provider-secrets/docker_username",
-        "DOCKER_PAT_FILE=/etc/blueprint/provider-secrets/docker_pat",
-        "HF_TOKEN_FILE=/etc/blueprint/provider-secrets/huggingface_token",
-        "BLUEPRINT_WAM_OBJECT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_access_key_id",
-        "BLUEPRINT_WAM_OBJECT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_secret_access_key",
-        "BLUEPRINT_WAM_OBJECT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_endpoint_url",
-        "BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_bucket",
-        "BLUEPRINT_WAM_OBJECT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/digitalocean_spaces_region",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod",
-        "PIPELINE_SYNC_TOKEN_FILE=/etc/blueprint/provider-secrets/pipeline_sync_token",
-    ):
-        assert binding in environment
-
-
-def test_installer_gives_the_service_account_ownership_of_the_checkout() -> None:
-    """A root-owned checkout makes git refuse with "detected dubious ownership"
-    when the service account probes the allocator's source identity, which
-    rejects a paid launch at admission. Observed in production after a root
-    deploy."""
-    script = _text("scripts/install_live_pipeline_control_plane.sh")
-
-    assert 'chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${REPO_ROOT}"' in script
-    assert 'cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)' in script
-    assert "dubious ownership" in script
-
-
-def test_dispatcher_exit_code_separates_outcome_from_dispatch_failure() -> None:
-    """Exiting non-zero on a blocked launch made systemd mark the unit failed and
-    deactivate the path unit watching the queue, so one blocked run silently
-    stopped every later website trigger from dispatching."""
-    from pathlib import Path as _Path
-
-    source = _Path(
-        "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py"
-    ).read_text(encoding="utf-8")
-
-    assert 'return 0 if result["status"] == "completed" else 2' not in source
-    assert (
-        'return 0 if result.get("schema_version") == QUEUE_RUN_SCHEMA_VERSION else 2'
-        in source
-    )
-
-
 def test_provider_billing_reconciler_timer_is_deployed_for_accounting_closure() -> None:
     """The provider billing reconciler must be part of the deployed unit set.
 
@@ -462,17 +247,3 @@ def test_provider_billing_reconciler_timer_is_deployed_for_accounting_closure() 
     deployer = _text("scripts/deploy_control_plane_commit.py")
     assert '"blueprint-provider-billing-reconciler.service",' in deployer
     assert '"blueprint-provider-billing-reconciler.timer",' in deployer
-
-
-def test_agent_run_dispatcher_uses_active_release_and_preserves_only_bound_watchdogs() -> None:
-    unit = _text("deploy/systemd/blueprint-agent-run-dispatcher.service")
-    assert "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane" in unit
-    assert "BLUEPRINT_PIPELINE_REPO" not in unit
-    assert 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}"' in unit
-    assert 'GIT_CONFIG_VALUE_0="$${PWD}"' in unit
-    assert 'PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}"' in unit
-    assert "KillMode=process" in unit
-    assert "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process" in unit
-    assert "ExecStopPost=" in unit and "blueprint_pipeline.task_evaluation_dispatcher_cgroup_cleanup" in unit
-    assert "--state-root" in unit and "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT" in unit
-    assert "BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519" in unit

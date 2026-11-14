@@ -185,8 +185,7 @@ durations (`.github/full-test-lane-duration-baseline.json`): every file stays
 whole on one shard except a file heavier than half a shard, whose tests are
 scheduled by node ID. Every green lane uploads
 `full-test-lane-duration-baseline.refreshed.json` in its `full-test-lane-<run>`
-artifact; when shards drift apart, commit that file as the baseline (and update
-the source run pinned in `tests/test_full_lane_sharding.py`). Each shard retains its own collection, JUnit, and verification
+artifact; when shards drift apart, commit that file as the baseline. Each shard retains its own collection, JUnit, and verification
 receipt; the canonical job proves their disjoint union has no duplicates,
 omissions, failures, errors, or skips before rebuilding the existing canonical
 JUnit and `cpu_full.json` artifact. The deploy verifier revalidates every shard
@@ -230,14 +229,9 @@ URL or operator assertion alone is never deploy evidence;
 there is no text-only bypass.
 
 GitHub artifacts are 90-day transport copies, not the durable audit archive.
-For a release, `Release Evidence Retention / Immutable BASE release evidence
-archive` must archive the exact-SHA evidence bundle to versioned S3 Object Lock
-`COMPLIANCE` storage, retain it for at least 2,555 days, and verify version,
-checksum, size, metadata, retention, and a full version-specific GET digest
-readback. External artifact-signature and immutable-retention envelopes are
-required even for `BASE`; the immutable receipt is release evidence, while the
-workflow YAML and an unexecuted bundle are not. See
-`docs/RELEASE_SUPPLY_CHAIN_AND_RETENTION.md`.
+The release evidence graph requires external artifact-signature and
+immutable-retention envelopes even for `BASE`; no workflow in this repository
+produces them. See `docs/RELEASE_SUPPLY_CHAIN_AND_RETENTION.md`.
 
 Dependabot configuration and pinned CodeQL workflow files are committed, but
 repository vulnerability alerts, branch protection, successful CodeQL uploads,
