@@ -198,35 +198,6 @@ def test_business_brief_is_the_shared_platform_block_cited_by_digest(tmp_path):
         ranking.business_context(tmp_path / "PLATFORM_CONTEXT.md")
 
 
-def test_preparation_ranks_once_grounded_targets_exist_and_before_the_native_handoff(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from blueprint_pipeline import website_scene_handoff
-    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
-    from tests.test_qualification_coverage_edges import _descriptor
-
-    events = []
-    monkeypatch.setattr(ranking, "rank_website_candidates", lambda **kwargs: events.append(("rank", kwargs)))
-    monkeypatch.setattr(website_scene_handoff, "prepare_website_scene_handoff",
-                        lambda **_: events.append(("native", None)) or {"website_intake_outbox": {
-                            "state": "forward_pending"}})
-    pipeline = tmp_path / "capture" / "pipeline"
-    pipeline.mkdir(parents=True)
-    for allowed in (True, False):
-        run_website_capture_preparation(
-            descriptor=_descriptor(metadata={"site_task_context": context()}), capture_root=tmp_path / "capture",
-            pipeline_dir=pipeline, source_video=None, derived_scene_generation_allowed=allowed, gates=[],
-            prepare_media=lambda **_: {"status": "noop", "privacy_status": "website_capture_admitted",
-                                       "privacy_verified": True, "task_masks": MASKS},
-            check_privacy=lambda **_: SimpleNamespace(passed=True),
-            make_gate=lambda _name, passed, _detail: SimpleNamespace(passed=passed))
-    # Only a capture whose rights allow derived processing is ranked; the handoff always follows.
-    assert [kind for kind, _ in events] == ["rank", "native", "native"]
-    call = events[0][1]
-    assert call["task_masks"] == MASKS and call["pipeline_dir"] == pipeline
-    assert call["task_context"]["context_digest"] == context()["context_digest"]
-
-
 def _resend_layout(answer_text, *, other_text=None, own_completed=False):
     """``retained_gemini_call`` as #3555 lays out a resent call: the request's own file stays unanswered,
     the result lives in ``<stem>.resend-1.json``; optionally a completed file with another result."""

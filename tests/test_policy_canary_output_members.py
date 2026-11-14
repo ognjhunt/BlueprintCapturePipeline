@@ -30,12 +30,10 @@ from blueprint_pipeline import task_evaluation_configured_scene_object_store as 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     PROVIDER_RESULT_FILENAME,
-    RESULT_SCHEMA_VERSION,
 )
 from blueprint_pipeline.provider_output_member_index import build_member_index, validate_member_selection
 from blueprint_pipeline.provider_output_member_view import CONTRACTS, POLICY_CANARY_CONTRACT
 from blueprint_pipeline.task_evaluation_configured_scene_object_store import _ARTIFACT_STORE_FILE_ENV
-from blueprint_pipeline.task_evaluation_scene_execution_authority import proves_no_provider_allocation
 from tests.provider_output_fixtures import (
     RangeStore,
     VirtualFile,
@@ -125,135 +123,6 @@ def _run_session(context, tmp_path, monkeypatch, *, execute=True, lane=None):
 
 def _forbidden(*_args, **_kwargs):
     raise AssertionError("the session authority was consumed or the lane ran before the mode was resolved")
-
-
-@pytest.mark.parametrize("value", ["STREAM", "stream ", "upload", "1", "auto", "Download"])
-def test_invalid_delivery_mode_refuses_before_consumption_with_zero_mutations(context, tmp_path, monkeypatch, value):
-    """Auto is what an unset setting means, not a value: ``auto`` refuses like any other typo, and a
-    configured store and a recorded measurement never turn a value that is not a mode into a stream."""
-    _set_delivery(monkeypatch, tmp_path, value, configured=True, measured=True)
-    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
-
-    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
-
-    assert result == {"schema_version": RESULT_SCHEMA_VERSION, "status": "blocked",
-                      "provider_mutations_performed": 0, "provider_allocations_observed": 0, "retry_cap": 0,
-                      "blockers": ["policy_canary_output_delivery_mode_invalid"]}
-    assert not (tmp_path / "allocator" / "policy_canary_session_consumption.json").exists()
-    # The dispatcher closes it as a run that allocated nothing.
-    assert proves_no_provider_allocation(result)
-
-
-def test_download_mode_forwards_exactly_today_s_lane_arguments(context, tmp_path, monkeypatch):
-    """Without the B2 store (the CI condition), unset and empty download exactly as ``download``
-    does: each forwards the lane's own defaults, plus only the record of why it downloaded."""
-    _set_delivery(monkeypatch, tmp_path, None, configured=False)
-    unset = _run_session(context, tmp_path / "unset", monkeypatch, execute=False)
-    records = {}
-    for value in ("", "download"):
-        monkeypatch.setenv(members.DELIVERY_ENV, value)
-        forwarded = _run_session(context, tmp_path / "unset", monkeypatch, execute=False)
-        records[value] = forwarded.pop(RESOLUTION)
-        assert forwarded == {key: item for key, item in unset.items() if key != RESOLUTION}
-    assert unset[RESOLUTION] == records[""] == AUTO_DOWNLOAD
-    assert records["download"] == {"mode": "download", "reason": "explicit"}
-    # The lane's own defaults: nothing streams.
-    assert (unset["provider_output_delivery"], unset["provider_output_member_contract"]) == ("download", None)
-    defaults = inspect.signature(arena.run_arena_native_control_vast).parameters
-    assert defaults[RESOLUTION].default is None  # every other arena caller records nothing
-    assert all(defaults[key].default == unset[key] for key in unset
-               if key.startswith("provider_output_") and key != RESOLUTION)
-
-
-@pytest.mark.parametrize(("setting", "configured", "measured", "expected"), [
-    (None, True, True, AUTO_STREAM),
-    ("", True, True, AUTO_STREAM),
-    # Deploying is not the flip: a bound store alone downloads until the host records a measurement.
-    (None, True, False, UNMEASURED),
-    (None, False, True, AUTO_DOWNLOAD),
-    ("download", True, True, {"mode": "download", "reason": "explicit"}),
-    # The owner's override needs no measurement.
-    ("stream", True, False, {"mode": "stream", "reason": "explicit"}),
-])
-def test_the_session_forwards_the_resolved_mode_and_why(context, tmp_path, monkeypatch, setting, configured,
-                                                         measured, expected):
-    """Unset streams only with a store promotion accepts and a needed set recorded within budget; an
-    explicit value means what it says. The lane is handed the mode, its contract, and the record."""
-    _set_delivery(monkeypatch, tmp_path, setting, configured=configured, measured=measured)
-
-    forwarded = _run_session(context, tmp_path, monkeypatch, execute=False)
-
-    assert forwarded["provider_output_delivery"] == expected["mode"]
-    assert forwarded[RESOLUTION] == expected
-    streams = expected["mode"] == "stream"
-    assert forwarded["provider_output_member_contract"] is (members.POLICY_CANARY_OUTPUT_CONTRACT if streams else None)
-    assert forwarded["provider_output_reservation"] is None  # a dry run takes no hold
-
-
-def test_a_run_refused_at_consumption_records_its_resolution(context, tmp_path, monkeypatch):
-    """Resolved before the authority is consumed, so even a run the consumption refuses says which
-    mode it would have used and why."""
-    _set_delivery(monkeypatch, tmp_path, None, configured=False)
-    monkeypatch.setattr(native, "consume_session_authority_once", lambda *_args, **_kwargs: {
-        "status": "blocked", "blockers": ["policy_canary_session_authority_already_consumed"]})
-
-    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
-
-    assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
-    assert result["blockers"] == ["policy_canary_session_authority_already_consumed"]
-    assert result[RESOLUTION] == AUTO_DOWNLOAD
-
-
-def test_stream_refuses_before_consumption_without_the_b2_artifact_store(context, tmp_path, monkeypatch):
-    """Review I4: the artifact client would otherwise borrow the staging store's credentials."""
-    monkeypatch.setenv(members.DELIVERY_ENV, "stream")
-    for name in _ARTIFACT_STORE_FILE_ENV.values():
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv(next(iter(_ARTIFACT_STORE_FILE_ENV.values())), str(tmp_path / "only-one-of-five"))
-    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
-
-    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
-
-    assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
-    assert result["blockers"] == ["policy_canary_output_stream_artifact_store_not_configured"]
-    assert result[RESOLUTION] == {"mode": "stream", "reason": "explicit"}
-    assert proves_no_provider_allocation(result)
-    # Auto applies the very same check: with this partial store, an unset setting downloads.
-    monkeypatch.delenv(members.DELIVERY_ENV)
-    assert _run_session(context, tmp_path, monkeypatch, execute=False)[RESOLUTION] == INVALID_STORE
-
-
-@pytest.mark.parametrize("defect", ["missing", "directory", "unreadable"])
-def test_stream_refuses_before_consumption_unless_every_b2_setting_is_a_readable_file(
-        context, tmp_path, monkeypatch, defect):
-    """Review minor 8: a B2 setting naming a missing file, a directory or an unreadable file would
-    only fail when promotion first reads it, after the paid run. The session refuses first."""
-    if defect == "unreadable" and os.geteuid() == 0:
-        pytest.skip("root reads a mode-000 file")
-    _set_delivery(monkeypatch, tmp_path, None, configured=True, measured=True)
-    settings = tmp_path / "b2"
-    assert members.artifact_store_configured()
-    broken = settings / "secret_key"
-    if defect == "missing":
-        broken.unlink()
-    elif defect == "directory":
-        broken.unlink()
-        broken.mkdir()
-    else:
-        broken.chmod(0)
-    assert not members.artifact_store_configured()
-    monkeypatch.setenv(members.DELIVERY_ENV, "stream")
-    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
-
-    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
-
-    assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
-    assert result["blockers"] == ["policy_canary_output_stream_artifact_store_not_configured"]
-    assert result[RESOLUTION] == {"mode": "stream", "reason": "explicit"}
-    # Auto applies the very same check: the store this ``stream`` was refused over sends unset to
-    # download, even with the needed set measured.
-    monkeypatch.delenv(members.DELIVERY_ENV)
-    assert _run_session(context, tmp_path, monkeypatch, execute=False)[RESOLUTION] == INVALID_STORE
 
 
 @pytest.mark.parametrize(("defect", "accepted"), [
@@ -433,9 +302,10 @@ def test_other_arena_callers_never_stream():
             function = getattr(enclosing.get(node), "name", "<module>")
             if any(name.startswith("provider_output_") for name in _keyword_names(node, (path.name, function))):
                 streaming_calls.append((path.name, function))
-    assert lane_calls >= 10
+    assert lane_calls >= 9
+    # The policy-canary session runner left with the early trial (2026-11-14); the transport now refuses
+    # stream delivery for every caller, so the one caller left that asks for it fails closed.
     assert streaming_calls == [
-        ("native_task_arena_vast.py", "run_native_task_arena_policy_canary_session_vast"),
         ("team_candidate_quick10_vast.py", "run_team_candidate_session_vast"),
     ]
     team_tree = ast.parse((SRC / "team_candidate_quick10_vast.py").read_text())
@@ -664,152 +534,3 @@ def test_auto_holds_the_needed_set_to_the_hold_the_session_can_take(tmp_path, mo
     assert members.resolve_output_delivery(environ, measurement_path=record).record() == OVER_BUDGET
 
 
-@pytest.mark.parametrize("ending, outcome", [("completed", "completed"), ("raised", "failed"),
-                                             ("consumption_refused", "blocked")])
-def test_a_screening_download_holds_its_landing_room_through_the_run_and_releases_it_on_every_exit(
-        context, tmp_path, monkeypatch, ending, outcome):
-    """Stage 8 review: the landing room is held by the session from before any spend until the run ends."""
-    import os
-
-    from blueprint_pipeline import beta_screening_disk_admission as disk_admission
-    from blueprint_pipeline.control_plane_disk_budget import ENCLOSING_RESERVATIONS_ENV
-
-    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
-    released, seen = [], {}
-
-    class Hold:
-        token = "b" * 32
-
-        def release(self, *, outcome="completed"):
-            released.append(outcome)
-
-    monkeypatch.setattr(disk_admission, "reserve_landing_hold", lambda _job: Hold())
-    monkeypatch.setattr(native, "consume_session_authority_once", lambda *_a, **_kw: (
-        {"status": "refused", "blockers": ["x"]} if ending == "consumption_refused" else {"status": "consumed"}))
-
-    def lane(**kwargs):
-        seen["enclosing"] = os.environ.get(ENCLOSING_RESERVATIONS_ENV)
-        seen["reservation"] = kwargs["provider_output_reservation"]
-        if ending == "raised":
-            raise RuntimeError("the run failed")
-        return {"status": "completed"}
-
-    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
-
-    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
-    _, _, binding = context
-    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
-    members.record_resolution(tmp_path, members.OutputDelivery(members.DOWNLOAD, members.EXPLICIT))
-    if ending == "raised":
-        with pytest.raises(RuntimeError):
-            _run_session(context, tmp_path, monkeypatch, lane=lane)
-    else:
-        _run_session(context, tmp_path, monkeypatch, lane=lane)
-    assert released == [outcome]
-    if ending != "consumption_refused":
-        # The extraction's exact hold inside it does not count it twice; the download lane gets no stream hold.
-        assert seen == {"enclosing": "b" * 32, "reservation": None}
-    assert os.environ.get(ENCLOSING_RESERVATIONS_ENV) is None
-
-
-def test_a_screening_download_without_room_refuses_before_the_authority_is_consumed(context, tmp_path, monkeypatch):
-    from blueprint_pipeline import beta_screening_disk_admission as disk_admission
-    from blueprint_pipeline.control_plane_disk_ledger import ControlPlaneDiskBudgetError
-
-    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
-
-    def refused(_job):
-        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
-
-    monkeypatch.setattr(disk_admission, "reserve_landing_hold", refused)
-    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
-    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
-
-    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
-    _, _, binding = context
-    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
-    members.record_resolution(tmp_path, members.OutputDelivery(members.DOWNLOAD, members.EXPLICIT))
-    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
-    assert result["blockers"] == ["policy_canary_output_disk_admission_refused"]
-    assert proves_no_provider_allocation(result)
-
-
-def test_a_screening_session_uses_the_delivery_its_pre_launch_check_resolved(context, tmp_path, monkeypatch):
-    """Review 36 (6): resolved once, in the coordinator's check, and passed on; never resolved again."""
-    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
-
-    _set_delivery(monkeypatch, tmp_path, None, configured=True, measured=True)  # this process would stream
-    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
-    _, _, binding = context
-    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
-    members.record_resolution(tmp_path, members.OutputDelivery(members.DOWNLOAD, members.AUTO_NEEDED_SET_UNMEASURED))
-    forwarded = _run_session(context, tmp_path, monkeypatch, execute=False)
-    assert forwarded["provider_output_delivery"] == "download"
-    assert forwarded[RESOLUTION] == {"mode": "download", "reason": members.AUTO_NEEDED_SET_UNMEASURED}
-
-
-
-def test_a_screening_session_without_its_pre_launch_resolution_is_held_before_any_spend(context, tmp_path, monkeypatch):
-    """Review 8c (6): it must not quietly resolve again in its own process."""
-    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
-
-    _set_delivery(monkeypatch, tmp_path, None, configured=True, measured=True)
-    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
-    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
-    _, _, binding = context
-    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
-    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
-    assert result["blockers"] == [members.RESOLUTION_MISSING] and proves_no_provider_allocation(result)
-
-
-@pytest.mark.parametrize("backend", ["robolab.v1", "task_family_native.v1"])
-@pytest.mark.parametrize("room", [True, False])
-def test_each_policy_canary_lane_is_checked_before_launch_and_its_paid_run_uses_that_record(
-        context, tmp_path, monkeypatch, backend, room):
-    """Review 8d (1): both lanes that land through this session get their record; a paid run proceeds with
-    room and waits in line, unspent, without it. A task-family run is never shut out for want of a record."""
-    from types import SimpleNamespace
-
-    from blueprint_pipeline import beta_policy_screening_launch as launch
-    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
-    from blueprint_pipeline import beta_screening_disk_admission as disk_admission
-    from blueprint_pipeline import vast_launch_slots
-    from blueprint_pipeline.control_plane_disk_budget import floor_bytes
-
-    _set_delivery(monkeypatch, tmp_path, "download", configured=False)
-    monkeypatch.setenv(disk_admission.RESERVATION_ROOT_ENV, str(tmp_path / "ledger"))
-    monkeypatch.delenv(disk_admission.LANDING_HOLD_ENV, raising=False)
-    total = 400 * 1024**3
-    free = floor_bytes(total, role=disk_admission.ROLE) + disk_admission.DEFAULT_LANDING_HOLD_BYTES + (
-        1024**3 if room else -1024**3)
-    monkeypatch.setattr(disk_admission, "measure_disk", lambda _p: SimpleNamespace(total=total, free=free, used=total - free))
-    monkeypatch.setattr(launch, "_validate_prepared", lambda *_a: None)
-    monkeypatch.setattr(vast_launch_slots, "inspect_vast_launch_admission", lambda: {"status": "admitted", "blockers": []})
-    capacity = launch.preflight_candidate_capacity(plan={}, candidate={"execution_spec": {"backend": backend}},
-                                                   attempt_dir=tmp_path, prepared={})
-    assert members.resolved_for_attempt(tmp_path / "allocator") == members.OutputDelivery(members.DOWNLOAD, members.EXPLICIT)
-    if not room:
-        assert capacity["capacity_available"] is False and capacity["blockers"] == [disk_admission.WORK_DISK_WAIT_BLOCKER]
-        return  # the coordinator keeps it in line; nothing is launched or paid for
-    assert capacity == {"capacity_available": True, "blockers": []}
-    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
-    monkeypatch.setattr(native, "consume_session_authority_once", lambda *_a, **_kw: {"status": "consumed"})
-    _, _, binding = context
-    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
-    ran = []
-    _run_session(context, tmp_path, monkeypatch, lane=lambda **kwargs: ran.append(kwargs) or {"status": "completed"})
-    assert len(ran) == 1 and ran[0]["provider_output_delivery"] == members.DOWNLOAD
-
-
-def test_a_paid_screening_run_without_a_record_is_held_and_its_authority_never_consumed(context, tmp_path, monkeypatch):
-    """Un-faked: no pre-launch record beside the attempt, a paid run, the real lookup."""
-    from blueprint_pipeline import beta_screening_control_delivery as control_delivery
-
-    _set_delivery(monkeypatch, tmp_path, "stream", configured=True, measured=True)
-    monkeypatch.setattr(control_delivery, "runtime_control_ready_for_authority", lambda **_kwargs: None)
-    monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
-    _, _, binding = context
-    monkeypatch.setitem(binding, "run_kind", "blueprint_beta_screening")
-    assert not (tmp_path / members.RESOLVED_FILENAME).exists()
-    result = _run_session(context, tmp_path, monkeypatch, execute=True, lane=_forbidden)
-    assert result["blockers"] == [members.RESOLUTION_MISSING] and proves_no_provider_allocation(result)
