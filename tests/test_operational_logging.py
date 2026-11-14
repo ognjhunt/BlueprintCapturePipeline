@@ -126,18 +126,8 @@ def test_capture_pipeline_logs_lane_lifecycle(
     )
     monkeypatch.setattr(
         capture_orchestrator,
-        "resolve_requested_lanes",
-        lambda **_kwargs: ["qualification", "evaluation_prep"],
-    )
-    monkeypatch.setattr(
-        capture_orchestrator,
         "run_qualification_pipeline",
         lambda **_kwargs: {"status": "completed", "lane": "qualification"},
-    )
-    monkeypatch.setattr(
-        capture_orchestrator,
-        "run_evaluation_prep_stage",
-        lambda **_kwargs: {"manifest_path": str(tmp_path / "eval.json")},
     )
 
     with caplog.at_level(logging.INFO, logger="blueprint_pipeline.capture_orchestrator"):
@@ -147,11 +137,11 @@ def test_capture_pipeline_logs_lane_lifecycle(
         )
 
     assert result["status"] == "completed"
-    assert _event_names(caplog).count("capture_pipeline.lane_started") == 2
-    assert _event_names(caplog).count("capture_pipeline.lane_completed") == 2
+    assert _event_names(caplog).count("capture_pipeline.lane_started") == 1
+    assert _event_names(caplog).count("capture_pipeline.lane_completed") == 1
     completed = _records(caplog, "capture_pipeline.completed")[-1]
-    assert completed.lanes == ["qualification", "evaluation_prep"]
-    assert completed.result_count == 2
+    assert completed.lanes == ["qualification"]
+    assert completed.result_count == 1
 
 
 class _RuntimeBackend:

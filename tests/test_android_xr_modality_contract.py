@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor, build_capture_bundle_constraints
-from blueprint_pipeline.capture_orchestrator import resolve_requested_lanes
 from blueprint_pipeline.retrieval_index_stage import run_retrieval_index_stage
 
 import pytest
@@ -88,19 +87,6 @@ def test_capture_descriptor_preserves_android_xr_video_only_and_strips_false_cla
     assert constraints["capture_modality"] == "android_xr_video_only"
     assert constraints["capture_capabilities"]["camera_pose"] is False
     assert "quoted_payout_cents" not in constraints
-
-
-def test_android_xr_video_only_descriptor_resolves_to_qualification_only(tmp_path: Path) -> None:
-    descriptor_path = tmp_path / "bucket" / "scenes" / "scene-xr" / "captures" / "capture-xr" / "capture_descriptor.json"
-    descriptor_path.parent.mkdir(parents=True)
-    descriptor_path.write_text(json.dumps(_android_xr_descriptor_payload()), encoding="utf-8")
-
-    lanes = resolve_requested_lanes(
-        descriptor_gcs_uri="gs://bucket/scenes/scene-xr/captures/capture-xr/capture_descriptor.json",
-        gcs_root=tmp_path,
-    )
-
-    assert lanes == ["qualification"]
 
 
 def test_retrieval_index_skips_android_xr_video_only_until_new_geometry_contract(tmp_path: Path) -> None:

@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
-from blueprint_pipeline.capture_orchestrator import resolve_requested_lanes
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
 
@@ -298,22 +297,6 @@ def _write_geometry_lane(monkeypatch, capture_root: Path) -> None:  # type: igno
     monkeypatch.setenv("VIDEO_TO_WORLD_RUNNER_TOKEN", "test-token")
     monkeypatch.setattr("blueprint_pipeline.geometry_stage.run_video_to_world_provider", _fake_provider)
     build_geometry_stage_contract(capture_root)
-
-
-def test_resolve_requested_lanes_demotes_bridge_default_scene_memory(tmp_path: Path) -> None:
-    capture_root, descriptor_uri = _build_staged_capture(tmp_path)
-    descriptor_path = capture_root / "capture_descriptor.json"
-    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
-    descriptor["requested_lanes"] = ["qualification", "scene_memory"]
-    descriptor["requested_outputs"] = []
-    descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
-
-    lanes = resolve_requested_lanes(
-        descriptor_gcs_uri=descriptor_uri,
-        gcs_root=tmp_path,
-    )
-
-    assert lanes == ["qualification"]
 
 
 def test_materialized_capture_uses_beta_default_current_lanes(

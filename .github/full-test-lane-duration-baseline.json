@@ -1,6 +1,6 @@
 {
   "default_seconds_per_test": 0.250656326,
-  "file_count": 2275,
+  "file_count": 2274,
   "files": [
     {
       "duration_seconds": 0.05,
@@ -1266,11 +1266,6 @@
       "duration_seconds": 0.216,
       "path": "tests/test_capture_orchestrator.py",
       "test_count": 21
-    },
-    {
-      "duration_seconds": 0.036,
-      "path": "tests/test_capture_orchestrator_coverage_edges.py",
-      "test_count": 3
     },
     {
       "duration_seconds": 0.434,
@@ -12477,6 +12472,6 @@
   "source_junit_sha256": "457d4512db4021477c9cdb91a801f5b639a4e48b43fe574ba3d527b60700251a",
   "source_repository_sha": "e9af5888afc5efa25dfcfc8742fcfed1e30e7ffd",
   "source_run_id": 38193701899,
-  "test_count": 34522,
-  "total_duration_seconds": 8653.368
+  "test_count": 34519,
+  "total_duration_seconds": 8653.332
 }
