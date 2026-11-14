@@ -26,9 +26,6 @@ import blueprint_pipeline.site_package_orchestrator as orchestrator
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
 from blueprint_pipeline.common import PipelineError, StageError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.live_pipeline_control_plane import (
-    LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
-)
 from blueprint_pipeline.pubsub_handoff_listener import (
     HandoffMessage,
     main,
@@ -363,7 +360,7 @@ def test_process_handoff_records_preparation_without_staging_evaluation(
     manifest_path.write_text(
         json.dumps(
             {
-                "schema_version": LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
+                "schema_version": "blueprint_live_pipeline_control_plane_run.v1",
                 "capture_root": str(configured_capture_root),
                 "job_request_inbox": str(inbox_dir),
             }

@@ -1,6 +1,6 @@
 {
   "default_seconds_per_test": 0.250656326,
-  "file_count": 2274,
+  "file_count": 2268,
   "files": [
     {
       "duration_seconds": 0.05,
@@ -3638,16 +3638,6 @@
       "test_count": 7
     },
     {
-      "duration_seconds": 0.485,
-      "path": "tests/test_live_pipeline_control_plane.py",
-      "test_count": 14
-    },
-    {
-      "duration_seconds": 0.251,
-      "path": "tests/test_live_pipeline_control_plane_coverage_edges.py",
-      "test_count": 10
-    },
-    {
       "duration_seconds": 0.121,
       "path": "tests/test_live_pipeline_forwarding_secret_setup.py",
       "test_count": 5
@@ -3656,11 +3646,6 @@
       "duration_seconds": 7.594,
       "path": "tests/test_live_pipeline_import_isolation.py",
       "test_count": 5
-    },
-    {
-      "duration_seconds": 2.308,
-      "path": "tests/test_live_pipeline_input_intake.py",
-      "test_count": 28
     },
     {
       "duration_seconds": 9.79,
@@ -3681,11 +3666,6 @@
       "duration_seconds": 0.288,
       "path": "tests/test_live_pipeline_manifest_alert.py",
       "test_count": 13
-    },
-    {
-      "duration_seconds": 1.845,
-      "path": "tests/test_live_pipeline_proof_audit.py",
-      "test_count": 15
     },
     {
       "duration_seconds": 1.804,
@@ -8858,19 +8838,9 @@
       "test_count": 15
     },
     {
-      "duration_seconds": 0.464,
-      "path": "tests/test_sim_only_beta_deployment_parity_proof.py",
-      "test_count": 12
-    },
-    {
       "duration_seconds": 0.432,
       "path": "tests/test_sim_only_beta_local_gate.py",
       "test_count": 7
-    },
-    {
-      "duration_seconds": 0.495,
-      "path": "tests/test_sim_only_beta_release_gate.py",
-      "test_count": 11
     },
     {
       "duration_seconds": 0.756,
@@ -12472,6 +12442,6 @@
   "source_junit_sha256": "457d4512db4021477c9cdb91a801f5b639a4e48b43fe574ba3d527b60700251a",
   "source_repository_sha": "e9af5888afc5efa25dfcfc8742fcfed1e30e7ffd",
   "source_run_id": 38193701899,
-  "test_count": 34519,
-  "total_duration_seconds": 8653.332
+  "test_count": 34429,
+  "total_duration_seconds": 8647.484
 }

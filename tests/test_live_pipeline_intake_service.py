@@ -11,10 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from blueprint_pipeline import live_pipeline_intake_service as service
-from blueprint_pipeline.live_pipeline_control_plane import (
-    CONTROL_PLANE_OUTPUT_PATH_ENV,
-    run_live_pipeline_control_plane,
-)
+from blueprint_pipeline.live_pipeline_intake_runtime_controls import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.live_pipeline_intake_service import (
     INTAKE_TOKEN_ENV,
     create_app,
@@ -151,17 +148,6 @@ def _capture_root(tmp_path: Path) -> Path:
     )
     _write_json(capture_root / "raw" / "manifest.json", {"scene_id": "scene-1"})
     return capture_root
-
-
-def _control_manifest(tmp_path: Path, capture_root: Path) -> Path:
-    output_path = tmp_path / "control" / "live_pipeline_control_plane_manifest.json"
-    run_live_pipeline_control_plane(
-        capture_root=capture_root,
-        job_request_inbox=tmp_path / "webapp-inbox",
-        load_local_env=False,
-        output_path=output_path,
-    )
-    return output_path
 
 
 def _task_evaluation_launch_request() -> dict[str, object]:
@@ -732,9 +718,7 @@ def test_live_pipeline_capture_upload_intake_returns_typed_fail_closed_blockers(
 
 
 def test_live_pipeline_intake_service_requires_token(tmp_path: Path, monkeypatch) -> None:
-    capture_root = _capture_root(tmp_path)
-    manifest_path = _control_manifest(tmp_path, capture_root)
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest_path))
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "missing-manifest.json"))
     monkeypatch.delenv(INTAKE_TOKEN_ENV, raising=False)
     client = TestClient(create_app())
 

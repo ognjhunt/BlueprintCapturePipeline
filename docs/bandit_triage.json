@@ -15,30 +15,6 @@
     {
       "disposition": "accepted_risk",
       "expires_on": "2027-02-04",
-      "filename": "scripts/run_sim_only_beta_deployment_parity_proof.py",
-      "fingerprint": "9bb25bb42142519823988cd9c9bddeaaf9bf37d08aa8c94ca5ff18bf49e5affd",
-      "line_number": 102,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "scripts/run_sim_only_beta_local_gate.py",
-      "fingerprint": "924cc0db0b1e68146b731e5d02d1f7e088fbe8091a66bd7460ee72d4d2c4fcb5",
-      "line_number": 211,
-      "owner": "@ognjhunt",
-      "reason": "The URL is a constant https host chosen in code; no customer data reaches it. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/city_launch_autonomy_harness.py",
       "fingerprint": "39844462ae63eeff180f8e13f009bfc80888ff564168cc755f119c452d0174ce",
       "line_number": 905,
