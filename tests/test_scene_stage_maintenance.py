@@ -126,7 +126,10 @@ def test_a_completed_packet_queues_its_probe_and_is_held_or_released_on_the_prob
 
 def test_a_team_half_refused_for_cold_storage_brings_its_run_back_and_is_held_by_name(tmp_path, monkeypatch, no_trial):
     world = prepared_source_queue(tmp_path, monkeypatch)
-    _block(world, {"status": "blocked", "blockers": [COLD_STORAGE]})
+    # Blocked under the running release: a release the block has not seen would send it back to pending once
+    # (``release_requeued``), which is the packet stage's rule, not the hold this test is about.
+    _block(world, {"status": "blocked", "blockers": [COLD_STORAGE], "release_commit": RELEASE})
+    monkeypatch.setattr(packets, "current_release_commit", lambda: RELEASE)
     restored = []
     monkeypatch.setattr(maintenance, "_restore_source_run",
                         lambda request, **kwargs: restored.append((request["intent_id"], kwargs)) or {"status": "refused"})
