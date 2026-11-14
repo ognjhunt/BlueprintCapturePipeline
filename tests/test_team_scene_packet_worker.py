@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from blueprint_pipeline import robot_free_probe_gate as gate
-from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as source
+from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as source
 from blueprint_pipeline import team_scene_packet
 from blueprint_pipeline import team_scene_packet_worker as worker
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest

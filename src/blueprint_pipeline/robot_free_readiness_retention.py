@@ -232,7 +232,7 @@ def retain_receipt(run_root: str | Path, receipt: Mapping[str, Any], *, supersed
 def retain_for_source_launch(run_root: str | Path, *, fetcher: Fetcher | None = None) -> dict[str, Any]:
     """The same retention for a completed source launch, read from its validated terminal evidence."""
 
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_configured_controls_source_evidence import _validate_source
 
     result, _receipt, _zero = _validate_source(Path(run_root))
     return retain_robot_free_readiness(

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import task_evaluation_configured_controls_autostart as autostart
-from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
+from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as worker
 
 
 COMMIT = "a" * 40
@@ -351,68 +351,6 @@ def test_autostart_intent_refuses_a_present_but_altered_bound_copy(
         match="configured_controls_autostart_intent_binding_invalid",
     ):
         autostart._profile_intent(run_root)
-
-
-
-def test_worker_materializes_cpu_autostart_before_advancing_plan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    launch_root = tmp_path / "launch-runs"
-    run_root = launch_root / "scene-839873-launch"
-    run_root.mkdir(parents=True)
-    (run_root / "launch_profile.json").write_text(
-        json.dumps(
-            {
-                "immutable_inputs": [
-                    {"name": "configured_controls_autostart_intent"}
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_root / "launch_receipt.json").write_text(
-        '{"status":"completed"}', encoding="utf-8"
-    )
-    (run_root / "webapp_sync_succeeded.json").write_text("{}", encoding="utf-8")
-    (run_root / "post_teardown_provider_zero_receipt.json").write_text(
-        "{}", encoding="utf-8"
-    )
-    plan_root = tmp_path / "plans"
-
-    def materialize(**kwargs):
-        plan_root.mkdir()
-        (plan_root / "scene-839873-launch.json").write_text("{}", encoding="utf-8")
-        return {
-            "status": "agent_binding_accepted_plan_materialized",
-            "selected_candidate_id": "candidate-0042",
-            "plan_digest": "sha256:" + "1" * 64,
-        }
-
-    monkeypatch.setattr(autostart, "materialize_configured_controls_autostart", materialize)
-    monkeypatch.setattr(
-        worker,
-        "advance_configured_controls_plan",
-        lambda **kwargs: {
-            "status": "episode_preparation_queued",
-            "source_launch_id": Path(kwargs["plan_path"]).stem,
-        },
-    )
-    report = worker.process_plans(
-        plan_root=plan_root,
-        launch_state_root=launch_root,
-        progression_root=tmp_path / "progression",
-        preparation_queue_root=tmp_path / "preparations",
-        activation_queue_root=tmp_path / "activations",
-    )
-
-    assert report["status"] == "completed"
-    assert [row["status"] for row in report["rows"]] == [
-        "agent_binding_accepted_plan_materialized",
-        "episode_preparation_queued",
-    ]
-    assert report["rows"][0]["selected_candidate_id"] == "candidate-0042"
-    assert report["allocator_invoked"] is False
-    assert report["provider_mutation_performed"] is False
 
 
 def test_paid_agent_does_not_repeat_an_existing_failed_or_interrupted_attempt(tmp_path):
@@ -1116,7 +1054,7 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
     captured: dict[str, object] = {}
 
     from blueprint_pipeline import (
-        task_evaluation_configured_controls_progression_worker as progression_worker,
+        task_evaluation_configured_controls_source_evidence as progression_worker,
     )
 
     monkeypatch.setattr(

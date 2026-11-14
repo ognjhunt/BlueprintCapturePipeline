@@ -134,7 +134,7 @@ def test_restart_revalidates_accepted_source_and_refusal_blocks_new_spend(tmp_pa
 def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
     """Real sealed completion requests and planner; stub only host scene/runtime reads."""
     from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as completed_scene
+    from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as completed_scene
     from blueprint_pipeline import team_candidate_quick10_registry as registry
     from blueprint_pipeline import team_scene_packet_worker as packets
     from tests.test_beta_policy_screening_plan import admitted as admit_candidate, inputs, scene

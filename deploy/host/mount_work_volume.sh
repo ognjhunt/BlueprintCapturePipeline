@@ -84,8 +84,6 @@ EVIDENCE_HOT_ON_VOLUME=(
 WORKER_UNITS=(
   blueprint-task-evaluation-launch-preparation.path
   blueprint-task-evaluation-launch-preparation.timer
-  blueprint-task-evaluation-sam31-preparation-execution.path
-  blueprint-task-evaluation-sam31-preparation-execution.timer
   blueprint-task-evaluation-episode-compilation.path
   blueprint-task-evaluation-episode-compilation.timer
   blueprint-task-evaluation-episode-compilation-remote.path
@@ -93,11 +91,8 @@ WORKER_UNITS=(
   blueprint-task-evaluation-launch-activation.path
   blueprint-task-evaluation-launch-activation.timer
   blueprint-task-evaluation-launch-dispatcher.path
-  blueprint-team-evaluation-runner.path
   blueprint-rigid-robot-free-probe-runner.path
   blueprint-rigid-robot-free-probe-runner.timer
-  blueprint-task-evaluation-configured-controls-progression.timer
-  blueprint-task-evaluation-configured-controls-progression.path
   blueprint-task-evaluation-terminal-resource-release.path
   blueprint-control-plane-storage-gc.timer
   blueprint-website-withdrawal-deletion.timer
@@ -119,14 +114,11 @@ WORKER_UNITS=(
   blueprint-website-atlas-provider-poll.timer
   blueprint-website-atlas-provider-poll.path
   blueprint-task-evaluation-launch-preparation.service
-  blueprint-task-evaluation-sam31-preparation-execution.service
   blueprint-task-evaluation-episode-compilation.service
   blueprint-task-evaluation-episode-compilation-remote.service
   blueprint-task-evaluation-launch-activation.service
   blueprint-task-evaluation-launch-dispatcher.service
-  blueprint-team-evaluation-runner.service
   blueprint-rigid-robot-free-probe-runner.service
-  blueprint-task-evaluation-configured-controls-progression.service
   blueprint-task-evaluation-terminal-resource-release.service
   blueprint-control-plane-storage-gc.service
   blueprint-website-withdrawal-deletion.service

@@ -1172,7 +1172,7 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
              models: Mapping[str, Path] | None = None,
              owner_scope: Mapping[str, Any] | None = None, remote: Any = None,
              assumed_before: bool = False) -> dict[str, Any]:
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_configured_controls_source_evidence import _validate_source
     from .team_scene_packet import prepare_team_scene
 
     # A half of this revision already assumed its thresholds: it keeps that contract, so a confirmation that

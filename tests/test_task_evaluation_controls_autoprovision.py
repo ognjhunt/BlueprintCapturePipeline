@@ -207,57 +207,6 @@ def test_current_spend_pointer_is_read_when_preparation_arrives(tmp_path):
     assert worker.provision_link(**kwargs) == receipt
 
 
-def test_production_default_and_worker_order(tmp_path, monkeypatch):
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as progression
-    kwargs = setup(tmp_path)
-    real_with_external_fakes = kwargs.pop("provisioner")
-    monkeypatch.setattr(worker.producer, "provision_configured_controls_continuation", real_with_external_fakes)
-    # With no producer argument, the worker reaches the canonical producer seam.
-    assert worker.provision_link(**kwargs)["status"] == "installed"
-    monkeypatch.setenv(worker.CONFIG_ENV, "catalog-config.json")
-    monkeypatch.setattr(progression, "running_release_commit", lambda: COMMIT)
-    events = []
-    def process(path, **kw):
-        events.append("provision")
-        assert kw["expected_production_commit"] == COMMIT
-        return [{"status": "installed"}]
-    monkeypatch.setattr(worker, "process_config", process)
-    monkeypatch.setattr(progression.scene_configuration_activation, "progression_rows",
-        lambda **_: events.append("activation") or [])
-    result = progression.process_plans(plan_root=tmp_path / "plans",
-        launch_state_root=tmp_path / "launches", progression_root=tmp_path / "progression",
-        preparation_queue_root=tmp_path / "preparations", activation_queue_root=tmp_path / "activation",
-        scene_configuration_activation_intent_root=tmp_path / "scene-activations")
-    assert result["status"] == "completed"
-    assert events == ["provision", "activation"]
-
-
-def test_expired_installed_intent_cannot_continue_progression(tmp_path, monkeypatch):
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as progression
-    monkeypatch.setenv(worker.CONFIG_ENV, "catalog-config.json")
-    monkeypatch.setattr(progression, "running_release_commit", lambda: COMMIT)
-    monkeypatch.setattr(worker, "process_config", lambda *a, **kw: [
-        {"status": "controls_autoprovision_refused", "blocker": "authority_expired",
-         "blocked_scene_key": [TEAM, SCENE_ID, TASK_ID]}])
-    events = []
-    monkeypatch.setattr(progression.scene_configuration_activation, "progression_rows",
-        lambda **kw: events.append(kw["blocked_scene_keys"]) or [])
-    _write(tmp_path / "launches" / "revoked" / "launch_profile.json", {
-        "task_evaluation_run": {"team_namespace": TEAM, "scene_id": SCENE_ID, "task_id": TASK_ID}})
-    _write(tmp_path / "launches" / "valid" / "launch_profile.json", {
-        "task_evaluation_run": {"team_namespace": TEAM, "scene_id": "other-scene", "task_id": TASK_ID}})
-    _write(tmp_path / "plans" / "revoked.json", {"source_launch_id": "revoked"})
-    _write(tmp_path / "plans" / "valid.json", {"source_launch_id": "valid"})
-    monkeypatch.setattr(progression, "advance_configured_controls_plan",
-        lambda **kw: events.append(Path(kw["plan_path"]).stem) or {"status": "awaiting_controls"})
-    result = progression.process_plans(plan_root=tmp_path / "plans",
-        launch_state_root=tmp_path / "launches", scene_configuration_activation_intent_root=tmp_path / "intents",
-        preparation_queue_root=tmp_path / "preparations", activation_queue_root=tmp_path / "activations",
-        progression_root=tmp_path / "progression")
-    assert result["status"] == "blocked"
-    assert events == [{(TEAM, SCENE_ID, TASK_ID)}, "valid"]
-
-
 def test_queued_dispatch_owner_guard_reopens_current_consent(tmp_path):
     kwargs = setup(tmp_path)
     config = _write(tmp_path / "config.json", {"scene_root": str(kwargs["scene_root"]), "trusted_clients": ["webapp"]})

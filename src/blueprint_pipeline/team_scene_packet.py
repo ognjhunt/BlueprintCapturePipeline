@@ -1295,7 +1295,7 @@ def fetch_team_scene_sources(*, run_root: str | Path, output_root: str | Path,
     """A completed source launch's published revision, and its documents fetched under ``output_root``."""
 
     from .robot_free_readiness_retention import _revision
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_configured_controls_source_evidence import _validate_source
     from .task_evaluation_scene_rigid_robot_free_readiness import fetch_revision_documents
 
     result, _receipt, _zero = _validate_source(Path(run_root))

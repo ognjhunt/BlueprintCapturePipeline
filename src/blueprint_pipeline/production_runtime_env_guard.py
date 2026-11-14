@@ -95,7 +95,6 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.task_evaluation_launch_reconciler",
     "blueprint_pipeline.task_evaluation_scene_retirement_supervisor",
     "blueprint_pipeline.task_evaluation_terminal_resource_release",
-    "blueprint_pipeline.task_evaluation_configured_controls_progression_worker",
     "blueprint_pipeline.team_candidate_quick10_launch",
     "blueprint_pipeline.unit_failure_notifier",
     "blueprint_pipeline.website_atlas_preview",

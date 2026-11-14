@@ -334,12 +334,6 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/preflight" in text
             assert "ReadWritePaths=/var/lib/blueprint " not in text
             continue
-        if unit.name == "blueprint-task-evaluation-configured-controls-progression.service":
-            # Its worker exits 2 whenever a row is blocked; a failed oneshot never
-            # re-arms the OnUnitInactiveSec timer, so exit 2 must count as success.
-            assert "SuccessExitStatus=2" in unit.read_text(encoding="utf-8")
-            timer = unit.with_suffix(".timer").read_text(encoding="utf-8")
-            assert "OnUnitInactiveSec=" in timer
         if unit.name == "blueprint-control-plane-capacity.service":
             # Root housekeeping like the reaper: growing the work volume needs the
             # block device and the online-resize ioctl, nothing wider.  It writes
@@ -402,7 +396,6 @@ HOST_MEMORY = {
     "blueprint-task-evaluation-scene-progression.service": ("200", "4G", "5G", "3.2G"),
     "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G", "722M"),
     "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G", "32M"),
-    "blueprint-task-evaluation-configured-controls-progression.service": ("200", "1G", "2G", "149M"),
     "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G", "62M"),
     "blueprint-agent-execution.service": ("200", "1G", "2G", "202M"),
     "blueprint-task-evaluation-episode-compilation.service": ("200", "3G", "4G", "60M"),
@@ -437,10 +430,8 @@ HOST_MEMORY_KEPT = {
     "blueprint-off-host-reaper-heartbeat.service": ("-200", "256M"),
     "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "5.5G"),
     "blueprint-website-atlas-preview.service": ("-200", "5.5G"),
-    "blueprint-team-evaluation-runner.service": ("-200", "5.5G"),
     "blueprint-beta-policy-screening.service": ("-200", "5.5G"),
     "blueprint-rigid-robot-free-probe-runner.service": ("-200", "5.5G"),
-    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "5.5G"),
     "blueprint-agent-run-dispatcher.service": ("-200", "5.5G"),
     "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
     # The failure notifier carries a page; a run peaked at 27 MB locally.
@@ -526,12 +517,9 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
-    "blueprint-task-evaluation-sam31-preparation-execution.service",
-    "blueprint-team-evaluation-runner.service",
     "blueprint-agent-run-dispatcher.service",
     "blueprint-task-evaluation-episode-compilation.service",
     "blueprint-task-evaluation-episode-compilation-remote.service",
-    "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-agent-stage-replay.service",
     # Not a job mover, but bulk reads and uploads every 15 minutes: bounded with them so it never starves the host.
     "blueprint-control-plane-state-backup.service",
@@ -598,8 +586,6 @@ KILL_MODE_PROCESS_UNITS = (
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-task-evaluation-sam31-preparation-execution.service",
-    "blueprint-team-evaluation-runner.service",
 )
 
 

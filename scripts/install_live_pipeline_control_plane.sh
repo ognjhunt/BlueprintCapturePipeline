@@ -1457,12 +1457,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-provider-poll.path" \
   "${SYSTEMD_DIR}/blueprint-website-atlas-provider-poll.path"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.service" \
-  "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.path" \
-  "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.path"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-intake.service" \
   "${SYSTEMD_DIR}/blueprint-pipeline-intake.service"
 run install -m 0644 \
@@ -1532,20 +1526,11 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-reconciler.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-reconciler.timer"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.service"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-scene-progression.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-scene-progression.service"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-scene-progression.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-scene-progression.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.timer" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.path" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.path"
 install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-storage-gc.service" \
   "${SYSTEMD_DIR}/blueprint-control-plane-storage-gc.service"
@@ -1754,9 +1739,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-provider-billing-reconciler.timer
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
-  systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer
   systemctl enable --now blueprint-task-evaluation-scene-progression.timer
-  systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
   systemctl enable --now blueprint-control-plane-storage-gc.timer
   systemctl enable --now blueprint-website-withdrawal-deletion.timer
   systemctl enable --now blueprint-control-plane-state-backup.timer
@@ -1775,7 +1758,6 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.timer
-  systemctl enable --now blueprint-team-evaluation-runner.path
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
 else
   echo "installed"
@@ -1783,15 +1765,12 @@ else
   echo "enable billing reconciliation with: systemctl enable --now blueprint-provider-billing-reconciler.timer"
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
-  echo "enable configured-controls progression with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer"
-  echo "enable compilation-result progression wake-up with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
   echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
   echo "enable bounded disk-capacity preparation retries with: systemctl enable --now blueprint-task-evaluation-launch-preparation.timer"
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable hourly recovery of interrupted activation claims with: systemctl enable --now blueprint-task-evaluation-launch-activation.timer"
-  echo "enable the staged robot-team evaluation runner with: systemctl enable --now blueprint-team-evaluation-runner.path"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"
 fi

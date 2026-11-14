@@ -22,13 +22,6 @@ def test_a_deadline_cannot_silently_truncate_the_planned_campaign(window, accept
         assert blockers == ["team_evaluation_execution_window_below_planned_runtime"]
 
 
-def test_runner_timeout_covers_the_highest_supported_planner_rate():
-    root = Path(__file__).resolve().parents[1]
-    unit = (root / "deploy/systemd/blueprint-team-evaluation-runner.service").read_text()
-    assert "TimeoutStartSec=7d" in unit
-    assert 7 * 86400 > campaign_ttl_seconds(control_hz=120) + launch.STOP_TEARDOWN_GRACE_SECONDS
-
-
 def test_short_funding_refuses_before_releasing_the_credential(tmp_path, monkeypatch):
     world = _world(tmp_path, monkeypatch)
     original = launch._funding
