@@ -43,9 +43,6 @@
     "src/blueprint_pipeline/gpu_render_providers.py": [
       "tests/test_gpu_render_providers.py"
     ],
-    "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": [
-      "tests/test_groot_oscar_digitalocean_closed_loop_job.py"
-    ],
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": [
       "tests/test_isaac_g1_kitchen_parity_job.py"
     ],
@@ -164,12 +161,6 @@
     "src/blueprint_pipeline/simulation_automation.py": [
       "tests/test_simulation_automation.py"
     ],
-    "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py": [
-      "tests/test_single_g1_kitchen_episode_runpod.py"
-    ],
-    "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": [
-      "tests/test_single_g1_kitchen_qualification_session.py"
-    ],
     "src/blueprint_pipeline/site_eval_director.py": [
       "tests/test_site_eval_director.py"
     ],
@@ -260,7 +251,6 @@
     "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
     "src/blueprint_pipeline/geometry_stage.py": 2244,
     "src/blueprint_pipeline/gpu_render_providers.py": 3553,
-    "src/blueprint_pipeline/groot_oscar_digitalocean_closed_loop_job.py": 2643,
     "src/blueprint_pipeline/isaac_g1_kitchen_parity_job.py": 3012,
     "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
     "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
@@ -296,8 +286,6 @@
     "src/blueprint_pipeline/scene_asset_preflight.py": 2213,
     "src/blueprint_pipeline/semantic_teacher_image_edit_vast.py": 2517,
     "src/blueprint_pipeline/simulation_automation.py": 3804,
-    "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py": 4378,
-    "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4648,
     "src/blueprint_pipeline/site_eval_director.py": 2152,
     "src/blueprint_pipeline/site_package_orchestrator.py": 5697,
     "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2085,

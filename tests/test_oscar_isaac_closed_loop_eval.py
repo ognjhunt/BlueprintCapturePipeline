@@ -7336,25 +7336,6 @@ def test_episode_runs_full_cap_without_stop_flag(tmp_path):
     assert termination["steps_executed"] == 3
 
 
-def test_sealed_plan_and_cli_carry_stop_on_task_completion(tmp_path):
-    from blueprint_pipeline import groot_oscar_closed_loop_image as gocl
-
-    plan = gocl.build_sealed_launch_plan(
-        start_frame="/workspace/seed.png",
-        route_file="/workspace/route.json",
-        steps=12,
-        task_prompt="open the fridge",
-        output_dir="/workspace/t4_out",
-        env={"BLUEPRINT_GROOT_OSCAR_SEALED_IMAGE": "true"},
-    )
-    if plan["closed_loop_command"]:
-        assert "--stop-on-task-completion" in plan["closed_loop_command"]
-        assert (
-            plan["closed_loop_command"][plan["closed_loop_command"].index("--min-steps") + 1] == "3"
-        )
-        assert plan["episode_length_contract"]["min_steps_before_task_completion"] == 3
-
-
 def test_transition_verdict_uses_episode_baseline_not_step_pair(tmp_path):
     contract = {
         "task_kind": "manipulation",

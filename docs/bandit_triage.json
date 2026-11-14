@@ -73,42 +73,6 @@
       "test_id": "B615"
     },
     {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
-      "fingerprint": "21a4f324fce683597a7f6800267e7ecf63f36586d0443f0613e7ff9e7482eb6e",
-      "line_number": 587,
-      "owner": "@ognjhunt",
-      "reason": "The remote episode URL comes from a permission-checked secret file, requires HTTPS, rejects redirects by exact response URL comparison, and the full object is SHA-256 verified. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
-      "fingerprint": "ee054aabb092ac4f57743d8fea38d4e03e123f274c673c77161a812ab0ffa0f6",
-      "line_number": 632,
-      "owner": "@ognjhunt",
-      "reason": "Range reads use the previously validated signed HTTPS URL, reject redirects by exact response URL comparison, require status 206, and enforce the exact requested byte count. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "mitigated_by_control",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
-      "fingerprint": "9e53b3e519ca9988d7d851797a2639e34dd5cc2aa2dae6012760467920fa90ca",
-      "line_number": 647,
-      "owner": "@ognjhunt",
-      "reason": "The full-object digest pass uses the permission-checked signed HTTPS URL, rejects redirects by exact response URL comparison, and binds the bundle to its expected SHA-256 before use. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
       "disposition": "accepted_risk",
       "expires_on": "2026-12-06",
       "filename": "src/blueprint_pipeline/isaac_particlefield_render_job.py",

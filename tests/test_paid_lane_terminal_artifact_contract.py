@@ -86,7 +86,6 @@ SEALED_BY_ALLOCATOR_CALLER = {
 #: The tests below refuse a stale entry, refuse an entry that has quietly
 #: started sealing, and cap the total so the ledger cannot absorb a new lane.
 UNSEALED_LANE_DEBT = {
-    "single_g1_kitchen_episode_runpod.py": "frozen_program",
     "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
 }
 
@@ -213,7 +212,7 @@ def test_the_widened_discovery_still_sees_the_lanes_it_used_to() -> None:
     assert {module for module in PAID_LANE_MODULES if module.endswith("_vast.py")} <= discovered
     # The runpod family, invisible here until a live canary depended on it.
     assert "openpi_policy_ranking_runpod.py" in discovered
-    assert sum(1 for module in discovered if "_runpod" in module) >= 2
+    assert sum(1 for module in discovered if "_runpod" in module) >= 1
 
 
 def test_a_lane_sealed_by_its_caller_really_is_sealed_by_that_caller() -> None:
