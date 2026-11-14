@@ -1,6 +1,6 @@
 """Cloud CDN delivery signing (SCALE2-04) — flagged, fallback-safe.
 
-See docs/BUYER_DELIVERY_CDN_DESIGN_2026-07-20.md. These tests pin the Cloud
+These tests pin the Cloud
 CDN signed-URL scheme (HMAC-SHA1 over the full URL, base64url) and the
 fail-quiet config gating that keeps direct GCS signed URLs as the fallback.
 """
