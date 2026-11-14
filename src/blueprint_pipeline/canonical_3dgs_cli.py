@@ -10,7 +10,6 @@ from typing import Callable, Sequence
 Command = Callable[[Sequence[str] | None], int]
 COMMANDS: dict[str, tuple[str, str]] = {
     "prepare": ("blueprint_pipeline.canonical_3dgs_pipeline", "main"),
-    "run-arm": ("blueprint_pipeline.canonical_3dgs_worker", "main"),
     "finalize": ("blueprint_pipeline.canonical_3dgs_pipeline", "finalize_main"),
     "transport": ("blueprint_pipeline.canonical_3dgs_transport", "main"),
     "admit-worker": ("blueprint_pipeline.canonical_3dgs_admission", "main"),
