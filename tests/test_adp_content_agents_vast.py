@@ -682,7 +682,7 @@ def test_match_v2_variant_rejects_changed_approved_snapshot(tmp_path: Path) -> N
 
 
 def test_match_v2_configs_remove_unproven_aluminum_assertion(tmp_path: Path) -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         "material_agent.yaml": assets / "adp009a_content_agents_material.vast.yaml",
         "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
@@ -2264,7 +2264,7 @@ def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
     after: str,
 ) -> None:
     source = _fake_source(tmp_path, monkeypatch)
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     config_sources = {}
     for name in ("material_agent.yaml", "texture_agent.yaml", "physics_agent.yaml"):
         source_name = "adp009a_content_agents_" + name.removesuffix("_agent.yaml") + ".vast.yaml"
@@ -2284,7 +2284,7 @@ def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
 
 
 def test_remote_configs_freeze_successor_models_for_both_scene_fixtures() -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     for prefix in ("adp009a_content_agents_", "adp009d_content_agents_articulated_"):
         material = yaml.safe_load((assets / f"{prefix}material.vast.yaml").read_text())
         physics = yaml.safe_load((assets / f"{prefix}physics.vast.yaml").read_text())
@@ -4062,7 +4062,7 @@ def test_articulated_variant_rejects_unadmitted_candidate(tmp_path: Path) -> Non
 def test_articulated_configs_preserve_articulation() -> None:
     """No SimReady pass may re-derive geometry or rebuild the articulation."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     for name in ("material", "texture", "physics"):
         text = (
             assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
@@ -4084,7 +4084,7 @@ def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
 ) -> None:
     """Scene-specific config inputs are normalized at the reusable seam."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets
         / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
@@ -4107,7 +4107,7 @@ def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
 def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) -> None:
     """A movable scene replacement must not reach PhysX as a triangle mesh."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
         for agent in ("material", "texture", "physics")
@@ -4133,7 +4133,7 @@ def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) ->
 
 def test_scene_configuration_forwards_object_identity_and_image_conditioning(tmp_path: Path) -> None:
     """The image generator consumes texture.reference_image_uris, not input references."""
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
         for agent in ("material", "texture", "physics")
@@ -4162,7 +4162,7 @@ def test_scene_configuration_forwards_object_identity_and_image_conditioning(tmp
 def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
     tmp_path: Path,
 ) -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets
         / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
@@ -4181,7 +4181,7 @@ def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
 
 
 def _articulated_runtime_configs(tmp_path: Path) -> dict:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     destination = tmp_path / "configs"
     destination.mkdir()
     sources = {
@@ -4749,7 +4749,7 @@ def test_articulated_agent_configs_describe_the_articulated_object() -> None:
     answering the question it was given.
     """
 
-    assets = ROOT / "docs/arm_decision_proof_v1/assets"
+    assets = ROOT / "config" / "content_agents"
     foreign = ("beverage", "canned", "green can", "soda")
     for name in ("material", "texture", "physics"):
         text = (
@@ -4766,7 +4766,7 @@ def test_articulated_texture_config_targets_a_real_render_material() -> None:
 
     text = (
         ROOT
-        / "docs/arm_decision_proof_v1/assets"
+        / "config/content_agents"
         / "adp009d_content_agents_articulated_texture.vast.yaml"
     ).read_text(encoding="utf-8")
 

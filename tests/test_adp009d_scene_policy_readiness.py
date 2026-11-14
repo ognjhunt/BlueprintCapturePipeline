@@ -15,9 +15,9 @@ from blueprint_pipeline.adp009d_scene_policy_readiness import (
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
-MANIFESTS = Path(__file__).parents[1] / "docs/arm_decision_proof_v1/manifests"
-REPORT = MANIFESTS / "adp009d_scene_840920_policy_readiness.v1.json"
-SCENARIO = MANIFESTS / "third_scene_840920_task_a_scenario_suite.v1.json"
+TRIAL_CONFIG = Path(__file__).parents[1] / "config/trial"
+REPORT = TRIAL_CONFIG / "adp009d_scene_840920_policy_readiness.v1.json"
+SCENARIO = TRIAL_CONFIG / "third_scene_840920_task_a_scenario_suite.v1.json"
 
 
 def _values() -> tuple[dict, dict]:

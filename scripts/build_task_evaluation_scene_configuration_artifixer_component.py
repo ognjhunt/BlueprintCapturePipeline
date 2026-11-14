@@ -161,9 +161,8 @@ def build_artifixer_scene_configuration_component(
             "scripts/public_scene_artifixer3d_runner.py": (
                 "blueprint_runtime/scripts/public_scene_artifixer3d_runner.py"
             ),
-            "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json": (
-                "blueprint_runtime/docs/arm_decision_proof_v1/manifests/"
-                "image_editor_backends.v1.json"
+            "config/image_editor_backends.v1.json": (
+                "blueprint_runtime/config/image_editor_backends.v1.json"
             ),
         }
         copies.update(

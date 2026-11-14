@@ -1466,7 +1466,7 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
     candidate_path = candidate_root / "public_scene_artifixer3d_candidate_inputs.v3.json"
     registry_path = (
         package_root
-        / "blueprint_runtime/docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
+        / "blueprint_runtime/config/image_editor_backends.v1.json"
     )
     packet_root = _semantic_rights_and_request(
         candidate=candidate,

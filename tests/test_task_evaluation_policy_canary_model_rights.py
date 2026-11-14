@@ -15,7 +15,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 @pytest.fixture
 def source(tmp_path):
     root = Path(__file__).resolve().parents[1]
-    template = root / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_model_rights.v1.json"
+    template = root / "config/trial/scene839873_policy_canary_model_rights.v1.json"
     original = template.read_bytes()
     repo = tmp_path / "repo"
     repo.mkdir()

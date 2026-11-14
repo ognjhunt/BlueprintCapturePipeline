@@ -831,8 +831,7 @@ def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
     inventory = json.loads(
         (
             Path(__file__).resolve().parents[1]
-            / "docs/experiments/policy_ranking_thesis_20260726/"
-            "openpi_polaris_checkpoint_inventory.json"
+            / "config/trial/openpi_polaris_checkpoint_inventory.json"
         ).read_text(encoding="utf-8")
     )
     entry = next(

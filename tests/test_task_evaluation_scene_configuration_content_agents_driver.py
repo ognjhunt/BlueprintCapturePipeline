@@ -180,7 +180,7 @@ def _package(path: Path) -> None:
         if name.endswith(".sh"):
             target.chmod(0o755)
     (path / "content_agents_model_compatibility_plan.json").write_text("{}\n", encoding="utf-8")
-    assets = ROOT / "docs/arm_decision_proof_v1/assets"
+    assets = ROOT / "config/content_agents"
     for source_name, destination_name in (
         ("adp009a_content_agents_material.vast.yaml", "material_agent.yaml"),
         ("adp009a_content_agents_texture.vast.yaml", "texture_agent.yaml"),

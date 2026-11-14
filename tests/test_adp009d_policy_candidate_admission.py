@@ -199,8 +199,7 @@ def test_candidate_digest_blocks_caller_relabeling() -> None:
 
 _FROZEN_INVENTORY = (
     Path(__file__).resolve().parents[1]
-    / "docs/experiments/policy_ranking_thesis_20260726"
-    / "openpi_polaris_checkpoint_inventory.json"
+    / "config/trial/openpi_polaris_checkpoint_inventory.json"
 )
 
 

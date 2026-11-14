@@ -93,7 +93,7 @@ def _repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (root / "src" / "blueprint_pipeline" / name).write_bytes(
             (source_repo / "src" / "blueprint_pipeline" / name).read_bytes()
         )
-    registry = Path("docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json")
+    registry = Path("config/image_editor_backends.v1.json")
     (root / registry).parent.mkdir(parents=True)
     (root / registry).write_bytes((source_repo / registry).read_bytes())
     weights = root / RUNTIME_VGG16_WEIGHTS
@@ -397,7 +397,7 @@ def test_seals_two_task_bundle_and_rehearses_exact_entrypoint(
         "torch_home_relative_path": "hub/checkpoints/vgg16-397923af.pth",
         "network_retrieval_during_method_execution_required": False,
     }
-    assert "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json" in names
+    assert "config/image_editor_backends.v1.json" in names
     assert not any(name.endswith("artifixer-1.3b.pt") for name in names)
     assert request["source_object_restoration_permitted"] is False
     assert request["outside_exact_support_changed_pixels_permitted"] == 0

@@ -516,11 +516,11 @@ def test_policy_canary_keeps_registry_out_of_native_controller_slot() -> None:
     root = Path(__file__).resolve().parents[1]
     native = (
         root
-        / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_native_controller_configuration.v1.json"
+        / "config/trial/scene839873_policy_canary_native_controller_configuration.v1.json"
     )
     registry = (
         root
-        / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_controller_configuration.v1.json"
+        / "config/trial/scene839873_policy_canary_controller_configuration.v1.json"
     )
     native_record = _record(native, "controller.configuration")
     registry_record = _record(registry, "controller.configuration")

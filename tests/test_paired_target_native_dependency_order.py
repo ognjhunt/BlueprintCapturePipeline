@@ -27,6 +27,7 @@ from blueprint_pipeline.paired_target_native_manipulation_preflight import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFESTS = REPO_ROOT / "docs/arm_decision_proof_v1/manifests"
+TRIAL_CONFIG = REPO_ROOT / "config/trial"
 TASKS = (
     ("task_a_washer_door_open", "a", "washer_asset"),
     ("task_b_notebook_relocation", "b", "notebook_asset"),
@@ -214,7 +215,8 @@ def _fixture(root: Path, *, gravity_response=None) -> dict:
 
         scenario_value = json.loads(
             (
-                MANIFESTS / f"third_scene_840920_task_{letter}_scenario_suite.v1.json"
+                (TRIAL_CONFIG if letter == "a" else MANIFESTS)
+                / f"third_scene_840920_task_{letter}_scenario_suite.v1.json"
             ).read_text()
         )
         scenario_value["task_freeze_digest"] = freeze_value["task_freeze_digest"]
