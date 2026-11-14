@@ -1,6 +1,6 @@
 {
   "default_seconds_per_test": 0.250656326,
-  "file_count": 2256,
+  "file_count": 2252,
   "files": [
     {
       "duration_seconds": 0.05,
@@ -518,16 +518,6 @@
       "test_count": 4
     },
     {
-      "duration_seconds": 0.027,
-      "path": "tests/test_agent_review_cli.py",
-      "test_count": 8
-    },
-    {
-      "duration_seconds": 0.006,
-      "path": "tests/test_agent_review_recapture_planner.py",
-      "test_count": 2
-    },
-    {
       "duration_seconds": 0.938,
       "path": "tests/test_agent_run_executor.py",
       "test_count": 42
@@ -538,19 +528,9 @@
       "test_count": 11
     },
     {
-      "duration_seconds": 0.007,
-      "path": "tests/test_agent_runtime_artifacts.py",
-      "test_count": 1
-    },
-    {
       "duration_seconds": 0.123,
       "path": "tests/test_agent_runtime_comparison.py",
       "test_count": 3
-    },
-    {
-      "duration_seconds": 0.098,
-      "path": "tests/test_agent_runtime_orchestrator_coverage.py",
-      "test_count": 7
     },
     {
       "duration_seconds": 5.946,
@@ -12382,6 +12362,6 @@
   "source_junit_sha256": "457d4512db4021477c9cdb91a801f5b639a4e48b43fe574ba3d527b60700251a",
   "source_repository_sha": "e9af5888afc5efa25dfcfc8742fcfed1e30e7ffd",
   "source_run_id": 38193701899,
-  "test_count": 34367,
-  "total_duration_seconds": 8643.836
+  "test_count": 34349,
+  "total_duration_seconds": 8643.698
 }

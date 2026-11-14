@@ -14,9 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Tuple
 
 
-# Shared readiness thresholds. Kept here so the numpy-free reviewer path
-# (agent_runtime.orchestrator) and the qualification capability envelope
-# stay in lock-step on a single source of truth.
+# Shared readiness threshold of the qualification capability envelope.
 MAXIMUM_HIDDEN_ZONE_BOUND = 0.35
 
 # Never carried onto an atomically replaced file, so restoring a target's

@@ -269,7 +269,6 @@ blueprint-submit-warm-render-batch = "blueprint_pipeline.warm_render_server:main
 blueprint-run-warm-render-broker = "blueprint_pipeline.warm_render_broker:main"
 blueprint-preflight-capture = "blueprint_pipeline.preflight_capture:main"
 blueprint-check-cpu-env = "blueprint_pipeline.cpu_env_doctor:main"
-blueprint-agent-review = "blueprint_pipeline.agent_review_cli:main"
 blueprint-run-e2e = "blueprint_pipeline.run_e2e:main"
 blueprint-compile-evaluation-run = "blueprint_pipeline.evaluation_run_contract:main"
 blueprint-run-evaluation-run = "blueprint_pipeline.evaluation_run_execution:main"
