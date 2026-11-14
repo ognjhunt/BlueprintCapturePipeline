@@ -1,0 +1,114 @@
+{
+  "schema_version": "evaluation_run.v1",
+  "run_id": "adp009d-840313-franka-two-policy-dry-v1",
+  "mode": "evaluate",
+  "scene_bundle": {
+    "adapter_id": "openusd_scene_bundle",
+    "adapter_version": "1",
+    "bundle_id": "adp009d-840313-interiorgs-sage-v1",
+    "uri": "blueprint://task-evaluation-inputs/adp009d-840313-interiorgs-sage-v1",
+    "entrypoint": "840313.usdz",
+    "content_digest": "sha256:4cbf6781cd43cdf02353e0417aefd9ee4df1a65a99e7dbb2ef69a0a0170f22ba"
+  },
+  "robot_adapter": {
+    "adapter_id": "isaac_robot_asset",
+    "adapter_version": "1",
+    "robot_profile_id": "franka-panda-robotiq-2f85-droid-v1",
+    "asset_ref": "isaac://Robots/FrankaRobotics/FrankaPanda/franka.usd",
+    "embodiment": "droid_abs_joint_pos",
+    "sensors": [
+      "external_rgb",
+      "wrist_rgb"
+    ]
+  },
+  "task_scenario_pack": {
+    "adapter_id": "manifest_task_scenario_pack",
+    "adapter_version": "1",
+    "pack_id": "adp009d-840313-pick-place-scenario-suite-v1",
+    "tasks": [
+      {
+        "task_id": "pick-approved-can-to-frozen-destination",
+        "object_id": "approved_can",
+        "success_authority": "deterministic_simulator_state"
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "adp009d-840313-canonical-anchor",
+        "task_id": "pick-approved-can-to-frozen-destination",
+        "scenario_suite_digest": "sha256:de19e6b6f098ff9dc1a10facb3119eca24d05f0e37998a93e352b0e16c2fef0b",
+        "paired_controls": [
+          "zero_action_negative",
+          "deterministic_scripted_positive"
+        ]
+      }
+    ]
+  },
+  "policy_adapter": {
+    "adapter_id": "robot_eval_policy_package",
+    "adapter_version": "1",
+    "policy_id": "adp009d-frozen-two-candidate-pair-v1",
+    "candidate_ids": [
+      "pi05_droid",
+      "groot_n17_droid"
+    ],
+    "observation_schema_ref": "blueprint://schemas/adp009d_dual_rgb_observation.v1",
+    "action_schema_ref": "blueprint://schemas/droid_abs_joint_pos_action.v1",
+    "policy_may_grade_itself": false
+  },
+  "runtime_provider_profile": {
+    "adapter_id": "isaac_provider_runtime",
+    "adapter_version": "1",
+    "profile_id": "adp009d-isaac-lab-arena-vast-l40s-v1",
+    "providers": [
+      "vast"
+    ],
+    "simulator": "isaac_lab_arena",
+    "max_spend_usd": 6.0,
+    "timeout_seconds": 5400,
+    "retry_cap": 0
+  },
+  "proof_contract": {
+    "adapter_id": "declared_evidence_proof_contract",
+    "adapter_version": "1",
+    "contract_id": "adp009d-simulator-state-media-controls-v1",
+    "required_evidence": [
+      "allocator_admission",
+      "zero_action_negative_control",
+      "scripted_positive_control",
+      "lossless_policy_input_frames",
+      "frame_manifest",
+      "human_review_video",
+      "deterministic_simulator_state_score",
+      "artifact_manifest",
+      "teardown_manifest",
+      "provider_zero_receipt"
+    ],
+    "claim_ceiling": {
+      "development_only": true,
+      "simulator_only": true,
+      "physical_robot_readiness": false,
+      "safety_approval": false
+    },
+    "prohibited_claims": [
+      "physical_success",
+      "deployment_readiness",
+      "safety_certification",
+      "general_scene_performance"
+    ],
+    "rights_privacy_scope": {
+      "status": "internal_noncommercial_research_only",
+      "external_use_allowed": false
+    }
+  },
+  "metadata": {
+    "program_id": "arm-decision-proof-v1",
+    "adp_item": "ADP-009D",
+    "publication_state": "dry_only",
+    "live_blockers": [
+      "exact_adp009d_runtime_adapter_not_on_protected_main",
+      "scripted_positive_control_not_passed",
+      "allocator_artifact_manifest_not_emitted"
+    ]
+  }
+}

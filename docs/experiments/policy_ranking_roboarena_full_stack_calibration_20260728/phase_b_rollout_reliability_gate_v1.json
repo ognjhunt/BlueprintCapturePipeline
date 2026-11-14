@@ -1,0 +1,79 @@
+{
+  "schema_version": "policy_ranking_phase_b_rollout_reliability_gate.v1",
+  "experiment_id": "policy_ranking_roboarena_full_stack_calibration_20260728",
+  "registered_at": "2026-07-28T16:29:02-0500",
+  "status": "prospective_offline_design_phase_b_not_admitted",
+  "paid_execution_admitted": false,
+  "provider_called_for_this_gate_version": false,
+  "physical_outcome_labels_accessed_to_select_this_rule": false,
+  "claim_boundary": "This is a frozen evidence-reliability and abstention rule for future Phase-B runs. It is not WAM qualification, rank fidelity, independent confirmation, or Phase-B admission.",
+  "provenance": {
+    "lab_branch": "claude/abstention-lab-20260728",
+    "lab_commit": "af1663f2",
+    "main_integration_pr": 227,
+    "main_integration_commit": "65504fe9d97fe066e75531f96980a6f2a14c55d5",
+    "known_answer_validation": "32_of_35_campaign_3_examples_with_class_correct_reasons",
+    "known_answer_validation_is_independent_confirmation": false,
+    "known_limitation": "Per-window timing disagreement false-flagged 3 of 20 real windows in the lab validation; therefore timing is not a per-window terminal rule."
+  },
+  "window_gate": {
+    "timing_flag_scope": "session",
+    "immediate_hard_failure_flags": [
+      "decode_failed",
+      "too_few_frames",
+      "blank_frames",
+      "static_under_command",
+      "motion_without_command",
+      "invalid_action_rot6d"
+    ],
+    "timing_correlation_recorded_per_window": true,
+    "timing_disagreement_can_terminate_single_window": false,
+    "thresholds": {
+      "downscale_width": 160,
+      "blank_spatial_std_min": 4.0,
+      "command_active_energy_min": 0.05,
+      "command_null_energy_max": 0.01,
+      "static_motion_max": 0.05,
+      "null_motion_max": 0.6,
+      "timing_correlation_min": 0.15,
+      "timing_check_min_energy_std": 0.05,
+      "rot6d_orthonormal_tol": 0.15
+    }
+  },
+  "session_timing_gate": {
+    "independent_unit": "session_episode",
+    "eligible_window": "no_non_timing_reliability_flag_and_finite_timing_correlation",
+    "aggregation": "median_of_eligible_window_correlations",
+    "minimum_eligible_timing_windows": 3,
+    "timing_correlation_min": 0.15,
+    "below_threshold_result": "timing_disagreement_product_abstention",
+    "insufficient_windows_result": "timing_evidence_insufficient_product_abstention",
+    "numerical_rule": "median_equal_to_threshold_passes",
+    "per_window_vote_or_kill": false
+  },
+  "arm_handling": {
+    "each_wam_arm_evaluated_separately": true,
+    "registered_score_fusion": false,
+    "visible_skeleton_output": "report_reliability_but_do_not_treat_visible_skeleton_motion_as_world_consequence",
+    "scene_masked_output": "run_the_same_gate_separately_for_skeleton_capable_arms",
+    "native_cosmos_output": "run_on_native_rollout_without_oscar_frames_upstream",
+    "hybrid_output": "run_separately_and_retain_hybrid_attribution"
+  },
+  "evaluator_handling": {
+    "product_ranking_credit_when_gate_fails": false,
+    "diagnostic_evaluator_may_score_retained_technically_valid_failure": true,
+    "reason": "Phase-B calibration must measure how causal and reliability diagnostics relate to rank fidelity even when the WAM screen is unfavorable.",
+    "diagnostic_evaluator_score_can_erase_gate_failure": false,
+    "invalid_or_undecodable_media_evaluator_eligible": false
+  },
+  "future_run_requirements": {
+    "threshold_object_must_be_explicitly_serialized_and_hashed_per_experiment": true,
+    "defaults_alone_are_not_a_scientific_freeze": true,
+    "failures_and_abstentions_retained": true,
+    "session_level_reports_retained": true,
+    "new_disjoint_confirmation_required_for_scientific_credit": true,
+    "risk_coverage_and_abstention_correctness_reported": true,
+    "causal_counterfactual_screen_still_required": true,
+    "passing_tier_1_is_necessary_not_sufficient_for_wam_qualification": true
+  }
+}
