@@ -7,7 +7,6 @@ import pytest
 
 from blueprint_pipeline.cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
 from blueprint_pipeline.gpu_render_providers import RenderLaunchSpec
-from blueprint_pipeline import provider_closure_audit
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -339,12 +338,6 @@ class _FakeIAM:
         }
 
 
-
-
-
-
-
-
 def test_cloud_adapters_fail_closed_when_account_configuration_missing(monkeypatch, tmp_path: Path) -> None:
     names = (
         "BLUEPRINT_GCP_PROJECT",
@@ -377,26 +370,6 @@ def test_cloud_adapters_fail_closed_when_account_configuration_missing(monkeypat
     assert "gcp_project_missing" in gcp["configuration_blockers"]
     with pytest.raises(ValueError, match="aws_provider_integration_removed"):
         AWSRenderProvider().build_request(_spec(), tmp_path)
-
-
-def test_provider_closure_reports_gcp_and_aws_credentials_without_reading_values(
-    monkeypatch, tmp_path: Path
-) -> None:
-    gcp_file = tmp_path / "gcp.json"
-    gcp_file.write_text("credential-material", encoding="utf-8")
-    aws_file = tmp_path / "aws-credentials"
-    aws_file.write_text("credential-material", encoding="utf-8")
-    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(gcp_file))
-    monkeypatch.setenv("BLUEPRINT_GCP_PROJECT", "blueprint-test")
-    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(aws_file))
-    monkeypatch.setenv("BLUEPRINT_AWS_ACCOUNT_ID", "123456789012")
-    gcp = provider_closure_audit._credential_audit("gcp")
-    aws = provider_closure_audit._credential_audit("aws")
-    assert gcp["credential_configured"] is True
-    assert aws["credential_configured"] is False
-    assert aws["reason"] == "aws_provider_integration_removed"
-    assert gcp["raw_secret_values_read"] is False
-    assert aws["raw_secret_values_recorded"] is False
 
 
 def test_retired_aws_never_discovers_credentials_or_claims_provider_zero(monkeypatch):

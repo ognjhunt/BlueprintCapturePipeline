@@ -430,24 +430,6 @@ def test_an_entry_the_website_would_refuse_is_left_out_and_the_result_still_publ
     assert videos.publication_entry(row, summary) is None
 
 
-def test_production_acceptance_reads_a_publication_with_practice_run_videos():
-    from blueprint_pipeline.production_autonomy_acceptance import AcceptanceEvidenceError, _publication_contract
-
-    fixture = json.loads((ROOT / "tests/fixtures/beta_policy_screening_review_videos_publication.v2.json").read_text())
-    assert _publication_contract(fixture)["schema_version"] == "beta_policy_screening_publication.v2"
-
-    def sealed(value):
-        return {**value, "publication_digest": cross_runtime_canonical_digest(value, digest_field="publication_digest")}
-    broken = json.loads(json.dumps(fixture))
-    broken["review_videos"][0]["practice_runs"][0]["outcome"] = "failure"
-    with pytest.raises(AcceptanceEvidenceError, match="publication_contract_invalid"):
-        _publication_contract(sealed(broken))
-    retained = {**json.loads(json.dumps(fixture)), "schema_version": "beta_policy_screening_publication.v1",
-                "purpose": "screening", "claim_ceiling": "diagnostic_policy_execution", "recommendation_eligible": False}
-    with pytest.raises(AcceptanceEvidenceError, match="publication_contract_invalid"):
-        _publication_contract(sealed(retained))
-
-
 def test_a_pass_waits_for_withdrawal_deletion_and_never_recreates_a_removed_capture(world, monkeypatch):
     import fcntl
 

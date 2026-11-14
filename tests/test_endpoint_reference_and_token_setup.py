@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import policy_endpoint_token_setup as token_setup
-from blueprint_pipeline.g1_field_run_capture import _first_string, _webapp_route_prefill
 
 
 def test_policy_endpoint_token_setup_creates_reuses_and_prints_manifest(
@@ -56,6 +55,3 @@ def test_policy_endpoint_token_setup_creates_reuses_and_prints_manifest(
     assert token_file.read_text(encoding="utf-8") == "second-token\n"
 
 
-def test_g1_field_route_helpers_cover_empty_and_unaccepted_inputs() -> None:
-    assert _first_string("", None, default="fallback") == "fallback"
-    assert _webapp_route_prefill({"status": "blocked"}) == {}

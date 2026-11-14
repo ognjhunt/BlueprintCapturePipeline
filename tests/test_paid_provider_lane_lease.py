@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-import blueprint_pipeline.isaac_g1_kitchen_parity_job as J
 import blueprint_pipeline.paid_provider_lane_lease as lease_module
 from blueprint_pipeline.paid_lane_guard import (
     bind_pending_teardown_instance,
@@ -20,7 +19,6 @@ from blueprint_pipeline.paid_lane_guard import (
 from blueprint_pipeline.paid_provider_lane_lease import (
     BLOCKER_ALREADY_OWNED,
     BLOCKER_STALE_REQUIRES_RECONCILIATION,
-    PaidProviderLaneLeaseSet,
     STALE_RECLAIM_REQUIRED_EVIDENCE,
     accept_paid_provider_lane_lease_handoff,
     acquire_paid_provider_lane_lease,
@@ -1173,61 +1171,6 @@ def test_initial_acquire_blocks_for_open_pending_teardown_without_legacy_lease(
     assert blocked["reconciliation"]["open_pending_teardown_count"] == 1
 
 
-def test_reconciliation_blocks_open_supervised_descendant_record() -> None:
-    reconciliation = _reconciliation(
-        lane=J.ISAAC_G1_KITCHEN_PARITY_LANE,
-        pending=[
-            {
-                "schema_version": "pending_teardown.v1",
-                "provider": "runpod",
-                "lane": "isaac_startup_supervisor",
-                "status": "open",
-                "run_id": "supervised-attempt",
-                "instance_id": "child-pod",
-                "job_dir": "child-job",
-                "path": "/tmp/child-pending.json",
-            }
-        ],
-    )
-
-    assert reconciliation["status"] == "blocked"
-    assert reconciliation["open_pending_teardown_count"] == 1
-    assert reconciliation["blockers"] == [BLOCKER_ALREADY_OWNED]
-
-
-def test_supervised_descendant_allocation_is_inside_parity_lease_scope(
-    tmp_path: Path,
-) -> None:
-    class _Provider:
-        name = "runpod"
-
-        def billable_inventory(self, *, name_prefix: str) -> dict:
-            resource_name = "blueprint-isaac-g1-supervised-attempt-001"
-            resources = (
-                [{"instance_id": "supervised-pod", "name": resource_name}]
-                if resource_name.startswith(name_prefix)
-                else []
-            )
-            return {
-                "api_confirmed": True,
-                "live_resource_count": len(resources),
-                "resources": resources,
-            }
-
-    lease_set = PaidProviderLaneLeaseSet(
-        providers={"runpod": _Provider()},
-        lane=J.ISAAC_G1_KITCHEN_PARITY_LANE,
-        job_dir=str(tmp_path / "job"),
-        resource_name_prefix=J.ISAAC_G1_KITCHEN_PARITY_RESOURCE_PREFIX,
-    )
-
-    summary = lease_set.acquire()
-
-    assert summary["status"] == "blocked"
-    assert summary["blockers"] == [BLOCKER_ALREADY_OWNED]
-    assert summary["leases"][0]["reconciliation"]["provider_live_resource_count"] == 1
-
-
 def test_release_retains_lease_until_terminal_reconciliation_passes(
     tmp_path: Path,
 ) -> None:
@@ -1250,72 +1193,6 @@ def test_release_retains_lease_until_terminal_reconciliation_passes(
     assert retained["status"] == "retained_unverified_teardown"
     assert retained["released"] is False
     assert read_lease("runpod", "lane", tmp_path) is not None
-
-
-def test_paid_job_blocks_before_provider_mutation_when_lane_owned(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """A second local agent must stop with a stable blocker before create."""
-    lease_dir = Path(os.environ["BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR"])
-    other_owner = acquire_paid_provider_lane_lease(
-        provider="runpod",
-        lane=J.ISAAC_G1_KITCHEN_PARITY_LANE,
-        job_dir="other-agent-job",
-        lease_dir=lease_dir,
-        reconciliation=_reconciliation(lane=J.ISAAC_G1_KITCHEN_PARITY_LANE),
-    )
-    assert other_owner["status"] == "acquired"
-
-    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "50.0")
-    monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_REF_ENV, "registry.example/worker:20260711")
-    monkeypatch.setattr(
-        J,
-        "_git_worktree_evidence",
-        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
-    )
-
-    def _fake_stage(bundle_zip, job_dir, *, key_prefix):
-        job_dir.mkdir(parents=True, exist_ok=True)
-        (job_dir / "provider_bundle_url.txt").write_text("https://spaces.example/b?sig=A")
-        (job_dir / "provider_output_put_url.txt").write_text("https://spaces.example/o?sig=B")
-        (job_dir / "provider_output_get_url.txt").write_text("https://spaces.example/o?sig=C")
-        return {"status": "completed", "manifest": {}}
-
-    class _FakeProvider:
-        name = "runpod"
-
-        def available(self) -> dict:
-            return {"provider": self.name, "available": True}
-
-        def build_request(self, spec, job_dir):
-            return {"env": dict(spec.env)}
-
-    def _launch_must_not_run(*_args, **_kwargs):
-        raise AssertionError("owned lane must block before any provider mutation")
-
-    monkeypatch.setattr(J, "get_render_provider", lambda name, warm_candidates=(): _FakeProvider())
-    monkeypatch.setattr(J, "stage_bundle", _fake_stage)
-    monkeypatch.setattr(J, "launch_with_marker_retry", _launch_must_not_run)
-    monkeypatch.setattr(J, "race_launch", _launch_must_not_run)
-
-    m = J.run_isaac_g1_kitchen_parity_job(
-        scenarios=_SCENARIOS,
-        out_dir=tmp_path / "job",
-        provider="runpod",
-        allow_paid=True,
-        allow_dirty_paid_launch=True,
-        cold_race_contenders=1,
-    )
-
-    assert m["status"] == "blocked"
-    assert BLOCKER_ALREADY_OWNED in m["blockers"]
-    assert m["paid_provider_lane_lease"]["status"] == "blocked"
-    assert m["paid_provider_lane_lease"]["leases"][0]["holder"]["job_dir"] == ("other-agent-job")
-    # The prior owner's lease is untouched.
-    assert (
-        read_lease("runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir)["job_dir"]
-        == "other-agent-job"
-    )
 
 
 def _stage_for_paid_job(_bundle_zip, job_dir, *, key_prefix):
@@ -1353,120 +1230,3 @@ class _InventoryProvider:
         }
 
 
-def _configure_paid_job(monkeypatch, provider: _InventoryProvider) -> None:
-    monkeypatch.setenv(J.ISAAC_G1_MAX_SPEND_USD_ENV, "50.0")
-    monkeypatch.setenv(J.ISAAC_WORKER_IMAGE_REF_ENV, "registry.example/worker:20260711")
-    monkeypatch.setattr(
-        J,
-        "_git_worktree_evidence",
-        lambda: {"status": "available", "git_sha": "abc123", "dirty": False},
-    )
-    monkeypatch.setattr(J, "get_render_provider", lambda _name, warm_candidates=(): provider)
-    monkeypatch.setattr(J, "stage_bundle", _stage_for_paid_job)
-
-
-def test_paid_job_blocks_on_legacy_open_teardown_before_provider_create(
-    tmp_path: Path, monkeypatch
-) -> None:
-    provider = _InventoryProvider()
-    _configure_paid_job(monkeypatch, provider)
-    open_pending_teardown(
-        provider="runpod",
-        lane=J.ISAAC_G1_KITCHEN_PARITY_LANE,
-        run_id="legacy-active-run",
-        job_dir=tmp_path / "legacy-job",
-        max_age_seconds=3600,
-    )
-    monkeypatch.setattr(
-        J,
-        "launch_with_marker_retry",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy active lane must block before create")
-        ),
-    )
-
-    manifest = J.run_isaac_g1_kitchen_parity_job(
-        scenarios=_SCENARIOS,
-        out_dir=tmp_path / "job",
-        provider="runpod",
-        allow_paid=True,
-        allow_dirty_paid_launch=True,
-        cold_race_contenders=1,
-    )
-
-    assert manifest["status"] == "blocked"
-    assert BLOCKER_ALREADY_OWNED in manifest["blockers"]
-    reconciliation = manifest["paid_provider_lane_lease"]["leases"][0]["reconciliation"]
-    assert reconciliation["open_pending_teardown_count"] == 1
-
-
-def test_launch_exception_releases_lease_when_inventory_proves_no_allocation(
-    tmp_path: Path, monkeypatch
-) -> None:
-    provider = _InventoryProvider()
-    _configure_paid_job(monkeypatch, provider)
-    monkeypatch.setattr(
-        J,
-        "launch_with_marker_retry",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("provider call failed before allocation")
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="before allocation"):
-        J.run_isaac_g1_kitchen_parity_job(
-            scenarios=_SCENARIOS,
-            out_dir=tmp_path / "job",
-            provider="runpod",
-            allow_paid=True,
-            allow_dirty_paid_launch=True,
-            cold_race_contenders=1,
-        )
-
-    lease_dir = Path(os.environ["BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR"])
-    assert read_lease("runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir) is None
-
-
-def test_stopped_billable_allocation_retains_lane_lease(tmp_path: Path, monkeypatch) -> None:
-    provider = _InventoryProvider()
-    _configure_paid_job(monkeypatch, provider)
-
-    def _launch(*_args, **_kwargs):
-        provider.live = True
-        return {
-            "status": "launched",
-            "instance_id": "pod-live",
-            "mode": "cold_create_marker_verified",
-        }
-
-    monkeypatch.setattr(J, "launch_with_marker_retry", _launch)
-    monkeypatch.setattr(
-        J,
-        "watch_and_collect",
-        lambda *_args, **_kwargs: {
-            "status": "completed",
-            "elapsed_seconds": 1,
-            "teardown": {"status": "stopped"},
-            "teardown_reason": "runner_done_preserved_for_warm_reuse",
-            "runner_result": {
-                "status": "completed",
-                "policy_id": "blueprint_default_walk_to_target_smoke_policy",
-                "scenarios": [],
-            },
-        },
-    )
-
-    manifest = J.run_isaac_g1_kitchen_parity_job(
-        scenarios=_SCENARIOS,
-        out_dir=tmp_path / "job",
-        provider="runpod",
-        allow_paid=True,
-        allow_dirty_paid_launch=True,
-        cold_race_contenders=1,
-    )
-
-    release = manifest["paid_provider_lane_lease"]["release"]
-    assert release["all_providers_terminal"] is False
-    assert release["results"][0]["status"] == "retained_unverified_teardown"
-    lease_dir = Path(os.environ["BLUEPRINT_PAID_PROVIDER_LANE_LEASE_DIR"])
-    assert read_lease("runpod", J.ISAAC_G1_KITCHEN_PARITY_LANE, lease_dir) is not None

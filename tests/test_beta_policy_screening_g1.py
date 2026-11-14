@@ -825,61 +825,6 @@ def navigation_profile(kwargs, tmp_path, *, candidates=(DP_NAV,)):
             "native_g1_registration_source": dict(kwargs["source"])}
 
 
-def test_planning_binds_a_navigation_g1_row_and_quotes_only_its_funded_cells(tmp_path, monkeypatch):
-    from pathlib import Path
-    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
-
-    def never(*_args, **_kwargs):
-        raise AssertionError("a navigation scene reached a fixed-arm runtime or the paused-controls omission")
-
-    monkeypatch.setattr(capabilities, "_native_templates", never)
-    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_control_omission.omit_paused_controls", never)
-    monkeypatch.setattr("blueprint_pipeline.cosmos_droid_bundle.profile", never)
-    monkeypatch.setattr("blueprint_pipeline.molmoact2_droid_runtime.candidate_execution_spec", never)
-    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch, wall_x=-0.2)
-    profile = navigation_profile(kwargs, tmp_path)
-    # The probe receipt is read where the record's scene facts name it (its own directory), not the profile's.
-    (tmp_path / "elsewhere").mkdir()
-    profile["robot_free_probe_root"] = str(tmp_path / "elsewhere")
-    planning = capabilities.build_planning_inputs(catalog=load_default_catalog(), profile=profile,
-        capture_root=Path(profile["capture_root"]), source=kwargs["source"], inputs_dir=tmp_path / "screening-inputs")
-    assert planning["scene"]["task_kind"] == "goal_region_navigation"
-    binding = planning["capabilities"]["candidate_bindings"][DP_NAV]
-    descriptor = binding["execution_spec"]
-    assert descriptor[g1.DROPPED_START_OFFSETS_FIELD] == {"back_15cm": "g1_spawn_overlap"}
-    assert descriptor["setup_quality_flags"] == ["g1_spawn_overlap"] and descriptor["backend"] == g1.BACKEND
-    quote = planning["cost_quotes"][DP_NAV]
-    assert quote["episode_count"] == 3 and quote["maximum_cost_usd"] == "4.00"
-    # The contract the candidates run is the record's, with no paused-controls omission.
-    sealed = json.loads(Path(planning["scene"]["scene_inputs"]["path"]).read_text())
-    assert sealed["task_success_contract"] == kwargs["contract"] and "diagnostic_control_omission_authority" not in sealed
-    # The robot-free probe receipt is the record's own, from the directory its scene facts name.
-    assert planning["scene"]["robot_free_probe_digest"] == sealed["beta_robot_free_probe_receipt"]["receipt_digest"]
-
-
-def test_planning_binds_a_navigation_g1_row_whose_offset_has_no_floor_and_quotes_its_other_cells(
-        tmp_path, monkeypatch):
-    """Codex on #3480: the plan's descriptor must accept a floor-absent drop, not refuse the whole row."""
-    from pathlib import Path
-    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
-
-    def never(*_args, **_kwargs):
-        raise AssertionError("a navigation scene reached a fixed-arm runtime or the paused-controls omission")
-
-    monkeypatch.setattr(capabilities, "_native_templates", never)
-    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_control_omission.omit_paused_controls", never)
-    monkeypatch.setattr("blueprint_pipeline.cosmos_droid_bundle.profile", never)
-    monkeypatch.setattr("blueprint_pipeline.molmoact2_droid_runtime.candidate_execution_spec", never)
-    kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch, floor_x_min=-0.04)
-    profile = navigation_profile(kwargs, tmp_path)
-    planning = capabilities.build_planning_inputs(catalog=load_default_catalog(), profile=profile,
-        capture_root=Path(profile["capture_root"]), source=kwargs["source"], inputs_dir=tmp_path / "screening-inputs")
-    descriptor = planning["capabilities"]["candidate_bindings"][DP_NAV]["execution_spec"]
-    assert descriptor[g1.DROPPED_START_OFFSETS_FIELD] == {"back_15cm": "g1_spawn_floor_absent"}
-    assert descriptor["setup_quality_flags"] == ["g1_spawn_floor_absent"]
-    assert planning["cost_quotes"][DP_NAV]["episode_count"] == 3
-
-
 def test_an_estimated_scene_floor_flags_a_navigation_row_and_never_refuses_it(tmp_path, monkeypatch):
     from tests.test_beta_policy_screening_g1_prepare import fallback_floor_levelling
     kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, levelling=fallback_floor_levelling())
@@ -902,32 +847,6 @@ def test_without_an_estimated_floor_a_navigation_row_carries_no_floor_flag(tmp_p
     levelling = {key: value for key, value in fallback_floor_levelling().items() if key != "fallback_floor"}
     kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, levelling=levelling)
     assert g1.setup_quality_flags(g1.candidate_execution_spec(**kwargs)) == []
-
-
-def test_planning_quotes_a_floor_estimated_navigation_row_and_its_flag_reaches_the_result(tmp_path, monkeypatch):
-    from pathlib import Path
-    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
-    from tests.test_beta_policy_screening_g1_prepare import fallback_floor_levelling
-
-    kwargs, _, _ = navigation_spec_inputs(tmp_path, monkeypatch, levelling=fallback_floor_levelling())
-    profile = navigation_profile(kwargs, tmp_path)
-    planning = capabilities.build_planning_inputs(catalog=load_default_catalog(), profile=profile,
-        capture_root=Path(profile["capture_root"]), source=kwargs["source"], inputs_dir=tmp_path / "screening-inputs")
-    descriptor = planning["capabilities"]["candidate_bindings"][DP_NAV]["execution_spec"]
-    assert descriptor["setup_quality_flags"] == ["g1_scene_floor_estimated"]
-    assert g1.DROPPED_START_OFFSETS_FIELD not in descriptor
-    quote = planning["cost_quotes"][DP_NAV]  # Every cell funded: a flag, never a gate.
-    assert quote["episode_count"] == g1.CELLS_PER_SESSION and quote["maximum_cost_usd"] == "4.00"
-    # The plan takes the code and the row's result summary carries it, as it carries the spawn flags.
-    flags = ["g1_scene_floor_estimated"]
-    plan = g1_plan(flags=flags)
-    assert plan["candidates"][0]["status"] == "selected" and validate_screening_plan(plan) == plan
-    schema = json.loads((g1.REPOSITORY / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
-    Draft202012Validator(schema).validate(plan)
-    assert "g1_scene_floor_estimated" in schema["$defs"]["execution"]["properties"]["setup_quality_flags"][
-        "description"]
-    plan, candidate, result = session_result(flags=flags)
-    assert g1.summarize_result(result, plan=plan, candidate=candidate)["setup_quality_flags"] == flags
 
 
 def test_the_worker_refuses_a_scene_kind_that_is_not_a_string_by_name_never_by_type_error():

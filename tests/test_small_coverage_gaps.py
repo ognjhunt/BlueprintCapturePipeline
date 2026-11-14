@@ -7,8 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from blueprint_pipeline import industrial_ontology, local_capture, model_access_env
-from blueprint_pipeline import wam_vision_success_judge
+from blueprint_pipeline import local_capture, model_access_env
 from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.synthesis import plucker_rays
 
@@ -149,48 +148,3 @@ def test_plucker_tensor_and_zero_moment_normalization(monkeypatch) -> None:  # t
     assert np.all(normalized == 0.0)
 
 
-def test_industrial_ontology_and_wam_vision_judge_edges() -> None:
-    multi = industrial_ontology.classify_industrial_entities(
-        ["rack tote pallet_zone traffic_zone workcell"]
-    )
-    assert {entity.entity_type for entity in multi} >= {
-        "rack",
-        "tote",
-        "pallet_zone",
-        "traffic_zone",
-        "workcell",
-    }
-
-    assert wam_vision_success_judge._mapping({"a": 1}) == {"a": 1}
-    assert wam_vision_success_judge._mapping(["bad"]) == {}
-    assert wam_vision_success_judge._string_list("one") == ["one"]
-    assert wam_vision_success_judge._string_list(["one", "", None, "two"]) == ["one", "two"]
-    assert wam_vision_success_judge._string_list(123) == []
-    assert wam_vision_success_judge._float(True, 0.5) == 0.5
-    assert wam_vision_success_judge._float("bad", 0.7) == 0.7
-    payload = wam_vision_success_judge.build_fixture_vision_success_labels(
-        rollout_results={
-            "evaluation_substrate": "fixture_wam",
-            "rollouts": [
-                {
-                    "rollout_id": "rollout-a",
-                    "predicted_success": True,
-                    "uncertainty_score": 0.1,
-                    "ood_flags": ["lighting"],
-                    "failure_mode_ids": [],
-                },
-                ["ignored"],
-            ],
-        },
-        generated_at="2026-06-20T00:00:00Z",
-    )
-    assert payload["status"] == "completed"
-    assert payload["success_rate"] == 1.0
-    assert payload["ood_label_count"] == 1
-    assert payload["failure_mode_ids"] == ["wam_ood_uncertain"]
-    assert (
-        wam_vision_success_judge.build_fixture_vision_success_labels(rollout_results={})[
-            "status"
-        ]
-        == "blocked_missing_rollouts"
-    )

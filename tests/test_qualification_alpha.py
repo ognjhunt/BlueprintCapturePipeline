@@ -11,11 +11,6 @@ from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import materialize_capture_bundle
 
 
-@pytest.fixture(autouse=True)
-def _disable_default_object_index_backend_commands(monkeypatch):  # type: ignore[no-untyped-def]
-    monkeypatch.setattr("blueprint_pipeline.object_index_stage._command_from_env", lambda _name: "")
-
-
 def _build_staged_capture(
     tmp_path: Path,
     *,

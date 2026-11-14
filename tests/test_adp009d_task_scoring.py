@@ -1128,19 +1128,6 @@ def test_numpy_inputs_are_accepted_verbatim() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_thresholds_match_the_harness_manifest_contract() -> None:
-    """Changing one of these here without the harness breaks the frozen task."""
-
-    from blueprint_pipeline import adp009d_franka_evaluation_harness as harness
-
-    source = Path(harness.__file__).read_text(encoding="utf-8")
-    assert f'"minimum_lift_m": {LIFT_CLEARANCE_M}' in source
-    assert f'"minimum_translation_m": {DESTINATION_MIN_DISTANCE_FROM_START_M}' in source
-    assert f'"maximum_center_error_m": {PLACE_RADIUS_M}' in source
-    assert f'"maximum_tilt_degrees": {PLACE_MAX_TILT_DEG}' in source
-    assert '"deterministic_simulator_state"' in source
-
-
 def test_scene_constants_match_the_isaac_runtime_and_approach_capture() -> None:
     from blueprint_pipeline import adp009d_approach_capture as approach
 

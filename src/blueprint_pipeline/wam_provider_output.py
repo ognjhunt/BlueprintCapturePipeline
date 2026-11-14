@@ -381,9 +381,7 @@ def inspect_provider_runtime_output_archive(
             if Path(candidate).name in RUNTIME_RESULT_FILENAMES:
                 try:
                     if Path(candidate).name == "native_g1_beta_session_result.v1.json":
-                        from .native_g1_beta_transport import MAX_TERMINAL_BYTES
-                        if archive.getinfo(candidate).file_size > MAX_TERMINAL_BYTES:
-                            raise ValueError("g1_beta_terminal_read_budget_exceeded")
+                        raise ValueError("g1_beta_lane_removed")
                     if Path(candidate).name == "native_task_arena_policy_canary_session_result.v1.json":
                         parsed, runtime_result_parse_scope = _native_status_projection(archive, candidate)
                     else:

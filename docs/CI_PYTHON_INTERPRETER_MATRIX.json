@@ -30,8 +30,7 @@
     "python_versions": ["3.11", "3.12"],
     "suite": [
       "scripts/validate_python_interpreter_matrix.py",
-      "tests/test_public_scientific_claims.py",
-      "tests/test_sc3_eval_protocol.py"
+      "tests/test_public_scientific_claims.py"
     ],
     "evidence_role": "install and bounded contract compatibility; not canonical launch evidence"
   },

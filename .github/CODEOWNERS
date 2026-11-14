@@ -30,8 +30,6 @@
 /deploy/ @ognjhunt
 /src/blueprint_pipeline/security_controls.py @ognjhunt
 /src/blueprint_pipeline/post_training_data_package.py @ognjhunt
-/src/blueprint_pipeline/sc3_eval_protocol.py @ognjhunt
-/src/blueprint_pipeline/robot_eval_execution.py @ognjhunt
 /src/blueprint_pipeline/action_normalization.py @ognjhunt
 /src/blueprint_pipeline/ios_manifest.py @ognjhunt
 /src/blueprint_pipeline/materialization.py @ognjhunt

@@ -333,64 +333,6 @@ def test_retained_packet_with_receipt_is_never_replaced_on_validation_failure(pr
     assert not list(final.parent.glob("." + final.name + ".incomplete-*"))
 
 
-@pytest.mark.parametrize("spawn_reading", ["overlap", "clear", "missing"])
-def test_planning_funds_no_g1_row_whose_packet_spawns_inside_the_room(prepared_scene, tmp_path, monkeypatch,
-                                                                       spawn_reading):
-    from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
-    from blueprint_pipeline.beta_policy_screening_capabilities import build_planning_inputs
-    from blueprint_pipeline.beta_policy_screening_launch import _write
-    from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan
-    from blueprint_pipeline.robot_free_probe_gate import (
-        RECEIPT_FILENAME, REQUIRED_CHECKS, RIGID_RECEIPT_SCHEMA, task_success_contract_binding)
-    from blueprint_pipeline.team_candidate_quick10_registry import scene_facts
-
-    args, request, _ = prepared_scene
-    if spawn_reading == "overlap":
-        _inside_the_table(monkeypatch, keep_searched=False)
-    result = prepare.prepare_native_g1_beta_packet(**args)
-    if spawn_reading == "missing":
-        (Path(result["scene_packet"]["path"]).parent / spawn.FILENAME).unlink()
-    dp = g1.CANDIDATES[0]
-    [inputs_path] = args["output_root"].glob("team_scene_inputs.v1.json")
-    profile = {"capture_root": str(tmp_path / "capture"), "scene_id": args["site_id"], "task_id": request["task_id"],
-               "team_scene_inputs_path": str(inputs_path), "robot_free_probe_root": str(tmp_path / "probe"),
-               "open_loop_horizon": 8, "max_hourly_rate_usd": 0.8,
-               "screening_candidates": {dp: {"native_g1": {"scene_packet": result["scene_packet"],
-                                                           **_shared_sources(args, tmp_path, monkeypatch)}}}}
-    facts = scene_facts(profile)
-    task = facts["scene"]["task_spec"]
-    # Hermetic admission receipt; this test establishes no physical or GPU claim.
-    probe = {"schema_version": RIGID_RECEIPT_SCHEMA, "status": "passed", "learned_policy_evaluation_admitted": True,
-             "configured_scene_revision_digest": facts["inputs"]["scene_revision_digest"],
-             "task_spec_digest": canonical_digest(task),
-             "task_success_contract_digest": task_success_contract_binding(task["task_kind"],
-                                                                           facts["inputs"]["task_success_contract"]),
-             "checks": dict.fromkeys(REQUIRED_CHECKS["rigid_pick_place"], True),
-             "proof_boundary": {"robot_embodiment_used": False}, "receipt_digest": ""}
-    probe["receipt_digest"] = canonical_digest(probe, digest_field="receipt_digest")
-    _write(Path(profile["robot_free_probe_root"]) / RECEIPT_FILENAME, probe)
-    catalog = load_default_catalog()
-    planning = build_planning_inputs(catalog=catalog, profile=profile, capture_root=Path(profile["capture_root"]),
-                                     source=args["source"], inputs_dir=tmp_path / "screening-inputs")
-    capabilities = planning["capabilities"]
-    plan = build_screening_plan(catalog, planning["scene"], capabilities=capabilities,
-                                cost_quotes=planning["cost_quotes"], campaign_id="g1-spawn")
-    row = next(row for row in plan["candidates"] if row["candidate_id"] == dp)
-    if spawn_reading == "overlap":  # The only spawn reason that refuses money.
-        assert capabilities["candidate_blockers"][dp] == ["g1_spawn_overlap"]
-        assert dp not in capabilities["candidate_bindings"] and dp not in planning["cost_quotes"]
-        assert row["status"] == "unavailable" and "g1_spawn_overlap" in row["blockers"] and "cost_quote" not in row
-        return
-    # Clear, or not measured: bound, quoted and selected; an unmeasured spawn travels as a flag.
-    assert dp not in capabilities["candidate_blockers"] and dp in planning["cost_quotes"]
-    assert row["status"] == "selected"
-    flags = row["execution_spec"].get("setup_quality_flags")
-    assert flags == (["g1_spawn_clearance_unmeasured"] if spawn_reading == "missing" else None)
-
-
-# --- a navigation base packet: the G1 at the compiled start (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C) ---
-
-
 def room_floor(path: Path, *, floor_x_min: float = -3.0, wall_x: float | None = None) -> Path:
     """A static Z-up room: a floor at z = 0 from ``floor_x_min`` to x = 6 m and, optionally, a wall at ``wall_x``."""
     from pxr import Gf, Usd, UsdGeom, UsdPhysics

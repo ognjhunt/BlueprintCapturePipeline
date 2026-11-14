@@ -55,15 +55,6 @@ def test_atlas_task_retry_attempt_cannot_be_called_outside_the_allocator_adapter
         ("scripts/bypass.py", "bypass")}
 
 
-def test_selected_g1_controller_is_a_registered_canonical_admission_surface():
-    path = "src/blueprint_pipeline/native_g1_team_paid_policy.py"
-    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text())
-    assert path in verifier.APPROVED_ADMISSION_ISSUERS
-    assert path in verifier.APPROVED_LANE_ADMISSION_BUILDERS
-    assert path in manifest["issuer_allowlist"]["require_paid_resource_admission"]
-    assert path in manifest["issuer_allowlist"]["build_paid_lane_admission"]
-
-
 def test_request_dict_runpod_create_is_discovered_and_unclassified() -> None:
     source = """
 RUNPOD_REST_API_BASE = "https://rest.runpod.io/v1"

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import io
 from pathlib import Path
-from urllib import error as urllib_error
 
 import pytest
 
-from blueprint_pipeline import launch_proof_policy, safe_env, site_world_runtime_service_client
+from blueprint_pipeline import launch_proof_policy, safe_env
 from blueprint_pipeline import world_model_policy as wmp
 
 
@@ -136,92 +134,3 @@ class _FakeResponse:
         return self.body
 
 
-def test_site_world_runtime_service_client_success_and_error_paths(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_URL", "https://runtime.test/")
-    monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_API_KEY", "secret")
-    monkeypatch.setenv("SITE_WORLD_RUNTIME_SERVICE_TIMEOUT_SECONDS", "0")
-    config = site_world_runtime_service_client.SiteWorldRuntimeServiceConfig.from_env()
-    assert config.service_url == "https://runtime.test"
-    assert config.timeout_seconds == 1
-    client = site_world_runtime_service_client.SiteWorldRuntimeServiceClient(config)
-
-    requests: list[object] = []
-
-    def fake_urlopen(request: object, *, timeout: int) -> _FakeResponse:
-        requests.append(request)
-        assert timeout == 1
-        return _FakeResponse(b'{"ok": true}')
-
-    monkeypatch.setattr(site_world_runtime_service_client.urllib_request, "urlopen", fake_urlopen)
-    assert client.register_site_world_package(spec={}, registration={}, health={})["ok"] is True
-    with pytest.warns(DeprecationWarning):
-        assert client.build_site_world({"site_world_id": "site-1"})["ok"] is True
-    assert client.get_site_world("site world/1")["ok"] is True
-    assert client.get_site_world_health("site world/1")["ok"] is True
-    assert client.create_session(
-        "site world/1",
-        robot_profile_id="robot-1",
-        task_id="task-1",
-        scenario_id="scenario-1",
-        start_state_id="start-1",
-        canonical_package_uri=None,
-        trajectory={"x": 1},
-        debug_mode=False,
-    )["ok"] is True
-    assert client.reset_session("session/1", task_id="task-2")["ok"] is True
-    last_request = requests[-1]
-    assert last_request.headers["Authorization"] == "Bearer secret"
-    assert last_request.full_url.endswith("/v1/sessions/session/1/reset")
-    assert b'"scenario_id"' not in last_request.data
-
-    empty_client = site_world_runtime_service_client.SiteWorldRuntimeServiceClient(
-        site_world_runtime_service_client.SiteWorldRuntimeServiceConfig(
-            service_url="",
-            api_key="",
-            timeout_seconds=1,
-        )
-    )
-    with pytest.raises(RuntimeError, match="URL is not configured"):
-        empty_client.get_site_world("site-1")
-
-    monkeypatch.setattr(
-        site_world_runtime_service_client.urllib_request,
-        "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(b""),
-    )
-    assert client.get_site_world("site-1") == {}
-
-    monkeypatch.setattr(
-        site_world_runtime_service_client.urllib_request,
-        "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(b"[]"),
-    )
-    with pytest.raises(RuntimeError, match="non-object JSON"):
-        client.get_site_world("site-1")
-
-    http_error = urllib_error.HTTPError(
-        "https://runtime.test/v1/site-worlds",
-        503,
-        "unavailable",
-        hdrs={},
-        fp=io.BytesIO(b"service down"),
-    )
-    monkeypatch.setattr(
-        site_world_runtime_service_client.urllib_request,
-        "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(http_error),
-    )
-    with pytest.raises(RuntimeError, match="HTTP 503: service down"):
-        client.get_site_world("site-1")
-
-    monkeypatch.setattr(
-        site_world_runtime_service_client.urllib_request,
-        "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            urllib_error.URLError("network down")
-        ),
-    )
-    with pytest.raises(RuntimeError, match="network down"):
-        client.get_site_world("site-1")

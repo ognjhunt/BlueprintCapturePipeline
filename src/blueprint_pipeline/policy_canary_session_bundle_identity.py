@@ -107,37 +107,11 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
                 and payload.get("model_delivery") == "scripted_in_process"
                 and payload.get("learned_policy_rollout_count") == 0
                 and payload.get("scripted_rollout_count") == payload.get("episodes_per_policy"))
-    cosmos = isinstance(candidates, list) and len(candidates) == 1 and candidates[0] in {
-        "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}
-    if cosmos:
-        from .cosmos_droid_bundle import validate_runtime_contract
-        contract = validate_runtime_contract(payload.get("cosmos_runtime") or {})
-        if (contract["candidate_id"] != candidates[0]
-                or minimum_gpu_ram_mb(payload) < contract["minimum_gpu_memory_gb"] * 1000):
-            raise ValueError("cosmos_gpu_memory_or_candidate_binding_invalid")
     if openwam:
         from .team_local_policy import openwam_bundle_for_interface
         openwam_bundle_for_interface(payload["team_policy_interface_id"]).validate_runtime_contract(payload.get("openwam_runtime") or {})
         if minimum_gpu_ram_mb(payload) < 80_000:
             raise ValueError("openwam_gpu_memory_floor_invalid")
-    trlc = payload.get("team_policy_interface_id") == "pi05_trlc_joint14.v1"
-    if trlc:
-        from .trlc_pi05_bundle import validate_runtime_contract
-        validate_runtime_contract(payload.get("trlc_pi05_runtime") or {})
-        if minimum_gpu_ram_mb(payload) < 48_000:
-            raise ValueError("trlc_pi05_gpu_memory_floor_invalid")
-    molmoact2 = payload.get("team_policy_interface_id") == "molmoact2_yam_joint14.v1"
-    if molmoact2:
-        from .molmoact2_yam_bundle import validate_runtime_contract
-        validate_runtime_contract(payload.get("molmoact2_runtime") or {})
-        if minimum_gpu_ram_mb(payload) < 48_000:
-            raise ValueError("molmoact2_gpu_memory_floor_invalid")
-    molmoact2_droid = payload.get("team_policy_interface_id") == "molmoact2_droid_joint8.v1"
-    if molmoact2_droid:
-        from .molmoact2_droid_bundle import validate_runtime_contract
-        validate_runtime_contract(payload.get("molmoact2_droid_runtime") or {})
-        if minimum_gpu_ram_mb(payload) < 48_000:
-            raise ValueError("molmoact2_droid_gpu_memory_floor_invalid")
     if (SCRIPTED in candidate_execution_kinds(payload).values()) != scripted:
         raise ValueError("scripted_policy_manifest_execution_kind_mismatch")
     if shape is BETA_SHAPE:
@@ -153,9 +127,8 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
             and _SHA.fullmatch(str(payload.get("family_static_readiness_digest") or "")) is not None
         ) if family else (
             (("team_credential_env" not in payload and isinstance(candidates, list) and candidates
-              and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid",
-                                    *BETA_POLARIS_VARIANT_CANDIDATE_IDS])
-             or ((openwam or molmoact2 or molmoact2_droid or trlc or scripted) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
+              and candidates[0] in [*PAIR, *BETA_POLARIS_VARIANT_CANDIDATE_IDS])
+             or ((openwam or scripted) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
              or (payload.get("team_policy_interface_id") in {
                      "openpi_droid_https.v1", "blueprint_policy_https.v1", "dreamlabs_dream1.v1"}
                  and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
@@ -225,41 +198,12 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
             required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
                              "provider_runtime/adp009d_policy_server_worker.py",
                              "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py"})
-        if manifest.get("team_policy_interface_id") == "pi05_trlc_joint14.v1":
-            from .trlc_pi05_bundle import RUNTIME_MODULES, validate_runtime_contract
-            contract = validate_runtime_contract(manifest["trlc_pi05_runtime"])
-            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
-            required.update("provider_runtime/" + name for name in contract["required_entries"])
-            required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
-                             "provider_runtime/adp009d_policy_server_worker.py",
-                             "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py"})
-        if manifest.get("team_policy_interface_id") == "molmoact2_yam_joint14.v1":
-            from .molmoact2_yam_bundle import RUNTIME_MODULES, validate_runtime_contract
-            contract = validate_runtime_contract(manifest["molmoact2_runtime"])
-            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
-            required.update("provider_runtime/" + name for name in contract["required_entries"])
-            required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
-                             "provider_runtime/adp009d_policy_server_worker.py",
-                             "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py"})
-        if manifest.get("team_policy_interface_id") == "molmoact2_droid_joint8.v1":
-            from .molmoact2_droid_bundle import RUNTIME_MODULES, validate_runtime_contract
-            contract = validate_runtime_contract(manifest["molmoact2_droid_runtime"])
-            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
-            required.update("provider_runtime/" + name for name in contract["required_entries"])
-            required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
-                             "provider_runtime/adp009d_policy_server_worker.py"})
         if candidate in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
             from .adp009d_policy_provisioning import CHECKPOINT_INVENTORY_STAGED_NAME
             required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
                              "provider_runtime/adp009d_policy_server_worker.py",
                              "provider_runtime/openpi_droid_policy_runtime.py",
                              f"provider_runtime/{CHECKPOINT_INVENTORY_STAGED_NAME}"})
-        if candidate in {"cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
-            from .cosmos_droid_bundle import RUNTIME_MODULES, validate_runtime_contract
-            contract = validate_runtime_contract(manifest.get("cosmos_runtime") or {})
-            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
-            required.update("provider_runtime/" + name for name in contract["required_entries"])
-            required.add(f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh")
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             required.update("provider_runtime/blueprint_pipeline/" + name for name in (
                 "task_family_native_runtime.py", "task_family_native_contracts.py", "task_family_native_controls.py",
@@ -304,8 +248,6 @@ def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: s
         if manifest.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
             valid = valid and ('openwam_client:$RUNTIME_DIR' in entrypoint_text
                                and '--terminate-ready-server' in entrypoint_text)
-        if manifest.get("team_policy_interface_id") in {"molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1", "pi05_trlc_joint14.v1"}:
-            valid = valid and '--terminate-ready-server' in entrypoint_text
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             valid = valid and 'export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"' in entrypoint_text
     elif _shape(manifest) is not TEAM_SHAPE:

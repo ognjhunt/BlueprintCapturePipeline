@@ -24,16 +24,13 @@ The description is the first line of each module's own docstring.
 |---|---|---|---|
 | `agent_execution.comparison` | Frozen operational comparison of the SDK and managed session runtimes | `python -m blueprint_pipeline.agent_execution.comparison` | no |
 | `atlas_preview_replay` | Replay an Atlas preview job's next controller steps against this tree, paying for nothing | `python -m blueprint_pipeline.atlas_preview_replay` | yes |
-| `atlas_retained_handoff` | Adopt a completed background into its capture job without another provider call | no command line of its own | no |
 | `claude_opus_model_preflight` | No-inference Opus 5.5 availability and published-price preflight | `python -m blueprint_pipeline.claude_opus_model_preflight` | yes |
-| `cloud_tasks_dispatch` | Cloud Tasks dispatch for job envelopes — explicit-job transport lane | no command line of its own | no |
 | `decision_evidence_handoff` | Verify the versioned Pipeline-to-WebApp Decision/Evidence handoff | `python -m blueprint_pipeline.decision_evidence_handoff` | no |
 | `gear_sonic_container_smoke` | Container smoke for the pinned GEAR-SONIC WBC tree and real robot model XML | `python -m blueprint_pipeline.gear_sonic_container_smoke` | no |
 | `groot_oscar_cached_footprint` | Audit measured host-image plus external-model cached worker footprint | `python -m blueprint_pipeline.groot_oscar_cached_footprint` | no |
 | `nvidia_siggraph_completion` | Requirement-to-evidence matrix for the SIGGRAPH 2026 implementation memo | `python -m blueprint_pipeline.nvidia_siggraph_completion` | no |
 | `omniverse_library_preflight` | Fail-closed ovrtx and ovphysx external-worker preflight contracts | `python -m blueprint_pipeline.omniverse_library_preflight` | no |
 | `openai_prompt_cache_canary` | Bounded five-call GPT-6.1 Sol explicit prompt-cache mechanics canary | `python -m blueprint_pipeline.openai_prompt_cache_canary` | yes |
-| `portable_evidence_receipt_mirror` | Mirror digest-bound evidence receipts without copying raw evidence bytes | no command line of its own | no |
 | `postshot_license_transport` | Single-use, delete-acknowledged transport for Postshot licence material | no command line of its own | no |
 | `run_summary_aggregation` | Aggregate per-capture pipeline run summaries without upgrading evidence claims | `python -m blueprint_pipeline.run_summary_aggregation` | no |
 | `seal_blast_radius` | Answer "what breaks if I amend this seal?" before anyone amends it | `python -m blueprint_pipeline.seal_blast_radius` | no |

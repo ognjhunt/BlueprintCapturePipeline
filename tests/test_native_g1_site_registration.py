@@ -622,38 +622,6 @@ def test_a_changed_source_gets_a_new_packet_and_a_new_row(compiled_world):
     assert reader._site_screening_profile(registry, profile)["native_g1_registration_source"] == changed["source"]
 
 
-def test_the_worker_registers_before_reading_the_profile_and_goes_on_when_registration_raises(tmp_path, monkeypatch):
-    from blueprint_pipeline import beta_policy_screening_worker as worker
-    from blueprint_pipeline import team_candidate_quick10_registry as registry
-    from tests.test_beta_policy_screening_worker import prepared_source_queue
-
-    world = prepared_source_queue(tmp_path, monkeypatch)
-    order = []
-    read = registry.profile_for_capture
-    monkeypatch.setattr(registry, "profile_for_capture", lambda path: order.append("profile") or read(path))
-    calls = []
-
-    def registers(**kwargs):
-        calls.append(kwargs)
-        order.append("registration")
-        raise RuntimeError("development_only injected registration fault")
-
-    monkeypatch.setattr(registration, "ensure_site_registration", registers)
-    [adopted] = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"],
-                                               packet_queue_root=world["packet_queue"])["sources"]
-    assert adopted["status"] == "enqueued"
-    assert adopted["g1_registration"]["status"] == "failed"
-    assert adopted["g1_registration"]["error"]["type"] == "builtins.RuntimeError"
-    assert order[:2] == ["registration", "profile"]
-    [call] = calls
-    assert call["site_id"] == "site-job1" and call["source_queue"] == world["packet_queue"]
-    plan = json.loads(next((world["screening_queue"] / "plans").glob("*.json")).read_text())
-    assert call["source"] == plan["source"]
-
-
-# --- a navigation site: the G1 at its compiled start (docs/G1_NAVIGATION_FROM_COMPILED_SPEC.md, part C) ---
-
-
 @pytest.fixture
 def navigation_world(tmp_path, monkeypatch):
     """A real navigation record over a measurable room, its site records and a pinned manifest; the packet is
@@ -889,54 +857,3 @@ def test_a_refused_retained_consent_on_a_navigation_site_composes_nothing(naviga
     assert not overlay_path(kwargs["site_id"]).exists() and not list(tmp_path.rglob("navigation_authority.json"))
 
 
-def test_the_navigation_chain_from_the_record_through_g1_prepare_to_a_cell(navigation_world, monkeypatch, tmp_path):
-    """The real chain on CPU: the navigation record, the service registration (G1 prepare and the composed goal
-    authority), planning on the shipped catalog, a funded row's start-offset cell, and the cell's derived packet and
-    navigation authority as the G1 runtime and worker check them. No simulator, provider or money."""
-    from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
-    from blueprint_pipeline.beta_policy_screening_capabilities import build_planning_inputs
-    from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan, validate_screening_plan
-    from blueprint_pipeline.native_g1_beta_authority import apply_start_offset, start_offset_parameters
-    from blueprint_pipeline.native_g1_beta_navigation import derive_navigation_authority
-    from blueprint_pipeline.native_g1_beta_packet import materialize_cell_packet, verify_cell_packet
-
-    kwargs, profile, registry, args, record = navigation_world
-    _stand_in_source(monkeypatch, kwargs)
-    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
-    current = reader._site_screening_profile(registry, profile)
-    # Only the CPU fixture stand-ins for the shared sources and the pinned G1 USD; consent is read as granted.
-    monkeypatch.setattr("blueprint_pipeline.native_g1_publisher_source_stage.verify_g1_publisher_source", lambda root: {})
-    monkeypatch.setattr("blueprint_pipeline.native_task_runtime_source_packet.verify_native_task_runtime_source_packet",
-        lambda path: {"runtime_profile": "unitree_g1", "redistribution_permitted": True})
-    monkeypatch.setattr(g1, "ROBOT_USD_SHA256", args["robot_asset_record"]["sha256"])
-    catalog = load_default_catalog()
-    planning = build_planning_inputs(catalog=catalog, profile=current, capture_root=Path(current["capture_root"]),
-                                     source=kwargs["source"], inputs_dir=tmp_path / "screening-inputs")
-    plan = build_screening_plan(catalog, planning["scene"], capabilities=planning["capabilities"],
-                                cost_quotes=planning["cost_quotes"], campaign_id="navigation-chain")
-    assert validate_screening_plan(plan) == plan
-    rows = {row["candidate_id"]: row for row in plan["candidates"]}
-    row = rows[DP_NAV]
-    assert row["status"] == "selected" and row["max_cost_usd"] == "4.00" and row["episode_count"] == 4
-    assert [cell["family"] for cell in row["scenario_cells"]] == ["robot_start_offset"] * 4
-    for key in (DP, PI):
-        assert rows[key]["status"] == "unavailable"
-        assert "task_kind_not_supported_by_candidate" in rows[key]["blockers"]
-    # The funded row's second cell: the G1 starts 15 cm to its left, nothing else moves.
-    spec = json.loads(Path(row["execution_spec"]["policy_execution_spec"]["path"]).read_text())
-    base = Path(spec["native_g1"]["scene_packet"]["path"]).parent
-    cell = row["scenario_cells"][1]
-    derivation = materialize_cell_packet(base_packet=base, output_dir=tmp_path / "cell", cell=cell,
-                                         base_authority=spec["rights_authority"])
-    assert verify_cell_packet(base_packet=base, cell_packet=tmp_path / "cell", cell=cell,
-                              base_authority=spec["rights_authority"]) == derivation
-    base_plan = json.loads((base / "native_task_arena_scene_plan.v1.json").read_text())
-    cell_plan = json.loads((tmp_path / "cell/native_task_arena_scene_plan.v1.json").read_text())
-    assert cell_plan["robot"]["base_pose_world"] == apply_start_offset(base_plan["robot"]["base_pose_world"],
-                                                                       start_offset_parameters(1))
-    assert cell_plan["task_spec"] == base_plan["task_spec"] and cell_plan["objects"] == base_plan["objects"]
-    # The goal decision carries across the derivation exactly as the runtime hands it to the worker.
-    authority = json.loads(Path(spec["native_g1"]["navigation_authority"]["path"]).read_text())
-    carried = derive_navigation_authority(authority, base_plan, cell_plan, derivation["rights_authority"],
-        base_contract=json.loads((base / "native_task_runtime_contract.v1.json").read_text()))
-    assert carried["new_human_review_claimed"] is False and carried["scene_plan_digest"] == cell_plan["plan_digest"]

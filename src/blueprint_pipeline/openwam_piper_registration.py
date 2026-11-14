@@ -43,13 +43,9 @@ def prepare(request: dict, *, state_root: Path = STATE_ROOT, model_root: Path = 
     rows = {_contract.YAM_SCHEMA: 30, _contract.TRLC_SCHEMA: 50}.get(request["schema_version"], 1)
     prepared = bind_prepared_configuration(body / "configuration", body / "prepared",
         original["robot_embodiment"]["model"]["url"], runtime_settings={"control_hz": 60, "action_chunk_rows": rows})
-    if request["schema_version"] == _contract.TRLC_SCHEMA:
-        from .trlc_pi05_runtime import build_policy_spec, configure_prepared_inputs
-        prepared = configure_prepared_inputs(prepared)
-    elif request["schema_version"] == _contract.YAM_SCHEMA:
-        from .molmoact2_yam_runtime import build_policy_spec, configure_prepared_inputs
-        prepared = configure_prepared_inputs(prepared)
-    elif request["schema_version"] == _contract.FRANKA_SCHEMA:
+    # The TRLC and MolmoAct2 YAM lanes are removed.
+    require(request["schema_version"] not in {_contract.TRLC_SCHEMA, _contract.YAM_SCHEMA}, "public_policy_lane_removed")
+    if request["schema_version"] == _contract.FRANKA_SCHEMA:
         from .openwam_franka_runtime import build_policy_spec, configure_prepared_inputs
         prepared = configure_prepared_inputs(prepared)
     else:

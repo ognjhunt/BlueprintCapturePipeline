@@ -7,10 +7,6 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from blueprint_pipeline.evaluator_evidence_profiles import (
-    EVALUATOR_EVIDENCE_PROFILES,
-    required_evaluator_evidence_digest_fields,
-)
 from blueprint_pipeline.roboworld_evaluator import (
     ADMISSION_EVIDENCE_SCHEMA_VERSION,
     JUDGE_CALIBRATION_REQUEST_SCHEMA_VERSION,
@@ -435,18 +431,6 @@ def test_tracked_admission_checklist_matches_frozen_evidence() -> None:
         tracked,
         _load_schema("roboworld_admission_reproduction_checklist.schema.json"),
     )
-
-
-def test_roboworld_evidence_profile_requires_new_evaluator_artifacts() -> None:
-    profile = EVALUATOR_EVIDENCE_PROFILES["roboworld_progress_v1"]
-    fields = required_evaluator_evidence_digest_fields("roboworld_progress_v1")
-
-    assert profile["step_forcing_backend_required"] is False
-    assert profile["paper_metrics_inherited"] is False
-    assert "progress_profile_manifest_sha256" in fields
-    assert "view_authority_manifest_sha256" in fields
-    assert "judge_calibration_set_sha256" in fields
-    assert "segment_aggregation_report_sha256" in fields
 
 
 def test_profile_digest_and_override_validation_fail_closed() -> None:

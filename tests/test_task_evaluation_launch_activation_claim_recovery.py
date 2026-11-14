@@ -429,30 +429,6 @@ def test_a_retired_claim_never_re_activates_its_stale_preparation(tmp_path) -> N
     assert launch["status"] == "awaiting_scene_configuration_authority"
 
 
-def test_other_consumers_read_a_retired_claim_as_terminal_and_never_launched(tmp_path) -> None:
-    from blueprint_pipeline.control_plane_pin_proofs import _expired_unlaunched
-    from blueprint_pipeline.task_evaluation_blocked_activation_retention import (
-        BlockedActivationRetentionError, build_blocked_activation_retention_plan,
-    )
-    from blueprint_pipeline.task_evaluation_configured_controls_progression_worker import _activation_authority
-
-    value, queue, name = _killed_claim(tmp_path)
-    now = _abandoned(queue, name)
-    base = tmp_path / "launch-activations"
-    _activation_directory(base, value["activation_id"], idle_seconds=2 * 86400, now=now)
-    _retire(queue, now)
-    owner = value["activation_id"]
-    # The storage pin proof never counts it as a prepared activation that lapsed unlaunched.
-    assert _expired_unlaunched(owner, queue, now=now + 30 * 86400) == (None, "activation_result_not_prepared")
-    # No progression finds an authority to launch with.
-    assert _activation_authority(activation_queue_root=queue, profile_dir=tmp_path / "profiles",
-                                 activation_id=owner) is None
-    # The bundle reclaimer accepts it as a terminal blocked claim and stops only at the missing receipt.
-    with pytest.raises(BlockedActivationRetentionError, match="^blocked_activation_retention_preparation_receipt_invalid$"):
-        build_blocked_activation_retention_plan(activation_root=base / owner, activation_base_root=base,
-                                                state_root=queue.parent, activation_queue_root=queue)
-
-
 def test_recovery_stays_off_the_hot_lane_and_out_of_the_worker() -> None:
     from tests.test_live_pipeline_import_isolation import HOT_LANE_MODULES, _transitive_local_modules
 

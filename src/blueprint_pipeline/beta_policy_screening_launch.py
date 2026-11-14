@@ -130,8 +130,7 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
                       attempt_dir: Path) -> dict[str, Any]:
     """Build and static-preflight a sealed provider bundle; never allocate."""
     if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
-        from .beta_policy_screening_g1_launch import prepare_candidate as prepare_g1
-        return prepare_g1(plan=plan, candidate=candidate, attempt_dir=attempt_dir)
+        raise ValueError("g1_beta_screening_lane_removed")  # refused before any bundle or allocator request
     from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .native_task_arena_policy_canary_bundle import (
         build_policy_canary_session_bundle, preflight_sealed_policy_canary_bundle,
@@ -202,11 +201,7 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     elif native_spec.get("policy_interface_id") == "blueprint_scripted_pick_place.v1":
         from .scripted_robot_runtime_dispatch import runtime_for_policy
         runtime_for_policy(native_spec["policy_spec"]).validate_execution_spec(native_spec)
-    elif native_spec.get("policy_interface_id") == "molmoact2_droid_joint8.v1":
-        from .molmoact2_droid_runtime import validate_execution_spec
-        validate_execution_spec(native_spec)
-    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid",
-                                                 "cosmos3_nano_policy_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS}:
+    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS}:
         raise ValueError("beta_screening_policy_provisioning_not_configured")
     if (native_spec["runtime_identity_digest"] != execution["runtime_digest"]
             or native_spec["task_success_contract_digest"] != scene["task_success_contract_digest"]):
@@ -372,8 +367,7 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         _check_quote(plan, candidate)
         execution = candidate.get("execution_spec") or {}
         if execution.get("backend") == "native_g1.v1":
-            from .beta_policy_screening_g1_launch import reopen_candidate
-            reopen_candidate(plan, candidate)
+            raise ValueError("g1_beta_screening_lane_removed")
         if execution.get("backend") == "task_family_native.v1":
             from .beta_policy_screening_family import reopen_family_planning_inputs, validate_family_candidate_catalog
             scene = _read(_bound_path(plan["scene_inputs"]))
@@ -630,17 +624,17 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
                          "provider_zero_verified": True, "no_allocation_proven": False,
                          "applicability": "historical_only", "blockers": [stopped["reason"]]})
         if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
-            try:
-                from .beta_policy_screening_g1_launch import join_result
-                joined = join_result(plan=plan, candidate=candidate, adapter=adapter, prepared=prepared,
-                                     receipt=absence, adapter_path=result_path)
-            except (OSError, ValueError, KeyError, TypeError):
-                return kept({"status": "blocked", "provider_allocation_performed": True,
-                             "provider_zero_verified": True, "no_allocation_proven": False,
-                             "blockers": _unscored_blockers(adapter, root, "g1_beta_native_result_missing_or_invalid")})
-            return kept({"status": "completed", "provider_allocation_performed": True,
+            # The G1 lane is removed: an attempt allocated before that settles once its own instance is
+            # proven absent (above) and its watchdog closed on that instance; it stays unscored.
+            watchdog = adapter.get("independent_watchdog_close") or {}
+            if (watchdog.get("status") != "provider_terminal" or watchdog.get("provider_absence_confirmed") is not True
+                    or watchdog.get("instance_ids") != [absence["instance_id"]]
+                    or type(watchdog.get("watchdog_process_exit_code")) is not int):
+                return {"status": "reconciliation_required", "provider_zero_verified": False,
+                        "no_allocation_proven": False, "blockers": ["g1_beta_result_watchdog_not_terminal"]}
+            return kept({"status": "blocked", "provider_allocation_performed": True,
                          "provider_zero_verified": True, "no_allocation_proven": False,
-                         "result": joined, "blockers": joined.get("blockers") or []})
+                         "blockers": _unscored_blockers(adapter, root, "g1_beta_native_result_missing_or_invalid")})
         try:
             native_path = Path(str(adapter.get("native_control_result_path") or ""))
             native = _read(native_path)

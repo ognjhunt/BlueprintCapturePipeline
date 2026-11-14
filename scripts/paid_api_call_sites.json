@@ -2,12 +2,6 @@
   "schema_version": "paid_api_call_sites.v1",
   "description": "Every API-priced call site (OpenAI incl. Codex CLI and Agents SDK, Gemini, World Labs, hosted SAM, Anthropic, NVIDIA NIM, DeepInfra, DreamLabs, Palatial, RunPod serverless) found by scripts/verify_paid_resource_allocator.py. Keys are path::enclosing scope::signal. admitted: via (where the path reaches it) and admission (the admission, reservation or ledger function), both path::name. not_paid: reason. unadmitted: can_spend_on, and the key must be named in UNADMITTED_API_CALL_SITES, which tests/test_paid_resource_allocator_verifier.py pins (adding one needs an explicit edit to that test). admitted means the admission, reservation or ledger call runs before the paid request on every path.",
   "sites": {
-    "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>::openai_codex_cli": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/adp_content_agents_codex_advisory_review.py::<module>",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; an ADP evidence-program constant read by its own module only"
-    },
     "src/blueprint_pipeline/agent_execution/openai_transport.py::OpenAIAgentsHTTP.request::openai_api_url": {
       "provider": "openai",
       "class": "admitted",
@@ -72,8 +66,8 @@
     "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction": {
       "provider": "openai",
       "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/site_eval_director.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; called only by the site_eval_director and simulation_automation operator CLIs"
+      "entry_point": "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator",
+      "reason": "no caller remains in the package; no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph"
     },
     "src/blueprint_pipeline/agent_runtime/openai_phase2.py::CodexOpenAIPhase2Runner.__call__::openai_codex_cli": {
       "provider": "openai",
@@ -344,8 +338,8 @@
     "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction": {
       "provider": "gemini",
       "class": "not_automatic",
-      "entry_point": "scripts/run_isaac_g1_kitchen_parity_eval.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator parity-evaluation script"
+      "entry_point": "src/blueprint_pipeline/render_visual_qc.py::review_render_frame",
+      "reason": "no caller remains in the package; no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph"
     },
     "src/blueprint_pipeline/runpod_provider_adapter.py::<module>::runpod_serverless_api_url": {
       "provider": "runpod_serverless",
@@ -359,18 +353,6 @@
       "class": "not_automatic",
       "entry_point": "src/blueprint_pipeline/scene_placement/target_resolver.py::<module>",
       "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; library default with no production caller"
-    },
-    "src/blueprint_pipeline/simulation_automation.py::CodexSdkSimulationAutomationAgentAdapter.build_ledger::openai_codex_cli": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/simulation_automation.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
-    },
-    "src/blueprint_pipeline/site_eval_director.py::CodexSdkCodeMaintainerAdapter.build_request_manifest::openai_codex_cli": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/site_eval_director.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator CLI"
     },
     "src/blueprint_pipeline/task_evaluation_authoring_auth_recovery.py::authenticate_key::openai_api_url": {
       "provider": "openai",

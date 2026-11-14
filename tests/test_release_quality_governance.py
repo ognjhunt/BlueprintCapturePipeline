@@ -145,29 +145,6 @@ def test_live_intake_stays_under_its_source_governance_budget() -> None:
     ).is_file()
 
 
-def test_project_cli_budget_keeps_one_canonical_wam_fixture_entrypoint() -> None:
-    root = Path(__file__).resolve().parents[1]
-    policy = json.loads(
-        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
-    )
-    pyproject_source = (root / "pyproject.toml").read_text(encoding="utf-8")
-    canonical = (
-        'blueprint-run-wam-fixture-evaluator = '
-        '"blueprint_pipeline.wam_fixture_evaluator:main"'
-    )
-    assert canonical in pyproject_source
-    assert "blueprint-run-wam-eval-job =" not in pyproject_source
-    result = validate_source_governance(
-        root=root,
-        policy=policy,
-        today=date.fromisoformat(policy["baseline_date"]),
-    )
-    assert not any(
-        blocker.startswith("project_script_budget_exceeded:")
-        for blocker in result["blockers"]
-    )
-
-
 def _bandit_finding(root: Path, *, severity: str = "MEDIUM") -> dict[str, object]:
     source = root / "src" / "example.py"
     source.parent.mkdir(parents=True, exist_ok=True)
@@ -1502,8 +1479,6 @@ def test_outbound_http_call_sites_route_through_the_safe_boundary() -> None:
     root = Path(__file__).resolve().parents[1]
     rewired = (
         "src/blueprint_pipeline/gpu_render_providers.py",
-        "src/blueprint_pipeline/wam_strict_action_consistency_scorer_client.py",
-        "scripts/run_isaac_g1_kitchen_parity_eval.py",
     )
     for relative in rewired:
         text = (root / relative).read_text(encoding="utf-8")

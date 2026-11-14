@@ -45,10 +45,6 @@ PAID_LANE_MODULES = (
     "adp_retained_scene_render_vast.py",
     "native_task_arena_vast.py",
     "native_task_arena_warm_vast.py",
-    # Not a `*_vast*.py` transport: it is the fresh-site camera lane's own
-    # runner, and #543 gave `new-site-native-camera` a builder, so the launch
-    # profile now reads the terminal result it writes.
-    "nvidia_warehouse_native_camera_gpu_admission.py",
     # The `*_runpod*.py` half of the provider families. Dual-purpose: the
     # frozen `openpi-policy-ranking` campaign and the live
     # `new-site-diagnostic-canary` #544 made reachable share this runner.
@@ -61,7 +57,6 @@ PAID_LANE_MODULES = (
     # terminal write into the same contract and is verified as one.
     "sam31_gpu_admission.py",
     "semantic_teacher_image_edit_vast.py",
-    "simpler_public_vast.py",
     "task_evaluation_scene_configuration_vast.py",
     # Beta L5: one team candidate's Quick-10 session, through the shared Arena transport.
     "team_candidate_quick10_vast.py",
@@ -634,9 +629,6 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
 #: `sam31_gpu_admission.py` was the urgent one -- `semantic-sam31-source-tracks`
 #: is website-reachable today -- and it now seals, so it has moved into
 #: `PAID_LANE_MODULES` and the bound below has been ratcheted with it.
-#: `nvidia_warehouse_native_camera_gpu_admission.py` followed for the same
-#: reason: #543 gave `new-site-native-camera` a builder, which turned a dormant
-#: omission into a live one, and it now seals.
 #:
 #: `openpi_policy_ranking_gpu_admission.py` stays, but read what it is: this
 #: module writes no terminal adapter result of its own, and the paid execution

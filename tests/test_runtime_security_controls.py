@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import io
-import json
-import stat
-import tarfile
-import zipfile
 from pathlib import Path
 from types import MethodType
 
@@ -15,9 +11,6 @@ from starlette.websockets import WebSocketDisconnect
 from blueprint_pipeline import (
     privacy_runner_service,
     pubsub_handoff_listener as phl,
-    robot_eval_execution as ree,
-    robot_eval_job_orchestrator as rejo,
-    robot_eval_worker as rew,
     video_to_world_runner_service,
 )
 from blueprint_pipeline.common import PipelineError
@@ -294,90 +287,6 @@ def test_pubsub_staging_rejects_identity_blob_and_request_path_traversal(tmp_pat
         )
 
 
-def test_capture_archive_rejects_file_sources_links_bombs_and_member_floods(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    local = tmp_path / "bundle.zip"
-    with zipfile.ZipFile(local, "w") as archive:
-        archive.writestr("capture_descriptor.json", "{}")
-    with pytest.raises(ValueError, match="file://"):
-        rew._extract_capture_root_bundle(local.as_uri(), tmp_path / "file-uri")
-    monkeypatch.setenv("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME", "true")
-    with pytest.raises(ValueError, match="local capture bundle"):
-        rew._extract_capture_root_bundle(str(local), tmp_path / "provider-local")
-    monkeypatch.delenv("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME")
-    with pytest.raises(security.SecurityValidationError, match="not public"):
-        rew._uri_to_local_file(
-            "https://127.0.0.1/capture.zip",
-            tmp_path / "private-source",
-            filename="capture.zip",
-        )
-
-    remote_manifest = {
-        "schema_version": "robot_eval_worker_manifest.v1",
-        "job_id": "remote-local-root",
-        "provisioner": "runpod",
-        "simulator": "fixture",
-        "capture_root": str(tmp_path),
-        "job_request": {"job_id": "remote-local-root", "capture_root": str(tmp_path)},
-    }
-
-    def fetch_manifest(_url: str, *, output_path: Path, **_kwargs):  # type: ignore[no-untyped-def]
-        output_path.write_text(json.dumps(remote_manifest), encoding="utf-8")
-        return security.BoundedHttpResponse(
-            body=b"",
-            status=200,
-            content_type="application/json",
-            final_url="https://storage.example/worker.json",
-        )
-
-    monkeypatch.setenv("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME", "true")
-    monkeypatch.setenv(
-        "BLUEPRINT_WORKER_ALLOWED_DOWNLOAD_ORIGINS",
-        "https://storage.example",
-    )
-    monkeypatch.setattr(rew, "fetch_bounded_https", fetch_manifest)
-    blocked = rew.run_robot_eval_worker(
-        manifest_uri="https://storage.example/worker.json",
-        work_dir=tmp_path / "remote-local-root",
-    )
-    assert blocked["blockers"] == ["provider_runtime_capture_root_bundle_required"]
-    monkeypatch.delenv("BLUEPRINT_ROBOT_EVAL_PROVIDER_RUNTIME")
-
-    symlink_zip = tmp_path / "symlink.zip"
-    with zipfile.ZipFile(symlink_zip, "w") as archive:
-        info = zipfile.ZipInfo("capture_descriptor.json")
-        info.create_system = 3
-        info.external_attr = (stat.S_IFLNK | 0o777) << 16
-        archive.writestr(info, "../../outside")
-    with pytest.raises(ValueError, match="links or special"):
-        rew._extract_capture_root_bundle(str(symlink_zip), tmp_path / "zip-link")
-
-    symlink_tar = tmp_path / "symlink.tar"
-    with tarfile.open(symlink_tar, "w") as archive:
-        info = tarfile.TarInfo("capture_descriptor.json")
-        info.type = tarfile.SYMTYPE
-        info.linkname = "../../outside"
-        archive.addfile(info)
-    with pytest.raises(ValueError, match="links or special"):
-        rew._extract_capture_root_bundle(str(symlink_tar), tmp_path / "tar-link")
-
-    bomb = tmp_path / "bomb.zip"
-    with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("capture_descriptor.json", b"0" * (2 * 1024 * 1024))
-    with pytest.raises(ValueError, match="compression ratio"):
-        rew._extract_capture_root_bundle(str(bomb), tmp_path / "zip-bomb")
-
-    flood = tmp_path / "flood.zip"
-    with zipfile.ZipFile(flood, "w") as archive:
-        archive.writestr("capture_descriptor.json", "{}")
-        archive.writestr("extra.json", "{}")
-    monkeypatch.setattr(rew, "CAPTURE_ARCHIVE_MAX_MEMBERS", 1)
-    with pytest.raises(ValueError, match="member count"):
-        rew._extract_capture_root_bundle(str(flood), tmp_path / "member-flood")
-
-
 class _FakePeerSocket:
     def __init__(self, peer_ip: str = "93.184.216.34") -> None:
         self.peer_ip = peer_ip
@@ -470,87 +379,6 @@ def _install_fake_connections(
 
     monkeypatch.setattr(security, "_open_pinned_connection", open_connection)
     return connections
-
-
-def test_policy_endpoint_blocks_ssrf_oversize_redirect_and_http(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("BLUEPRINT_POLICY_ENDPOINT_ALLOWED_ORIGINS", "https://127.0.0.1")
-    status, payload, detail = ree._call_policy_api(
-        endpoint="https://127.0.0.1/latest/meta-data",
-        observation_manifest={"observations": []},
-        timeout_seconds=1,
-    )
-    assert status == "failed"
-    assert payload is None
-    assert detail["blockers"] == ["policy_api_call_failed"]
-
-    modality_status, missing = rejo._validate_policy_modality(
-        modality="policy_api_endpoint",
-        payload={"endpoint_url": "http://policy.example/run"},
-    )
-    assert modality_status == "blocked"
-    assert missing == ["policy_package.policy_api_endpoint.endpoint_url"]
-
-    monkeypatch.setattr(
-        security,
-        "resolve_public_ips",
-        lambda *_args, **_kwargs: ("93.184.216.34",),
-    )
-    _install_fake_connections(
-        monkeypatch,
-        [
-            _FakePinnedResponse(
-                headers={"Content-Type": "application/json", "Content-Length": "101"}
-            )
-        ],
-    )
-    with pytest.raises(security.SecurityValidationError, match="byte limit"):
-        security.fetch_bounded_https(
-            "https://policy.example/run",
-            max_bytes=100,
-            allowed_origins=("https://policy.example",),
-            allowed_content_types=("application/json",),
-        )
-
-    _install_fake_connections(
-        monkeypatch,
-        [
-            _FakePinnedResponse(
-                status=302,
-                headers={"Location": "https://169.254.169.254/latest/meta-data"},
-                chunks=[b""],
-            )
-        ],
-    )
-    with pytest.raises(security.SecurityValidationError, match="origin is not approved|not public"):
-        security.fetch_bounded_https(
-            "https://policy.example/run",
-            max_bytes=100,
-            allowed_origins=("https://policy.example",),
-            allowed_content_types=("application/json",),
-        )
-
-    target = tmp_path / "interrupted-download.json"
-    _install_fake_connections(
-        monkeypatch,
-        [
-            _FakePinnedResponse(
-                chunks=[b"partial", OSError("stream interrupted")],
-            )
-        ],
-    )
-    with pytest.raises(OSError, match="interrupted"):
-        security.fetch_bounded_https(
-            "https://policy.example/run",
-            max_bytes=100,
-            allowed_origins=("https://policy.example",),
-            allowed_content_types=("application/json",),
-            output_path=target,
-        )
-    assert not target.exists()
-
 
 
 def test_dns_rebinding_public_private_public_never_connects_or_requests_private(

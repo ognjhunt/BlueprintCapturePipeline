@@ -16,7 +16,6 @@ additional opt-in lane: set BLUEPRINT_TEST_LOCAL_ARTIFACTS=1 to sweep them too.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -25,20 +24,8 @@ import pytest
 
 from blueprint_pipeline import success_claim_contracts as scc
 from blueprint_pipeline.proof_contracts import build_site_package_manifest
-from blueprint_pipeline.robot_eval_execution import _simulator_attempts_from_payload
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-_RUNNER = REPO_ROOT / "scripts" / "run_isaac_g1_kitchen_parity_eval.py"
-
-
-def _load_runner():
-    spec = importlib.util.spec_from_file_location("parity_runner_scc", _RUNNER)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-RUNNER = _load_runner()
 
 
 # --------------------------------------------------------------------------------------
@@ -495,80 +482,6 @@ def _runner_review_evidence(passing: bool) -> dict:
     }
 
 
-def test_runner_ledger_kinematic_lane_is_not_policy_success() -> None:
-    outcome = {
-        "frames_captured": 48,
-        "task_success": True,
-        "task_success_contract": "visible_reach_to_affordance",
-        "task_status": "passed",
-    }
-    ledger = RUNNER._scenario_success_claim_ledger(
-        {"scenario_id": "s1"}, outcome, _runner_review_evidence(True)
-    )
-    assert ledger["claims"]["policy_task_success"] is False
-    assert any(
-        b.startswith("policy_action_execution:action_source_not_policy") for b in ledger["blockers"]
-    )
-    assert ledger["highest_truthful_claim"] == "simulator_task_success"
-    assert ledger["claims"]["physical_deployment_ready"] is False
-
-
-def test_runner_ledger_camera_only_motion_stays_at_media_valid() -> None:
-    outcome = {
-        "frames_captured": 48,
-        "task_success": True,
-        "task_success_contract": "root_navigation_to_target",
-        "task_status": "passed",
-    }
-    ledger = RUNNER._scenario_success_claim_ledger(
-        {"scenario_id": "s1"}, outcome, _runner_review_evidence(False)
-    )
-    assert ledger["claims"]["review_task_success"] is False
-    # Trace/simulator layers may still pass, but review-grade claims must not.
-    assert ledger["claims"]["media_valid"] is True
-
-
-def test_runner_ledger_declared_state_change_blocks_simulator_claim() -> None:
-    scenario = {
-        "scenario_id": "s1",
-        "success_state_change": {"object": "door", "property": "open_fraction"},
-    }
-    outcome = {
-        "frames_captured": 48,
-        "task_success": True,
-        "task_success_contract": "visible_reach_to_affordance",
-        "task_status": "passed",
-    }
-    ledger = RUNNER._scenario_success_claim_ledger(scenario, outcome, _runner_review_evidence(True))
-    assert ledger["claims"]["simulator_task_success"] is False
-    assert "task_declares_state_change_but_contact_state_change_not_proven" in ledger["blockers"]
-    assert ledger["highest_truthful_claim"] == "review_task_success"
-
-
-def test_runner_build_result_attaches_ledger_rows() -> None:
-    scenarios = [{"scenario_id": "s1"}]
-    outcomes = [
-        {
-            "frames_captured": 10,
-            "task_success": False,
-            "task_success_contract": "root_navigation_to_target",
-            "task_status": "failed_task_criteria",
-        }
-    ]
-    result = RUNNER.build_result(
-        scenarios=scenarios,
-        outcomes=outcomes,
-        policy_id="g1_walkto_v1",
-        kitchen_usd="kitchen.usd",
-        g1_usd=None,
-        blockers=[],
-    )
-    row = result["scenarios"][0]
-    assert row["success_claim_ledger"]["schema_version"] == "success_claim_ledger.v1"
-    assert "success_claim_summary" in result
-    assert result["success_claim_summary"]["physical_deployment_ready_count"] == 0
-
-
 # --------------------------------------------------------------------------------------
 # WAM success labels — generated-media review is never authoritative without a verdict
 # --------------------------------------------------------------------------------------
@@ -586,29 +499,6 @@ def _criterion_results(*, passed: bool = True) -> list[dict[str, object]]:
             "evidence_refs": ["v.mp4#frame=4"],
         }
     ]
-
-
-def test_completed_status_without_verdict_fails_closed() -> None:
-    attempts = _simulator_attempts_from_payload(
-        payload={"episodes": [{"status": "completed"}]},
-        simulator="mujoco",
-        generated_at="2026-07-04T00:00:00Z",
-    )
-    attempt = attempts[0]
-    assert attempt["task_success"] is False
-    assert attempt["task_success_explicit"] is False
-    assert "task_success_not_reported_failing_closed" in attempt["failure_mode_ids"]
-
-
-def test_explicit_task_success_still_accepted() -> None:
-    attempts = _simulator_attempts_from_payload(
-        payload={"episodes": [{"status": "completed", "task_success": True}]},
-        simulator="mujoco",
-        generated_at="2026-07-04T00:00:00Z",
-    )
-    attempt = attempts[0]
-    assert attempt["task_success"] is True
-    assert attempt["task_success_explicit"] is True
 
 
 # --------------------------------------------------------------------------------------

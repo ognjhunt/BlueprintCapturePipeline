@@ -14,11 +14,6 @@ from blueprint_pipeline.exact_workcell_variation_matrix import (
     build_agent_proposal_brief,
     compile_variation_matrix,
 )
-from blueprint_pipeline.exact_workcell_variation_inputs import (
-    AgentsSDKVariationProposalAgent,
-    ExactWorkcellVariationAgentOutput,
-    build_variation_request_from_admitted_contracts,
-)
 from blueprint_pipeline.exact_workcell_variation_runtime import (
     compile_evaluation_schedule,
     compile_isaac_lab_event_plan,
@@ -27,9 +22,6 @@ from blueprint_pipeline.exact_workcell_variation_runtime import (
     validate_matrix_and_schedule,
 )
 from blueprint_pipeline.evaluation_run_contract import validate_evaluation_run_spec
-from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import (
-    AgentsSDKInvocationResult,
-)
 
 
 def _sha(character: str) -> str:
@@ -250,42 +242,6 @@ class _FixtureVariationAgent:
         }
 
 
-class _FixtureAgentsSDKInvoker:
-    def __init__(self) -> None:
-        self.spec = None
-        self.input_value = None
-
-    def invoke(self, spec, input_value):
-        self.spec = spec
-        self.input_value = input_value
-        return AgentsSDKInvocationResult(
-            output=ExactWorkcellVariationAgentOutput.model_validate(
-                {
-                    "dimension_priorities": [
-                        {"dimension_id": "door_reset_angle_rad", "weight": 4.0}
-                    ],
-                    "targeted_interactions": [
-                        {
-                            "dimension_ids": [
-                                "door_reset_angle_rad",
-                                "hinge_dynamic_friction",
-                            ],
-                            "rationale": "Reset angle and hinge friction interact.",
-                        }
-                    ],
-                    "object_cousins": [],
-                }
-            ),
-            provider="openai",
-            model=spec.model,
-            sdk_version="0.19.1",
-            latency_seconds=0.01,
-            usage={},
-            cost_usd=None,
-            cost_status="fixture",
-        )
-
-
 def _source_contract(schema_version: str, **values) -> dict:
     contract = {
         "schema_version": schema_version,
@@ -467,97 +423,6 @@ def test_agent_brief_exposes_only_admitted_bounds_and_agent_cannot_authorize() -
     assert "policy" not in json.dumps(brief["allowed_dimensions"]).lower()
     assert any("Do not include object cousins" in row for row in brief["instructions"])
     assert brief["brief_digest"] == canonical_digest(brief, digest_field="brief_digest")
-
-
-def test_autonomous_builder_merges_scene_task_embodiment_and_seals_agent_output() -> None:
-    original = _request()
-    dimensions = original["variation_dimensions"]
-    scene = _source_contract(
-        "exact_workcell_scene_variation_contract.v1",
-        **original["scene_binding"],
-        variation_dimensions=dimensions[2:4],
-    )
-    task = _source_contract(
-        "exact_workcell_task_variation_contract.v1",
-        **original["task_binding"],
-        variation_dimensions=[dimensions[0], dimensions[4]],
-    )
-    embodiment = _source_contract(
-        "exact_workcell_embodiment_variation_contract.v1",
-        **original["embodiment_binding"],
-        variation_dimensions=[dimensions[1]],
-    )
-
-    request = build_variation_request_from_admitted_contracts(
-        matrix_id="site_840920.open_washer.franka.baseline_100",
-        implementation_commit="a" * 40,
-        seed_root=2026082601,
-        scene_contract=scene,
-        task_contract=task,
-        embodiment_contract=embodiment,
-        agent=_FixtureVariationAgent(),
-    )
-    matrix = compile_variation_matrix(request)
-
-    assert len(request["variation_dimensions"]) == 5
-    assert {row["source_contract"] for row in request["variation_dimensions"]} == {
-        "scene",
-        "task",
-        "embodiment",
-    }
-    assert request["agent_proposal"]["model_identity"] == (
-        "fixture-variation-agent@1"
-    )
-    assert request["agent_proposal"]["outcome_data_accessed"] is False
-    assert matrix["agent_role"]["mode"] == "bounded_proposal"
-    assert matrix["cell_count"] == 100
-
-
-def test_autonomous_builder_uses_canonical_agents_sdk_adapter() -> None:
-    original = _request()
-    dimensions = original["variation_dimensions"]
-    scene = _source_contract(
-        "exact_workcell_scene_variation_contract.v1",
-        **original["scene_binding"],
-        variation_dimensions=dimensions[2:4],
-    )
-    task = _source_contract(
-        "exact_workcell_task_variation_contract.v1",
-        **original["task_binding"],
-        variation_dimensions=[dimensions[0], dimensions[4]],
-    )
-    embodiment = _source_contract(
-        "exact_workcell_embodiment_variation_contract.v1",
-        **original["embodiment_binding"],
-        variation_dimensions=[dimensions[1]],
-    )
-    invoker = _FixtureAgentsSDKInvoker()
-    agent = AgentsSDKVariationProposalAgent(
-        invoker=invoker,
-        run_id="exact-workcell-agent-fixture",
-    )
-
-    request = build_variation_request_from_admitted_contracts(
-        matrix_id="site_840920.open_washer.franka.agents_sdk_baseline_100",
-        implementation_commit="a" * 40,
-        seed_root=2026082602,
-        scene_contract=scene,
-        task_contract=task,
-        embodiment_contract=embodiment,
-        agent=agent,
-    )
-    matrix = compile_variation_matrix(request)
-
-    assert invoker.spec.capability == "exact_workcell_variation_proposal"
-    assert invoker.spec.output_type is ExactWorkcellVariationAgentOutput
-    assert invoker.spec.model == "gpt-6-luna"
-    assert invoker.spec.reasoning_effort == "max"
-    assert '"brief"' in invoker.input_value
-    assert request["agent_proposal"]["model_identity"] == (
-        "openai-agents-sdk:gpt-6-luna:reasoning=max@0.19.1"
-    )
-    assert matrix["agent_role"]["mode"] == "bounded_proposal"
-    assert matrix["cell_count"] == 100
 
 
 def test_create_only_publication_preserves_full_byte_readback(tmp_path: Path) -> None:

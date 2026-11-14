@@ -52,10 +52,6 @@ PRODUCTION_SCAN_EXCLUSIONS = {
 }
 APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
-    "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
-    "src/blueprint_pipeline/native_g1_paid_campaign.py",
-    "src/blueprint_pipeline/native_g1_team_paid_policy.py",
-    "src/blueprint_pipeline/native_g1_beta_paid.py",
     "src/blueprint_pipeline/parallel_findall_admission.py",
     "src/blueprint_pipeline/policy_canary_allocator_lane.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
@@ -67,12 +63,8 @@ APPROVED_ADMISSION_ISSUERS = {
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
-    "src/blueprint_pipeline/native_g1_paid_campaign.py",
-    "src/blueprint_pipeline/native_g1_team_paid_policy.py",
-    "src/blueprint_pipeline/native_g1_beta_paid.py",
     "src/blueprint_pipeline/parallel_findall_admission.py",
     "src/blueprint_pipeline/policy_canary_allocator_lane.py",
-    "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
     "src/blueprint_pipeline/remote_cpu_job_allocator.py",
     "src/blueprint_pipeline/rigid_robot_free_probe_lane.py",

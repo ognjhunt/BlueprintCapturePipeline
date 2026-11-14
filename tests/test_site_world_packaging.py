@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 
 from blueprint_contracts.site_world_contract import load_site_world_bundle, validate_site_world_bundle
-from blueprint_pipeline.evaluation_prep_stage import _build_launchable_export_bundle
 from blueprint_pipeline.geometry_stage import build_geometry_stage_contract
 from blueprint_pipeline.materialization import build_capture_bundle_records, materialize_capture_bundle
 
@@ -425,56 +424,6 @@ def _assert_valid_production_bundle(eval_root: Path) -> dict[str, object]:
     errors = validate_site_world_bundle(bundle, production_mode=True)
     assert errors == []
     return bundle.spec
-
-
-def test_production_launchable_export_requires_runtime_session_smoke(monkeypatch) -> None:
-    monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
-
-    bundle = _build_launchable_export_bundle(
-        scene_memory_bundle_manifest={"geometry_summary_path": "../geometry/geometry_summary.json"},
-        geometry_bundle_manifest={"status": "complete"},
-        site_world_registration={"runtime_capabilities": {}},
-        site_world_health={
-            "launchable": False,
-            "status": "degraded",
-            "blockers": ["runtime_session_smoke_required"],
-        },
-        runtime_demo_manifest={},
-        simready_prep_manifest_path=None,
-    )
-
-    assert bundle["status"] == "blocked"
-    assert bundle["runtime_required"] is True
-    assert "runtime_required_for_buyer_launch" in bundle["launch_blockers"]
-
-
-def test_launchable_export_blocks_fallback_geometry_conditioning() -> None:
-    bundle = _build_launchable_export_bundle(
-        scene_memory_bundle_manifest={
-            "geometry_summary_path": "../geometry/geometry_summary.json",
-            "geometry_summary": {
-                "status": "completed_with_fallback",
-                "geometry_source": "fallback_geometry",
-                "fallback_used": True,
-                "ready_for_world_model": False,
-                "geometry_live_ready": False,
-                "site_faithful_market_ready": False,
-                "launch_blockers": ["fallback_geometry_not_live_video_to_world"],
-            },
-        },
-        geometry_bundle_manifest={"status": "missing"},
-        site_world_registration={"runtime_capabilities": {}},
-        site_world_health={"launchable": False, "status": "blocked", "blockers": []},
-        runtime_demo_manifest={},
-        simready_prep_manifest_path=None,
-    )
-
-    geometry_bundle = bundle["bundles"]["geometry_conditioning"]
-    assert geometry_bundle["launchable"] is False
-    assert geometry_bundle["geometry_source"] == "fallback_geometry"
-    assert geometry_bundle["fallback_used"] is True
-    assert "fallback_geometry_not_live_video_to_world" in geometry_bundle["blockers"]
-    assert bundle["status"] == "partial"
 
 
 def test_materialization_capture_orientation_precedence(monkeypatch, tmp_path: Path) -> None:

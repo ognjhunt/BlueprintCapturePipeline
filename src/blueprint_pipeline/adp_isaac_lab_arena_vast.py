@@ -429,14 +429,7 @@ def _extract_provider_output(
     try:
         with zipfile.ZipFile(path) as archive:
             if result_name == "native_g1_beta_session_result.v1.json":
-                from .native_g1_beta_transport import MAX_OUTPUT_BYTES, MAX_TERMINAL_BYTES
-                members = archive.infolist()
-                if (path.stat().st_size > MAX_OUTPUT_BYTES or sum(member.file_size for member in members) > MAX_OUTPUT_BYTES
-                        or archive.getinfo(result_name).file_size > MAX_TERMINAL_BYTES):
-                    blockers.append(f"{blocker_prefix}_output_read_budget_exceeded")
-                if (len(archive.namelist()) != len(set(archive.namelist()))
-                        or any((member.external_attr >> 16) & 0o170000 == 0o120000 for member in members)):
-                    blockers.append(f"{blocker_prefix}_output_inventory_invalid")
+                blockers.append(f"{blocker_prefix}_native_g1_lane_removed")
             if result_name == "embodiment_asset_preparation_result.v1.json":
                 from .deployment_embodiment_preparation_contract import MAX_OUTPUT_BYTES
                 members = archive.infolist()
@@ -501,8 +494,7 @@ def _provider_execution_transport_completed(
 ) -> bool:
     """Keep dedicated robot result transports separate from task/score claims."""
     if provider_bundle_kind == "native_g1_beta_screening":
-        from .native_g1_beta_transport import RESULT_FILENAME, transport_completed
-        return expected_output_filename == RESULT_FILENAME and transport_completed(execution, manifest=bundle)
+        return False  # The native G1 lane is removed.
     if execution.get("schema_version") == "native_g1_beta_session_result.v1":
         return False
     if provider_bundle_kind == "embodiment_asset_preparation":

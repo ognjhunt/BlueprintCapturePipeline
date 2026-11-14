@@ -20,7 +20,6 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.provider_output_member_index import (
-    BULK_EXTENSIONS,
     MemberInflater,
     ProviderOutputMemberIndexError,
     build_member_index,
@@ -182,7 +181,6 @@ def test_record_ranges_reopen_each_member_with_one_range_request():
     assert all(row["if_match"] == ETAG for row in reopened)
 
 
-
 def test_index_document_validates_and_forgery_is_refused():
     index, _ = _index(_mixed_archive())
     assert validate_member_index(index) is index
@@ -216,7 +214,6 @@ def test_index_document_validates_and_forgery_is_refused():
     for unserializable in ({**index, "members": [object()]}, {**index, "limits": {1: 2, "a": 3}}):
         with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_index_invalid$"):
             validate_member_index(unserializable)
-
 
 
 def test_selection_is_a_versioned_document_bound_to_one_index():
@@ -371,7 +368,6 @@ def _local_field(offset, value, **entry):
 def test_index_refuses_crc_mismatch_gaps_duplicates_unsafe_paths_and_caps(case):
     build, options, code = _REFUSALS[case]
     assert _refusal(build(), **options) == code
-
 
 
 def _oversize_records(field, count=40):
@@ -576,14 +572,6 @@ def test_virtual_multi_gigabyte_archive_is_indexed_without_allocating_its_bytes(
     assert store.whole_object_gets() == 1
 
 
-def test_bulk_extensions_match_the_retention_payload_list():
-    from blueprint_pipeline.task_evaluation_terminal_scene_payload_retention import (
-        _BINARY_PAYLOAD_SUFFIXES,
-    )
-
-    assert BULK_EXTENSIONS == frozenset(_BINARY_PAYLOAD_SUFFIXES)
-
-
 def test_stream_to_is_one_pinned_get_and_archive_sha256_stays_a_thin_caller():
     data = _mixed_archive()
     store = RangeStore(data)
@@ -605,7 +593,6 @@ def test_stream_to_is_one_pinned_get_and_archive_sha256_stays_a_thin_caller():
     for start, end in ((0, 0), (-1, 5), (5, len(data) + 1)):
         with pytest.raises(ProviderOutputTransportError, match="range_invalid"):
             reader.stream_to(received.extend, start=start, end=end)
-
 
 
 @pytest.mark.parametrize("fault, code", [
