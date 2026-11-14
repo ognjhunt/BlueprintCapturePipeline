@@ -3,8 +3,7 @@
 The job packet is what an approved deployment company reads to judge one job
 without a visit (owner direction 2026-11-12). A job is shared in full: the
 site's sentence and constraints, the video without sound, the first look on
-paper, the 3D reconstruction, the simulation and the success rule, and the
-early trial. Sharing is the service: a job whose site accepted recording
+paper, the 3D reconstruction, the simulation and the success rule. Sharing is the service: a job whose site accepted recording
 statement `2026-11-12.v4` or later goes to the deployment companies Blueprint
 has approved, and a job under an older statement is not shown to any company
 until its site accepts the current one. A site's name, street address and
@@ -76,8 +75,7 @@ whole, in the operator record.
 
 ```bash
 python3 scripts/export_job_packet.py --pull-root ./pulled --capture-dir <the capture> \
-  --operator <you> --output-root ./out [--screening-publication ./publication.json] \
-  [--review-videos-dir <clips>] [--team-scene-dir <packet>] [--configured-scene-dir <publication>]
+  --operator <you> --output-root ./out [--team-scene-dir <packet>] [--configured-scene-dir <publication>]
 ```
 
 The machine needs `ffmpeg` and `ffprobe`: the video goes in without its sound
@@ -108,7 +106,7 @@ know is left out and counted, never printed as it stands.
 
 Withdrawn, unconsented, authority-ended and owner-closed jobs are refused.
 Every refusal names the file or place it is about. A packet is never held for
-the simulation, the success rule or the early trial: the status line says what
+the simulation or the success rule: the status line says what
 is not in it yet.
 
 The simulation is in the packet only as one composed stage,
