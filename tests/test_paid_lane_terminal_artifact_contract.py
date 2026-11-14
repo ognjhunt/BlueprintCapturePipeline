@@ -61,7 +61,6 @@ PAID_LANE_MODULES = (
     # terminal write into the same contract and is verified as one.
     "sam31_gpu_admission.py",
     "semantic_teacher_image_edit_vast.py",
-    "simpler_public_vast.py",
     "task_evaluation_scene_configuration_vast.py",
     # Beta L5: one team candidate's Quick-10 session, through the shared Arena transport.
     "team_candidate_quick10_vast.py",

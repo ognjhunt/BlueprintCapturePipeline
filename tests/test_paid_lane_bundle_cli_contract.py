@@ -44,7 +44,6 @@ BUNDLE_BUILT_BY_SCRIPT = {
 #: means giving that module a `main()`.
 BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     # Frozen or retired lanes -- no launch path is wanted.
-    "cosmos_edge_closed_loop_provider_bundle.py",
     # Generic Arena bundle is a shared library, not a launch entry point.
     "native_task_arena_bundle.py",
     # beta_policy_screening_g1_launch.prepare_candidate rebuilds this library

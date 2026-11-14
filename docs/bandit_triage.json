@@ -133,30 +133,6 @@
       "test_id": "B614"
     },
     {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/openvla_policy_command_adapter.py",
-      "fingerprint": "f0954e2e8150188be4f50a283cb1770bbbe22aa16502a74025f0c913d2114296",
-      "line_number": 617,
-      "owner": "@ognjhunt",
-      "reason": "The checkpoint is a resolved local path and both processor and model loads are forced to local_files_only with remote code disabled; no mutable Hub download occurs at this site. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B615"
-    },
-    {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/openvla_policy_command_adapter.py",
-      "fingerprint": "285835dc07334e4ebd1e53920e5c4824336d8d5277dbd24f8bff1bbac3b0ca68",
-      "line_number": 631,
-      "owner": "@ognjhunt",
-      "reason": "The checkpoint is a resolved local path and both processor and model loads are forced to local_files_only with remote code disabled; no mutable Hub download occurs at this site. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B615"
-    },
-    {
       "disposition": "accepted_risk",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/palatial_physready.py",

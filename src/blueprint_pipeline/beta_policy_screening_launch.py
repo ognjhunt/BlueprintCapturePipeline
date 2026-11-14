@@ -192,21 +192,14 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     if family:
         from .beta_policy_screening_family import validate_family_candidate_catalog
         validate_family_candidate_catalog(plan, candidate, native_spec, static, scene=scene)
-    from .policy_interface_binding import TEAM_HTTPS_INTERFACES, TEAM_ROBOT_INTERFACES, TEAM_LOCAL_INTERFACES
+    from .policy_interface_binding import TEAM_HTTPS_INTERFACES, TEAM_ROBOT_INTERFACES
     if native_spec.get("policy_interface_id") in TEAM_HTTPS_INTERFACES:
         from .beta_policy_screening_hosted import validate_hosted_delivery
         validate_hosted_delivery(native_spec, execution, episodes=candidate["episode_count"])
-    elif native_spec.get("policy_interface_id") in TEAM_LOCAL_INTERFACES:
-        from .team_local_policy import runtime_for_interface
-        runtime_for_interface(native_spec["policy_interface_id"]).validate_execution_spec(native_spec)
     elif native_spec.get("policy_interface_id") == "blueprint_scripted_pick_place.v1":
         from .scripted_robot_runtime_dispatch import runtime_for_policy
         runtime_for_policy(native_spec["policy_spec"]).validate_execution_spec(native_spec)
-    elif native_spec.get("policy_interface_id") == "molmoact2_droid_joint8.v1":
-        from .molmoact2_droid_runtime import validate_execution_spec
-        validate_execution_spec(native_spec)
-    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid",
-                                                 "cosmos3_nano_policy_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS}:
+    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS}:
         raise ValueError("beta_screening_policy_provisioning_not_configured")
     if (native_spec["runtime_identity_digest"] != execution["runtime_digest"]
             or native_spec["task_success_contract_digest"] != scene["task_success_contract_digest"]):

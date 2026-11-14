@@ -91,8 +91,8 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
     plan = build_screening_plan(catalog, planning["scene"], capabilities=planning["capabilities"],
         cost_quotes=planning["cost_quotes"], campaign_id="rigid-campaign")
     candidates = [row for row in plan["candidates"] if row["status"] == "selected"]
-    assert {row["candidate_id"] for row in candidates} == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid",
-                                                          "molmoact2_droid", "pi0_droid_jointpos_100k_polaris"}
+    assert {row["candidate_id"] for row in candidates} == {"pi05_droid", "groot_n17_droid", "pi0_droid_jointpos_polaris",
+                                                          "pi0_fast_droid_jointpos_polaris", "pi0_droid_jointpos_100k_polaris"}
     # The screening lane cannot rent Cosmos Nano's 80 GB floor: listed with that reason, its budget spent next in order.
     nano = next(row for row in plan["candidates"] if row["candidate_id"] == "cosmos3_nano_policy_droid")
     assert (nano["status"], nano["blockers"]) == ("infeasible", ["screening_gpu_memory_floor_unrentable"])
@@ -176,18 +176,6 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
             assert sealed["candidate_ids"] == [candidate["candidate_id"]]
             assert sealed["task_success_contract_digest"] == inputs["task_success_contract_digest"]
             assert sealed["beta_screening_admission"]["robot_free_probe_receipt_digest"] == receipt["receipt_digest"]
-            if candidate["candidate_id"] in {"cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
-                from blueprint_pipeline.cosmos_droid_bundle import profile
-                selected = profile(candidate["candidate_id"])
-                manifest = json.loads(archive.read("provider_runtime/adp_arena_provider_manifest.json"))
-                assert manifest["minimum_gpu_memory_gb"] == selected.MINIMUM_GPU_MEMORY_GB
-                assert "provider_runtime/" + selected.SNAPSHOT_STAGED_NAME in archive.namelist()
-                native = json.loads(archive.read("provider_runtime/native_task_packet/native_task_arena_scene_plan.v1.json"))
-                cameras = {row["role"]: row for row in native["cameras"]}
-                assert cameras["exterior_right"]["policy_input"] is True
-                assert cameras["overview"]["policy_input"] is False
-                script = archive.read(f"provider_runtime/adp009d_policy_provisioning.{candidate['candidate_id']}.sh").decode()
-                assert "blueprint_pipeline.cosmos_droid_provisioning" in script
         assert (attempt / "allocator_launch_intent.json").is_file()
     replayed = coordinator.process_screening_queue(queue_root=queue, max_launches=5, require_publication_ack=False)
     assert replayed["launches_started"] == 0 and len(spawned) == 5

@@ -834,8 +834,6 @@ def test_planning_binds_a_navigation_g1_row_and_quotes_only_its_funded_cells(tmp
 
     monkeypatch.setattr(capabilities, "_native_templates", never)
     monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_control_omission.omit_paused_controls", never)
-    monkeypatch.setattr("blueprint_pipeline.cosmos_droid_bundle.profile", never)
-    monkeypatch.setattr("blueprint_pipeline.molmoact2_droid_runtime.candidate_execution_spec", never)
     kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch, wall_x=-0.2)
     profile = navigation_profile(kwargs, tmp_path)
     # The probe receipt is read where the record's scene facts name it (its own directory), not the profile's.
@@ -868,8 +866,6 @@ def test_planning_binds_a_navigation_g1_row_whose_offset_has_no_floor_and_quotes
 
     monkeypatch.setattr(capabilities, "_native_templates", never)
     monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_control_omission.omit_paused_controls", never)
-    monkeypatch.setattr("blueprint_pipeline.cosmos_droid_bundle.profile", never)
-    monkeypatch.setattr("blueprint_pipeline.molmoact2_droid_runtime.candidate_execution_spec", never)
     kwargs, packet, plan = navigation_spec_inputs(tmp_path, monkeypatch, floor_x_min=-0.04)
     profile = navigation_profile(kwargs, tmp_path)
     planning = capabilities.build_planning_inputs(catalog=load_default_catalog(), profile=profile,

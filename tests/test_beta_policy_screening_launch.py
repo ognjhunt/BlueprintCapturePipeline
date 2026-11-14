@@ -41,7 +41,7 @@ def test_real_single_candidate_robolab_bundle_passes_both_pre_create_gates(tmp_p
 
     plan, facts = _plan(tmp_path, monkeypatch, scene_half=scene_half)
     selected = [row for row in plan["candidates"] if row["status"] == "selected"]
-    assert {row["candidate_id"] for row in selected} == {"pi05_droid", "groot_n17_droid", "molmoact2_droid"}
+    assert {row["candidate_id"] for row in selected} == {"pi05_droid", "groot_n17_droid", "pi0_droid_jointpos_100k_polaris"}
     assert plan["maximum_planned_cost_usd"] == "12.00"
     candidate = next(row for row in selected if row["candidate_id"] == "pi05_droid")
     prepared = launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=tmp_path / "attempt")

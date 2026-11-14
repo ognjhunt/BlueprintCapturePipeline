@@ -47,11 +47,6 @@ from .native_task_arena_policy_canary_session import (
 )
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .openpi_droid_policy_runtime import ARENA_CANDIDATE_POLICY_IDS, BETA_POLARIS_VARIANT_CANDIDATE_IDS
-from .openwam_franka_bundle import RUNTIME_MODULES as OPENWAM_RUNTIME_MODULES
-from .molmoact2_yam_bundle import RUNTIME_MODULES as MOLMOACT2_RUNTIME_MODULES
-from .trlc_pi05_bundle import RUNTIME_MODULES as TRLC_RUNTIME_MODULES
-from .molmoact2_droid_bundle import RUNTIME_MODULES as MOLMOACT2_DROID_RUNTIME_MODULES
-from .cosmos_droid_bundle import CANDIDATES as COSMOS_CANDIDATES, RUNTIME_MODULES as COSMOS_RUNTIME_MODULES
 from .task_evaluation_canary_hotfix_overlay import (
     apply_canary_hotfix_overlay,
     canary_hotfix_execution_release,
@@ -80,7 +75,6 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "rigid_robot_free_probe_recorder.py", "rigid_robot_free_probe_plan.py",
     "rigid_robot_free_readiness_score.py",
 )
-TEAM_RUNTIME_MODULE_NAMES = tuple(dict.fromkeys((*TEAM_RUNTIME_MODULE_NAMES, *OPENWAM_RUNTIME_MODULES, *MOLMOACT2_RUNTIME_MODULES, *TRLC_RUNTIME_MODULES, *MOLMOACT2_DROID_RUNTIME_MODULES, *COSMOS_RUNTIME_MODULES, "team_local_policy.py")))
 
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
@@ -252,7 +246,7 @@ def _family_operator_inputs(
 
 def _entrypoint(*, local_candidates: tuple[str, ...] = ("pi05_droid", "groot_n17_droid"),
                 run_kind: str = RUN_KIND, credential_env: str | None = None,
-                family_runtime_catalog_staged: bool = False, openwam_local: bool = False) -> str:
+                family_runtime_catalog_staged: bool = False) -> str:
     if credential_env is not None and re.fullmatch(r"[A-Z][A-Z0-9_]{2,58}_FILE", credential_env) is None:
         raise ValueError("beta_robolab_https_credential_binding_invalid")
     credential_check = "" if credential_env is None else f'''/isaac-sim/python.sh - {shlex.quote(credential_env)} <<'PYCREDENTIAL'
@@ -294,8 +288,6 @@ fi
     )
     catalog_config = ('export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"'
                       if family_runtime_catalog_staged else "")
-    local_client_config = ('export PYTHONDONTWRITEBYTECODE=1\nexport PYTHONPATH="$RUNTIME_DIR/openwam_client:$RUNTIME_DIR${PYTHONPATH:+:$PYTHONPATH}"'
-                           if openwam_local else "")
     control_check = ('''/isaac-sim/python.sh -m blueprint_pipeline.beta_screening_runtime_control --runtime-root "$RUNTIME_DIR"
 control_rc=$?
 if [ $control_rc -ne 0 ]; then
@@ -415,7 +407,7 @@ elif [ "$strict_controls" != legacy ]; then
 fi
 
 {provisioning}
-{local_client_config}
+
 
 {control_check}
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
@@ -528,28 +520,13 @@ def build_policy_canary_session_bundle(
                 raise ValueError("scripted_baseline_execution_requires_beta_run")
             scripted_candidates.append(candidate)
         elif interface not in TEAM_HTTPS_INTERFACES:
-            if interface in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1", "molmoact2_yam_joint14.v1", "pi05_trlc_joint14.v1"}:
-                from .team_local_policy import runtime_for_interface
-                runtime_for_interface(interface).validate_execution_spec(spec)
-                if inputs.get("run_kind") != "blueprint_beta_screening":
-                    raise ValueError("team_local_native_execution_requires_beta_run")
-            elif interface == "molmoact2_droid_joint8.v1":
-                from .molmoact2_droid_runtime import validate_execution_spec as validate_molmo_droid_spec
-                validate_molmo_droid_spec(spec)
-                if inputs.get("run_kind") != "blueprint_beta_screening":
-                    raise ValueError("molmoact2_droid_native_execution_requires_beta_run")
-            elif candidate in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
+            if candidate in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
                 from .openpi_droid_policy_runtime import validate_beta_polaris_variant_execution_spec
                 validate_beta_polaris_variant_execution_spec(spec)
                 if inputs.get("run_kind") != "blueprint_beta_screening":
                     raise ValueError("openpi_beta_polaris_variant_requires_beta_run")
-            elif candidate not in ("pi05_droid", "groot_n17_droid", *COSMOS_CANDIDATES):
+            elif candidate not in ("pi05_droid", "groot_n17_droid"):
                 raise ValueError("policy_canary_local_provisioning_identity_not_admitted")
-            if candidate in COSMOS_CANDIDATES:
-                from .cosmos_droid_bundle import profile
-                profile(candidate).validate_execution_spec(spec)
-                if inputs.get("run_kind") != "blueprint_beta_screening":
-                    raise ValueError("cosmos_edge_native_execution_requires_beta_run")
             local_candidates.append(candidate)
         if inputs.get("run_kind") == "blueprint_beta_screening":
             if spec.get("evaluation_backend") == FAMILY_BACKEND:
@@ -684,33 +661,9 @@ def build_policy_canary_session_bundle(
         contract_dependency = stage_policy_contract_dependencies(runtime)
         robolab_dependency = (stage_robolab_source(runtime)
                               if any(spec.get("evaluation_backend") == "robolab.v1" for spec in specs.values()) else None)
-        openwam_contract = molmoact2_contract = molmoact2_droid_contract = cosmos_contract = trlc_contract = None
         for candidate in local_candidates:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
-            if specs[candidate].get("policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
-                from .team_local_policy import openwam_bundle_for_interface
-                selected = openwam_bundle_for_interface(specs[candidate]["policy_interface_id"])
-                openwam_contract = selected.stage_runtime(runtime)
-                provisioning_script = selected.provisioning_script()
-            elif specs[candidate].get("policy_interface_id") == "pi05_trlc_joint14.v1":
-                from .trlc_pi05_bundle import stage_runtime, provisioning_script as trlc_script, validate_native_inputs
-                validate_native_inputs(runtime_source_receipt=runtime_source_path, base_bundle_path=Path(base["bundle_path"]))
-                trlc_contract = stage_runtime(runtime)
-                provisioning_script = trlc_script()
-            elif specs[candidate].get("policy_interface_id") == "molmoact2_yam_joint14.v1":
-                from .molmoact2_yam_bundle import stage_runtime, provisioning_script as molmoact2_script
-                molmoact2_contract = stage_runtime(runtime)
-                provisioning_script = molmoact2_script()
-            elif specs[candidate].get("policy_interface_id") == "molmoact2_droid_joint8.v1":
-                from .molmoact2_droid_bundle import stage_runtime, provisioning_script as molmoact2_droid_script
-                molmoact2_droid_contract = stage_runtime(runtime)
-                provisioning_script = molmoact2_droid_script()
-            elif candidate in COSMOS_CANDIDATES:
-                from .cosmos_droid_bundle import stage_runtime as stage_cosmos, provisioning_script as cosmos_script
-                cosmos_contract = stage_cosmos(runtime, candidate)
-                provisioning_script = cosmos_script()
-            else:
-                provisioning_script = build_provisioning_script(candidate)
+            provisioning_script = build_provisioning_script(candidate)
             script.write_text(provisioning_script, encoding="utf-8")
             script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         for name in POLICY_RUNTIME_ROOT_MODULE_NAMES:
@@ -728,8 +681,8 @@ def build_policy_canary_session_bundle(
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
         entrypoint.write_text(_entrypoint(local_candidates=tuple(local_candidates), run_kind=inputs["run_kind"],
                                          credential_env=credential_env,
-                                         family_runtime_catalog_staged=operator_inputs is not None,
-                                         openwam_local=openwam_contract is not None), encoding="utf-8")
+                                         family_runtime_catalog_staged=operator_inputs is not None),
+                       encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)
@@ -737,30 +690,6 @@ def build_policy_canary_session_bundle(
             if type(minimum_gpu_memory_gb) not in (int, float) or not 0 < minimum_gpu_memory_gb <= 1024:
                 raise ValueError("beta_screening_gpu_memory_bound_invalid")
             manifest["minimum_gpu_memory_gb"] = minimum_gpu_memory_gb
-        if cosmos_contract is not None:
-            manifest["minimum_gpu_memory_gb"] = max(cosmos_contract["minimum_gpu_memory_gb"],
-                                                    manifest.get("minimum_gpu_memory_gb", 0))
-            manifest.update(cosmos_runtime=cosmos_contract, secret_material_bundled=False)
-        if openwam_contract is not None:
-            from .openwam_piper_runtime import MINIMUM_GPU_MEMORY_GB
-            manifest["minimum_gpu_memory_gb"] = max(MINIMUM_GPU_MEMORY_GB, manifest.get("minimum_gpu_memory_gb", 0))
-            manifest.update(openwam_runtime=openwam_contract, team_policy_interface_id=openwam_contract["policy_interface_id"],
-                            secret_material_bundled=False)
-        if trlc_contract is not None:
-            from .trlc_pi05_runtime import MINIMUM_GPU_MEMORY_GB
-            manifest["minimum_gpu_memory_gb"] = max(float(manifest.get("minimum_gpu_memory_gb") or 0), MINIMUM_GPU_MEMORY_GB)
-            manifest.update(trlc_pi05_runtime=trlc_contract, team_policy_interface_id="pi05_trlc_joint14.v1",
-                            secret_material_bundled=False)
-        if molmoact2_contract is not None:
-            from .molmoact2_yam_runtime import MINIMUM_GPU_MEMORY_GB
-            manifest["minimum_gpu_memory_gb"] = max(MINIMUM_GPU_MEMORY_GB, manifest.get("minimum_gpu_memory_gb", 0))
-            manifest.update(molmoact2_runtime=molmoact2_contract, team_policy_interface_id="molmoact2_yam_joint14.v1",
-                            secret_material_bundled=False)
-        if molmoact2_droid_contract is not None:
-            from .molmoact2_droid_runtime import MINIMUM_GPU_MEMORY_GB
-            manifest["minimum_gpu_memory_gb"] = max(MINIMUM_GPU_MEMORY_GB, manifest.get("minimum_gpu_memory_gb", 0))
-            manifest.update(molmoact2_droid_runtime=molmoact2_droid_contract,
-                            team_policy_interface_id="molmoact2_droid_joint8.v1", secret_material_bundled=False)
         manifest.update(
             {
                 "schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION,

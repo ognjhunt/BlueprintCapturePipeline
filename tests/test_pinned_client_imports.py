@@ -18,8 +18,6 @@ import zipfile
 
 import pytest
 
-from blueprint_pipeline import cosmos_droid_client_dependencies as cosmos_client
-from blueprint_pipeline import cosmos_droid_provisioning
 from blueprint_pipeline import openwam_piper_client_dependencies as openwam_client
 
 PINNED = ("websockets", "msgpack", "openpi_client", "typing_extensions")
@@ -107,35 +105,6 @@ def _host_websockets_12(tmp_path: Path) -> Path:
     return root
 
 
-def _activate_cosmos(tmp_path, monkeypatch, row):
-    monkeypatch.setattr(cosmos_client, "verified_dependency_manifest", lambda path: {})
-    monkeypatch.setattr(cosmos_droid_provisioning, "client_wheels", lambda manifest, minor: [row])
-    cosmos_client.activate_client_dependencies(tmp_path)
-
-
-def test_cosmos_client_wins_over_a_host_importer_that_ignores_sys_path(tmp_path, monkeypatch, isolated_imports):
-    row = _install(tmp_path, wheels="cosmos_policy_client_wheels", target="cosmos_policy_client")
-    host = _host_websockets_12(tmp_path)
-    sys.meta_path.insert(0, HostFastImporter(host))
-    import websockets as preloaded  # what the Kit worker held before policy load
-    assert preloaded.__version__ == "12.0"
-
-    _activate_cosmos(tmp_path, monkeypatch, row)
-
-    target = (tmp_path / "cosmos_policy_client").resolve()
-    import msgpack
-    import openpi_client
-    import typing_extensions
-    import websockets
-    import websockets.sync.client
-    assert websockets.__version__ == "16.0" and websockets.sync.client.VERSION == "16.0"
-    for module in (websockets, websockets.sync.client, msgpack, openpi_client, typing_extensions):
-        assert Path(module.__file__).resolve().is_relative_to(target)
-    # A name the pinned wheel lacks fails instead of mixing in the host copy.
-    with pytest.raises(ModuleNotFoundError):
-        import websockets.speedups  # noqa: F401
-
-
 def test_openwam_client_wins_over_a_host_importer_that_ignores_sys_path(tmp_path, monkeypatch, isolated_imports):
     row = _install(tmp_path, wheels="openwam_client_wheels", target="openwam_client", only_websockets=True)
     sys.meta_path.insert(0, HostFastImporter(_host_websockets_12(tmp_path)))
@@ -151,17 +120,3 @@ def test_openwam_client_wins_over_a_host_importer_that_ignores_sys_path(tmp_path
     assert Path(msgpack.__file__).resolve().is_relative_to(tmp_path / "isaac-sim")
 
 
-def test_cosmos_precedence_is_still_enforced_on_the_pinned_install(tmp_path, monkeypatch, isolated_imports):
-    # Bytes match their wheel, but the wheel is not the pinned 16.0 client.
-    row = _install(tmp_path, wheels="cosmos_policy_client_wheels", target="cosmos_policy_client", version="15.0")
-    with pytest.raises(ValueError, match="cosmos_policy_client_dependency_precedence_invalid"):
-        _activate_cosmos(tmp_path, monkeypatch, row)
-
-
-def test_repeated_activation_keeps_one_pinned_finder_first(tmp_path, monkeypatch, isolated_imports):
-    row = _install(tmp_path, wheels="cosmos_policy_client_wheels", target="cosmos_policy_client")
-    for _ in range(3):  # provisioning builds a fresh client on every readiness retry
-        _activate_cosmos(tmp_path, monkeypatch, row)
-    pinned = [finder for finder in sys.meta_path if type(finder).__name__ == "PinnedClientFinder"]
-    assert len(pinned) == 1 and sys.meta_path[0] is pinned[0]
-    assert sys.path.count(str(tmp_path / "cosmos_policy_client")) == 1
