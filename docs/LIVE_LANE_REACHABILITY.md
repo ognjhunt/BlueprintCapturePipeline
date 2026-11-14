@@ -39,10 +39,8 @@ attempt completed. Production proof additionally requires:
 
 | Probe kind | Live profile builder |
 | --- | --- |
-| `adp-artifixer3d-exact-support` | `build_artifixer3d_live_profile.py` |
 | `adp-gaussian-excision` | `build_gaussian_excision_live_profile.py` |
 | `adp-isaac-lab-arena-native-control` | `build_arena_native_control_live_profile.py` |
-| `adp-paired-target-native-import` | `build_paired_target_native_import_live_profile.py` |
 | `adp-retained-scene-gpu-render` | `build_retained_scene_render_live_profile.py` |
 | `adp-usd-content-agents` | `build_content_agents_live_profile.py` |
 | `adp-usd-joint-agent` | `build_joint_agent_live_profile.py` |

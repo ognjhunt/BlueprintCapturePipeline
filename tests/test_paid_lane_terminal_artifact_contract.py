@@ -49,8 +49,6 @@ PAID_LANE_MODULES = (
     # frozen `openpi-policy-ranking` campaign and the live
     # `new-site-diagnostic-canary` #544 made reachable share this runner.
     "openpi_policy_ranking_runpod.py",
-    "paired_target_native_import_vast.py",
-    "public_scene_artifixer3d_vast.py",
     "public_scene_simready_isaac_vast.py",
     # Not a `*_vast*.py` transport at all: it writes the launch profile's
     # terminal `result.json` on every non-execute-ready path, so it is a
