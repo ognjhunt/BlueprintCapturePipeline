@@ -229,18 +229,6 @@
       "test_id": "B608"
     },
     {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/company_policy_sandbox_v2.py",
-      "fingerprint": "574819e9806f7bef9764575d65b34c7edf95b4fd15bb603a6bb4529f3876e199",
-      "line_number": 238,
-      "owner": "@ognjhunt",
-      "reason": "The plan encodes a private container /tmp tmpfs with noexec,nosuid,nodev and an admitted size bound, plus runsc/read-only root/capability drop/no-new-privileges/resource and namespace restrictions. Executor equality checks prevent widening this plan to a host mount. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
       "disposition": "mitigated_by_control",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/control_plane_registered_checkpoint_cache.py",
@@ -311,18 +299,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B102"
-    },
-    {
-      "disposition": "false_positive",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/company_policy_sandbox_executor.py",
-      "fingerprint": "7f4dcbd864899aa0cbbeba5cf865d7304a8f00a5dee6e43d931af1f5c38c79be",
-      "line_number": 398,
-      "owner": "@ognjhunt",
-      "reason": "The literal /tmp is a private container tmpfs with rw,noexec,nosuid,nodev and an admitted size cap. The executor requires exact validated plan equality, digest-bound image, runsc, read-only root, dropped capabilities, no-new-privileges, admitted UID/GID and bounded CPU/memory/PIDs with seccomp/AppArmor; host namespaces/mounts and open network are refused. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
     },
     {
       "disposition": "mitigated_by_control",
