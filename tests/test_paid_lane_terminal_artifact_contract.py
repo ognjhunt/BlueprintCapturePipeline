@@ -64,7 +64,6 @@ PAID_LANE_MODULES = (
     # terminal `result.json` on every non-execute-ready path, so it is a
     # terminal write into the same contract and is verified as one.
     "sam31_gpu_admission.py",
-    "sam31_paid_resource_allocator_lane.py",
     "semantic_teacher_image_edit_vast.py",
     "simpler_public_vast.py",
     "task_evaluation_scene_configuration_vast.py",
@@ -78,7 +77,6 @@ PAID_LANE_MODULES = (
 #: but only while the named wrapper really does seal, so the test below checks
 #: both halves rather than taking the claim on trust.
 SEALED_BY_ALLOCATOR_CALLER = {
-    "sam31_vast_source_track_canary.py": "sam31_paid_resource_allocator_lane.py",
 }
 
 #: Lanes that run a paid attempt and seal nothing, with why. These all reach the
@@ -91,9 +89,6 @@ SEALED_BY_ALLOCATOR_CALLER = {
 #: The tests below refuse a stale entry, refuse an entry that has quietly
 #: started sealing, and cap the total so the ledger cannot absorb a new lane.
 UNSEALED_LANE_DEBT = {
-    "measurement_chrono_dem_vast_canary.py": "shares_unsealed_canonical_allocator_write",
-    "measurement_dlo_lab_vast_canary.py": "shares_unsealed_canonical_allocator_write",
-    "measurement_isaac_vast_canary.py": "shares_unsealed_canonical_allocator_write",
     "single_g1_kitchen_episode_runpod.py": "frozen_program",
     "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
 }

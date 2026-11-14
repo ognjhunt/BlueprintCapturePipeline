@@ -42,6 +42,11 @@ from .task_evaluation_terminal_resource_release import dispatch_terminal_resourc
 
 
 ROOT = Path(__file__).resolve().parents[2]
+RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS = (
+    "native-task-arena-destination-qualification",
+    "native-task-arena-construction",
+    "native-task-arena-controls",
+)
 CONTROL_PLANE_RELEASE_STATE_ROOT = Path(
     os.environ.get(
         "BLUEPRINT_CONTROL_PLANE_RELEASE_STATE_ROOT",
@@ -774,6 +779,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "single-kitchen-finetune",
             "openpi-policy-ranking",
             "new-site-diagnostic-canary",
+            # Native task-arena lanes whose allocator branch was removed; the
+            # preparation graph still names them, and the allocator refuses them.
+            *RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS,
             policy_canary_lane.PROBE_KIND, RIGID_ROBOT_FREE_PROBE_KIND,
             TASK_EVALUATION_SCENE_CONFIGURATION_PROBE_KIND,
         ),
@@ -796,6 +804,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--native-task-arena-attempt-authority",
         help="Exact single-use paid-attempt authority; required for execute.",
     )
+    # Named by the preparation graph for the removed native task-arena lanes;
+    # accepted only so the request reaches the refusal below.
+    for retired_flag in (
+        "--native-task-arena-packet",
+        "--native-task-arena-runtime-source-packet",
+        "--native-task-arena-construction-result",
+    ):
+        gpu.add_argument(retired_flag, help=argparse.SUPPRESS)
     policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
     gpu.add_argument("--adp-job-dir")
     _add_adp_resource_arguments(gpu)
@@ -904,6 +920,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "blockers": (
                 [RUNPOD_RETIRED_BLOCKER]
                 if args.provider == "runpod"
+                else ["native_task_arena_allocator_lane_removed"]
+                if args.probe_kind in RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS
                 else ["digitalocean_gpu_canary_requires_persistent_host_bake"]
             ),
             "provider_mutations_performed": 0,

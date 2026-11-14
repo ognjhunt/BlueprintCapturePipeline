@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from argparse import Namespace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -19,9 +17,6 @@ from blueprint_pipeline.sam31_gpu_admission import (
 )
 from blueprint_pipeline.sam31_paid_attempt_authority import (
     materialize_sam31_paid_attempt_authority,
-)
-from blueprint_pipeline.sam31_paid_resource_allocator_lane import (
-    run_sam31_paid_resource_allocator_lane,
 )
 from blueprint_pipeline.sam31_source_track_canary_worker import BUNDLE_RECEIPT_SCHEMA_VERSION
 from blueprint_pipeline.task_evaluation_launch_dispatcher import TaskEvaluationLaunchError
@@ -170,105 +165,6 @@ def test_builds_publishable_zero_retry_sam_profile(tmp_path: Path) -> None:
     assert "source_track_import_result_path" in profile["terminal_contract"][
         "required_path_fields"
     ]
-
-
-def test_published_profile_reaches_real_dry_run_with_fresh_preflight(
-    tmp_path: Path,
-) -> None:
-    """Join the published argv to the allocator that consumes its preflight.
-
-    The profile used to name a file beneath the fresh launch root that no
-    producer wrote. A fixture that merely creates that file cannot reproduce
-    the production contract: the allocator requires a fresh, digest-bound Vast
-    capacity/provider-zero snapshot collected under an armed watchdog.
-    """
-
-    profile = _build(_fixture(tmp_path / "inputs"))
-    run_root = (tmp_path / "launch-run").resolve()
-    (run_root / "allocator").mkdir(parents=True)
-    argv = [str(value).replace("{launch_run_root}", str(run_root)) for value in profile["allocator"]["argv"]]
-
-    def argument(name: str) -> str:
-        return argv[argv.index(name) + 1]
-
-    args = Namespace(
-        provider_launch_request=argument("--provider-launch-request"),
-        preflight_bundle=argument("--preflight-bundle"),
-        admission_out=argument("--admission-out"),
-        bound_request_out=argument("--bound-request-out"),
-        adapter_output=argument("--adapter-output"),
-        provider=argument("--provider"),
-        expected_source_commit=argument("--expected-source-commit"),
-        sam31_max_spend_usd=float(argument("--sam31-max-spend-usd")),
-        sam31_max_hourly_rate_usd=float(argument("--sam31-max-hourly-rate-usd")),
-        sam31_hard_ttl_seconds=int(argument("--sam31-hard-ttl-seconds")),
-        sam31_retry_cap=int(argument("--sam31-retry-cap")),
-        sam31_authority_id=argument("--sam31-authority-id"),
-        sam31_input_bundle=argument("--sam31-input-bundle"),
-        sam31_input_bundle_receipt=argument("--sam31-input-bundle-receipt"),
-        sam31_attempt_authority=argument("--sam31-attempt-authority"),
-        sam31_allowed_active_vast_instance_id=[],
-        sam31_hf_token_file=argument("--sam31-hf-token-file"),
-        execute=False,
-    )
-    # A profile build cannot freeze a five-minute capacity snapshot. Even if a
-    # stale/structurally incomplete file is already present, the allocator must
-    # replace it with bytes from the canonical live producer before admission.
-    Path(args.preflight_bundle).write_text(
-        json.dumps({"schema_version": "semantic_sam31_gpu_provider_preflight.v1"}),
-        encoding="utf-8",
-    )
-
-    class ReadOnlyProvider:
-        def capacity_preflight(self, _request):
-            return {
-                "status": "available",
-                "selected_offer": {
-                    "gpu_name": "L40S",
-                    "gpu_ram_mb": 48_000,
-                    "on_demand_price_usd_per_hour": 0.5,
-                    "geolocation": "California, US",
-                },
-            }
-
-        def billable_inventory(self, *, name_prefix: str):
-            return {
-                "api_confirmed": True,
-                "live_resource_count": 0,
-                "resources": [],
-                "name_prefix": name_prefix,
-            }
-
-    started = run_root / "allocator" / "started-vast-instance-id.txt"
-    closed: list[bool] = []
-    result = run_sam31_paid_resource_allocator_lane(
-        args,
-        checkout_commit=COMMIT,
-        provider_factory=lambda _name: ReadOnlyProvider(),
-        arm_watchdog=lambda **_kwargs: (
-            {
-                "watchdog_pid": 123,
-                "watchdog_started_epoch": 1_000,
-                "watchdog_deadline_epoch": 9_999_999_999,
-                "pod_name_prefix": "blueprint-sam31-source-tracks-fixture-",
-            },
-            SimpleNamespace(started_instance_id_path=started),
-        ),
-        close_watchdog_without_allocation=lambda **_kwargs: (
-            closed.append(True) or {"status": "provider_terminal"}
-        ),
-    )
-
-    preflight = json.loads(Path(args.preflight_bundle).read_text(encoding="utf-8"))
-    assert result["status"] == "dry_run_ready", result.get("blockers")
-    assert result["blockers"] == []
-    assert preflight["schema_version"] == "semantic_sam31_gpu_provider_preflight.v1"
-    assert preflight["status"] == "verified"
-    assert preflight["provider_inventory_verified_zero"] is True
-    assert preflight["preflight_digest"] == canonical_digest(
-        preflight, digest_field="preflight_digest"
-    )
-    assert closed == [True]
 
 
 def test_profile_binds_all_nonsecret_immutable_inputs(tmp_path: Path) -> None:

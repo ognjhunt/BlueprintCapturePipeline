@@ -1614,6 +1614,14 @@ def test_every_native_preparation_command_passes_its_real_cli_parser(monkeypatch
         observed.append(parsed)
         raise ParsedWithoutExecution
 
+    from blueprint_pipeline.paid_resource_allocator import RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS
+
+    def retired_allocator_lane(argv):
+        return "blueprint_pipeline.paid_resource_allocator" in argv and any(
+            kind in argv for kind in RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS
+        )
+
+    refused = 0
     monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parse_only)
     for lane, steps in prep.LANES.items():
         if not lane.startswith("native_task_arena_"):
@@ -1628,9 +1636,16 @@ def test_every_native_preparation_command_passes_its_real_cli_parser(monkeypatch
             else:
                 module = importlib.import_module("scripts." + Path(argv[1]).stem)
                 arguments = argv[2:]
+            if retired_allocator_lane(argv):
+                # The allocator branch for this lane was removed: the request is
+                # recognised and refused before any provider call.
+                assert module.main(arguments) == 2
+                refused += 1
+                continue
             with pytest.raises(ParsedWithoutExecution):
                 module.main(arguments)
-    assert len(observed) == sum(len(steps) for lane, steps in prep.LANES.items() if lane.startswith("native_task_arena_"))
+    assert refused > 0
+    assert len(observed) + refused == sum(len(steps) for lane, steps in prep.LANES.items() if lane.startswith("native_task_arena_"))
 
 
 def test_native_genesis_refreshes_inventory_without_changing_consent_or_budget(tmp_path):

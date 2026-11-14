@@ -314,12 +314,6 @@
       "class": "not_paid",
       "reason": "GET of the organization Costs API (a spend read); not billed"
     },
-    "src/blueprint_pipeline/openai_prompt_cache_canary.py::run_mechanics_canary::openai_client_construction": {
-      "provider": "openai",
-      "class": "not_automatic",
-      "entry_point": "src/blueprint_pipeline/openai_prompt_cache_canary.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator canary CLI"
-    },
     "src/blueprint_pipeline/palatial_physready.py::<module>::palatial_api_url": {
       "provider": "palatial",
       "class": "not_automatic",
