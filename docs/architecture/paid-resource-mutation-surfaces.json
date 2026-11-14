@@ -275,15 +275,6 @@
       ]
     },
     {
-      "path": "src/blueprint_pipeline/reconstruction_vast_worker_smoke.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "require_paid_resource_admission_grant",
-        "run_reconstruction_vast_worker_smoke",
-        "provider.launch("
-      ]
-    },
-    {
       "path": "src/blueprint_pipeline/remote_cpu_job_allocator.py",
       "classification": "canonical_adapter",
       "required_markers": [

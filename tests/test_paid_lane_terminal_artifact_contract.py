@@ -56,7 +56,6 @@ PAID_LANE_MODULES = (
     "paired_target_native_import_vast.py",
     "public_scene_artifixer3d_vast.py",
     "public_scene_simready_isaac_vast.py",
-    "reconstruction_vast_worker_smoke.py",
     # Not a `*_vast*.py` transport at all: it writes the launch profile's
     # terminal `result.json` on every non-execute-ready path, so it is a
     # terminal write into the same contract and is verified as one.
@@ -650,7 +649,6 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
 #: allocator's imports.
 TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {
     "openpi_policy_ranking_gpu_admission.py": "new-site-diagnostic-canary + frozen openpi",
-    "reconstruction_gpu_admission.py": "reconstruction-worker-smoke",
 }
 
 
