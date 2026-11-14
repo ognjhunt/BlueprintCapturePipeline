@@ -47,7 +47,6 @@ _KNOWN_UNITS = {
     'blueprint-task-evaluation-sam31-preparation-execution.service': 'task_evaluation_sam31_preparation_execution',
     'blueprint-task-evaluation-launch-dispatcher.service': 'task_evaluation_launch_dispatcher',
     'blueprint-task-evaluation-launch-reconciler.service': 'task_evaluation_launch_reconciler',
-    'blueprint-task-evaluation-launch-supervisor.service': 'task_evaluation_launch_supervisor',
     'blueprint-task-evaluation-terminal-resource-release.service': 'task_evaluation_terminal_resource_release',
     'blueprint-task-evaluation-configured-controls-progression.service': 'task_evaluation_configured_controls_progression_worker',
 }
@@ -1127,7 +1126,6 @@ _WORKERS = frozenset('blueprint_pipeline.' + name for name in (
     'task_evaluation_sam31_preparation_execution',
     'task_evaluation_launch_dispatcher',
     'task_evaluation_launch_reconciler',
-    'task_evaluation_launch_supervisor',
     'task_evaluation_terminal_resource_release',
     'task_evaluation_configured_controls_progression_worker',
 ))

@@ -42,6 +42,8 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
         "blueprint-capture-reconstruction-dispatcher.path",
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-existing-policy-canary-continuation.timer",
+        "blueprint-task-evaluation-launch-supervisor.timer",
+        "blueprint-scene-object-discovery.path",
     )
     for unit in RETIRED_HOLD_UNITS:
         plain = {"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",

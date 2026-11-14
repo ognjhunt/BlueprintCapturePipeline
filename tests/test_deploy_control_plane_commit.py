@@ -626,17 +626,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     probe_runner_timer = unit_dir / "blueprint-rigid-robot-free-probe-runner.timer"
     probe_runner_timer.write_text(
         "[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
-    discovery_service = unit_dir / "blueprint-scene-object-discovery.service"
-    discovery_service.write_text(
-        "[Service]\nExecStart=/usr/bin/blueprint-discover-scene-objects\n",
-        encoding="utf-8",
-    )
-    discovery_path = unit_dir / "blueprint-scene-object-discovery.path"
-    discovery_path.write_text(
-        "[Path]\nPathChanged=/scene-object-discoveries/pending\n"
-        "PathExistsGlob=/scene-object-discoveries/pending/*.json\n",
-        encoding="utf-8",
-    )
     team_scene_service = unit_dir / "blueprint-team-scene-packet.service"
     team_scene_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-team-scene-packet\n", encoding="utf-8"
@@ -763,7 +752,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "blueprint-agent-run-dispatcher.timer", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-launch-supervisor.service", "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-provider-billing-reconciler.service", "blueprint-provider-billing-reconciler.timer",
         "blueprint-task-evaluation-terminal-resource-release.service", "blueprint-task-evaluation-terminal-resource-release.path",
@@ -813,8 +801,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         probe_runner_service,
         probe_runner_path,
         probe_runner_timer,
-        discovery_service,
-        discovery_path,
         team_scene_service,
         team_scene_path,
         *team_remote_units,
@@ -901,8 +887,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-rigid-robot-free-probe-runner.service",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-rigid-robot-free-probe-runner.timer",
-        "blueprint-scene-object-discovery.service",
-        "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.service",
         "blueprint-team-scene-packet.path",
         "blueprint-team-scene-packet-remote.service",
@@ -915,8 +899,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-task-evaluation-scene-progression.service",
         "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-launch-supervisor.service",
-        "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service",
         "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-provider-billing-reconciler.service",
@@ -1017,8 +999,6 @@ PAUSED_LANE_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
-    "blueprint-task-evaluation-launch-supervisor.timer",
-    "blueprint-scene-object-discovery.path",
     "blueprint-embodiment-preparation.path",
     "blueprint-embodiment-preparation.timer",
     "blueprint-task-evaluation-episode-compilation.path",

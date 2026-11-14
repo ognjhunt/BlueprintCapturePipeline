@@ -150,7 +150,6 @@ INTAKE_CLIENT_SECRETS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_SECRETS_JSON"
 INTAKE_CLIENT_ROOTS_ENV = "BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON"
 INTAKE_NONCE_STORE_DIR_ENV = "BLUEPRINT_LIVE_PIPELINE_NONCE_STORE_DIR"
 TASK_EVALUATION_LAUNCH_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT"
-SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV = "BLUEPRINT_SCENE_OBJECT_DISCOVERY_QUEUE_ROOT"
 TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH_ENV = (
     "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"
 )
@@ -1017,13 +1016,6 @@ def create_app() -> FastAPI:
                     _string(os.getenv(TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT_ENV))
                 ),
                 "asynchronous_no_spend_preparation_only": True,
-                "accepts_host_paths_or_commands": False,
-            },
-            "scene_object_discovery_queue": {
-                "supported": True,
-                "configured": bool(_string(os.getenv(SCENE_OBJECT_DISCOVERY_QUEUE_ROOT_ENV))),
-                "asynchronous_preparation_only": True,
-                "provider_execution_requires_separate_activation": True,
                 "accepts_host_paths_or_commands": False,
             },
             "task_evaluation_launch_activation_queue": {

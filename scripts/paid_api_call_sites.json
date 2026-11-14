@@ -338,17 +338,17 @@
       "provider": "openai",
       "class": "admitted",
       "structural_check": "not expressible on the static graph: AgentTaskService receives the runtime factory as a callable (runtime_for_task), so every method of the production service looks reachable from its module",
-      "via": "src/blueprint_pipeline/task_evaluation_launch_supervisor.py::_account_limit_wait",
+      "via": "src/blueprint_pipeline/agent_execution/production.py::_require_account_limit",
       "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
-      "note": "the launch supervisor checks the account limit before invoking (a refusal is waiting_for_account_limit, not cached, asked again next tick); the production agent service checks it before a task starts; every other caller runs inside an admitted paid lane with its own reservation audit"
+      "note": "the production agent service checks it before a task starts; every other caller runs inside an admitted paid lane with its own reservation audit"
     },
     "src/blueprint_pipeline/task_evaluation_supervisor/agents_sdk.py::OpenAIAgentsSDKInvoker.invoke::openai_credentials": {
       "provider": "openai",
       "class": "admitted",
       "structural_check": "not expressible on the static graph: AgentTaskService receives the runtime factory as a callable (runtime_for_task), so every method of the production service looks reachable from its module",
-      "via": "src/blueprint_pipeline/task_evaluation_launch_supervisor.py::_account_limit_wait",
+      "via": "src/blueprint_pipeline/agent_execution/production.py::_require_account_limit",
       "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
-      "note": "the launch supervisor checks the account limit before invoking (a refusal is waiting_for_account_limit, not cached, asked again next tick); the production agent service checks it before a task starts; every other caller runs inside an admitted paid lane with its own reservation audit"
+      "note": "the production agent service checks it before a task starts; every other caller runs inside an admitted paid lane with its own reservation audit"
     },
     "src/blueprint_pipeline/task_object_agent_session.py::execute_agent_authoring::openai_agents_provider": {
       "provider": "openai",

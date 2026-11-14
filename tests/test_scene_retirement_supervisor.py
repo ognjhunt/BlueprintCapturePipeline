@@ -24,7 +24,6 @@ UNITS = {
     'blueprint-task-evaluation-sam31-preparation-execution': 'task_evaluation_sam31_preparation_execution',
     'blueprint-task-evaluation-launch-dispatcher': 'task_evaluation_launch_dispatcher',
     'blueprint-task-evaluation-launch-reconciler': 'task_evaluation_launch_reconciler',
-    'blueprint-task-evaluation-launch-supervisor': 'task_evaluation_launch_supervisor',
     'blueprint-task-evaluation-terminal-resource-release': 'task_evaluation_terminal_resource_release',
     'blueprint-task-evaluation-configured-controls-progression': 'task_evaluation_configured_controls_progression_worker',
 }

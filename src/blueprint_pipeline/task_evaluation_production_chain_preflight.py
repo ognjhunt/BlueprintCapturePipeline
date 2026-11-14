@@ -85,7 +85,6 @@ CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-reconciler.service",
-    "blueprint-task-evaluation-launch-supervisor.service",
     "blueprint-task-evaluation-terminal-resource-release.service",
     "blueprint-gpu-spend-guard.service",
     "blueprint-provider-billing-reconciler.service",

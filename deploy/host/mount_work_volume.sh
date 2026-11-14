@@ -108,7 +108,6 @@ WORKER_UNITS=(
   blueprint-agent-stage-replay.timer
   blueprint-agent-stage-replay.path
   blueprint-completed-replay-cache-gc.timer
-  blueprint-scene-object-discovery.path
   blueprint-team-scene-packet.path
   blueprint-team-scene-packet-remote.path
   blueprint-team-scene-packet-remote.timer
@@ -141,7 +140,6 @@ WORKER_UNITS=(
   blueprint-task-evaluation-scene-progression.service
   blueprint-agent-stage-replay.service
   blueprint-completed-replay-cache-gc.service
-  blueprint-scene-object-discovery.service
   blueprint-team-scene-packet.service
   blueprint-team-scene-packet-remote.service
   blueprint-beta-policy-screening.service

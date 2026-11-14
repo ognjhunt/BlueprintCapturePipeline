@@ -469,8 +469,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-rigid-robot-free-probe-runner.path",
     "blueprint-rigid-robot-free-probe-runner.timer",
-    "blueprint-scene-object-discovery.service",
-    "blueprint-scene-object-discovery.path",
     # A prepared website scene's robot-team half, compiled on this host; no allocator.
     "blueprint-team-scene-packet.service",
     "blueprint-team-scene-packet.path",
@@ -485,8 +483,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-task-evaluation-scene-progression.service",
     "blueprint-task-evaluation-scene-progression.timer",
-    "blueprint-task-evaluation-launch-supervisor.service",
-    "blueprint-task-evaluation-launch-supervisor.timer",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-launch-reconciler.timer",
     # Provider billing reconciliation is the accounting-closure feed the
@@ -660,11 +656,6 @@ DEFAULT_PAUSED_LANE_DISARM_UNITS = (
     # Robot-team evaluation lanes, deleted by the owner (a deployment company
     # running its own software in our simulation is later). Their triggers stop
     # here before the WebApp routes they call are removed.
-    # Launch supervision: a read-only explainer that posts launch-supervision;
-    # it starts nothing and nothing waits on it.
-    "blueprint-task-evaluation-launch-supervisor.timer",
-    # Scene object discovery: no kept worker or website step writes its queue.
-    "blueprint-scene-object-discovery.path",
     # Embodiment preparation: a door grant starts it, the timer retries it.
     "blueprint-embodiment-preparation.path",
     "blueprint-embodiment-preparation.timer",
@@ -689,6 +680,9 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     # Robot-team policy-canary dispatch and the existing-canary continuation.
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-existing-policy-canary-continuation.timer",
+    # Launch supervision (a read-only explainer) and scene object discovery.
+    "blueprint-task-evaluation-launch-supervisor.timer",
+    "blueprint-scene-object-discovery.path",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the

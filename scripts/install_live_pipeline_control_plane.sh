@@ -1493,12 +1493,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.timer"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.service" \
-  "${SYSTEMD_DIR}/blueprint-scene-object-discovery.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.path" \
-  "${SYSTEMD_DIR}/blueprint-scene-object-discovery.path"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.service"
 run install -m 0644 \
@@ -1588,12 +1582,6 @@ install -m 0644 \
 install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-preflight.timer" \
   "${SYSTEMD_DIR}/blueprint-control-plane-preflight.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.service" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.timer" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-provider-billing-reconciler.service" \
   "${SYSTEMD_DIR}/blueprint-provider-billing-reconciler.service"
@@ -1781,7 +1769,6 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.timer
-  systemctl enable --now blueprint-scene-object-discovery.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.timer
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.timer
@@ -1790,7 +1777,6 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-activation.timer
   systemctl enable --now blueprint-team-evaluation-runner.path
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
-  systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
   echo "installed"
   echo "enable handoff listener with: systemctl enable --now blueprint-pubsub-handoff-listener.timer"
@@ -1802,12 +1788,10 @@ else
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
   echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
   echo "enable bounded disk-capacity preparation retries with: systemctl enable --now blueprint-task-evaluation-launch-preparation.timer"
-  echo "enable whole-splat object discovery queue with: systemctl enable --now blueprint-scene-object-discovery.path"
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable hourly recovery of interrupted activation claims with: systemctl enable --now blueprint-task-evaluation-launch-activation.timer"
   echo "enable the staged robot-team evaluation runner with: systemctl enable --now blueprint-team-evaluation-runner.path"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
-  echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"
 fi

@@ -212,6 +212,8 @@ RETIRED_HOLD_UNITS = (
     "blueprint-capture-reconstruction-dispatcher.path",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-existing-policy-canary-continuation.timer",
+    "blueprint-task-evaluation-launch-supervisor.timer",
+    "blueprint-scene-object-discovery.path",
 )
 EXPLICIT_RELEASE_UNITS = (DISPATCHER_HOLD_UNIT, *RETIRED_HOLD_UNITS)
 _LOG_TAIL_LINES = 200

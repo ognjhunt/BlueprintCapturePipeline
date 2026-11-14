@@ -382,12 +382,11 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
 
 #: Money safety, and the door to the host (#3329): the OOM killer passes them over. Never weakened: no
 #: throttle, no pressure kill, the memory cap each had before. G1 campaign settlement settles money too.
-#: Five of them keep 8G, which is above the host and never acts; each file says so. Their peaks are not
+#: Three of them keep 8G, which is above the host and never acts; each file says so. Their peaks are not
 #: measured on the host and a guessed cap must not kill a money-safety unit. They are outside BATCH_SLICE.
 HOST_SAFETY_GUARD_UNITS = (
     "blueprint-gpu-spend-guard.service",
     "blueprint-operator-door.service",
-    "blueprint-task-evaluation-launch-supervisor.service",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-terminal-resource-release.service",
 )
@@ -425,7 +424,6 @@ HOST_MEMORY_KEPT = {
     "blueprint-pubsub-handoff-listener.service": ("200", "5.5G"),
     "blueprint-task-evaluation-launch-activation.service": ("200", "5.5G"),
     "blueprint-embodiment-preparation.service": ("200", "5.5G"),
-    "blueprint-scene-object-discovery.service": ("200", "5.5G"),
     "blueprint-control-plane-preflight.service": ("200", "1G"),
     "blueprint-control-plane-capacity.service": ("200", "512M"),
     "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
@@ -530,7 +528,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-beta-policy-screening.service",
     "blueprint-embodiment-preparation.service",
-    "blueprint-scene-object-discovery.service",
     "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-team-evaluation-runner.service",
     "blueprint-agent-run-dispatcher.service",
@@ -553,7 +550,6 @@ OUTSIDE_BATCH_SLICE = {
     "blueprint-provider-billing-reconciler.service": "money safety: the billing feed the guard reads",
     "blueprint-scene-project-spend-refresh.service": "money safety: the scene spend ledger's refresh",
     "blueprint-task-evaluation-launch-reconciler.service": "money safety: the provider-zero proof",
-    "blueprint-task-evaluation-launch-supervisor.service": "money safety: launch supervision",
     "blueprint-task-evaluation-terminal-resource-release.service": "money safety: releases paid resources",
     "blueprint-control-plane-capacity.service": "the pager: capacity, stall and spend alerts",
     NOTIFIER_UNIT: "the failure notifier: it must run while the batch units are at their bound",
