@@ -3,7 +3,6 @@
   "issuer_allowlist": {
     "build_paid_lane_admission": [
       "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
-      "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
       "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
@@ -13,7 +12,6 @@
     ],
     "require_paid_resource_admission": [
       "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
-      "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
       "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/qualification_control_admission.py",
@@ -141,15 +139,6 @@
       "required_markers": [
         "stage_paired_witness_slot",
         "signed_output_object_binding_sha256"
-      ]
-    },
-    {
-      "path": "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "require_paid_resource_admission",
-        "RUNPOD_RETIRED_BLOCKER",
-        "run_openpi_policy_ranking_campaign"
       ]
     },
     {

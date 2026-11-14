@@ -32,7 +32,7 @@ def test_every_website_reachable_builder_has_digest_safe_publication() -> None:
             LIVE_REACHABILITY.read_text(encoding="utf-8"),
         )
     )
-    assert len(documented) == 12
+    assert len(documented) == 11
     assert documented == set(LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS)
     assert {
         builder

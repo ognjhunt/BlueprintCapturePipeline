@@ -45,10 +45,6 @@ PAID_LANE_MODULES = (
     "adp_retained_scene_render_vast.py",
     "native_task_arena_vast.py",
     "native_task_arena_warm_vast.py",
-    # The `*_runpod*.py` half of the provider families. Dual-purpose: the
-    # frozen `openpi-policy-ranking` campaign and the live
-    # `new-site-diagnostic-canary` #544 made reachable share this runner.
-    "openpi_policy_ranking_runpod.py",
     "public_scene_simready_isaac_vast.py",
     # Not a `*_vast*.py` transport at all: it writes the launch profile's
     # terminal `result.json` on every non-execute-ready path, so it is a
@@ -152,9 +148,7 @@ def _discovered_paid_lanes() -> set[str]:
 
     Widening to ``*_vast*.py`` fixed the pattern and left the *provider* half
     of the hole open: Vast is not the only provider, and every ``*_runpod*.py``
-    lane was invisible here for the same reason. Six of them take a grant, and
-    one -- `openpi_policy_ranking_runpod.py` -- is the paid execution path for
-    `new-site-diagnostic-canary`, which #544 made website-reachable. A gate
+    lane was invisible here for the same reason. A gate
     that only knows one provider's naming will keep rediscovering this, so both
     families are globbed and a lane on a third provider is expected to be added
     here rather than to a debt row.
@@ -200,9 +194,6 @@ def test_the_widened_discovery_still_sees_the_lanes_it_used_to() -> None:
 
     assert "task_evaluation_scene_configuration_vast.py" in discovered
     assert {module for module in PAID_LANE_MODULES if module.endswith("_vast.py")} <= discovered
-    # The runpod family, invisible here until a live canary depended on it.
-    assert "openpi_policy_ranking_runpod.py" in discovered
-    assert sum(1 for module in discovered if "_runpod" in module) >= 1
 
 
 def test_a_lane_sealed_by_its_caller_really_is_sealed_by_that_caller() -> None:
@@ -627,17 +618,7 @@ def test_every_lane_seals_the_root_its_provider_run_lives_under() -> None:
 #: `sam31_gpu_admission.py` was the urgent one -- `semantic-sam31-source-tracks`
 #: is website-reachable today -- and it now seals, so it has moved into
 #: `PAID_LANE_MODULES` and the bound below has been ratcheted with it.
-#:
-#: `openpi_policy_ranking_gpu_admission.py` stays, but read what it is: this
-#: module writes no terminal adapter result of its own, and the paid execution
-#: for both the frozen campaign and the live `new-site-diagnostic-canary` runs
-#: through `openpi_policy_ranking_runpod.py`, which now seals and is checked as
-#: a paid lane above. The live exposure is closed; the row remains because this
-#: transport still names neither field and the ledger is keyed on the
-#: allocator's imports.
-TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {
-    "openpi_policy_ranking_gpu_admission.py": "new-site-diagnostic-canary + frozen openpi",
-}
+TRANSPORTS_MISSING_TERMINAL_EVIDENCE: dict[str, str] = {}
 
 
 def _allocator_transport_imports() -> set[str]:
@@ -693,7 +674,7 @@ def test_the_missing_terminal_evidence_set_only_ever_shrinks() -> None:
     cannot be spent on the next lane that would rather be excused than sealed.
     """
 
-    assert len(TRANSPORTS_MISSING_TERMINAL_EVIDENCE) <= 6, (
+    assert len(TRANSPORTS_MISSING_TERMINAL_EVIDENCE) <= 0, (
         "a transport was added to TRANSPORTS_MISSING_TERMINAL_EVIDENCE rather "
         "than sealing its terminal evidence. This list records lanes that "
         "cannot report completed after paying for a GPU; it is not an "

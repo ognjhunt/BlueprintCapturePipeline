@@ -51,7 +51,6 @@ PRODUCTION_SCAN_EXCLUSIONS = {
     "scripts/verify_paid_resource_allocator.py",
 }
 APPROVED_ADMISSION_ISSUERS = {
-    "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
     "src/blueprint_pipeline/parallel_findall_admission.py",
     "src/blueprint_pipeline/policy_canary_allocator_lane.py",
     "src/blueprint_pipeline/qualification_control_admission.py",
@@ -62,7 +61,6 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/website_task_context.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
-    "src/blueprint_pipeline/openpi_policy_ranking_gpu_admission.py",
     "src/blueprint_pipeline/parallel_findall_admission.py",
     "src/blueprint_pipeline/policy_canary_allocator_lane.py",
     "src/blueprint_pipeline/qualification_control_admission.py",

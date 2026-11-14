@@ -51,7 +51,6 @@ attempt completed. Production proof additionally requires:
 | `native-task-arena-controls` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-policy` | `build_native_task_arena_live_profile.py` |
 | `native-task-arena-policy-diagnostic` | `build_native_task_arena_live_profile.py` |
-| `new-site-diagnostic-canary` | `build_new_site_diagnostic_canary_live_profile.py` |
 | `semantic-sam31-source-tracks` | `build_sam31_source_tracks_live_profile.py` |
 | `semantic-teacher-image-edit` | `build_semantic_teacher_image_edit_live_profile.py` |
 | `task-evaluation-scene-configuration` | `build_task_evaluation_scene_configuration_live_profile.py` |

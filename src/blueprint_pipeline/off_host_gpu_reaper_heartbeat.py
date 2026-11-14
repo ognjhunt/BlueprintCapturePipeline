@@ -53,7 +53,6 @@ DEADLINE_CEILINGS = (
     ("task_evaluation_scene_configuration_paid_authority", "MAX_TTL_SECONDS"),
     ("team_candidate_quick10_admission", "MAX_TTL_SECONDS"),
     ("native_task_arena_paid_authority", "MAX_TTL_SECONDS"),
-    ("openpi_policy_ranking_gpu_admission", "MAX_TTL_SECONDS"),
     ("deployment_embodiment_preparation_contract", "MAX_TTL_SECONDS"),
     ("canonical_3dgs_admission", "MAX_TTL_SECONDS"),
     ("beta_policy_screening_capabilities", "DEFAULT_HARD_TTL_SECONDS"),
