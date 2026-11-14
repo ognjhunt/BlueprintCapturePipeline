@@ -289,8 +289,9 @@ jobs:
           # runner home, where the different-UID child can read them safely.
           native_resource_root="$(/var/lib/blueprint-native-test-venv/bin/python -c 'from pathlib import Path; import blueprint_pipeline; print(Path(blueprint_pipeline.__file__).resolve().parents[2])')"
           test "$native_resource_root" = /var/lib/blueprint-native-test-venv/lib/python3.12
-          git archive HEAD docs | tar -x -C "$native_resource_root"
+          git archive HEAD docs config | tar -x -C "$native_resource_root"
           diff -rq -- docs "$native_resource_root/docs"
+          diff -rq -- config "$native_resource_root/config"
           # The actual different-UID child has ProtectHome=yes. Its interpreter
           # and imported dependencies must be protected outside /home/runner.
           sudo chown -hR root:root /var/lib/blueprint-native-test-venv

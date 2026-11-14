@@ -2051,9 +2051,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     for name in sorted(RUNPOD_ONLY_ALLOCATOR_COMMANDS):
         commands.add_parser(name, help=argparse.SUPPRESS)
-    args, unrecognized = parser.parse_known_args(argv)
-    if unrecognized and args.command not in RUNPOD_ONLY_ALLOCATOR_COMMANDS:
-        parser.error("unrecognized arguments: " + " ".join(unrecognized))
+    # A retired RunPod-only command is registered without its old arguments so it can be
+    # refused below; every other command is parsed strictly, as before.
+    args, _unrecognized = parser.parse_known_args(argv)
+    if args.command not in RUNPOD_ONLY_ALLOCATOR_COMMANDS:
+        args = parser.parse_args(argv)
     retired_aws = getattr(args, "provider", None) == "aws"
     if args.command == "gpu-canary" and getattr(args, "probe_kind", None) == RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND and getattr(args, "provider_launch_request", None) and Path(args.provider_launch_request).expanduser().is_file():
         retired_aws = retired_aws or _load(args.provider_launch_request).get("requested_execution_adapter_id") in WINDOWS_TRAINER_ADAPTER_IDS
