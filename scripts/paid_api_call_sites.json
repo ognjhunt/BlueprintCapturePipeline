@@ -69,6 +69,12 @@
       "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_budget",
       "note": "every path from an automatic entry passes the account-wide monthly limit at the operator's start; a refusal is a RuntimeError its callers record as an advisory-ledger blocker, nothing sent"
     },
+    "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator::openai_codex_client_construction": {
+      "provider": "openai",
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/agent_operator_runtime.py::run_codex_sdk_operator",
+      "reason": "no caller remains in the package; no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph"
+    },
     "src/blueprint_pipeline/agent_runtime/openai_phase2.py::CodexOpenAIPhase2Runner.__call__::openai_codex_cli": {
       "provider": "openai",
       "class": "admitted",
@@ -334,6 +340,12 @@
       "via": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::OpenAIAgentsSDKInvoker",
       "admission": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::reserve",
       "note": "official OpenAI cost run gate reserve() before the capped invoker runs"
+    },
+    "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "not_automatic",
+      "entry_point": "src/blueprint_pipeline/render_visual_qc.py::review_render_frame",
+      "reason": "no caller remains in the package; no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph"
     },
     "src/blueprint_pipeline/runpod_provider_adapter.py::<module>::runpod_serverless_api_url": {
       "provider": "runpod_serverless",
