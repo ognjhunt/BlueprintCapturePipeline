@@ -6,9 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.g1_kitchen_bundle_compatibility import (
-    CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
-)
 from blueprint_pipeline.isaac_worker_image_manifest import (
     _inspect_local_image,
     _runnable_child_digest,
@@ -52,99 +49,11 @@ def test_required_cuda_version_is_derived_from_image_config(
     assert derive_required_cuda_version(config) == (expected, source)
 
 
-def test_worker_build_identity_is_derived_from_immutable_config() -> None:
-    result = derive_worker_build_identity(
-        {
-            "config": {
-                "Env": [
-                    "BLUEPRINT_SOURCE_COMMIT=" + "a" * 40,
-                    "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="
-                    + CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
-                    "BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker",
-                    "BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6",
-                    "BLUEPRINT_ISAAC_SIM_VERSION=6.0.1",
-                ]
-            }
-        }
-    )
-
-    assert result["status"] == "verified"
-    assert result["source_commit"] == "a" * 40
-    assert result["source_dirty_patch_sha256"] == (
-        CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256
-    )
-    assert result["isaac_sim_major_version"] == 6
-    assert result["isaac_sim_version"] == "6.0.1"
-
-
 def test_worker_build_identity_blocks_missing_source_environment() -> None:
     result = derive_worker_build_identity({"config": {"Env": ["CUDA_VERSION=12.6"]}})
 
     assert result["status"] == "blocked"
     assert "worker_image_source_commit_missing_or_invalid" in result["blockers"]
-
-
-def test_source_overlay_identity_binds_last_registry_layer() -> None:
-    source_layer = _digest("d")
-    result = summarize_manifest(
-        image_ref="docker.io/example/isaac:overlay",
-        resolved_digest=_digest("e"),
-        raw_manifest={
-            "layers": [
-                {"digest": _digest("c"), "size": 10},
-                {"digest": source_layer, "size": 20},
-            ]
-        },
-        image_config={
-            "architecture": "amd64",
-            "os": "linux",
-            "config": {
-                "Env": [
-                    "BLUEPRINT_SOURCE_COMMIT=" + "a" * 40,
-                    "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="
-                    + CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
-                    "BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker",
-                    "BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6",
-                    "BLUEPRINT_WORKER_IMAGE_BUILD_METHOD=crane_exact_source_overlay_experimental",
-                    "BLUEPRINT_WORKER_BASE_IMAGE_DIGEST=docker.io/example/isaac@"
-                    + _digest("b"),
-                    "BLUEPRINT_WORKER_SOURCE_MANIFEST_SHA256=" + _digest("f"),
-                    "BLUEPRINT_WORKER_SOURCE_LAYER_DIGEST=" + source_layer,
-                ]
-            },
-        },
-    )
-
-    assert result["worker_build_identity"]["status"] == "verified"
-    assert result["worker_build_identity"]["source_layer_matches_last_registry_layer"] is True
-
-    result["worker_build_identity"] = {}
-    mismatched = summarize_manifest(
-        image_ref="docker.io/example/isaac:overlay",
-        resolved_digest=_digest("e"),
-        raw_manifest={"layers": [{"digest": _digest("c"), "size": 10}]},
-        image_config={
-            "config": {
-                "Env": [
-                    "BLUEPRINT_SOURCE_COMMIT=" + "a" * 40,
-                    "BLUEPRINT_SOURCE_DIRTY_PATCH_SHA256="
-                    + CANONICAL_CLEAN_SOURCE_DIRTY_PATCH_SHA256,
-                    "BLUEPRINT_WORKER_IMAGE_FAMILY=isaac-eval-worker",
-                    "BLUEPRINT_ISAAC_SIM_MAJOR_VERSION=6",
-                    "BLUEPRINT_WORKER_IMAGE_BUILD_METHOD=crane_exact_source_overlay_experimental",
-                    "BLUEPRINT_WORKER_BASE_IMAGE_DIGEST=docker.io/example/isaac@"
-                    + _digest("b"),
-                    "BLUEPRINT_WORKER_SOURCE_MANIFEST_SHA256=" + _digest("f"),
-                    "BLUEPRINT_WORKER_SOURCE_LAYER_DIGEST=" + source_layer,
-                ]
-            },
-        },
-    )
-    assert mismatched["worker_build_identity"]["status"] == "blocked"
-    assert (
-        "worker_image_overlay_source_layer_not_last_registry_layer"
-        in mismatched["worker_build_identity"]["blockers"]
-    )
 
 
 def test_split_image_manifest_is_digest_pinned_and_sizes_drive_startup_timeout() -> None:
@@ -379,14 +288,3 @@ def test_local_inspection_is_explicitly_not_registry_evidence(monkeypatch) -> No
     assert result["runtime_config"]["user"] == "blueprint:blueprint"
 
 
-def test_isaac_build_script_keeps_digest_pinned_base_default() -> None:
-    script = (
-        Path(__file__).resolve().parents[1] / "scripts" / "build_push_isaac_worker_image.sh"
-    ).read_text(encoding="utf-8")
-    assert "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:783444c706538aa76cf5126e911ddc5e618779e6105305ad4af4260362a30aa9" in script
-    assert "refuses pushed Isaac worker build from a dirty source tree" in script
-    assert "BLUEPRINT_NVIDIA_WAREHOUSE_CAMERA_RELEASE_OUTPUT" in script
-    assert (
-        "blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission" in script
-    )
-    assert "build-release" in script

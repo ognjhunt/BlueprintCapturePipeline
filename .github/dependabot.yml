@@ -44,8 +44,6 @@ updates:
       - /deploy/docker/policy_model_cpu
       - /deploy/docker/policy_ranking_openpi
       - /deploy/docker/reconstruction_worker
-      - /deploy/docker/robot_eval_worker/isaac
-      - /deploy/docker/robot_eval_worker/mujoco
       - /deploy/docker/robot_eval_worker/unitree_groot_sonic_wam
       - /deploy/docker/sam3
       - /deploy/docker/sam31_source_tracks

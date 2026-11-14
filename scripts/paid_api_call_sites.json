@@ -335,12 +335,6 @@
       "admission": "src/blueprint_pipeline/public_scene_sam31_ai_visual_reviewer.py::reserve",
       "note": "official OpenAI cost run gate reserve() before the capped invoker runs"
     },
-    "src/blueprint_pipeline/render_visual_qc.py::_gemini_review_image::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "not_automatic",
-      "entry_point": "scripts/run_isaac_g1_kitchen_parity_eval.py::main",
-      "reason": "no automatic entry point (systemd unit, Cloud Run job, Cloud Function) reaches it on the static call graph; operator parity-evaluation script"
-    },
     "src/blueprint_pipeline/runpod_provider_adapter.py::<module>::runpod_serverless_api_url": {
       "provider": "runpod_serverless",
       "class": "admitted",

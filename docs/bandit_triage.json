@@ -61,18 +61,6 @@
       "test_id": "B310"
     },
     {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/mujoco_g1_simulator_command.py",
-      "fingerprint": "7c9b53dee83d314a9c7a87ae32e71304db724fbdd630cd54109f0d281f957ec7",
-      "line_number": 683,
-      "owner": "@ognjhunt",
-      "reason": "This fixed temporary workspace is used only in an isolated local or provider worker boundary; the exact site remains time-bounded and must be replaced or re-reviewed before expiry. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B108"
-    },
-    {
       "disposition": "false_positive",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/object_index_stage.py",
@@ -107,18 +95,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B108"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/official_g1_policy_handoff.py",
-      "fingerprint": "5580fd4f6c432ecc02262fbd1a26a0a09467226ef9e4e7365224208dac658cee",
-      "line_number": 1946,
-      "owner": "@ognjhunt",
-      "reason": "TorchScript loading is restricted to an explicitly selected local policy checkpoint and is not an untrusted upload boundary; this deserialization risk remains time-bounded and requires re-review before expiry. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B614"
     },
     {
       "disposition": "accepted_risk",

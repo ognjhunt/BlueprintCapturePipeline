@@ -28,29 +28,17 @@
     "src/blueprint_pipeline/capture_orchestrator.py": [
       "tests/test_capture_orchestrator.py"
     ],
-    "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": [
-      "tests/test_g1_site_3dgs_mujoco_preview.py"
-    ],
     "src/blueprint_pipeline/geometry_stage.py": [
       "tests/test_geometry_stage.py"
     ],
     "src/blueprint_pipeline/gpu_render_providers.py": [
       "tests/test_gpu_render_providers.py"
     ],
-    "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": [
-      "tests/test_isaac_g1_site_3dgs_realistic_eval.py"
-    ],
-    "src/blueprint_pipeline/isaac_runtime_task_backend.py": [
-      "tests/test_isaac_runtime_task_backend_live_state.py"
-    ],
     "src/blueprint_pipeline/live_pipeline_intake_service.py": [
       "tests/test_live_pipeline_intake_service.py"
     ],
     "src/blueprint_pipeline/materialization.py": [
       "tests/test_materialization_edges.py"
-    ],
-    "src/blueprint_pipeline/mujoco_g1_simulator_command.py": [
-      "tests/test_mujoco_g1_simulator_command.py"
     ],
     "src/blueprint_pipeline/native_task_arena_construction_worker.py": [
       "tests/test_native_task_arena_construction_worker.py"
@@ -79,9 +67,6 @@
     ],
     "src/blueprint_pipeline/object_index_stage.py": [
       "tests/test_object_index_stage.py"
-    ],
-    "src/blueprint_pipeline/official_g1_policy_handoff.py": [
-      "tests/test_official_g1_policy_handoff.py"
     ],
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": [
       "tests/test_oscar_wam_command_adapter.py"
@@ -192,14 +177,10 @@
     "src/blueprint_pipeline/arena_result_ingest.py": 2383,
     "src/blueprint_pipeline/articulated_usd_depth_sweep.py": 2786,
     "src/blueprint_pipeline/capture_orchestrator.py": 2002,
-    "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py": 2954,
     "src/blueprint_pipeline/geometry_stage.py": 2244,
     "src/blueprint_pipeline/gpu_render_providers.py": 3553,
-    "src/blueprint_pipeline/isaac_g1_site_3dgs_realistic_eval.py": 5057,
-    "src/blueprint_pipeline/isaac_runtime_task_backend.py": 3580,
     "src/blueprint_pipeline/live_pipeline_intake_service.py": 3374,
     "src/blueprint_pipeline/materialization.py": 2200,
-    "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6063,
     "src/blueprint_pipeline/native_franka_pose_servo.py": 2845,
     "src/blueprint_pipeline/native_runtime_backend.py": 2970,
     "src/blueprint_pipeline/native_task_arena_actuator_sweep.py": 2551,
@@ -209,7 +190,6 @@
     "src/blueprint_pipeline/native_task_arena_policy_canary_worker.py": 2297,
     "src/blueprint_pipeline/native_task_construction_plan.py": 2281,
     "src/blueprint_pipeline/object_index_stage.py": 2369,
-    "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
     "src/blueprint_pipeline/post_training_data_package.py": 6727,

@@ -5,16 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.nvidia_warehouse_native_camera_gpu_admission import (
-    _seal_terminal as seal_native_camera_terminal,
-)
 from blueprint_pipeline.openpi_policy_ranking_runpod import (
     _seal_terminal as seal_diagnostic_terminal,
 )
 from blueprint_pipeline.task_evaluation_launch_dispatcher import _terminal_evidence
 
 
-SEALERS = (seal_diagnostic_terminal, seal_native_camera_terminal)
+SEALERS = (seal_diagnostic_terminal,)
 
 
 def _completed_result(*, absence_confirmed: bool = True) -> dict[str, object]:

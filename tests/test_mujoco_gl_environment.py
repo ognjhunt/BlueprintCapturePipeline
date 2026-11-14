@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
@@ -52,12 +51,3 @@ def test_mujoco_import_failure_restores_absent_default(
     assert "MUJOCO_GL" not in os.environ
 
 
-def test_all_mujoco_gl_defaults_use_scoped_import_seam() -> None:
-    paths = (
-        "src/blueprint_pipeline/official_g1_policy_handoff.py",
-        "src/blueprint_pipeline/g1_site_3dgs_mujoco_preview.py",
-        "src/blueprint_pipeline/mujoco_g1_simulator_command.py",
-    )
-    for path in paths:
-        source = Path(path).read_text(encoding="utf-8")
-        assert 'setdefault("MUJOCO_GL"' not in source

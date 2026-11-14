@@ -162,15 +162,6 @@
       ]
     },
     {
-      "path": "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
-      "classification": "canonical_adapter",
-      "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "run_native_camera_gpu_lane"
-      ]
-    },
-    {
       "path": "src/blueprint_pipeline/openpi_policy_ranking_runpod.py",
       "classification": "canonical_adapter",
       "required_markers": [

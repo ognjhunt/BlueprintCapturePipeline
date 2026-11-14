@@ -25,15 +25,12 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import (
-    nvidia_warehouse_native_camera_gpu_admission as native_camera,
-)
 from blueprint_pipeline import openpi_policy_ranking_runpod as openpi_runpod
 
 
 LANES = pytest.mark.parametrize(
     "module",
-    (native_camera, openpi_runpod),
+    (openpi_runpod,),
     ids=lambda m: m.__name__.rsplit(".", 1)[-1],
 )
 
@@ -150,44 +147,3 @@ def test_the_seal_reads_the_root_the_evidence_actually_lives_under(
     )
 
 
-def test_the_native_camera_lane_seals_the_result_it_really_writes(
-    tmp_path: Path,
-) -> None:
-    """End to end through the lane, on a path that refuses before any provider.
-
-    The unit tests above prove the wrapper is correct; this proves the wrapper
-    is actually on the path that writes the launch profile's `result.json`. The
-    lane's first three refusals write `admission_out` instead, so the earliest
-    terminal write is the not-admitted branch, which is what this reaches.
-    """
-
-    root = tmp_path / "allocator"
-    root.mkdir()
-    adapter_output = root / "result.json"
-
-    result = native_camera.run_native_camera_gpu_lane(
-        release_evidence=_write(tmp_path / "release.json", {"status": "blocked"}),
-        input_bundle_receipt=_write(tmp_path / "bundle.json", {}),
-        preflight_bundle=_write(
-            tmp_path / "preflight.json",
-            {"provider": "vast", "container_disk_bytes": 0},
-        ),
-        admission_out=root / "admission.json",
-        bound_request_out=root / "bound_request.json",
-        adapter_output=adapter_output,
-        pod_name=f"{native_camera.CANARY_NAME_PREFIX}probe",
-        expected_source_commit="0" * 40,
-        execute=False,
-        hard_ttl_seconds=600,
-        max_spend_usd=1.0,
-    )
-
-    assert result["provider_mutations_performed"] == 0
-    assert adapter_output.is_file(), "the lane wrote no terminal result at all"
-
-    written = json.loads(adapter_output.read_text(encoding="utf-8"))
-    assert "artifact_manifest_path" in written, (
-        "the launch profile reads required_path_fields off this exact file; "
-        "without this key the run reports allocator_terminal_artifact_missing"
-    )
-    assert "teardown_manifest_path" in written
