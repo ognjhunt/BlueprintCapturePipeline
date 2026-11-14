@@ -61,14 +61,8 @@
     "src/blueprint_pipeline/materialization.py": [
       "tests/test_materialization_edges.py"
     ],
-    "src/blueprint_pipeline/mujoco_eval_media.py": [
-      "tests/test_mujoco_eval_media.py"
-    ],
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": [
       "tests/test_mujoco_g1_simulator_command.py"
-    ],
-    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": [
-      "tests/test_mujoco_g1_wam_vla_policy_endpoint_eval.py"
     ],
     "src/blueprint_pipeline/native_task_arena_construction_worker.py": [
       "tests/test_native_task_arena_construction_worker.py"
@@ -101,17 +95,8 @@
     "src/blueprint_pipeline/official_g1_policy_handoff.py": [
       "tests/test_official_g1_policy_handoff.py"
     ],
-    "src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py": [
-      "tests/test_oscar_cosmos_wam_evaluator.py"
-    ],
-    "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": [
-      "tests/test_oscar_isaac_closed_loop_eval.py"
-    ],
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": [
       "tests/test_oscar_wam_command_adapter.py"
-    ],
-    "src/blueprint_pipeline/oscar_wam_provider_bundle.py": [
-      "tests/test_oscar_wam_provider_bundle.py"
     ],
     "src/blueprint_pipeline/paid_resource_allocator.py": [
       "tests/test_paid_resource_allocator.py"
@@ -182,9 +167,6 @@
     ],
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": [
       "tests/test_task_evaluation_supervisor.py"
-    ],
-    "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": [
-      "tests/test_unitree_groot_n17_sonic_vast_persistent_session.py"
     ],
     "src/blueprint_pipeline/vast_provider_adapter.py": [
       "tests/test_vast_provider_adapter.py"
@@ -258,7 +240,6 @@
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
     "src/blueprint_pipeline/materialization.py": 2200,
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6063,
-    "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12110,
     "src/blueprint_pipeline/native_franka_pose_servo.py": 2845,
     "src/blueprint_pipeline/native_runtime_backend.py": 2970,
     "src/blueprint_pipeline/native_task_arena_actuator_sweep.py": 2551,
@@ -269,10 +250,7 @@
     "src/blueprint_pipeline/native_task_construction_plan.py": 2281,
     "src/blueprint_pipeline/object_index_stage.py": 2369,
     "src/blueprint_pipeline/official_g1_policy_handoff.py": 2942,
-    "src/blueprint_pipeline/oscar_cosmos_wam_evaluator.py": 6607,
-    "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 8183,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
-    "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5872,
     "src/blueprint_pipeline/paid_resource_allocator.py": 7456,
     "src/blueprint_pipeline/post_training_data_package.py": 6727,
     "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
@@ -292,7 +270,6 @@
     "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py": 2109,
     "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py": 2662,
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 4166,
-    "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
     "src/blueprint_pipeline/vast_provider_adapter.py": 10420,
     "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
     "src/blueprint_pipeline/wam_generated_video_review.py": 2412,

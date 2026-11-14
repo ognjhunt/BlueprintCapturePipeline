@@ -84,9 +84,7 @@ SEALED_BY_ALLOCATOR_CALLER = {
 #: admission that the lane is not launchable, not an exemption from fixing it.
 #: The tests below refuse a stale entry, refuse an entry that has quietly
 #: started sealing, and cap the total so the ledger cannot absorb a new lane.
-UNSEALED_LANE_DEBT = {
-    "unitree_groot_n17_sonic_vast_persistent_session.py": "frozen_program",
-}
+UNSEALED_LANE_DEBT: dict[str, str] = {}
 
 VALID_DEBT_REASONS = {"shares_unsealed_canonical_allocator_write", "frozen_program"}
 

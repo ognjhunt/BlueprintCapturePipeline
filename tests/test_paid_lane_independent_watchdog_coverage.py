@@ -36,7 +36,6 @@ LANES_WITHOUT_AN_INDEPENDENT_WATCHDOG = frozenset(
         "robot_eval_provider_launcher",
         "simpler_public_vast",
         "unitree_groot_n17_sonic_vast_image_canary",
-        "unitree_groot_n17_sonic_vast_persistent_session",
         "unitree_groot_n17_sonic_vast_policy_command",
         "vast_authorized_probe_runner",
         # The direct CLI remains intentionally unwatched because paid mutation

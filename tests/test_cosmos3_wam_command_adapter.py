@@ -16,7 +16,6 @@ from blueprint_pipeline.sc3_fidelity_contracts import (
     SC3_EXECUTOR_TRUSTED_PUBLIC_KEY_SHA256_ENV,
 )
 
-
 ADAPTER_ENV_VARS = (
     "BLUEPRINT_COSMOS3_WAM_SOURCE_ROOT",
     "BLUEPRINT_COSMOS3_NANO_SOURCE_ROOT",
@@ -194,98 +193,6 @@ def test_adapter_respects_local_model_run_gate(
     assert payload["blockers"] == ["blocked_BLUEPRINT_ALLOW_LOCAL_WAM_MODEL_not_enabled"]
     assert payload["run_gates"]["local_model_gate_enabled"] is False
     assert payload["learned_wam_model_ran"] is False
-
-
-def test_adapter_emits_trusted_schema_with_verified_identity_and_declared_recipe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_adapter_env(monkeypatch)
-    output_path = _output_path(tmp_path, monkeypatch)
-    monkeypatch.setenv("BLUEPRINT_ALLOW_LOCAL_WAM_MODEL", "true")
-    source_root = _source_root(tmp_path)
-    checkpoint = _checkpoint(tmp_path, base_model="Cosmos3-Nano")
-    rollout_input = tmp_path / "wam_rollout_input_manifest.json"
-    _write_json(rollout_input, {"task_prompts": []})
-    monkeypatch.setenv("BLUEPRINT_WAM_ROLLOUT_INPUT", str(rollout_input))
-
-    save_root = tmp_path / "generated"
-    save_root.mkdir()
-    package_manifest = {
-        "schema_version": "blueprint_cosmos_rollout_input_package.v1",
-        "save_root": str(save_root),
-        "inference_params_path": str(tmp_path / "params.json"),
-        "source_review_video_path": str(tmp_path / "review.mp4"),
-        "source_camera": "robot_pov",
-        "scenario_eval_run_id": "run-1",
-        "task_id": "task-1",
-        "spawn_id": "spawn-1",
-    }
-    monkeypatch.setattr(
-        adapter,
-        "_materialize_cosmos_input_package",
-        lambda **kwargs: dict(package_manifest),
-    )
-    monkeypatch.setattr(
-        adapter,
-        "_run_import_probe",
-        lambda **kwargs: {"status": "completed", "blockers": []},
-    )
-
-    def _fake_run_cosmos3(**kwargs: Any) -> dict[str, Any]:
-        (save_root / "rollout_0001.mp4").write_bytes(b"generated mp4")
-        return {
-            "schema_version": "cosmos3_subprocess_result.v1",
-            "status": "completed",
-            "returncode": 0,
-            "blockers": [],
-        }
-
-    monkeypatch.setattr(adapter, "_run_cosmos3", _fake_run_cosmos3)
-    monkeypatch.setattr(
-        adapter,
-        "validate_generated_mp4_for_review",
-        lambda path: {"status": "completed", "blockers": []},
-    )
-
-    payload = adapter.run(["--source-root", str(source_root), "--checkpoint", str(checkpoint)])
-
-    assert payload["schema_version"] == "cosmos3_wam_command_adapter.v1"
-    assert payload["status"] == "completed"
-    assert payload["base_model"] == "Cosmos3-Nano"
-    assert payload["learned_wam_model_ran"] is True
-    assert payload["fresh_model_run_claimed"] is True
-    assert payload["fresh_model_run_steps"] == 1
-    assert payload["configured_inference_steps_per_model_run"] == 35
-    assert payload["rollouts"][0]["base_model"] == "Cosmos3-Nano"
-    assert payload["rollouts"][0]["generated_video_sha256"] == (
-        hashlib.sha256(b"generated mp4").hexdigest()
-    )
-    assert payload["rollouts"][0]["success_label_source"] == ("generated_video_requires_review")
-    truth = payload["truth_boundary"]
-    assert truth["checkpoint_identity_verified_as_cosmos3_nano"] is True
-    assert truth["sc3_recipe_metadata_is_declared_config_not_proof"] is True
-    assert truth["generated_world_rank_fidelity_result_proven"] is False
-    recipe = payload["sc3_recipe_declared_config"]
-    assert recipe["training_mixture"] == {
-        "forward_dynamics": 0.8,
-        "cross_view": 0.1,
-        "inverse_dynamics": 0.1,
-    }
-    assert recipe["horizon_decoupling"] == {
-        "predict_horizon_frames": 24,
-        "execute_horizon_frames": 16,
-    }
-    assert recipe["claim_boundary"]["recipe_metadata_is_operator_declared_config"] is True
-    assert recipe["claim_boundary"]["recipe_metadata_is_execution_or_training_proof"] is False
-    assert payload["raw_credentials_written_to_artifacts"] is False
-    assert payload["secret_hashes_written_to_artifacts"] is False
-    assert json.loads(output_path.read_text(encoding="utf-8"))["status"] == "completed"
-
-    from blueprint_pipeline.oscar_cosmos_wam_evaluator import (
-        TRUSTED_WAM_MODEL_PAYLOAD_SCHEMAS,
-    )
-
-    assert "cosmos3_wam_command_adapter.v1" in TRUSTED_WAM_MODEL_PAYLOAD_SCHEMAS
 
 
 def test_rollout_payload_never_claims_learned_run_without_verified_identity(

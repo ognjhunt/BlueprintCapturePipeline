@@ -85,42 +85,6 @@
       "test_id": "B108"
     },
     {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py",
-      "fingerprint": "51f57abb785b9f4631ebc82951e0195a68cb216cd18b3c0b92c4dc7432a960de",
-      "line_number": 936,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2027-02-04",
-      "filename": "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py",
-      "fingerprint": "8f8caa533ee17d100a23a3fb865d70085bbafbb5842b80078c2b0cc032ce4f0a",
-      "line_number": 6823,
-      "owner": "@ognjhunt",
-      "reason": "The URL comes from operator configuration (an env var, a CLI flag or a job-state file Blueprint's own tooling wrote). It has no scheme validation and is not reachable by a customer. Owner re-review 2026-11-06.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py",
-      "fingerprint": "b3270f0953f5e772a0dfc0c51f68a430c5c68839155f1b645a3e0a47afe4c86e",
-      "line_number": 7428,
-      "owner": "@ognjhunt",
-      "reason": "TorchScript loading is restricted to an explicitly selected local policy checkpoint and is not an untrusted upload boundary; this deserialization risk remains time-bounded and requires re-review before expiry. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B614"
-    },
-    {
       "disposition": "false_positive",
       "expires_on": "2027-02-04",
       "filename": "src/blueprint_pipeline/object_index_stage.py",
@@ -287,18 +251,6 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B310"
-    },
-    {
-      "disposition": "accepted_risk",
-      "expires_on": "2026-12-06",
-      "filename": "src/blueprint_pipeline/unitree_g1_policy_execution.py",
-      "fingerprint": "371848f4a12d71f2d9854a90d4f43cc6a14afa0f9e496069ab60111e93683546",
-      "line_number": 104,
-      "owner": "@ognjhunt",
-      "reason": "TorchScript loading is restricted to an explicitly selected local policy checkpoint and is not an untrusted upload boundary; this deserialization risk remains time-bounded and requires re-review before expiry. Re-confirmed 2026-11-06 by the owner (session approval) at this unchanged code fingerprint; see docs/audits/2026-11-06-bandit-triage-review-packet.md. Hardening is due before this window ends.",
-      "reviewed_on": "2026-11-06",
-      "severity": "MEDIUM",
-      "test_id": "B614"
     },
     {
       "disposition": "accepted_risk",

@@ -23,8 +23,6 @@ from blueprint_pipeline.action_space_registry import (
     UNITREE_G1_ARM_HAND_43D,
     get_action_space,
 )
-from blueprint_pipeline import oscar_resident_worker as resident
-
 
 # -- P1: the CLI option must be accepted by the function main() forwards to ---
 
@@ -116,47 +114,6 @@ _FAILING_WORKER = textwrap.dedent(
     time.sleep(300)
     """
 )
-
-
-def test_worker_is_closed_when_startup_validation_fails(tmp_path: Path) -> None:
-    """start() spawns before it validates, so a rejected handshake must tear down."""
-
-    script = tmp_path / "worker.py"
-    script.write_text(_FAILING_WORKER, encoding="utf-8")
-
-    class _Args:
-        oscar_repo = str(tmp_path)
-        checkpoint = str(tmp_path / "ckpt")
-        oscar_num_steps = 35
-        oscar_guidance = 6.0
-        oscar_height = 480
-        oscar_width = 640
-        oscar_fps = 15.0
-        provider_timeout_seconds = 30.0
-        oscar_resident_worker_max_restarts = 0
-
-    real_argv = resident.build_resident_worker_argv
-    resident.build_resident_worker_argv = lambda **_kwargs: [sys.executable, str(script)]
-    try:
-        with pytest.raises(resident.ResidentWorkerError, match="gpu_residency_unproven"):
-            resident.start_resident_oscar_generate_from_args(
-                _Args(),
-                python=sys.executable,
-                extract_next_frame=lambda video, out_dir: None,
-                require_gpu_residency=True,
-            )
-    finally:
-        resident.build_resident_worker_argv = real_argv
-
-    # The spawned process must not survive the rejected handshake: a leaked
-    # worker would hold the GPU for the rest of the job.
-    leaked = subprocess.run(
-        ["pgrep", "-f", str(script)], capture_output=True, text=True, check=False
-    )
-    assert leaked.returncode != 0, f"leaked worker pids: {leaked.stdout.strip()}"
-
-
-# -- P2: a stalled judge command must be bounded and still settle -----------
 
 
 def _spend_policy(**overrides):
