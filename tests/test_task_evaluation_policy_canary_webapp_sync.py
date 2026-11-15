@@ -15,7 +15,7 @@ from blueprint_pipeline.task_evaluation_run_webapp_sync import (
     sync_policy_canary_preprovider_blocked_to_webapp,
     sync_task_evaluation_policy_canary_to_webapp,
 )
-from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
+from tests.policy_canary_setup_support import public_setup
 
 
 def _artifact(character: str, artifact_id: str) -> dict[str, object]:

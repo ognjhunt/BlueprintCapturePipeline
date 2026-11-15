@@ -38,7 +38,7 @@ def test_a_paused_lanes_disarmed_trigger_is_not_a_blocker(monkeypatch) -> None:
     """The release disarms paused lanes' triggers (2026-11-12 frame); the preflight must not count them."""
     from blueprint_pipeline.control_plane_stall_alarm import read_deploy_paused_triggers
 
-    held = "blueprint-agent-run-dispatcher"
+    held = "blueprint-task-evaluation-episode-compilation"
     compile_timer = "blueprint-task-evaluation-launch-preparation.timer"
     assert f"{held}.timer" in read_deploy_paused_triggers()
     assert compile_timer not in read_deploy_paused_triggers()

@@ -383,7 +383,6 @@ def test_a_real_compiled_half_is_found_deleted_and_never_compiled_again(tmp_path
     """The worker's own half, row, request, status and probe entry; then every reader of them, with them gone."""
     from blueprint_pipeline import rigid_robot_free_probe_runner as runner
     from blueprint_pipeline import team_scene_packet_worker as worker
-    from blueprint_pipeline.beta_policy_screening_scene_half import current_half
     from blueprint_pipeline.rigid_robot_free_probe_bundle import current_probe_state
     from blueprint_pipeline.rigid_robot_free_probe_lane import ENABLE_ENV
     from blueprint_pipeline.rigid_support_pad import half_support_hold
@@ -391,7 +390,6 @@ def test_a_real_compiled_half_is_found_deleted_and_never_compiled_again(tmp_path
     from blueprint_pipeline.robot_access_measurement import measurement_due
     from blueprint_pipeline.team_candidate_quick10_registry import (
         TeamCandidateRegistryError,
-        offer_eligibility,
         profile_for_capture,
         scene_facts,
     )
@@ -434,15 +432,12 @@ def test_a_real_compiled_half_is_found_deleted_and_never_compiled_again(tmp_path
         team_scene.apply_team_scene(section)
     assert not real["halves"].exists() and list(probes.glob(f"*/{real['halves'].name}.json")) == []
 
-    # The registry's readers: no row, so no profile, no offer, no probe request.
+    # The registry's readers: no row, so no profile, no probe request.
     assert profile_for_capture(capture) is None
-    assert offer_eligibility(None) == (None, ["team_candidate_profile_missing"])
     assert current_probe_state(capture)["status"] == "profile_missing"
     # A reader still holding the old row, or a status naming the half, gets a typed refusal or nothing.
     with pytest.raises(TeamCandidateRegistryError, match="team_scene_inputs_unavailable"):
         scene_facts(profile)
-    assert offer_eligibility(profile) == (None, ["team_scene_inputs_unavailable"])
-    assert current_half(profile, scene_revision_digest=profile["scene_revision_digest"]) is None
     for reader in (half_proposal, measurement_due, half_support_hold, worker.unscorable_half,
                    worker.stale_unreached_station):
         assert reader(inputs_path) is None, reader

@@ -197,11 +197,9 @@ else:
         assert len(retained) == 1 and retained[0].read_bytes() == content, name
     if case == "success":
         assert result.returncode == 0, result.stderr
-        for source in scripted_sources:
-            installed = door / "operator_door"
-            if source.suffix == ".py":
-                installed /= "scripted-baseline-source"
-            assert (installed / source.name).read_bytes() == source.read_bytes()
+        # The door no longer installs public or scripted policies (2026-11-14): it carries none of their files.
+        assert not (door / "operator_door" / "scripted-baseline-source").exists()
+        assert not (door / "operator_door" / "scripted_robot_baseline_registration_profile.json").exists()
         assert "DISPATCHER_HOLD_ONLY = True" in (
             door / "operator_door" / "admitted_controls.py").read_text()
         assert (door / "INSTALLED_COMMIT").read_text() == "b" * 40 + "\n"

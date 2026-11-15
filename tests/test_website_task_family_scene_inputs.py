@@ -69,7 +69,7 @@ def test_family_scene_profile_uses_operator_runtime_and_preserves_compilation_bo
     profile = profile_for_capture(tmp_path)
     facts = scene_facts(profile)
     assert facts['scene']['task_kind'] == 'button_press'
-    assert facts['max_policy_queries'] is None and facts['open_loop_horizon'] == 1
+    assert facts['open_loop_horizon'] == 1
     assert facts['prompt'] == 'Run the original multi-object job.'
 
 

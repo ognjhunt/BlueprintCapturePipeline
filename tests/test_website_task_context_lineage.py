@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
 
@@ -115,67 +114,6 @@ def test_task_semantics_bought_for_the_parent_load_for_its_confirmed_successor(t
     with pytest.raises(ValueError, match="website_task_semantics_planner_binding_invalid"):
         semantics.load_task_semantics(job_dir=tmp_path, task_context=successor_of(parent, description="Other"),
                                       source_video_digest=source)
-
-
-def _ranking(pipeline: Path, context: dict) -> dict:
-    from blueprint_pipeline.website_candidate_ranking import RANKING_FILENAME, SCHEMA_VERSION
-
-    value = {"schema_version": SCHEMA_VERSION, "task_context_digest": context["context_digest"],
-             "claim_ceiling": "development_only", "basis": "advisory_order_never_exclusion", "status": "ranked",
-             "candidates": [], "priority_order": ["candidate-b", "candidate-a"], "preparation_requested": []}
-    value["ranking_digest"] = canonical_digest(value, digest_field="ranking_digest")
-    pipeline.mkdir(parents=True, exist_ok=True)
-    (pipeline / RANKING_FILENAME).write_text(json.dumps(value))
-    return value
-
-
-def test_the_parents_candidate_ranking_is_the_successors_and_no_model_is_called(tmp_path, monkeypatch):
-    from blueprint_pipeline import website_candidate_ranking as ranking
-
-    parent, _, _ = semantics_fixture()
-    current = successor_of(parent)
-    pipeline = tmp_path / "pipeline"
-    retained = _ranking(pipeline, parent)
-    monkeypatch.setattr(ranking, "_gemini", lambda prompt: pytest.fail("a confirmed successor is never ranked again"))
-    assert ranking.rank_website_candidates(task_context=current, task_masks={"targets": []}, pipeline_dir=pipeline,
-                                           capture_root=tmp_path) == retained
-    assert ranking.load_ranking(pipeline, task_context_digest=current["context_digest"]) is None  # needs the context
-    (pipeline / "website_task_context.json").write_text(json.dumps(current))
-    assert ranking.retained_priority(pipeline, task_context_digest=current["context_digest"]) == [
-        "candidate-b", "candidate-a"]
-    edited = successor_of(parent, description="Other")
-    assert ranking.load_ranking(pipeline, task_context_digest=edited["context_digest"], task_context=edited) is None
-
-
-@pytest.mark.parametrize("current_kind", ["successor", "edited"])
-def test_screening_reads_a_source_bound_to_the_parent_against_the_confirmed_successor(tmp_path, monkeypatch,
-                                                                                      current_kind):
-    """The intake receipt names the record's sealed context; the website now reads the confirmed successor."""
-    from blueprint_pipeline import beta_policy_screening_worker as worker
-    from blueprint_pipeline import team_scene_packet_worker as packets
-    from blueprint_pipeline import website_task_context as reader
-
-    rights = {"consent_status": "granted", "consent_revoked": False, "consent_scope": ["robot_evaluation"],
-              "derived_scene_generation_allowed": True}
-    parent = _sealed({"schema_version": "website_site_task_context.v1", "request_id": "req1",
-                      "scene_id": "site-req1", "capture_id": "walkthrough-req1", "task_family": "navigation",
-                      "description": "Walk to the end of the aisle.", "confirmed": False, "confirmed_at": None,
-                      "purpose": "scene_preparation", "capture_rights": rights})
-    current = successor_of(parent) if current_kind == "successor" else successor_of(parent, description="Other")
-    capture = tmp_path / "capture"
-    (capture / "pipeline").mkdir(parents=True)
-    source = {"scene_intent_id": "scene-" + "a" * 64, "scene_intent_digest": "sha256:" + "a" * 64,
-              "capture_id": "walkthrough-req1", "task_id": "website-" + parent["context_digest"][7:27],
-              "task_context_digest": parent["context_digest"], "scene_revision_digest": "sha256:" + "b" * 64}
-    monkeypatch.setattr(packets, "resolve_capture_root", lambda _source: capture)
-    monkeypatch.setattr(reader, "load_current_website_task_context", lambda **_: deepcopy(current))
-    for retained in (parent, current):  # before and after the replay rewrote the retained context
-        (capture / "pipeline/website_task_context.json").write_text(json.dumps(retained))
-        if current_kind == "successor":
-            assert worker.require_current_source(source, site_id="site-req1") == current
-        else:
-            with pytest.raises(ValueError, match="beta_screening_(current_task_context_changed|source_context_mismatch)"):
-                worker.require_current_source(source, site_id="site-req1")
 
 
 def test_the_entry_keeps_the_lineage_before_it_replaces_the_sealed_context(tmp_path, monkeypatch):
@@ -293,28 +231,3 @@ def test_semantics_bought_for_the_parent_load_for_a_successor_that_accepted_the_
     else:  # the same answers with no parent named by the website: a corrected brief binds nothing of the parent
         with pytest.raises(ValueError, match="website_task_semantics_planner_binding_invalid"):
             semantics.load_task_semantics(job_dir=tmp_path, task_context=current, source_video_digest=source)
-
-
-@pytest.mark.parametrize("current_kind", ["answered", "corrected"])
-def test_screening_reads_a_parent_bound_source_against_a_successor_that_accepted_the_proposal(tmp_path, monkeypatch,
-                                                                                               current_kind):
-    from blueprint_pipeline import beta_policy_screening_worker as worker
-    from blueprint_pipeline import team_scene_packet_worker as packets
-    from blueprint_pipeline import website_task_context as reader
-
-    parent = WEBSITE_SEALED
-    current = WEBSITE_SUCCESSOR if current_kind == "answered" else WEBSITE_CORRECTED
-    site = parent["scene_id"]
-    capture = tmp_path / "capture"
-    (capture / "pipeline").mkdir(parents=True)
-    source = {"scene_intent_id": "scene-" + "a" * 64, "scene_intent_digest": "sha256:" + "a" * 64,
-              "capture_id": parent["capture_id"], "task_id": "website-" + parent["context_digest"][7:27],
-              "task_context_digest": parent["context_digest"], "scene_revision_digest": "sha256:" + "b" * 64}
-    monkeypatch.setattr(packets, "resolve_capture_root", lambda _source: capture)
-    monkeypatch.setattr(reader, "load_current_website_task_context", lambda **_: deepcopy(current))
-    (capture / "pipeline/website_task_context.json").write_text(json.dumps(current))
-    if current_kind == "answered":
-        assert worker.require_current_source(source, site_id=site) == current
-    else:
-        with pytest.raises(ValueError, match="beta_screening_source_context_mismatch"):
-            worker.require_current_source(source, site_id=site)

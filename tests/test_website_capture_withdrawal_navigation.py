@@ -7,9 +7,9 @@ USDs, and the scene-inputs record's root (``website_navigation_scene_inputs``) w
 scene and G1 USD copies and robot-free probe receipt; the team registry's derived row names that
 record. Each is deleted with the rest of the site.
 
-Hermetic: the deletion tests' synthetic site and fakes, the navigation scene-inputs tests' synthetic
-room and a tiny G1-shaped robot under a fixed test identity. No capture, mesh, splat or video of a
-real site, and nothing reaches a provider, a bucket, the WebApp or the host.
+Hermetic: the deletion tests' synthetic site and fakes, and the files an earlier release's navigation handoff
+wrote, laid out under their names (the walking job's writers are gone). No capture, mesh, splat or video of
+a real site, and nothing reaches a provider, a bucket, the WebApp or the host.
 """
 # Covers: src/blueprint_pipeline/website_capture_withdrawal_team_scene.py
 # Covers: src/blueprint_pipeline/website_capture_withdrawal_deletion.py
@@ -23,15 +23,18 @@ import pytest
 from blueprint_pipeline import website_capture_withdrawal_deletion as deletion
 from blueprint_pipeline.team_candidate_quick10_registry import write_derived_profile
 from blueprint_pipeline.team_candidate_registry_reader import REGISTRY_ENV
-from blueprint_pipeline.website_locomotion_task import NAVIGATION_TASK_FILE
-from blueprint_pipeline.website_navigation_scene_assets import FILE as ASSETS_FILE
-from blueprint_pipeline.website_navigation_packet import navigation_task_spec
-from blueprint_pipeline.website_navigation_scene_inputs import OUTPUT_DIRECTORY, write_navigation_scene_inputs
 from blueprint_pipeline.website_preparation_revision import workspace
 from tests import test_website_capture_withdrawal_deletion as base
 from tests.test_website_capture_withdrawal_team_scene import _registry
-from tests.test_website_navigation_packet import _context, _spec
-from tests.test_website_navigation_scene_inputs import _scene_assets, navigation_scene_inputs_arguments
+
+# The names an earlier release's navigation handoff wrote (``website_locomotion_task``,
+# ``website_navigation_scene_assets``, ``website_navigation_scene_inputs``; removed with the walking job).
+NAVIGATION_TASK_FILE = "navigation_task_spec.json"
+ASSETS_FILE = "navigation_scene_assets.json"
+OUTPUT_DIRECTORY = "navigation_scene_inputs"
+RECORD_FILENAME = "website_navigation_scene_inputs.v1.json"
+PACKET_DIRECTORY = "native-task-packet"
+REVISION = "sha256:" + "5" * 64
 
 world = base.world  # the deletion tests' withdrawn site, runs, B2 and roots
 
@@ -42,43 +45,50 @@ def _files(root: Path) -> list[Path]:
 
 @pytest.fixture
 def navigation(world, tmp_path, monkeypatch):
-    """A navigation job's handoff outputs, laid out where the handoff writes them, and its derived row."""
+    """A navigation job's handoff outputs, laid out where an earlier release's handoff wrote them, and its row.
+
+    The walking job's writers are gone (the owner dropped it, 2026-11-14), but sites that ran one still hold
+    these files: each is written here at the path and under the name the handoff used.
+    """
     capture = world["capture"]
     root = workspace(capture)
-    (tmp_path / "fixture").mkdir()
-    arguments = navigation_scene_inputs_arguments(tmp_path / "fixture", monkeypatch)
-    # The A1 task spec (this site's) and the A2 scene files, in the capture workspace as the handoff writes them.
-    spec = _spec(site_id="site-req1")
-    task = navigation_task_spec(spec, task_context=_context(spec))
-    task_path = base._write(root / NAVIGATION_TASK_FILE, task)
-    scene_files = _scene_assets(root / "navigation_scene")
-    assets_path = base._write(root / ASSETS_FILE, scene_files)
-    usds = [Path(scene_files[role]["path"]) for role in ("appearance", "collision")]
-    # The pinned G1 is the robot's own file, outside the site; the record stages a copy of it.
-    with monkeypatch.context() as before_the_withdrawal:
-        # The deletion tests' site has already withdrawn, and the writer refuses a withdrawn capture:
-        # this record stands for one written before the withdrawal landed.
-        before_the_withdrawal.setattr("blueprint_pipeline.website_atlas_preview_store.capture_withdrawn",
-                                      lambda _capture: False)
-        written = write_navigation_scene_inputs(navigation_task_spec=task, scene_assets=scene_files,
-                                                robot_record=arguments["robot_record"],
-                                                output_root=root / OUTPUT_DIRECTORY, capture_root=capture)
-    record = written["record"]
-    record_root = Path(written["path"]).parent
+    task_path = base._write(root / NAVIGATION_TASK_FILE, {"task_id": "navigation-site-req1", "site_id": "site-req1"})
+    usds = [root / "navigation_scene" / name for name in ("scene_appearance.usdz", "scene_collision.usda")]
+    for path in usds:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic " + path.name.encode())
+    assets_path = base._write(root / ASSETS_FILE, {role: {"path": str(path)} for role, path in
+                                                   zip(("appearance", "collision"), usds)})
+    # The pinned G1 is the robot's own file, outside the site; the record staged a copy of it.
+    robot = tmp_path / "robot" / "g1_29dof.usda"
+    robot.parent.mkdir(parents=True)
+    robot.write_bytes(b"#usda 1.0\n")
+    record_root = root / OUTPUT_DIRECTORY / "1111111111111111-aaaa0001"
+    inputs = record_root / ".inputs"
+    for path in (inputs / "scene/scene_collision.usda", inputs / "scene/scene_appearance.usdz",
+                 inputs / "robot" / robot.name):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"staged " + path.name.encode())
+    packet = record_root / PACKET_DIRECTORY
+    base._write(packet / "native_task_arena_scene_plan.v1.json", {"task_id": "navigation-site-req1"})
+    probe = base._write(record_root / "navigation_robot_free_probe_receipt.v1.json", {"status": "passed"})
+    record_path = base._write(record_root / RECORD_FILENAME, {
+        "schema_version": "blueprint.website_navigation_scene_inputs.v1", "task_id": "navigation-site-req1",
+        "scene_revision_digest": REVISION, "packet_root": str(packet.resolve()),
+        "robot_free_probe": {"path": str(probe.resolve())}})
     # The team registry's derived row, written by the registry's own writer.
     registry = Path(world["resolution"]["team_registry"])
     derived = tmp_path / "inputs/team-scene-profiles"
     _registry(registry, derived)
     monkeypatch.setenv(REGISTRY_ENV, str(registry))
     row = write_derived_profile({
-        "capture_root": str(capture), "scene_id": "site-req1", "task_id": record["task_id"],
+        "capture_root": str(capture), "scene_id": "site-req1", "task_id": "navigation-site-req1",
         "scenario_id": "scene.nominal", "robot_free_probe_root": str(record_root),
-        "scene_revision_digest": record["scene_revision_digest"], "navigation_scene_inputs_path": written["path"]})
+        "scene_revision_digest": REVISION, "navigation_scene_inputs_path": str(record_path)})
     assert row["status"] == "written"
-    return {"root": root, "task": task_path, "assets": assets_path, "usds": usds, "record": Path(written["path"]),
-            "record_root": record_root, "probe": Path(record["robot_free_probe"]["path"]),
-            "packet": Path(record["packet_root"]), "row": Path(row["path"]), "derived": derived,
-            "robot": Path(arguments["robot_record"]["path"])}
+    return {"root": root, "task": task_path, "assets": assets_path, "usds": usds, "record": record_path,
+            "record_root": record_root, "probe": probe, "packet": packet, "row": Path(row["path"]),
+            "derived": derived, "robot": robot}
 
 
 def test_withdrawal_deletes_every_file_a_navigation_job_wrote(world, navigation):
@@ -126,4 +136,3 @@ def test_a_derived_row_naming_a_navigation_record_outside_the_site_fails_closed(
     with pytest.raises(deletion.WithdrawalDeletionError, match="unresolved_copies"):
         base._apply(world, plan, uncovered_roots=())
     assert base._snapshot(tmp_path) == before and elsewhere.is_file() and job["record"].is_file()
-

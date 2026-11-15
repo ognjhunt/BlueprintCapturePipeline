@@ -26,13 +26,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Mapping, Sequence
 
-from . import task_evaluation_policy_canary_setup as policy_canary_setup
-from .adp_articulated_task_success_contract import (
-    confirmed_task_success_contract_matches_published,
-    task_kind_of_contract,
-    validate_task_success_contract,
-)
-from .adp_task_scoring import TaskNeutralScoringError
 from .control_plane_disk_budget import (
     DEFAULT_RESERVATION_ROOT,
     ControlPlaneDiskBudgetError,
@@ -45,7 +38,6 @@ from .control_plane_registered_reference_gate import (
     _publisher_observation,
 )
 from .decision_evidence_contracts import cross_runtime_canonical_digest
-from .episode_interpretation_batch_authority import validate_episode_interpretation_batch_authority_shape
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
@@ -401,90 +393,8 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
     if request.get("request_digest") != canonical_digest(request, digest_field="request_digest"):
         blockers.append("launch_request_digest_mismatch")
     if request.get("run_kind") == "internal_policy_canary":
-        allowed_fields = {
-            "schema_version",
-            "launch_id",
-            "run_id",
-            "launch_profile_id",
-            "launch_profile_digest",
-            "source_commit",
-            "source_bundle",
-            "evaluation_run_spec",
-            "source_launch_id",
-            "offering_digest",
-            "setup_digest",
-            "preset_id",
-            "run_kind",
-            "claim_ceiling",
-            "scene_revision_digest",
-            "scene_controls_status_at_submission",
-            "task_success_contract",
-            "task_success_contract_digest",
-            "episode_interpretation_source_rights_admission",
-            "episode_interpretation_authority",
-            "team_namespace",
-            "robot_preset_id",
-            "policy_candidate_ids",
-            "episode_plan",
-            "notification",
-            "authorization",
-            "required_controls",
-            "controls_qualification_bypassed",
-            "scene_promotion_permitted",
-            "official_ranking_permitted",
-            "idempotency_key",
-            "request_digest",
-        }
-        if not set(request).issubset(allowed_fields):
-            blockers.append("policy_canary_launch_request_fields_invalid")
-        try:
-            task_success_contract = validate_task_success_contract(
-                _mapping(request.get("task_success_contract")),
-                task_kind=task_kind_of_contract(_mapping(request.get("task_success_contract"))),
-            )
-        except TaskNeutralScoringError as exc:
-            blockers.append("policy_canary_task_success_contract_invalid:" + str(exc))
-        else:
-            if (
-                request.get("task_success_contract_digest")
-                != task_success_contract["contract_digest"]
-            ):
-                blockers.append("policy_canary_task_success_contract_digest_mismatch")
-        if (
-            request.get("episode_interpretation_authority") is not None
-            or request.get("episode_interpretation_source_rights_admission") is not None
-        ):
-            try:
-                interpretation_authority = (
-                    validate_episode_interpretation_batch_authority_shape(
-                        _mapping(request.get("episode_interpretation_authority"))
-                    )
-                )
-                source_rights = _mapping(
-                    request.get("episode_interpretation_source_rights_admission")
-                )
-                if (
-                    interpretation_authority.get("run_id") != request.get("run_id")
-                    or source_rights.get("run_id") != request.get("run_id")
-                    or source_rights.get("external_disclosure_authorized") is not True
-                    or source_rights.get("provider_training_authorized") is not False
-                    or source_rights.get("public_redistribution_authorized") is not False
-                    or source_rights.get("accepted_by")
-                    != interpretation_authority.get("accepted_by")
-                    or source_rights.get("accepted_on")
-                    != interpretation_authority.get("accepted_on")
-                    or source_rights.get("disclosed_artifact_roles")
-                    != interpretation_authority.get("allowed_artifact_roles")
-                    or source_rights.get("admission_digest")
-                    != canonical_digest(source_rights, digest_field="admission_digest")
-                    or interpretation_authority.get("source_rights_admission_digest")
-                    != source_rights.get("admission_digest")
-                ):
-                    raise ValueError("binding mismatch")
-            except ValueError:
-                blockers.append("policy_canary_episode_interpretation_authority_invalid")
-    return policy_canary_setup.normalize_policy_canary_launch_request_blockers(
-        request, blockers)
+        blockers.append("policy_canary_launch_retired")
+    return sorted(set(blockers))
 
 
 def _validate_launch_profile(
@@ -516,8 +426,8 @@ def _validate_launch_profile(
             validate_policy_run_setup(_mapping(profile.get("policy_run_setup")))
         except TaskEvaluationPolicyRunContractError as exc:
             blockers.append(f"launch_profile_policy_run_setup_invalid:{exc}")
-    blockers.extend(policy_canary_setup.launch_profile_policy_canary_setup_blockers(
-        profile, prefix="launch_profile_policy_canary_setup_invalid"))
+    if "internal_policy_canary_setup" in profile:
+        blockers.append("launch_profile_policy_canary_setup_invalid:retired")
     _validate_reference(profile.get("source_bundle"), field="source_bundle", blockers=blockers)
     profile_source = _mapping(profile.get("source_bundle"))
     if not _is_identifier(profile_source.get("bundle_id")):
@@ -707,7 +617,7 @@ def _validate_launch_profile(
     if profile.get("claim_ceiling") not in {
         "development_only",
         "partner_run_pending_physical_join",
-    } | ({"diagnostic_policy_execution"} if "internal_policy_canary_setup" in profile else set()):
+    }:
         blockers.append("launch_profile_claim_ceiling_invalid")
     if profile.get("profile_digest") != canonical_digest(profile, digest_field="profile_digest"):
         blockers.append("launch_profile_digest_mismatch")
@@ -715,8 +625,6 @@ def _validate_launch_profile(
     # The separately validated preparation template may name canonical
     # ``secret-file:...`` references but cannot contain a secret value.
     secret_scan.pop("policy_run_setup", None)
-    secret_scan.pop("internal_policy_canary_setup", None)
-    secret_scan.pop("internal_policy_canary_execution_plan", None)
     if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_secret_value_forbidden")
     return sorted(set(blockers))
@@ -754,9 +662,7 @@ def _project_public_launch_profile_descriptor(
 ) -> dict[str, Any]:
     descriptor = {field: profile[field] for field in PUBLIC_PROFILE_DESCRIPTOR_FIELDS}
     for field in PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS:
-        if field in profile and not (
-            field == "policy_run_setup" and "internal_policy_canary_setup" in profile
-        ):
+        if field in profile:
             descriptor[field] = profile[field]
     allocator = _mapping(profile.get("allocator"))
     descriptor["required_authorization"] = {
@@ -816,7 +722,7 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
         except TaskEvaluationPolicyRunContractError as exc:
             blockers.append(f"launch_profile_public_policy_run_setup_invalid:{exc}")
     if "internal_policy_canary_setup" in descriptor:
-        blockers.extend(policy_canary_setup.policy_canary_setup_blockers(descriptor["internal_policy_canary_setup"], prefix="launch_profile_public_policy_canary_setup_invalid"))
+        blockers.append("launch_profile_public_policy_canary_setup_invalid:retired")
     authorization = _mapping(descriptor.get("required_authorization"))
     if set(authorization) != {"max_spend_usd", "hard_ttl_seconds"}:
         blockers.append("launch_profile_public_required_authorization_fields_invalid")
@@ -887,11 +793,10 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
     if descriptor.get("claim_ceiling") not in {
         "development_only",
         "partner_run_pending_physical_join",
-    } | ({"diagnostic_policy_execution"} if "internal_policy_canary_setup" in descriptor else set()):
+    }:
         blockers.append("launch_profile_public_claim_ceiling_invalid")
     secret_scan = dict(descriptor)
     secret_scan.pop("policy_run_setup", None)
-    secret_scan.pop("internal_policy_canary_setup", None)
     if _contains_secret_key(secret_scan):
         blockers.append("launch_profile_public_secret_value_forbidden")
     return sorted(set(blockers))
@@ -966,9 +871,7 @@ def validate_launch_request_against_public_catalog(
     ):
         expected = descriptor.get(descriptor_field)
         requested = (
-            policy_canary_setup.bound_policy_canary_required_controls(
-                request, _mapping(expected)
-            )
+            dict(request.get("required_controls", {}))
             if request_field == "required_controls"
             else request.get(request_field)
         )
@@ -978,21 +881,6 @@ def validate_launch_request_against_public_catalog(
         "source_commit"
     ):
         blockers.append("launch_profile_public_catalog_source_commit_mismatch")
-    public_setup = _mapping(descriptor.get("internal_policy_canary_setup"))
-    if public_setup:
-        published = _mapping(public_setup.get("task_success_contract"))
-        if not confirmed_task_success_contract_matches_published(
-            task_kind=task_kind_of_contract(published), published=published,
-            selected=_mapping(request.get("task_success_contract"))):
-            blockers.append(
-                "launch_profile_public_catalog_task_success_contract_mismatch"
-            )
-        if request.get("task_success_contract_digest") != _mapping(
-            request.get("task_success_contract")
-        ).get("contract_digest"):
-            blockers.append(
-                "launch_profile_public_catalog_task_success_contract_digest_mismatch"
-            )
     return blockers
 
 
@@ -1515,8 +1403,7 @@ def dispatch_launch_request(
         ):
             blockers.append("evaluation_run_spec_profile_binding_mismatch")
         profile_controls = _mapping(profile.get("required_controls"))
-        bound_request_controls = policy_canary_setup.bound_policy_canary_required_controls(
-            request, profile_controls)
+        bound_request_controls = dict(request.get("required_controls", {}))
         if bound_request_controls != profile_controls:
             blockers.append("launch_required_controls_profile_binding_mismatch")
         if request.get("claim_ceiling") != profile.get("claim_ceiling"):
@@ -1537,10 +1424,6 @@ def dispatch_launch_request(
         if isinstance(approved_spend, (int, float)) and isinstance(profile_spend, (int, float)):
             if profile_spend > approved_spend:
                 blockers.append("launch_profile_exceeds_approved_spend")
-
-    if canary_receipt := policy_canary_setup.maybe_dispatch_policy_canary_preparation(
-        request=request, profile=profile, blockers=blockers, state_root=state_root):
-        return canary_receipt
 
     live_requested = bool(execute)
     execution_scope_launch_id = str(execute_launch_id or "").strip()

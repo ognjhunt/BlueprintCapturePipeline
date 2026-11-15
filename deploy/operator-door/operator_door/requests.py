@@ -58,7 +58,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import DoorConfig
-from .public_policy_registration_contract import validate_request as validate_public_policy_registration
 from .admitted_controls import DISPATCHER_HOLD_ONLY
 from .hostinfo import UNIT_NAME
 from .secrets_guard import redact_lines
@@ -86,11 +85,6 @@ _SCOPES = {
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
     "selected-handoff": "operate",
-    "install-public-piper-policy": "operate",
-    "install-public-yam-policy": "operate",
-    "install-public-franka-policy": "operate",
-    "install-public-trlc-policy": "operate",
-    "install-scripted-robot-baselines": "operate",
     # One owner-approved, time-only extension of a sealed scene intent's window.
     "extend-scene-execution-window": "operate",
     # One owner-approved spend/attempt ceiling grant for a sealed scene intent.
@@ -128,7 +122,6 @@ if DISPATCHER_HOLD_ONLY:
     # starts and no money moves.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
                            "confirm-owner-success-contract", "retire-parked-delivery"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -167,14 +160,13 @@ _SAFETY_CRITICAL = re.compile(
     r"terminal-resource-release|storage-gc|capacity|replay-cache-gc|preflight"
 )
 _BASELINE_TRIGGER_SAFETY = re.compile(r"spend-guard|watchdog|teardown|reaper|provider-zero")
-DISPATCHER_HOLD_UNIT = "blueprint-agent-run-dispatcher.timer"
 # Triggers this repository no longer ships that a host may still have installed
 # and enabled. Removing a unit file from the repository does not stop the unit,
 # and only root can remove it from the host. Until then the door may hold
-# exactly these, also under the dispatcher-only profile, and like the
-# dispatcher's their hold may require an explicit release, so a retired unit
-# stays off past the deadline and across a reboot. None protects money or
-# cleanup; each kept its hold guard while it was shipped.
+# exactly these, also under the dispatcher-only profile, and their hold may
+# require an explicit release, so a retired unit stays off past the deadline
+# and across a reboot. No unit request starts or restarts one.
+# None protects money or cleanup; each kept its hold guard while it was shipped.
 RETIRED_HOLD_UNITS = (
     "blueprint-pipeline-control-plane.timer",
     "blueprint-capture-reconstruction-dispatcher.timer",
@@ -191,8 +183,11 @@ RETIRED_HOLD_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-beta-policy-screening.timer",
+    "blueprint-agent-run-dispatcher.timer",
 )
-EXPLICIT_RELEASE_UNITS = (DISPATCHER_HOLD_UNIT, *RETIRED_HOLD_UNITS)
+EXPLICIT_RELEASE_UNITS = RETIRED_HOLD_UNITS
+# No unit request starts a retired trigger, nor the founder-stopped agent-run dispatcher's service.
+_NEVER_STARTED_UNITS = frozenset({*RETIRED_HOLD_UNITS, "blueprint-agent-run-dispatcher.service"})
 _LOG_TAIL_LINES = 200
 
 
@@ -270,7 +265,7 @@ def _hold_unit(unit: Any) -> str:
         raise RequestRefused("unit_is_door")
     if _SAFETY_CRITICAL.search(unit):
         raise RequestRefused("unit_safety_critical")
-    if DISPATCHER_HOLD_ONLY and unit != DISPATCHER_HOLD_UNIT and unit not in RETIRED_HOLD_UNITS:
+    if DISPATCHER_HOLD_ONLY and unit not in RETIRED_HOLD_UNITS:
         raise RequestRefused("hold_unit_profile_refused")
     return unit
 
@@ -288,13 +283,6 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
     required_scope(kind)
-    if kind in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines"}:
-        _only(body, ("kind", "request"))
-        try:
-            request = validate_public_policy_registration(body.get("request"), operation=kind)
-        except ValueError as error:
-            raise RequestRefused(str(error)) from error
-        return {"kind": kind, "request": request}
     if kind in ("retire-scene", "restore-scene"):
         fields = {"kind", "intent_id", "consent_id", "expected_sha256", "expected_size_bytes"}
         if kind == "retire-scene":
@@ -356,6 +344,8 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("unit_is_door")
         if action not in _UNIT_ACTIONS:
             raise RequestRefused("unit_action_invalid")
+        if action in ("start", "restart") and unit in _NEVER_STARTED_UNITS:
+            raise RequestRefused("unit_retired")
         if action in _TRIGGER_ONLY_ACTIONS:
             # Pausing a trigger never kills a running job; stopping a service could.
             if not unit.endswith((".timer", ".path")):

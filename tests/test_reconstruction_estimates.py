@@ -4,9 +4,6 @@
 #   src/blueprint_pipeline/atlas_scene_planner.py
 #   src/blueprint_pipeline/atlas_video_inputs.py
 #   src/blueprint_pipeline/website_task_preparation.py
-#   src/blueprint_pipeline/beta_policy_screening_plan.py
-#   src/blueprint_pipeline/beta_policy_screening_publication_flags.py
-#   src/blueprint_pipeline/beta_policy_screening_result.py
 """Reconstruction refusals that continue on a labelled estimate, and those the same inputs repeat (2026-11-10).
 
 An estimate is named once (``atlas_scene_estimates``) and reaches the site's result as a flag in
@@ -20,14 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from jsonschema import Draft202012Validator, FormatChecker
 
 from blueprint_pipeline import atlas_scene_estimates as estimates
 from blueprint_pipeline import atlas_video_inputs as video
 from blueprint_pipeline import deterministic_refusal as deterministic
-from blueprint_pipeline.beta_policy_screening_plan import BetaPolicyScreeningPlanError, validate_screening_plan
-from blueprint_pipeline.beta_policy_screening_publication_flags import scene_feasibility
-from blueprint_pipeline.beta_policy_screening_result import screening_publication
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 ROOT = Path(__file__).parents[1]
@@ -163,22 +156,3 @@ def test_the_capture_s_base_scene_gives_its_flags_and_an_unreadable_one_gives_no
     assert estimates.capture_scene_flags(tmp_path) == [estimates.LEVEL]
     (root / "base_scene.json").write_text("{not json")
     assert estimates.capture_scene_flags(tmp_path) == []
-
-
-def test_a_plan_carries_the_estimate_flags_to_the_v3_scene_feasibility_and_one_without_publishes_as_before():
-    from tests.test_beta_policy_screening_coordinator import plan as make_plan, seal
-    before = validate_screening_plan(make_plan())
-    flags = [estimates.COLLIDER, estimates.LEVEL]
-    value = validate_screening_plan(seal({**make_plan(), "scene_estimate_flags": flags}, "plan_digest"))
-    state = {"revision": 1, "updated_at": "2026-11-10T00:00:00Z",
-             "candidates": {row["candidate_id"]: {"status": "pending", "blockers": []} for row in value["candidates"]}}
-    budget = {"currency": "USD", "site_limit_usd": "30.00", "planned_usd": "0.00", "spent_usd": "0.00"}
-    publication = screening_publication(plan=value, state=state, budget=budget)
-    assert publication["scene_feasibility"] == {"status": "flagged", "flags": flags}
-    assert screening_publication(plan=before, state=state, budget=budget)["scene_feasibility"]["flags"] == []
-    schema = json.loads((ROOT / "docs/schemas/beta_policy_screening_publication.v3.schema.json").read_text())
-    Draft202012Validator(schema["properties"]["scene_feasibility"], format_checker=FormatChecker()).validate(
-        publication["scene_feasibility"])
-    assert scene_feasibility([], estimates=["not a code!"])["flags"] != []  # carried as untyped, never as text
-    with pytest.raises(BetaPolicyScreeningPlanError, match="beta_screening_plan_schema_invalid"):
-        validate_screening_plan(seal({**make_plan(), "scene_estimate_flags": ["Not A Code"]}, "plan_digest"))

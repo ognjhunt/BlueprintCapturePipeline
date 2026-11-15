@@ -160,21 +160,11 @@ def test_owned_atlas_cpu_queue_and_task_contracts_exclude_active_execution() -> 
 # from, each of which would bring that hot lane back.
 SHARED_CATALOG_MODULES = (
     "team_candidate_registry_reader",
-    "beta_policy_effective_catalog",
-    "beta_policy_screening_g1_catalog",
-    "beta_policy_screening_files",
-    "team_candidate_rights",
-    "team_candidate_credential_file",
 )
 SHARED_CATALOG_FORBIDDEN = HOT_LANE_MODULES | {
     "paid_resource_allocator",
-    "beta_policy_screening_launch",
     "team_scene_packet",
     "team_candidate_quick10_registry",
-    "beta_policy_screening_team",
-    "beta_policy_screening_g1",
-    "team_candidate_quick10_vast",
-    "team_candidate_quick10_admission",
 }
 
 
@@ -186,7 +176,6 @@ def test_shared_registry_and_effective_catalog_stay_off_the_hot_lane() -> None:
         if reached:
             leaked[seed] = sorted(reached)
     assert not leaked, f"Shared catalog modules reach the hot lane: {leaked}"
-    assert "team_candidate_rights" in _transitive_local_modules(("beta_policy_effective_catalog",))
 
 
 def test_withdrawal_g1_deletion_does_not_import_the_team_scene_worker() -> None:
@@ -195,7 +184,7 @@ def test_withdrawal_g1_deletion_does_not_import_the_team_scene_worker() -> None:
     # control-plane test above covers what withdrawal deletion reaches as a whole.
     direct = _local_imported_modules(PKG_DIR / "website_capture_withdrawal_native_g1.py")
     assert "team_scene_capture_root" in direct
-    assert not direct.intersection(HOT_LANE_MODULES | {"team_scene_packet_worker", "beta_policy_screening_launch"})
+    assert not direct.intersection(HOT_LANE_MODULES | {"team_scene_packet_worker"})
 
 
 def test_withdrawal_team_scene_deletion_reads_the_queues_layout_from_light_modules() -> None:
@@ -205,7 +194,7 @@ def test_withdrawal_team_scene_deletion_reads_the_queues_layout_from_light_modul
     # Its probe part reads the money records' names from the same light module, never the runner, the
     # lane or the settlement code it must not change.
     forbidden = HOT_LANE_MODULES | {
-        "team_scene_packet_worker", "beta_policy_screening_launch", "rigid_robot_free_probe_runner",
+        "team_scene_packet_worker", "rigid_robot_free_probe_runner",
         "rigid_robot_free_probe_lane", "rigid_robot_free_probe_settlement", "team_candidate_quick10_registry",
         "paid_resource_allocator"}
     for module, light in (("website_capture_withdrawal_team_scene",

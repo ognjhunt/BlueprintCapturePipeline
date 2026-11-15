@@ -19,7 +19,6 @@ from blueprint_pipeline import remote_cpu_job_lease as leases
 from blueprint_pipeline import remote_cpu_job_records as records
 from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
 from blueprint_pipeline import task_evaluation_episode_compilation_remote as remote
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.remote_cpu_allocator_fakes import B2_BUCKET
 from tests.remote_cpu_fakes import FakeGcsError
 from tests.remote_episode_compilation_support import (
@@ -27,7 +26,6 @@ from tests.remote_episode_compilation_support import (
     OUTPUTS,
     CollectorWorld,
     Crash,
-    Host,
     digest_of,
     tree_snapshot,
 )
@@ -113,107 +111,6 @@ def test_remote_stage_writes_only_the_consumer_subset_on_the_host(tmp_path: Path
                                           "digest": result["compiled_episode_packet_digest"],
                                           "size_bytes": result["compiled_episode_packet_size_bytes"]}]
     assert packet.as_posix() not in landed and not (compiled / compilation / packet).exists()
-
-
-def test_landed_subset_passes_launch_activation_and_canary_handoff(tmp_path: Path, monkeypatch) -> None:
-    """``tests/test_task_evaluation_launch_activation_worker.py``'s production-compiler case, compiled remotely:
-    activation and the canary hand-off read the landed adapter tree, packet root and runtime receipt."""
-
-    from blueprint_pipeline import task_evaluation_launch_activation_worker as activation
-    from blueprint_pipeline.task_evaluation_launch_preparation_contract import launch_preparation_request_digest
-    from blueprint_pipeline.task_evaluation_policy_canary_handoff import _compiled_construction
-    from tests.test_task_evaluation_launch_activation_worker import _stage_verified_preparation
-
-    preparation, _, _, queue, input_root = _stage_verified_preparation(tmp_path / "preparation")
-    prepared = input_root / preparation["preparation_id"]
-    host = Host(tmp_path)
-    envelope = {"schema_version": "task_evaluation_episode_compilation_envelope.v1",
-                "compilation_id": preparation["preparation_id"], "preparation_id": preparation["preparation_id"],
-                "run_id": preparation["run_id"], "team_namespace": preparation["team_namespace"],
-                "expected_production_commit": preparation["expected_production_commit"],
-                "configured_scene_revision_digest": preparation["task"]["configured_scene_revision_digest"],
-                "request": preparation, "envelope_digest": ""}
-    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
-    name = f"{envelope['compilation_id']}-{envelope['envelope_digest'][7:]}.json"
-    row = host.queue / "processing" / name
-    row.write_text(json.dumps(envelope), encoding="utf-8")
-    reference = host.inputs / preparation["preparation_id"] / "robot.json"
-    reference.parent.mkdir(parents=True)
-    reference.write_bytes(b'{"robot": "franka"}\n')
-    compilation = envelope["compilation_id"]
-    plan = remote.RemotePlan(
-        queue_row={"queue": remote.QUEUE, "name": name, "envelope_digest": envelope["envelope_digest"]},
-        compilation_id=compilation, source_commit=preparation["expected_production_commit"],
-        image="gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:" + "d" * 64,
-        environment_digest=HOST_RECORD["environment_digest"], host_environment_digest=HOST_RECORD["environment_digest"],
-        closure={"class": "not_applicable", "source_appearance_digest": None}, environment={},
-        inputs=tuple(remote._input(role, contract_path, path, host.fs) for role, contract_path, path in (
-            ("queue_envelope", "queue_envelope", row), ("materialized_reference", "robot.configuration", reference))),
-        output_root=f"{OUTPUTS}/{compilation}", declared_scratch=(f"{OUTPUTS}/content-addressed/",),
-        allowed_cpu_classes=(), ephemeral_bytes_required=0)
-    world = CollectorWorld(tmp_path, monkeypatch, plan=plan, host=host)
-
-    def fabricated(descriptor: dict, roots) -> dict:
-        """What test :685 copies into place, compiled in the worker: the adapter tree, bound to this output."""
-
-        output = roots.local(descriptor["outputs"]["output_root"])
-        adapter_root = output / "native-arena-adapter"
-        shutil.copytree(prepared / "native-arena-adapter", adapter_root)
-        for document in ("native_task_arena_scene_plan.v1.json", "native_task_arena_packet_receipt.v1.json"):
-            (adapter_root / "construction-packet" / document).write_text("{}\n", encoding="utf-8")
-        adapter_path = adapter_root / "task_evaluation_native_arena_adapter_result.v1.json"
-        adapter = json.loads(adapter_path.read_text(encoding="utf-8"))
-        adapter.update(packet_root=str(adapter_root / "construction-packet"), runtime_source_receipt=str(
-            adapter_root / "runtime-source" / "native_task_runtime_source_packet.v1.json"))
-        adapter["result_digest"] = canonical_digest(adapter, digest_field="result_digest")
-        adapter_path.chmod(0o640)
-        adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
-        (output / "configured-scene").mkdir()
-        (output / "configured-scene" / "appearance.usdc").write_bytes(b"appearance" * 1000)
-        packet = output / "native-task-arena-bundle.zip"
-        packet.write_bytes(b"production-owned-episode-packet" * 100)
-        result = {"schema_version": "task_evaluation_episode_compilation_result.v1",
-                  "status": "compiled_for_production_launch", "compilation_id": compilation,
-                  "run_id": envelope["run_id"], "team_namespace": envelope["team_namespace"],
-                  "source_commit": descriptor["code"]["source_commit"],
-                  "configured_scene_revision_digest": envelope["configured_scene_revision_digest"],
-                  "compiled_episode_packet_digest": digest_of(packet.read_bytes()),
-                  "compiled_episode_packet_size_bytes": packet.stat().st_size, "compiled_episode_packet_path": str(packet),
-                  "adapter_result_path": str(adapter_path), "adapter_result_digest": adapter["result_digest"],
-                  "compiler_output_digest": "sha256:" + "c" * 64, "customer_supplied_prebuilt_episode_packet": False,
-                  "compiled_by_production": True, "provider_mutation_performed": False,
-                  "paid_execution_requested": False, "automatic_progression_required": True, "blockers": [],
-                  "result_digest": ""}
-        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-        return {"result": result, "release_path_misses": [], "failures": []}
-
-    world.stage_override = fabricated
-    _complete(world)
-    assert world.lease()["state"] == "completed" and world.row_state() == "completed"
-    assert sorted(path.name for path in (host.outputs / compilation).iterdir()) == ["native-arena-adapter"]
-
-    # Test :685's activation request, pointed at the remotely compiled result.
-    result_path = next((queue / "results").glob("*.json"))
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    result.update(status="queued_for_production_episode_compilation", episode_compilation_id=compilation,
-                  episode_compilation_queue_envelope_digest=envelope["envelope_digest"])
-    result.pop("adapter_result_digest")
-    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    result_path.chmod(0o640)
-    result_path.write_text(json.dumps(result), encoding="utf-8")
-    request = {"preparation": {"preparation_id": preparation["preparation_id"],
-                               "request_digest": launch_preparation_request_digest(preparation),
-                               "result_digest": result["result_digest"]},
-               "team_namespace": preparation["team_namespace"],
-               "expected_production_commit": preparation["expected_production_commit"]}
-    loaded_request, _, loaded_adapter, _ = activation._load_verified_preparation(
-        activation_request=request, preparation_queue_root=queue, preparation_input_root=input_root,
-        episode_compilation_queue_root=host.queue, episode_compilation_output_root=host.outputs)
-    assert loaded_request["preparation_id"] == compilation
-    assert Path(loaded_adapter["packet_root"]).is_dir()
-    construction = _compiled_construction(host.queue, preparation_id=compilation,
-                                          expected_production_commit=preparation["expected_production_commit"])
-    assert construction["scene_plan_path"].is_file() and construction["runtime_source_receipt_path"].is_file()
 
 
 def test_row_never_moves_before_compute_zero_is_proven(tmp_path: Path, monkeypatch) -> None:

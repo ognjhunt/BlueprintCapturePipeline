@@ -1,9 +1,7 @@
-"""G52: a screening campaign never reserves for a withdrawn site, and releases what it held unlaunched."""
+"""G52: whether a site has withdrawn is read from the configured roots only, and an unreadable bucket is unknown."""
 from __future__ import annotations
 
-from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
 from blueprint_pipeline import screening_site_withdrawal as withdrawal
-from tests.test_beta_policy_screening_coordinator import Backend, plan, publication
 
 
 def _withdraw(root, site="site-job-1", bucket=None):
@@ -17,55 +15,6 @@ def _roots(monkeypatch, tmp_path):
     roots.mkdir()
     monkeypatch.setenv(withdrawal.SITE_ROOTS_ENV, str(roots))
     return roots
-
-
-def test_withdrawn_site_reserves_nothing_and_never_prepares(tmp_path, monkeypatch):
-    roots = _roots(monkeypatch, tmp_path)
-    _withdraw(roots, bucket="bucket-a")
-    queue = tmp_path / "queue"
-    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=queue)
-    backend = Backend()
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
-    value = publication(queue)
-    assert backend.preparations == 0 and backend.launches == 0
-    assert value["budget"]["committed_upper_bound_usd"] == "0"
-    assert {row["status"] for row in value["candidates"]} == {"blocked"}
-    assert all(row["blockers"] == [withdrawal.WITHDRAWN_BLOCKER] for row in value["candidates"])
-
-
-def test_withdrawal_after_reservation_releases_the_unlaunched_hold(tmp_path, monkeypatch):
-    roots = _roots(monkeypatch, tmp_path)
-    queue = tmp_path / "queue"
-    coordinator.enqueue_screening_campaign(plan(), queue_root=queue)
-
-    class Busy(Backend):
-        def preflight_candidate_capacity(self, **kwargs):
-            return {"capacity_available": False, "blockers": ["vast_paid_launch_lock_busy"]}
-
-    backend = Busy()
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
-    assert publication(queue)["budget"]["reserved_usd"] == "4"
-    _withdraw(roots)
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
-    value = publication(queue)
-    assert value["budget"]["reserved_usd"] == "0" and value["budget"]["committed_upper_bound_usd"] == "0"
-    assert value["candidates"][0]["status"] == "blocked"
-    assert value["candidates"][0]["blockers"] == [withdrawal.WITHDRAWN_BLOCKER]
-    assert backend.launches == 0
-
-
-def test_unreadable_withdrawal_state_waits_without_reserving(tmp_path, monkeypatch):
-    missing = tmp_path / "not-mounted"
-    monkeypatch.setenv(withdrawal.SITE_ROOTS_ENV, str(missing))
-    queue = tmp_path / "queue"
-    coordinator.enqueue_screening_campaign(plan(), queue_root=queue)
-    backend = Backend()
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
-    assert publication(queue)["candidates"][0]["status"] == "pending"
-    assert publication(queue)["budget"]["committed_upper_bound_usd"] == "0" and backend.preparations == 0
-    missing.mkdir()  # the root comes back: the next pass reserves and launches as before
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
-    assert backend.launches == 1
 
 
 def test_state_reads_only_configured_roots(tmp_path, monkeypatch):
@@ -118,28 +67,3 @@ def test_a_bucket_that_cannot_be_read_is_unknown_never_not_withdrawn(tmp_path, m
     assert withdrawal.site_withdrawal_state("site-job-1") == "unknown"
     _withdraw(roots, site="site-job-1", bucket="blueprint-8c1ca.appspot.com")
     assert withdrawal.site_withdrawal_state("site-job-1") == "withdrawn"
-
-
-def test_an_unreadable_withdrawal_state_launches_nothing_for_a_reserved_row(tmp_path, monkeypatch):
-    roots = _roots(monkeypatch, tmp_path)
-    queue = tmp_path / "queue"
-    coordinator.enqueue_screening_campaign(plan(), queue_root=queue)
-    busy = {"value": True}
-
-    class Busy(Backend):
-        def preflight_candidate_capacity(self, **kwargs):
-            return ({"capacity_available": False, "blockers": ["vast_paid_launch_lock_busy"]} if busy["value"]
-                    else {"capacity_available": True, "blockers": []})
-
-    backend = Busy()
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
-    assert publication(queue)["budget"]["reserved_usd"] == "4"
-    busy["value"] = False
-    monkeypatch.setattr(coordinator, "_capacity_retry_ready", lambda attempt: True)  # only the withdrawal read holds it
-    (roots / "_pipeline_failures").mkdir()
-    with monkeypatch.context() as patch:
-        _unreadable(patch, roots / "_pipeline_failures")
-        coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
-    assert backend.launches == 0 and publication(queue)["budget"]["reserved_usd"] == "4"
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=queue, executor=backend)
-    assert backend.launches == 1

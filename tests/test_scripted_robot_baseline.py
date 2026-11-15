@@ -103,32 +103,6 @@ def test_nearest_arm_selection_is_measured_and_does_not_move_other_arm():
     assert action["gripper_closures"][0] == [0., 0.]
 
 
-def test_planner_retains_scripted_identity_for_selected_deferred_and_unavailable():
-    from copy import deepcopy
-    from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
-    from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan, validate_screening_plan
-    from tests.test_beta_policy_screening_plan import inputs, admitted, scene, NOW
-    catalog, _, _ = inputs(3)
-    rows = deepcopy(catalog["candidates"])
-    for row in rows:
-        row["policy"].update(kind="scripted", digest_kind="source_code_inventory", source="blueprint-owned:scripted_pick_place")
-        row["interface"]["policy_interface_id"] = "blueprint_scripted_pick_place.v1"
-    catalog = seal_catalog({**catalog, "candidates": rows})
-    bindings, quotes = {}, {}
-    for row in catalog["candidates"][:2]:
-        bindings[row["candidate_id"]], quotes[row["candidate_id"]] = admitted(row, maximum="8.00")
-    plan = build_screening_plan(catalog, scene(), campaign_id="development-only", now=NOW,
-        capabilities={"candidate_bindings": bindings}, cost_quotes=quotes)
-    assert [row["status"] for row in plan["candidates"]] == ["selected", "waitlisted", "unavailable"]
-    assert {row["execution_evidence_kind"] for row in plan["candidates"]} == {EVIDENCE_KIND}
-    assert validate_screening_plan(plan) == plan
-    import json
-    from pathlib import Path
-    from jsonschema import Draft202012Validator
-    schema = json.loads((Path(__file__).parents[1] / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
-    Draft202012Validator(schema).validate(plan)
-
-
 def test_task_driver_copies_actual_authored_geometry_without_reference_joint_trajectory(monkeypatch):
     from blueprint_pipeline import scripted_robot_baseline_runtime as runtime
     from blueprint_pipeline.native_task_construction_plan import materialize_native_task_construction_phase_plan
@@ -157,5 +131,3 @@ def test_task_driver_copies_actual_authored_geometry_without_reference_joint_tra
         runtime.build_task_plan(_planar_push_fixture(), policy, manifest)
     with pytest.raises(ValueError, match="scripted_baseline_task_kind_unsupported"):
         runtime.build_task_plan({"task_kind": "articulated_open_close"}, policy, manifest)
-
-

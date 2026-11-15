@@ -35,7 +35,7 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
     """A unit the repository retired can be kept off until an operator removes it from the host."""
 
-    assert EXPLICIT_RELEASE_UNITS == ("blueprint-agent-run-dispatcher.timer", *RETIRED_HOLD_UNITS)
+    assert EXPLICIT_RELEASE_UNITS == RETIRED_HOLD_UNITS
     assert RETIRED_HOLD_UNITS == (
         "blueprint-pipeline-control-plane.timer",
         "blueprint-capture-reconstruction-dispatcher.timer",
@@ -52,6 +52,7 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
         "blueprint-task-evaluation-configured-controls-progression.path",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-beta-policy-screening.timer",
+        "blueprint-agent-run-dispatcher.timer",
     )
     for unit in RETIRED_HOLD_UNITS:
         plain = {"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",
@@ -68,6 +69,19 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
                               "reason": "Retired unit still installed", "expires_in_seconds": 86400,
                               "require_explicit_release": True})
         assert error.value.code == code
+
+
+def test_no_unit_request_starts_a_retired_trigger_or_the_agent_run_dispatcher() -> None:
+    """The founder's stop of the agent-run dispatcher stays true once it is retired."""
+
+    for unit in ("blueprint-agent-run-dispatcher.timer", "blueprint-agent-run-dispatcher.service",
+                 "blueprint-beta-policy-screening.timer"):
+        for action in ("start", "restart"):
+            with pytest.raises(RequestRefused) as error:
+                validate_request({"kind": "unit", "unit": unit, "action": action})
+            assert error.value.code == "unit_retired"
+    assert validate_request({"kind": "unit", "unit": "blueprint-agent-run-dispatcher.service",
+                             "action": "reset-failed"})["action"] == "reset-failed"
 
 
 def test_explicit_release_policy_is_dispatcher_only_and_typed() -> None:

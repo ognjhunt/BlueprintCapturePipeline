@@ -22,7 +22,6 @@ from blueprint_pipeline.decision_evidence_execution import (
     execute_evidence_plan,
 )
 from blueprint_pipeline.physical_outcome_learning import join_physical_outcome
-from blueprint_pipeline.decision_evidence_handoff import verify as verify_webapp_handoff
 from blueprint_pipeline.task_site_measurement_routing import (
     ALL_CAPABILITY_FIELDS,
     validate_measurement_qualification,
@@ -1296,10 +1295,6 @@ def test_checked_in_json_schemas_validate_control_plane_and_webapp_examples() ->
         from blueprint_pipeline.decision_evidence_contracts import DecisionEnvelope
 
         assert DecisionEnvelope.from_mapping(example).digest == example["decision_envelope_digest"]
-    verification = verify_webapp_handoff(handoff)
-    assert verification["status"] == "passed"
-    assert verification["artifact_count"] == 9
-    assert verification["example_count"] == 3
 
 
 def test_checked_in_rigid_object_vertical_slice_matches_plan_decision_and_learning() -> None:

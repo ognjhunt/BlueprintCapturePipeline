@@ -123,14 +123,23 @@ class TeamHost:
     def register_bodies(self) -> dict[str, Any]:
         """Two registered team bodies, one with its own robot model, as the worker test registers them."""
 
-        from blueprint_pipeline import beta_policy_screening_launch as launch
+        import hashlib
+
         from tests.test_team_scene_packet import bodies
         from tests.test_team_scene_packet_worker import _registry
 
+        def record(path: Path) -> dict[str, Any]:
+            data = path.read_bytes()
+            return {"path": str(path.resolve()), "size_bytes": len(data),
+                    "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+
+        def write(path: Path, value: Any) -> Path:
+            path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return path
+
         body = bodies(self.base)
-        records = {name: launch._record(launch._write(self.base / f"{name}.manifest.json", value))
-                   for name, value in body.items()}
-        arm = launch._record(self.base / "robot.usda")
+        records = {name: record(write(self.base / f"{name}.manifest.json", value)) for name, value in body.items()}
+        arm = record(self.base / "robot.usda")
         _registry(self.world["operator"], packet_inputs=self.world["inputs"], defaults={"screening_candidates": {
             "team_long": {"robot_policy": {"manifest": records["long"], "model": arm}},
             "team_rover": {"robot_policy": {"manifest": records["wheeled"]}}}})

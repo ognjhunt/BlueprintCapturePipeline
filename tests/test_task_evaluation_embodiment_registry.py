@@ -166,57 +166,6 @@ def test_a_wider_or_unexplained_allowance_is_caught(monkeypatch, change) -> None
     assert f"development_run_allowance_invalid:{g1.embodiment_id}" in registry.embodiment_registry_violations()
 
 
-def test_a_navigation_walk_records_the_allowance_stood_in_and_development_only_never_verified() -> None:
-    from blueprint_pipeline.task_spec_compiler import requirements
-    from blueprint_pipeline.website_locomotion_task import NAVIGATION_PIPELINE_PIECES, runnable_options
-
-    assert registry.STOOD_IN == "stood in by the development-run allowance (development_only)"
-    for built in (None, frozenset(NAVIGATION_PIPELINE_PIECES)):
-        walk = runnable_options(requirements(locomote=True, manipulate=False), built_pieces=built)
-        g1_rows = [row for row in walk["policies"] if row["embodiment_id"] == registry.G1_EMBODIMENT_ID]
-        # Both navigation rows are listed; nothing narrows a navigation site to one.
-        assert sorted(row["candidate_id"] for row in g1_rows) == sorted(NAVIGATION_CHECKPOINTS)
-        for row in g1_rows:
-            assert not any(item.startswith("embodiment:") for item in row["missing"])
-            assert row["claim_ceiling"] == "development_only"
-            record = row["development_run_allowance"]
-            assert record["task_profile_id"] == NAVIGATION and record["claim_ceiling"] == "development_only"
-            assert list(record["stood_in"]) == ["verified_site_episode", "reviewed_checkpoint_terms"]
-            assert {entry["status"] for entry in record["stood_in"].values()} == {registry.STOOD_IN}
-            assert VERIFIED_EPISODE_WORDS in record["stood_in"]["verified_site_episode"]["owner_decision"]
-            assert CHECKPOINT_TERMS_WORDS in record["stood_in"]["reviewed_checkpoint_terms"]["owner_decision"]
-            assert record["stood_in"]["reviewed_checkpoint_terms"]["checkpoint_review"] == \
-                registry.g1_navigation_checkpoint_development_rights_review(row["candidate_id"])
-            # Stood in, never verified or satisfied: no value of the record says so.
-            assert not any(word in text.lower() for text in _strings(record) for word in ("verified", "satisf"))
-        # The body itself is listed as it is: unavailable, with every gap.
-        body = next(row for row in walk["embodiments"] if row["embodiment_id"] == registry.G1_EMBODIMENT_ID)
-        assert body["status"] == "unavailable"
-        assert body["missing"] == ["verified_site_episode", "reviewed_checkpoint_terms"]
-    # With no job's outputs known it is still held by the pipeline's own pieces, not by the body's items.
-    walk = runnable_options(requirements(locomote=True, manipulate=False))
-    assert all(not row["runnable"] and row["missing"] for row in walk["policies"])
-
-
-def test_the_navigation_hold_names_neither_stood_in_item_and_records_the_allowance() -> None:
-    from blueprint_pipeline.task_spec_compiler import requirements
-    from blueprint_pipeline.website_locomotion_hold import HOLD_CODE
-    from blueprint_pipeline.website_locomotion_task import runnable_policy_gap
-
-    context = {"task_family": "navigation", "context_digest": "sha256:" + "a" * 64, "description": "Walk."}
-    gap = runnable_policy_gap(task_context=context, requirements=requirements(locomote=True, manipulate=False),
-                              spec_digest="sha256:" + "c" * 64)
-    assert gap["code"] == HOLD_CODE
-    reason_missing = gap["reason"].split("Missing: ", 1)[1].split(".", 1)[0]
-    for item in ("embodiment:verified_site_episode", "embodiment:reviewed_checkpoint_terms"):
-        assert item not in gap["missing"] and item not in reason_missing
-    assert f"embodiment:reviewed_checkpoint_terms, embodiment:verified_site_episode: {registry.STOOD_IN}." \
-        in gap["reason"]
-    policies = gap["runnable_options"]["policies"]
-    assert policies and all(row["development_run_allowance"]["claim_ceiling"] == "development_only"
-                            for row in policies)
-
-
 def test_the_g1_run_scope_a_stood_in_run_records_is_pinned_development_only() -> None:
     """Pin: whatever proceeds on the allowance, every G1 run's authority claims no more than development_only."""
     from blueprint_pipeline import native_g1_beta_authority as authority
@@ -224,51 +173,3 @@ def test_the_g1_run_scope_a_stood_in_run_records_is_pinned_development_only() ->
     assert authority.SCOPE["claim_ceiling"] == "development_only"
     assert authority.SCOPE["ranking_eligible"] is False and authority.SCOPE["qualification_permitted"] is False
     assert authority.SCOPE["physical_outcome_claimed"] is False
-
-
-def test_rigid_pick_place_on_the_g1_is_pinned_as_it_was() -> None:
-    """Pin: manipulation routing, the manipulation catalog rows and their registration identity are unchanged."""
-    import json
-    from pathlib import Path
-
-    from blueprint_pipeline.job_capability_routing import route_job_capabilities
-    from blueprint_pipeline.task_spec_compiler import requirements
-    from blueprint_pipeline.website_locomotion_task import runnable_options
-
-    routing = route_job_capabilities("rigid_pick_place", embodiment_ids=[registry.G1_EMBODIMENT_ID])
-    assert routing["configurations"] == []
-    assert {"kind": "embodiment", "id": registry.G1_EMBODIMENT_ID, "missing": ["verified_site_episode",
-            "reviewed_checkpoint_terms"], "reason": registry.embodiment(registry.G1_EMBODIMENT_ID).reason} \
-        in routing["unavailable"]
-    arm = runnable_options(requirements(locomote=False, manipulate=True))
-    g1_arm = [row for row in arm["policies"] if row["embodiment_id"] == registry.G1_EMBODIMENT_ID]
-    assert sorted(row["candidate_id"] for row in g1_arm) == sorted(MANIPULATION_CHECKPOINTS)
-    for row in g1_arm:
-        assert row == {"candidate_id": row["candidate_id"], "embodiment_id": registry.G1_EMBODIMENT_ID,
-                       "runnable": False,
-                       "missing": ["embodiment:verified_site_episode", "embodiment:reviewed_checkpoint_terms"]}
-    rows = {row["candidate_id"]: row for row in json.loads(
-        (Path(registry.__file__).resolve().parents[2] / "config/beta_policy_candidates.v1.json").read_text())["candidates"]}
-    assert rows["humanoidarena_dp_g1_dex3_sonic"]["supported_task_kinds"] == ["rigid_pick_place"]
-    assert rows["humanoidarena_pi05_g1_dex3_sonic"]["supported_task_kinds"] == ["rigid_pick_place"]
-    assert rows["humanoidarena_dp_g1_dex3_sonic"]["configuration_digest"] == \
-        "sha256:7642740f48911d8237591536827ef1327c6d92d41ae456093cf95d42009643be"
-    assert rows["humanoidarena_pi05_g1_dex3_sonic"]["configuration_digest"] == \
-        "sha256:98530d80577e61eba52599d9578d7bead1faec33502bf4edea4dbb2d8d604397"
-    # The G1 row is main's but for the navigation allowance; no other body declares one.
-    g1 = registry.embodiment(registry.G1_EMBODIMENT_ID)
-    assert dataclasses.replace(g1, development_run_allowances=()) == registry.EmbodimentProfile(
-        embodiment_id=registry.G1_EMBODIMENT_ID,
-        robot="Unitree G1", tool="Dex3 hand", arm_count=2, mobility="humanoid",
-        observation_schema_ids=("humanoidarena_head_rgb_state64_v1",),
-        action_schema_ids=("humanoidarena_semantic_v3",),
-        controller="SONIC whole-body controller", simulator_runtime_id="isaac_native_arena_g1_v1",
-        sensor_reference="configs/g1_humanoidarena_checkpoint_inventory.v1.json",
-        task_profile_ids=("rigid_pick_place", "goal_region_navigation"), status="unavailable",
-        missing=("verified_site_episode", "reviewed_checkpoint_terms"),
-        reason="No production policy-canary profile has executed a verified G1 episode on a site scene, and "
-               "its checkpoint terms are pending review.",
-        policy_robot_profile_ids=("unitree_g1_dex3_sonic_v1",),
-    )
-    assert all(not row.development_run_allowances for row in registry.EMBODIMENT_REGISTRY
-               if row.embodiment_id != registry.G1_EMBODIMENT_ID)

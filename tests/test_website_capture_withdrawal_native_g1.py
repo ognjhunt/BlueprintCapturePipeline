@@ -7,16 +7,12 @@ placeholder bytes, never a capture, mesh, USD or image.
 # Covers: src/blueprint_pipeline/website_capture_withdrawal_native_g1.py
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import native_g1_site_registration as registration
-from blueprint_pipeline import team_candidate_registry_reader as reader
-from blueprint_pipeline import website_capture_withdrawal as withdrawal
 from blueprint_pipeline import website_capture_withdrawal_deletion as deletion
 from blueprint_pipeline import website_capture_withdrawal_native_g1 as native_g1
 from blueprint_pipeline.team_scene_packet_worker import capture_key
@@ -96,34 +92,6 @@ def test_withdrawal_deletes_the_sites_g1_rows_and_packets_and_then_its_halves(wo
     assert receipt["deleted"]["team_scene"]["halves"] == [row["directory"] for row in plan["team_scene"]["halves"]]
     assert "team_scene_halves" not in {row["holder"] for row in receipt["remaining"]}
     assert receipt["pipeline_controlled_deletion_complete"] is True
-
-
-def test_the_rows_and_packet_a_real_registration_writes_are_the_ones_found(tmp_path, monkeypatch):
-    from tests.test_native_g1_site_registration import SITE, door_world, overlay_path
-
-    retained, kwargs, _, _ = door_world(tmp_path, monkeypatch)
-    assert registration.ensure_site_registration(**kwargs)["status"] == "registered"
-    rows = overlay_path().parent
-    capture = tmp_path / f"pubsub/source-bucket/scenes/{SITE}/captures/walkthrough-{SITE[5:]}"
-    base._write(capture / "raw/video.mp4", b"synthetic-video")
-    withdrawal.acknowledge_withdrawal(capture_root=capture, command={
-        "schema_version": "website_capture_withdrawal.v1", "request_id": SITE[5:], "scene_id": SITE,
-        "capture_id": capture.name, "withdrawal_id": "withdrawal-development",
-        "requested_at_iso": "2026-11-06T00:00:00Z"})
-    site, identity = deletion._site_identity(capture)
-    unresolved: list = []
-    section = native_g1.plan_native_g1(identity, [], site=site, registration_root=rows,
-                                       halves_root=tmp_path / "halves", unresolved=unresolved)
-    assert unresolved == []
-    assert [row[0] for row in section["registration_files"]] == [
-        str(rows / f"{SITE}.json"), str(rows / f"{SITE}.status.json")]
-    [found] = section["packet_namespaces"]
-    row = json.loads(overlay_path().read_text())
-    assert all(item["native_g1"]["scene_packet"]["path"].startswith(found["directory"] + "/")
-               for item in row["screening_candidates"].values())
-    native_g1.apply_native_g1(section)
-    assert not overlay_path().exists() and not Path(found["directory"]).exists()
-    assert reader.site_registration_overlay(SITE) is None and retained.registry_path.exists()
 
 
 @pytest.mark.parametrize("fault,reason", [

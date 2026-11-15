@@ -59,7 +59,6 @@ REQUIRED_TRUE_FLAGS = (
 # needed releasing. A test pins this tuple against `deploy/systemd/*.service`
 # so a new unit cannot ship an unchecked entrypoint.
 CONTROL_PLANE_ENTRYPOINTS = (
-    "blueprint_pipeline.agent_run_executor",
     "blueprint_pipeline.agent_execution.production",
     "blueprint_pipeline.agent_execution.stage_recovery",
     "blueprint_pipeline.completed_replay_cache_retention",
@@ -86,7 +85,6 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.team_scene_packet_worker",
     "blueprint_pipeline.team_scene_packet_collector",
     "blueprint_pipeline.team_scene_packet_remote_condition",
-    "blueprint_pipeline.beta_policy_screening_worker",
     "blueprint_pipeline.scene_stage_maintenance",
     "blueprint_pipeline.rigid_robot_free_probe_runner",
     "blueprint_pipeline.task_evaluation_launch_activation_worker",
@@ -96,7 +94,6 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.task_evaluation_launch_reconciler",
     "blueprint_pipeline.task_evaluation_scene_retirement_supervisor",
     "blueprint_pipeline.task_evaluation_terminal_resource_release",
-    "blueprint_pipeline.team_candidate_quick10_launch",
     "blueprint_pipeline.unit_failure_notifier",
     "blueprint_pipeline.website_atlas_preview",
     "blueprint_pipeline.website_capture_withdrawal_automatic",

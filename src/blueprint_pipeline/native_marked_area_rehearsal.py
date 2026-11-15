@@ -158,7 +158,7 @@ def marked_area_control_search_request(*, source_request: Mapping[str, Any], pha
 
 def direct_policy_request(*, source_request: Mapping[str, Any], authorized_by: str, authorization_reference: str) -> dict[str, Any]:
     """Record an explicit controls omission for diagnostic policy execution only."""
-    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+    from .policy_canary_scene_resolution import validate_control_omission_authority
     validate_native_task_arena_packet_request(source_request)
     request = copy.deepcopy(dict(source_request))
     spec = request["task_spec"]

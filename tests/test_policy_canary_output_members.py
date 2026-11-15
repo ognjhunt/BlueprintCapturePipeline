@@ -15,7 +15,6 @@ from __future__ import annotations
 import ast
 import inspect
 import json
-import os
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -27,9 +26,6 @@ from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
 from blueprint_pipeline import policy_canary_output_members as members
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as scene_store
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.native_task_arena_policy_canary_session import (
-    PROVIDER_RESULT_FILENAME,
-)
 from blueprint_pipeline.provider_output_member_index import build_member_index, validate_member_selection
 from blueprint_pipeline.provider_output_member_view import CONTRACTS, POLICY_CANARY_CONTRACT
 from blueprint_pipeline.task_evaluation_configured_scene_object_store import _ARTIFACT_STORE_FILE_ENV
@@ -39,6 +35,11 @@ from tests.provider_output_fixtures import (
     quick10_production_shaped_archive,
     quick10_shaped_archive,
 )
+
+#: ``native_task_arena_policy_canary_session.PROVIDER_RESULT_FILENAME`` and ``EPISODES_PER_POLICY`` when the
+#: canary left: the names and shape retained archives carry.
+PROVIDER_RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.json"
+EPISODES_PER_POLICY = 10
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
 SMALL = {"cells": 10, "frames_per_camera": 2, "png_bytes": 8 * 1024, "mp4_bytes": 64 * 1024,
@@ -277,19 +278,10 @@ def test_other_arena_callers_never_stream():
             function = getattr(enclosing.get(node), "name", "<module>")
             if any(name.startswith("provider_output_") for name in _keyword_names(node, (path.name, function))):
                 streaming_calls.append((path.name, function))
-    assert lane_calls >= 9
-    # The policy-canary session runner left with the early trial (2026-11-14); the transport now refuses
-    # stream delivery for every caller, so the one caller left that asks for it fails closed.
-    assert streaming_calls == [
-        ("team_candidate_quick10_vast.py", "run_team_candidate_session_vast"),
-    ]
-    team_tree = ast.parse((SRC / "team_candidate_quick10_vast.py").read_text())
-    team_calls = [node for node in ast.walk(team_tree) if isinstance(node, ast.Call)
-                  and getattr(node.func, "id", None) == "run_arena_native_control_vast"]
-    assert len(team_calls) == 1
-    delivery = next(keyword.value for keyword in team_calls[0].keywords
-                    if keyword.arg == "provider_output_delivery")
-    assert isinstance(delivery, ast.Constant) and delivery.value == "download"
+    assert lane_calls >= 8
+    # The policy-canary session runner and the team session left with the early trial (2026-11-14):
+    # no caller asks the transport for stream delivery.
+    assert streaming_calls == []
     # Only the contract module reads the flag: no other module holds its name as a value.
     readers = sorted(path.name for path, source in sources.items() if members.DELIVERY_ENV in source and any(
         isinstance(node, ast.Constant) and node.value == members.DELIVERY_ENV for node in ast.walk(ast.parse(source))))
@@ -409,38 +401,6 @@ def test_auto_streams_only_on_a_sealed_measurement_within_budget(tmp_path, case,
     assert override.record() == {"mode": "stream", "reason": "explicit"}
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a mode-000 directory")
-def test_auto_never_raises_when_the_store_or_the_record_cannot_be_reached(tmp_path, monkeypatch):
-    """Review: below Python 3.13 ``Path.is_file`` raises ``PermissionError`` under a parent it cannot
-    traverse. Auto resolution, the dispatcher's workload label and an explicit ``stream`` must answer
-    instead, or every dispatcher tick exits 2, download runs included."""
-    from blueprint_pipeline.task_evaluation_policy_canary_disk import canary_workload
-
-    _set_delivery(monkeypatch, tmp_path, None, configured=True, measured=True)
-    store = tmp_path / "b2"
-    store.chmod(0)
-    try:
-        assert members.resolve_output_delivery().record() == INVALID_STORE
-        assert members.artifact_store_configured() is False
-        assert canary_workload() == "policy_canary"
-        monkeypatch.setenv(members.DELIVERY_ENV, "stream")
-        assert canary_workload() == "policy_canary_streamed"  # explicit values keep today's label
-    finally:
-        store.chmod(0o700)
-
-    # A record behind a directory the dispatcher cannot traverse is an invalid record, not an error.
-    monkeypatch.delenv(members.DELIVERY_ENV)
-    records = members.MEASUREMENT_PATH.parent
-    records.chmod(0)
-    try:
-        assert members.resolve_output_delivery().record() == {
-            "mode": "download", "reason": "auto_needed_set_record_invalid"}
-        assert canary_workload() == "policy_canary"
-    finally:
-        records.chmod(0o700)
-    assert members.resolve_output_delivery().record() == AUTO_STREAM
-
-
 def test_the_fixed_record_path_is_hot_evidence_beside_the_policy_canary_state():
     """The one host record auto reads: under the control plane's state tree, where the dispatcher
     (``blueprint``) reads it, and classified so no reclaim tool ever takes it."""
@@ -459,7 +419,6 @@ def test_the_quick10_shape_names_the_session_s_own_members():
     one child result per cell (one cell per episode of each policy), and the first cell's static
     startup preflight, which also binds the streamed native inventory."""
     from blueprint_pipeline import arena_provider_output_streaming as streaming
-    from blueprint_pipeline.native_task_arena_policy_canary_session import EPISODES_PER_POLICY
     from tests.provider_output_fixtures import quick10_production_shape
 
     assert members.QUICK10_CELL_COUNT == EPISODES_PER_POLICY
@@ -503,5 +462,3 @@ def test_auto_holds_the_needed_set_to_the_hold_the_session_can_take(tmp_path, mo
 
     monkeypatch.setenv(FOOTPRINT_ENV, "lots")
     assert members.resolve_output_delivery(environ, measurement_path=record).record() == OVER_BUDGET
-
-

@@ -48,7 +48,7 @@ from tests.test_task_evaluation_launch_preparation_worker import (
     request_with_fetchable_bytes,
 )
 from tests.test_task_evaluation_launch_dispatcher import _profile as launch_profile
-from tests.test_task_evaluation_policy_canary_setup import _setup as public_canary_setup
+from tests.policy_canary_setup_support import public_setup as public_canary_setup
 
 
 SERVICE_ACCOUNT = pwd.getpwuid(os.geteuid()).pw_name

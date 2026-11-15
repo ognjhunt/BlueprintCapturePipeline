@@ -91,21 +91,3 @@ def test_native_summary_validates_skipped_json_and_refuses_oversized_terminal(tm
         from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_archive
         result = inspect_provider_runtime_output_archive(archive, zip_path=str(large), zip_size_bytes=large.stat().st_size)
     assert result['runtime_result_present'] is False and result['json_parse_errors']
-
-
-def test_hash_bound_status_refuses_tampered_source_bytes(tmp_path):
-    from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
-    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    root = tmp_path / NAME
-    payload = {'run_kind': 'team_candidate_evaluation', 'status': 'blocked', 'blockers': ['known']}
-    payload['result_digest'] = canonical_digest(payload, digest_field='result_digest')
-    worker._seal_result(result_path=root, result=payload)
-    path = tmp_path / 'tampered.zip'
-    with zipfile.ZipFile(path, 'w') as archive:
-        for source in tmp_path.glob('*.json'):
-            data = source.read_bytes()
-            if source.name == NAME:
-                data = data.replace(b'known', b'other')
-            archive.writestr(source.name, data)
-    result = inspect_provider_runtime_output_zip(path)
-    assert result['runtime_result_present'] is False and result['json_parse_errors']

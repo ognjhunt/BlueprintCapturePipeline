@@ -83,9 +83,9 @@ def test_control_search_declares_many_options_without_rewriting_task():
 
 @pytest.mark.parametrize("marked_area", [False, True])
 def test_direct_policy_omission_preserves_all_task_scoring_criteria(marked_area):
-    from tests.test_native_task_arena_policy_canary_session import _activation
+    from tests.policy_canary_setup_support import public_setup
     from blueprint_pipeline.native_marked_area_rehearsal import direct_policy_request
-    original_contract = _activation()['task_success_contract']
+    original_contract = public_setup()['task_success_contract']
     contract = copy.deepcopy(original_contract)
     contract['criteria']['controls'] = {'mode': 'required_per_cell',
         'control_ids': ['zero_action_negative', 'deterministic_scripted_positive']}

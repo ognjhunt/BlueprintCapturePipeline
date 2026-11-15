@@ -232,23 +232,6 @@ def _selected_handoff_environment(config: DoorConfig, request: dict[str, Any]) -
             "DOOR_SERVICE_USER": "blueprint", "DOOR_SELECTED_HANDOFF_REQUEST": json.dumps(selection, sort_keys=True)}
 
 
-def _public_policy_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-            "DOOR_SERVICE_USER": "blueprint",
-            "DOOR_PUBLIC_POLICY_OPERATION": request["kind"],
-            "DOOR_PUBLIC_POLICY_REQUEST": json.dumps(request["request"], sort_keys=True, allow_nan=False)}
-
-
-def _public_policy_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
-    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
-            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "PrivateNetwork=yes",
-            "RestrictAddressFamilies=AF_UNIX", "UMask=0077",
-            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
-            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
-            "ReadWritePaths=/etc/blueprint /var/lib/blueprint/pipeline-control-plane/public-policy-registrations "
-            "/var/lib/blueprint-operator-door/policy-registrations " + str(Path(config.spool_root) / "results"))
-
-
 def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
     writable = str(Path(config.spool_root) / "results")
     if request["mode"] in {"dispatch", "preparation-resume", "preparation-reissue"}:
@@ -357,26 +340,6 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
-    "install-public-trlc-policy": _LaunchSpec(
-        "blueprint-operator-door-public-trlc-policy", "door-install-public-piper-policy.sh", "5min",
-        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
-        _public_policy_environment, _public_policy_properties),
-    "install-public-franka-policy": _LaunchSpec(
-        "blueprint-operator-door-public-franka-policy", "door-install-public-piper-policy.sh", "5min",
-        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
-        _public_policy_environment, _public_policy_properties),
-    "install-scripted-robot-baselines": _LaunchSpec(
-        "blueprint-operator-door-scripted-baselines", "door-install-public-piper-policy.sh", "10min",
-        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
-        _public_policy_environment, _public_policy_properties),
-    "install-public-yam-policy": _LaunchSpec(
-        "blueprint-operator-door-public-yam-policy", "door-install-public-piper-policy.sh", "5min",
-        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
-        _public_policy_environment, _public_policy_properties),
-    "install-public-piper-policy": _LaunchSpec(
-        "blueprint-operator-door-public-policy", "door-install-public-piper-policy.sh", "5min",
-        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
-        _public_policy_environment, _public_policy_properties),
     "retire-scene": _LaunchSpec("blueprint-operator-door-scene-retire", "door-scene-lifecycle.sh", "2h",
                                 lambda request: request["consent_id"][:12],
                                 _lifecycle_environment, _lifecycle_properties),

@@ -28,7 +28,6 @@ from blueprint_pipeline import team_scene_packet_remote as lane
 from blueprint_pipeline import team_scene_packet_worker as worker
 from blueprint_pipeline import website_owner_success_assumption as assumption
 from blueprint_pipeline import website_owner_success_confirmation as website
-from blueprint_pipeline.beta_policy_screening_scene_half import current_half
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, profile_for_capture, scene_facts
 from blueprint_pipeline.team_scene_packet import TeamScenePacketError, read_team_scene_inputs
 from tests.test_task_evaluation_owner_success_confirmation import confirm
@@ -55,8 +54,6 @@ def _plan(compiled: dict[str, Any]) -> dict[str, Any]:
 
 def test_an_unconfirmed_website_job_compiles_at_once_on_the_same_thresholds_marked_as_assumed(tmp_path, monkeypatch):
     from blueprint_pipeline.adp_articulated_task_success_contract import validate_task_success_contract
-    from blueprint_pipeline.beta_policy_screening_control_omission import omit_paused_controls
-    from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import _require_strict_owner_success_contract
 
     job, inputs = _job(tmp_path, monkeypatch)
     compiled = _compile(job, {**inputs, **ASSUME}, tmp_path / "assumed")
@@ -85,14 +82,11 @@ def test_an_unconfirmed_website_job_compiles_at_once_on_the_same_thresholds_mark
     assert marker["binding_digest"] == notice["binding_digest"]
     assert marker["configured_success_criteria_digest"] == notice["configured_success_criteria_digest"]
     assert marker["proposal_authority_digest"] == notice["proposal_authority_digest"]
-    # Every step after the packet admits it: the scorer's validator, the strict owner check, the scene's
-    # facts as a team run stages them, and the screening contract under the standing controls pause.
+    # Every step after the packet admits it: the scorer's validator and the scene's facts as the scripted
+    # check stages them.
     validate_task_success_contract(contract, task_kind="rigid_pick_place")
-    _require_strict_owner_success_contract(task_spec=plan["task_spec"], contract=contract)
     facts = scene_facts({"team_scene_inputs_path": compiled["path"], "open_loop_horizon": 8})
     assert facts["inputs"]["task_success_contract"] == contract
-    screened, _omission = omit_paused_controls(contract)
-    assert assumption.contract_assumed(screened) and screened["provenance"] == provenance
 
     # The same job once its site confirmed: the very same criteria, the site's provenance, and no marker.
     applied = confirm(job)
@@ -287,29 +281,8 @@ def _world(tmp_path: Path, monkeypatch) -> dict[str, Any]:
         return worker.process_team_scene_queue(queue_root=queue, fetcher=lambda row: job.store[row["uri"]],
                                                offer_transport=lambda **_: {"status": "accepted"})
 
-    def screening_source() -> dict[str, Any]:
-        """The source screening plans this job under, checked as it is before every paid attempt."""
-
-        from blueprint_pipeline import beta_policy_screening_worker as screening
-        from blueprint_pipeline import website_task_context
-
-        retained = _record(capture / "pipeline" / "website_task_context.json")
-        current = {**retained, "capture_rights": {"consent_status": "granted", "consent_revoked": False,
-                                                  "consent_scope": ["robot_evaluation"],
-                                                  "derived_scene_generation_allowed": True}}
-        monkeypatch.setattr(website_task_context, "load_current_website_task_context", lambda **_: current)
-        queued = _record(queue / "processed" / f"{key}.json")
-        value = {"scene_intent_id": queued["intent_id"], "scene_intent_digest": queued["intent_digest"],
-                 "capture_id": queued["capture_id"], "task_id": queued["task_id"],
-                 "task_context_digest": retained["context_digest"],
-                 "scene_revision_digest": queued["scene_revision_digest"]}
-        # Raises beta_screening_current_task_context_changed when the job's context no longer binds it.
-        screening.require_current_source(value, site_id=SCENE_ID)
-        return value
-
     return {"job": job, "queue": queue, "key": key, "request": request, "capture": capture.resolve(),
-            "process": process, "context_path": capture / "pipeline" / "website_task_context.json",
-            "screening_source": screening_source}
+            "process": process, "context_path": capture / "pipeline" / "website_task_context.json"}
 
 
 def _status(world: dict[str, Any]) -> dict[str, Any]:
@@ -347,11 +320,7 @@ def test_the_worker_compiles_an_unconfirmed_job_without_waiting_and_a_later_conf
     assumed_path = first["team_scene_inputs_path"]
     assumed = read_team_scene_inputs(assumed_path)["task_success_contract"]
     assert assumption.contract_assumed(assumed)
-    profile = profile_for_capture(world["capture"])
-    revision = job.revision["revision_digest"]
-    assumed_half = current_half(profile, scene_revision_digest=revision)
     probe_before = current_probe_state(world["capture"])["request"]["request_digest"]
-    source_before = world["screening_source"]()
     record_before = Path(assumed_path).read_bytes()
 
     # The timer's pass sends the thresholds to the job page, as it did for a blocked job; nothing moves.
@@ -375,17 +344,15 @@ def test_the_worker_compiles_an_unconfirmed_job_without_waiting_and_a_later_conf
     assert status[assumption.FIELD] == {**first[assumption.FIELD], "site_answer": "confirmed", "confirmed_later": {
         "confirmation_digest": row["confirmation_digest"], "confirmed_at": row["confirmed_at"],
         "issuer_channel": "website"}}
-    # Nothing is bought again: the same half, contract digest and probe request, so the same screening half
-    # (no re-plan), and the screening source still binds the job's context (2026-11-07: no
-    # task_context_changed). What was scored stays labelled as scored on assumed thresholds.
+    # Nothing is bought again: the same half, contract digest and probe request, and the job's context is
+    # unchanged (2026-11-07: no task_context_changed). What was scored stays labelled as scored on assumed
+    # thresholds.
     assert Path(assumed_path).read_bytes() == record_before
     assert read_team_scene_inputs(assumed_path)["task_success_contract"] == assumed
     profile = profile_for_capture(world["capture"])
     assert profile["team_scene_inputs_path"] == assumed_path
-    assert current_half(profile, scene_revision_digest=revision) == assumed_half
     assert current_probe_state(world["capture"])["request"]["request_digest"] == probe_before
     assert world["context_path"].read_bytes() == context_before
-    assert world["screening_source"]() == source_before
     # Later passes ask the website nothing more, move nothing and leave the status as it is.
     calls = webapp.calls
     for _ in range(2):

@@ -726,7 +726,6 @@ def test_every_arena_worker_derives_the_render_path_from_its_plan() -> None:
         native_task_arena_construction_worker,
         native_task_arena_control_sweep_worker,
         native_task_arena_controls_worker,
-        native_task_arena_policy_canary_worker,
         native_task_arena_policy_worker,
         native_task_arena_runtime_preflight_worker,
     )
@@ -735,7 +734,6 @@ def test_every_arena_worker_derives_the_render_path_from_its_plan() -> None:
         native_task_arena_construction_worker,
         native_task_arena_control_sweep_worker,
         native_task_arena_controls_worker,
-        native_task_arena_policy_canary_worker,
         native_task_arena_policy_worker,
         native_task_arena_runtime_preflight_worker,
     ):

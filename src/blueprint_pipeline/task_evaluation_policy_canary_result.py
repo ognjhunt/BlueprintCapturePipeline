@@ -19,12 +19,47 @@ from .adp_task_scoring import (
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .articulated_task_success_contract_schema import task_success_contract_schema
 
+CONTROL_IDS = ("zero_action_negative", "deterministic_scripted_positive")
+
+
+def controls_required(contract: Mapping[str, Any]) -> bool:
+    """Moved unchanged from ``native_policy_canary_control_gate`` when the internal canary left."""
+    return (contract.get("criteria") or {}).get("controls") == {
+        "mode": "required_per_cell", "control_ids": list(CONTROL_IDS)}
+
+
+WARNINGS = {
+    "controls_omitted_by_user": "Controls omitted at the user's request — diagnostic results remain unqualified.",
+    "configured_controls_pending": "Controls pending — results are unqualified.",
+    "controls_failed": "Required controls failed — results are unqualified.",
+    "controls_verified_development_only": "Controls verified for this simulation matrix — development-only results remain unqualified.",
+}
 
 SCHEMA_VERSION = "task_evaluation_policy_canary_result_projection.v1"
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[2] / "docs" / "schemas" / f"{SCHEMA_VERSION}.schema.json"
 )
 
+
+def control_summary(controls: list[Mapping[str, Any]], episodes: list[Mapping[str, Any]]) -> dict[str, int]:
+    pairs: dict[str, list[Mapping[str, Any]]] = {}
+    for row in controls:
+        pairs.setdefault(str(row["cell_id"]), []).append(row)
+    learned: dict[str, set[tuple[str, int]]] = {}
+    for row in episodes:
+        if isinstance(row.get("seed"), int) and not isinstance(row["seed"], bool):
+            learned.setdefault(str(row.get("candidate_id")), set()).add((str(row.get("cell_id")), row["seed"]))
+    aligned = learned.get("pi05_droid", set()) & learned.get("groot_n17_droid", set())
+    verified = sum(len(rows) == 2 and {row["control_id"] for row in rows} == set(CONTROL_IDS)
+                   and len({row["seed"] for row in rows}) == 1
+                   and (cell, rows[0]["seed"]) in aligned
+                   and all(row["terminal_state"] == "completed" and row["control_passed"]
+                           and not row["evidence_gaps"] for row in rows)
+                   for cell, rows in pairs.items())
+    return {"expected_count": 20, "recorded_count": len(controls),
+            "completed_count": sum(row["terminal_state"] == "completed" for row in controls),
+            "passed_count": sum(row["control_passed"] for row in controls),
+            "verified_cell_count": verified}
 
 class TaskEvaluationPolicyCanaryResultError(ValueError):
     """A canary result would overclaim or omit terminal evidence."""
@@ -132,7 +167,6 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyCanaryResultError(
                 "policy_canary_result_completed_episode_evidence_incomplete"
             )
-    from .policy_canary_control_result_delivery import WARNINGS, CONTROL_IDS, control_summary
     if result["warning"] != WARNINGS[result["scene_controls_status"]]:
         raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_controls_warning_invalid")
     controls = result.get("controls")
@@ -162,7 +196,6 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_required_controls_unverified")
     elif result["scene_controls_status"] == "controls_omitted_by_user":
         omission = result.get("control_omission") or {}
-        from .native_policy_canary_control_gate import controls_required
         if (omission.get("task_success_contract_digest") != task_success_contract["contract_digest"]
                 or controls_required(task_success_contract)
                 or counts["diagnostic_control_rollout_count"] != 0

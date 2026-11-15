@@ -22,7 +22,7 @@ fails if its report shows a network attempt, a new paid call, a provider mutatio
 The replays enforce their own boundaries (see each replay module's docstring), so the run costs $0 and
 uses no host and no network. It takes about 6 seconds locally. CI runs it nightly and on pull requests
 that touch preparation, levelling, mesh registration, the Atlas preview controller, deterministic
-refusals, screening or the replay modules (`.github/workflows/replay-set.yml`), along with
+refusals or the replay modules (`.github/workflows/replay-set.yml`), along with
 `tests/test_replay_set_v1.py` and `tests/test_atlas_reconstruction_stage_replay.py`.
 
 ## Layout
@@ -47,7 +47,7 @@ defaults bound at import all read the replay clock). Rebuilding the set writes a
 
 | record | kind | expected first stop |
 | --- | --- | --- |
-| `rigid-pick-place-1080p-short` | rigid pick-and-place | `completed` at `screening_plan` (plan frozen within the job ceiling) |
+| `rigid-pick-place-1080p-short` | rigid pick-and-place | `completed` at `probe_enqueue` (the probe the compile queued) |
 | `rigid-pick-place-4k-long` | rigid pick-and-place | `would_buy` at `probe_enqueue` (no retained probe trace, so the GPU probe would be bought; it is named and not made) |
 | `rigid-pick-place-1080p-long-closure-missing` | rigid pick-and-place | `missing_input` at `completion` (post-teardown provider-zero receipt not retained) |
 | `navigation-4k-short` | navigation | `refusal` at `completion`, `preparation_completion_not_adopted` |
@@ -61,9 +61,9 @@ defaults bound at import all read the replay clock). Rebuilding the set writes a
 ## What it proves, and what it does not
 
 It proves that the harness works: one command replays several records of both job kinds through
-`task_evaluation_downstream_replay` (completion, readiness, team packet, probe enqueue, screening
-plan), offline and at $0, and fails when a stop moves. It also pins each job kind's path through that
-chain. A rigid pick-and-place launch reaches its screening plan, stops at the paid probe, or names the
+`task_evaluation_downstream_replay` (completion, readiness, team packet, probe enqueue, probe
+run), offline and at $0, and fails when a stop moves. It also pins each job kind's path through that
+chain. A rigid pick-and-place launch reaches its probe, stops at the paid probe, or names the
 file it is missing. A navigation job (prepared with its scene kept as filmed, with no launch) is not
 adopted by the launched-preparation join, and the refusal names the job.
 

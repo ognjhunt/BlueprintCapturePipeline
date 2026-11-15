@@ -312,6 +312,17 @@ def test_identified_inserted_task_object_fails_closed_on_identity_mismatch() -> 
         materialize_native_task_runtime_contract(**fixture)
 
 
+@pytest.mark.parametrize("task_kind", ["rigid_pick_place", "articulated_open_close"])
+def test_rigid_and_articulated_contracts_refuse_a_missing_task_object(task_kind: str) -> None:
+    """A manipulation job with no task object in the scene is refused by name, before anything is sealed."""
+    fixture = _rigid_fixture() if task_kind == "rigid_pick_place" else _articulated_fixture()
+    fixture["assets"] = [row for row in fixture["assets"] if row["semantic_role"] != "task_object"]
+
+    with pytest.raises(NativeTaskRuntimeContractError) as excinfo:
+        materialize_native_task_runtime_contract(**fixture)
+    assert "native_task_runtime_asset_missing:task_object" in excinfo.value.errors
+
+
 def test_runtime_contract_refuses_unconfirmed_agent_success_criteria() -> None:
     fixture = _identified_rigid_fixture()
     fixture["task_spec"].update(

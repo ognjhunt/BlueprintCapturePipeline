@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from functools import partial, wraps
-import json
 import queue
 import sys
 import threading
@@ -18,8 +17,6 @@ import websockets.asyncio.server
 import websockets.sync.client
 
 from blueprint_pipeline import openpi_droid_policy_runtime as runtime
-from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
-from blueprint_pipeline.policy_request_evidence import persist_request_evidence
 from tests.test_openpi_droid_policy_runtime import _cohort, _runtime_metadata
 
 
@@ -134,54 +131,6 @@ def test_cold_inference_outlasts_heartbeat_without_losing_or_repeating_request(
     assert all(call["open_timeout"] == 0.12 for call in bounded_default_client)
 
 
-def test_inference_deadline_preserves_one_attempt_and_unproven_response(
-    tmp_path, bounded_default_client, monkeypatch,
-):
-    monkeypatch.setattr(runtime, "_bounded_openpi_client_type", partial(
-        runtime._bounded_openpi_client_type, inference_timeout_seconds=0.08,
-    ))
-    spec = runtime.load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
-    retained = []
-    episode_id = "run--cell--pi05_droid"
-    with _server(_runtime_metadata(spec), inference_delay=0.35) as (port, requests):
-        client = _client(tmp_path, port)
-        client.bind_request_evidence_sink(lambda receipt: retained.append(persist_request_evidence(
-            receipt, root=tmp_path / "episodes", episode_id=episode_id, query_index=0,
-        )))
-        started = time.monotonic()
-        with pytest.raises(TimeoutError) as caught:
-            client.infer({"prompt": "fixture pick"})
-        assert time.monotonic() - started < 0.3
-        assert len(requests) == len(retained) == len(bounded_default_client) == 1
-        assert client.last_request_evidence()["serialization_verified"] is True
-        assert client.candidate_policy_queried is False
-        assert client._client is None
-        progress = {
-            "first_observation_retained": True,
-            "candidate_policy_query_attempted": True,
-            "candidate_policy_queried": False,
-            "policy_request_artifacts": retained,
-        }
-        path = worker._write_episode_failure_gap(
-            output_root=tmp_path, run_id="run", context={"cell_id": "cell", "candidate_id": "pi05_droid"},
-            failure=caught.value, progress=progress,
-        )
-    evidence = json.loads(path.read_text())
-    assert evidence["failure_type"] == "TimeoutError"
-    assert evidence["candidate_policy_query_attempted"] is True
-    assert evidence["candidate_policy_queried"] is False
-    assert evidence["policy_response_status"] == "unproven"
-    assert evidence["candidate_action_returned"] is False
-    assert evidence["actions_reached_robot"] is False
-    assert evidence["candidate_policy_action_queries"] == []
-    receipt = json.loads((tmp_path / evidence["evidence_artifacts"]["policy_query_receipt"]["relative_path"]).read_text())
-    assert receipt["candidate_policy_query_attempted"] is True
-    assert receipt["candidate_policy_queried"] is False
-    assert receipt["policy_response_status"] == "unproven"
-    assert receipt["policy_request_artifacts"] == retained
-    assert receipt["policy_queries"] == []
-
-
 @pytest.mark.parametrize("delays", [
     {"metadata_delay": 0.35},
     {"handshake_delay": 0.35},
@@ -233,17 +182,6 @@ def test_connection_refusal_is_one_attempt_and_preserves_original_failure(tmp_pa
     assert client._client is None
     with pytest.raises(ValueError, match="openpi_policy_request_evidence_missing"):
         client.last_request_evidence()
-
-
-def test_failure_before_query_is_explicitly_not_attempted(tmp_path):
-    path = worker._write_episode_failure_gap(
-        output_root=tmp_path, run_id="run", context={"cell_id": "cell", "candidate_id": "pi05_droid"},
-        failure=RuntimeError("no input"), progress={},
-    )
-    evidence = json.loads(path.read_text())
-    assert evidence["candidate_policy_query_attempted"] is False
-    assert evidence["policy_response_status"] == "not_attempted"
-    assert "policy_query_receipt" not in evidence["evidence_artifacts"]
 
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])

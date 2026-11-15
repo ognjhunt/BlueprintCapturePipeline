@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from blueprint_pipeline import task_evaluation_scene_intake as intake
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
 from blueprint_pipeline import task_evaluation_scene_policy_binding as scene_policy
 from blueprint_pipeline import task_evaluation_scene_terminal_reconciler as reconciler
 from blueprint_pipeline.decision_evidence_contracts import (
@@ -30,7 +31,6 @@ from blueprint_pipeline.decision_evidence_contracts import (
     cross_runtime_canonical_digest,
 )
 from tests.test_task_evaluation_scene_intake import request as owner_request
-from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
 COMMIT = "d" * 40
@@ -49,6 +49,37 @@ def _write(path: Path, value: dict, field: str | None = None) -> Path:
         value[field] = canonical_digest(value, digest_field=field)
     path.write_text(json.dumps(value))
     return path
+
+
+def public_setup() -> dict[str, object]:
+    """The confirmed rigid success contract a policy-run projection carries."""
+    task_spec = {
+        "manipulation_strategy": "planar_push",
+        "destination_position_bounds_world_m": {
+            "minimum": [1.14, 1.99, 0.79],
+            "maximum": [1.16, 2.01, 0.81],
+        },
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.1,
+        "support_height_interval_m": [0.79, 0.81],
+        "minimum_translation_m": 0.14,
+        "minimum_lift_m": 0.0,
+        "movement_epsilon_m": 0.001,
+        "settle_window_samples": 3,
+        "settle_position_tolerance_m": 0.002,
+        "settle_orientation_tolerance_rad": 0.01,
+        "release_gripper_width_min_m": 0.07,
+    }
+    task_success_contract = seal_rigid_task_success_contract(
+        task_spec=task_spec,
+        site_id="interiorgs-839873",
+        task_id="scene-839873-mug-planar-push",
+        author_source="compatibility_default",
+        author_id="blueprint:manipulation_strategy_defaults.v1",
+        confirmation_status="confirmed",
+    )
+    return {"task_success_contract": task_success_contract,
+            "task_success_contract_digest": task_success_contract["contract_digest"]}
 
 
 def _artifact(character: str, artifact_id: str) -> dict:

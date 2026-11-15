@@ -6,7 +6,7 @@ published with its configured bundle, its sealed launch receipt, WebApp readback
 and provider-zero closure, the scene intent and attempt that own it, the website
 capture with its task context, the operator registry and the WebApp's answers.
 The replay runs this tree's real join, readiness scorer, team compile, probe lane
-and screening planner on scratch copies; nothing reaches a provider, a GPU, the
+on scratch copies; nothing reaches a provider, a GPU, the
 object store, the WebApp or the network, and the pulled files are only read.
 """
 
@@ -41,7 +41,6 @@ from blueprint_pipeline.task_evaluation_scene_execution_authority import bind_sc
 from blueprint_pipeline.task_evaluation_scene_rigid_robot_free_readiness import rigid_task_for_revision
 from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_SCHEMA
 from blueprint_pipeline.team_scene_packet_worker import CONFIGURED_BUNDLE_FILENAME
-from tests.test_beta_policy_screening_job_ceiling import ceiling_summary
 from tests.test_rigid_robot_free_probe import FlatSupport, binding
 from tests.test_team_scene_packet import _scene
 from tests.test_website_scene_preparation_scope import preparation_request
@@ -245,25 +244,28 @@ def website_job(tmp_path: Path, *, trace: bool = True, runtime_source: Path | No
     _save(webapp / "atlas-configuration.json", {
         "schema_version": "website_atlas_configuration.v1", "dispatch_authorized": False,
         "grant_creation_allowed": False, "task_context_digest": context["context_digest"],
-        "source_video_digest": SOURCE_VIDEO, "job_ceiling": ceiling_summary(40)})
+        "source_video_digest": SOURCE_VIDEO, "job_ceiling": {
+            "schema_version": "website_job_ceiling.v1", "maximum_cost_usd": 40, "source": "retained_atlas_grant",
+            "preparation_cost_usd": 0, "native_construction_cost_usd": 0, "screening_cost_usd": 0,
+            "reserved_or_settled_cost_usd": 0, "remaining_cost_usd": 40}})
     return {"host": host, "run": run, "intent_dir": intents / intent["intent_id"], "capture": capture,
             "registry": registry, "mirror": mirror, "webapp": webapp, "scene": scene, "task_id": task_id,
             "result_path": result_path}
 
 
-def _replay(job: dict[str, Any], tmp_path: Path, until: str = "screening_plan", **changes: Any) -> dict[str, Any]:
+def _replay(job: dict[str, Any], tmp_path: Path, until: str = "probe_run", **changes: Any) -> dict[str, Any]:
     inputs = {"launch_run": job["run"], "intent_dir": job["intent_dir"], "capture_dir": job["capture"],
               "registry": job["registry"], "mirror": job["mirror"], "webapp_snapshots": job["webapp"], **changes}
     return downstream.replay(**inputs, until=until, replay_root=tmp_path / "replays")
 
 
-def test_a_completed_website_scene_replays_to_its_screening_plan_and_names_it(tmp_path):
+def test_a_completed_website_scene_replays_to_its_probe_run_and_names_it(tmp_path):
     job = website_job(tmp_path)
     before = _tree(job["host"])
     report = _replay(job, tmp_path)
 
     stop = report["first_stop"]
-    assert (stop["kind"], stop["stage"]) == ("completed", "screening_plan"), stop
+    assert (stop["kind"], stop["stage"]) == ("completed", "probe_run"), stop
     assert [(row["stage"], row["status"]) for row in report["stages"]] == [
         (stage, "passed") for stage in downstream.STAGES]
     stages = {row["stage"]: row for row in report["stages"]}
@@ -277,16 +279,9 @@ def test_a_completed_website_scene_replays_to_its_screening_plan_and_names_it(tm
     assert report["recorded_effects"] == []
     # A decided receipt wants no probe run, so nothing was queued for the paid lane.
     assert stages["probe_enqueue"]["outcome"]["probe_state"] == "receipt_decided"
-    # The plan the screening worker froze, within the job's dollar ceiling.
-    plan = stop["plan"]
-    assert plan["budget_usd"] == "15.00" and plan["budget_basis"] == "website_job_ceiling"
-    assert {row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"}
-    assert Path(plan["path"]).is_file() and Path(plan["path"]).is_relative_to(Path(report["run_root"]))
-    # The WebApp reads were answered from the pulled snapshots; the documents from the mirror, and the
-    # revision from the launch's own byte-identical copy.
-    answered = {(row["operation"], Path(row["answered_from"]).name) for row in report["webapp_answers"]}
-    assert answered == {("task-context", "task-context.json"),
-                        ("atlas-configuration", "atlas-configuration.json")}
+    # The chain asks the WebApp nothing up to the probe (the screening plan's reads left with the trial);
+    # the documents come from the mirror, and the revision from the launch's own byte-identical copy.
+    assert report["webapp_answers"] == []
     sources = {row["uri"]: row["answered_from"] for row in report["object_reads"]}
     assert sources[job["scene"]["revision_reference"]["uri"]].endswith("configured_scene_revision.v1.json")
     assert all(row["answered_from"] for row in report["object_reads"])
@@ -347,7 +342,7 @@ def test_a_probe_the_scene_still_needs_stops_where_the_lane_would_buy_its_run(tm
     stages = {row["stage"]: row for row in report["stages"]}
     assert stages["readiness"]["outcome"]["status"] == "probe_unavailable"
     assert stages["probe_enqueue"]["outcome"]["enqueue"][0]["status"] == "queued"
-    assert stages["screening_plan"]["status"] == "not_reached"
+    assert stages["probe_run"]["status"] == "not_reached"
     # The host-only launch gates are named as not evaluated rather than passed.
     assert {"driver_ceiling_blockers", "launch_environment_blockers"} <= set(report["host_only_gates_not_evaluated"])
     assert report["evidence"]["unchanged"] is True and _tree(job["host"]) == before
