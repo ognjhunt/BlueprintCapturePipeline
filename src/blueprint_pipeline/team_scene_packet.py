@@ -58,6 +58,7 @@ import argparse
 import hashlib
 import json
 import math
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -514,7 +515,8 @@ def _with_scoring_bounds(spec: Mapping[str, Any], bounds: Mapping[str, Any] | No
 
 
 def _seated_rigid_adapter(*, revision: Mapping[str, Any], references: Mapping[str, Any], collision: Path,
-                          staged_destination: bool = False) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+                          staged_destination: bool = False, accept_simulator_not_run: bool = False
+                          ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """The rigid task adapted with the replacement seated on the support the physics runs on, the reading, the pad.
 
     The registered support top is the highest face of the whole support, not
@@ -544,7 +546,8 @@ def _seated_rigid_adapter(*, revision: Mapping[str, Any], references: Mapping[st
         adapt_rigid_relocation_task_template,
     )
 
-    adapter = adapt_rigid_relocation_task_template(configured_revision=revision, materialized_references=references)
+    adapter = adapt_rigid_relocation_task_template(configured_revision=revision, materialized_references=references,
+                                                   accept_simulator_not_run=accept_simulator_not_run)
     spec = adapter["native_task_definition"]["task_spec"]
     documents = adapter["source_documents"]["documents"]
     observed = documents["static_qualification"].get("observed_structure") or {}
@@ -589,7 +592,8 @@ def _seated_rigid_adapter(*, revision: Mapping[str, Any], references: Mapping[st
     planar = pad is not None and pad["record"]["plane"]["consistent"] is True
     physics = pad["planarized_triangles"] if planar else triangles
     seated = adapt_rigid_relocation_task_template(configured_revision=revision, materialized_references=references,
-                                                  support_surface=triangle_support_surface(physics))
+                                                  support_surface=triangle_support_surface(physics),
+                                                  accept_simulator_not_run=accept_simulator_not_run)
     definition = seated["native_task_definition"]
     alignment = definition["task_spec"]["interaction_affordance"]["support_alignment"]
     reading: dict[str, Any] = {"status": "measured_on_scene_collider", "start": alignment.get("start_support"),
@@ -891,8 +895,16 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            keep_assumed_thresholds: bool = False,
                            movable_furniture: Mapping[str, Any] | None = None,
                            robot_access_scope: Mapping[str, Any] | None = None,
-                           robot_access_offer: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                           robot_access_offer: Mapping[str, Any] | None = None,
+                           package_only: bool = False) -> dict[str, Any]:
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
+
+    ``package_only`` is the website worker's (owner decision 2026-11-15): Blueprint builds the deployment
+    companies' scene package and runs no test on it. A refusal whose every code means only that there is no place
+    for, or no parts of, the idle arm (``team_scene_robot_absent.robot_only_reason``) writes the half without the
+    arm and records why (``robot_station_absent``); the record says no paid robot-free probe is queued for the half
+    (``robot_free_probe: "not_queued"``); and it is the only compile that reads a stage 5 that ran no simulator
+    (the adapter's ``accept_simulator_not_run``). Where the arm can be placed it is placed as before.
 
     Each of ``embodiment_manifests`` (registered team bodies) also gets its own station on the same scene
     (``_embodiment_stations``); without any, the record is exactly the Franka-only one. A body whose
@@ -950,7 +962,18 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     if (bundle.is_symlink() or not bundle.is_file() or bundle.stat().st_size != declared.get("size_bytes")
             or _sha256(bundle) != declared.get("digest")):
         raise TeamScenePacketError("team_scene_configured_bundle_binding_invalid")
-    profile = _droid_profile(Path(droid_profile_path), droid_profile_digest)
+    from . import team_scene_robot_absent as robot_absent
+
+    try:
+        profile: dict[str, Any] | None = _droid_profile(Path(droid_profile_path), droid_profile_digest)
+        profile_refusal: TeamScenePacketError | None = None
+    except TeamScenePacketError as exc:
+        # A job with its own destination object reads its execution binding from the profile too (a scene input,
+        # ``rigid_destination_task_binding``): for it the profile is never the arm's alone.
+        if (not package_only or destination_declaration is not None
+                or robot_absent.robot_only_reason(exc) is None):
+            raise
+        profile, profile_refusal = None, exc
     runtime_source = _runtime_source(Path(runtime_source_receipt_path))
     root.mkdir(parents=True, mode=0o750)
 
@@ -979,7 +1002,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     else:
         adapter, seating, support = _seated_rigid_adapter(
             revision=revision, references=references, collision=collision,
-            staged_destination=destination_declaration is not None)
+            staged_destination=destination_declaration is not None,
+            # The package's only caller that reads a stage 5 that ran no simulator (the adapter refuses it otherwise).
+            accept_simulator_not_run=package_only)
         definition = adapter["native_task_definition"]
         task_spec = compiler._runtime_subject_task_spec(definition["task_spec"])
         task_spec["success_criteria"] = adapter["native_success_criteria"].get("criteria")
@@ -1063,111 +1088,140 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             "object_type": "RIGID", "pose_world": destination_asset["pose_world"],
             "reset_state": {"root_pose_world": destination_asset["pose_world"], "joint_positions": {}}})
 
-    # The station: a mount level with the task's support, on the closest clear floor facing the task,
-    # out of a moving part's way. A rigid pick and place is measured from every clear stance: it takes the
-    # first with the task's contact in reach that the scripted carry clears from, else the one in reach whose
-    # contact is nearest, the miss flagged (``_carrying_station``), as the bundle's gate will measure it. The pedestal keeps the arm's own
-    # margin from the room and the object (``PEDESTAL_SEARCH``), and a rigid task's stances rank by the
-    # farther of its start and target, a footprint apart, so the carry is tried from several spots.
-    whole_region = not articulated and destination_support is not None
-    carry = not articulated and task_spec.get("manipulation_strategy") == "pick_and_place"
-    from .scene_physics_preflight import collision_kept_loaded
-    from .team_embodiment_stance import EVERY_CLEAR_STANCE, PEDESTAL_SEARCH
+    # Everything above is the scene's own. The arm's part below may be absent on a website compile, by name.
+    scene_rows, absent = list(rows), None
+    try:
+        if profile is None:
+            raise profile_refusal or TeamScenePacketError("team_scene_droid_profile_invalid")
+        # The station: a mount level with the task's support, on the closest clear floor facing the task,
+        # out of a moving part's way. A rigid pick and place is measured from every clear stance: it takes the
+        # first with the task's contact in reach that the scripted carry clears from, else the one in reach whose
+        # contact is nearest, the miss flagged (``_carrying_station``), as the bundle's gate will measure it. The pedestal keeps the arm's own
+        # margin from the room and the object (``PEDESTAL_SEARCH``), and a rigid task's stances rank by the
+        # farther of its start and target, a footprint apart, so the carry is tried from several spots.
+        whole_region = not articulated and destination_support is not None
+        carry = not articulated and task_spec.get("manipulation_strategy") == "pick_and_place"
+        from .scene_physics_preflight import collision_kept_loaded
+        from .team_embodiment_stance import EVERY_CLEAR_STANCE, PEDESTAL_SEARCH
 
-    # Every search below reads the collider's one binary copy, and the packet steps after them. The hold
-    # keeps one parse should no copy be made.
-    # The scene's own movable furniture, named to the Franka's search only for a carry (it is only reported).
-    named, refused = [], []
-    if carry and movable_furniture is not None and movable_furniture.get("status") == "measured":
-        from .robot_access_furniture import eligible_obstacles, search_obstacles
+        # Every search below reads the collider's one binary copy, and the packet steps after them. The hold
+        # keeps one parse should no copy be made.
+        # The scene's own movable furniture, named to the Franka's search only for a carry (it is only reported).
+        named, refused = [], []
+        if carry and movable_furniture is not None and movable_furniture.get("status") == "measured":
+            from .robot_access_furniture import eligible_obstacles, search_obstacles
 
-        documents_in = adapter["source_documents"]["documents"]
-        named, refused = eligible_obstacles(movable_furniture.get("record"), supports=[
-            row for row in (documents_in.get("support_plane"), destination_support) if isinstance(row, Mapping)])
-    access: dict[str, Any] | None = None
-    with collision_kept_loaded(collision):
-        try:
-            place = dict(
-                collision_path=collision, collision_sha256=_sha256(physics_collision), offset=[0.0, 0.0, 0.0],
-                subject_center=stance_center if whole_region else start,
-                subject_minimum=[float(v) for v in subject_bounds[0]],
-                subject_maximum=[float(v) for v in subject_bounds[1]],
-                footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
-                task_motion=motion, **PEDESTAL_SEARCH,
-                **({} if articulated else {"task_points_world_m": [start, target]}))
-            station = ground_stance(**place, ranked=EVERY_CLEAR_STANCE if carry else 0,
-                                    **({"movable_obstacles": search_obstacles(named)} if named else {}))
-        except TeamEmbodimentError as exc:
-            # A ValueError itself: caught first, so a named stance refusal keeps its own reason.
-            raise TeamScenePacketError(",".join(exc.blockers) or "team_scene_station_inputs_invalid") from exc
-        except (KeyError, TypeError, ValueError) as exc:
-            raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
-        ranked_stances = station if carry else None
-        station, station_search = (_carrying_station(station, task_spec=task_spec, collision=collision,
-                                                     profile=profile) if carry else (station, None))
-        # Moving furniture is proposed only when no clear stance has the task's contact in reach;
-        # a scripted carry miss with the object in reach is a flag, and the half goes on.
-        if (carry and station_search is not None and not station_search["cleared"]
-                and not station_search.get("stances_in_reach") and movable_furniture is not None):
-            access = _robot_access_proposal(
-                movable_furniture, stances=ranked_stances, carry=station_search, named=named, refused=refused,
-                subject_center=place["subject_center"], task_spec=task_spec, support_top=support_top,
-                revision=revision, collision_sha256=place["collision_sha256"], task_id=task_id,
-                support_label=str(adapter["source_documents"]["documents"]["support_plane"].get("publisher_label")
-                                  or ""), scope=robot_access_scope, offer=robot_access_offer)
-            if access["status"] == "proposed" and robot_access_scope is not None:
-                applied = _robot_access_applied(
-                    access, scope=robot_access_scope, physics_collision=physics_collision, root=root, place=place,
-                    floor_z=float(station["floor_z_m"]), station=station, task_spec=task_spec, profile=profile,
-                    support=support, adapter=adapter, start=start, target=target, support_top=support_top)
-                if applied is not None:
-                    access, derived_access = applied["record"], applied["collider"]
-                    if applied["station"] is not None:
-                        physics_collision = collision = derived_access
-                        place, station, station_search = applied["place"], applied["station"], applied["search"]
-                        rows[1] = compiler.evidence_asset_row(physics_collision, root=root,
-                                                              semantic_role="scene_collision")
-        stations: dict[str, dict[str, Any]] = {}
-        ranked: dict[str, list[dict[str, Any]]] = {}
-        if embodiment_manifests:
-            # The object a tool holds: a rigid carry's own extent, or an articulated part's handle (its joint's kind).
-            joints = (task_spec.get("articulation_graph") or {}).get("joints") or []
-            grasp = None if not (carry or articulated) else {
-                "dimensions_m": [float(b) - float(a) for a, b in zip(*object_bounds, strict=True)],
-                "joint_type": next((str(row.get("joint_type")) for row in joints if row.get("role") == "target"),
-                                   "unknown") if articulated else None}
-            stations = _embodiment_stations(embodiment_manifests, place=place, points=[start, target], grasp=grasp,
-                                            ranked=ranked)
-    base = {"position_world_m": station["position_world_m"], "orientation_xyzw": station["orientation_xyzw"]}
-    request: dict[str, Any] = {
-        "schema_version": "native_task_arena_packet_request.v1", "scene_id": scene_id, "task_id": task_id,
-        "task_spec": task_spec, "task_joint_bindings": definition.get("task_joint_bindings") or [],
-        "task_state_binding": state_binding,
-        **({"articulated_kinematic_path_receipt": task["kinematic_path"]} if articulated else {}),
-        "assets": rows, "robot_base_pose_world": base,
-        "robot_joint_reset_positions_rad": dict(profile["robot_joint_reset_positions_rad"]),
-        "cameras": _cameras(profile, base=station["position_world_m"], start=start, target=target,
-                            whole_region=whole_region),
-        "scenario": adapter["native_episode_execution"].get("scenario"),
-        "physics_frequency_hz": adapter["native_episode_execution"].get("physics_frequency_hz"),
-        "configured_task_template_adapter": adapter,
-        "appearance_variant": compiler.packet_appearance_variant(appearance), "request_digest": ""}
-    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
-    packet = root / PACKET_DIRECTORY
-    materialize_native_task_arena_packet(request=request, evidence_root=root, output_dir=packet,
-                                         link_sources_within=root)
-    exterior_right, placement = _exterior_right(packet, base=base, aim=start)
-    camera_layout: dict[str, Any] = {"exterior_right": placement}
-    if exterior_right is not None:
-        packet_field = "measured_on_packet" if placement["status"] in {"placed", "limited"} else "estimated_from_packet"
-        camera_layout[packet_field] = _record(packet / "native_task_arena_packet_receipt.v1.json")
-        request = {**request, "cameras": [*request["cameras"], exterior_right], "request_digest": ""}
+            documents_in = adapter["source_documents"]["documents"]
+            named, refused = eligible_obstacles(movable_furniture.get("record"), supports=[
+                row for row in (documents_in.get("support_plane"), destination_support) if isinstance(row, Mapping)])
+        access: dict[str, Any] | None = None
+        with collision_kept_loaded(collision):
+            try:
+                place = dict(
+                    collision_path=collision, collision_sha256=_sha256(physics_collision), offset=[0.0, 0.0, 0.0],
+                    subject_center=stance_center if whole_region else start,
+                    subject_minimum=[float(v) for v in subject_bounds[0]],
+                    subject_maximum=[float(v) for v in subject_bounds[1]],
+                    footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
+                    task_motion=motion, **PEDESTAL_SEARCH,
+                    **({} if articulated else {"task_points_world_m": [start, target]}))
+                station = ground_stance(**place, ranked=EVERY_CLEAR_STANCE if carry else 0,
+                                        **({"movable_obstacles": search_obstacles(named)} if named else {}))
+            except TeamEmbodimentError as exc:
+                # A ValueError itself: caught first, so a named stance refusal keeps its own reason.
+                raise TeamScenePacketError(",".join(exc.blockers) or "team_scene_station_inputs_invalid") from exc
+            except (KeyError, TypeError, ValueError) as exc:
+                raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
+            ranked_stances = station if carry else None
+            station, station_search = (_carrying_station(station, task_spec=task_spec, collision=collision,
+                                                         profile=profile) if carry else (station, None))
+            # Moving furniture is proposed only when no clear stance has the task's contact in reach;
+            # a scripted carry miss with the object in reach is a flag, and the half goes on.
+            if (carry and station_search is not None and not station_search["cleared"]
+                    and not station_search.get("stances_in_reach") and movable_furniture is not None):
+                access = _robot_access_proposal(
+                    movable_furniture, stances=ranked_stances, carry=station_search, named=named, refused=refused,
+                    subject_center=place["subject_center"], task_spec=task_spec, support_top=support_top,
+                    revision=revision, collision_sha256=place["collision_sha256"], task_id=task_id,
+                    support_label=str(adapter["source_documents"]["documents"]["support_plane"].get("publisher_label")
+                                      or ""), scope=robot_access_scope, offer=robot_access_offer)
+                if access["status"] == "proposed" and robot_access_scope is not None:
+                    applied = _robot_access_applied(
+                        access, scope=robot_access_scope, physics_collision=physics_collision, root=root, place=place,
+                        floor_z=float(station["floor_z_m"]), station=station, task_spec=task_spec, profile=profile,
+                        support=support, adapter=adapter, start=start, target=target, support_top=support_top)
+                    if applied is not None:
+                        access, derived_access = applied["record"], applied["collider"]
+                        if applied["station"] is not None:
+                            physics_collision = collision = derived_access
+                            place, station, station_search = applied["place"], applied["station"], applied["search"]
+                            rows[1] = compiler.evidence_asset_row(physics_collision, root=root,
+                                                                  semantic_role="scene_collision")
+            stations: dict[str, dict[str, Any]] = {}
+            ranked: dict[str, list[dict[str, Any]]] = {}
+            if embodiment_manifests:
+                # The object a tool holds: a rigid carry's own extent, or an articulated part's handle (its joint's kind).
+                joints = (task_spec.get("articulation_graph") or {}).get("joints") or []
+                grasp = None if not (carry or articulated) else {
+                    "dimensions_m": [float(b) - float(a) for a, b in zip(*object_bounds, strict=True)],
+                    "joint_type": next((str(row.get("joint_type")) for row in joints if row.get("role") == "target"),
+                                       "unknown") if articulated else None}
+                stations = _embodiment_stations(embodiment_manifests, place=place, points=[start, target], grasp=grasp,
+                                                ranked=ranked)
+        base = {"position_world_m": station["position_world_m"], "orientation_xyzw": station["orientation_xyzw"]}
+        request: dict[str, Any] = {
+            "schema_version": "native_task_arena_packet_request.v1", "scene_id": scene_id, "task_id": task_id,
+            "task_spec": task_spec, "task_joint_bindings": definition.get("task_joint_bindings") or [],
+            "task_state_binding": state_binding,
+            **({"articulated_kinematic_path_receipt": task["kinematic_path"]} if articulated else {}),
+            "assets": rows, "robot_base_pose_world": base,
+            "robot_joint_reset_positions_rad": dict(profile["robot_joint_reset_positions_rad"]),
+            "cameras": _cameras(profile, base=station["position_world_m"], start=start, target=target,
+                                whole_region=whole_region),
+            "scenario": adapter["native_episode_execution"].get("scenario"),
+            "physics_frequency_hz": adapter["native_episode_execution"].get("physics_frequency_hz"),
+            "configured_task_template_adapter": adapter,
+            "appearance_variant": compiler.packet_appearance_variant(appearance), "request_digest": ""}
         request["request_digest"] = canonical_digest(request, digest_field="request_digest")
-        packet = root / THREE_VIEW_PACKET_DIRECTORY
+        packet = root / PACKET_DIRECTORY
         materialize_native_task_arena_packet(request=request, evidence_root=root, output_dir=packet,
                                              link_sources_within=root)
-    plan = _read(packet / "native_task_arena_scene_plan.v1.json", "team_scene_packet_invalid")
-    receipt = packet / "native_task_arena_packet_receipt.v1.json"
+        exterior_right, placement = _exterior_right(packet, base=base, aim=start)
+        camera_layout: dict[str, Any] = {"exterior_right": placement}
+        if exterior_right is not None:
+            packet_field = "measured_on_packet" if placement["status"] in {"placed", "limited"} else "estimated_from_packet"
+            camera_layout[packet_field] = _record(packet / "native_task_arena_packet_receipt.v1.json")
+            request = {**request, "cameras": [*request["cameras"], exterior_right], "request_digest": ""}
+            request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+            packet = root / THREE_VIEW_PACKET_DIRECTORY
+            materialize_native_task_arena_packet(request=request, evidence_root=root, output_dir=packet,
+                                                 link_sources_within=root)
+    except ValueError as exc:  # every typed refusal below is one; only the arm's own codes are let through
+        if package_only and isinstance(exc.__cause__, OSError):
+            # A full disk or a passing write failure is the host's, never a final half without the arm: it
+            # raises as the operating-system error it is, and the worker retries it (``transient_cause``).
+            raise exc.__cause__ from exc
+        reason = robot_absent.robot_only_reason(exc) if package_only else None
+        if reason is None:
+            raise
+        # Only the arm's part failed: the scene is written without it, and nothing is put in its place.
+        for partial in (root / PACKET_DIRECTORY, root / THREE_VIEW_PACKET_DIRECTORY):
+            shutil.rmtree(partial, ignore_errors=True)
+        station, station_search, camera_layout, stations, access = None, None, {}, {}, None
+        stage_5, stage_4 = robot_absent.stage_records(adapter)
+        absent = {"reason": reason, "robot_included": False, "paid_step_started": False,
+                  # The look file failed its quality gate: it ships as it is, and the package says so.
+                  **({"appearance_quality": "not_passed"}
+                     if robot_absent.APPEARANCE_QUALITY in reason.split(",") else {})}
+        scene = robot_absent.materialize_scene_package(
+            assets=scene_rows, task_spec=task_spec, scene_id=scene_id, task_id=task_id,
+            physics_frequency_hz=adapter["native_episode_execution"].get("physics_frequency_hz"),
+            evidence_root=root, output_dir=root / robot_absent.DIRECTORY, reason=reason,
+            representation=appearance.get("representation"), stage_5_record=stage_5, stage_4_record=stage_4)
+        plan, receipt = scene["plan"], scene["receipt"]
+    else:
+        plan = _read(packet / "native_task_arena_scene_plan.v1.json", "team_scene_packet_invalid")
+        receipt = packet / "native_task_arena_packet_receipt.v1.json"
     task_kind = "articulated_open_close" if articulated else "rigid_pick_place"
     if stations and embodiment_models:
         from .team_embodiment import validate_embodiment_manifest
@@ -1206,7 +1260,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         "scene_revision_digest": revision["revision_digest"],
         "configuration_digest": canonical_digest({"scene_revision_digest": revision["revision_digest"],
                                                   "packet": packet_record["sha256"],
-                                                  "station": station["stance_digest"]}),
+                                                  "station": station["stance_digest"] if station else None}),
         "plan_digest": plan["plan_digest"], "task_success_contract": contract,
         "task_success_contract_digest": contract["contract_digest"],
         "base_native_packet": packet_record, "runtime_source": runtime_source, "construction_result": packet_record,
@@ -1218,6 +1272,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         **({"embodiment_stations": stations} if stations else {}),
         **({"robot_access_removal": access} if access is not None else {}),
         **({assumption.FIELD: assumed} if assumed is not None else {}),
+        **({robot_absent.FIELD: absent} if absent is not None else {}),
+        **({robot_absent.PROBE_FIELD: robot_absent.PROBE_NOT_QUEUED}
+           if package_only else {}),
         "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
     path = root / RECORD_FILENAME
@@ -1227,6 +1284,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             "robot_station": station,
             **({"owner_success_confirmation": confirmation} if confirmation is not None else {}),
             **({assumption.FIELD: assumed} if assumed is not None else {}),
+            **({robot_absent.FIELD: dict(absent)} if absent is not None else {}),
             **({"robot_access_removal": {key: access[key] for key in ("status", "reason", "confirmation_digest",
                                                                       "binding_digest") if key in access}}
                if access is not None else {})}
@@ -1336,6 +1394,7 @@ def record_team_scene(compiled: Mapping[str, Any], *, run_root: str | Path, capt
     """
 
     from .team_candidate_quick10_registry import write_derived_profile
+    from .team_scene_robot_absent import half_queues_no_probe
 
     descriptor = _read(Path(capture_root) / "capture_descriptor.json", "team_scene_capture_descriptor_invalid")
     written = write_derived_profile({
@@ -1344,7 +1403,10 @@ def record_team_scene(compiled: Mapping[str, Any], *, run_root: str | Path, capt
         "robot_free_probe_root": str(Path(run_root).resolve()),
         "scene_revision_digest": scene_revision_digest, "team_scene_inputs_path": compiled["path"]})
     probe = {"status": "profile_not_written", "queued": False}
-    if written.get("status") == "written":
+    if written.get("status") == "written" and half_queues_no_probe(compiled["path"]):
+        # Its sealed record says no paid probe is queued for it (``materialize_team_scene``, owner 2026-11-15).
+        probe = {"status": "not_queued", "queued": False}
+    elif written.get("status") == "written":
         from .rigid_robot_free_probe_runner import enqueue_rigid_robot_free_probe
 
         probe = enqueue_rigid_robot_free_probe(capture_root)

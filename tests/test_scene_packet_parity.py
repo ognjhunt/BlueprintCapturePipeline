@@ -154,7 +154,8 @@ def _compare_case_a(tmp_path: Path, old: dict[str, Any], result: dict[str, Any],
     assert _plan_fields(new_plan) == _plan_fields(old_plan)
     # O3: the same contract, support pad and seating.
     assert _record_fields(status["team_scene_inputs_path"]) == _record_fields(old_status["team_scene_inputs_path"])
-    # Intended difference 1: the old plan carries no success rule, so the download refused it; the new one does.
+    # Intended difference 1: the old plan carries no success rule; the new one does. (The download now reads the old
+    # half's rule from its sealed record, ``website_company_simulation._with_sealed_rule``.)
     assert "task_success_contract" not in old_plan["task_spec"]
     contract = _json(status["team_scene_inputs_path"])["task_success_contract"]
     assert new_plan["task_spec"]["task_success_contract"] == contract
@@ -167,12 +168,13 @@ def _compare_case_a(tmp_path: Path, old: dict[str, Any], result: dict[str, Any],
     if probe is not None:
         assert probe["scene_plan"]["robot"]["robot_id"] == "franka_panda"
         assert probe["task_success_contract_digest"] == contract["contract_digest"]
-    # The download: refused for the old half, published for the new one, with the criteria in its rule.
-    refused, _, _ = _download(tmp_path / "dl-old", old_status["team_scene_inputs_path"])
-    assert refused["status"] != "published"
+    # The download: published for both halves, with the same criteria in their rule (the old one's from its record).
+    old_published, old_rule, _ = _download(tmp_path / "dl-old", old_status["team_scene_inputs_path"])
+    assert old_published["status"] == "published", old_published
     published, rule, names = _download(tmp_path / "dl-new", status["team_scene_inputs_path"])
     assert published["status"] == "published", published
     assert rule["criteria"] and "success_rule.json" in names
+    assert old_rule["criteria"] == rule["criteria"]
 
 
 
@@ -257,10 +259,11 @@ def test_case_c_an_articulated_job_carries_its_success_rule_in_the_plan_and_is_p
             for row in _plan_fields(new_plan)["objects"]] == unchanged
     assert {**_plan_fields(new_plan), "objects": None} == {**_plan_fields(old_plan), "objects": None}
     # The plan states no lift direction; the room's files declare Z, so the real download publishes the new half
-    # with the open/close goal in its success rule. The old half still has no rule in its plan, so it is refused.
+    # with the open/close goal in its success rule. The old half's rule is read from its record now, and the old
+    # object file's documentation names the host file it was flattened from, so the scan refuses it.
     assert "lift_unit_world" not in new_plan["task_spec"]["interaction_affordance"]
     refused, _, _ = _download(tmp_path / "dl-old", old["path"])
-    assert refused["status"] == "refused" and refused["reason"] == "website_company_simulation_success_rule_missing"
+    assert refused["status"] == "refused" and refused["reason"] == "website_company_simulation_file_names_the_site"
     result, rule, names = _download(tmp_path / "dl-new", compiled["path"])
     assert result["status"] == "published", result
     assert rule["up_axis"] == "Z" and rule["units"] == "metres, radians, seconds"
