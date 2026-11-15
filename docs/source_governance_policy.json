@@ -4,9 +4,6 @@
     "src/blueprint_pipeline/adp009d_control_episode.py": [
       "tests/test_adp009d_control_episode.py"
     ],
-    "src/blueprint_pipeline/adp009d_isaac_runtime.py": [
-      "tests/test_adp009d_hold_trace_wiring.py"
-    ],
     "src/blueprint_pipeline/adp009d_physics_backend_comparison.py": [
       "tests/test_adp009d_physics_backend_comparison.py"
     ],
@@ -123,7 +120,6 @@
   ],
   "grandfathered_module_line_limits": {
     "src/blueprint_pipeline/adp009d_control_episode.py": 3352,
-    "src/blueprint_pipeline/adp009d_isaac_runtime.py": 4647,
     "src/blueprint_pipeline/adp009d_physics_backend_comparison.py": 2041,
     "src/blueprint_pipeline/adp_task_scoring.py": 2130,
     "src/blueprint_pipeline/adp_content_agents_vast.py": 2800,

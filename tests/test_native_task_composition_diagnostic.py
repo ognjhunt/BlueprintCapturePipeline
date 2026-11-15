@@ -11,7 +11,6 @@ from pxr import Tf, Usd, UsdGeom, UsdLux, UsdPhysics
 
 from blueprint_pipeline import native_task_composition_diagnostic as diagnostic
 from blueprint_pipeline import native_task_composition_worker as worker
-from blueprint_pipeline import adp009d_isaac_runtime as aov
 from tests.native_task_pinned_clock_fixture import PinnedSimulationClock
 
 
@@ -40,7 +39,7 @@ def native(tmp_path, monkeypatch):
     before_layer = stage.GetRootLayer().ExportToString()
     config = {'/rtx/rendermode': 'RayTracedLighting'}
     monkeypatch.setitem(sys.modules, 'carb', NS(settings=NS(get_settings=lambda: NS(get=config.get))))
-    monkeypatch.setattr(aov, '_camera_prim_diagnostics', lambda _: {'fixture_native_camera': True})
+    monkeypatch.setattr(worker, '_camera_prim_diagnostics', lambda _: {'fixture_native_camera': True})
     pose = torch.tensor([[0., 0., 0., 0., 0., 0., 1.]])
     data = NS(output={}, info={'semantic_segmentation': {'idToLabels': {'7': {'class': 'task_support'}, '9': {'class': 'scene_appearance'}}}},
         intrinsic_matrices=torch.tensor([[[10.,0.,5.5],[0.,10.,3.5],[0.,0.,1.]]]),
@@ -363,17 +362,10 @@ def test_fresh_output_required_so_prior_native_evidence_cannot_be_overwritten(na
 
 def test_composition_payload_has_complete_import_closure_without_loading_policy(tmp_path):
     import subprocess
-    import shutil
     from pathlib import Path
-    from blueprint_pipeline.native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
-    package=tmp_path/'blueprint_pipeline'
-    package.mkdir()
-    (package/'__init__.py').write_text('')
-    for name in POLICY_RUNTIME_MODULE_NAMES:
-        source = Path(worker.__file__).parent / name
-        shutil.copyfile(source,package/source.name)
-    probe="import sys; sys.path.insert(0, sys.argv[1]); import blueprint_pipeline.native_task_composition_worker; from blueprint_pipeline.adp009d_isaac_runtime import _save_camera; assert not any('groot_n17' in k for k in sys.modules)"
-    result=subprocess.run([sys.executable,'-I','-c',probe,str(tmp_path)],capture_output=True,text=True,timeout=30)
+    source_root = Path(worker.__file__).resolve().parents[1]
+    probe="import sys; sys.path.insert(0, sys.argv[1]); import blueprint_pipeline.native_task_composition_worker as w; assert callable(w._save_camera); assert not any('groot_n17' in k or 'policy_episode' in k for k in sys.modules)"
+    result=subprocess.run([sys.executable,'-I','-c',probe,str(source_root)],capture_output=True,text=True,timeout=60)
     assert result.returncode==0,result.stderr
     assert Path(worker.__file__).name=='native_task_composition_worker.py'
 

@@ -511,30 +511,6 @@ def test_internal_canary_uses_the_registry_bound_embodiment_and_candidate_pair()
     )
 
 
-def test_activation_materializes_ten_existing_paired_campaign_units() -> None:
-    from blueprint_pipeline.native_task_arena_policy_campaign import MEMBER_IDS
-
-    assert FROZEN_CANDIDATE_IDS == tuple(MEMBER_IDS)
-    setup_value = setup()
-    config = configuration(setup_value)
-    plan = build_policy_run_plan(config, setup=setup_value)
-
-    activation = build_policy_campaign_activation_manifest(
-        configuration=config,
-        plan=plan,
-        controls_qualification=controls_qualification(config, plan),
-    )
-
-    assert activation["campaign_unit_count"] == 10
-    assert all(
-        unit["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
-        and unit["runtime_contract"] == "native_task_arena_policy_campaign.v1"
-        and unit["provider_allocation_authorized"] is False
-        for unit in activation["campaign_units"]
-    )
-    assert activation["paid_execution_requested"] is False
-
-
 def test_fail_without_fix_activation_rejects_missing_scored_cell_controls() -> None:
     """The former single-controls predecessor could not prove all ten cells."""
 

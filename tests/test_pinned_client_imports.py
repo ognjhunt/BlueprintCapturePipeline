@@ -18,7 +18,6 @@ import zipfile
 
 import pytest
 
-from blueprint_pipeline import openwam_piper_client_dependencies as openwam_client
 
 PINNED = ("websockets", "msgpack", "openpi_client", "typing_extensions")
 
@@ -103,20 +102,4 @@ def _host_websockets_12(tmp_path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(code)
     return root
-
-
-def test_openwam_client_wins_over_a_host_importer_that_ignores_sys_path(tmp_path, monkeypatch, isolated_imports):
-    row = _install(tmp_path, wheels="openwam_client_wheels", target="openwam_client", only_websockets=True)
-    sys.meta_path.insert(0, HostFastImporter(_host_websockets_12(tmp_path)))
-    monkeypatch.setattr(openwam_client, "verified_dependency_manifest", lambda path: {"thin_client_wheels": [row]})
-
-    openwam_client.activate_client_dependencies(tmp_path)
-
-    import websockets.sync.client
-    assert websockets.__version__ == "16.0"
-    assert Path(websockets.__file__).resolve().parent == (tmp_path / "openwam_client/websockets").resolve()
-    # OpenWAM pins only websockets; the host keeps its own copies of the rest.
-    import msgpack
-    assert Path(msgpack.__file__).resolve().is_relative_to(tmp_path / "isaac-sim")
-
 

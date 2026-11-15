@@ -55,7 +55,6 @@ LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS = {
     "build_content_agents_live_profile.py": "content_addressed_full_readback",
     "build_gaussian_excision_live_profile.py": "content_addressed_full_readback",
     "build_joint_agent_live_profile.py": "content_addressed_full_readback",
-    "build_native_task_arena_live_profile.py": "content_addressed_full_readback",
     "build_retained_scene_render_live_profile.py": "content_addressed_full_readback",
     "build_sam31_source_tracks_live_profile.py": "content_addressed_full_readback",
     "build_semantic_teacher_image_edit_live_profile.py": "content_addressed_full_readback",

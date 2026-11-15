@@ -280,21 +280,6 @@ def test_v89_camera_orientation_was_unreachable_but_task_orientation_is_reachabl
     assert math.dist(task_body, robot_base) < 0.855
 
 
-def test_runtime_applies_the_preregistered_task_orientation_before_native_ik() -> None:
-    from blueprint_pipeline import adp009d_isaac_runtime as runtime
-
-    source = Path(runtime.__file__).read_text(encoding="utf-8")
-    callback = source[source.index("def _scripted_pose_action_callback") :]
-    assert "scripted_control_task_orientation_missing" in callback
-    assert "target_body_quaternion_world_xyzw=(" in callback
-    assert "target_quaternion_world_xyzw" in callback
-    assert "semantic_finger_tool_midpoint_world_m(" in callback
-    assert '"raw_finger_body_midpoint_world_m"' in callback
-    assert "grasp_frame_target_for_task_space_strategy(" in callback
-    assert "task_space_translation_strategy" in callback
-    assert "CONTROL_PLAN_FILENAME" in callback
-
-
 class _Tensor(list):
     """Enough of a tensor for the adapter's indexing, without torch."""
 
@@ -1452,7 +1437,6 @@ def test_the_adapter_satisfies_the_episode_loop_seam() -> None:
 def test_module_imports_without_isaac_or_torch() -> None:
     """It must stay testable off-GPU, so simulator imports live inside methods."""
 
-    from pathlib import Path
 
     from blueprint_pipeline import adp009d_isaac_episode_adapter as module
 

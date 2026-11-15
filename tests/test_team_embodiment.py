@@ -17,9 +17,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from blueprint_pipeline import (
-    episode_visual_evidence,
-)
 from blueprint_pipeline.adp009d_task_scoring import SUPPORT_PLANE_Z_M
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_runtime import camera_runtime_parameters
@@ -31,11 +28,6 @@ from blueprint_pipeline.team_embodiment import (
     team_embodiment_binding,
     validate_embodiment_manifest,
     verify_model_file,
-)
-from blueprint_pipeline.team_policy_https_client import (
-    METADATA_SCHEMA,
-    TeamPolicyHttpsClient,
-    TeamPolicySpec,
 )
 
 ARM = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint"]
@@ -295,41 +287,6 @@ def test_an_arm_that_cannot_be_evaluated_is_refused_by_name_before_any_gpu(tmp_p
         verify_model_file(declared, other)
 
 
-def test_the_team_service_gets_its_own_cameras_and_state_and_must_name_its_robot(tmp_path) -> None:
-    model = write_robot_usd(tmp_path / "acme_arm.usda")
-    declared = validate_embodiment_manifest(manifest(model))
-    spec = TeamPolicySpec(policy_id="acme-arm-pick", endpoint_url=ORIGIN + "/v1/act", metadata_url=ORIGIN + "/v1/act",
-                          allowed_origin=ORIGIN, model_identity_digest="sha256:" + "7" * 64,
-                          embodiment_id=declared["embodiment_id"], action_chunk_rows=4, open_loop_horizon=4,
-                          camera_names=["wrist_rgb", "scene_rgb"])
-    metadata = spec.expected_metadata()
-    seen: list[dict[str, Any]] = []
-
-    def transport(*, url: str, method: str, body: bytes | None, headers: dict[str, str]) -> bytes:
-        assert headers["Authorization"] == "Bearer team-token-0123456789"
-        if method == "GET":
-            return json.dumps(metadata).encode()
-        seen.append(json.loads(body))
-        return json.dumps({"actions": [[0.1, 0.2, 0.3, 1.0]] * 4}).encode()
-
-    client = TeamPolicyHttpsClient(spec=spec, bearer_token="team-token-0123456789", transport=transport)
-    image = np.zeros((240, 320, 3), dtype=np.uint8)
-    actions = client.infer({"images": {"wrist_rgb": image, "scene_rgb": image}, "prompt": "Put the mug on the tray",
-                            "state": {"joint_position": [0.0, 0.1, 0.2], "joint_velocity": [0.0, 0.0, 0.0],
-                                      "gripper_position": [0.0], "base": BASE_AT_REST}})
-    assert actions == [[0.1, 0.2, 0.3, 1.0]] * 4
-    request = seen[0]
-    assert (request["schema_version"], request["policy_interface_id"]) == (
-        "blueprint.policy_https_request.v1", "blueprint_policy_https.v1")
-    assert sorted(request["observation"]["images"]) == ["scene_rgb", "wrist_rgb"]
-    assert request["observation"]["state"] == {"joint_position": [0.0, 0.1, 0.2], "joint_velocity": [0.0, 0.0, 0.0],
-                                               "gripper_position": [0.0], "base": BASE_AT_REST}
-    assert metadata["schema_version"] == METADATA_SCHEMA
-    metadata = {**metadata, "embodiment_id": "some-other-robot"}  # served for some other robot
-    with pytest.raises(ValueError, match="identity_mismatch"):
-        client.preflight_readiness()
-
-
 class _Array:
     def __init__(self, value: Any):
         self.torch = np.asarray(value)
@@ -412,20 +369,6 @@ class _Policy:
     def infer(self, observation: dict[str, Any]) -> list[list[float]]:
         self.observations.append(observation)
         return self.chunks[min(len(self.observations), len(self.chunks)) - 1]
-
-
-def _team_loop(tmp_path, monkeypatch):
-    declared, sealed = binding(tmp_path)
-    plan = {**apply_team_embodiment(station_plan(), sealed), "scenario": {"seed": 7}}
-    built = type("Built", (), {"env": _Env(), "camera_scene_names": {
-        "team_camera_0": "team_camera_0", "team_camera_1": "team_camera_1", "overview": "external_camera_2"}})()
-    monkeypatch.setattr(episode_visual_evidence, "finalize_multicamera_visual_evidence",
-                        lambda **kwargs: ({"status": "complete"}, []))
-    spec = TeamPolicySpec(policy_id="acme-arm-pick", endpoint_url=ORIGIN + "/v1/act",
-                          metadata_url=ORIGIN + "/v1/metadata", allowed_origin=ORIGIN,
-                          model_identity_digest="sha256:" + "7" * 64, embodiment_id=declared["embodiment_id"],
-                          action_chunk_rows=4, open_loop_horizon=4, camera_names=["wrist_rgb", "scene_rgb"])
-    return built, plan, spec
 
 
 def wheeled_manifest(model: Path) -> dict[str, Any]:

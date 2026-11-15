@@ -16,7 +16,6 @@ from blueprint_pipeline.droid_https_policy_client import (
     DroidHttpsPolicySpec,
     DroidHttpsTeamPolicyClient,
 )
-from blueprint_pipeline.policy_interface_binding import observation_interface, resolve_policy_interface
 
 ORIGIN = "https://policy.acme-robotics.example"
 SPEC = DroidHttpsPolicySpec(policy_id="team-acme.pi05-ft-7", endpoint_url=ORIGIN + "/v1/act",
@@ -40,15 +39,6 @@ def _service(*, metadata: dict[str, Any] | None = None, response: Any = None):
         return json.dumps(value).encode() if not isinstance(value, bytes) else value
 
     return calls, transport
-
-
-def test_interface_registry_keeps_the_frozen_pair_on_its_pinned_servers() -> None:
-    assert resolve_policy_interface({"candidate_id": "pi05_droid"}) == "openpi_droid.v1"
-    assert resolve_policy_interface({"candidate_id": "groot_n17_droid"}) == "groot_n17_droid.v1"
-    with pytest.raises(ValueError, match="frozen_candidate_mismatch"):
-        resolve_policy_interface({"candidate_id": "pi05_droid", "policy_interface_id": "openpi_droid_https.v1"})
-    team = {"candidate_id": "team-acme.pi05-ft-7", "policy_interface_id": "openpi_droid_https.v1"}
-    assert observation_interface(team) == "pi05_droid"
 
 
 def test_a_query_returns_only_actions_and_retains_evidence_without_the_credential() -> None:

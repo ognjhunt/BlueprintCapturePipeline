@@ -49,37 +49,10 @@ RESULT_SCHEMA_BY_MODE = {
     "runtime_preflight": "native_task_arena_runtime_preflight.v1",
     "construction_canary": "native_task_arena_construction_result.v1",
     "controls": "native_task_arena_control_result.v1",
-    "policy": "native_task_arena_policy_result.v1",
-    "policy_diagnostic": "native_task_arena_policy_diagnostic_result.v1",
-    "controlled_policy": "controlled_native_policy_result.v1",
     "rigid_robot_free_probe": "rigid_robot_free_probe_result.v1",
 }
 # Beta L5's robot-free probe belongs to the free beta, not to Arm Decision Proof.
 PROGRAM_ID_BY_MODE = {"rigid_robot_free_probe": "blueprint-free-beta-evaluated-pilot"}
-POLICY_EXECUTION_AUTHORITY_BY_MODE = {
-    "policy": "qualified_controls_evaluation",
-    "policy_diagnostic": (
-        "development_only_unqualified_controls_canonical_diagnostic"
-    ),
-}
-POLICY_RUNTIME_ROOT_MODULE_NAMES = (
-    "policy_request_evidence.py",
-    "adp009d_checkpoint_fetch_worker.py",
-    "adp009d_gated_backbone.py",
-    "adp009d_groot_wire_wheels.py",
-    "adp009d_groot_worker_identity.py",
-    "adp009d_policy_server_worker.py",
-    "adp009d_provisioning_preflight.py",
-    "adp009d_policy_rights.py",
-    "decision_evidence_contracts.py",
-    "droid_policy_bridge.py",
-    "groot_n17_wire_client.py",
-    "groot_n17_droid_policy_runtime.py",
-    "openpi_droid_policy_runtime.py",
-)
-POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES = ("core/__init__.py", "core/common.py", "core/security_controls.py")
-
-
 class NativeTaskArenaBundleError(ValueError):
     """Stable packet/bundle failures before any provider mutation."""
 
@@ -652,16 +625,13 @@ def build_native_task_arena_bundle(
         "runtime_preflight",
         "construction_canary",
         "controls",
-        "policy",
-        "policy_diagnostic",
-        "controlled_policy",
         "rigid_robot_free_probe",
     }:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_execution_mode_invalid"]
         )
-    is_policy_mode = execution_mode in {"policy", "policy_diagnostic"}
-    if is_policy_mode is not bool(str(policy_candidate_id or "").strip()):
+    # No admitted mode runs a policy candidate; the policy modes are retired.
+    if str(policy_candidate_id or "").strip():
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_policy_binding_invalid"]
         )
@@ -876,10 +846,6 @@ def build_native_task_arena_bundle(
     if "native_task_official_nurec.py" in module_names:
         from .native_task_official_nurec import runtime_data_files
         extra_files.update(runtime_data_files())
-    if is_policy_mode:
-        package_source = Path(__file__).resolve().parent
-        extra_files.update({"blueprint_pipeline/" + name: package_source / name
-                            for name in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES})
     for relative_text, source_text in sorted(extra_files.items()):
         relative = PurePosixPath(relative_text)
         source = Path(source_text)
@@ -897,116 +863,6 @@ def build_native_task_arena_bundle(
             "size_bytes": destination.stat().st_size, "sha256": _sha256(destination)})
     policy_provisioning_script_name: str | None = None
     policy_provisioning_record: dict[str, Any] | None = None
-    policy_execution_spec_digest: str | None = None
-    policy_execution_authority: str | None = None
-    policy_rights_binding: dict[str, Any] | None = None
-    family_execution_binding: dict[str, Any] = {}
-    if is_policy_mode:
-        from .adp009d_policy_provisioning import (
-            CHECKPOINT_INVENTORY_STAGED_NAME,
-            POLICY_EXECUTION_SPEC_STAGED_NAME,
-            build_provisioning_script,
-        )
-
-        candidate = str(policy_candidate_id)
-        policy_provisioning_script_name = (
-            f"adp009d_policy_provisioning.{candidate}.sh"
-        )
-        provisioning_path = runtime / policy_provisioning_script_name
-        provisioning_path.write_text(
-            build_provisioning_script(candidate), encoding="utf-8"
-        )
-        provisioning_path.chmod(
-            provisioning_path.stat().st_mode
-            | stat.S_IXUSR
-            | stat.S_IXGRP
-            | stat.S_IXOTH
-        )
-        policy_provisioning_record = {
-            "relative_path": policy_provisioning_script_name,
-            "size_bytes": provisioning_path.stat().st_size,
-            "sha256": _sha256(provisioning_path),
-        }
-        package_source = Path(__file__).resolve().parent
-        for name in POLICY_RUNTIME_ROOT_MODULE_NAMES:
-            source = package_source / name
-            if not source.is_file():
-                raise NativeTaskArenaBundleError(
-                    [f"native_task_arena_policy_runtime_helper_missing:{name}"]
-                )
-            destination = runtime / name
-            shutil.copy2(source, destination)
-            runtime_root_rows.append(
-                {
-                    "relative_path": name,
-                    "size_bytes": destination.stat().st_size,
-                    "sha256": _sha256(destination),
-                }
-            )
-        inputs_by_name = {relative.name: source for relative, source in input_sources}
-        execution_spec_source = inputs_by_name.get(
-            "native_task_arena_policy_execution_spec.v1.json"
-        )
-        if execution_spec_source is None:
-            raise NativeTaskArenaBundleError(
-                ["native_task_arena_policy_execution_spec_staging_missing"]
-            )
-        try:
-            sealed_execution_spec = json.loads(
-                execution_spec_source.read_text(encoding="utf-8")
-            )
-            sealed_rights = sealed_execution_spec.get("candidate_rights_binding")
-        except (AttributeError, OSError, json.JSONDecodeError) as exc:
-            raise NativeTaskArenaBundleError(
-                ["native_task_arena_policy_execution_spec_staging_invalid"]
-            ) from exc
-        if (
-            not isinstance(sealed_execution_spec, dict)
-            or sealed_execution_spec.get("candidate_id") != candidate
-            or sealed_execution_spec.get("execution_spec_digest")
-            != canonical_digest(
-                sealed_execution_spec, digest_field="execution_spec_digest"
-            )
-            or sealed_execution_spec.get("execution_authority")
-            != POLICY_EXECUTION_AUTHORITY_BY_MODE[execution_mode]
-            or not isinstance(sealed_rights, Mapping)
-            or sealed_rights.get("rights_receipt_digest")
-            != canonical_digest(sealed_rights, digest_field="rights_receipt_digest")
-        ):
-            raise NativeTaskArenaBundleError(
-                ["native_task_arena_policy_execution_spec_staging_invalid"]
-            )
-        policy_execution_spec_digest = str(
-            sealed_execution_spec["execution_spec_digest"]
-        )
-        policy_execution_authority = str(
-            sealed_execution_spec["execution_authority"]
-        )
-        policy_rights_binding = json.loads(
-            json.dumps(sealed_rights, allow_nan=False)
-        )
-        if sealed_execution_spec.get("evaluation_backend") == "task_family_native.v1":
-            family_execution_binding = {
-                field: sealed_execution_spec.get(field)
-                for field in ("evaluation_backend", "native_runtime_contract_digest",
-                              "task_family_runtime_selection")
-            }
-        shutil.copy2(
-            execution_spec_source,
-            runtime / POLICY_EXECUTION_SPEC_STAGED_NAME,
-        )
-        if candidate == "pi05_droid":
-            inventory_source = inputs_by_name.get(
-                "openpi_polaris_checkpoint_inventory.json"
-            )
-            if inventory_source is None:
-                raise NativeTaskArenaBundleError(
-                    ["native_task_arena_openpi_checkpoint_inventory_staging_missing"]
-                )
-            shutil.copy2(
-                inventory_source,
-                runtime / CHECKPOINT_INVENTORY_STAGED_NAME,
-            )
     if runtime_source_receipt is not None:
         source_receipt_path = Path(runtime_source_packet_receipt).expanduser().resolve()
         source_packet_path = Path(runtime_source_receipt["verified_packet_path"])
@@ -1084,16 +940,6 @@ def build_native_task_arena_bundle(
         "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
         "expected_output_filename": str(expected_output_filename),
         "policy_candidate_id": policy_candidate_id,
-        **(
-            {
-                "policy_execution_spec_digest": policy_execution_spec_digest,
-                "policy_execution_authority": policy_execution_authority,
-                "policy_rights_binding": policy_rights_binding,
-                **family_execution_binding,
-            }
-            if is_policy_mode
-            else {}
-        ),
         "candidate_policy_queried": False,
         "candidate_outcomes_accessed": False,
         "packet_bytes_mutated": False,
@@ -1159,7 +1005,6 @@ def build_native_task_arena_bundle(
 __all__ = [
     "DEFAULT_EXPECTED_OUTPUT_FILENAME",
     "NativeTaskArenaBundleError",
-    "POLICY_RUNTIME_ROOT_MODULE_NAMES",
     "SCHEMA_VERSION",
     "build_native_task_arena_bundle",
     "digest_pinned_container_image",

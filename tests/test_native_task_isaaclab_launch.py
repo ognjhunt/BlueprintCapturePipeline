@@ -568,7 +568,6 @@ def test_every_arena_worker_launches_on_the_shared_device() -> None:
     from blueprint_pipeline import (
         native_task_arena_construction_worker,
         native_task_arena_controls_worker,
-        native_task_arena_policy_worker,
     )
     from blueprint_pipeline.native_task_isaaclab_launch import (
         NATIVE_TASK_ARENA_DEVICE,
@@ -578,7 +577,6 @@ def test_every_arena_worker_launches_on_the_shared_device() -> None:
     for module in (
         native_task_arena_construction_worker,
         native_task_arena_controls_worker,
-        native_task_arena_policy_worker,
     ):
         source = inspect.getsource(module)
         assert "launch_native_task_isaaclab(" in source
@@ -601,13 +599,11 @@ def test_no_arena_worker_hardcodes_a_device_literal() -> None:
     from blueprint_pipeline import (
         native_task_arena_construction_worker,
         native_task_arena_controls_worker,
-        native_task_arena_policy_worker,
     )
 
     for module in (
         native_task_arena_construction_worker,
         native_task_arena_controls_worker,
-        native_task_arena_policy_worker,
     ):
         source = inspect.getsource(module)
         assert '"cuda:0"' not in source, f"{module.__name__} hardcodes a device"
@@ -726,7 +722,6 @@ def test_every_arena_worker_derives_the_render_path_from_its_plan() -> None:
         native_task_arena_construction_worker,
         native_task_arena_control_sweep_worker,
         native_task_arena_controls_worker,
-        native_task_arena_policy_worker,
         native_task_arena_runtime_preflight_worker,
     )
 
@@ -734,7 +729,6 @@ def test_every_arena_worker_derives_the_render_path_from_its_plan() -> None:
         native_task_arena_construction_worker,
         native_task_arena_control_sweep_worker,
         native_task_arena_controls_worker,
-        native_task_arena_policy_worker,
         native_task_arena_runtime_preflight_worker,
     ):
         source = inspect.getsource(module)
