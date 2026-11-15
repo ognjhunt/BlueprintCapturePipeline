@@ -106,7 +106,7 @@ SCOPE_ARGUMENTS = ("owner_success_confirmation_scope", "robot_access_scope")
 # Read on the host and carried as data: ``movable_furniture`` by the host worker, ``robot_access_offer`` here.
 DATA_ARGUMENTS = ("movable_furniture", "robot_access_offer")
 # The website worker's own switches, carried only when set (``team_scene_packet_worker.WEBSITE_COMPILE``).
-FLAG_ARGUMENTS = ("assume_unconfirmed_standard_thresholds", "keep_assumed_thresholds")
+FLAG_ARGUMENTS = ("assume_unconfirmed_standard_thresholds", "keep_assumed_thresholds", "package_only")
 
 
 class TeamScenePacketRemoteError(RuntimeError):
@@ -781,7 +781,10 @@ def run_team_scene_packet_in_worker(descriptor: Mapping[str, Any], roots: Any) -
                        if made.get("owner_success_confirmation") else {}),
                     **({ASSUMPTION_FIELD: made[ASSUMPTION_FIELD]} if made.get(ASSUMPTION_FIELD) else {}),
                     **({"robot_access_removal": made["robot_access_removal"]}
-                       if made.get("robot_access_removal") else {})}
+                       if made.get("robot_access_removal") else {}),
+                    # Written without the idle arm, and why: the host's status says so on this route too.
+                    **({"robot_station_absent": made["robot_station_absent"]}
+                       if made.get("robot_station_absent") else {})}
     except Exception as exc:  # noqa: BLE001 - every refusal is a typed result, as the host worker types it
         blockers, error_type = [_remote_blocker(exc)], type(exc).__name__
     result = {"schema_version": RESULT_SCHEMA_VERSION, "status": "blocked" if blockers else COMPLETED,

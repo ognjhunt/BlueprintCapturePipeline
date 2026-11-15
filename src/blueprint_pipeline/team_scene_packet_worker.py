@@ -179,8 +179,11 @@ OWNER_CONTRACT_BLOCKER_PREFIX = "team_scene_owner_contract_invalid:"
 OWNER_CONFIRMATION_REQUEUE_FIELD = "owner_success_confirmation_requeued"
 # Every request this worker compiles is a website job's (``validated_request``). Its compile, and no operator's
 # or Arm Decision Proof's, scores a job whose site has not confirmed Blueprint's standard success thresholds on
-# those thresholds at once, and says so (``website_owner_success_assumption``).
-WEBSITE_COMPILE = {"assume_unconfirmed_standard_thresholds": True}
+# those thresholds at once, and says so (``website_owner_success_assumption``). Owner decision 2026-11-15: the half is
+# the deployment companies' scene package and Blueprint runs no robot, so a refusal that concerns only the idle arm
+# writes the half without it, and no paid robot-free probe is queued for the half: one flag, ``package_only``
+# (``team_scene_packet.materialize_team_scene``).
+WEBSITE_COMPILE = {"assume_unconfirmed_standard_thresholds": True, "package_only": True}
 # Any other deterministic refusal a new release may have fixed: each status names the release that wrote it,
 # each newly deployed release returns the refusal to pending once, and the status keeps the releases tried.
 RELEASE_COMMIT_FIELD = "release_commit"
@@ -1033,7 +1036,13 @@ def _compiled_status(attempt: Path, prepared: Mapping[str, Any], written: Mappin
             # Scored on Blueprint's standard thresholds, which the site has not confirmed.
             **({ASSUMPTION_FIELD: dict(prepared[ASSUMPTION_FIELD])} if prepared.get(ASSUMPTION_FIELD) else {}),
             **({"robot_access_removal": dict(prepared["robot_access_removal"])}
-               if prepared.get("robot_access_removal") else {})}
+               if prepared.get("robot_access_removal") else {}),
+            # Written without Blueprint's idle arm, and why (nothing was bought for it).
+            **({"robot_station_absent": dict(prepared["robot_station_absent"])}
+               if prepared.get("robot_station_absent") else {}),
+            # No paid robot-free probe was queued for this half (owner, 2026-11-15: Blueprint runs no test of its own).
+            **({"robot_free_probe": "not_queued"}
+               if (prepared.get("robot_free_probe") or {}).get("status") == "not_queued" else {})}
 
 
 def _compile_routed(request: Mapping[str, Any], *, status: Mapping[str, Any], run: Path, capture: Path,

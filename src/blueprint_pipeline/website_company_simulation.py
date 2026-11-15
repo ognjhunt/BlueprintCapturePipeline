@@ -9,7 +9,10 @@ company clip is published (``website_company_clip``):
   queue's ``status/<key>.json`` (``completed``, ``outcome: compiled``) names the half, whose
   ``scene/native-task-packet/`` holds ``native_task_arena_scene_plan.v1.json`` and the staged USD files under
   ``assets/``: the scene's look (``scene_appearance``), its collision (``scene_collision``) and the job's object
-  (``task_object``) with its start pose, and the plan's ``task_spec.task_success_contract.criteria``;
+  (``task_object``) with its start pose, and the plan's ``task_spec.task_success_contract.criteria`` (the half's
+  sealed record holds them when the plan does not, ``_with_sealed_rule``); a website half written without
+  Blueprint's idle arm holds the same under ``scene/scene-package/`` (``team_scene_robot_absent``), and a half
+  blocked only for its robot-team offer is a source all the same (owner decision 2026-11-15);
 - the package holds ``scene.usda``, written by ``scene_package_stage`` from the plan: every part referenced by a
   relative path and placed at the plan's pose under a neutral prim name (``/World/Room``, ``/World/Object``, ...),
   in metres with the plan's up axis; the parts (``scene/room.*``, ``scene/room_collision.*``, ``object.*``), what
@@ -91,6 +94,31 @@ QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
 DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/team-scene-packets"
 PACKET_DIRECTORIES = ("native-task-packet", "native-task-packet-three-view")
 PLAN_FILE = "native_task_arena_scene_plan.v1.json"
+#: A website half written without Blueprint's idle arm (``team_scene_robot_absent``): its own folder and plan.
+SCENE_PACKAGE = ("scene-package", "scene_package_plan.v1.json")
+#: A half compiled and recorded whose robot-team offer post failed (``team_scene_packet_worker``) is blocked only
+#: for that offer, which no company package needs: the package is made from it all the same.
+OFFER_ONLY_BLOCK = ["team_scene_offer_publication_failed"]
+#: What ``README.txt`` says was checked (``physics_check``), and the other plain notes it may carry: the one place
+#: for that wording. A scene whose stage 5 ran in Isaac Sim, or whose stage 5 cannot be read, keeps the README
+#: packages always had, which names no check. One whose stage 5 ran no simulator says so, and says the object's
+#: static USD check passed only when the revision's own stage-4 record shows it passed (``static_check_passed``).
+STATIC_CHECK_PASSED = ("The object's file passed Blueprint's static USD physics check (one rigid body, collision "
+                       "shapes, mass and friction within set ranges).")
+NO_SIMULATOR = "Blueprint did not run this scene in Isaac Sim or any other simulator."
+PHYSICS_CHECK_WORDS = {
+    "isaac_sim": (),
+    "not_run": (NO_SIMULATOR,),
+    "not_run_static_check_passed": (STATIC_CHECK_PASSED, NO_SIMULATOR),
+}
+#: ``{count}`` movable items the site agreed to move out of the arm's way (``robot_access_removal``): a count only.
+FURNITURE_REMOVED = ("{count} movable item(s) the site agreed to move are not in the collision file; they still "
+                     "appear in the appearance file.")
+#: The look file failed its quality gate (``team_scene_robot_absent.APPEARANCE_QUALITY``) and ships as it is.
+APPEARANCE_QUALITY_NOT_PASSED = ("The appearance file did not pass Blueprint's image quality check; it is included "
+                                 "as it is.")
+#: The stage-4 record a rigid website object passes (``task_object_artisan_candidate``, ``_usd_findings``).
+RIGID_STATIC_SCHEMA = "task_evaluation_rigid_replacement_static_qualification.v1"
 _USD = frozenset({".usd", ".usda", ".usdc", ".usdz"})
 _FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -174,7 +202,9 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
         status = _read(path)
         # A reused half (a duplicate request, or a retry that found its half) is written as ``already_compiled``;
         # either way the half itself is checked below (``_half``), never trusted for the word.
-        if (status.get("status") == "completed" and status.get("outcome") in SUCCESS_OUTCOMES
+        if ((status.get("status") == "completed" or (status.get("status") == "blocked"
+                                                       and status.get("blockers") == OFFER_ONLY_BLOCK))
+                and status.get("outcome") in SUCCESS_OUTCOMES
                 and status.get("capture_id") == identity["capture_id"]
                 and Path(str(status.get("capture_root") or "")) == root
                 and isinstance(status.get("team_scene_inputs_path"), str)):
@@ -209,9 +239,9 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
     from .scene_package_stage import StageRefused, neutral_rule, placements, up_axis
     if not scene.is_absolute() or scene.is_symlink() or not scene.is_dir():
         return None
-    for name in PACKET_DIRECTORIES:
+    for name, plan_file in [*((name, PLAN_FILE) for name in PACKET_DIRECTORIES), SCENE_PACKAGE]:
         packet = scene / name
-        plan_path = _inside(scene, packet / PLAN_FILE)
+        plan_path = _inside(scene, packet / plan_file)
         if plan_path is None:
             continue
         plan = _read(plan_path)
@@ -219,11 +249,12 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
             continue
         source: dict[str, Any] = {"packet_dir": packet, "plan_path": plan_path, "plan": plan,
                                   "plan_digest": plan.get("plan_digest"), "status": dict(status), "files": {},
-                                  "refusal": None}
+                                  "refusal": None, "physics_check": physics_check(packet, plan),
+                                  **_record_notes(scene, status)}
         try:
             rows = placements(plan)
             axis = up_axis(plan, packet=packet)
-            rule = neutral_rule(plan, estimates=estimates, packet=packet)
+            rule = neutral_rule(_with_sealed_rule(plan, scene, status), estimates=estimates, packet=packet)
             if rule is None:
                 raise StageRefused("scene_stage_success_rule_missing")
             for placement, raw in zip(rows, plan["objects"], strict=True):
@@ -245,6 +276,84 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
     return None
 
 
+def _with_sealed_rule(plan: Mapping[str, Any], scene: Path, status: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The plan, with the half's sealed success contract when the plan carries none.
+
+    A half sealed on the strategy's default contract writes it in its record (``team_scene_inputs.v1.json``),
+    not in the plan. The record is read only when it is this scene's and seals itself, and only for the task it
+    was sealed on: the plan it names (this one, or this one's sibling with one more camera) holds the same task.
+    """
+    task_spec = plan.get("task_spec")
+    if not isinstance(task_spec, Mapping) or task_spec.get("task_success_contract") is not None:
+        return plan
+    record = _sealed_record(scene, status)
+    contract = record.get("task_success_contract")
+    if not isinstance(contract, Mapping):
+        return plan
+    sealed_on = plan if record.get("plan_digest") == plan.get("plan_digest") else next(
+        (other for other in (_read(path) for path in (_inside(scene, scene / name / PLAN_FILE)
+                                                      for name in PACKET_DIRECTORIES) if path is not None)
+         if other and other.get("plan_digest") == record.get("plan_digest")), None)
+    if sealed_on is None or sealed_on.get("task_spec") != task_spec:
+        return plan
+    return {**plan, "task_spec": {**task_spec, "task_success_contract": dict(contract)}}
+
+
+def _sealed_record(scene: Path, status: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The half's own record (``team_scene_inputs.v1.json``) when it is this scene's and seals itself, else empty."""
+    record_path = _inside(scene, scene / Path(str(status.get("team_scene_inputs_path") or "")).name)
+    record = _read(record_path) if record_path is not None else {}
+    return record if record.get("inputs_digest") == canonical_digest(record, digest_field="inputs_digest") else {}
+
+
+def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
+    """What the half's sealed record says the package must tell: furniture moved for the arm, a look file that
+    failed its quality gate. Empty for a half that has neither, so its package is as before."""
+    record = _sealed_record(scene, status)
+    access = record.get("robot_access_removal") if isinstance(record.get("robot_access_removal"), Mapping) else {}
+    items = access.get("items") if access.get("status") == "applied" and access.get("station_after") else None
+    absent = record.get("robot_station_absent") if isinstance(record.get("robot_station_absent"), Mapping) else {}
+    return {**({"removed_items": len(items)} if isinstance(items, list) and items else {}),
+            **({"appearance_quality": "not_passed"} if absent.get("appearance_quality") == "not_passed" else {})}
+
+
+def _stage_documents(packet: Path, plan: Mapping[str, Any]) -> tuple[Any, Any]:
+    """The revision's stage-5 and stage-4 records as the half carries them: an arm-free plan's own copies, else the
+    adapted task's source documents in the packet's request (``configured_task_template_adapter``)."""
+    if isinstance(plan.get("stage_5"), Mapping):
+        return plan.get("stage_5"), plan.get("stage_4")
+    request = _read(packet / "native_task_arena_packet_request.v1.json")
+    documents = (((request.get("configured_task_template_adapter") or {}).get("source_documents") or {})
+                 .get("documents") or {})
+    return documents.get("native_import_qualification"), documents.get("static_qualification")
+
+
+def static_check_passed(static: Any) -> bool:
+    """The revision's stage-4 record shows the object's static USD check passed (``_usd_findings``: no finding)."""
+    return (isinstance(static, Mapping) and static.get("schema_version") == RIGID_STATIC_SCHEMA
+            and static.get("status") == "authored_structure_statically_qualified"
+            and static.get("authored_structure_statically_qualified") is True
+            and static.get("structural_findings") == []
+            and static.get("result_digest") == canonical_digest(static, digest_field="result_digest"))
+
+
+def physics_check(packet: Path, plan: Mapping[str, Any]) -> str | None:
+    """What the README says was checked: ``isaac_sim``, ``not_run`` or ``not_run_static_check_passed``, or None.
+
+    Stage 5 is read by its own reader (``website_scene_without_simulator.stage_five_receipt_kind``): a passed Isaac
+    import, or the record that no simulator ran, each sealed; anything else is None (today's README).
+    """
+    from .website_scene_without_simulator import stage_five_receipt_kind
+
+    stage, static = _stage_documents(packet, plan)
+    kind = stage_five_receipt_kind(stage)
+    if kind == "qualified":
+        return "isaac_sim"
+    if kind == "not_run":
+        return "not_run_static_check_passed" if static_check_passed(static) else "not_run"
+    return None
+
+
 def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKAGE_BYTES) -> str:
     """Names this package: the files' digests, their placements, the success rule, the builder and the cap."""
     return canonical_digest({
@@ -252,7 +361,10 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         "files": {prim: {key: row[key] for key in ("sha256", "size_bytes", "suffix", "placement")}
                   for prim, row in sorted(source["files"].items())},
         "rule": source.get("rule"), "axis": source.get("axis"), "refusal": source.get("refusal"),
-        "plan_digest": source.get("plan_digest") if source.get("refusal") else None})
+        "plan_digest": source.get("plan_digest") if source.get("refusal") else None,
+        # Only a wording that differs from the packages before it names a new revision.
+        **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
+        **{key: source[key] for key in ("removed_items", "appearance_quality") if source.get(key)}})
 
 
 # --- what must never leave --------------------------------------------------------------------------------------
@@ -615,6 +727,12 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
               "Built from one phone video of the site. Sizes, distances and positions are estimates from that",
               "video, not measurements. A result in this simulation is not a promise of what a robot does at the",
               "site, and says nothing about safety. No robot is included: bring your own."]
+    import textwrap
+
+    notes = [*(PHYSICS_CHECK_WORDS.get(source.get("physics_check")) or ()),
+             *([FURNITURE_REMOVED.format(count=source["removed_items"])] if source.get("removed_items") else []),
+             *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else [])]
+    lines += textwrap.wrap(" ".join(notes), width=100) if notes else []
     if (source.get("rule") or {}).get("object_estimates_from_video"):
         lines.append("The object's mass and friction in success_rule.json are ranges estimated from the video.")
     lines += ["", "Terms", "",
@@ -1052,9 +1170,19 @@ def tick(storage_root: Path, *, stop_reason: Callable[[], str | None] | None = N
             counts["deferred"] = len(captures) - index
             counts["stopped_" + (reason or "time_budget")] = 1
             break
-        status = publish_company_simulation(capture, **options)["status"]
+        result = publish_company_simulation(capture, **options)
+        status = result["status"]
         counts[status] = counts.get(status, 0) + 1
+        if status in NOT_PUBLISHED_ALOUD:
+            # Each capture whose package is not out, and why, in the unit's journal: the counts alone hide whose.
+            logger.warning("website_company_simulation_outcome capture=%s status=%s reason=%s", Path(capture).name,
+                           status, result.get("reason") or "")
     return counts
+
+
+#: Outcomes a pass names by capture (``tick``): a package that should exist and does not. ``no_source`` and
+#: ``not_permitted`` are the job's state, not a fault, and stay counts only.
+NOT_PUBLISHED_ALOUD = frozenset({"failed", "refused", "over_size_cap", "build_timed_out"})
 
 
 #: The route's clock (the pass takes ``now`` from its caller); a test can set it.

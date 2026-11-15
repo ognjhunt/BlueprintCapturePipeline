@@ -488,21 +488,15 @@ def test_halves_and_statuses_stored_before_the_marker_existed_still_read(tmp_pat
     assert assumption.half_assumption(tmp_path / "missing.json") is None and assumption.half_assumption(None) is None
 
 
-def test_an_assumed_half_goes_on_to_its_probe_and_is_offered_once_the_probe_passes(tmp_path, monkeypatch):
-    from blueprint_pipeline import robot_free_probe_gate as gate
-    from blueprint_pipeline.rigid_robot_free_probe_bundle import current_probe_state
-    from tests.test_team_scene_packet_worker import _passed_rigid_probe
-
+def test_an_assumed_half_queues_no_probe_and_is_reused_still_assumed(tmp_path, monkeypatch):
     world = _world(tmp_path, monkeypatch)
     [first] = world["process"]()["results"]
-    # The compile queued the half's robot-free probe: the request it plans is bound to the assumed contract.
-    state = current_probe_state(world["capture"])
-    assert state["status"] == "probe_required"
-    [entry] = (tmp_path / "rigid-robot-free-probes" / "pending").glob("*.json")
-    assert _record(entry)["probe_request_digest"] == state["request"]["request_digest"]
-    # The probe lane passes it; the redelivered request reuses the half, still marked as assumed.
-    profile = profile_for_capture(world["capture"])
-    (world["job"].run / gate.RECEIPT_FILENAME).write_text(json.dumps(_passed_rigid_probe(profile)))
+    # The website compile queues no paid robot-free probe for the half it writes (owner, 2026-11-15), and the
+    # half's sealed record says so.
+    assert first["robot_free_probe"] == "not_queued"
+    assert not list((tmp_path / "rigid-robot-free-probes").rglob("*.json"))
+    assert _record(Path(first["team_scene_inputs_path"]))["robot_free_probe"] == "not_queued"
+    # The redelivered request reuses the half, still marked as assumed.
     shutil.copyfile(world["queue"] / "processed" / f"{world['key']}.json",
                     world["queue"] / "pending" / f"{world['key']}.json")
     [again] = world["process"]()["results"]
@@ -520,7 +514,7 @@ def test_the_remote_compile_carries_the_website_flag_and_returns_the_marker(tmp_
     plain = lane._worker_arguments(arguments, fs)
     flagged = lane._worker_arguments({**arguments, **worker.WEBSITE_COMPILE}, fs)
     assert plain is not None and "assume_unconfirmed_standard_thresholds" not in plain
-    assert flagged == {**plain, "assume_unconfirmed_standard_thresholds": True}
+    assert flagged == {**plain, **dict.fromkeys(worker.WEBSITE_COMPILE, True)}
 
     class Roots:
         filesystem_root = fs

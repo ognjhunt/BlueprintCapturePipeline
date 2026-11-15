@@ -62,6 +62,9 @@ from .usd_binary_read_cache import read_scoped, readable
 SCHEMA = "blueprint.team_free_base_stance.v1"
 SEARCH_RADIUS_M = 1.6
 GRID_STEP_M = 0.05
+#: The stand validator's refusals that are about where the stand is, not the floor under it (``validate_stand_pose``).
+STAND_PLACEMENT_FAILURES = frozenset({"clips", "clearance", "standoff_out", "facing_off", "forward_frame_mismatch",
+                                      "outside_boundary"})
 #: A task supported by the floor itself (an installed appliance, a floor
 #: cabinet) puts a fixed arm's mount on the floor; this absorbs floor-fit noise.
 FLOOR_MOUNT_TOLERANCE_M = 0.02
@@ -456,6 +459,23 @@ def _room_mesh_blockers(room: Mapping[str, Any], *, x: float, y: float, yaw: flo
                 & (local_y.max(axis=1) >= -grown[1]) & (local_y.min(axis=1) <= grown[1])]
 
 
+def _floor_under(room: Mapping[str, Any], *, x: float, y: float, yaw: float, footprint: list[float], floor_z: float,
+                 tolerance: float) -> bool:
+    """The footprint's centre and corners have floor under them (``_room_mesh_refusal``'s floor test, alone)."""
+
+    import numpy as np
+
+    from .external_scene_robot_placement import _footprint_support_report
+
+    cosine, sine = math.cos(yaw), math.sin(yaw)
+    hx, hy = float(footprint[0]), float(footprint[1])
+    points = [(x + cosine * u - sine * v, y + sine * u + cosine * v)
+              for u, v in ((0.0, 0.0), (hx, hy), (hx, -hy), (-hx, hy), (-hx, -hy))]
+    nearby = np.concatenate([room["floor"](point, point) for point in points])
+    return bool(_footprint_support_report(support_triangles=nearby, position=(x, y), yaw=yaw, half_extent_xy=(hx, hy),
+                                          floor_z=floor_z, height_tolerance=tolerance)["full_sample_support_candidate"])
+
+
 def _room_mesh_refusal(room: Mapping[str, Any], *, x: float, y: float, yaw: float, footprint: list[float],
                        clearance_m: float, floor_z: float, tolerance: float, moved: Any = None,
                        blockers: Any = None) -> str | None:
@@ -764,7 +784,14 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
         # Never a stance inside the room's own furniture: no clear space is a refusal by name.
         blockers = (["team_embodiment_task_motion_no_clear_stance"] if struck else []) + (
             ["team_embodiment_room_mesh_no_clear_stance"] if any(refused.values()) else [])
-        raise TeamEmbodimentError(blockers or ["team_embodiment_free_base_no_clear_stance"])
+        error = TeamEmbodimentError(blockers or ["team_embodiment_free_base_no_clear_stance"])
+        # Whether any spot refused for the stand's or the arm's reasons had floor under it (no code changes): a
+        # room with no floor near the task refuses as the room's, not the arm's.
+        arm_reasons = {"occupied", "roofed", "task_motion_strike", *STAND_PLACEMENT_FAILURES}
+        error.arm_refused_with_floor = room is not None and any(
+            row[1] in arm_reasons and _floor_under(room, x=row[2], y=row[3], yaw=row[4], footprint=list(footprint[:2]),
+                                                   floor_z=float(floor_z), tolerance=tolerance) for row in refusals)
+        raise error
     candidates.sort()
     best = candidates[0]
     measured = None if room is None else {

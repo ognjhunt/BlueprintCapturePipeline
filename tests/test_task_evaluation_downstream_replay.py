@@ -326,25 +326,22 @@ def test_the_cli_writes_the_report_and_exits_zero_on_a_completed_replay(tmp_path
     assert json.loads(Path(printed["report_path"]).read_text())["first_stop"] == printed["first_stop"]
 
 
-def test_a_probe_the_scene_still_needs_stops_where_the_lane_would_buy_its_run(tmp_path):
+def test_a_website_half_with_no_probe_trace_buys_nothing(tmp_path):
+    """The website compile queues no paid robot-free probe for its half (owner, 2026-11-15): with no retained
+    trace the chain runs to its ``until`` and nothing would be bought."""
     from tests.test_native_task_arena_bundle import _runtime_source_packet
 
     job = website_job(tmp_path, trace=False, runtime_source=_runtime_source_packet(tmp_path / "runtime"))
     before = _tree(job["host"])
     report = _replay(job, tmp_path)
     stop = report["first_stop"]
-    assert (stop["kind"], stop["stage"]) == ("would_buy", "probe_enqueue"), stop
-    # The canonical allocator invocation, named: the capped GPU probe, never started.
-    assert stop["code"] == "paid_resource_allocator:gpu-canary:rigid-robot-free-probe"
-    assert stop["max_spend_usd"] == "1.0" and "--execute" in stop["argv"]
-    [bought] = report["would_buy"]
-    assert bought["boundary"] == "rigid_robot_free_probe_runner.run_allocator"
+    assert (stop["kind"], stop["stage"], stop["code"]) == ("completed", "probe_run", "until_probe_run"), stop
+    assert report["would_buy"] == []
     stages = {row["stage"]: row for row in report["stages"]}
     assert stages["readiness"]["outcome"]["status"] == "probe_unavailable"
-    assert stages["probe_enqueue"]["outcome"]["enqueue"][0]["status"] == "queued"
-    assert stages["probe_run"]["status"] == "not_reached"
-    # The host-only launch gates are named as not evaluated rather than passed.
-    assert {"driver_ceiling_blockers", "launch_environment_blockers"} <= set(report["host_only_gates_not_evaluated"])
+    assert all(row.get("status") != "queued" for row in stages["probe_enqueue"]["outcome"]["enqueue"])
+    # No probe launch was reached, so no host-only launch gate is left unevaluated.
+    assert not report["host_only_gates_not_evaluated"]
     assert report["evidence"]["unchanged"] is True and _tree(job["host"]) == before
 
 

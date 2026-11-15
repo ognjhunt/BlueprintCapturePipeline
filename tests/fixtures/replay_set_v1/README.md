@@ -47,8 +47,8 @@ defaults bound at import all read the replay clock). Rebuilding the set writes a
 
 | record | kind | expected first stop |
 | --- | --- | --- |
-| `rigid-pick-place-1080p-short` | rigid pick-and-place | `completed` at `probe_enqueue` (the probe the compile queued) |
-| `rigid-pick-place-4k-long` | rigid pick-and-place | `would_buy` at `probe_enqueue` (no retained probe trace, so the GPU probe would be bought; it is named and not made) |
+| `rigid-pick-place-1080p-short` | rigid pick-and-place | `completed` at `probe_enqueue` (its `until`) |
+| `rigid-pick-place-4k-long` | rigid pick-and-place | `completed` at `probe_run`: the website compile queues no paid robot-free probe for the half it writes (owner, 2026-11-15), so nothing would be bought and the replay runs to its `until` |
 | `rigid-pick-place-1080p-long-closure-missing` | rigid pick-and-place | `missing_input` at `completion` (post-teardown provider-zero receipt not retained) |
 | `navigation-4k-short` | navigation | `refusal` at `completion`, `preparation_completion_not_adopted` |
 | `navigation-1080p-long` | navigation | as above, under its own submission |
@@ -63,8 +63,8 @@ defaults bound at import all read the replay clock). Rebuilding the set writes a
 It proves that the harness works: one command replays several records of both job kinds through
 `task_evaluation_downstream_replay` (completion, readiness, team packet, probe enqueue, probe
 run), offline and at $0, and fails when a stop moves. It also pins each job kind's path through that
-chain. A rigid pick-and-place launch reaches its probe, stops at the paid probe, or names the
-file it is missing. A navigation job (prepared with its scene kept as filmed, with no launch) is not
+chain. A rigid pick-and-place launch runs to its `until` (the website compile queues no paid probe for
+its half), or names the file it is missing. A navigation job (prepared with its scene kept as filmed, with no launch) is not
 adopted by the launched-preparation join, and the refusal names the job.
 
 The last five records cover the stretch between "upload accepted" and "scene ready to configure".

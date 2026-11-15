@@ -36,6 +36,7 @@ from .decision_evidence_contracts import canonical_digest
 #: The outcome a source's state keeps once its probe gate admitted the scene: nothing more to decide for
 #: this request (a decided passed receipt is never replaced), so later passes read no remote state for it.
 PROBE_PASSED = "probe_passed"
+PROBE_NOT_QUEUED = "robot_free_probe_not_queued"
 
 
 def require_current_source(source: Mapping[str, Any], *, site_id: str) -> dict[str, Any]:
@@ -255,6 +256,7 @@ def scene_stage_pass(*, queue_root: str | Path, packet_queue_root: str | Path,
     )
     from .task_evaluation_configured_controls_source_evidence import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
+    from .team_scene_robot_absent import half_queues_no_probe
     from .team_scene_packet_worker import (
         _read_json,
         current_release_commit,
@@ -300,7 +302,9 @@ def scene_stage_pass(*, queue_root: str | Path, packet_queue_root: str | Path,
                 if request_key(request) != path.stem:
                     raise ValueError("beta_screening_source_request_key_invalid")
                 packet_status = _read_json(packet_root / "status" / path.name) or {}
-                if packet_status.get("status") not in {"completed", "skipped"}:
+                # A half recorded whose robot-team offer post failed is ready for the scene package all the same.
+                if (packet_status.get("status") not in {"completed", "skipped"}
+                        and packet_status.get("blockers") != ["team_scene_offer_publication_failed"]):
                     # Say why the scene half is not ready, and whether it is still being retried.
                     outcome["scene_packet"] = {key: packet_status[key] for key in
                                                ("status", "blockers", "automatic_retry") if key in packet_status}
@@ -352,12 +356,19 @@ def scene_stage_pass(*, queue_root: str | Path, packet_queue_root: str | Path,
                         raise ValueError("beta_screening_scene_profile_unavailable")
                     # Reconcile packets prepared before the probe lane was installed as well as newly
                     # compiled scenes. Queueing is unpaid and idempotent; the probe lane decides and pays.
-                    probe = enqueue_rigid_robot_free_probe(capture)
-                    outcome["robot_free_probe_status"] = probe["status"]
-                    probe_gate(profile)
-                    # The scene's probe admitted it: the scene stage moves on, so its hold is released.
-                    outcome.update(status="scene_stage_ready", scene_stage=PROBE_PASSED)
-                    hold = RELEASE
+                    if half_queues_no_probe(profile.get("team_scene_inputs_path")):
+                        # Its sealed record says no paid probe is queued for it (``team_scene_robot_absent``): none
+                        # is queued or read, and nothing holds the job for one. A half compiled before records
+                        # nothing and keeps its probe state below.
+                        outcome.update(status="scene_stage_ready", scene_stage=PROBE_NOT_QUEUED)
+                        hold = RELEASE
+                    else:
+                        probe = enqueue_rigid_robot_free_probe(capture)
+                        outcome["robot_free_probe_status"] = probe["status"]
+                        probe_gate(profile)
+                        # The scene's probe admitted it: the scene stage moves on, so its hold is released.
+                        outcome.update(status="scene_stage_ready", scene_stage=PROBE_PASSED)
+                        hold = RELEASE
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
                 # No raw remote response, URL, credentials or customer content in operational logs.
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ""

@@ -258,12 +258,11 @@ RECORDS: list[dict[str, Any]] = [
      "expected_stop": {"kind": "completed", "stage": "probe_run", "code": "until_probe_run"}},
     {"record_id": "rigid-pick-place-4k-long", "job_kind": "rigid_pick_and_place",
      "input_variety": {"video_resolution": "4k", "clip_length": "long"},
-     "description": "A completed rigid pick-and-place preparation with no probe trace: the probe must run, "
-                    "so the chain stops where the probe lane would buy its GPU run.",
+     "description": "A completed rigid pick-and-place preparation with no probe trace: the website compile "
+                    "queues no paid probe for its half, so the chain runs to its until and buys nothing.",
      "build": lambda root: _rigid(root, trace=False),
      "until": "probe_run",
-     "expected_stop": {"kind": "would_buy", "stage": "probe_enqueue",
-                       "code": "paid_resource_allocator:gpu-canary:rigid-robot-free-probe"}},
+     "expected_stop": {"kind": "completed", "stage": "probe_run", "code": "until_probe_run"}},
     {"record_id": "rigid-pick-place-1080p-long-closure-missing", "job_kind": "rigid_pick_and_place",
      "input_variety": {"video_resolution": "1080p", "clip_length": "long"},
      "description": "A rigid pick-and-place launch whose post-teardown provider-zero receipt was not retained: "

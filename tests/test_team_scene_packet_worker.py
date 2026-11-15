@@ -217,12 +217,24 @@ def test_a_registry_without_the_packet_inputs_block_skips_by_name_and_an_invalid
     assert status["blockers"] == ["team_scene_packet_inputs_not_operator_owned"]
 
 
+def _broken_inputs(world: dict[str, Any]) -> dict[str, Any]:
+    """Packet inputs whose runtime source may not be redistributed: a rights refusal of the whole half.
+
+    (A broken DROID profile no longer refuses a website half: it is the idle arm's alone, so the half is written
+    without the arm; ``test_a_website_half_whose_arm_cannot_be_made_is_written_without_it``.)
+    """
+    receipt = Path(world["inputs"]["runtime_source_receipt_path"]).with_name("runtime_source_not_redistributable.json")
+    receipt.write_text(json.dumps({**json.loads(Path(world["inputs"]["runtime_source_receipt_path"]).read_text()),
+                                   "redistribution_permitted": False}))
+    return {**world["inputs"], "runtime_source_receipt_path": str(receipt)}
+
+
 def test_a_refused_compile_leaves_no_partial_half_and_its_retry_compiles_cleanly(tmp_path, monkeypatch):
     world = _world(tmp_path, monkeypatch)
-    # The revision's documents are fetched into the attempt before the DROID profile's binding refuses.
-    _registry(world["operator"], packet_inputs={**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64})
+    # The revision's documents are fetched into the attempt before the runtime source receipt refuses.
+    _registry(world["operator"], packet_inputs=_broken_inputs(world))
     [status] = world["process"]()["results"]
-    assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_droid_profile_binding_invalid"])
+    assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_runtime_source_invalid"])
     assert "error" not in status  # A typed refusal is its own cause.
     assert list(world["halves"].iterdir()) == []
     assert profile_for_capture(world["capture"]) is None and world["calls"] == []
@@ -415,13 +427,13 @@ def test_an_unlisted_refusal_is_retried_on_the_shared_schedule_six_times_then_st
     world = _world(tmp_path, monkeypatch)
     queue, key = world["queue"], world["key"]
     _release(monkeypatch, RELEASE_1)
-    _registry(world["operator"], packet_inputs={**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64})
+    _registry(world["operator"], packet_inputs=_broken_inputs(world))
     _at(monkeypatch, 0)
     [status] = world["process"]()["results"]
-    assert status["blockers"] == ["team_scene_droid_profile_binding_invalid"] and "automatic_retry" not in status
+    assert status["blockers"] == ["team_scene_runtime_source_invalid"] and "automatic_retry" not in status
     assert status[worker.RELEASE_COMMIT_FIELD] == RELEASE_1
     assert status[worker.REFUSAL_RETRY_FIELD] == {"attempts": 0, "limit": 6,
-                                                  "reason": "team_scene_droid_profile_binding_invalid",
+                                                  "reason": "team_scene_runtime_source_invalid",
                                                   "not_before": "2026-10-31T12:15:00+00:00"}
     assert not worker.final_block(status, release=RELEASE_1)
     elapsed = 0
@@ -432,7 +444,7 @@ def test_an_unlisted_refusal_is_retried_on_the_shared_schedule_six_times_then_st
         assert world["process"]()["automatic_requeue"] == []
         _at(monkeypatch, elapsed + wait)
         expected = [{"request_key": key, "reason": "refusal_retry", "attempt": attempt,
-                     "blocker": "team_scene_droid_profile_binding_invalid"}]
+                     "blocker": "team_scene_runtime_source_invalid"}]
         if attempt % 2:
             assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == expected
             [status] = world["process"]()["results"]
@@ -440,7 +452,7 @@ def test_an_unlisted_refusal_is_retried_on_the_shared_schedule_six_times_then_st
             run = world["process"]()
             assert run["automatic_requeue"] == expected
             [status] = run["results"]
-        assert status["blockers"] == ["team_scene_droid_profile_binding_invalid"]
+        assert status["blockers"] == ["team_scene_runtime_source_invalid"]
         assert status[worker.REFUSAL_RETRY_FIELD]["attempts"] == attempt
         elapsed += wait
     # Spent: it stays blocked under this release, final, from either pass, however long it waits.
@@ -474,12 +486,12 @@ def test_a_deploy_that_fixes_a_deterministic_refusal_re_drives_it_once_per_relea
     world = _world(tmp_path, monkeypatch)
     queue, key = world["queue"], world["key"]
     _release(monkeypatch, RELEASE_1)
-    broken = {**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64}
+    broken = _broken_inputs(world)
     _registry(world["operator"], packet_inputs=broken)
     _at(monkeypatch, 0)
     [status] = world["process"]()["results"]
     assert (status["blockers"], status[worker.RELEASE_COMMIT_FIELD]) == (
-        ["team_scene_droid_profile_binding_invalid"], RELEASE_1)
+        ["team_scene_runtime_source_invalid"], RELEASE_1)
     # A new release is deployed: the timer's pass returns the refusal to pending once, recorded before the move.
     _release(monkeypatch, RELEASE_2)
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
@@ -490,7 +502,7 @@ def test_a_deploy_that_fixes_a_deterministic_refusal_re_drives_it_once_per_relea
     # This release did not fix it: refused again, and never retried again under this release, from either pass.
     [status] = world["process"]()["results"]
     assert (status["blockers"], status[worker.RELEASE_COMMIT_FIELD], status[worker.RELEASE_REQUEUE_FIELD]) == (
-        ["team_scene_droid_profile_binding_invalid"], RELEASE_2, [RELEASE_2])
+        ["team_scene_runtime_source_invalid"], RELEASE_2, [RELEASE_2])
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
     assert world["process"]()["automatic_requeue"] == []
     # Even a status naming an older release is not retried for a release already tried.
