@@ -175,6 +175,16 @@ Intended design: every upload is written to one record before it is sent, and st
 - **The early trial in drain:** its first tick on this release (22:31:57Z, after the spend guard's run it is ordered behind) started nothing and took 18 s of wall time, 17 s of CPU and 34 MB. On the previous release a tick took about 3 minutes of CPU and up to 884 MB.
 - **Not checked:** no website job has passed through scene configuration, the scene packet or the scripted check on this release. The operator door lists the new unit only after a door upgrade.
 
+## Deploy on 2026-11-15 at 03:28Z (outside the D-08 window, on the owner's word)
+
+- **Why outside the window:** the owner approved it at about 22:45Z on 2026-11-14 ("yes", to releasing the commit that merged #3597 that night, after the same reading of the host). No job was in flight and no GPU instance was live, so the two costs D-08 guards against did not apply. One release on the owner's word, not a standing change to D-08.
+- **Before, 03:28Z (door status and requests):** active release `efefe8a`. No activation hold, no paid-launch lock held, no door request pending. Screening ledger: nothing launching, pending, preparing, running or awaiting reconciliation; no publication pending. Spend guard passed with no live instance. 206 historical failed units.
+- **03:28:14Z, `16b596a` (#3597):** requested after main's CI attested the commit at about 03:27Z (request `20261115T032814Z-deploy-91ddc7df`); deployed at 03:40:54Z.
+- **What this release carries since `efefe8a`:** #3597 — the early trial's timer retired and its unit files removed; readers we keep moved off trial modules; the scene's appearance read in bounded blocks; door and drawer jobs downloadable.
+- **After, 03:41Z:** active release `16b596a`, `commit_proven` true, no blockers, no new failed unit (206 before and after), spend guard passed, no live instance. Receipt: `blueprint-beta-policy-screening.timer` was enabled and active and is now retired (stopped and disabled); the other 14 retired triggers were already off.
+- **Still running:** `blueprint-scene-stage-maintenance.timer` (first run on this release at 03:40:51Z, clean, nothing to deliver), the intake, scene progression, the scripted check's runner, the Atlas preview timer, withdrawal deletion and the spend guard.
+- **Not checked:** no website job has passed through scene configuration, the scene packet or the scripted check on this release.
+
 ## Library-aisle navigation run (2026-11-06)
 
 The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.
