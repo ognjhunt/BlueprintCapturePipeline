@@ -103,10 +103,13 @@ def job_report(job: dict, status: dict) -> dict:
                   if _names_capture(cat_json(f"{INTENT_ROOT}/{entry['name']}/intent.json"), job["capture_id"])]
         running = [progress.get("status") for progress, outcome in scenes
                    if progress.get("status") != "completed" and outcome.get("terminal") is not True]
+        # A completed progression supersedes a retained terminal outcome (task_evaluation_scene_outcome).
+        ended = [outcome.get("reason_code") for progress, outcome in scenes
+                 if progress.get("status") != "completed" and outcome.get("terminal") is True]
         if running:
             stage = f"scene:{running[0]}"
-        elif scenes and all(outcome.get("terminal") is True for _progress, outcome in scenes):
-            failure = failure or scenes[0][1].get("reason_code")
+        elif scenes and len(ended) == len(scenes):
+            failure = failure or ended[0]
     if manifest:
         stage, times["package_built"] = "package_built", manifest.get("built_at_epoch")
         refused = manifest.get("refused_by_webapp")

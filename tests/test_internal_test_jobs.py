@@ -532,8 +532,16 @@ def test_the_runner_stops_at_a_refusal_and_follow_ends_on_it(tmp_path, monkeypat
      "retry_cap_exhausted", True),
     ([({"status": "blocked"}, {"terminal": True, "reason_code": "retry_cap_exhausted"}), ({"status": "running"}, None)],
      "scene:running", None, False),                     # one intent still runs: not ended, as the door reads it
+    # a completed progression supersedes a terminal outcome it kept from earlier
+    ([({"status": "completed"}, {"terminal": True, "reason_code": "retry_cap_exhausted"})],
+     "preparation:terminal_success", None, False),
+    ([({"status": "completed"}, {"terminal": True, "reason_code": "retry_cap_exhausted"})], "package_delivered", None,
+     True),
+    ([({"status": "completed"}, None), ({"status": "blocked"}, {"terminal": True, "reason_code": "retry_cap_exhausted"})],
+     "preparation:terminal_success", None, False),
 ])
 def test_follow_reads_the_scene_chain_after_a_successful_preparation(monkeypatch, scenes, stage, failure, done):
-    runner, report = _job_report(monkeypatch, {}, ledger={"status": "terminal_success"}, submitted_at=NOW,
+    manifest = {"delivered": {"at": 1}} if stage == "package_delivered" else {}
+    runner, report = _job_report(monkeypatch, manifest, ledger={"status": "terminal_success"}, submitted_at=NOW,
                                  scenes=[(p, o or {}) for p, o in scenes])
     assert (report["stage"], report["first_failure"], runner.done(report)) == (stage, failure, done)
