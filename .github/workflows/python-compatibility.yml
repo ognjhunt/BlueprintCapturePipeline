@@ -72,5 +72,4 @@ jobs:
       - name: Run compatibility contract suite
         run: |
           uv run python -m pytest -q \
-            tests/test_public_scientific_claims.py \
-            tests/test_sc3_eval_protocol.py
+            tests/test_public_scientific_claims.py

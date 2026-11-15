@@ -79,19 +79,14 @@ class DoorConfig:
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-rigid-robot-free-probe-runner.service",
-        "blueprint-beta-policy-screening.timer",
-        "blueprint-beta-policy-screening.service",
+        "blueprint-scene-stage-maintenance.timer",
+        "blueprint-scene-stage-maintenance.service",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-scene-progression.service",
-        "blueprint-task-evaluation-configured-controls-progression.timer",
-        "blueprint-task-evaluation-configured-controls-progression.service",
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-task-evaluation-launch-reconciler.service",
-        "blueprint-task-evaluation-policy-canary-dispatcher.path",
-        "blueprint-native-g1-team-campaign-dispatcher.timer",
-        "blueprint-native-g1-team-campaign-settlement.timer",
         "blueprint-gpu-spend-guard.timer",
     )
     max_read_bytes: int = 16 * 1024 * 1024
@@ -112,7 +107,6 @@ class DoorConfig:
     venv_python: str = "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
     idle_wait_units: tuple[str, ...] = (
         "blueprint-task-evaluation-scene-progression.service",
-        "blueprint-task-evaluation-configured-controls-progression.service",
     )
     idle_wait_seconds: int = 1800
 

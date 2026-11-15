@@ -516,11 +516,11 @@ def test_policy_canary_keeps_registry_out_of_native_controller_slot() -> None:
     root = Path(__file__).resolve().parents[1]
     native = (
         root
-        / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_native_controller_configuration.v1.json"
+        / "config/trial/scene839873_policy_canary_native_controller_configuration.v1.json"
     )
     registry = (
         root
-        / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_controller_configuration.v1.json"
+        / "config/trial/scene839873_policy_canary_controller_configuration.v1.json"
     )
     native_record = _record(native, "controller.configuration")
     registry_record = _record(registry, "controller.configuration")
@@ -1038,7 +1038,7 @@ def test_closed_compiler_joins_revision_and_robot_team_inputs(
         receipt_path = _write_json(inputs, "appearance-receipt.json", receipt)
         registry_path = (
             Path(__file__).resolve().parents[1]
-            / "docs/arm_decision_proof_v1/manifests/"
+            / "tests/fixtures/arm_decision_proof_v1/manifests/"
             "franka_robotiq_policy_camera_mount_registry.v1.json"
         )
         observation_refs = {

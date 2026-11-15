@@ -62,14 +62,6 @@ was invisible. Each has its own check, with the same route and repeat:
     refusal's next timed retry is overdue by as long. An entry whose last
     attempt the WebApp refused the grant for (a money stop the owner lifts)
     never pages.
-``screening_campaign_stalled`` and ``screening_publication_stalled``
-    A screening campaign has rows still to run and its ledger entry has not
-    changed for ``screening`` minutes (default 8 h, twice a run's longest hard
-    TTL), or its latest revision has stayed unpublished for ``publication``
-    minutes (default 90). Waitlisted rows (the site allowance or job ceiling)
-    never page. A ``blocked`` row is not a row still to run, so one waiting for
-    the coordinator's timed re-plan is quiet; an overdue re-plan is not seen
-    (the ledger records no due time for it).
 
 A store whose own trigger the operator door holds is paused on purpose and is
 not read. A request, probe or campaign pages only while its capture still has a
@@ -106,7 +98,7 @@ from .task_evaluation_launch_dispatcher_ownership import DISPATCHER_LOCK_NAME, u
 SCHEMA_VERSION = "control_plane_stall_check.v1"
 PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trigger_inactive_unheld",
                         "launch_activation_stuck", "atlas_preview_stalled", "team_scene_packet_stalled",
-                        "rigid_probe_stalled", "screening_campaign_stalled", "screening_publication_stalled",
+                        "rigid_probe_stalled",
                         # Not a stall: a scene's ceiling passed a whole multiple of its grant (gates nothing).
                         "scene_budget_doubled",
                         # Not a stall: a preparation stopped on Blueprint's own records, paged once
@@ -132,12 +124,9 @@ ACTIVATION_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_R
 ATLAS_STORAGE_ROOT_ENV = "BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT"
 TEAM_SCENE_QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
 RIGID_PROBE_QUEUE_ROOT_ENV = "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE"
-SCREENING_QUEUE_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"
 ATLAS_MINUTES_ENV = "BLUEPRINT_STALL_ATLAS_MINUTES"
 TEAM_SCENE_MINUTES_ENV = "BLUEPRINT_STALL_TEAM_SCENE_MINUTES"
 RIGID_PROBE_MINUTES_ENV = "BLUEPRINT_STALL_RIGID_PROBE_MINUTES"
-SCREENING_MINUTES_ENV = "BLUEPRINT_STALL_SCREENING_MINUTES"
-PUBLICATION_MINUTES_ENV = "BLUEPRINT_STALL_PUBLICATION_MINUTES"
 
 DEFAULT_PROGRESSION_MINUTES = 90
 DEFAULT_HANDOFF_MINUTES = 8 * 60
@@ -145,16 +134,13 @@ DEFAULT_LAUNCH_GRACE_MINUTES = 30
 DEFAULT_TRIGGER_MINUTES = 60
 # The job stores take one of the two existing waits. A job that waits on the pipeline itself
 # gets the progression wait (90 min): an Atlas job is stepped every minute and a deploy pauses
-# its timer for 30-40 minutes, and a publication is offered again on every screening pass. A
+# its timer for 30-40 minutes. A
 # request handed to a worker that may hold it for whole runs gets the handoff wait (8 h): a
 # team scene request waits out its worker's own retries (5 min, 30 min, 2 h) behind compiles of
-# up to an hour, a rigid probe runs two funded attempts of at most an hour each, and a
-# screening run holds its row for up to its hard TTL of at most four hours.
+# up to an hour, and a rigid probe runs two funded attempts of at most an hour each.
 DEFAULT_ATLAS_MINUTES = DEFAULT_PROGRESSION_MINUTES
 DEFAULT_TEAM_SCENE_MINUTES = DEFAULT_HANDOFF_MINUTES
 DEFAULT_RIGID_PROBE_MINUTES = DEFAULT_HANDOFF_MINUTES
-DEFAULT_SCREENING_MINUTES = DEFAULT_HANDOFF_MINUTES
-DEFAULT_PUBLICATION_MINUTES = DEFAULT_PROGRESSION_MINUTES
 
 # The launch reconciler's own bounds (``task_evaluation_launch_reconciler``):
 # a lease whose allocator never started is stale after PRE_RUN_STALE_SECONDS,
@@ -217,19 +203,11 @@ RIGID_PROBE_TIMED_STATES = frozenset({"staging_refused"})
 RIGID_PROBE_SUPERSEDED_DIRNAME = "superseded_terminals"
 RIGID_PROBE_REFUSAL_RETRY_TRIGGER = "refusal_retry"
 MAX_SUPERSESSIONS = 64
-SCREENING_LEDGER_FILENAME = "screening_ledger.v1.json"
-SCREENING_LEDGER_SCHEMA = "blueprint.beta_policy_screening_ledger.v1"
-# Rows the screening queue still has to run or settle; ``waitlisted`` waits for money instead.
-SCREENING_LIVE_STATUSES = frozenset({"pending", "preparing", "launching", "running", "reconciliation_required"})
-_SCREENING_STATUS_ORDER = ("reconciliation_required", "running", "launching", "preparing", "pending")
-SCREENING_WAITLISTED_STATUS = "waitlisted"
-SCREENING_TRIGGER = "blueprint-beta-policy-screening.timer"
 MAX_ATLAS_JOBS = 512
 MAX_QUEUE_ENTRIES = 512
 # A status is kept for every request ever finished; the newest are read.
 MAX_STATUS_ENTRIES = 2048
 MAX_CAMPAIGNS = 512
-MAX_LEDGER_BYTES = 4 * 1024 * 1024
 _HEX = re.compile(r"[0-9a-f]{16}\Z")
 
 MAX_INTENT_DIRECTORY_ENTRIES = 10_000
@@ -286,12 +264,9 @@ class StallConfig:
     atlas_storage_root: Path | None = None
     team_scene_queue_root: Path | None = None
     rigid_probe_queue_root: Path | None = None
-    screening_queue_root: Path | None = None
     atlas_seconds: float = DEFAULT_ATLAS_MINUTES * 60.0
     team_scene_seconds: float = DEFAULT_TEAM_SCENE_MINUTES * 60.0
     rigid_probe_seconds: float = DEFAULT_RIGID_PROBE_MINUTES * 60.0
-    screening_seconds: float = DEFAULT_SCREENING_MINUTES * 60.0
-    publication_seconds: float = DEFAULT_PUBLICATION_MINUTES * 60.0
 
 
 def default_deploy_tool() -> Path:
@@ -337,12 +312,9 @@ def config_from_environment(environ: Mapping[str, str] | None = None) -> StallCo
         atlas_storage_root=root(ATLAS_STORAGE_ROOT_ENV),
         team_scene_queue_root=root(TEAM_SCENE_QUEUE_ROOT_ENV),
         rigid_probe_queue_root=root(RIGID_PROBE_QUEUE_ROOT_ENV),
-        screening_queue_root=root(SCREENING_QUEUE_ROOT_ENV),
         atlas_seconds=minutes(ATLAS_MINUTES_ENV, DEFAULT_ATLAS_MINUTES),
         team_scene_seconds=minutes(TEAM_SCENE_MINUTES_ENV, DEFAULT_TEAM_SCENE_MINUTES),
         rigid_probe_seconds=minutes(RIGID_PROBE_MINUTES_ENV, DEFAULT_RIGID_PROBE_MINUTES),
-        screening_seconds=minutes(SCREENING_MINUTES_ENV, DEFAULT_SCREENING_MINUTES),
-        publication_seconds=minutes(PUBLICATION_MINUTES_ENV, DEFAULT_PUBLICATION_MINUTES),
         # Last: every threshold above may add to it.
         config_errors=tuple(errors),
     )
@@ -933,8 +905,8 @@ def check_triggers(
 
 
 # --------------------------------------------------------------------------- #
-# 5-8. Job stores nothing else watches: Atlas previews, team scene packets,
-#      rigid robot-free probes, screening campaigns and their publications
+# 5-7. Job stores nothing else watches: Atlas previews, team scene packets and
+#      rigid robot-free probes
 # --------------------------------------------------------------------------- #
 
 
@@ -1006,7 +978,7 @@ def _codes(value: Any, limit: int = 4) -> list[str]:
 def open_window_captures(config: StallConfig, *, now: float, budget: _Budget) -> set[str] | None:
     """The captures with a scene intent whose execution window is still open, or ``None`` when that is unknown.
 
-    A team scene request, a rigid probe or a screening campaign of a capture whose every intent is
+    A team scene request or a rigid probe of a capture whose every intent is
     revoked or past its window (extensions included) cannot be funded or run again: its row is
     history, not a stall, by the rule ``check_scene_progressions`` applies to an intent's own row.
     Without it a refusal from months ago would page every hour for good. Every listed intent is
@@ -1490,115 +1462,6 @@ def check_rigid_probes(
     return section, alerts
 
 
-def check_screening(
-    config: StallConfig, *, now: float, budget: _Budget, holds: Path | None = None,
-    remembered: Mapping[str, Any] | None = None, memory_out: dict[str, Any] | None = None,
-    windows: Callable[[], set[str] | None] | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """A campaign with rows still to run and no ledger change, or a revision left unpublished, for too long.
-
-    ``updated_at`` moves with every change to a campaign's ledger entry. The ledger does not say
-    since when a revision has been unpublished (a restart resets ``published_revision`` on
-    purpose), so ``memory_out`` carries, per campaign, when this alarm first saw it unpublished;
-    ``remembered`` is the previous tick's, and one tick that sees it published forgets it.
-    ``windows`` answers ``open_window_captures``; a campaign's capture is named by its retained plan.
-    """
-
-    remembered = remembered if isinstance(remembered, Mapping) else {}
-    root = config.screening_queue_root
-    skipped = _store(root, SCREENING_TRIGGER, holds, "screening_queue_unreadable")
-    if skipped is not None:
-        return skipped
-    try:
-        ledger = _read_json(root / SCREENING_LEDGER_FILENAME, MAX_LEDGER_BYTES)
-    except FileNotFoundError:
-        return {"status": "absent"}, []
-    except (OSError, ValueError):
-        return {"status": "unreadable"}, [_incomplete("screening_ledger_unreadable")]
-    campaigns = ledger.get("campaigns")
-    if ledger.get("schema_version") != SCREENING_LEDGER_SCHEMA or not isinstance(campaigns, dict):
-        return {"status": "unreadable"}, [_incomplete("screening_ledger_unreadable")]
-    counts: dict[str, int] = {}
-    stalled: list[dict[str, Any]] = []
-    unpublished: list[dict[str, Any]] = []
-    unreadable = pending_publications = 0
-    truncated = len(campaigns) > MAX_CAMPAIGNS
-
-    plan_captures: dict[str, str | None] = {}
-
-    def window_closed(campaign_id: str) -> bool:
-        if campaign_id not in plan_captures:
-            try:
-                plan = _read_json(root / "plans" / f"{campaign_id}.json", MAX_LEDGER_BYTES)
-                plan_captures[campaign_id] = _label(plan.get("capture_id"))
-            except (OSError, ValueError):
-                plan_captures[campaign_id] = None  # unknown: the campaign stays watched
-        return _window_closed(windows, plan_captures[campaign_id])
-
-    for campaign_id, campaign in sorted(campaigns.items())[:MAX_CAMPAIGNS]:
-        if budget.expired():
-            truncated = True
-            break
-        rows = campaign.get("candidates") if isinstance(campaign, dict) else None
-        if _label(campaign_id) is None or not isinstance(rows, dict) or not all(
-                isinstance(row, dict) and isinstance(row.get("status"), str) for row in rows.values()):
-            unreadable += 1
-            continue
-        live = [row for row in rows.values() if row["status"] in SCREENING_LIVE_STATUSES]
-        row_holds = [store_hold(_codes(row.get("blockers"), limit=16)) for row in live]
-        every_hold = [store_hold(_codes(row.get("blockers"), limit=16)) for row in rows.values()]
-        updated = _epoch(campaign.get("updated_at"))
-        if live and all(hold is not None for hold in row_holds):
-            disposition = row_holds[0]
-        elif live and updated is None:
-            unreadable += 1
-            disposition = None
-        elif live and now - updated >= config.screening_seconds and window_closed(campaign_id):
-            disposition = "execution_window"
-        elif live:
-            disposition = "watched"
-            if now - updated >= config.screening_seconds:
-                waits = [row for row, hold in zip(live, row_holds) if hold is None]
-                stalled.append({
-                    # The row that most needs a person names the campaign's state.
-                    "target": campaign_id[:120], "status": next(
-                        status for status in _SCREENING_STATUS_ORDER if any(row["status"] == status for row in waits)),
-                    "unfinished_rows": len(waits),
-                    "blockers": sorted({code for row in waits for code in _codes(row.get("blockers"))})[:4],
-                    "age_seconds": round(now - updated), "threshold_seconds": round(config.screening_seconds)})
-        elif any(row["status"] == SCREENING_WAITLISTED_STATUS for row in rows.values()):
-            # Only the site's allowance or the job's ceiling keeps these rows from running.
-            disposition = "money_approval"
-        else:
-            disposition = "finished"
-        if disposition is not None:
-            counts[disposition] = counts.get(disposition, 0) + 1
-        if campaign.get("revision") == campaign.get("published_revision"):
-            continue
-        pending_publications += 1
-        if any(hold in {"privacy", "rights"} for hold in every_hold):
-            continue  # the website ended a withdrawn or revoked job itself; nothing is owed to it
-        since = _number(remembered.get(campaign_id))
-        since = now if since is None or since > now else since
-        if memory_out is not None:
-            memory_out[campaign_id] = since
-        if now - since >= config.publication_seconds and not window_closed(campaign_id):
-            unpublished.append({"target": campaign_id[:120], "age_seconds": round(now - since),
-                                "age_is_lower_bound": True,
-                                "threshold_seconds": round(config.publication_seconds)})
-    section = {"status": "observed", "campaigns": len(campaigns), "truncated": truncated, "unreadable": unreadable,
-               "stalled": len(stalled), "publications_pending": pending_publications,
-               "publications_stalled": len(unpublished), "dispositions": dict(sorted(counts.items()))}
-    alerts = [_page("screening_campaign_stalled", stalled)] if stalled else []
-    if unpublished:
-        alerts.append(_page("screening_publication_stalled", unpublished))
-    if truncated:
-        alerts.append(_incomplete("screening_ledger_truncated", count=len(campaigns)))
-    if unreadable:
-        alerts.append(_incomplete("screening_campaign_unreadable", count=unreadable))
-    return section, alerts
-
-
 # --------------------------------------------------------------------------- #
 # One tick
 # --------------------------------------------------------------------------- #
@@ -1658,7 +1521,6 @@ def observe_stalls(
     prior_memory = prior_memory if isinstance(prior_memory, Mapping) else {}
     remembered = prior_memory.get("scene_progression")
     progression_memory: dict[str, Any] = {}
-    publication_memory: dict[str, Any] = {}
     scene_budget_memory: dict[str, Any] = {}
     preparation_fault_memory: dict[str, Any] = {}
     budget = _Budget(deadline=monotonic() + DEADLINE_SECONDS, events=MAX_EVENT_READS, clock=monotonic)
@@ -1691,9 +1553,6 @@ def observe_stalls(
             config, now=observed, budget=budget, holds=holds, windows=windows)),
         ("rigid_probes", lambda: check_rigid_probes(
             config, now=observed, budget=budget, holds=holds, windows=windows)),
-        ("screening", lambda: check_screening(
-            config, now=observed, budget=budget, holds=holds, windows=windows,
-            remembered=prior_memory.get("screening_publication"), memory_out=publication_memory)),
         ("scene_budget", lambda: _check_scene_budgets(
             config, now=observed, remembered=prior_memory.get("scene_budget"), memory_out=scene_budget_memory)),
         ("preparation_faults", lambda: _check_preparation_faults(
@@ -1722,11 +1581,9 @@ def observe_stalls(
             "atlas": config.atlas_seconds,
             "team_scene": config.team_scene_seconds,
             "rigid_probe": config.rigid_probe_seconds,
-            "screening": config.screening_seconds,
-            "publication": config.publication_seconds,
         },
         "checks": checks,
-        "memory": {"scene_progression": progression_memory, "screening_publication": publication_memory,
+        "memory": {"scene_progression": progression_memory,
                    "scene_budget": scene_budget_memory, "preparation_fault": preparation_fault_memory},
         "alerts": alerts,
     }
@@ -1782,11 +1639,6 @@ def describe(alert: Mapping[str, Any]) -> str | None:
         if alert.get("status") == "retry_overdue":
             return f"rigid robot-free probe timed staging retry overdue {age}{why}: {name}{tail}"
         return f"rigid robot-free probe pending {age} ({alert.get('status')}){why}: {name}{tail}"
-    if code == "screening_campaign_stalled":
-        return (f"screening campaign without ledger progress {age}, {alert.get('unfinished_rows')} unfinished "
-                f"({alert.get('status')}){why}: {name}{tail}")
-    if code == "screening_publication_stalled":
-        return f"screening publication undelivered {age}: {name}{tail}"
     return f"{target} {alert.get('status') or 'inactive'} {age} with no owner hold{tail}"
 
 
@@ -1801,7 +1653,6 @@ __all__ = [
     "check_launch_leases",
     "check_rigid_probes",
     "check_scene_progressions",
-    "check_screening",
     "check_team_scene_packets",
     "check_triggers",
     "config_from_environment",

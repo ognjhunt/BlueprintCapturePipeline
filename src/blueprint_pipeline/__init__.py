@@ -27,10 +27,6 @@ _LAZY_PUBLIC_ATTRS = {
     "preview_capture_bundle": (".materialization", "preview_capture_bundle"),
     "PipelineConfig": (".capture_orchestrator", "PipelineConfig"),
     "run_capture_pipeline": (".capture_orchestrator", "run_capture_pipeline"),
-    "run_evaluation_prep_stage": (
-        ".evaluation_prep_stage",
-        "run_evaluation_prep_stage",
-    ),
     "run_object_geometry_stage": (
         ".object_geometry_stage",
         "run_object_geometry_stage",

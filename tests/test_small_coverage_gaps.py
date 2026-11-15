@@ -7,9 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from blueprint_pipeline import industrial_ontology, local_capture, model_access_env
-from blueprint_pipeline import wam_vision_success_judge
-from blueprint_pipeline.agent_runtime import artifacts, contracts
+from blueprint_pipeline import local_capture, model_access_env
 from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.synthesis import plucker_rays
 
@@ -129,70 +127,6 @@ def test_local_capture_error_branches_and_root_layout(tmp_path: Path) -> None:
     assert context.descriptor_uri == "gs:////scenes/scene-1/captures/capture-1/capture_descriptor.json"
 
 
-def test_agent_runtime_contract_and_artifact_helpers(tmp_path: Path) -> None:
-    context = local_capture.LocalCaptureContext(
-        capture_root=tmp_path / "capture",
-        raw_root=tmp_path / "capture" / "raw",
-        pipeline_root=tmp_path / "capture" / "pipeline",
-        descriptor_path=tmp_path / "capture" / "capture_descriptor.json",
-        raw_complete_path=tmp_path / "capture" / "raw" / "capture_upload_complete.json",
-        storage_root=tmp_path,
-        bucket="bucket",
-        scene_id="scene",
-        capture_id="capture",
-    )
-    bundle = artifacts.PipelineReviewArtifacts(
-        context=context,
-        descriptor=types.SimpleNamespace(),
-        qa_report={},
-        site_intake={},
-        capture_package_manifest={},
-        capture_qa_scorecard={},
-        task_scope_record={},
-        qualification_record={},
-        qualification_brief={},
-        scene_graph={},
-        route_graph={},
-        geometry_evidence={},
-        supplemental_geometry=[],
-        capability_checks={},
-        blocker_register={},
-        readiness_decision={},
-        readiness_report="",
-        opportunity_handoff={},
-        human_actions_required={},
-        task_hypothesis_report={},
-        normalized_task_hypothesis={},
-    )
-    assert bundle.pipeline_dir == context.pipeline_root
-    with pytest.raises(PipelineError, match="Missing required pipeline artifact"):
-        artifacts._read_required_json(tmp_path / "missing.json", "missing")
-
-    output = contracts.ReviewOutputFile(name="memo", path="memo.md")
-    step = contracts.ReviewStepResult(
-        skill_name="skill",
-        output_path="out.json",
-        source="fixture",
-        provider_metadata={"model": "fake"},
-    )
-    review = contracts.AgentReviewBundle(
-        scene_id="scene",
-        capture_id="capture",
-        provider="openai",
-        readiness_state="review_required",
-        final_memo_path="memo.md",
-        final_bundle_path="bundle.json",
-        human_actions_required_path="actions.json",
-        outputs=[output],
-        steps=[step],
-        runtime={"provider": "fixture"},
-    ).to_dict()
-    assert review["outputs"] == [{"name": "memo", "path": "memo.md"}]
-    assert review["steps"][0]["provider_metadata"] == {"model": "fake"}
-    assert contracts.ensure_mapping({"a": 1}) == {"a": 1}
-    assert contracts.ensure_mapping(None) == {}
-
-
 def test_plucker_tensor_and_zero_moment_normalization(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     class FakeTensor:
         def __init__(self, array: np.ndarray) -> None:
@@ -214,48 +148,3 @@ def test_plucker_tensor_and_zero_moment_normalization(monkeypatch) -> None:  # t
     assert np.all(normalized == 0.0)
 
 
-def test_industrial_ontology_and_wam_vision_judge_edges() -> None:
-    multi = industrial_ontology.classify_industrial_entities(
-        ["rack tote pallet_zone traffic_zone workcell"]
-    )
-    assert {entity.entity_type for entity in multi} >= {
-        "rack",
-        "tote",
-        "pallet_zone",
-        "traffic_zone",
-        "workcell",
-    }
-
-    assert wam_vision_success_judge._mapping({"a": 1}) == {"a": 1}
-    assert wam_vision_success_judge._mapping(["bad"]) == {}
-    assert wam_vision_success_judge._string_list("one") == ["one"]
-    assert wam_vision_success_judge._string_list(["one", "", None, "two"]) == ["one", "two"]
-    assert wam_vision_success_judge._string_list(123) == []
-    assert wam_vision_success_judge._float(True, 0.5) == 0.5
-    assert wam_vision_success_judge._float("bad", 0.7) == 0.7
-    payload = wam_vision_success_judge.build_fixture_vision_success_labels(
-        rollout_results={
-            "evaluation_substrate": "fixture_wam",
-            "rollouts": [
-                {
-                    "rollout_id": "rollout-a",
-                    "predicted_success": True,
-                    "uncertainty_score": 0.1,
-                    "ood_flags": ["lighting"],
-                    "failure_mode_ids": [],
-                },
-                ["ignored"],
-            ],
-        },
-        generated_at="2026-06-20T00:00:00Z",
-    )
-    assert payload["status"] == "completed"
-    assert payload["success_rate"] == 1.0
-    assert payload["ood_label_count"] == 1
-    assert payload["failure_mode_ids"] == ["wam_ood_uncertain"]
-    assert (
-        wam_vision_success_judge.build_fixture_vision_success_labels(rollout_results={})[
-            "status"
-        ]
-        == "blocked_missing_rollouts"
-    )

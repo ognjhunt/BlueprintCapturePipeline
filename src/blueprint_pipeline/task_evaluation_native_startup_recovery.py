@@ -6,10 +6,8 @@ This module does not launch providers or repair runtime/placement failures.
 """
 from __future__ import annotations
 
-import copy
 from datetime import datetime
 from pathlib import Path
-import time
 
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_submission_inputs import read, require, sha
@@ -22,14 +20,6 @@ from . import task_evaluation_scene_intake as intake
 # runtime. Only these explicit infrastructure outcomes authorize replacement.
 STARTUP_LOSS = frozenset({"vast_heartbeat_instance_exited", "vast_heartbeat_container_missing"})
 STARTUP_CONSEQUENCES = STARTUP_LOSS | {"vast_heartbeat_output_missing_success_marker"}
-
-
-def configuration(controls: dict, progression: dict) -> dict:
-    """Use the existing scene worker's ownership scope, not invented defaults."""
-    require(controls["scene_root"] == progression["intent_root"], "native_retry_scene_scope_changed")
-    return {"scene_root": controls["scene_root"], **{key: progression[key] for key in (
-        "provider_guard_path", "ownership_roots", "child_execution_root", "launch_execution_root",
-        "child_queue_root", "launch_queue_root")}}
 
 
 def _owned_path(root: Path, value: str) -> Path:
@@ -106,98 +96,6 @@ def retain_failure(*, run_root: Path, launch: dict, activation: dict,
     else:
         intake.write_exclusive(path, failure)
     return prior, path
-
-
-def advance(*, config: dict, plan: dict, state: Path, launch_root: Path,
-            launch: dict, activation: dict, phase: dict, base: dict, preparation: dict,
-            activation_queue_root: Path, publisher, submitter_factory, now: float | None = None):
-    """Advance one successor transition; return (effective launch, pending status).
-
-    Immutable files make replay after interruption idempotent. The scene ledger
-    serializes reservations and forbids two successors of the same attempt.
-    """
-    from . import task_evaluation_configured_controls_progression_worker as worker
-    from .task_evaluation_configured_controls_progression import (
-        stage_configured_controls_activation, submit_authorized_progression_launch)
-    from .task_evaluation_scene_progression_recovery import reconcile_ownership
-    from .task_evaluation_scene_execution_authority import bind_scene_attempt
-    from .task_evaluation_scene_owner_attempt_profiles import make_owner_attempt_record
-
-    moment = time.time() if now is None else now
-    current, current_activation = launch, activation
-    # The ledger's owner limit is authoritative; this additionally bounds scanning.
-    for _ in range(9):
-        retry_root = state / "startup-recovery" / current["launch_id"]
-        retry_launch_path = retry_root / "launch.json"
-        retry_activation_path = retry_root / "activation.json"
-        if retry_launch_path.exists():
-            current = read(retry_launch_path, digest_field="progression_digest")
-            current_activation = read(retry_activation_path, digest_field="progression_digest")
-            continue
-        failure = retain_failure(run_root=launch_root / current["launch_id"], launch=current,
-            activation=current_activation, scene_root=Path(config["scene_root"]), output_root=retry_root)
-        if failure is None:
-            return current, None
-        prior, failure_path = failure
-        owner = intake._read(Path(config["scene_root"]) / prior["intent_id"] / "intent.json", "intent_digest")
-        require(owner["request"]["execution"]["max_retries"] > 0, "native_retry_owner_limit_exhausted")
-        token = read(failure_path)["failure_digest"][7:19]
-        activation_id = current_activation["activation_request"]["activation_id"] + "-boot-" + token
-        require(len(activation_id) <= 192, "native_retry_identity_exhausted")
-        reservation_path = retry_root / "reservation.json"
-        attempt_id = "native-startup-" + read(failure_path)["failure_digest"][7:47]
-        ledger_path = Path(config["scene_root"]) / prior["intent_id"] / "attempts" / (attempt_id + ".json")
-        if ledger_path.exists() and not reservation_path.exists():
-            retained = intake._read(ledger_path, "attempt_digest")
-            require(retained.get("recovery", {}).get("prior_attempt_id") == prior["attempt_id"]
-                    and retained["recovery"].get("failure_digest") == read(failure_path)["failure_digest"],
-                    "native_retry_reservation_changed")
-            worker._write_immutable(reservation_path, retained)
-        if reservation_path.exists():
-            reservation = read(reservation_path, digest_field="attempt_digest")
-            retained = intake._read(Path(config["scene_root"]) / prior["intent_id"] / "attempts" /
-                                   (reservation["attempt_id"] + ".json"), "attempt_digest")
-            require(retained == reservation and reservation.get("recovery", {}).get("prior_attempt_id") == prior["attempt_id"],
-                    "native_retry_reservation_changed")
-        else:
-            evidence = reconcile_ownership(attempt=prior, failure_path=failure_path, config=config,
-                                           output_root=retry_root / "ownership", now=moment)
-            reservation = intake.reserve_scene_attempt(queue_root=config["scene_root"], intent_id=prior["intent_id"],
-                attempt_id=attempt_id,
-                source_commit=prior["source_commit"], runtime_digest=prior["runtime_digest"],
-                input_digest=prior["input_digest"], provider=prior["provider"],
-                maximum_spend_usd=prior["maximum_spend_usd"], recovery_from_attempt_id=prior["attempt_id"],
-                recovery_evidence=evidence, now=moment)
-            worker._write_immutable(reservation_path, reservation)
-        if not retry_activation_path.exists():
-            authorization = copy.deepcopy(current_activation["activation_request"]["authorization"])
-            # Native profiles are immutable and keyed by revision, not activation id.
-            authorization["profile_revision"] = attempt_id
-            old_owner = authorization["scene_owner_attempt"]
-            authorization["scene_owner_attempt"] = make_owner_attempt_record(owner_fields=bind_scene_attempt(reservation),
-                **{k: old_owner[k] for k in ("phase", "team_namespace", "scene_id", "task_id", "runtime_source_bundle_digest")})
-            lineage = current_activation["activation_request"]["lineage"]
-            lane = current_activation["lane"]
-            require(lane == "native_task_arena_construction", "native_retry_lane_not_supported")
-            window = worker._materialize_phase_release_window(state=base, preparation=preparation, phase=phase,
-                lineage=lineage, authorization=authorization, lane=lane, root=retry_root,
-                publisher=publisher(), activation_id=activation_id)
-            staged = stage_configured_controls_activation(progression=base, preparation_result=preparation,
-                release_window=window, lineage=lineage, authorization=authorization, lane=lane,
-                queue_root=activation_queue_root, submitted_by=plan["submitted_by"], activation_id=activation_id)
-            worker._write_immutable(retry_activation_path, staged)
-            return current, "startup_replacement_activation_queued"
-        staged = read(retry_activation_path, digest_field="progression_digest")
-        ready = worker._activation_authority(activation_queue_root=activation_queue_root,
-            profile_dir=Path(plan["profile_dir"]), activation_id=staged["activation_request"]["activation_id"])
-        if ready is None:
-            return current, "awaiting_startup_replacement_activation"
-        activated, profile = ready
-        queued = submit_authorized_progression_launch(activation_progression=staged, activation_result=activated,
-            profile=profile, launch_authority=read(phase["launch_authority_path"]), submitter=submitter_factory())
-        worker._write_immutable(retry_launch_path, queued)
-        return queued, "startup_replacement_launch_queued"
-    raise ValueError("native_startup_recovery_scan_limit")
 
 
 def effective_launch(state: Path, launch: dict) -> dict:

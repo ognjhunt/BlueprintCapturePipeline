@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import (
     native_task_arena_policy_diagnostic_bundle as diagnostic_bundle_module,
 )
@@ -393,76 +392,3 @@ def test_diagnostic_episode_retains_actions_but_skips_task_scoring() -> None:
         ),
     }
 
-
-def test_allocator_routes_explicit_diagnostic_probe_without_official_admission(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _diagnostic_controls(tmp_path, scene, construction)
-    execution_path = tmp_path / "diagnostic-execution.json"
-    build_policy_diagnostic_execution_spec(
-        candidate_id="pi05_droid",
-        scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
-        construction_result_path=construction,
-        control_result_path=controls,
-        output_path=execution_path,
-    )
-    observed: dict = {}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "d" * 40, "checkout_clean": True}),
-    )
-    monkeypatch.setattr(
-        allocator,
-        "run_native_task_arena_policy_diagnostic_vast",
-        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
-    )
-    args = [
-        "gpu-canary",
-        "--probe-kind",
-        "native-task-arena-policy-diagnostic",
-        "--provider",
-        "vast",
-        "--provider-launch-request",
-        str(tmp_path / "unused-request.json"),
-        "--release-evidence",
-        str(tmp_path / "unused-release.json"),
-        "--model-cache-evidence",
-        str(tmp_path / "unused-model.json"),
-        "--preflight-bundle",
-        str(tmp_path / "unused-preflight.json"),
-        "--admission-out",
-        str(tmp_path / "diagnostic-admission.json"),
-        "--bound-request-out",
-        str(tmp_path / "unused-bound.json"),
-        "--adapter-output",
-        str(tmp_path / "diagnostic-adapter.json"),
-        "--pod-name",
-        "native-task-policy-diagnostic",
-        "--native-task-arena-packet",
-        str(packet),
-        "--native-task-arena-runtime-source-packet",
-        str(_runtime_source_packet(tmp_path)),
-        "--native-task-arena-construction-result",
-        str(construction),
-        "--native-task-arena-control-result",
-        str(controls),
-        "--native-task-arena-policy-execution-spec",
-        str(execution_path),
-        "--adp-job-dir",
-        str(tmp_path / "diagnostic-job"),
-        "--adp-max-hourly-rate-usd",
-        "0.64",
-        "--adp-max-spend-usd",
-        "0.5",
-        "--adp-hard-ttl-seconds",
-        "2800",
-    ]
-
-    assert allocator.main(args) == 0
-    assert observed["prepared_bundle"]["execution_mode"] == "policy_diagnostic"
-    admission = json.loads((tmp_path / "diagnostic-admission.json").read_text())
-    assert admission["candidate_policy_queried"] is True
-    assert admission["allocation_binding"]["execution_mode"] == "policy_diagnostic"

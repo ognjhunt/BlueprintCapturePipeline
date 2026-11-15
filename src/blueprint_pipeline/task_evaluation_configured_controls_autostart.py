@@ -1092,7 +1092,7 @@ def materialize_configured_controls_autostart(
 ) -> dict[str, Any]:
     """Produce an exact plan from one completed, Website-synced configuration."""
 
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_configured_controls_source_evidence import _validate_source
 
     launch_root = Path(launch_state_root).expanduser()
     run_root = launch_root / source_launch_id

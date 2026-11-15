@@ -1,9 +1,7 @@
 """Real HTTP framing and redirect dispatch, with in-memory sockets only."""
 
-import ast
 import http.client
 import io
-from pathlib import Path
 import socket
 from types import SimpleNamespace
 import urllib.request
@@ -13,13 +11,11 @@ import urllib.response
 import pytest
 
 from blueprint_pipeline import artifact_http_transport as transport
-from blueprint_pipeline import native_g1_team_vm_system_packages as native
 from blueprint_pipeline import production_blender_runtime as blender
 from blueprint_pipeline import task_evaluation_artifixer_pretraining as artifixer
-from tests.test_artifact_https_transports import registry
 
 
-@pytest.mark.parametrize("module", [transport, native])
+@pytest.mark.parametrize("module", [transport])
 @pytest.mark.parametrize("url", [
     "http://artifact.example/a", "file:///a", "https://user:secret@artifact.example/a",
     "https://artifact.example:444/a", "https://artifact.example/a#fragment",
@@ -48,8 +44,7 @@ def test_initial_capability_query_is_preserved_and_headers_refuse_before_fetch(m
 
 
 @pytest.mark.parametrize("module,handler", [
-    (transport, "_AnonymousArtifactRedirect"), (native, "_AnonymousArtifactRedirect"),
-    (registry, "_AnonymousBlobRedirect"),
+    (transport, "_AnonymousArtifactRedirect"),
 ])
 def test_real_redirect_dispatch_closes_without_draining_or_forwarding_credentials(module, handler):
     class UnboundedBody:
@@ -81,24 +76,9 @@ def test_real_redirect_dispatch_closes_without_draining_or_forwarding_credential
     assert refused.closed and len(observed) == 1
 
 
-@pytest.mark.parametrize("module,handler", [
-    (registry, "_RegistryNoRedirect"),
-])
-def test_refused_control_redirect_closes_body_without_following(module, handler):
-    closed = []
-    redirect = getattr(module, handler)()
-    redirect.parent = SimpleNamespace(open=lambda *a, **kw: pytest.fail("control redirect may not follow"))
-    with pytest.raises(ValueError):
-        redirect.http_error_302(None, SimpleNamespace(close=lambda: closed.append(True)),
-                               302, "redirect", {"location": "https://other.example/"})
-    assert closed == [True]
-
-
 @pytest.mark.parametrize("module,handler,initial_method,status,target", [
     (transport, "_AnonymousArtifactRedirect", "GET", 302, "https://cdn.example/blob"),
     (transport, "_AnonymousArtifactRedirect", "GET", 302, "http://cdn.example/blob"),
-    (registry, "_RegistryNoRedirect", "GET", 302, "https://cdn.example/blob"),
-    (registry, "_AnonymousBlobRedirect", "GET", 302, "https://cdn.example/blob"),
     (transport, "_AnonymousArtifactRedirect", "GET", 401, None),
 ])
 def test_actual_urllib_dispatch_keeps_refused_or_followed_responses_closed(
@@ -173,7 +153,7 @@ def test_actual_http_response_full_transfer_eof_and_size_cap(framing):
     (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n", b"X-Trailer: slow\r\n\r\n"),
     (b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n", b"xxx"),
 ])
-@pytest.mark.parametrize("module", [transport, native, registry])
+@pytest.mark.parametrize("module", [transport])
 def test_real_http_parser_clamps_slow_headers_body_and_chunk_framing(module, prefix, suffix, monkeypatch):
     clock = [0.0]
     class Peer:
@@ -225,7 +205,7 @@ def test_original_socket_timeout_and_earlier_absolute_deadline_are_preserved(mon
     assert wrapped._remaining() == 5
 
 
-@pytest.mark.parametrize("module", [transport,native,registry])
+@pytest.mark.parametrize("module", [transport])
 def test_each_late_redirect_connection_clamps_tcp_tls_timeout_before_connect(module,monkeypatch):
     clock,calls = [95],[]
     monkeypatch.setattr(module.time,"monotonic",lambda:clock[0])
@@ -244,28 +224,6 @@ def test_each_late_redirect_connection_clamps_tcp_tls_timeout_before_connect(mod
     with pytest.raises(TimeoutError,match="artifact_transfer_deadline"):
         expired.connect()
     assert calls == [5, 5, 5]
-
-
-def test_small_native_package_transfer_keeps_exact_size_sha_and_immutable_mode(
-    tmp_path,monkeypatch
-):
-    body = b"tiny synthetic deb bytes"
-    import hashlib
-    row = {"filename":"fixture.deb","package":"fixture","version":"1",
-           "size_bytes":len(body),"sha256":"sha256:"+hashlib.sha256(body).hexdigest(),
-           "url":"https://origin.example/fixture.deb"}
-    monkeypatch.setattr(native,"SYSTEM_PACKAGES",{"fixture":row})
-    monkeypatch.setattr(native.shutil,"disk_usage",lambda *a:SimpleNamespace(free=10**12))
-    monkeypatch.setattr(native,"open_artifact_response",lambda *a,**kw:io.BytesIO(body))
-    native.fetch_fixed_package_bytes(tmp_path/"good")
-    path = tmp_path/"good/fixture.deb"
-    assert path.read_bytes() == body and path.stat().st_mode & 0o777 == 0o444
-    monkeypatch.setattr(native,"open_artifact_response",lambda *a,**kw:io.BytesIO(body[:-1]))
-    with pytest.raises(ValueError):
-        native.fetch_fixed_package_bytes(tmp_path/"truncated")
-    monkeypatch.setattr(native,"open_artifact_response",lambda *a,**kw:io.BytesIO(body+b"x"))
-    with pytest.raises(ValueError,match="package_transfer_bound"):
-        native.fetch_fixed_package_bytes(tmp_path/"oversized")
 
 
 @pytest.mark.parametrize("fault,code", [
@@ -300,26 +258,3 @@ def test_earlier_caller_deadline_refuses_before_network_or_file_creation(tmp_pat
                 artifixer.CAPSULE_BYTES_ENV:"4"},stage_input={},_deadline=99)
     assert not path.exists()
 
-
-def test_standalone_source_cohorts_embed_the_exact_transport_contract():
-    source = Path(transport.__file__).read_text()
-    definitions = {node.name: ast.dump(node, include_attributes=False)
-        for node in ast.parse(source).body if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
-    for module in (native,):
-        actual = {node.name: ast.dump(node, include_attributes=False)
-            for node in ast.parse(Path(module.__file__).read_text()).body
-            if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in definitions}
-        assert actual == definitions
-    classes = {name: value for name, value in definitions.items()
-               if name in {"_DeadlineSocket", "_DeadlineHTTPSConnection", "_DeadlineHTTPSHandler", "_ClosingHTTPErrorProcessor"}}
-    actual = {node.name: ast.dump(node, include_attributes=False)
-        for node in ast.parse(Path(registry.__file__).read_text()).body
-        if isinstance(node, ast.ClassDef) and node.name in classes}
-    assert actual == classes
-    helpers = {name: value for name, value in definitions.items()
-               if name in {"_artifact_remaining", "_resolve_addresses", "_validated_resolver_result",
-                           "_create_deadline_connection"}}
-    actual_helpers = {node.name: ast.dump(node, include_attributes=False)
-        for node in ast.parse(Path(registry.__file__).read_text()).body
-        if isinstance(node, ast.FunctionDef) and node.name in helpers}
-    assert actual_helpers == helpers

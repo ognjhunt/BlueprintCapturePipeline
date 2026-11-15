@@ -1541,27 +1541,3 @@ def test_a_relative_scene_input_without_a_scene_root_fails_closed(tmp_path: Path
             repo_root=repo,
             job_dir=tmp_path / "rootless_job",
         )
-
-
-def test_the_committed_portable_request_resolves_its_repository_inputs() -> None:
-    """The manifest the live lane is rebuilt from must not name a path that
-    exists only on one workstation."""
-
-    checkout = Path(__file__).resolve().parents[1]
-    manifest = json.loads(
-        (
-            checkout
-            / "docs/arm_decision_proof_v1/manifests"
-            / "third_scene_840920_retained_scene_gpu_render_request.v2.json"
-        ).read_text(encoding="utf-8")
-    )
-    request = build_retained_scene_gpu_render_request(manifest)
-
-    assert request["request_digest"] == manifest["request_digest"]
-    for key in ("candidate_set_path", "execution_authority_path", "renderer_vendor_root"):
-        assert not str(manifest[key]).startswith("/"), key
-    for lane in manifest["task_lanes"]:
-        assert not str(lane["camera_contract_path"]).startswith("/")
-    # The repository-side inputs must resolve in this checkout; the scene-side
-    # ones are private bytes staged separately and are not asserted here.
-    assert (checkout / manifest["execution_authority_path"]).is_file()

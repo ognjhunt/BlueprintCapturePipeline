@@ -29,7 +29,7 @@ def reconcile_preparation_completion(*, intent, config, fetcher=None):
             continue
         try:
             from .task_evaluation_scene_attempt_binding import require_scene_execution_binding
-            from .task_evaluation_configured_controls_progression_worker import _validate_source
+            from .task_evaluation_configured_controls_source_evidence import _validate_source
             from .task_evaluation_launch_terminal_evidence import _scene_configuration_terminal_projection
             intake._require(profile.get('profile_digest') == canonical_digest(profile, digest_field='profile_digest'),
                             'preparation_completion_profile_invalid')

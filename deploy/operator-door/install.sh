@@ -95,36 +95,8 @@ if [ "$dispatcher_hold_only" -eq 1 ]; then
     >"$stage/operator_door/admitted_controls.py"
 fi
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
-  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-restore-g1-runtime-source.sh "$source_dir"/door-restore-g1-pi-language-assets.sh "$source_dir"/door-retire-parked-delivery.sh "$source_dir"/door-selected-handoff.sh "$source_dir"/door-extend-scene-execution-window.sh "$source_dir"/door-extend-scene-execution-budget.sh "$source_dir"/door-confirm-owner-success-contract.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh "$source_dir"/door-repair-notifier-binding.sh \
-  "$source_dir"/door-public-embodiment-preparation.sh "$source_dir"/door-install-public-piper-policy.sh "$source_dir"/install.sh "$stage/"
-install -m 0644 "$repo_root/config/policy_runtimes/native_g1_registration_profile.json" \
-  "$stage/operator_door/native_g1_registration_profile.json"
-install -m 0644 "$repo_root/config/policy_runtimes/openwam_franka_registration_profile.json" \
-  "$stage/operator_door/openwam_franka_registration_profile.json"
-install -m 0644 "$repo_root/config/policy_runtimes/openwam_franka_model_card.md" \
-  "$stage/operator_door/openwam_franka_model_card.md"
-install -m 0644 "$repo_root/config/policy_runtimes/scripted_robot_baseline_registration_profile.json" \
-  "$stage/operator_door/scripted_robot_baseline_registration_profile.json"
-install -m 0644 "$repo_root/config/policy_runtimes/scripted_robot_baseline_license.txt" \
-  "$stage/operator_door/scripted_robot_baseline_license.txt"
-install -d -m 0755 "$stage/operator_door/scripted-baseline-source"
-for scripted_source in scripted_robot_baseline.py scripted_robot_baseline_runtime.py scripted_robot_grasp_frames.py scripted_robot_robotiq_runtime.py scripted_robot_industrial_robotiq_runtime.py scripted_robot_yaskawa_robotiq_runtime.py scripted_robot_kuka_robotiq_runtime.py scripted_robot_public_arm_robotiq_runtime.py; do
-  install -m 0644 "$repo_root/src/blueprint_pipeline/$scripted_source" "$stage/operator_door/scripted-baseline-source/$scripted_source"
-done
-install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_registration_profile.json" \
-  "$stage/operator_door/openwam_piper_registration_profile.json"
-install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_model_card.md" \
-  "$stage/operator_door/openwam_piper_model_card.md"
-for public_profile_file in molmoact2_yam_registration_profile.json molmoact2_yam_publisher_readme.md molmoact2_yam_publisher_license.txt; do
-  install -m 0644 "$repo_root/config/policy_runtimes/$public_profile_file" "$stage/operator_door/$public_profile_file"
-done
-for trlc_profile_file in trlc_pi05_registration_profile.json trlc_pi05_tokenizer_inventory.v1.json; do
-  install -m 0644 "$repo_root/config/policy_runtimes/$trlc_profile_file" "$stage/operator_door/$trlc_profile_file"
-done
-install -d -m 0755 "$stage/operator_door/trlc_pi05_notices"
-for trlc_notice in APACHE-2.0.txt NOTICE.txt base-model-card.md community-model-card.md gemma-prohibited-use.txt gemma-terms.txt provenance.json; do
-  install -m 0644 "$repo_root/src/blueprint_pipeline/_vendor/trlc_pi05_notices/$trlc_notice" "$stage/operator_door/trlc_pi05_notices/$trlc_notice"
-done
+  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-retire-parked-delivery.sh "$source_dir"/door-selected-handoff.sh "$source_dir"/door-extend-scene-execution-window.sh "$source_dir"/door-extend-scene-execution-budget.sh "$source_dir"/door-confirm-owner-success-contract.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh "$source_dir"/door-repair-notifier-binding.sh \
+  "$source_dir"/install.sh "$stage/"
 if [ "$dispatcher_hold_only" -eq 0 ]; then
   python3 -I -S "$source_dir/stage-historical-runtime.py" "$repo_root/src/blueprint_pipeline" "$stage/historical-python"
   install -m 0644 "$source_dir/historical-generation-entry.py" "$stage/historical-generation-entry.py"

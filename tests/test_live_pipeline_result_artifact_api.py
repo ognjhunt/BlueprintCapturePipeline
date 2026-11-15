@@ -14,9 +14,7 @@ from blueprint_pipeline.live_pipeline_result_artifact_resolution import (
     resolve_live_pipeline_result_artifact,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from blueprint_pipeline.live_pipeline_control_plane import (
-    CONTROL_PLANE_OUTPUT_PATH_ENV,
-)
+from blueprint_pipeline.live_pipeline_intake_runtime_controls import CONTROL_PLANE_OUTPUT_PATH_ENV
 
 
 ARTIFACT_ID = "a2634d9fa2634d9fa2634d9fa2634d9f"

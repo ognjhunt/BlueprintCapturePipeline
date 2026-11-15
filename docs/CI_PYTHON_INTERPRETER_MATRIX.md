@@ -18,7 +18,6 @@ as launch or deploy proof:
 | --- | --- | --- |
 | `CI / Impacted test and sentinel gate` | `.github/workflows/ci.yml` | Bounded impacted tests plus contract, security, paid-resource, and release-policy sentinels. |
 | `Full Test Lane / Full pytest lane on CPU runner` | `.github/workflows/full-test-lane.yml` | Full CPU pytest lane required for deploy evidence. |
-| `Sim-Only Local Gate / Regenerate sim-only local gate artifact` | `.github/workflows/sim-only-local-gate.yml` | Sim-only local gate artifact regeneration. |
 
 ## Compatibility Interpreters
 

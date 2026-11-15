@@ -21,9 +21,6 @@ from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
 
 LAUNCH_WEBAPP_URL_ENV = "PIPELINE_TASK_EVALUATION_LAUNCH_WEBAPP_URL"
-LAUNCH_SUPERVISION_WEBAPP_URL_ENV = (
-    "PIPELINE_TASK_EVALUATION_LAUNCH_SUPERVISION_WEBAPP_URL"
-)
 LAUNCH_PROGRESS_WEBAPP_URL_ENV = "PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL"
 PIPELINE_SYNC_TOKEN_FILE_ENV = "PIPELINE_SYNC_TOKEN_FILE"
 
@@ -299,64 +296,12 @@ def sync_launch_receipt_to_webapp(
     return {**common, "status": "succeeded", "response": dict(response)}
 
 
-def sync_launch_supervision_to_webapp(
-    *, supervision: Mapping[str, Any], endpoint_url: str | None = None,
-    token: str | None = None, timeout_seconds: float = 10.0,
-) -> dict[str, Any]:
-    payload = dict(supervision)
-    common = {
-        "schema_version": "task_evaluation_launch_supervision_webapp_sync_result.v1",
-        "snapshot_digest": payload.get("snapshot_digest"),
-        "supervision_digest": payload.get("supervision_digest"),
-    }
-    resolved_url = str(
-        endpoint_url or os.getenv(LAUNCH_SUPERVISION_WEBAPP_URL_ENV) or ""
-    ).strip()
-    resolved_token = _optional_pipeline_sync_token(token)
-    if not resolved_url or not resolved_token:
-        return {**common, "status": "skipped", "reason": "sync_not_configured"}
-    try:
-        url = validated_https_sync_url(resolved_url)
-    except ValueError:
-        return {**common, "status": "failed", "reason": "sync_url_invalid"}
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    outbound = urllib_request.Request(
-        url,
-        data=body,
-        headers=_pipeline_sync_headers(resolved_token, body),
-        method="POST",
-    )
-    try:
-        with urllib_request.urlopen(  # nosec B310 - URL is pinned to validated HTTPS
-            outbound, timeout=max(0.1, timeout_seconds)
-        ) as response:
-            raw = response.read().decode("utf-8")
-    except urllib_error.HTTPError as exc:
-        return {**common, "status": "failed", "reason": f"http_error:{exc.code}"}
-    except urllib_error.URLError as exc:
-        return {**common, "status": "failed", "reason": f"url_error:{exc.reason}"}
-    except (TimeoutError, ValueError) as exc:
-        return {**common, "status": "failed", "reason": type(exc).__name__.lower()}
-    try:
-        response = json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
-        return {**common, "status": "failed", "reason": "invalid_json"}
-    if not isinstance(response, Mapping) or any(
-        response.get(field) != common[field]
-        for field in ("snapshot_digest", "supervision_digest")
-    ):
-        return {**common, "status": "failed", "reason": "response_binding_mismatch"}
-    return {**common, "status": "succeeded", "response": dict(response)}
-
-
 __all__ = [
     "LAUNCH_PROGRESS_WEBAPP_URL_ENV",
-    "LAUNCH_SUPERVISION_WEBAPP_URL_ENV",
     "LAUNCH_WEBAPP_URL_ENV",
     "PIPELINE_SYNC_TOKEN_FILE_ENV",
     "PipelineSyncTokenError",
     "load_pipeline_sync_token",
     "sync_launch_progress_to_webapp",
     "sync_launch_receipt_to_webapp",
-    "sync_launch_supervision_to_webapp",
 ]

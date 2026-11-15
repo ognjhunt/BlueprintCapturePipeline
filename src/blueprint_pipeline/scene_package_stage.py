@@ -7,7 +7,10 @@ is a record and never leaves. So both the simulation package for deployment comp
 (``website_company_simulation``) and the offline job packet (``job_packet_export``) write ``scene.usda`` with this
 module: one stage with a neutral prim for each row (``/World/Room``, ``/World/Object``, ...; a role this module
 does not know becomes ``/World/Part_01`` and so on, a repeated role ``/World/Object_02``), carrying the plan's
-position, orientation, scale and visibility, in metres with the plan's up axis.
+position, orientation, scale and visibility, in metres with the plan's up axis. The up axis is the plan's lift
+direction (a rigid pick-and-place plan states it); a plan that states no lift direction (an articulated open/close
+plan) is read in the frame its room files declare (their authored ``upAxis``, which must agree). Neither stated:
+refused. No axis is ever assumed.
 
 Each asset is referenced on a child prim, ``<role prim>/Asset``, so the asset keeps its own root transform and the
 plan's pose is applied on top of it. That is how Blueprint's own checks compose them: the appearance alignment
@@ -48,7 +51,11 @@ CRITERIA_KEYS = frozenset({
     "maximum_tilt_rad", "non_colliding", "radius_m", "shape", "stable_seconds", "surface_position_world_m",
     "containment_excursions", "workspace_excursions", "forbidden_contact_classes", "maximum_regrasps",
     "maximum_retries", "maximum_task_contact_force_n", "minimum_fall_m", "minimum_opening_m", "minimum_angle_rad",
-    "minimum_hold_seconds", "placement_relation", "interior_bounds_world_m", "success_rule"})
+    "minimum_hold_seconds", "placement_relation", "interior_bounds_world_m", "success_rule",
+    # An articulated open/close goal (``articulated_task_success_contract``): the target joint's success interval,
+    # hard limits and reset position (metres for a slide, radians for a hinge), the settled speed and the motion
+    # threshold. Plain numbers; the joint ids beside them are text and stay out.
+    "success_interval", "joint_hard_limits", "reset_position", "maximum_settled_target_speed", "movement_epsilon"})
 #: The words a criterion's value may be, each read from the scorer, not guessed: the modes
 #: ``adp_rigid_task_scoring`` compares (``required``, ``ignored``, ``released``, ``cleared``, ``closed_at_most``,
 #: and ``forbidden`` for excursions), the target's shape, relation and rule (``task_evaluation_surface_target``:
@@ -74,14 +81,53 @@ def _finite(value: Any, length: int) -> bool:
                     for item in value))
 
 
-def up_axis(plan: Mapping[str, Any]) -> str:
-    """The stage's up axis from the plan's lift direction; refused when the plan does not say Z or Y."""
-    lift = ((plan.get("task_spec") or {}).get("interaction_affordance") or {}).get("lift_unit_world")
+#: The rows whose files are the room: their own frame is the scene's world frame.
+WORLD_FRAME_ROLES = frozenset({"scene_collision", "scene_appearance"})
+
+
+def up_axis(plan: Mapping[str, Any], *, packet: Path | None = None) -> str:
+    """The stage's up axis: the plan's lift direction, else what the room's files declare; refused when neither says.
+
+    A plan with a lift direction must say Z or Y. A plan with none (an articulated open/close plan) is read from
+    ``packet``, the directory its rows' files are in: each room file (``WORLD_FRAME_ROLES``) that authors ``upAxis``
+    must say the same Z or Y, and at least one must author it. Nothing stated, a disagreement or another axis:
+    refused, with the same reason.
+    """
+    affordance = (plan.get("task_spec") or {}).get("interaction_affordance") or {}
+    lift = affordance.get("lift_unit_world")
     if _finite(lift, 3) and [float(item) for item in lift] == [0.0, 0.0, 1.0]:
         return "Z"
     if _finite(lift, 3) and [float(item) for item in lift] == [0.0, 1.0, 0.0]:
         return "Y"
+    if "lift_unit_world" not in affordance and packet is not None:
+        declared = _room_up_axes(plan, Path(packet))
+        if len(declared) == 1 and declared <= {"Z", "Y"}:
+            return next(iter(declared))
     raise StageRefused("scene_stage_up_axis_not_stated")
+
+
+def _room_up_axes(plan: Mapping[str, Any], packet: Path) -> set[str]:
+    """The ``upAxis`` each room file of the plan authors (unauthored files say nothing; an unreadable one says '?')."""
+    from pxr import Sdf
+
+    declared: set[str] = set()
+    for row in plan.get("objects") or []:
+        if not isinstance(row, Mapping) or row.get("semantic_role") not in WORLD_FRAME_ROLES:
+            continue
+        relative = PurePosixPath(str(row.get("usd_path") or ""))
+        path = packet.joinpath(*relative.parts)
+        if (not relative.parts or relative.is_absolute() or ".." in relative.parts or path.is_symlink()
+                or not path.is_file() or not path.resolve().is_relative_to(packet.resolve())):
+            declared.add("?")
+            continue
+        try:
+            layer = Sdf.Layer.OpenAsAnonymous(str(path))
+            root = layer.pseudoRoot
+            if root.HasInfo("upAxis"):
+                declared.add(str(root.GetInfo("upAxis")))
+        except Exception:  # noqa: BLE001 - a file that cannot be read states nothing usable
+            declared.add("?")
+    return declared
 
 
 def placements(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -250,11 +296,12 @@ def _range(value: Any) -> list[float] | None:
     return None
 
 
-def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None,
+                 packet: Path | None = None) -> dict[str, Any] | None:
     """The success-rule file: the criteria and the neutral facts to reproduce the run, or None without criteria.
 
     ``estimates``: the preparation's ``physics.bounds`` for the object, estimated from the video; when it holds a
-    mass or friction range they go under ``object_estimates_from_video``.
+    mass or friction range they go under ``object_estimates_from_video``. ``packet``: as for ``up_axis``.
     """
     criteria = ((plan.get("task_spec") or {}).get("task_success_contract") or {}).get("criteria")
     if not isinstance(criteria, Mapping):
@@ -262,7 +309,7 @@ def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None
     rows = placements(plan)
     support = "/World/Support" if any(row["prim"] == "Support" for row in rows) else None
     kept, left_out = neutral_criteria(criteria, support_prim=support)
-    rule: dict[str, Any] = {"units": "metres, radians, seconds", "up_axis": up_axis(plan), "criteria": kept,
+    rule: dict[str, Any] = {"units": "metres, radians, seconds", "up_axis": up_axis(plan, packet=packet), "criteria": kept,
                             "criteria_fields_left_out": left_out}
     cadence = plan.get("cadence") if isinstance(plan.get("cadence"), Mapping) else {}
     timing = {key: cadence[key] for key in ("physics_frequency_hz", "control_frequency_hz", "episode_length_seconds")
@@ -288,5 +335,5 @@ def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None
     return rule
 
 
-__all__ = ["CRITERIA_KEYS", "MODE_WORDS", "ROLE_PRIMS", "StageRefused", "neutral_criteria", "neutral_rule",
+__all__ = ["CRITERIA_KEYS", "MODE_WORDS", "ROLE_PRIMS", "WORLD_FRAME_ROLES", "StageRefused", "neutral_criteria", "neutral_rule",
            "package_name", "placements", "up_axis", "write_stage"]

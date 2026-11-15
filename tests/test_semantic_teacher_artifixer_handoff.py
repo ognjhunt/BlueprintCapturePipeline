@@ -10,15 +10,6 @@ import pytest
 from PIL import Image
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.fresh_scene_supervisor_bindings import (
-    compile_fresh_scene_supervisor_bindings,
-    materialize_fresh_scene_semantic_teacher_handoff_request,
-    materialize_fresh_scene_supervisor_bindings,
-)
-from blueprint_pipeline.fresh_scene_paired_target_preparation import (
-    STAGE_CONTRACTS,
-    materialize_fresh_scene_preparation_status,
-)
 from blueprint_pipeline.public_scene_artifixer3d_candidate_inputs import (
     materialize_artifixer3d_candidate_inputs,
 )
@@ -34,7 +25,6 @@ from blueprint_pipeline.semantic_teacher_image_edit_worker import (
     RUNTIME_RESULT_SCHEMA_VERSION,
 )
 from tests.test_public_scene_artifixer3d_candidate_inputs import _preflight
-from tests.test_public_scene_calibrated_object_masks import _task
 
 
 def _sha256(path: Path) -> str:
@@ -285,63 +275,6 @@ def test_handoff_emits_exact_two_teacher_receipts_and_one_dual_packet(
     assert (output / f"{HANDOFF_SCHEMA_VERSION}.json").is_file()
 
 
-def test_handoff_receipts_advance_fresh_scene_to_artifixer_execution(
-    tmp_path: Path,
-) -> None:
-    fixture = _fixture(tmp_path)
-    output = tmp_path / "handoff"
-    handoff = _run(fixture, output)
-    candidate = json.loads(fixture["candidate_path"].read_text(encoding="utf-8"))
-    task_ids = [task["task_id"] for task in candidate["tasks"]]
-    task_freezes: list[Path] = []
-    for slot, task_id in enumerate(task_ids, start=1):
-        path = tmp_path / f"freeze-{task_id}.json"
-        _write(path, _task(task_id, slot))
-        task_freezes.append(path)
-    artifacts: dict[str, object] = {}
-    for contract in STAGE_CONTRACTS:
-        if contract["stage_id"] == "artifixer3d_result":
-            break
-        if contract["stage_id"] == "semantic_teacher_receipts":
-            artifacts[contract["stage_id"]] = {
-                row["task_id"]: str(output / row["relative_path"])
-                for row in handoff["semantic_teacher_receipts"]
-            }
-            continue
-        if contract["stage_id"] == "dual_target_artifixer_inputs":
-            artifacts[contract["stage_id"]] = str(
-                output / handoff["dual_target_inputs"]["relative_path"]
-            )
-            continue
-        value: dict[str, object] = {
-            "schema_version": contract["schemas"][0],
-            "status": (contract["accepted_statuses"][0] if contract["accepted_statuses"] else None),
-        }
-        if contract["digest_fields"]:
-            field = contract["digest_fields"][0]
-            value[field] = canonical_digest(value, digest_field=field)
-        if contract["cardinality"] == "per_task":
-            paths = {}
-            for task_id in task_ids:
-                path = tmp_path / f"{contract['stage_id']}-{task_id}.json"
-                _write(path, value)
-                paths[task_id] = str(path)
-            artifacts[contract["stage_id"]] = paths
-        else:
-            path = tmp_path / f"{contract['stage_id']}.json"
-            _write(path, value)
-            artifacts[contract["stage_id"]] = str(path)
-
-    status = materialize_fresh_scene_preparation_status(
-        task_freeze_paths=task_freezes,
-        artifacts=artifacts,
-        output_path=tmp_path / "preparation-status.json",
-    )
-
-    assert status["first_blocker"] == "fresh_scene_artifixer3d_result_missing"
-    assert status["next_required_stage"] == "artifixer3d_result"
-
-
 def test_handoff_rejects_mutated_png_before_writing_output(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     frame = next((fixture["runtime_root"] / "tasks").rglob("*.png"))
@@ -421,56 +354,3 @@ def test_handoff_rejects_different_candidate_path_and_negative_radius(
     assert not output.exists()
 
 
-def test_supervisor_binding_seals_handoff_request_and_all_transitive_inputs(
-    tmp_path: Path,
-) -> None:
-    fixture = _fixture(tmp_path)
-    request_path = tmp_path / "handoff-request.json"
-    request = materialize_fresh_scene_semantic_teacher_handoff_request(
-        result_import_path=fixture["import_path"],
-        semantic_teacher_packet_path=fixture["packet_path"],
-        source_candidate_inputs_receipt_path=fixture["candidate_path"],
-        transition_radius_pixels=2,
-        output_path=request_path,
-        roots=[tmp_path],
-    )
-    status_path = tmp_path / "status.json"
-    status = _sealed(
-        status_path,
-        {
-            "schema_version": "fresh_scene_paired_target_preparation.v1",
-            "status": "blocked",
-            "task_ids": ["task_0", "task_1"],
-            "task_count": 2,
-        },
-        "status_digest",
-    )
-    manifest_path = tmp_path / "bindings.json"
-    manifest = materialize_fresh_scene_supervisor_bindings(
-        preparation_status_path=status_path,
-        semantic_teacher_handoff_request_path=request_path,
-        output_path=manifest_path,
-        roots=[tmp_path],
-    )
-
-    assert request["transition_radius_pixels"] == 2
-    assert (
-        len(
-            manifest["tool_requests"]["fresh_scene_semantic_teacher_handoff_request"][
-                "input_inventory"
-            ]
-        )
-        > 20
-    )
-    reopened = compile_fresh_scene_supervisor_bindings(manifest_path, roots=[tmp_path])
-    assert (
-        "materialize_fresh_scene_semantic_teacher_artifixer_handoff"
-        in reopened["requested_tool_ids"]
-    )
-    assert (
-        reopened["context_bindings"]["fresh_scene_semantic_teacher_handoff_request"][
-            "request_digest"
-        ]
-        == request["request_digest"]
-    )
-    assert status["status_digest"]

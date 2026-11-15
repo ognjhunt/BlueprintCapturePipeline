@@ -8,10 +8,8 @@ import pytest
 import numpy as np
 from PIL import Image
 
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import adp009d_aura_native_vast as subject
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
@@ -176,89 +174,6 @@ def test_materializer_rejects_offcenter_camera_or_changed_reference(
             aura_ply_path=ply,
             output_path=tmp_path / "probe.json",
         )
-
-
-def _allocator_args(tmp_path: Path, *, execute: bool) -> list[str]:
-    values = [
-        "gpu-canary",
-        "--probe-kind",
-        subject.PROBE_KIND,
-        "--provider",
-        "vast",
-        "--provider-launch-request",
-        str(tmp_path / "unused-request.json"),
-        "--release-evidence",
-        str(tmp_path / "unused-release.json"),
-        "--model-cache-evidence",
-        str(tmp_path / "unused-model.json"),
-        "--preflight-bundle",
-        str(tmp_path / "unused-preflight.json"),
-        "--admission-out",
-        str(tmp_path / "admission.json"),
-        "--bound-request-out",
-        str(tmp_path / "unused-bound.json"),
-        "--adapter-output",
-        str(tmp_path / "adapter.json"),
-        "--pod-name",
-        "adp009d-aura-native",
-        "--adp009d-aura-native-probe-manifest",
-        str(tmp_path / "probe.json"),
-        "--adp009d-aura-source-root",
-        str(tmp_path / "aura-source"),
-        "--adp-job-dir",
-        str(tmp_path / "job"),
-        "--adp-max-hourly-rate-usd",
-        "0.8",
-        "--adp-max-spend-usd",
-        "1.25",
-        "--adp-hard-ttl-seconds",
-        "2700",
-    ]
-    if execute:
-        values.append("--execute")
-    return values
-
-
-@pytest.mark.parametrize("execute", [False, True])
-def test_allocator_routes_native_aura_only_through_canonical_grant(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
-) -> None:
-    observed: dict = {}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    monkeypatch.setattr(
-        allocator,
-        "build_aura_native_live_camera_bundle",
-        lambda **kwargs: {
-            "status": "ready",
-            "bundle_sha256": "sha256:" + "b" * 64,
-            "input_digest": "sha256:" + "c" * 64,
-            "source_commit": subject.SOURCE_COMMIT,
-            "source_tree": subject.SOURCE_TREE,
-            "aura_ply_sha256": subject.EXPECTED_AURA_PLY_SHA256,
-        },
-    )
-
-    def fake_run(**kwargs):
-        observed.update(kwargs)
-        return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_aura_native_live_camera_vast", fake_run)
-
-    assert allocator.main(_allocator_args(tmp_path, execute=execute)) == 0
-    assert observed["execute"] is execute
-    assert (
-        isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant)
-        is execute
-    )
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["probe_kind"] == subject.PROBE_KIND
-    assert admission["retry_cap"] == 0
-    assert admission["candidate_policy_queried"] is False
-    assert admission["hard_cap_usd"] == 1.25
 
 
 def test_native_aura_transport_has_dedicated_contract_and_ssh_launch() -> None:

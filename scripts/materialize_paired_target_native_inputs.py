@@ -9,10 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from blueprint_pipeline.agent_cad_graph_visual_composition import (
-    materialize_agent_cad_visual_composition,
-    seal_agent_cad_visual_binding,
-)
 from blueprint_pipeline.materializer_cli import Param, Step, run
 from blueprint_pipeline.native_task_arena_packet import (
     materialize_native_task_arena_appearance_variant_request,
@@ -48,13 +44,6 @@ from blueprint_pipeline.paired_target_native_construction_bindings import (
 )
 from blueprint_pipeline.paired_target_native_manipulation_preflight import (
     materialize_paired_target_native_manipulation_preflight,
-)
-from blueprint_pipeline.registered_replacement_asset import (
-    materialize_registered_replacement_asset,
-)
-from blueprint_pipeline.simready_graph_asset import author_simready_graph_asset
-from blueprint_pipeline.simready_graph_asset_static_qualification import (
-    qualify_simready_graph_asset_static,
 )
 from blueprint_pipeline.source_collider_subtree_removal import (
     materialize_source_collider_batch_removal,
@@ -128,82 +117,6 @@ STEPS: dict[str, Step] = {
             ),
             "output_root": Param("--output-root", required=True),
             "expected_source_sha256": Param("--expected-source-sha256"),
-        },
-    ),
-    "simready-graph-asset": Step(
-        "Author one task-neutral SimReady graph asset from sealed inputs.",
-        author_simready_graph_asset,
-        {
-            "spec": Param("--spec", required=True, json_file=True),
-            "task_freeze_receipt_path": Param("--task-freeze", required=True),
-            "source_asset_receipt_path": Param(
-                "--source-asset-receipt", required=True
-            ),
-            "destination": Param("--output-usd", required=True),
-            "measured_derivation": Param("--measured-derivation", json_file=True),
-            "receipt_path": Param("--output-receipt", required=True),
-        },
-    ),
-    "simready-static-qualification": Step(
-        "Reopen and statically qualify authored or registered SimReady bytes.",
-        qualify_simready_graph_asset_static,
-        {
-            "spec": Param("--spec", required=True, json_file=True),
-            "authoring_receipt_path": Param(
-                "--authoring-receipt", required=True
-            ),
-            "registered_replacement_asset_receipt_path": Param(
-                "--registered-asset-receipt"
-            ),
-            "output_path": Param("--output", required=True),
-        },
-    ),
-    "visual-binding": Step(
-        "Seal the selected CAD visual meshes onto the graph asset links.",
-        seal_agent_cad_visual_binding,
-        {
-            "graph_authoring_receipt_path": Param(
-                "--graph-authoring-receipt", required=True
-            ),
-            "cad_agent_output_receipt_path": Param("--cad-agent-output-receipt"),
-            "cad_agent_matrix_path": Param("--cad-agent-matrix"),
-            "cad_agent_backend_id": Param("--cad-agent-backend-id"),
-            "cad_agent_visual_review_path": Param(
-                "--cad-agent-visual-review", required=True
-            ),
-            "mesh_projection_receipt_path": Param(
-                "--mesh-projection-receipt", required=True
-            ),
-            "link_bindings": Param("--link-bindings", required=True, json_file=True),
-            "unmapped_graph_link_reasons": Param(
-                "--unmapped-graph-link-reasons", required=True, json_file=True
-            ),
-            "freeze_carry_forward": Param("--freeze-carry-forward", json_file=True),
-            "output_path": Param("--output", required=True),
-        },
-    ),
-    "visual-composition": Step(
-        "Compose the exact selected CAD visuals into the graph asset USD.",
-        materialize_agent_cad_visual_composition,
-        {
-            "binding_path": Param("--binding", required=True),
-            "destination_usd_path": Param("--output-usd", required=True),
-            "receipt_path": Param("--receipt"),
-            "grasp_collision_patches": Param(
-                "--grasp-collision-patches", json_file=True
-            ),
-        },
-    ),
-    "registered-asset": Step(
-        "Apply the reviewed frame registration to one composed replacement.",
-        materialize_registered_replacement_asset,
-        {
-            "visual_composition_receipt_path": Param(
-                "--visual-composition-receipt", required=True
-            ),
-            "frame_registration_path": Param("--frame-registration", required=True),
-            "output_usd_path": Param("--output-usd", required=True),
-            "output_receipt_path": Param("--output-receipt", required=True),
         },
     ),
     "interaction-affordance": Step(

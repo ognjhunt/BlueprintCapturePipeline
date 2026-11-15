@@ -1,14 +1,7 @@
-"""Every live profile builder goes through the one skeleton, or it is a copy.
+"""Every receipt-driven live profile builder declares a TTL band the allocator accepts.
 
-Three lanes could be launched from the website and eleven could not, and the
-obvious next step was eleven more builders. The two that existed were 319 and
-281 lines sharing 184 identical lines, so eleven more would have been eleven
-more chances to omit the residency check, the spend binding, or the terminal
-contract -- and each of those is only discovered after a provider is rented.
-
-This rediscovers the builders from `scripts/` rather than listing them, so a
-builder added tomorrow is held to the same thing without anyone remembering to
-add it here.
+The builders are rediscovered from `scripts/` rather than listed, so a builder
+added tomorrow is held to the same band without anyone remembering to add it.
 """
 
 from __future__ import annotations
@@ -24,7 +17,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
-SHARED_MODULE = "task_evaluation_live_profile"
 
 
 def _builders() -> list[Path]:
@@ -165,59 +157,6 @@ def _is_receipt_driven(path: Path) -> bool:
     """
 
     return "--bundle-receipt" in _cli_arguments(path)
-
-
-@pytest.mark.parametrize("path", _builders(), ids=lambda p: p.stem)
-def test_every_builder_takes_its_control_surface_from_one_definition(
-    path: Path,
-) -> None:
-    """`required_controls` and `terminal_contract` decide if a run is provable.
-
-    A lane that quietly dropped `provider_zero_required` or stopped asking for
-    a teardown manifest would keep passing until the day it mattered. There is
-    one definition of both, and every builder uses it.
-    """
-
-    source = path.read_text(encoding="utf-8")
-    assert SHARED_MODULE in source, f"{path.name} does not import the shared module"
-    assert "shared_control_surface" in source or "build_lane_live_profile" in source
-    for owned in ('"required_controls"', '"terminal_contract"', '"webapp_sync"'):
-        assert owned not in source, (
-            f"{path.name} sets {owned} itself; `shared_control_surface` already "
-            "does, and two copies drift"
-        )
-
-
-@pytest.mark.parametrize(
-    "path", [p for p in _builders() if _is_receipt_driven(p)], ids=lambda p: p.stem
-)
-def test_every_receipt_driven_builder_uses_the_whole_skeleton(path: Path) -> None:
-    """Residency, spend binding, and validation are not per-lane decisions."""
-
-    source = path.read_text(encoding="utf-8")
-    if "build_lane_live_profile" not in source:
-        pytest.fail(
-            f"{path.name} assembles a launch profile by hand. Declare a "
-            "LaneLiveProfileSpec and call build_lane_live_profile instead -- the "
-            "residency, spend, and terminal-contract checks live there."
-        )
-    # Resolving the receipt is the skeleton's job; doing it again here means
-    # this builder decided to resolve it differently.
-    assert "resolve_host_resident_bundle_receipt" not in source
-
-
-@pytest.mark.parametrize("path", _builders(), ids=lambda p: p.stem)
-def test_every_builder_offers_a_revision_argument(path: Path) -> None:
-    """Published profiles are immutable, so a rebuild needs its own id.
-
-    Reusing one id for two different input sets at a single commit surfaces as
-    `launch_profile_immutable_input_digest_mismatch` on the next launch, not at
-    publish time.
-    """
-
-    assert "--revision" in _cli_arguments(path), (
-        f"{path.name} cannot distinguish a rebuild"
-    )
 
 
 @pytest.mark.parametrize(

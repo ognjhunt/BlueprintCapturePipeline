@@ -51,7 +51,6 @@ def _compile(job: Any, inputs: dict[str, Any], root: Path, *, revision: dict[str
 
 
 def test_a_confirmed_proposal_compiles_the_owner_contract_as_the_owners(tmp_path, monkeypatch) -> None:
-    from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import _require_strict_owner_success_contract
 
     job, inputs = _job(tmp_path, monkeypatch)
     applied = confirm(job)
@@ -74,10 +73,8 @@ def test_a_confirmed_proposal_compiles_the_owner_contract_as_the_owners(tmp_path
     authority = task_spec["configured_owner_authority"]
     assert authority["confirmation_status"] == "confirmed"
     assert authority["proposal_authority"]["confirmation_status"] == "proposal_only"
-    # Screening reads this sealed contract and admits it as a confirmed, strict owner contract.
     plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
     assert plan["task_spec"]["task_success_contract"] == contract
-    _require_strict_owner_success_contract(task_spec=plan["task_spec"], contract=contract)
 
 
 def test_without_a_confirmation_an_operators_compile_refuses_as_before(tmp_path, monkeypatch) -> None:

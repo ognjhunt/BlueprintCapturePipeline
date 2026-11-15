@@ -62,9 +62,9 @@ def test_builds_released_content_agents_component_without_scene_inputs(
         "src/blueprint_pipeline/content_agents_model_compatibility.py",
         "src/blueprint_pipeline/production_cad_skill_sources.py",
         "skillpacks/cad_authoring/skills/multi-agent-cad/SKILL.md",
-        "docs/arm_decision_proof_v1/assets/adp009a_content_agents_material.vast.yaml",
-        "docs/arm_decision_proof_v1/assets/adp009a_content_agents_texture.vast.yaml",
-        "docs/arm_decision_proof_v1/assets/adp009a_content_agents_physics.vast.yaml",
+        "config/content_agents/adp009a_content_agents_material.vast.yaml",
+        "config/content_agents/adp009a_content_agents_texture.vast.yaml",
+        "config/content_agents/adp009a_content_agents_physics.vast.yaml",
     )
     for relative in copies:
         destination = repository / relative

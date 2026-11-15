@@ -616,17 +616,3 @@ def test_default_fetcher_refuses_unconfigured_bucket_before_request(tmp_path, mo
         deferred.default_reference_fetcher({"uri": "s3://unconfigured-bucket/document.json",
             "digest": "sha256:" + "0" * 64, "size_bytes": 10})
     assert calls == []
-
-
-def test_progression_unit_declares_b2_role_without_overriding_legacy_store():
-    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service").read_text()
-    for line in [
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE=/etc/blueprint/provider-secrets/backblaze_b2_region",
-        "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET=blueprint-task-evaluation-artifacts-prod",
-    ]:
-        assert f"Environment={line}" in unit
-    assert "Environment=BLUEPRINT_WAM_OBJECT_STORE" not in unit

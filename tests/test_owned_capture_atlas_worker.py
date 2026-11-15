@@ -243,7 +243,7 @@ def test_existing_timer_is_safe_with_no_owned_configuration(tmp_path, monkeypatc
 
 def test_existing_timer_discovers_explicit_owned_job_from_same_server_roots(owned, configuration, monkeypatch, tmp_path, capsys):
     from blueprint_pipeline.capture_upload_intake import CAPTURE_UPLOAD_STORE_ROOT_ENV
-    from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
+    from blueprint_pipeline.live_pipeline_intake_runtime_controls import CONTROL_PLANE_OUTPUT_PATH_ENV
     from blueprint_pipeline.live_pipeline_intake_runtime_controls import INTAKE_WORK_DIR_ENV
     _enqueue(owned, configuration, monkeypatch)
     manifest = tmp_path / "live-manifest.json"
@@ -263,7 +263,7 @@ def test_existing_timer_discovers_explicit_owned_job_from_same_server_roots(owne
 def test_the_provider_poll_reads_an_owned_job_until_its_source_is_revoked(owned, configuration, monkeypatch, tmp_path,
                                                                           capsys):
     from blueprint_pipeline.capture_upload_intake import CAPTURE_UPLOAD_STORE_ROOT_ENV
-    from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
+    from blueprint_pipeline.live_pipeline_intake_runtime_controls import CONTROL_PLANE_OUTPUT_PATH_ENV
     from blueprint_pipeline.live_pipeline_intake_runtime_controls import INTAKE_WORK_DIR_ENV
     _enqueue(owned, configuration, monkeypatch)
     manifest = tmp_path / "live-manifest.json"

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import task_evaluation_configured_controls_autostart_support as support
-from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
+from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as worker
 from blueprint_pipeline import task_evaluation_retained_controls_evidence as retained
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import validation_file_digests as digests

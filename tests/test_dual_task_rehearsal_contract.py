@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
-from pathlib import Path
 
 import pytest
 
@@ -369,28 +367,3 @@ def test_learned_outcome_leakage_fails_before_scene_selection() -> None:
         validate_selection_preregistration(value)
 
     assert "dual_task_selection_outcome_leakage" in caught.value.errors
-
-
-def test_checked_in_third_scene_freezes_validate_as_one_independent_pair() -> None:
-    root = Path(__file__).resolve().parents[1]
-    manifests = root / "docs/arm_decision_proof_v1/manifests"
-
-    preregistration = json.loads(
-        (manifests / "third_scene_dual_task_selection_preregistration.v1.json").read_text()
-    )
-    scene = json.loads(
-        (manifests / "third_scene_840920_dual_task_scene_freeze.v1.json").read_text()
-    )
-    task_a = json.loads(
-        (manifests / "third_scene_840920_task_a_freeze.v1.json").read_text()
-    )
-    task_b = json.loads(
-        (manifests / "third_scene_840920_task_b_freeze.v1.json").read_text()
-    )
-    expected_join = json.loads(
-        (manifests / "third_scene_840920_dual_task_freeze_join.v1.json").read_text()
-    )
-
-    validate_selection_preregistration(preregistration)
-    validate_scene_freeze(scene)
-    assert validate_task_freeze_join([task_a, task_b]) == expected_join

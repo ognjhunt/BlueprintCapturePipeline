@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import time
 from pathlib import Path
 
@@ -34,7 +33,6 @@ from blueprint_pipeline import task_evaluation_scene_terminal_result_index as in
 from blueprint_pipeline import task_evaluation_scene_terminal_reconciler as reconciler
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
-from tests.test_task_evaluation_policy_canary_dispatcher import materialize_canary_root
 from tests.test_task_evaluation_scene_terminal_reconciler import _env, _launch_request, _profile, _write
 
 BUCKET = "blueprint-production-inputs"
@@ -131,33 +129,6 @@ def _reseal(value: dict, field: str) -> dict:
 # ------------------------------------------------------------------ stage A: launch bridge
 
 
-def test_launch_bridge_from_the_real_public_canary_launch_is_not_owner_bound(tmp_path, monkeypatch):
-    """A public (website-direct) canary launch has no owner binding: the REAL
-    launch dispatcher's run root is recognised and skipped, nothing is filed."""
-    from blueprint_pipeline.task_evaluation_launch_dispatcher import dispatch_launch_request
-    from tests.test_task_evaluation_policy_canary_preparation_dispatch import _profile_and_request
-
-    env = _env(tmp_path)
-    (tmp_path / "public").mkdir()
-    profile, request = _profile_and_request(tmp_path / "public")
-    profiles = tmp_path / "profiles"
-    profiles.mkdir()
-    (profiles / f"{profile['profile_id']}.json").write_text(json.dumps(profile), encoding="utf-8")
-    request_path = tmp_path / "request.json"
-    request_path.write_text(json.dumps(request), encoding="utf-8")
-    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT", str(tmp_path / "preparations"))
-    receipt = dispatch_launch_request(
-        request_path=request_path, profile_dir=profiles, state_root=tmp_path / "runs", execute=True,
-        allocator_runner=lambda _argv: (_ for _ in ()).throw(AssertionError("allocator must not run")))
-    assert receipt["status"] == "queued_for_no_spend_preparation"
-    launch_root = tmp_path / "runs" / request["launch_id"]
-    assert (launch_root / "launch_profile.json").is_file() and (launch_root / "launch_request.json").is_file()
-    result = _bridge(env, launch_root)
-    assert result["status"] == "not_owner_bound"
-    assert result["provider_mutation_performed"] is False
-    assert not Path(env["config"]["terminal_result_root"]).exists()
-
-
 def test_launch_bridge_files_the_owner_bound_launch_into_the_intent_directory(tmp_path):
     env = _env(tmp_path)
     launch_root = _owner_launch_run(tmp_path / "state", env)
@@ -200,211 +171,7 @@ def test_launch_bridge_without_a_matching_owner_intent_is_typed_and_writes_nothi
 # ------------------------------------------------------------- stage B: canary terminal set
 
 
-def test_policy_canary_terminal_from_the_real_dispatcher_output_reconciles_the_blocked_owner_status(
-        tmp_path, monkeypatch):
-    env = _env(tmp_path)
-    _bridge(env, _owner_launch_run(tmp_path / "state", env))
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID)
-    result = _canary(env, run["root"])
-    assert result["status"] == "policy_canary_terminal_indexed", result
-    assert result["intent_id"] == env["intent_id"] and result["run_id"] == RUN_ID
-    assert result["provider_mutation_performed"] is False
-    directory = _terminal_dir(env)
-    assert _files(directory) == {
-        "launch_request.json", "launch_profile.json", "policy_canary_result_projection.json",
-        "policy_canary_webapp_sync.json", "provider_zero_closure.json", "policy_canary_dispatch_receipt.json",
-        "terminal_index_state.json"}
-    # Byte-exact copies of the producer's sealed files -- the receipt binds them by digest.
-    root = run["root"]
-    assert (directory / "provider_zero_closure.json").read_bytes() == (
-        root / "post_teardown_global_provider_zero.json").read_bytes()
-    assert (directory / "policy_canary_dispatch_receipt.json").read_bytes() == (
-        root / "dispatch_receipt.json").read_bytes()
-    assert (directory / "policy_canary_result_projection.json").read_bytes() == (
-        root / "artifacts/result_delivery/policy_canary_result_projection.json").read_bytes()
-    state = json.loads((directory / "terminal_index_state.json").read_text())
-    assert state["canary_run_root"] == str(root) and state["run_id"] == RUN_ID
-    # The REAL reconciler joins them into a truthful BLOCKED terminal owner status.
-    terminal = _reconcile(env)
-    assert terminal["terminal"] is True and terminal["status"] == "blocked", terminal
-    assert "policy_canary_episode_runner_failed" in terminal["blockers"]
-    assert len(terminal["state"]["terminal_failed_children"]) == 20
-    assert terminal["result_reference"] is None
-    assert _canary(env, run["root"]) == result  # idempotent
-
-
-def test_policy_canary_terminal_waits_for_the_launch_bridge_and_writes_nothing(tmp_path, monkeypatch):
-    env = _env(tmp_path)
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID)
-    result = _canary(env, run["root"])
-    assert result["status"] == "launch_bridge_pending" and result["run_id"] == RUN_ID
-    assert not Path(env["config"]["terminal_result_root"]).exists()
-
-
-def test_policy_canary_terminal_before_the_dispatch_receipt_is_typed_pending(tmp_path, monkeypatch):
-    env = _env(tmp_path)
-    _bridge(env, _owner_launch_run(tmp_path / "state", env))
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID)
-    (run["root"] / "dispatch_receipt.json").unlink()  # a run still in flight
-    result = _canary(env, run["root"])
-    assert result["status"] == "dispatch_receipt_pending"
-    assert _files(_terminal_dir(env)) == {"launch_request.json", "launch_profile.json"}
-
-
-def test_policy_canary_terminal_refuses_a_projection_that_no_longer_matches_the_sealed_receipt(
-        tmp_path, monkeypatch):
-    """R10: the whole cross-bound set is validated BEFORE anything is written."""
-    env = _env(tmp_path)
-    _bridge(env, _owner_launch_run(tmp_path / "state", env))
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID)
-    projection_path = run["root"] / "artifacts/result_delivery/policy_canary_result_projection.json"
-    projection_path.write_text(projection_path.read_text() + "\n")  # bytes drift from the receipt record
-    with pytest.raises(index.TerminalResultIndexError, match="dispatch_receipt_binding_invalid"):
-        _canary(env, run["root"])
-    assert _files(_terminal_dir(env)) == {"launch_request.json", "launch_profile.json"}
-
-
-def test_policy_canary_terminal_refuses_a_receipt_without_persisted_records(tmp_path, monkeypatch):
-    """A receipt sealed by a release that did not persist the projection/sync (the
-    retained production run abe19c87 is one) cannot be indexed: nothing binds the
-    files, and the index never manufactures them."""
-    env = _env(tmp_path)
-    _bridge(env, _owner_launch_run(tmp_path / "state", env))
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID)
-    receipt_path = run["root"] / "dispatch_receipt.json"
-    receipt = json.loads(receipt_path.read_text())
-    receipt.pop("policy_canary_result_projection")
-    receipt.pop("policy_canary_webapp_sync")
-    receipt_path.write_text(json.dumps(_reseal(receipt, "receipt_digest"), sort_keys=True,
-                                       separators=(",", ":")) + "\n")
-    with pytest.raises(index.TerminalResultIndexError, match="dispatch_receipt_records_missing"):
-        _canary(env, run["root"])
-    assert _files(_terminal_dir(env)) == {"launch_request.json", "launch_profile.json"}
-
-
-def test_policy_canary_terminal_refuses_an_unconfirmed_provider_zero(tmp_path, monkeypatch):
-    """Resource closure is part of the cross-bound set: a receipt that binds a
-    provider-zero receipt which does not confirm zero is never indexed."""
-    env = _env(tmp_path)
-    _bridge(env, _owner_launch_run(tmp_path / "state", env))
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID)
-    zero_path = run["root"] / "post_teardown_global_provider_zero.json"
-    zero = json.loads(zero_path.read_text())
-    zero.update(status="provider_zero_pending", live_instance_count=1, provider_zero_verified=False)
-    zero_path.write_text(json.dumps(_reseal(zero, "receipt_digest"), sort_keys=True) + "\n")
-    receipt_path = run["root"] / "dispatch_receipt.json"
-    receipt = json.loads(receipt_path.read_text())
-    receipt["provider_zero"] = {**receipt["provider_zero"], **index.file_record(zero_path)}
-    receipt_path.write_text(json.dumps(_reseal(receipt, "receipt_digest"), sort_keys=True,
-                                       separators=(",", ":")) + "\n")
-    with pytest.raises(index.TerminalResultIndexError, match="provider_zero_not_confirmed"):
-        _canary(env, run["root"])
-    assert _files(_terminal_dir(env)) == {"launch_request.json", "launch_profile.json"}
-
-
 # --------------------------------------------------------- stage C: durable publication
-
-
-def test_publication_derives_from_the_real_offload_pointer_and_completes_the_owner_status(
-        tmp_path, monkeypatch):
-    env = _env(tmp_path)
-    _bridge(env, _owner_launch_run(tmp_path / "state", env))
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID, completed=True)
-    assert run["receipt"]["status"] == "completed_unqualified"
-    assert _canary(env, run["root"])["status"] == "policy_canary_terminal_indexed"
-    # Before retention archives the run there is no durable publication: explicit,
-    # never completed, and no publication is manufactured.
-    pending = _reconcile(env)
-    assert pending["terminal"] is False and pending["blockers"] == ["terminal_result_publication_pending"]
-    assert not (_terminal_dir(env) / "terminal_result_publication.json").exists()
-    # The REAL retention step archives the canary root and leaves the sealed pointer.
-    pointer_path = _offload(run["root"])
-    assert pointer_path.is_file() and not run["root"].exists()
-    terminal = _reconcile(env)
-    assert terminal["terminal"] is True and terminal["status"] == "completed", terminal
-    pointer = json.loads(pointer_path.read_text())
-    assert terminal["result_reference"] == {
-        "uri": pointer["uri"], "digest": run["receipt"]["policy_canary_projection_digest"],
-        "size_bytes": pointer["size_bytes"]}
-    assert terminal["result_reference"]["uri"].startswith("s3://")
-    publication = json.loads((_terminal_dir(env) / "terminal_result_publication.json").read_text())
-    assert publication["schema_version"] == reconciler.PUBLICATION_SCHEMA
-    assert publication["archive_digest"] == pointer["digest"] and publication["provider_allocated"] is False
-    assert publication["publication_digest"] == canonical_digest(publication, digest_field="publication_digest")
-    assert _reconcile(env) == terminal  # duplicate tick is byte-identical
-
-
-def test_publication_refuses_a_pointer_that_does_not_bind_this_run(tmp_path, monkeypatch):
-    env = _env(tmp_path)
-    _bridge(env, _owner_launch_run(tmp_path / "state", env))
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID, completed=True)
-    _canary(env, run["root"])
-    pointer_path = _offload(run["root"])
-    pointer = json.loads(pointer_path.read_text())
-    for member in pointer["members"]:
-        if member["relative_path"].endswith("policy_canary_result_projection.json"):
-            member["sha256"] = "sha256:" + "0" * 64  # the archive holds a different projection
-    pointer_path.chmod(0o640)
-    pointer_path.write_text(json.dumps(_reseal(pointer, "pointer_digest"), indent=2, sort_keys=True) + "\n")
-    result = index.index_result_publication(terminal_directory=_terminal_dir(env))
-    assert result["status"] == "publication_pointer_unbound"
-    terminal = _reconcile(env)
-    assert terminal["status"] != "completed"
-    assert "terminal_result_publication_pointer_unbound" in terminal["blockers"]
-    assert not (_terminal_dir(env) / "terminal_result_publication.json").exists()
-
-
-@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses discretionary mode bits")
-def test_unreadable_pointer_is_typed_not_a_crash(tmp_path, monkeypatch):
-    env = _env(tmp_path)
-    _bridge(env, _owner_launch_run(tmp_path / "state", env))
-    run = materialize_canary_root(tmp_path / "canaries", monkeypatch, run_id=RUN_ID, completed=True)
-    _canary(env, run["root"])
-    pointer_path = _offload(run["root"])
-    pointer_path.chmod(0)
-    try:
-        result = index.index_result_publication(terminal_directory=_terminal_dir(env))
-        assert result["status"] == "publication_pointer_unreadable"
-        terminal = _reconcile(env)
-        assert terminal["status"] != "completed"
-        assert "terminal_result_publication_pointer_unreadable" in terminal["blockers"]
-    finally:
-        pointer_path.chmod(0o440)
-
-
-@pytest.mark.parametrize('completed', [False, True])
-def test_later_owner_attempt_retains_both_results_and_selects_its_own_terminal(tmp_path, monkeypatch, completed):
-    from blueprint_pipeline import task_evaluation_scene_intake as intake
-    from blueprint_pipeline import task_evaluation_scene_policy_binding as policy
-    env = _env(tmp_path)
-    first = _bridge(env, _owner_launch_run(tmp_path / 'state', env))
-    run = materialize_canary_root(tmp_path / 'canaries', monkeypatch, run_id=RUN_ID)
-    _canary(env, run['root'])
-    prior_terminal = _reconcile(env)
-    prior_bytes = {p.name: p.read_bytes() for p in Path(first['directory']).iterdir() if p.is_file()}
-    binding = env['binding']
-    attempt = intake.reserve_scene_attempt(queue_root=env['config']['intent_root'], intent_id=env['intent_id'],
-        attempt_id='policy-next', source_commit=env['release']['source_commit'],
-        runtime_digest=binding['runtime_digest'], input_digest='sha256:'+'6'*64,
-        provider='vast', maximum_spend_usd=1, now=env['now']+1)
-    next_env = {**env, 'binding': policy.seal_binding(scene_intent_digest=env['intent']['intent_digest'],
-        attempt_id=attempt['attempt_id'], policy_candidates=binding['policy_candidates'],
-        runtime_digest=attempt['runtime_digest'], input_digest=attempt['input_digest'])}
-    next_id = RUN_ID+'-next'
-    second = _bridge(next_env, _owner_launch_run(tmp_path/'state', next_env, run_id=next_id, launch_id='launch-owner-2'))
-    assert second['directory'] != first['directory']
-    assert _reconcile(env) is None  # An older failed result cannot finish the pending successor.
-    next_run = materialize_canary_root(tmp_path/'canaries-next', monkeypatch, run_id=next_id, completed=completed)
-    indexed = _canary(env, next_run['root'])
-    assert indexed['intent_id'] == env['intent_id']
-    if completed:
-        _offload(next_run['root'])
-    terminal = _reconcile(env)
-    assert terminal['status'] == ('completed' if completed else 'blocked')
-    assert terminal['state']['result_run_id'] == next_id
-    assert terminal['state']['terminal_join']['path'] != prior_terminal['state']['terminal_join']['path']
-    assert {name: (Path(first['directory'])/name).read_bytes() for name in prior_bytes} == prior_bytes
-    assert _reconcile(env) == terminal
 
 
 def test_two_runs_bound_to_the_same_attempt_are_not_arbitrarily_selected(tmp_path):

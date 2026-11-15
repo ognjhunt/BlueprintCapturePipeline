@@ -8,9 +8,6 @@ import pytest
     ("native_g1_development_pair", "_read_result"),
     ("native_g1_development_pair", "_score_from_episode"),
     ("native_g1_development_pair", "_verified_review_media"),
-    ("native_g1_paid_campaign", "verify_g1_paid_output"),
-    ("native_g1_team_paid_output", "verify_g1_team_paid_output"),
-    ("native_g1_provider_runtime", "_query_count"),
 ])
 def test_existing_reader_refuses_missing_current_generation_before_payload(tmp_path, monkeypatch, module, method):
     from blueprint_pipeline import control_plane_lane_experiment_consumer as lifetime

@@ -222,8 +222,8 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
                                   "refusal": None}
         try:
             rows = placements(plan)
-            axis = up_axis(plan)
-            rule = neutral_rule(plan, estimates=estimates)
+            axis = up_axis(plan, packet=packet)
+            rule = neutral_rule(plan, estimates=estimates, packet=packet)
             if rule is None:
                 raise StageRefused("scene_stage_success_rule_missing")
             for placement, raw in zip(rows, plan["objects"], strict=True):

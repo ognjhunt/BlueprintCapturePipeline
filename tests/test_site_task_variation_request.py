@@ -10,7 +10,35 @@ from blueprint_pipeline.exact_workcell_variation_matrix import (
 )
 from blueprint_pipeline.native_task_runtime_contract import SUPPORTED_SCENARIO_RUNTIME_TARGETS
 from blueprint_pipeline.site_task_variation_request import build_site_task_variation_request
-from tests.test_task_evaluation_policy_canary_rescore import _task_spec
+
+
+# Moved unchanged from the retired policy-canary rescore tests.
+def _task_spec() -> dict[str, object]:
+    return {
+        "schema_version": "adp_task_spec.v2",
+        "task_kind": "rigid_pick_place",
+        "subject_asset_id": "cup",
+        "start_pose_world": [1.0, 2.0, 0.8, 0.0, 0.0, 0.0, 1.0],
+        "destination_position_bounds_world_m": {
+            "minimum": [1.14, 1.99, 0.79],
+            "maximum": [1.16, 2.01, 0.81],
+        },
+        "destination_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "destination_orientation_tolerance_rad": 0.1,
+        "support_height_interval_m": [0.79, 0.81],
+        "minimum_translation_m": 0.14,
+        "minimum_lift_m": 0.02,
+        "movement_epsilon_m": 0.001,
+        "reset_translation_tolerance_m": 0.001,
+        "reset_orientation_tolerance_rad": 0.01,
+        "settle_window_samples": 3,
+        "settle_position_tolerance_m": 0.002,
+        "settle_orientation_tolerance_rad": 0.01,
+        "release_required": True,
+        "release_gripper_width_min_m": 0.07,
+        "task_contact_minimum_force_n": 0.5,
+    }
+
 
 D = "sha256:"
 

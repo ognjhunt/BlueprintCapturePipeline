@@ -13,7 +13,6 @@ import zipfile
 
 import pytest
 
-from blueprint_pipeline import adp009d_franka_vast as transport
 from blueprint_pipeline import task_evaluation_scene_configuration_native_continuation as continuation
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime import execute_scene_configuration_stage_chain
@@ -225,37 +224,6 @@ def test_fixed_producer_drives_the_real_native_component_and_verifies_its_bytes(
     assert actual["deterministic_reset_state_digest_repeat_count"] == 3
 
 
-def test_native_continuation_uses_the_pinned_runtime_driver_and_normal_paid_transport(tmp_path, monkeypatch):
-    from blueprint_pipeline.public_scene_simready_isaac_bundle import DEFAULT_IMAGE
-    observed = {}
-    def observe(**kwargs):
-        from blueprint_pipeline.isaac_driver_support import resolve_max_isaac_driver
-        observed.update(kwargs)
-        observed["driver_ceiling_inside_call"] = resolve_max_isaac_driver()
-        return {}
-    monkeypatch.setattr(transport, "run_arena_native_control_vast", observe)
-    receipt = {"diagnostic_kind": continuation.BUNDLE_KIND, "container_image": DEFAULT_IMAGE,
-        "minimum_driver_version": continuation.MINIMUM_DRIVER_VERSION,
-        "maximum_driver_exclusive": continuation.MAXIMUM_DRIVER_EXCLUSIVE, "candidate_policy_queried": False,
-        "policy_candidate_id": None, "model_calls_performed": 0, "generated_tool_runtime_used": False,
-        "provider_disclosure_authorized": True, "claim_ceiling": "development_only"}
-    transport.run_adp009d_native_microcheck_vast(job_dir=tmp_path, prepared_bundle=receipt,
-        paid_resource_admission_grant=None, execute=False)
-    assert observed["container_image"] == DEFAULT_IMAGE
-    assert observed["minimum_driver_version"] == "595.58.03"
-    assert observed["min_compute_cap"] == 890
-    assert observed["driver_ceiling_inside_call"] == (596, 0, 0)
-    from blueprint_pipeline.isaac_driver_support import resolve_max_isaac_driver
-    assert resolve_max_isaac_driver() == (581, 0, 0)
-    assert observed["provider_bundle_kind"] == continuation.BUNDLE_KIND
-    assert observed["require_independent_watchdog"] is True
-    assert observed["candidate_policy_query_expected"] is False
-    with pytest.raises(ValueError, match="transport_contract_invalid"):
-        transport.run_adp009d_native_microcheck_vast(job_dir=tmp_path,
-            prepared_bundle={**receipt, "candidate_policy_queried": True},
-            paid_resource_admission_grant=None, execute=True)
-
-
 @pytest.mark.parametrize("fault", [None, "changed_asset", "empty_asset"])
 def test_controller_import_preflight_uses_exact_rigid_usd_bytes(tmp_path, fault):
     from pxr import Usd, UsdGeom, UsdPhysics
@@ -307,45 +275,3 @@ def test_native_continuation_has_complete_vast_script_environment_and_recovery(t
     assert "adp_arena_provider_runtime_output.zip" in script
     assert "BLUEPRINT_VAST_CUDA_RUNTIME_DEFERRED_TO_ISAAC_SIMULATION_APP" in script
     assert _REMOTE_ARCHIVE_BY_BUNDLE_KIND[kind] == "/workspace/adp_arena_provider_runtime_output.zip"
-
-
-def test_the_new_runtime_admits_its_supported_driver_without_widening_the_older_runtime():
-    from blueprint_pipeline.vast_provider_adapter import _select_offer
-    offer = {"ask_contract_id": 7, "machine_id": 1, "gpu_name": "RTX 4000 Ada", "gpu_ram": 20480,
-        "compute_cap": 890, "num_gpus": 1, "rentable": True, "dph_total": .20,
-        "driver_version": "595.91.07", "storage_cost": .20, "disk_space": 224}
-    kwargs = {"max_hourly_rate": .70, "min_gpu_ram_mb": 16000, "min_compute_cap": 890,
-        "max_compute_cap": 900, "minimum_driver_version": "595.58.03",
-        "require_known_supported_isaac_driver": True}
-    assert _select_offer([offer], **kwargs) is None
-    with transport._native_continuation_driver_scope(True):
-        assert _select_offer([offer], **kwargs) is not None
-        assert _select_offer([{**offer, "driver_version": "596.01.00"}], **kwargs) is None
-        assert _select_offer([{**offer, "driver_version": "580.159.04"}], **kwargs) is None
-    assert _select_offer([offer], **kwargs) is None
-
-
-@pytest.mark.parametrize("execute", [False, True])
-def test_native_continuation_cli_preserves_the_canonical_paid_admission(tmp_path, monkeypatch, execute):
-    from blueprint_pipeline import paid_resource_allocator as allocator
-    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
-    from tests.test_adp009d_native_microcheck_bundle import _allocator_args
-    observed = {}
-    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers", lambda:
-        ([], {"orchestrator_source_commit": "b" * 40, "checkout_clean": True}))
-    monkeypatch.setattr(continuation, "build_native_continuation_bundle", lambda **kwargs:
-        {"status": "ready", "bundle_sha256": "sha256:" + "c" * 64, "input_digest": "sha256:" + "d" * 64,
-         "diagnostic_kind": continuation.BUNDLE_KIND})
-    monkeypatch.setattr(allocator, "run_adp009d_native_microcheck_vast", lambda **kwargs:
-        observed.update(kwargs) or {"status": "completed" if execute else "dry_run_ready"})
-    argv = _allocator_args(tmp_path, execute=execute)
-    for key in ("--adp009d-approved-can", "--adp009d-sage-collision", "--adp009d-harness-manifest"):
-        i = argv.index(key)
-        del argv[i:i+2]
-    argv.extend(["--adp009d-diagnostic-only", "--adp009d-native-continuation-inputs", str(tmp_path / "inputs.json")])
-    assert allocator.main(argv) == 0
-    assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is execute
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["private_data_uploaded"] is True
-    assert admission["allocation_binding"]["native_continuation_requested"] is True
-    assert admission["allocation_binding"]["retry_cap"] == 0

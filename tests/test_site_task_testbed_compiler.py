@@ -14,7 +14,7 @@ from blueprint_pipeline.capture_intake import validate_capture_intake_envelope
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline import live_pipeline_reconstruction_testbed_routes as routes
-from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
+from blueprint_pipeline.live_pipeline_intake_runtime_controls import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.reconstruction_capability import (
     decide_simready_assets,
     normalize_reconstruction_result,

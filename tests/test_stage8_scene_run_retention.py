@@ -12,7 +12,7 @@ site's money, trimmed to nine rows and re-sealed). Nothing reaches the host, a p
 #   src/blueprint_pipeline/open_job_source_runs.py
 #   src/blueprint_pipeline/scene_run_cold_storage.py
 #   src/blueprint_pipeline/control_plane_storage_gc_reasons.py
-#   src/blueprint_pipeline/beta_policy_screening_holds.py
+#   src/blueprint_pipeline/scene_stage_holds.py
 #   src/blueprint_pipeline/rigid_robot_free_probe_bundle.py
 #   src/blueprint_pipeline/team_scene_packet_worker.py
 
@@ -27,11 +27,9 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-from blueprint_pipeline import beta_policy_screening_holds as holds
+from blueprint_pipeline import scene_stage_holds as holds
 from blueprint_pipeline import completed_replay_cache_retention as retention
 from blueprint_pipeline import open_job_source_runs as open_jobs
-from blueprint_pipeline import open_job_testing_final as testing
 from blueprint_pipeline import scene_run_cold_storage as cold
 from blueprint_pipeline.control_plane_storage_gc import run_storage_gc
 from blueprint_pipeline.control_plane_storage_gc_reasons import (
@@ -105,12 +103,20 @@ def world(tmp_path):
     def ledger(state: dict) -> None:
         value = _sealed({"schema_version": campaign["schema_version"], "campaigns": {plan["campaign_id"]: state},
                          "last_processed_campaign": plan["campaign_id"]}, "ledger_digest")
-        (screening / coordinator.LEDGER_FILENAME).write_text(json.dumps(value), encoding="utf-8")
+        (screening / open_jobs.LEDGER_FILENAME).write_text(json.dumps(value), encoding="utf-8")
 
     ledger(campaign["state"])
     return {"run": run, "runs": runs, "pointer": pointer, "request": request, "packets": packets,
             "intent_root": intent_root, "intent": intent, "screening": screening, "campaign": campaign,
             "ledger": ledger, "now": now, "receipt": receipt}
+
+
+def _publish_testing_record(world, final: bool) -> None:
+    """The sealed record the retired screening pass wrote for the ledger as it is now."""
+    ledger = json.loads((world["screening"] / open_jobs.LEDGER_FILENAME).read_text(encoding="utf-8"))
+    record = _sealed({"schema_version": open_jobs.TESTING_RECORD_SCHEMA, "ledger_digest": ledger["ledger_digest"],
+                      "final_by_intent": {world["request"]["intent_id"]: final}}, "record_digest")
+    (world["screening"] / open_jobs.TESTING_RECORD_FILENAME).write_text(json.dumps(record, sort_keys=True))
 
 
 def _reason(world, **overrides):
@@ -146,8 +152,7 @@ def test_with_the_job_open_the_clean_up_keeps_447s_scene_run_by_name(world):
 def test_447s_testing_is_not_final_because_a_deploy_plans_its_money_deferred_rows_again(world):
     # The real ledger: two rows deferred beta_screening_site_budget_exhausted at $26.63 of $30.
     intent_id = world["request"]["intent_id"]
-    assert testing.testing_final(intent_id, screening_queue_root=world["screening"]) is False
-    assert testing.publish_testing_record(world["screening"]) == {"status": "written", "intents": 1, "final": 0}
+    _publish_testing_record(world, False)
     assert open_jobs.testing_final(intent_id, screening_queue_root=world["screening"]) is False
     assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
 
@@ -159,12 +164,28 @@ def test_once_testing_is_final_the_run_goes_cold_on_the_two_day_rule(world):
             row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
     world["ledger"](state)
     intent_id = world["request"]["intent_id"]
-    assert testing.testing_final(intent_id, screening_queue_root=world["screening"]) is True
     # The GC reads only the screening pass's record: until the pass writes one, the run is kept.
     assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
-    testing.publish_testing_record(world["screening"])
+    _publish_testing_record(world, True)
     assert open_jobs.testing_final(intent_id, screening_queue_root=world["screening"]) is True
     assert _reason(world) is None
+
+
+def test_with_the_trial_retired_no_testing_record_is_written_so_the_run_is_kept(world):
+    """The early trial's timer is retired (2026-11-14): nothing writes the testing record any more.
+
+    A job with no record is simply not testing-final, so the storage collector keeps its source run
+    (planner amendment A3): nothing is deleted sooner, even when every screening row has ended.
+    """
+    state = copy.deepcopy(world["campaign"]["state"])
+    for row in state["candidates"].values():
+        if row["status"] == "deferred":
+            row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
+    world["ledger"](state)
+    intent_id = world["request"]["intent_id"]
+    assert not (world["screening"] / open_jobs.TESTING_RECORD_FILENAME).exists()
+    assert open_jobs.testing_final(intent_id, screening_queue_root=world["screening"]) is False
+    assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
 
 
 @pytest.mark.parametrize("fault", ["ledger_changed_since", "record_tampered", "record_unreadable"])
@@ -174,7 +195,7 @@ def test_a_testing_record_the_gc_cannot_trust_keeps_the_run(world, fault):
         if row["status"] == "deferred":
             row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
     world["ledger"](state)
-    testing.publish_testing_record(world["screening"])
+    _publish_testing_record(world, True)
     record = world["screening"] / open_jobs.TESTING_RECORD_FILENAME
     if fault == "ledger_changed_since":
         world["ledger"](copy.deepcopy(world["campaign"]["state"]))  # a later write: the record is for another ledger
@@ -211,7 +232,7 @@ def test_a_window_that_cannot_be_read_counts_as_ended_so_nothing_is_kept_for_eve
 
 
 def test_an_unreadable_screening_ledger_keeps_the_run_while_the_window_is_open(world):
-    (world["screening"] / coordinator.LEDGER_FILENAME).write_text("{not json")
+    (world["screening"] / open_jobs.LEDGER_FILENAME).write_text("{not json")
     assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
 
 
@@ -232,7 +253,7 @@ def _offloaded(world) -> Path:
 
 
 def test_before_the_fix_the_offloaded_447_run_reads_as_an_invalid_launch_receipt(world):
-    from blueprint_pipeline.task_evaluation_configured_controls_progression_worker import (
+    from blueprint_pipeline.task_evaluation_configured_controls_source_evidence import (
         TaskEvaluationConfiguredControlsProgressionWorkerError,
         _validate_source,
     )
@@ -335,12 +356,14 @@ class _Restore:
         monkeypatch.setattr(offload, "restore_offloaded_evidence", restore)
 
 
-def test_an_open_jobs_run_comes_back_by_itself_and_the_screening_pass_releases_its_hold(tmp_path, monkeypatch):
-    from blueprint_pipeline import beta_policy_screening_worker as worker
+def test_an_open_jobs_run_comes_back_by_itself_and_the_maintenance_pass_releases_its_hold(tmp_path, monkeypatch):
+    from blueprint_pipeline import scene_stage_maintenance as maintenance
     from blueprint_pipeline import scene_run_restore
-    from tests.test_beta_policy_screening_worker import prepared_source_queue
+    from tests.scene_stage_support import prepared_source_queue
 
     queue = prepared_source_queue(tmp_path, monkeypatch)
+    # The fixture's profile names no probe root: its robot-free probe reads as passed.
+    monkeypatch.setattr(maintenance, "probe_gate", lambda _profile: {})
     run = Path(queue["requests"][0]["source_launch_root"])
     pointer = _fixture("launch_run.offloaded.v1.json")
     run.parent.mkdir(parents=True, exist_ok=True)
@@ -350,17 +373,17 @@ def test_an_open_jobs_run_comes_back_by_itself_and_the_screening_pass_releases_i
     fake = _Restore(monkeypatch, disk=False)
     kwargs = {"queue_root": queue["screening_queue"], "packet_queue_root": queue["packet_queue"]}
     # No room for the download and its extraction: nothing is restored or spent, the job is held by name.
-    [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [outcome] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert outcome["blockers"] == [cold.COLD_STORAGE] and fake.calls == 0
     assert outcome["scene_run_restore"]["status"] == "refused"
     [held] = holds.pending_holds(queue_root=queue["screening_queue"])
     assert (held["reason_code"], held["detail_code"]) == ("team_scene_packet_blocked", "scene_run_in_cold_storage")
-    # Room returns: the next pass restores it (no person), reads it, plans, and releases the hold.
+    # Room returns: the next pass restores it (no person), reads it, and releases the hold.
     fake.disk = True
-    [planned] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    [planned] = maintenance.scene_stage_pass(**kwargs)["sources"]
     assert planned["scene_run_restore"]["status"] == "restored" and fake.calls == 1
     assert fake.reserved == [("evidence_offload", 2 * pointer["size_bytes"])]
-    assert planned["status"] == "enqueued" and planned["evaluation_hold"]["status"] == "released"
+    assert planned["status"] == "scene_stage_ready" and planned["evaluation_hold"]["status"] == "released"
     # Fresh: every restored file's time is now, so the clean-up's two-day rule does not take it again at once.
     assert min(path.stat().st_mtime for path in (run, *run.rglob("*"))) > time.time() - 60
 
@@ -403,7 +426,7 @@ def test_a_job_marked_final_whose_half_is_compiled_again_gets_its_run_back(world
         if row["status"] == "deferred":
             row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
     world["ledger"](state)
-    testing.publish_testing_record(world["screening"])
+    _publish_testing_record(world, True)
     assert _reason(world) is None  # final: the clean-up may move it
     _offloaded(world)
     # The half is compiled again (a new station): it needs the run, and the job's window is still open.
@@ -462,17 +485,17 @@ def test_at_the_floor_a_run_whose_job_has_a_test_running_is_never_moved(world, m
 
 
 def test_a_team_half_refused_for_cold_storage_is_held_by_name_on_the_first_pass(tmp_path, monkeypatch):
-    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline import scene_stage_maintenance as maintenance
     from blueprint_pipeline import team_scene_packet_worker as packets
-    from tests.test_beta_policy_screening_worker import prepared_source_queue
+    from tests.scene_stage_support import prepared_source_queue
 
     queue = prepared_source_queue(tmp_path, monkeypatch)
     key = packets.request_key(queue["requests"][0])
     (queue["packet_queue"] / "status" / f"{key}.json").write_text(json.dumps(
         {"status": "blocked", "blockers": [cold.COLD_STORAGE], "release_commit": "a" * 40}))
     monkeypatch.setattr(packets, "current_release_commit", lambda: "a" * 40)
-    [outcome] = worker.enqueue_prepared_scenes(queue_root=queue["screening_queue"],
-                                               packet_queue_root=queue["packet_queue"])["sources"]
+    [outcome] = maintenance.scene_stage_pass(queue_root=queue["screening_queue"],
+                                             packet_queue_root=queue["packet_queue"])["sources"]
     assert outcome["blockers"] == ["beta_screening_scene_packet_not_ready"]
     [held] = holds.pending_holds(queue_root=queue["screening_queue"])
     assert (held["reason_code"], held["detail_code"]) == ("team_scene_packet_blocked", "scene_run_in_cold_storage")
@@ -769,11 +792,13 @@ def test_the_site_is_told_restoring_only_while_a_restore_can_still_land(tmp_path
     """An archive that fails its own integrity is not being restored: the hold names that (the website's general
     "a problem on our side" sentence, which its ops alert reports to staff), never ``scene_run_in_cold_storage``;
     a transient failure keeps the cold-storage hold ("being restored")."""
-    from blueprint_pipeline import beta_policy_screening_worker as worker
+    from blueprint_pipeline import scene_stage_maintenance as maintenance
     from blueprint_pipeline import scene_run_restore
-    from tests.test_beta_policy_screening_worker import prepared_source_queue
+    from tests.scene_stage_support import prepared_source_queue
 
     queue = prepared_source_queue(tmp_path, monkeypatch)
+    # The fixture's profile names no probe root: its robot-free probe reads as passed.
+    monkeypatch.setattr(maintenance, "probe_gate", lambda _profile: {})
     run = Path(queue["requests"][0]["source_launch_root"])
     pointer = _fixture("launch_run.offloaded.v1.json")
     run.parent.mkdir(parents=True, exist_ok=True)
@@ -783,7 +808,7 @@ def test_the_site_is_told_restoring_only_while_a_restore_can_still_land(tmp_path
     _Restore(monkeypatch, transfer=fault != "transfer", intact=fault != "integrity")
     kwargs = {"queue_root": queue["screening_queue"], "packet_queue_root": queue["packet_queue"]}
     for _ in range(2):  # the second pass reads the record the first one wrote
-        [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+        [outcome] = maintenance.scene_stage_pass(**kwargs)["sources"]
     [held] = holds.pending_holds(queue_root=queue["screening_queue"])
     assert (held["reason_code"], held["detail_code"]) == ("team_scene_packet_blocked", detail)
     assert outcome["scene_run_restore"]["status"] == (

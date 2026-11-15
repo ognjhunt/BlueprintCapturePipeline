@@ -35,11 +35,24 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
     """A unit the repository retired can be kept off until an operator removes it from the host."""
 
-    assert EXPLICIT_RELEASE_UNITS == ("blueprint-agent-run-dispatcher.timer", *RETIRED_HOLD_UNITS)
+    assert EXPLICIT_RELEASE_UNITS == RETIRED_HOLD_UNITS
     assert RETIRED_HOLD_UNITS == (
         "blueprint-pipeline-control-plane.timer",
         "blueprint-capture-reconstruction-dispatcher.timer",
         "blueprint-capture-reconstruction-dispatcher.path",
+        "blueprint-task-evaluation-policy-canary-dispatcher.path",
+        "blueprint-existing-policy-canary-continuation.timer",
+        "blueprint-task-evaluation-launch-supervisor.timer",
+        "blueprint-scene-object-discovery.path",
+        "blueprint-embodiment-preparation.path",
+        "blueprint-embodiment-preparation.timer",
+        "blueprint-task-evaluation-sam31-preparation-execution.path",
+        "blueprint-task-evaluation-sam31-preparation-execution.timer",
+        "blueprint-team-evaluation-runner.path",
+        "blueprint-task-evaluation-configured-controls-progression.path",
+        "blueprint-task-evaluation-configured-controls-progression.timer",
+        "blueprint-beta-policy-screening.timer",
+        "blueprint-agent-run-dispatcher.timer",
     )
     for unit in RETIRED_HOLD_UNITS:
         plain = {"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",
@@ -56,6 +69,19 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
                               "reason": "Retired unit still installed", "expires_in_seconds": 86400,
                               "require_explicit_release": True})
         assert error.value.code == code
+
+
+def test_no_unit_request_starts_a_retired_trigger_or_the_agent_run_dispatcher() -> None:
+    """The founder's stop of the agent-run dispatcher stays true once it is retired."""
+
+    for unit in ("blueprint-agent-run-dispatcher.timer", "blueprint-agent-run-dispatcher.service",
+                 "blueprint-beta-policy-screening.timer"):
+        for action in ("start", "restart"):
+            with pytest.raises(RequestRefused) as error:
+                validate_request({"kind": "unit", "unit": unit, "action": action})
+            assert error.value.code == "unit_retired"
+    assert validate_request({"kind": "unit", "unit": "blueprint-agent-run-dispatcher.service",
+                             "action": "reset-failed"})["action"] == "reset-failed"
 
 
 def test_explicit_release_policy_is_dispatcher_only_and_typed() -> None:
@@ -259,48 +285,6 @@ def test_provider_output_resume_names_one_canary_attempt() -> None:
              "provider_output_resume_ingest_invalid"),
             ({"kind": "provider-output-resume", "run": "activation-1", "attempt": 1, "path": "/etc"},
              "request_key_unknown:path")):
-        with pytest.raises(RequestRefused) as caught:
-            validate_request(body)
-        assert caught.value.code == code
-
-
-def test_g1_runtime_source_restore_takes_only_apply() -> None:
-    """Every path, digest and object identity is pinned in the release module, never a field."""
-    assert validate_request({"kind": "restore-g1-runtime-source"}) == {"kind": "restore-g1-runtime-source",
-                                                                       "apply": False}
-    assert validate_request({"kind": "restore-g1-runtime-source", "apply": True}) == {
-        "kind": "restore-g1-runtime-source", "apply": True}
-    assert required_scope("restore-g1-runtime-source") == "operate"
-    for body, code in (
-            ({"kind": "restore-g1-runtime-source", "apply": "yes"}, "g1_runtime_source_apply_invalid"),
-            ({"kind": "restore-g1-runtime-source", "apply": 1}, "g1_runtime_source_apply_invalid"),
-            ({"kind": "restore-g1-runtime-source", "apply": None}, "g1_runtime_source_apply_invalid"),
-            ({"kind": "restore-g1-runtime-source", "path": "/mnt/blueprint-work/x"}, "request_key_unknown:path"),
-            ({"kind": "restore-g1-runtime-source", "apply": True, "packet_sha256": "sha256:" + "a" * 64},
-             "request_key_unknown:packet_sha256"),
-            ({"kind": "restore-g1-runtime-source", "url": "https://example.test/x"}, "request_key_unknown:url")):
-        with pytest.raises(RequestRefused) as caught:
-            validate_request(body)
-        assert caught.value.code == code
-
-
-def test_g1_pi_language_restore_takes_only_apply() -> None:
-    """The folder, the search root and the inventory are pinned in the release module, never a field."""
-    assert validate_request({"kind": "restore-g1-pi-language-assets"}) == {
-        "kind": "restore-g1-pi-language-assets", "apply": False}
-    assert validate_request({"kind": "restore-g1-pi-language-assets", "apply": True}) == {
-        "kind": "restore-g1-pi-language-assets", "apply": True}
-    assert required_scope("restore-g1-pi-language-assets") == "operate"
-    for body, code in (
-            ({"kind": "restore-g1-pi-language-assets", "apply": "yes"}, "g1_pi_language_assets_apply_invalid"),
-            ({"kind": "restore-g1-pi-language-assets", "apply": 1}, "g1_pi_language_assets_apply_invalid"),
-            ({"kind": "restore-g1-pi-language-assets", "apply": None}, "g1_pi_language_assets_apply_invalid"),
-            ({"kind": "restore-g1-pi-language-assets", "path": "/var/lib/blueprint/x"}, "request_key_unknown:path"),
-            ({"kind": "restore-g1-pi-language-assets", "bundle": "/var/lib/blueprint/x.zip"},
-             "request_key_unknown:bundle"),
-            ({"kind": "restore-g1-pi-language-assets", "apply": True, "sha256": "a" * 64},
-             "request_key_unknown:sha256"),
-            ({"kind": "restore-g1-pi-language-assets", "url": "https://example.test/x"}, "request_key_unknown:url")):
         with pytest.raises(RequestRefused) as caught:
             validate_request(body)
         assert caught.value.code == code

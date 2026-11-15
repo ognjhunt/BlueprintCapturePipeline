@@ -3,13 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import urllib.error
-import zipfile
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline import native_g1_pi_tokenizer_assets as assets
-from blueprint_pipeline.native_g1_provider_bundle import _verify_embedded_pi_tokenizer
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path]:
@@ -84,35 +82,6 @@ def test_provider_stage_uses_verified_bundle_bytes_and_refuses_changed_destinati
             bundled_dir=root,
             destination=target,
         )
-
-
-def test_bundle_rechecks_embedded_tokenizer_bytes(tmp_path: Path) -> None:
-    inventory, root = _fixture(tmp_path)
-    receipt = assets.verify_tokenizer_assets(inventory_path=inventory, asset_dir=root)
-    archive_path = tmp_path / "bundle.zip"
-    with zipfile.ZipFile(archive_path, "w") as archive:
-        archive.write(inventory, "configs/" + inventory.name)
-        for name in sorted(assets.EXPECTED_FILES):
-            archive.write(root / name, "provider_runtime/inputs/pi_tokenizer/" + name)
-    with zipfile.ZipFile(archive_path) as archive:
-        _verify_embedded_pi_tokenizer(
-            archive,
-            {"pi_tokenizer_assets": receipt},
-            inventory_path=inventory,
-        )
-    corrupt_archive = tmp_path / "corrupt.zip"
-    with zipfile.ZipFile(corrupt_archive, "w") as archive:
-        archive.write(inventory, "configs/" + inventory.name)
-        for name in sorted(assets.EXPECTED_FILES):
-            content = b"changed" if name == "tokenizer.model" else (root / name).read_bytes()
-            archive.writestr("provider_runtime/inputs/pi_tokenizer/" + name, content)
-    with zipfile.ZipFile(corrupt_archive) as archive:
-        with pytest.raises(ValueError, match="pi_tokenizer_file_size_mismatch"):
-            _verify_embedded_pi_tokenizer(
-                archive,
-                {"pi_tokenizer_assets": receipt},
-                inventory_path=inventory,
-            )
 
 
 @pytest.mark.parametrize("candidate", list(assets.PUBLISHER_TOKENIZER_REFS))

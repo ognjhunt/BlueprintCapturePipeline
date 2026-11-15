@@ -118,12 +118,6 @@ from .phase2_artifacts import (
     validate_frozen_scenario_manifest,
     validate_scenario_proposal_set,
 )
-from .pigey_candidate_runtime import (
-    PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION,
-    PigeyScenarioBinding,
-    PigeySimCandidateRuntime,
-    validate_pigey_license_attestation,
-)
 from .openai_cost_authority import (
     OPENAI_COST_AUTHORITY_ID,
     OPENAI_COST_SNAPSHOT_SCHEMA_VERSION,
@@ -149,22 +143,12 @@ from .evaluation import (
     evaluate_supervisor_execution,
     load_supervisor_evaluation_corpus,
 )
-from .recorded_evaluation import (
-    RECORDED_SUPERVISOR_EVAL_BUNDLE_SCHEMA_VERSION,
-    SUPERVISOR_EVAL_CONFIGURATION_SCHEMA_VERSION,
-    evaluate_recorded_supervisor_corpus,
-    freeze_supervisor_evaluation_configuration,
-    load_recorded_supervisor_execution,
-    load_sealed_supervisor_evaluation_corpus,
-    validate_supervisor_evaluation_configuration,
-)
 from .supervisor import SupervisorExecution, TaskEvaluationSupervisor
 from .tools import (
     RegisteredToolBinding,
     ToolRegistry,
     validate_tool_observation_binding,
 )
-from .vast_recovery_adapter import VastRecoveryAdapterError, VastWAMRecoveryAdapter
 
 __all__ = [
     "AGENTS_SDK_HARNESS_ID",
@@ -212,15 +196,11 @@ __all__ = [
     "OPENAI_COST_SNAPSHOT_SCHEMA_VERSION",
     "OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION",
     "Phase2ArtifactError",
-    "PIGEY_LICENSE_ATTESTATION_SCHEMA_VERSION",
-    "PigeyScenarioBinding",
-    "PigeySimCandidateRuntime",
     "PreauthorizedRecoveryController",
     "PreauthorizedRecoveryPolicy",
     "RegisteredToolBinding",
     "RecoveryControlError",
     "RECONSTRUCTION_EXECUTION_READINESS_SCHEMA_VERSION",
-    "RECORDED_SUPERVISOR_EVAL_BUNDLE_SCHEMA_VERSION",
     "SEALED_SUPERVISOR_EVAL_CORPUS_SCHEMA_VERSION",
     "SupervisorContext",
     "SupervisorContractError",
@@ -228,7 +208,6 @@ __all__ = [
     "SupervisorExecution",
     "SupervisorEvaluationCase",
     "SupervisorEvaluationError",
-    "SUPERVISOR_EVAL_CONFIGURATION_SCHEMA_VERSION",
     "SupervisorLedgerError",
     "SupervisorManagerDecision",
     "SupervisorManagerError",
@@ -247,8 +226,6 @@ __all__ = [
     "ToolDescriptor",
     "ToolObservation",
     "ToolRegistry",
-    "VastRecoveryAdapterError",
-    "VastWAMRecoveryAdapter",
     "agents_sdk_capabilities",
     "deterministic_baseline_capabilities",
     "compare_supervisor_to_baseline",
@@ -261,18 +238,13 @@ __all__ = [
     "execute_neutral_candidate_policy_suite",
     "reconcile_neutral_candidate_policy_costs",
     "evaluate_supervisor_execution",
-    "evaluate_recorded_supervisor_corpus",
-    "freeze_supervisor_evaluation_configuration",
     "load_capture_build_ingress",
     "validate_capture_build_ingress",
     "validate_capture_reconstruction_route",
     "validate_reconstruction_execution_readiness",
     "load_supervisor_evaluation_corpus",
-    "load_recorded_supervisor_execution",
-    "load_sealed_supervisor_evaluation_corpus",
     "openai_cost_authority_binding_digest",
     "validate_openai_cost_scope_attestation",
-    "validate_supervisor_evaluation_configuration",
     "proof_boundary",
     "validate_proof_boundary",
     "replay_supervisor_run",
@@ -304,5 +276,4 @@ __all__ = [
     "validate_frozen_scenario_manifest",
     "validate_scenario_proposal_set",
     "validate_tool_observation_binding",
-    "validate_pigey_license_attestation",
 ]

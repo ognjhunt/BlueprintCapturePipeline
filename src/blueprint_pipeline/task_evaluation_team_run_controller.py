@@ -15,7 +15,7 @@ def _require_passed_probe(root, terminal):
 
 def source_for_evaluation(*, config, intent, now=None):
     """Resolve only retained terminal evidence; never reconstruct or alter the source."""
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_configured_controls_source_evidence import _validate_source
 
     selected = intent['request']['task'].get('evaluation_source')
     if selected is None:
@@ -101,7 +101,7 @@ def plan_authority_blocker(value, launch_root):
         binding = value['evaluation_authority']
         authority.authority_scope(value.get('evaluation_run_id'), binding)
         worker._require(value['source_launch_id'] == binding['source_launch_id'], 'team_evaluation_source_changed')
-        from .task_evaluation_configured_controls_progression_worker import _validate_source
+        from .task_evaluation_configured_controls_source_evidence import _validate_source
         source_root = Path(launch_root) / value['source_launch_id']
         terminal, receipt, _ = _validate_source(source_root)
         worker._require(receipt['receipt_digest'] == value['source_launch_receipt_digest'],

@@ -5,17 +5,12 @@ import numpy as np
 import pytest
 from pathlib import Path
 
-from blueprint_pipeline.core.security_controls import BoundedHttpResponse
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_g1_shared_scene_episode import (
     run_g1_built_scene_policy_episode,
     run_g1_shared_scene_episode,
     team_policy_candidate_id,
 )
-from blueprint_pipeline.native_g1_team_policy_jsonl_client import NativeG1TeamPolicyJsonlClient
-from blueprint_pipeline.native_g1_team_policy_https_client import NativeG1TeamPolicyHttpsClient
-from tests.test_native_g1_team_policy_jsonl_client import _close, _process
-from tests.test_team_policy_delivery_profile import OWNER, _profile, _setup
 
 
 class _Scene:
@@ -327,102 +322,6 @@ def test_team_policy_identity_mismatch_refuses_before_scene_reset(tmp_path: Path
         )
     assert scene.seed is None
     assert policy.queries == 0
-
-
-def test_bound_team_process_receives_real_scene_observation(tmp_path: Path) -> None:
-    profile_digest = "sha256:" + "c" * 64
-    action = [0.0] * 40
-    action[3:9] = [1, 0, 0, 1, 0, 0]
-    process = _process("{'ok': True, 'action_chunk': " + repr([action]) + "}")
-    try:
-        client = NativeG1TeamPolicyJsonlClient(
-            process, timeout_seconds=2, profile_digest=profile_digest
-        )
-        scene = _Scene()
-        trace = run_g1_shared_scene_episode(
-            environment=scene,
-            policy_client=client,
-            sonic_bridge=_Bridge(),
-            candidate_id=team_policy_candidate_id(profile_digest),
-            task_prompt="pick the box",
-            max_steps=1,
-            output_dir=tmp_path,
-            read_task_sample=lambda: {"step_index": scene.step},
-            team_policy_profile_digest=profile_digest,
-            team_objective_id="task_success",
-        )
-        assert client.candidate_policy_queried
-        assert trace["policy_query_count"] == 1
-        assert trace["steps"][0]["semantic_action"] == action
-        assert trace["visual_evidence"]["status"] == "complete"
-    finally:
-        _close(process)
-
-
-def test_bound_team_endpoint_receives_real_scene_observation(tmp_path: Path) -> None:
-    setup = _setup()
-    profile = _profile(
-        setup,
-        {
-            "mode": "authenticated_endpoint",
-            "endpoint_url": "https://policy.example.org/v1/action",
-            "auth_secret_ref": "secretref:team/policy",
-            "timeout_ms": 5000,
-        },
-    )
-    action = [0.0] * 40
-    action[3:9] = [1, 0, 0, 1, 0, 0]
-    requests = []
-
-    def fetcher(url, **options):
-        request = json.loads(options["data"])
-        requests.append(request)
-        response = {
-            "protocol": request["protocol"],
-            "profile_digest": request["profile_digest"],
-            "request_id": request["request_id"],
-        }
-        response.update({"ok": True} if request["kind"] == "reset" else {"action_chunk": [action]})
-        return BoundedHttpResponse(
-            body=json.dumps(response).encode(),
-            status=200,
-            content_type="application/json",
-            final_url=url,
-        )
-
-    robot = setup["robot_presets"][0]
-    client = NativeG1TeamPolicyHttpsClient(
-        profile=profile,
-        expected_owner=OWNER,
-        expected_setup_digest=setup["setup_digest"],
-        expected_interface={
-            "robot_preset_id": robot["robot_preset_id"],
-            "embodiment_id": robot["embodiment_id"],
-            "observation_schema_id": robot["observation_schema"]["schema_id"],
-            "action_schema_id": robot["action_schema"]["schema_id"],
-        },
-        approved_origin="https://policy.example.org",
-        resolved_secret_ref="secretref:team/policy",
-        credential="private-token",
-        fetcher=fetcher,
-    )
-    scene = _Scene()
-    trace = run_g1_shared_scene_episode(
-        environment=scene,
-        policy_client=client,
-        sonic_bridge=_Bridge(),
-        candidate_id=team_policy_candidate_id(profile["profile_digest"]),
-        task_prompt="pick the box",
-        max_steps=1,
-        output_dir=tmp_path,
-        read_task_sample=lambda: {"step_index": scene.step},
-        team_policy_profile_digest=profile["profile_digest"],
-        team_objective_id="task_success",
-    )
-    assert [request["kind"] for request in requests] == ["reset", "infer"]
-    assert requests[1]["profile_digest"] == profile["profile_digest"]
-    assert trace["policy_query_count"] == 1
-    assert trace["visual_evidence"]["status"] == "complete"
 
 
 @pytest.mark.parametrize("score_status", ["scored", "undetermined"])

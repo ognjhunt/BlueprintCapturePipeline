@@ -62,7 +62,7 @@ The deploy tool `scripts/deploy_control_plane_commit.py` installs the units in `
 | 13 | Publication | same worker (`publish_screening`, `deliver_publications`) | `beta_policy_screening_worker` + `webapp_sync` (signed Pipeline sync token) | publications queue | WebApp `POST /api/internal/pipeline/beta-policy-screening-runs` and `…-holds` (`server/routes/internal-beta-policy-screening.ts`) → `taskEvaluationPolicyRuns`, `captureTaskEvaluationRuns` | WebApp | contract parity: `SCREENING_SITE_LIMIT_USD` (`server/utils/betaPolicyScreeningContract.ts`) must equal `SITE_LIMIT` **[MONEY]** |
 | 14 | Result and email | job page `/capture-upload/:token` (`JobWorkspace` → `ManagedScreeningResults` → `PolicyScreeningCandidates`); owner workspace `/app/tasks/:taskId`; videos `GET /api/screening-practice-run-videos/…` (from the intake's `GET /api/live-pipeline/beta-screening-review-videos/<id>`) | WebApp `server/utils/screeningOutcomeNotifications.ts` → `captureOutbox` | `taskEvaluationPolicyRuns` | outbox `deliveryReceipts` | Resend | the email is cancelled on consent withdrawal (F-01) **[PRIVACY]**; practice-run cache drops lapsed jobs (#1220) |
 
-The bounded estimate or "held" is decided in step 12 (`beta_policy_screening_result`, `beta_policy_screening_holds`). A held job publishes a hold in step 13, not a run.
+The bounded estimate or "held" is decided in step 12 (`beta_policy_screening_result`, `scene_stage_holds`). A held job publishes a hold in step 13, not a run.
 
 ## Side flows
 

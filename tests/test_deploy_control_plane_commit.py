@@ -55,108 +55,6 @@ def _private_temporary_directory(tmp_path_factory, monkeypatch):
     return scratch
 
 
-def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(monkeypatch, tmp_path):
-    calls = []
-    commit = 'a'*40
-    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
-    unit.parent.mkdir(parents=True)
-    unit.write_bytes((REPO_ROOT/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service').read_bytes())
-    def run(argv, **kwargs):
-        calls.append(argv)
-        if argv[:2] == ['systemctl', 'show']:
-            return SimpleNamespace(stdout='LoadState=loaded\nActiveState=failed\nMainPID=0\n')
-        if argv[:2] == ['systemctl', 'reset-failed']:
-            return SimpleNamespace(stdout='')
-        assert argv[0] == 'systemd-run' and '--wait' in argv
-        assert '--property=User=blueprint' in argv
-        assert sum(arg.startswith('--setenv=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_') for arg in argv) == 6
-        assert f'PYTHONPATH={tmp_path / "src"}' in argv
-        assert 'blueprint_pipeline.task_evaluation_terminal_controls_deploy' in argv
-        assert kwargs['timeout'] >= 1800  # retained validation exceeded ten minutes on the host
-        return SimpleNamespace(stdout=json.dumps({'status':'prepared','source_commit':commit,
-            'provider_mutation_performed':False,'model_called':False,'placement_materialized':False}))
-    monkeypatch.setattr(deploy.subprocess, 'run', run)
-    result = deploy._prepare_terminal_controls_adoptions(release_path=tmp_path, commit=commit, config_path=tmp_path/'config.json')
-    assert result['status'] == 'prepared'
-    assert sum(argv[:2] == ['systemctl','reset-failed'] for argv in calls) == 3
-
-
-def test_terminal_controls_child_failure_reports_typed_code_without_stderr(monkeypatch, tmp_path):
-    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
-    unit.parent.mkdir(parents=True)
-    unit.write_bytes((REPO_ROOT/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service').read_bytes())
-
-    def run(argv, **_kwargs):
-        if argv[:2] == ['systemctl', 'show']:
-            return SimpleNamespace(stdout='LoadState=loaded\nActiveState=inactive\nMainPID=0\n')
-        raise subprocess.CalledProcessError(
-            1, argv, output='',
-            stderr='secret-token-value\nConfiguredControlsProvisioningError: configured_controls_provisioning_registry_conflict:permission denied\n',
-        )
-
-    monkeypatch.setattr(deploy.subprocess, 'run', run)
-    with pytest.raises(deploy.ControlPlaneDeployError) as error:
-        deploy._prepare_terminal_controls_adoptions(
-            release_path=tmp_path, commit='a'*40, config_path=tmp_path/'config.json'
-        )
-    assert 'configured_controls_provisioning_registry_conflict' in str(error.value)
-    assert 'secret-token-value' not in str(error.value)
-    assert 'stderr_sha256_' in str(error.value)
-
-
-def test_terminal_controls_deploy_refuses_missing_scoped_artifact_store(tmp_path):
-    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
-    unit.parent.mkdir(parents=True)
-    unit.write_text('[Service]\nEnvironment=BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/tmp/legacy\n')
-    with pytest.raises(deploy.ControlPlaneDeployError, match='artifact_store_env_missing'):
-        deploy._terminal_controls_artifact_store_env(tmp_path)
-
-
-@pytest.mark.parametrize('active,pid', [('active','0'), ('inactive','12'), ('activating','0')])
-def test_terminal_controls_deploy_refuses_a_worker_race(monkeypatch, tmp_path, active, pid):
-    calls = []
-    def run(argv, **kwargs):
-        calls.append(argv)
-        return SimpleNamespace(stdout=f'LoadState=loaded\nActiveState={active}\nMainPID={pid}\n')
-    monkeypatch.setattr(deploy.subprocess, 'run', run)
-    with pytest.raises(deploy.ControlPlaneDeployError, match='worker_not_quiescent'):
-        deploy._prepare_terminal_controls_adoptions(release_path=tmp_path, commit='a'*40, config_path=tmp_path/'config.json')
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize("finishes", [True, False])
-def test_terminal_controls_drain_is_bounded_and_never_kills_worker(monkeypatch, finishes):
-    elapsed = [0.0]
-    calls = []
-    monkeypatch.setattr(deploy.time, "monotonic", lambda: elapsed[0])
-    monkeypatch.setattr(deploy.time, "sleep", lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds))
-
-    def run(argv, **kwargs):
-        calls.append(argv)
-        assert argv[:2] == ["systemctl", "show"]
-        busy = argv[2].endswith(".service") and not (finishes and elapsed[0] >= 2)
-        return SimpleNamespace(stdout="LoadState=loaded\nActiveState=" +
-            ("activating\nMainPID=123\n" if busy else "inactive\nMainPID=0\n"))
-
-    monkeypatch.setattr(deploy.subprocess, "run", run)
-    if finishes:
-        deploy._require_terminal_controls_quiescence(wait_seconds=4)
-        assert elapsed[0] == 2
-    else:
-        with pytest.raises(deploy.ControlPlaneDeployError, match="worker_not_quiescent"):
-            deploy._require_terminal_controls_quiescence(wait_seconds=4)
-        assert elapsed[0] == 4
-    assert calls[0][2].endswith(".path") and calls[1][2].endswith(".timer")
-
-
-def test_terminal_controls_drain_refuses_armed_trigger_without_waiting(monkeypatch):
-    monkeypatch.setattr(deploy.subprocess, "run", lambda *a, **kw:
-        SimpleNamespace(stdout="LoadState=loaded\nActiveState=active\nMainPID=0\n"))
-    monkeypatch.setattr(deploy.time, "sleep", lambda _: pytest.fail("must not wait with trigger armed"))
-    with pytest.raises(deploy.ControlPlaneDeployError, match="worker_not_quiescent"):
-        deploy._require_terminal_controls_quiescence(wait_seconds=600)
-
-
 def test_retention_reader_repair_preserves_owner_and_private_file_modes(tmp_path):
     root = tmp_path / "release-retention"
     root.mkdir(mode=0o700)
@@ -557,12 +455,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     preparation_timer = unit_dir / "blueprint-task-evaluation-launch-preparation.timer"
     preparation_timer.write_text("[Timer]\nOnUnitInactiveSec=2min\n", encoding="utf-8")
-    sam31_service = unit_dir / "blueprint-task-evaluation-sam31-preparation-execution.service"
-    sam31_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-sam31-phase\n", encoding="utf-8")
-    sam31_path = unit_dir / "blueprint-task-evaluation-sam31-preparation-execution.path"
-    sam31_path.write_text("[Path]\nPathExistsGlob=/sam31/pending/*.json\n", encoding="utf-8")
-    sam31_timer = unit_dir / "blueprint-task-evaluation-sam31-preparation-execution.timer"
-    sam31_timer.write_text("[Timer]\nOnUnitInactiveSec=30s\n", encoding="utf-8")
     compilation_service = (
         unit_dir / "blueprint-task-evaluation-episode-compilation.service"
     )
@@ -603,34 +495,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     activation_timer = unit_dir / "blueprint-task-evaluation-launch-activation.timer"
     activation_timer.write_text("[Timer]\nOnUnitInactiveSec=1h\n", encoding="utf-8")
-    canary_service = (
-        unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.service"
-    )
-    canary_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-policy-canary\n",
-        encoding="utf-8",
-    )
-    canary_path = (
-        unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.path"
-    )
-    canary_path.write_text(
-        "[Path]\nPathChanged=/policy-canaries/pending\n"
-        "PathExistsGlob=/policy-canaries/pending/*.json\n",
-        encoding="utf-8",
-    )
-    team_runner_service = unit_dir / "blueprint-team-evaluation-runner.service"
-    team_runner_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-team-evaluation-runner\n",
-        encoding="utf-8",
-    )
-    team_runner_path = unit_dir / "blueprint-team-evaluation-runner.path"
-    team_runner_path.write_text(
-        "[Path]\nPathExistsGlob=/team-evaluations/pending/*.json\n", encoding="utf-8")
-    embodiment_units = []
-    for suffix in ("service", "path", "timer"):
-        source = unit_dir / f"blueprint-embodiment-preparation.{suffix}"
-        source.write_text("[Unit]\nDescription=Exact asset preparation fixture\n")
-        embodiment_units.append(source)
     probe_runner_service = unit_dir / "blueprint-rigid-robot-free-probe-runner.service"
     probe_runner_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-rigid-robot-free-probe-runner\n",
@@ -641,28 +505,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     probe_runner_timer = unit_dir / "blueprint-rigid-robot-free-probe-runner.timer"
     probe_runner_timer.write_text(
         "[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
-    g1_service = unit_dir / "blueprint-native-g1-team-campaign-dispatcher.service"
-    g1_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-g1-team\n",
-        encoding="utf-8",
-    )
-    g1_timer = unit_dir / "blueprint-native-g1-team-campaign-dispatcher.timer"
-    g1_timer.write_text("[Timer]\nOnUnitInactiveSec=2min\n", encoding="utf-8")
-    g1_settlement_service = unit_dir / "blueprint-native-g1-team-campaign-settlement.service"
-    g1_settlement_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-g1-settlement\n", encoding="utf-8")
-    g1_settlement_timer = unit_dir / "blueprint-native-g1-team-campaign-settlement.timer"
-    g1_settlement_timer.write_text("[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
-    discovery_service = unit_dir / "blueprint-scene-object-discovery.service"
-    discovery_service.write_text(
-        "[Service]\nExecStart=/usr/bin/blueprint-discover-scene-objects\n",
-        encoding="utf-8",
-    )
-    discovery_path = unit_dir / "blueprint-scene-object-discovery.path"
-    discovery_path.write_text(
-        "[Path]\nPathChanged=/scene-object-discoveries/pending\n"
-        "PathExistsGlob=/scene-object-discoveries/pending/*.json\n",
-        encoding="utf-8",
-    )
     team_scene_service = unit_dir / "blueprint-team-scene-packet.service"
     team_scene_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-team-scene-packet\n", encoding="utf-8"
@@ -680,38 +522,12 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         team_remote_unit = unit_dir / f"blueprint-team-scene-packet-remote{suffix}"
         team_remote_unit.write_text(body, encoding="utf-8")
         team_remote_units.append(team_remote_unit)
-    screening_service = unit_dir / "blueprint-beta-policy-screening.service"
-    screening_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-beta-policy-screening\n", encoding="utf-8"
-    )
-    screening_timer = unit_dir / "blueprint-beta-policy-screening.timer"
-    screening_timer.write_text(
-        "[Timer]\nOnUnitInactiveSec=1min\n", encoding="utf-8"
-    )
-    progression_service = (
-        unit_dir
-        / "blueprint-task-evaluation-configured-controls-progression.service"
-    )
-    progression_service.write_text(
-        "[Service]\nExecStart=/usr/bin/blueprint-progress-configured-controls\n",
-        encoding="utf-8",
-    )
-    progression_timer = (
-        unit_dir
-        / "blueprint-task-evaluation-configured-controls-progression.timer"
-    )
-    progression_timer.write_text(
-        "[Timer]\nOnUnitInactiveSec=2min\n",
-        encoding="utf-8",
-    )
-    progression_path = (
-        unit_dir
-        / "blueprint-task-evaluation-configured-controls-progression.path"
-    )
-    progression_path.write_text(
-        "[Path]\nPathChanged=/task-evaluation-episode-compilations/results\n",
-        encoding="utf-8",
-    )
+    scene_stage_units = []
+    for suffix, body in ((".service", "[Service]\nExecStart=/usr/bin/blueprint-scene-stage-maintenance\n"),
+                         (".timer", "[Timer]\nOnUnitInactiveSec=1min\n")):
+        scene_stage_unit = unit_dir / f"blueprint-scene-stage-maintenance{suffix}"
+        scene_stage_unit.write_text(body, encoding="utf-8")
+        scene_stage_units.append(scene_stage_unit)
     storage_gc_service = unit_dir / "blueprint-control-plane-storage-gc.service"
     storage_gc_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-reclaim-storage\n",
@@ -785,11 +601,10 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     for name in (
         "system-blueprintbatch.slice", "blueprint-unit-failure@.service",
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
-        "blueprint-agent-execution.service", "blueprint-agent-run-dispatcher.service",
-        "blueprint-agent-run-dispatcher.timer", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
+        "blueprint-agent-execution.service",
+        "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-launch-supervisor.service", "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-provider-billing-reconciler.service", "blueprint-provider-billing-reconciler.timer",
         "blueprint-task-evaluation-terminal-resource-release.service", "blueprint-task-evaluation-terminal-resource-release.path",
@@ -817,15 +632,12 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
 
     expected = []
     for source in (
-        *additional_sources[:10],
+        *additional_sources[:8],
         service,
         path_unit,
         preparation_service,
         preparation_path,
         preparation_timer,
-        sam31_service,
-        sam31_path,
-        sam31_timer,
         compilation_service,
         compilation_path,
         compilation_timer,
@@ -833,29 +645,14 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         activation_service,
         activation_path,
         activation_timer,
-        canary_service,
-        canary_path,
-        team_runner_service,
-        team_runner_path,
-        *embodiment_units,
         probe_runner_service,
         probe_runner_path,
         probe_runner_timer,
-        g1_service,
-        g1_timer,
-        g1_settlement_service,
-        g1_settlement_timer,
-        discovery_service,
-        discovery_path,
         team_scene_service,
         team_scene_path,
         *team_remote_units,
-        screening_service,
-        screening_timer,
-        progression_service,
-        progression_timer,
-        progression_path,
-        *additional_sources[10:],
+        *scene_stage_units,
+        *additional_sources[8:],
         storage_gc_service,
         storage_gc_timer,
         *withdrawal_deletion_units,
@@ -902,8 +699,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-pubsub-handoff-listener.service",
         "blueprint-pubsub-handoff-listener.timer",
         "blueprint-agent-execution.service",
-        "blueprint-agent-run-dispatcher.service",
-        "blueprint-agent-run-dispatcher.timer",
         "blueprint-agent-stage-replay.service",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
@@ -912,9 +707,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-preparation.service",
         "blueprint-task-evaluation-launch-preparation.path",
         "blueprint-task-evaluation-launch-preparation.timer",
-        "blueprint-task-evaluation-sam31-preparation-execution.service",
-        "blueprint-task-evaluation-sam31-preparation-execution.path",
-        "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-episode-compilation.service",
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-episode-compilation.timer",
@@ -925,36 +717,18 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-launch-activation.timer",
-        "blueprint-task-evaluation-policy-canary-dispatcher.service",
-        "blueprint-task-evaluation-policy-canary-dispatcher.path",
-        "blueprint-team-evaluation-runner.service",
-        "blueprint-team-evaluation-runner.path",
-        "blueprint-embodiment-preparation.service",
-        "blueprint-embodiment-preparation.path",
-        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.service",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-rigid-robot-free-probe-runner.timer",
-        "blueprint-native-g1-team-campaign-dispatcher.service",
-        "blueprint-native-g1-team-campaign-dispatcher.timer",
-        "blueprint-native-g1-team-campaign-settlement.service",
-        "blueprint-native-g1-team-campaign-settlement.timer",
-        "blueprint-scene-object-discovery.service",
-        "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.service",
         "blueprint-team-scene-packet.path",
         "blueprint-team-scene-packet-remote.service",
         "blueprint-team-scene-packet-remote.timer",
         "blueprint-team-scene-packet-remote.path",
-        "blueprint-beta-policy-screening.service",
-        "blueprint-beta-policy-screening.timer",
-        "blueprint-task-evaluation-configured-controls-progression.service",
-        "blueprint-task-evaluation-configured-controls-progression.timer",
-        "blueprint-task-evaluation-configured-controls-progression.path",
+        "blueprint-scene-stage-maintenance.service",
+        "blueprint-scene-stage-maintenance.timer",
         "blueprint-task-evaluation-scene-progression.service",
         "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-launch-supervisor.service",
-        "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service",
         "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-provider-billing-reconciler.service",
@@ -995,21 +769,17 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
-        "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-launch-activation.timer",
-        "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
-        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
-        "blueprint-beta-policy-screening.timer",
+        "blueprint-scene-stage-maintenance.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-episode-compilation.timer",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-team-scene-packet-remote.timer",
         "blueprint-control-plane-storage-gc.timer",
@@ -1024,8 +794,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-website-atlas-preview.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
-        "blueprint-embodiment-preparation.path",
-        "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-task-evaluation-episode-compilation-remote.path",
         "blueprint-team-scene-packet-remote.path",
@@ -1055,14 +823,8 @@ def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
 
 
 PAUSED_LANE_UNITS = (
-    "blueprint-native-g1-team-campaign-dispatcher.timer",
-    "blueprint-native-g1-team-campaign-settlement.timer",
-    "blueprint-agent-run-dispatcher.timer",
-    "blueprint-team-evaluation-runner.path",
-    "blueprint-task-evaluation-sam31-preparation-execution.timer",
-    "blueprint-task-evaluation-sam31-preparation-execution.path",
-    "blueprint-task-evaluation-configured-controls-progression.timer",
-    "blueprint-task-evaluation-configured-controls-progression.path",
+    "blueprint-task-evaluation-episode-compilation.path",
+    "blueprint-task-evaluation-episode-compilation.timer",
 )
 
 
@@ -1089,7 +851,7 @@ def test_paused_lanes_are_disarmed_and_never_armed_again_without_leaving_the_dis
 
 @pytest.mark.parametrize("arm_list", ["always_arm_units", "always_arm_authority_gated_units", "always_arm_timer_units"])
 def test_a_unit_both_armed_and_disarmed_refuses_before_any_host_action(monkeypatch, arm_list: str) -> None:
-    unit = "blueprint-agent-run-dispatcher.timer"
+    unit = "blueprint-task-evaluation-episode-compilation.timer"
     monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
     with pytest.raises(deploy.ControlPlaneDeployError, match="authority_ambiguous"):
         deploy._restore_installed_path_units(
@@ -1112,7 +874,7 @@ def test_release_disarms_a_paused_lane_unit_idempotently(
     monkeypatch, case: str, before: tuple[str, str], returncode: int, final: tuple[str, str],
     preserve_controls: bool,
 ) -> None:
-    unit = "blueprint-task-evaluation-configured-controls-progression.timer"
+    unit = "blueprint-task-evaluation-episode-compilation.timer"
     state = {"is-enabled": before[0], "is-active": before[1]}
     calls: list[tuple[str, ...]] = []
 
@@ -1151,7 +913,7 @@ def test_release_disarms_a_paused_lane_unit_idempotently(
 
 
 def test_disarm_reports_a_unit_it_cannot_stop_without_failing_the_release(monkeypatch) -> None:
-    unit = "blueprint-agent-run-dispatcher.timer"
+    unit = "blueprint-task-evaluation-episode-compilation.timer"
 
     def completed(argv, **_kwargs):
         if argv[1] in {"stop", "disable"}:
@@ -1170,7 +932,7 @@ def test_disarm_reports_a_unit_it_cannot_stop_without_failing_the_release(monkey
 
 
 def test_disarm_touches_no_unit_outside_its_list(monkeypatch) -> None:
-    paused, other = "blueprint-agent-run-dispatcher.timer", "blueprint-task-evaluation-terminal-resource-release.path"
+    paused, other = "blueprint-task-evaluation-episode-compilation.timer", "blueprint-task-evaluation-terminal-resource-release.path"
     calls: list[tuple[str, ...]] = []
 
     def completed(argv, **_kwargs):
@@ -1191,14 +953,14 @@ def test_disarm_touches_no_unit_outside_its_list(monkeypatch) -> None:
     assert ("systemctl", "disable", other) not in calls and ("systemctl", "stop", other) not in calls
 
 
-@pytest.mark.parametrize("stuck", [None, "blueprint-agent-run-dispatcher.timer"])
+@pytest.mark.parametrize("stuck", [None, "blueprint-task-evaluation-episode-compilation.path"])
 def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tmp_path, monkeypatch, stuck) -> None:
     """End to end through deploy_control_plane_commit with the real restore and a fake systemd."""
 
     restore = deploy._restore_installed_path_units
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
     triggers = [unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))]
-    already_off = "blueprint-native-g1-team-campaign-settlement.timer"
+    already_off = "blueprint-task-evaluation-episode-compilation.timer"
     states = {unit: {"enabled": "enabled", "state": "active"} for unit in triggers}
     states[already_off] = {"enabled": "disabled", "state": "inactive"}
     before = {unit: dict(state) for unit, state in states.items()}
@@ -1242,6 +1004,177 @@ def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tm
     assert summary["status"] == ("failed" if stuck else "disarmed")
     assert set(summary["disarmed"]) == paused - {already_off} - {stuck}
     assert summary["held"] == []
+
+
+def test_retired_triggers_match_the_door_and_are_never_shipped_or_armed() -> None:
+    """The release retires exactly the triggers the door names as retired."""
+
+    import ast
+
+    door = Path(__file__).resolve().parents[1] / "deploy" / "operator-door" / "operator_door" / "requests.py"
+    tree = ast.parse(door.read_text(encoding="utf-8"))
+    names = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                 and any(getattr(target, "id", None) == "RETIRED_HOLD_UNITS" for target in node.targets))
+    assert deploy.DEFAULT_RETIRED_TRIGGER_UNITS == names
+    systemd = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+    for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS:
+        assert unit not in deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS
+        assert unit not in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+        assert not (systemd / unit).exists()
+    deploy._validate_retired_trigger_units()
+
+
+@pytest.mark.parametrize("arm_list", ["DEFAULT_ALWAYS_ARM_PATH_UNITS", "DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS",
+                                      "DEFAULT_ALWAYS_ARM_TIMER_UNITS", "DEPLOY_EXEMPT_TRIGGER_UNITS",
+                                      "DEFAULT_PAUSED_LANE_DISARM_UNITS", "DEFAULT_DEPLOYED_SYSTEMD_UNITS"])
+def test_a_retired_trigger_still_shipped_or_armed_refuses_the_release(tmp_path, monkeypatch, arm_list: str) -> None:
+    unit = "blueprint-pipeline-control-plane.timer"
+    monkeypatch.setattr(deploy, arm_list, (*getattr(deploy, arm_list), unit))
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", lambda _units: pytest.fail("host action"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match=f"deploy_retired_trigger_still_shipped:{unit}"):
+        deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+
+
+def _fake_retired_systemd(states: dict[str, dict[str, str] | None], *, failing: set[str] = frozenset()):
+    """A fake systemctl for retired triggers; None is a unit the host does not have."""
+
+    calls: list[tuple[str, ...]] = []
+
+    def systemctl(argv, **_kwargs):
+        calls.append(tuple(argv))
+        verb, unit = argv[1], argv[-1]
+        state = states[unit]
+        if verb == "show":
+            return subprocess.CompletedProcess(argv, 0, stdout="not-found\n" if state is None else "loaded\n", stderr="")
+        if state is None:
+            return subprocess.CompletedProcess(argv, 5, stdout="", stderr="Unit not loaded.")
+        if verb in {"is-enabled", "is-active"}:
+            value = state["enabled" if verb == "is-enabled" else "state"]
+            return subprocess.CompletedProcess(argv, 0, stdout=value + "\n", stderr="")
+        if unit in failing:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="busy")
+        if verb == "stop":
+            state["state"] = "inactive"
+        elif verb == "disable":
+            state["enabled"] = "disabled"
+        else:
+            raise AssertionError(f"Unexpected host operation: {verb}")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    return systemctl, calls
+
+
+def test_a_release_retires_unshipped_triggers_idempotently(tmp_path, monkeypatch) -> None:
+    """End to end: enabled and active is turned off, off stays off, absent is success."""
+
+    timer, path_on = deploy.DEFAULT_RETIRED_TRIGGER_UNITS[0], deploy.DEFAULT_RETIRED_TRIGGER_UNITS[2]
+    states: dict[str, dict[str, str] | None] = {
+        timer: {"enabled": "enabled", "state": "active"},
+        "blueprint-capture-reconstruction-dispatcher.timer": None,
+        path_on: {"enabled": "disabled", "state": "inactive"},
+        **{unit: None for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS[3:]},
+    }
+    retire = deploy._retire_unshipped_triggers
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    systemctl, calls = _fake_retired_systemd(states)
+    staged = {"source_commit": "d" * 40, "release_path": str(tmp_path / "release"), "created_release_checkout": True}
+
+    def stage(**kwargs):
+        if kwargs["activate"]:
+            calls.append(("release_switch",))
+        return staged
+
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", retire)
+    monkeypatch.setattr(deploy, "_move_source_checkout", lambda *_args: calls.append(("source_checkout_moved",)))
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release", stage)
+    monkeypatch.setattr(deploy, "_restore_installed_path_units",
+                        lambda _installed, **_kwargs: calls.append(("triggers_restored",)) or [])
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    receipt = deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+
+    assert receipt["status"] == "deployed"
+    # Retired before the source checkout moves and the release link switches, once, never at the end.
+    order = [call[0] if len(call) == 1 else call[1] for call in calls]
+    assert order.index("disable") < order.index("source_checkout_moved") < order.index("release_switch")
+    assert max(i for i, verb in enumerate(order) if verb in {"stop", "disable"}) < order.index("release_switch")
+    assert order.count("disable") == 2 and order[-1] == "triggers_restored"
+    calls[:] = [call for call in calls if len(call) > 1]
+    assert receipt["unshipped_trigger_retirement"] == {
+        "status": "retired", "retired": [timer], "already_off": [path_on],
+        "absent": ["blueprint-capture-reconstruction-dispatcher.timer", *deploy.DEFAULT_RETIRED_TRIGGER_UNITS[3:]],
+        "failed": [],
+    }
+    assert states[timer] == {"enabled": "disabled", "state": "inactive"}
+    rows = {row["unit"]: row for row in receipt["unshipped_trigger_states"]}
+    assert rows[timer]["before"] == {"enabled": "enabled", "state": "active"}
+    assert rows[timer]["requested_intent"] == "retire_unshipped_trigger"
+    # Only the retired triggers, only stop/disable and state probes; never a service, never an absent unit.
+    touched = {call[-1] for call in calls}
+    assert touched == set(deploy.DEFAULT_RETIRED_TRIGGER_UNITS)
+    assert {call[1] for call in calls} <= {"show", "is-enabled", "is-active", "stop", "disable"}
+    assert [call for call in calls if call[-1] == "blueprint-capture-reconstruction-dispatcher.timer"] == [
+        ("systemctl", "show", "--property=LoadState", "--value", "blueprint-capture-reconstruction-dispatcher.timer")]
+    # A second release finds every one already off or absent.
+    again = deploy._unshipped_trigger_retirement_summary(deploy._retire_unshipped_triggers())
+    assert again["status"] == "retired" and again["retired"] == [] and again["failed"] == []
+    assert again["already_off"] == [timer, path_on]
+
+
+def test_a_release_refused_before_the_switch_leaves_retired_triggers_alone(tmp_path, monkeypatch) -> None:
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", lambda _units: pytest.fail("retired on a refusal"))
+
+    def refuse(*_args, **_kwargs):
+        raise deploy.ControlPlaneDeployError("deploy_agent_execution_drain_refused")
+
+    monkeypatch.setattr(deploy, "_drain_agent_execution_before_release_switch", refuse)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="drain_refused") as raised:
+        deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+    assert deploy._unshipped_trigger_fields(raised.value) == {}
+
+
+def test_a_release_failing_after_the_switch_keeps_the_retired_triggers_off_and_reports_them(tmp_path, monkeypatch) -> None:
+    timer = deploy.DEFAULT_RETIRED_TRIGGER_UNITS[0]
+    states = {unit: None for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS}
+    states[timer] = {"enabled": "enabled", "state": "active"}
+    retire = deploy._retire_unshipped_triggers
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    systemctl, calls = _fake_retired_systemd(states)
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", retire)
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+
+    def unproven(*_args, **_kwargs):
+        raise deploy.ControlPlaneDeployError("deploy_intake_runtime_unproven")
+
+    monkeypatch.setattr(deploy, "_verify_intake_runtime", unproven)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="unproven") as raised:
+        deploy.deploy_control_plane_commit(**arguments, door_holds_dir=tmp_path / "holds")
+    fields = deploy._unshipped_trigger_fields(raised.value)
+    assert fields["unshipped_trigger_retirement"]["retired"] == [timer]
+    assert [row["unit"] for row in fields["unshipped_trigger_states"]] == list(deploy.DEFAULT_RETIRED_TRIGGER_UNITS)
+    assert states[timer] == {"enabled": "disabled", "state": "inactive"}
+    assert not [call for call in calls if call[1] in {"enable", "start", "restart"}]
+
+
+def test_a_retired_trigger_systemctl_cannot_stop_is_reported_not_raised(monkeypatch) -> None:
+    timer = deploy.DEFAULT_RETIRED_TRIGGER_UNITS[0]
+    states = {unit: None for unit in deploy.DEFAULT_RETIRED_TRIGGER_UNITS}
+    states[timer] = {"enabled": "enabled", "state": "active"}
+    systemctl, _calls = _fake_retired_systemd(states, failing={timer})
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    rows = deploy._retire_unshipped_triggers()
+    assert rows[0]["retired"] is False and rows[0]["retire_failed"] == ["stop", "disable"]
+    summary = deploy._unshipped_trigger_retirement_summary(rows)
+    assert summary["status"] == "failed" and summary["failed"] == [timer]
+
+    def broken(argv, **_kwargs):
+        raise OSError("systemctl missing")
+
+    monkeypatch.setattr(deploy.subprocess, "run", broken)
+    rows = deploy._retire_unshipped_triggers()
+    assert all(row["outcome"] == "failed" for row in rows)
+    assert rows[0]["after"] == {"enabled": "unknown", "state": "unknown"}
 
 
 @pytest.mark.parametrize("explicit", [False, True])
@@ -1323,34 +1256,6 @@ def test_failed_deploy_rechecks_a_hold_created_after_unit_snapshot(tmp_path, mon
             raise ValueError("deploy_failed")
 
     assert restored[0]["held_units"][unit]["owner"] == "alice"
-
-
-@pytest.mark.parametrize("unit", deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS)
-@pytest.mark.parametrize("enabled", ["disabled", "enabled"])
-def test_explicit_controls_pause_survives_default_progression_arming(
-    monkeypatch, unit: str, enabled: str,
-) -> None:
-    calls = []
-    before = {"enabled": enabled, "state": "inactive"}
-
-    def completed(argv, **kwargs):
-        calls.append(tuple(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(deploy.subprocess, "run", completed)
-    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(before))
-    restored = deploy._restore_installed_path_units(
-        [{"unit": unit}], before={unit: before}, arm_path_units=False,
-        always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
-        preserve_configured_controls_state=True,
-    )
-    assert calls == [
-        ("systemctl", "enable" if enabled == "enabled" else "disable", unit),
-        ("systemctl", "stop", unit),
-    ]
-    assert restored[0]["after"] == before
-    assert restored[0]["requested_intent"] == "preserve"
-    assert restored[0]["operator_freeze_preserved"] is True
 
 
 def test_conflicting_controls_intent_refuses_before_any_host_action(tmp_path, monkeypatch):
@@ -1785,6 +1690,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_verify_intake_runtime": lambda *_args, **_kwargs: {"commit_proven": True},
         "_activate_agent_execution": lambda **_kwargs: {},
         "_restore_installed_path_units": lambda _installed, **_kwargs: [],
+        "_retire_unshipped_triggers": lambda _units: [],
     }
     for name, stub in stubs.items():
         monkeypatch.setattr(deploy, name, stub)
@@ -2009,7 +1915,7 @@ def test_timer_restore_allows_hold_sweep_to_take_its_lock(tmp_path, monkeypatch,
     restore = deploy._restore_installed_path_units
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
     timer = "blueprint-pubsub-handoff-listener.timer"
-    held = "blueprint-agent-run-dispatcher.timer"
+    held = "blueprint-task-evaluation-scene-progression.timer"
     root = tmp_path / "holds"
     root.mkdir()
     record = {
@@ -2379,7 +2285,7 @@ def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(
     monkeypatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
-    unit = "blueprint-task-evaluation-policy-canary-dispatcher.path"
+    unit = "blueprint-rigid-robot-free-probe-runner.path"
     enabled = "enabled"
     active = "inactive"
 
@@ -4151,7 +4057,6 @@ def test_installer_records_the_service_account_access_receipt(
     )
 
     assert installed["service_account_access"]["status"] == "readable"
-
 
 
 def _protection_sources(tmp_path: Path, **overrides: object):
@@ -6101,69 +6006,13 @@ def test_controls_lane_with_a_cleared_robot_asset_does_not_block_the_release(tmp
     armed = {name: Path(previous[name]["path"]).read_bytes() for name in ("config", "catalog", "environment")}
     Path(kwargs["catalog"]["bindings"]["franka-droid"]["robot_asset_usd"]["path"]).unlink()
 
-    def unexpected(**_):
-        pytest.fail("terminal adoptions need an installed configuration")
-
-    monkeypatch.setattr(deploy, "_prepare_terminal_controls_adoptions", unexpected)
-    installation, adoptions = deploy._install_controls_autoprovision_lane(
-        bootstrap=config_root / "controls-autoprovision-bootstrap.json",
-        release_path=tmp_path, commit="a" * 40)
+    installation = deploy._install_controls_autoprovision_lane(
+        bootstrap=config_root / "controls-autoprovision-bootstrap.json")
     assert installation["status"] == "blocked"
     assert installation["blocker"] == "controls_autoprovision_asset_invalid"
     assert installation["configuration_written"] is False
-    assert adoptions == {"status": "skipped", "blocker": "controls_autoprovision_asset_invalid",
-                         "provider_mutation_performed": False}
     # Nothing new is armed: the last installed configuration is left exactly as it was.
     assert {name: Path(previous[name]["path"]).read_bytes() for name in armed} == armed
-
-
-def test_terminal_controls_lane_failure_is_recorded_but_a_live_worker_still_stops_the_release(tmp_path, monkeypatch):
-    _kwargs, config_root, _previous = _controls_lane_installed(tmp_path, monkeypatch)
-    bootstrap = config_root / "controls-autoprovision-bootstrap.json"
-    failure = ["deploy_terminal_controls_adoptions_failed:controls_autoprovision_asset_invalid:exit_1:stderr_sha256_x"]
-
-    def lane_failure(**_):
-        raise deploy.ControlPlaneDeployError(failure[0])
-
-    monkeypatch.setattr(deploy, "_prepare_terminal_controls_adoptions", lane_failure)
-    installation, adoptions = deploy._install_controls_autoprovision_lane(
-        bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)
-    assert installation["status"] == "installed"
-    assert adoptions == {"status": "blocked", "blocker": failure[0], "provider_mutation_performed": False}
-    for stops in ("deploy_terminal_controls_worker_not_quiescent",
-                  "deploy_terminal_controls_report_invalid",
-                  "deploy_terminal_controls_adoptions_failed:configured_controls_provisioning_registry_conflict:exit_1:x",
-                  "deploy_terminal_controls_adoptions_failed:unclassified:exit_1:x"):
-        failure[0] = stops
-        with pytest.raises(deploy.ControlPlaneDeployError):
-            deploy._install_controls_autoprovision_lane(bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)
-    failure[0] = "deploy_terminal_controls_report_unparseable"
-    assert deploy._install_controls_autoprovision_lane(
-        bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)[1]["status"] == "blocked"
-
-
-@pytest.mark.parametrize("field", ["provider_mutation_performed", "model_called", "placement_materialized"])
-def test_terminal_controls_report_of_a_provider_or_model_touch_stops_the_release(tmp_path, monkeypatch, field):
-    """A money fact in the helper's report is never swallowed by the lane step."""
-    _kwargs, config_root, _previous = _controls_lane_installed(tmp_path, monkeypatch)
-    commit = "a" * 40
-    unit = tmp_path / "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service"
-    unit.parent.mkdir(parents=True)
-    unit.write_bytes((REPO_ROOT / "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service").read_bytes())
-    report = {"status": "prepared", "source_commit": commit, "provider_mutation_performed": False,
-              "model_called": False, "placement_materialized": False, field: True}
-
-    def run(argv, **_kwargs):
-        if argv[:2] == ["systemctl", "show"]:
-            return SimpleNamespace(stdout="LoadState=loaded\nActiveState=inactive\nMainPID=0\n")
-        if argv[:2] == ["systemctl", "reset-failed"]:
-            return SimpleNamespace(stdout="")
-        return SimpleNamespace(stdout=json.dumps(report))
-
-    monkeypatch.setattr(deploy.subprocess, "run", run)
-    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_terminal_controls_report_invalid"):
-        deploy._install_controls_autoprovision_lane(
-            bootstrap=config_root / "controls-autoprovision-bootstrap.json", release_path=tmp_path, commit=commit)
 
 
 def test_blocked_lane_receipt_says_whether_the_installer_wrote_before_it_failed(tmp_path, monkeypatch):
@@ -6176,16 +6025,14 @@ def test_blocked_lane_receipt_says_whether_the_installer_wrote_before_it_failed(
         raise ValueError("controls_autoprovision_unmanaged_file")
 
     monkeypatch.setattr(installer, "install_controls_autoprovision", fails_after_writing_the_catalog)
-    installation, _ = deploy._install_controls_autoprovision_lane(
-        bootstrap=bootstrap, release_path=tmp_path, commit="a" * 40)
+    installation = deploy._install_controls_autoprovision_lane(bootstrap=bootstrap)
     assert installation["blocker"] == "controls_autoprovision_unmanaged_file"
     assert installation["configuration_written"] is True
     unreadable = tmp_path / "unreadable-bootstrap.json"
     unreadable.write_text("not json")
     monkeypatch.setattr(installer, "install_controls_autoprovision",
                         lambda *, bootstrap_path: (_ for _ in ()).throw(ValueError("controls_autoprovision_bootstrap_scope_invalid")))
-    installation, _ = deploy._install_controls_autoprovision_lane(
-        bootstrap=unreadable, release_path=tmp_path, commit="a" * 40)
+    installation = deploy._install_controls_autoprovision_lane(bootstrap=unreadable)
     assert installation["configuration_written"] == "not_determined"
 
 
@@ -6193,5 +6040,4 @@ def test_release_installs_the_controls_lane_through_the_non_blocking_step():
     source = (REPO_ROOT / "scripts" / "deploy_control_plane_commit.py").read_text()
     body = source[source.index("def deploy_control_plane_commit("):]
     assert "install_controls_autoprovision(" not in body
-    assert "_prepare_terminal_controls_adoptions(" not in body
     assert "_install_controls_autoprovision_lane(" in body

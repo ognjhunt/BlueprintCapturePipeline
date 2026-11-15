@@ -10,7 +10,6 @@ Blueprint lane. Review owner: @ognjhunt.
 
 | Component | Exact pin | Environment | License | Reviewed | Notes |
 | --- | --- | --- | --- | --- | --- |
-| skypilot[vast] | `0.13.0` (PyPI, released 2026-07-22) | `.venvs/skypilot` via `scripts/setup_skypilot_venv.sh`; CLI only (`BLUEPRINT_SKYPILOT_BIN`) | Apache-2.0 | 2026-08-02 | Never importable from the runtime; would downgrade Click/Uvicorn/Pillow. Usage telemetry disabled via `SKYPILOT_DISABLE_USAGE_COLLECTION=1`. |
 | nerfstudio | `1.1.5` (PyPI) | `.venvs/splatfacto` via `scripts/setup_splatfacto_venv.sh` (bakeoff arm G1) | Apache-2.0 | 2026-08-02 | PyPI 1.1.5 splatfacto hardcodes gsplat `DefaultStrategy`; pins `gsplat==1.4.0`. |
 | nerfstudio (git) | `nerfstudio-project/nerfstudio@50e0e3c70c775e89333256213363badbf074f29d` | same venv, arm G2 only | Apache-2.0 | 2026-08-02 | Required for the MCMC arm: `SplatfactoModelConfig.strategy = "mcmc"` exists only past the 1.1.5 release. Exact commit pin; imports `gsplat.strategy.MCMCStrategy`. |
 | gsplat | `1.4.0` (PyPI wheel/build) | `.venvs/splatfacto` | Apache-2.0 | 2026-08-02 | The version nerfstudio pins exactly. Distinct from the GPU worker image's vendored gsplat `937e2991…` (v1.5.3) and from NVIDIA's `usd-convert-gsplat` oracle — do not conflate. |
@@ -25,7 +24,7 @@ Rules:
    enters `docs/runtime_dependency_license_policy.json` through the normal
    fail-closed flow (lock regeneration + exact-version policy entry).
 3. Fail-closed at runtime: the code paths consuming these components
-   (`skypilot_provisioner`, `c2pa_stamping`, `cloud_tasks_dispatch`, the
+   (`c2pa_stamping`, `cloud_tasks_dispatch`, the
    splatfacto arm runner) each degrade to explicit
    `unavailable`/`blocked` statuses when the pinned component is absent —
    never to a silent fallback.

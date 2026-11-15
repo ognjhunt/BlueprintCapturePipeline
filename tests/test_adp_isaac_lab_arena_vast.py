@@ -10,29 +10,17 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
-from blueprint_pipeline import paid_resource_allocator as allocator
-from blueprint_pipeline.adp_founder_sim_protocol import (
-    build_founder_approval_receipt,
-    expected_founder_approval_statement,
-)
 from blueprint_pipeline.adp_isaac_lab_arena_vast import (
     DEFAULT_IMAGE,
-    PROBE_KIND,
     _bounded_spend_gate_open,
     _candidate_policy_query_blocker,
     _next_attempt_root,
     _remaining_session_live_minutes,
     _vast_authority_environment,
-    build_arena_native_control_bundle,
 )
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
-from blueprint_pipeline.provider_runtime_bundle_contract import (
-    provider_runtime_contract_blockers,
-)
 from blueprint_pipeline.vast_provider_adapter import (
-    _blueprint_bundle_preflight,
     _probe_env,
     _probe_shell_script,
     _resolve_launch_mode,
@@ -46,15 +34,6 @@ def _isolate_supervisor_context(monkeypatch: pytest.MonkeyPatch) -> None:
     # Watchdog contract tests set their own systemd context explicitly.
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
-
-def _approval_path(tmp_path: Path) -> Path:
-    receipt = build_founder_approval_receipt(
-        statement=expected_founder_approval_statement(),
-        evidence_ref="codex-task://test/user-message",
-    )
-    path = tmp_path / "approval.json"
-    write_json(path, receipt)
-    return path
 
 
 def _dry_run_bundle(tmp_path: Path) -> dict:
@@ -262,50 +241,6 @@ def test_policy_query_blocker_requires_query_for_an_evaluation_transport() -> No
         )
         == "adp009d_candidate_policy_query_status_missing"
     )
-
-
-def test_bundle_is_deterministic_approved_and_native_control_only(tmp_path: Path) -> None:
-    approval = _approval_path(tmp_path)
-    first = build_arena_native_control_bundle(
-        approval_path=approval, job_dir=tmp_path / "first", generated_at="fixed"
-    )
-    second = build_arena_native_control_bundle(
-        approval_path=approval, job_dir=tmp_path / "second", generated_at="fixed"
-    )
-
-    assert first["status"] == "ready"
-    assert first["bundle_sha256"] == second["bundle_sha256"]
-    assert first["candidate_policy_queried"] is False
-    assert first["candidate_outcomes_accessed"] is False
-    assert first["container_image"] == DEFAULT_IMAGE
-    with zipfile.ZipFile(first["bundle_path"]) as archive:
-        names = set(archive.namelist())
-        entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode()
-        runner = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
-    assert "provider_runtime/founder_sim_approval_receipt.json" in names
-    assert "provider_runtime/arena_worker_request.json" in names
-    assert "GR00T-N1.6-DROID" not in runner
-    assert "pi05_droid_jointpos_polaris" not in runner
-    assert (
-        provider_runtime_contract_blockers(
-            provider_bundle_kind="adp_arena",
-            entrypoint_text=entrypoint,
-            runner_text=runner,
-        )
-        == []
-    )
-    preflight = _blueprint_bundle_preflight(
-        job_dir=tmp_path / "preflight",
-        generated_at="fixed",
-        enable_blueprint_bundle=True,
-        enable_isaac_smoke=True,
-        provider_bundle_kind="adp_arena",
-        bundle_path=Path(first["bundle_path"]),
-        provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
-        provider_output_put_url="https://example.com/output.zip?sig=redacted",
-    )
-    assert preflight["status"] == "passed"
-    assert preflight["blockers"] == []
 
 
 def test_arena_bundle_uses_isaac_image_terms_and_ssh_bundle_path(
@@ -1071,76 +1006,6 @@ def test_live_transport_blocks_before_watchdog_storage_or_compute_on_spend_lock_
     assert manifest["status"] == "completed"
 
 
-def _allocator_args(tmp_path: Path, approval: Path, *, execute: bool) -> list[str]:
-    values = [
-        "gpu-canary",
-        "--probe-kind",
-        PROBE_KIND,
-        "--provider",
-        "vast",
-        "--provider-launch-request",
-        str(tmp_path / "unused-request.json"),
-        "--release-evidence",
-        str(tmp_path / "unused-release.json"),
-        "--model-cache-evidence",
-        str(tmp_path / "unused-model.json"),
-        "--preflight-bundle",
-        str(tmp_path / "unused-preflight.json"),
-        "--admission-out",
-        str(tmp_path / "admission.json"),
-        "--bound-request-out",
-        str(tmp_path / "unused-bound.json"),
-        "--adapter-output",
-        str(tmp_path / "adapter.json"),
-        "--pod-name",
-        "adp-arena",
-        "--adp-arena-approval",
-        str(approval),
-        "--adp-job-dir",
-        str(tmp_path / "job"),
-        "--adp-max-hourly-rate-usd",
-        "1.0",
-        "--adp-max-spend-usd",
-        "4.0",
-        "--adp-hard-ttl-seconds",
-        "14400",
-    ]
-    if execute:
-        values.append("--execute")
-    return values
-
-
-@pytest.mark.parametrize("execute", [False, True])
-def test_canonical_allocator_issues_arena_grant_only_for_execute(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
-) -> None:
-    approval = _approval_path(tmp_path)
-    observed: dict = {}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-
-    def fake_run(**kwargs):
-        observed.update(kwargs)
-        return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_arena_native_control_vast", fake_run)
-
-    assert allocator.main(_allocator_args(tmp_path, approval, execute=execute)) == 0
-    assert observed["execute"] is execute
-    assert observed["require_independent_watchdog"] is True
-    assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is (
-        execute
-    )
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["retry_cap"] == 0
-    assert admission["candidate_policy_queried"] is False
-    assert admission["hard_cap_usd"] == 4.0
-    assert admission["hard_ttl_seconds"] == 14400
-
-
 def test_avoidlist_already_in_the_job_directory_does_not_abort_the_launch(
     tmp_path: Path,
 ) -> None:
@@ -1362,3 +1227,35 @@ def test_missing_archive_cleanup_requires_independent_provider_zero(tmp_path, mo
         assert result['status'] == 'completed'
     else:
         assert not calls and result['remote_objects_retained_for_recovery'] is True
+
+
+@pytest.mark.parametrize("fault", [None, "create_unknown", "ids_unknown", "effects_unknown", "watchdog_unknown",
+    "watchdog_bool", "teardown_unknown", "cleanup_unknown", "contradictory_mutations"])
+def test_no_offer_allocation_fields_require_complete_explicit_absence(fault):
+    from blueprint_pipeline.adp_isaac_lab_arena_vast import provider_allocation_fields
+
+    adapter = {"provider_create_attempted": False, "vast_instance_ids": [], "vast_side_effects_may_have_occurred": False}
+    watchdog = {"status": "cancelled_no_allocation", "provider_mutations_performed": 0}
+    teardown = {"vast_instance_ids": [], "continuing_spend_from_this_run": False}
+    cleanup = {"all_objects_absent": True}
+    if fault == "create_unknown":
+        adapter.pop("provider_create_attempted")
+    if fault == "ids_unknown":
+        adapter.pop("vast_instance_ids")
+    if fault == "effects_unknown":
+        adapter.pop("vast_side_effects_may_have_occurred")
+    if fault == "watchdog_unknown":
+        watchdog.pop("provider_mutations_performed")
+    if fault == "watchdog_bool":
+        watchdog["provider_mutations_performed"] = False
+    if fault == "teardown_unknown":
+        teardown.pop("continuing_spend_from_this_run")
+    if fault == "cleanup_unknown":
+        cleanup.pop("all_objects_absent")
+    if fault == "contradictory_mutations":
+        adapter["provider_mutations_performed"] = 1
+    fields = provider_allocation_fields(adapter=adapter, watchdog=watchdog, teardown=teardown, cleanup=cleanup)
+    if fault is None:
+        assert fields["provider_mutations_performed"] == 0
+    else:
+        assert fields == {}

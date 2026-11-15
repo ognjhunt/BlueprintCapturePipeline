@@ -18,9 +18,6 @@ from blueprint_pipeline.argus_shadow import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-DELIVERABLE = REPO / "docs/experiments/argus_shadow_20261001"
-
-
 def _write(root: Path, name: str, value) -> dict:
     path = root / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -301,24 +298,6 @@ def test_articulated_grader_and_confirmed_acceptance_must_match(tmp_path):
     ep["artifacts"]["task_spec"] = _write(tmp_path, ref["path"], spec)
     with pytest.raises(ShadowError, match="acceptance_contract_differ"):
         prepare(seal(manifest, "manifest_digest"), tmp_path, allow_fixtures=True)
-
-
-def test_committed_empty_corpus_preserves_frozen_grader_and_refuses_current_source_drift():
-    path = DELIVERABLE / "argus_shadow_manifest.v1.json"
-    archived = path.read_bytes()
-    manifest = json.loads(archived)
-    assert manifest["current_grader_commit"] == "9cf0e298bf33280379a320240be005f28a480c3f"
-    assert manifest["episodes"] == []
-    # The archive retains its original grader identity. Even an empty corpus
-    # cannot silently run against changed source or propose paid work from it.
-    for operation in (
-        lambda: validate_manifest(manifest, REPO),
-        lambda: compare(manifest, REPO, []),
-        lambda: cost_proposal(manifest, REPO),
-    ):
-        with pytest.raises(ShadowError, match="executing_grader_differs_from_pin"):
-            operation()
-    assert path.read_bytes() == archived
 
 
 def test_empty_synthetic_corpus_is_honest_and_zero_cost(tmp_path):

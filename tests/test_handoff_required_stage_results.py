@@ -11,7 +11,6 @@ import pytest
 
 from blueprint_pipeline import pubsub_handoff_listener as listener
 from blueprint_pipeline import run_e2e
-from blueprint_pipeline.common import PipelineError
 
 
 @pytest.mark.parametrize(
@@ -55,32 +54,6 @@ def _setup(monkeypatch, tmp_path):
 
     monkeypatch.setattr(run_e2e, "run_capture_pipeline", capture)
     return root, calls
-
-
-@pytest.mark.parametrize("status", ["blocked", "failed", "not_started", None])
-def test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage(
-    monkeypatch, tmp_path, status
-):
-    root, calls = _setup(monkeypatch, tmp_path)
-
-    def supervisor(**_kwargs):
-        calls["supervisor"] += 1
-        return {"status": status if calls["supervisor"] == 1 else "non_spend_complete"}
-
-    monkeypatch.setattr(run_e2e, "run_capture_build_supervisor", supervisor)
-    with pytest.raises(
-        PipelineError, match="required_stage_not_complete:task_evaluation_supervisor"
-    ):
-        run_e2e.run_end_to_end(capture_root=str(root), provider="manual")
-    ledger = json.loads((root / "pipeline/run_e2e_stage_ledger.json").read_text())
-    assert ledger["status"] == "failed"
-    assert ledger["failed_stage"] == "task_evaluation_supervisor"
-    assert ledger["stages"]["capture_pipeline"]["status"] == "completed"
-    result = run_e2e.run_end_to_end(
-        capture_root=str(root), provider="manual", resume_completed_stages=True
-    )
-    assert result["task_evaluation_supervisor"]["status"] == "non_spend_complete"
-    assert calls == {"capture": 1, "supervisor": 2}
 
 
 def test_old_required_failure_snapshot_is_not_reused():
@@ -130,22 +103,6 @@ def test_completed_supervisor_preserves_optional_readiness_states(status):
         "site_package_manifest": {"status": "blocked"},
     }
     assert listener._handoff_result_disposition(result) == ("terminal_success", [])
-
-
-def test_real_required_supervisor_block_cannot_complete_capture(monkeypatch, tmp_path):
-    root, calls = _setup(monkeypatch, tmp_path)
-    with pytest.raises(
-        PipelineError, match="required_stage_not_complete:task_evaluation_supervisor:blocked"
-    ):
-        run_e2e.run_end_to_end(capture_root=str(root), provider="manual")
-    assert calls["capture"] == 1
-    reports = list(
-        (root / "pipeline/task_evaluation_supervisor/runs").glob(
-            "*/terminal_supervisor_report.json"
-        )
-    )
-    assert len(reports) == 1
-    assert json.loads(reports[0].read_text())["status"] == "blocked"
 
 
 @pytest.mark.parametrize("status", ["pending", "unknown", "not_started", None])
@@ -248,10 +205,11 @@ def test_capture_stage_hands_its_input_binding_to_the_lane_ledger(monkeypatch, t
     def capture(**kwargs):
         seen.append(kwargs.get("input_binding_digest", "absent"))
         return {"status": "completed", "lanes": ["qualification"],
-                "artifact_purpose": "evaluation_preparation", "robot_evaluation_performed": False}
+                "artifact_purpose": "evaluation_preparation", "robot_evaluation_performed": False,
+                "results": [{"lane": "qualification", "status": "completed", "native_execution_complete": False,
+                             "website_scene_preparation": {"status": "prepared"}}]}
 
     monkeypatch.setattr(run_e2e, "run_capture_pipeline", capture)
-    monkeypatch.setattr(run_e2e, "run_capture_build_supervisor", lambda **_kwargs: {"status": "non_spend_complete"})
     binding = "sha256:" + "d" * 64
     monkeypatch.setattr(run_e2e, "held_replay_binding", lambda _pipeline, base: binding)
     run_e2e.run_end_to_end(capture_root=str(root), provider="manual")

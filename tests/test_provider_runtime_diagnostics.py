@@ -1,7 +1,6 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/provider_runtime_diagnostics.py
 #   src/blueprint_pipeline/provider_output_remote_collection.py
-#   src/blueprint_pipeline/beta_policy_screening_worker.py
 #   src/blueprint_pipeline/bounded_error.py
 """A failed provider run's own account is summarized, bounded and redacted, at inspection time."""
 
@@ -15,7 +14,6 @@ import zipfile
 from pathlib import Path
 
 from blueprint_pipeline import provider_runtime_diagnostics as diagnostics
-from blueprint_pipeline.beta_policy_screening_worker import backfill_runtime_diagnostics
 from blueprint_pipeline.provider_output_remote_collection import RemoteProviderOutputCollector
 from tests.provider_output_fixtures import (
     DEFLATED,
@@ -278,29 +276,6 @@ def test_backfill_is_bounded_and_idempotent(tmp_path):
     written = json.loads((runs[0] / diagnostics.FILENAME).read_text())
     assert written["backfilled"] is True and written["status"] == "completed"
     assert any(row.get("session_failure_type") == "LaunchFailure" for row in written["results"])
-
-
-def test_beta_worker_backfills_local_and_work_volume_attempts(tmp_path):
-    root = tmp_path / "queue"
-    attempts = root / "attempts"
-    attempts.mkdir(parents=True)
-    _run_dir(attempts / "screen-local" / "allocator" / "attempts", "attempt_001")
-    work = tmp_path / "work" / "attempts"
-    _run_dir(work / "screen-remote" / "allocator" / "attempts", "attempt_001")
-    (attempts / "screen-remote.attempt_dir.json").write_text(json.dumps(
-        {"attempt_id": "screen-remote", "attempt_dir": str(work / "screen-remote")}))
-    # A pointer whose directory does not carry its own attempt id is ignored.
-    _run_dir(work / "screen-other" / "allocator" / "attempts", "attempt_001")
-    (attempts / "screen-forged.attempt_dir.json").write_text(json.dumps(
-        {"attempt_id": "screen-forged", "attempt_dir": str(work / "screen-other")}))
-
-    result = backfill_runtime_diagnostics(root)
-
-    assert result["status"] == "completed" and result["pending"] is False
-    assert sorted(Path(path).parents[3].name for path in result["written"]) == ["screen-local", "screen-remote"]
-    assert not (work / "screen-other/allocator/attempts/attempt_001/vast_provider_run" / diagnostics.FILENAME).exists()
-    assert backfill_runtime_diagnostics(root)["written"] == []
-    assert backfill_runtime_diagnostics(tmp_path / "missing-root")["status"] == "failed"
 
 
 def _collect(store, **options):

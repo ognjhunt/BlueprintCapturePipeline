@@ -1436,12 +1436,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-unit-failure@.service" \
   "${SYSTEMD_DIR}/blueprint-unit-failure@.service"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.service" \
-  "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.timer" \
-  "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.timer"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-preview.service" \
   "${SYSTEMD_DIR}/blueprint-website-atlas-preview.service"
 run install -m 0644 \
@@ -1456,12 +1450,6 @@ run install -m 0644 \
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-provider-poll.path" \
   "${SYSTEMD_DIR}/blueprint-website-atlas-provider-poll.path"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.service" \
-  "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.path" \
-  "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.path"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-intake.service" \
   "${SYSTEMD_DIR}/blueprint-pipeline-intake.service"
@@ -1493,12 +1481,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.timer"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.service" \
-  "${SYSTEMD_DIR}/blueprint-scene-object-discovery.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.path" \
-  "${SYSTEMD_DIR}/blueprint-scene-object-discovery.path"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.service"
 run install -m 0644 \
@@ -1526,24 +1508,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.timer"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.service" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-policy-canary-dispatcher.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-policy-canary-dispatcher.path" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-policy-canary-dispatcher.path"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-native-g1-team-campaign-dispatcher.service" \
-  "${SYSTEMD_DIR}/blueprint-native-g1-team-campaign-dispatcher.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-native-g1-team-campaign-dispatcher.timer" \
-  "${SYSTEMD_DIR}/blueprint-native-g1-team-campaign-dispatcher.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-native-g1-team-campaign-settlement.service" \
-  "${SYSTEMD_DIR}/blueprint-native-g1-team-campaign-settlement.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-native-g1-team-campaign-settlement.timer" \
-  "${SYSTEMD_DIR}/blueprint-native-g1-team-campaign-settlement.timer"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-terminal-resource-release.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-terminal-resource-release.service"
 run install -m 0644 \
@@ -1556,20 +1520,11 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-reconciler.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-reconciler.timer"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.service"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-scene-progression.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-scene-progression.service"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-scene-progression.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-scene-progression.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.timer" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-configured-controls-progression.path" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-configured-controls-progression.path"
 install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-storage-gc.service" \
   "${SYSTEMD_DIR}/blueprint-control-plane-storage-gc.service"
@@ -1606,12 +1561,6 @@ install -m 0644 \
 install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-control-plane-preflight.timer" \
   "${SYSTEMD_DIR}/blueprint-control-plane-preflight.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.service" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-supervisor.timer" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-supervisor.timer"
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-provider-billing-reconciler.service" \
   "${SYSTEMD_DIR}/blueprint-provider-billing-reconciler.service"
@@ -1671,40 +1620,6 @@ else
   run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -c \
     'import importlib.metadata as m; assert m.version("rfc8785") == "0.1.4"'
   echo "synchronized hash-pinned production runtime dependencies"
-fi
-
-# Build the Windows worker package from the exact promoted commit and bind the
-# environment to that immutable release directory. The transport compiler also
-# verifies the wheel's embedded source digest before any provider mutation.
-# This closes the gap where an old wheel at a stable placeholder path could be
-# paired with a newer dispatcher checkout.
-if [[ -n "${SOURCE_COMMIT:-}" ]]; then
-  WORKER_RELEASE_DIR="/opt/blueprint/releases/canonical-3dgs-worker/${SOURCE_COMMIT}"
-  if [[ "${DRY_RUN}" == "true" ]]; then
-    printf '[dry-run] build exact worker wheel for %s into %s\n' \
-      "${SOURCE_COMMIT}" "${WORKER_RELEASE_DIR}"
-  else
-    run install -d -m 0755 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
-      "${WORKER_RELEASE_DIR}"
-    WORKER_BUILD_RECEIPT="$(runuser -u "${SERVICE_USER}" -- \
-      "${REPO_ROOT}/scripts/build_canonical_3dgs_worker_wheel.sh" \
-      "${SOURCE_COMMIT}" "${WORKER_RELEASE_DIR}")"
-    WORKER_WHEEL="$(printf '%s' "${WORKER_BUILD_RECEIPT}" | \
-      python3 -c 'import json,sys; print(json.load(sys.stdin)["wheel_path"])')"
-    if [[ ! -f "${WORKER_WHEEL}" ]]; then
-      echo "ERROR: exact canonical worker wheel was not produced" >&2
-      exit 1
-    fi
-    printf '%s\n' "${WORKER_BUILD_RECEIPT}" > \
-      "${WORKER_RELEASE_DIR}/build_receipt.json"
-    run chown root:"${SERVICE_GROUP}" \
-      "${WORKER_RELEASE_DIR}/build_receipt.json"
-    run chmod 0644 "${WORKER_RELEASE_DIR}/build_receipt.json"
-    sed -i '/^BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL=/d' "${ENV_FILE}"
-    printf 'BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL=%s\n' "${WORKER_WHEEL}" >> \
-      "${ENV_FILE}"
-    echo "bound exact canonical worker wheel ${WORKER_WHEEL}"
-  fi
 fi
 
 # Single-use paid-attempt enforcement writes a consumption record before any
@@ -1784,9 +1699,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-provider-billing-reconciler.timer
   systemctl enable --now blueprint-gpu-spend-guard.timer
   systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer
-  systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer
   systemctl enable --now blueprint-task-evaluation-scene-progression.timer
-  systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path
   systemctl enable --now blueprint-control-plane-storage-gc.timer
   systemctl enable --now blueprint-website-withdrawal-deletion.timer
   systemctl enable --now blueprint-control-plane-state-backup.timer
@@ -1799,39 +1712,25 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.timer
-  systemctl enable --now blueprint-scene-object-discovery.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.timer
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.timer
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.timer
-  systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path
-  systemctl enable --now blueprint-team-evaluation-runner.path
-  systemctl enable --now blueprint-native-g1-team-campaign-dispatcher.timer
-  systemctl enable --now blueprint-native-g1-team-campaign-settlement.timer
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
-  systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer
 else
   echo "installed"
   echo "enable handoff listener with: systemctl enable --now blueprint-pubsub-handoff-listener.timer"
   echo "enable billing reconciliation with: systemctl enable --now blueprint-provider-billing-reconciler.timer"
   echo "enable spend admission guard with: systemctl enable --now blueprint-gpu-spend-guard.timer"
   echo "enable launch reconciliation with: systemctl enable --now blueprint-task-evaluation-launch-reconciler.timer"
-  echo "enable configured-controls progression with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.timer"
-  echo "enable compilation-result progression wake-up with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
   echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
   echo "enable bounded disk-capacity preparation retries with: systemctl enable --now blueprint-task-evaluation-launch-preparation.timer"
-  echo "enable whole-splat object discovery queue with: systemctl enable --now blueprint-scene-object-discovery.path"
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable hourly recovery of interrupted activation claims with: systemctl enable --now blueprint-task-evaluation-launch-activation.timer"
-  echo "enable authority-gated paid policy canary queue with: systemctl enable --now blueprint-task-evaluation-policy-canary-dispatcher.path"
-  echo "enable the staged robot-team evaluation runner with: systemctl enable --now blueprint-team-evaluation-runner.path"
-  echo "enable G1 team campaign dispatcher with: systemctl enable --now blueprint-native-g1-team-campaign-dispatcher.timer"
-  echo "enable G1 team campaign settlement with: systemctl enable --now blueprint-native-g1-team-campaign-settlement.timer"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
-  echo "enable optional launch supervision with: systemctl enable --now blueprint-task-evaluation-launch-supervisor.timer"
   echo "start intake service with: systemctl enable --now blueprint-pipeline-intake.service"
 fi

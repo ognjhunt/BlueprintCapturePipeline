@@ -96,33 +96,10 @@ def test_private_bytes_and_current_consent_remain_required(tmp_path, monkeypatch
         omission.load_for_run(launch_state_root=launches,source_launch_id=launch,now=now)
 
 
-def test_existing_typed_derivation_preserves_scoring_and_original_bytes(tmp_path):
-    from tests.test_native_task_arena_policy_canary_session import _activation
-    contract=copy.deepcopy(_activation()['task_success_contract'])
-    contract['criteria']['controls']={'mode':'required_per_cell','control_ids':omission.OMITTED}
-    contract['contract_digest']=cross_runtime_canonical_digest(contract,digest_field='contract_digest')
-    request={'schema_version':'native_task_arena_packet_request.v1','task_spec':{'task_success_contract':contract,
-        'configured_success_criteria':{'per_cell_controls_required':True}}}
-    request['request_digest']=canonical_digest(request,digest_field='request_digest')
-    path=tmp_path/'request.json'
-    path.write_text(json.dumps(request))
-    before=path.read_bytes()
-    derived,authority=omission.derived_contract(packet_request_path=path,
-        directive={'authorized_by':'owner','authorization_reference':'user:skip-controls'})
-    expected=copy.deepcopy(contract['criteria'])
-    expected.pop('controls')
-    assert derived['criteria']==expected and path.read_bytes()==before
-    assert authority['source_task_success_contract_digest']==contract['contract_digest']
-    assert authority['qualified_comparison_permitted'] is False
-
-
 def test_confirmed_drawer_contract_keeps_the_qualified_opening_threshold(tmp_path):
     from tests.test_task_evaluation_articulated_open_close_native_adapter import _case
     from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
         adapt_articulated_open_close_task_template,
-    )
-    from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
-        _require_strict_owner_success_contract,
     )
 
     case = _case(tmp_path)
@@ -137,66 +114,11 @@ def test_confirmed_drawer_contract_keeps_the_qualified_opening_threshold(tmp_pat
         task_spec=spec, site_id='scene-drawer', task_id='task-drawer')
     assert contract['criteria']['opening']['success_interval'] == spec['executable_opening_threshold']['success_interval']
     assert contract['criteria']['safety'] == {'mode': 'required'}
-    authority = {
-        'schema_version': 'task_evaluation_diagnostic_control_omission_authority.v1',
-        'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
-        'authorized_by': 'blueprint-platform-owner', 'authorization_reference': 'scene-intent:fixture',
-        'omitted_controls': omission.OMITTED,
-        'source_task_success_contract_digest': contract['contract_digest'],
-        'result_task_success_contract_digest': contract['contract_digest'],
-        'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
-    }
-    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
-    _require_strict_owner_success_contract(
-        task_spec=spec, contract=contract, diagnostic_control_omission_authority=authority,
-        task_kind='articulated_open_close')
     unconfirmed = copy.deepcopy(spec)
     unconfirmed['configured_owner_authority']['confirmation_status'] = 'proposal_only'
     with pytest.raises(ValueError, match='articulated_owner_contract_unconfirmed'):
         omission.confirmed_articulated_contract(
             task_spec=unconfirmed, site_id='scene-drawer', task_id='task-drawer')
-    weakened = copy.deepcopy(contract)
-    weakened['criteria']['opening']['success_interval'][0] = 0.1
-    weakened['contract_digest'] = cross_runtime_canonical_digest(weakened, digest_field='contract_digest')
-    with pytest.raises(ValueError, match='policy_canary_control_omission_scope_invalid'):
-        _require_strict_owner_success_contract(
-            task_spec=spec, contract=weakened, diagnostic_control_omission_authority={
-                **authority, 'result_task_success_contract_digest': weakened['contract_digest'],
-                'authority_digest': canonical_digest({
-                    **authority, 'result_task_success_contract_digest': weakened['contract_digest'],
-                }, digest_field='authority_digest'),
-            }, task_kind='articulated_open_close')
-
-
-def test_worker_omits_controls_before_any_standalone_controls_admission(tmp_path,monkeypatch):
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
-    from tests.test_task_evaluation_configured_controls_progression_worker import _plan,_write,_sealed_progression
-    plan_path=_plan(tmp_path)
-    plan=json.loads(plan_path.read_bytes())
-    launches,_,_,directive,_,_=scoped(tmp_path,monkeypatch,launch_id=plan['source_launch_id'])
-    state=tmp_path/'progressions'/plan['source_launch_id']/f"franka-controls-{plan['expected_production_commit'][:12]}"
-    _write(state/'configured_controls_progression.v1.json',_sealed_progression('episode_preparation_queued',
-        episode_preparation_request={'preparation_id':'prep-1'}))
-    _write(state/'construction_activation_progression.json',_sealed_progression('construction_activation_queued'))
-    _write(state/'construction_launch_progression.json',_sealed_progression('construction_launch_queued',launch_id='construction-1'))
-    prep=tmp_path/'preparations'
-    _write(prep/'identities/prep-1.json',{'identity':'prep-1'})
-    _write(prep/'results/prep-1-a.json',{'status':'prepared'})
-    def forbidden(*args,**kwargs):
-        pytest.fail('omitted standalone controls reached activation or launch')
-    monkeypatch.setattr(worker,'stage_configured_controls_activation',forbidden)
-    monkeypatch.setattr(worker,'submit_authorized_progression_launch',forbidden)
-    result=worker.advance_configured_controls_plan(plan_path=plan_path,launch_state_root=launches,
-        progression_root=tmp_path/'progressions',preparation_queue_root=prep,activation_queue_root=tmp_path/'activations')
-    assert result['status']=='controls_omitted_for_diagnostic_policy'
-    assert result['control_omission_directive_digest']==directive['directive_digest']
-    assert result['controls_qualified'] is result['qualified_comparison_permitted'] is False
-    assert not (state/'controls_activation_progression.json').exists()
-    assert not (state/'controls_launch_progression.json').exists()
-    _write(state/'controls_activation_progression.json',_sealed_progression('controls_activation_queued'))
-    with pytest.raises(worker.TaskEvaluationConfiguredControlsProgressionWorkerError,match='omission_after_controls_admission'):
-        worker.advance_configured_controls_plan(plan_path=plan_path,launch_state_root=launches,
-            progression_root=tmp_path/'progressions',preparation_queue_root=prep,activation_queue_root=tmp_path/'activations')
 
 
 @pytest.mark.parametrize("fault", ["revoked", "expired", "profile_changed"])

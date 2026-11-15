@@ -3,9 +3,7 @@
 These tests establish software wiring, not Isaac execution or task success.
 """
 import math
-from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -105,32 +103,6 @@ def test_nearest_arm_selection_is_measured_and_does_not_move_other_arm():
     assert action["gripper_closures"][0] == [0., 0.]
 
 
-def test_planner_retains_scripted_identity_for_selected_deferred_and_unavailable():
-    from copy import deepcopy
-    from blueprint_pipeline.beta_policy_candidate_catalog import seal_catalog
-    from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan, validate_screening_plan
-    from tests.test_beta_policy_screening_plan import inputs, admitted, scene, NOW
-    catalog, _, _ = inputs(3)
-    rows = deepcopy(catalog["candidates"])
-    for row in rows:
-        row["policy"].update(kind="scripted", digest_kind="source_code_inventory", source="blueprint-owned:scripted_pick_place")
-        row["interface"]["policy_interface_id"] = "blueprint_scripted_pick_place.v1"
-    catalog = seal_catalog({**catalog, "candidates": rows})
-    bindings, quotes = {}, {}
-    for row in catalog["candidates"][:2]:
-        bindings[row["candidate_id"]], quotes[row["candidate_id"]] = admitted(row, maximum="8.00")
-    plan = build_screening_plan(catalog, scene(), campaign_id="development-only", now=NOW,
-        capabilities={"candidate_bindings": bindings}, cost_quotes=quotes)
-    assert [row["status"] for row in plan["candidates"]] == ["selected", "waitlisted", "unavailable"]
-    assert {row["execution_evidence_kind"] for row in plan["candidates"]} == {EVIDENCE_KIND}
-    assert validate_screening_plan(plan) == plan
-    import json
-    from pathlib import Path
-    from jsonschema import Draft202012Validator
-    schema = json.loads((Path(__file__).parents[1] / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
-    Draft202012Validator(schema).validate(plan)
-
-
 def test_task_driver_copies_actual_authored_geometry_without_reference_joint_trajectory(monkeypatch):
     from blueprint_pipeline import scripted_robot_baseline_runtime as runtime
     from blueprint_pipeline.native_task_construction_plan import materialize_native_task_construction_phase_plan
@@ -159,52 +131,3 @@ def test_task_driver_copies_actual_authored_geometry_without_reference_joint_tra
         runtime.build_task_plan(_planar_push_fixture(), policy, manifest)
     with pytest.raises(ValueError, match="scripted_baseline_task_kind_unsupported"):
         runtime.build_task_plan({"task_kind": "articulated_open_close"}, policy, manifest)
-
-
-def test_actual_generic_loop_drives_one_arm_and_scores_independently(tmp_path, monkeypatch):
-    from blueprint_pipeline import adp_task_scoring, episode_visual_evidence, native_task_episode_environment
-    from blueprint_pipeline.team_embodiment import apply_team_embodiment, read_model_structure, team_embodiment_binding, validate_embodiment_manifest, verify_model_file
-    from blueprint_pipeline.team_embodiment_runtime import run_team_episode
-    from tests.test_team_arm_kinematics import CartesianRobot, named_inputs
-    from tests.test_team_embodiment import _Camera, _Scoring, station_plan
-
-    model, value = named_inputs(tmp_path)
-    manifest = validate_embodiment_manifest(value)
-    binding = team_embodiment_binding(manifest, model_record=verify_model_file(manifest, model),
-                                     structure=read_model_structure(model), scene_plan=station_plan())
-    scene = {**apply_team_embodiment(station_plan(), binding), "scenario": {"seed": 7}}
-    scene["cadence"].update(maximum_action_steps=120, settle_window_samples=0)
-    row = scene["robot"]
-    class Env:
-        def __init__(self):
-            self.robot, self.steps = CartesianRobot(row), []
-            self.unwrapped = SimpleNamespace(device="cpu", scene={"robot": self.robot,
-                **{name: _Camera() for name in ("team_camera_0", "team_camera_1", "team_camera_2", "external_camera_2")}})
-        def reset(self, seed):
-            self.robot.q = np.array([row["joint_reset_positions_rad"][name] for name in self.robot.joint_names])
-        def step(self, action):
-            order = [*row["joint_names"], *(joint["name"] for joint in row["gripper_joints"])]
-            self.steps.append(list(action[0]))
-            self.robot.q = np.array([action[0][order.index(name)] for name in self.robot.joint_names])
-    env = Env()
-    client = ScriptedRobotBaseline(plan=scripted_plan(scene_digest=scene["plan_digest"]), policy_id="development-only")
-    built = SimpleNamespace(env=env, camera_scene_names={**{f"team_camera_{i}": f"team_camera_{i}" for i in range(3)},
-                                                       "overview": "external_camera_2"})
-    monkeypatch.setattr(native_task_episode_environment, "NativeRigidScoringEnvironment", _Scoring)
-    monkeypatch.setattr(episode_visual_evidence, "finalize_multicamera_visual_evidence", lambda **_: ({"status": "complete"}, []))
-    samples = []
-    monkeypatch.setattr(adp_task_scoring, "score_task_episode_from_spec", lambda **kw: samples.extend(kw["samples"]) or {"task_succeeded": False})
-    progress = {}
-    result = run_team_episode(built=built, task_readback=None, policy=client, plan=scene, prompt="Fixture only",
-        max_policy_queries=120, open_loop_horizon=1, media_root=tmp_path / "episodes", episode_id="development-only-scripted",
-        progress=progress, to_action=lambda targets: [targets])
-    assert 0 < len(env.steps) <= 120
-    assert env.robot.q[env.robot.joint_names.index("left_joint_0")] > .07
-    assert env.robot.q[env.robot.joint_names.index("right_joint_0")] == 0.
-    assert result["score"]["task_succeeded"] is False  # Script's arrival cannot override native scorer.
-    assert samples and result["scripted_controller_calls"] > 0
-    assert result["policy_queries"] == 0 and progress["candidate_policy_queried"] is False
-    assert result["action_source"] == ACTION_SOURCE and result["policy_outcome_interpretable"] is False
-    assert progress["scripted_controller_invoked"] is True
-    assert result["policy_request_evidence_complete"] is False  # No network serialization exists.
-    assert result["scripted_request_evidence_complete"] is True

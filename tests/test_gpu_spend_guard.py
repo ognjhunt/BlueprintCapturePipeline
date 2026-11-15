@@ -19,7 +19,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueprint_pipeline import single_g1_kitchen_qualification_session as qualification
 from scripts import gpu_spend_guard as guard
 
 
@@ -382,38 +381,51 @@ def _write_qualification_owner(
         "release_evidence_status": "completed",
         "thin_release_contract_status": "passed",
     }
-    prefix = qualification.NAME_PREFIX_ROOT + "test-owner"
+    prefix = "blueprint-groot-oscar-canary-qualification-test-owner"
     nonce = "single-g1-kitchen-qualification-test-owner"
-    manifest = qualification._manifest_base(
-        root=attempt,
-        resource_name=prefix + "-instance",
-        resource_name_prefix=prefix,
-        launch_session_id=nonce,
-        bootstrap={
+    manifest = {
+        "schema_version": "single_g1_kitchen_qualification_session.v2",
+        "status": "allocated_ready_continuing_spend",
+        "provider": "vast",
+        "instance_id": instance_id,
+        "resource_name": prefix + "-instance",
+        "resource_name_prefix": prefix,
+        "job_dir": str(attempt),
+        "image_ref": image_ref,
+        "image_digest": image_digest,
+        "source_commit": source_commit,
+        "image_source_commit": source_commit,
+        "orchestrator_source_commit": source_commit,
+        "runtime_identity": {},
+        "release_binding_status": "bound",
+        "release_binding": release_binding,
+        "bundle_sha256": "c" * 64,
+        "launch_session_id": nonce,
+        "launch_session_nonce_sha256": hashlib.sha256(nonce.encode("utf-8")).hexdigest(),
+        "bootstrap": {
             "provider_bootstrap_sha256": "1" * 64,
             "episode_bootstrap_sha256": "2" * 64,
             "control_script_sha256": "3" * 64,
             "refresh_installer_sha256": "4" * 64,
             "component_script_sha256s": {},
             "overlay_revision": 1,
-            "control_contract_version": qualification.CONTROL_CONTRACT_VERSION,
+            "control_contract_version": "fixed_qualification_control_script.v7",
+            "arbitrary_remote_command_allowed": False,
+            "episode_auto_run": False,
         },
-        deadline_epoch=deadline_epoch,
-        image_ref=image_ref,
-        image_digest=image_digest,
-        source_commit=source_commit,
-        release_binding=release_binding,
-    )
-    manifest.update(
-        {
-            "status": "allocated_ready_continuing_spend",
-            "instance_id": instance_id,
-            "continuing_spend": continuing_spend,
-        }
-    )
+        "watchdog_deadline_epoch": float(deadline_epoch),
+        "continuing_spend": continuing_spend,
+        "raw_secret_values_recorded": False,
+    }
     manifest_path = attempt / manifest_name
-    qualification._private_write_json(manifest_path, manifest)
+    _private_write_json(manifest_path, manifest)
     return manifest_path
+
+
+def _private_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
 
 
 def test_owned_pod_with_live_owner_is_protected(tmp_path: Path) -> None:
@@ -962,7 +974,7 @@ def test_qualification_import_failure_preserves_v2_runtime_identity_owner(
             },
         }
     )
-    qualification._private_write_json(manifest_path, manifest)
+    _private_write_json(manifest_path, manifest)
     real_import = __import__
 
     def _fail_qualification_import(
@@ -1119,31 +1131,6 @@ def test_qualification_import_failure_requires_canonical_release_binding(
     assert protected == set()
 
 
-def test_qualification_validation_failure_does_not_disable_spend_guard(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manifest_path = _write_qualification_owner(
-        tmp_path / "qualification", "45483300"
-    )
-    monkeypatch.setattr(
-        qualification,
-        "_validate_manifest_binding",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("qualification validator unavailable")
-        ),
-    )
-
-    protected = guard.find_protected_pod_ids(
-        [tmp_path],
-        process_cmdlines=[
-            "python -m blueprint_pipeline.paid_resource_allocator "
-            f"--qualification-session-manifest {manifest_path}"
-        ],
-    )
-
-    assert protected == set()
-
-
 def test_spoofed_partial_qualification_manifest_is_not_protected(
     tmp_path: Path,
 ) -> None:
@@ -1182,7 +1169,7 @@ def test_legacy_unbound_qualification_manifest_is_not_protected(
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.pop("release_binding_status")
-    qualification._private_write_json(manifest_path, manifest)
+    _private_write_json(manifest_path, manifest)
 
     protected = guard.find_protected_pod_ids(
         [tmp_path],

@@ -118,9 +118,6 @@ Implemented:
   `unitree_endpoint_fresh_policy_action_command_ran=false`, and
   `unitree_endpoint_provider_output_replay_used=true`. This is endpoint/action
   plumbing evidence, not fresh Unitree hand-policy inference.
-- A reusable Unitree UnifoLM GPU image-context generator,
-  `blueprint-build-unitree-unifolm-gpu-image`, based on Unitree's CUDA 12.4
-  install path. The image context does not bake checkpoints or credentials.
 - A pushed Unitree UnifoLM SDPA fallback provider image:
   `docker.io/nijelhunt/blueprint-unitree-unifolm:20260622-cu124-sdpa3`.
   Its build-time healthcheck passes on the CPU builder and public registry
@@ -402,7 +399,6 @@ The runtime audit and provider-smoke helpers are:
 
 ```bash
 blueprint-run-unitree-groot-n17-sonic-policy-runtime --job-dir robot_eval_jobs/<job_id>
-blueprint-run-unitree-groot-n17-sonic-policy-server-preflight --job-dir robot_eval_jobs/<job_id>
 blueprint-run-unitree-groot-n17-sonic-policy-provider-smoke \
   --job-dir robot_eval_jobs/<job_id> \
   --frame-path <simulated-policy-frame>
@@ -584,15 +580,6 @@ real UnifoLM server is running. If the server is not listening, the adapter must
 emit `blocked_unitree_unifolm_vla_server_call_failed:URLError`; that is not a
 policy proof.
 
-The provider-smoke/import command is:
-
-```bash
-blueprint-run-unitree-unifolm-policy-provider-smoke \
-  --job-dir /path/to/job \
-  --frame-path /path/to/head_or_torso_frame.png \
-  --mode vla
-```
-
 The Vast adapter can validate the Unitree-specific bundle kind in dry-run mode:
 
 ```bash
@@ -626,29 +613,7 @@ provider job returned a Unitree action, but replay keeps
 `unitree_unifolm_policy_action_command_ran=false` for the current invocation and
 does not set `unitree_hand_manipulation_policy_used`.
 
-Build the reusable image context with:
-
-```bash
-blueprint-build-unitree-unifolm-gpu-image \
-  --job-dir /path/to/unitree_unifolm_gpu_image_context \
-  --image-ref docker.io/<user>/blueprint-unitree-unifolm:<versioned-tag>
-```
-
-The default generated image uses `--dependency-profile inference`. That profile
-keeps the Unitree server/runtime dependencies needed for a bounded policy call
-including TensorFlow image preprocessing, Qwen/Transformers, Diffusers action
-modules, FastAPI, and the Blueprint bridge, while excluding training/data-stack
-packages such as `datasets`, `deepspeed`, W&B, `tensorflow_datasets`, and
-`tensorflow_graphics`. Use `--dependency-profile full` only when intentionally
-building Unitree's broader training/data image; it is not required for the fast
-fresh-policy proof lane.
-
-Then build/push using the generated `build_image.sh` and `push_image.sh`, and
-use the pushed image as `--public-image` for the Vast adapter. Image build/push
-is still not policy execution proof; the proof starts only when the live provider
-loads checkpoints and returns policy JSON.
-
-The generated image also includes `run_unitree_unifolm_vla_policy_once`. That
+The pushed image also includes `run_unitree_unifolm_vla_policy_once`. That
 command bridges the Blueprint policy-command contract to Unitree's `/act`
 server: it starts `run_unitree_unifolm_vla_server`, waits for the server port,
 then calls `blueprint-unitree-unifolm-vla-server-bridge`. If checkpoint paths are
@@ -656,41 +621,6 @@ not mounted, the image launcher can download the public
 `unitreerobotics/UnifoLM-VLA-Base` and `unitreerobotics/UnifoLM-VLM-Base` repos
 on the GPU worker when `BLUEPRINT_UNITREE_UNIFOLM_ALLOW_HF_DOWNLOAD=true`.
 Those weights are runtime material, not image-baked artifacts.
-
-The long-lived RunPod `/act` server remains an architecture target, not a
-supported public allocation command. Its legacy `launch` mode exits with
-`legacy_unitree_unifolm_runpod_launch_cli_disabled`; route it through the
-canonical allocator before attempting a paid launch.
-
-The launch manifest writes a proxy URL shaped like
-`https://<pod_id>-8777.proxy.runpod.net/act`. Point the local command adapter at
-that URL:
-
-```bash
-export BLUEPRINT_UNITREE_UNIFOLM_VLA_COMMAND="python -m blueprint_pipeline.unitree_unifolm_vla_server_bridge --server-url https://<pod_id>-8777.proxy.runpod.net/act"
-export BLUEPRINT_UNITREE_UNIFOLM_VLA_CHECKPOINT=unitreerobotics/UnifoLM-VLA-Base
-export BLUEPRINT_UNITREE_UNIFOLM_VLM_CHECKPOINT=unitreerobotics/UnifoLM-VLM-Base
-```
-
-This is the path that can make `unitree_endpoint_hand_policy_used=true`, but
-only after the remote server is actually reachable and returns a fresh action
-for the current observation. Delete the pod when finished:
-
-```bash
-blueprint-launch-unitree-unifolm-runpod-server poll \
-  --job-dir robot_eval_jobs/unitree_unifolm_runpod_server_<timestamp>
-
-blueprint-launch-unitree-unifolm-runpod-server probe \
-  --job-dir robot_eval_jobs/unitree_unifolm_runpod_server_<timestamp>
-
-blueprint-launch-unitree-unifolm-runpod-server delete \
-  --job-dir robot_eval_jobs/unitree_unifolm_runpod_server_<timestamp>
-```
-
-`poll` reads RunPod pod state. `probe` reads the public status proxy and records
-whether the backend `run_unitree_unifolm_vla_server` process is running, whether
-a backend startup error occurred, and the redacted server log tail. A running
-pod without a reachable proxy or running backend is not a hand-policy proof.
 
 When a provider smoke completes, point the evaluator at it with:
 

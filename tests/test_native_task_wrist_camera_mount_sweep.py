@@ -25,7 +25,7 @@ from blueprint_pipeline.native_task_wrist_camera_mount_sweep import (
 
 REGISTRY = (
     Path(__file__).parents[1]
-    / "docs/arm_decision_proof_v1/manifests/"
+    / "tests/fixtures/arm_decision_proof_v1/manifests/"
     "franka_robotiq_policy_camera_mount_registry.v1.json"
 )
 

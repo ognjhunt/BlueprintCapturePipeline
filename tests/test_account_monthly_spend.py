@@ -425,7 +425,7 @@ def test_the_admission_path_stays_light():
     reachable = _transitive_local_modules(("paid_resource_admission",))
     assert {"account_monthly_spend", "paid_spend_meter"} <= reachable
     assert not reachable & {"account_monthly_spend_report", "paid_spend_meter_sources", "provider_spend_alerts",
-                            "beta_policy_screening_coordinator", *HOT_LANE_MODULES}
+                            "screening_retained_ledger", *HOT_LANE_MODULES}
 
 
 def test_the_spend_guard_rewrites_the_report_and_carries_its_summary(host):

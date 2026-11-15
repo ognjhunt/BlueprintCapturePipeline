@@ -38,8 +38,8 @@ _GRANT_ISSUER = object()
 #: that starts RunPod spend. Reads and teardown stay available: the spend guard
 #: still inventories RunPod and reaps an orphan while a RunPod key exists, and
 #: ``runpod_live_execution`` is absent on purpose (its grant only stops or
-#: terminates an existing pod). ``model_volume`` is a RunPod network volume; only
-#: ``groot_oscar_runpod_storage_volume`` issues it. This is a code constant, not an
+#: terminates an existing pod). ``model_volume`` is a RunPod network volume; its
+#: allocator is removed. This is a code constant, not an
 #: environment switch: re-enabling RunPod is a reviewed code change.
 RUNPOD_PROVIDER_RETIRED = True
 RUNPOD_RETIRED_BLOCKER = "runpod_provider_retired"

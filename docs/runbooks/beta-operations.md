@@ -771,7 +771,6 @@ unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
 | Unit | What it does | Why it is off | To turn it on |
 |---|---|---|---|
 | `blueprint-provider-billing-reconciler.timer` | Refreshes provider billing evidence every 10 minutes. | Not needed. `blueprint-gpu-spend-guard.service` `Wants=` the reconciler, so the reconciler runs with every guard start. Since #3278 (E-02), it refreshes at most every 10 minutes, and only while a live provider needs it. | Nothing to do. |
-| `blueprint-task-evaluation-launch-supervisor.timer` | Supervises launches with the OpenAI Agents SDK. This is optional. | It spends OpenAI money on every launch. | The owner decides the money first. |
 | `blueprint-task-evaluation-terminal-resource-release.path` | Watches the terminal resource release queue. It releases one terminal Vast record through the canonical allocator. | The queue has been empty since 2026-08-12 (one completed record). When `BLUEPRINT_ALLOW_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER` is set, the intake starts the release unit directly (`live_pipeline_intake_runtime_controls.py`). Teardown runs in the paid lane. The launch reconciler files the provider-zero receipt. | Add it to `DEFAULT_ALWAYS_ARM_TIMER_UNITS` if anything writes to its `pending/` folder again. |
 | `blueprint-capture-reconstruction-dispatcher.timer` and `.path` | Advanced the legacy capture reconstruction queue. | Retired: the website beta reconstructs through Atlas. The unit files, the dispatcher module and the listener's enqueue are gone from the repo (P-RT-01); the queue (`capture-reconstruction-queue/{pending,processing,completed}`) was empty. | The host still has the installed unit files until the host cleanup (H-03) disables and removes them. |
 
@@ -781,13 +780,19 @@ Every release stops and disables the triggers in `DEFAULT_PAUSED_LANE_DISARM_UNI
 (`scripts/deploy_control_plane_commit.py`): the humanoid G1 campaign dispatcher and
 settlement, the agent-run dispatcher with the team-evaluation runner path, SAM 3.1
 preparation execution (`.timer` and `.path`), and configured-controls progression
-(`.timer` and `.path`). A lane is armed or disarmed whole. No website job needs them;
+(`.timer` and `.path`). Since the owner deleted the robot-team evaluation lanes, it
+also stops the policy-canary dispatcher path, the launch supervisor timer, the scene
+object discovery path, embodiment preparation (`.timer` and `.path`) and host episode
+compilation (`.timer` and `.path`); remote episode compilation stays armed only to
+drain a hand-off already in flight. A lane is armed or disarmed whole. No website job needs them;
 their unit files and code stay. A unit already stopped or absent is fine; one that
 will not stop does not fail the release and is named in the receipt's
 `paused_lane_disarm.failed`, which `door status` shows under `deploys.recent_receipts`. The stall
 alarm and the preflight do not count them. To bring a lane back, move all its names from
 `DEFAULT_PAUSED_LANE_DISARM_UNITS` back into the arm lists (timers into
 `DEFAULT_ALWAYS_ARM_TIMER_UNITS`, paths into the list they came from) and deploy.
+Before it switches the release, every release also stops and disables, if installed, the triggers this repo no longer ships (`DEFAULT_RETIRED_TRIGGER_UNITS`, the door's `RETIRED_HOLD_UNITS`: `blueprint-pipeline-control-plane.timer`, `blueprint-capture-reconstruction-dispatcher.timer` and `.path`); their services and files are left alone, absent is fine,
+and the receipt's `unshipped_trigger_retirement` lists each as `retired`, `already_off`, `absent` or `failed` (a failure does not fail the release; a rollback leaves them off).
 A release that fails restores the earlier state, so paused lanes that were on before stay on until a release succeeds. Releasing a door hold on `blueprint-agent-run-dispatcher.timer` starts that timer until the next release.
 
 Not done: `reset-failed` on the transient failed units (O-24). It needs a door

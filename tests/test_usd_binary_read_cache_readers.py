@@ -20,7 +20,6 @@ import pytest
 pytest.importorskip("pxr")
 
 from blueprint_pipeline import usd_binary_read_cache as cache  # noqa: E402
-from tests.test_beta_policy_screening_g1_prepare import prepared_scene  # noqa: E402, F401 - a fixture
 
 NEVER = 1 << 62
 
@@ -103,8 +102,10 @@ def test_the_capability_verdict_and_fit_table_read_a_text_room_once(tmp_path, mo
         text_only.setattr(cache, "LAZY_COPY_BYTES", NEVER)
         parsed = collider_reads(text_only, room)
         from_text = run("text")
-    # Each search opened the file afresh: three whole-text parses of a 292 MB room, 3.6 GB each.
-    assert parsed["openusd"] == ["ground_stance", "collision_kept_loaded", "ground_stance"]
+    # Each search opened the file afresh: four whole-text parses of a 292 MB room, 3.6 GB each
+    # (the verdict's stance and carry searches, the table's station search, and the table's floor
+    # search added on 2026-11-12).
+    assert parsed["openusd"] == ["ground_stance", "collision_kept_loaded", "ground_stance", "ground_stance"]
     reads = collider_reads(monkeypatch, room)
     from_copy = run("copy")
     assert reads == {"openusd": [], "numpy": ["binary_copy"]}
@@ -131,36 +132,3 @@ def test_a_stance_search_on_its_own_reads_a_text_room_once(tmp_path, monkeypatch
     assert _search(room, ranked=24) == from_text
     assert reads == {"openusd": [], "numpy": ["binary_copy"]}
     assert ground_stance.__wrapped__  # its own read scope, or its caller's
-
-
-def test_the_g1_preparation_reads_the_base_packets_text_room_once(tmp_path, monkeypatch, prepared_scene,  # noqa: F811
-                                                                  copies_small_rooms):
-    from blueprint_pipeline import beta_policy_screening_g1_prepare as prepare
-
-    args, _, _ = prepared_scene
-    base_root = Path(args["base_packet_record"]["path"]).parent
-    [collision] = [path for path in (base_root / "assets").iterdir() if path.name.startswith("collision")]
-    assert collision.read_bytes()[:5] == b"#usda"
-
-    def prepared() -> dict[str, str]:
-        # Into the same root each time (its paths are recorded), removed after.
-        import shutil
-
-        result = prepare.prepare_native_g1_beta_packet(**args)
-        root = Path(result["scene_packet"]["path"]).parent
-        files = {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-                 for path in sorted(root.rglob("*")) if path.is_file()}
-        shutil.rmtree(Path(args["output_root"]) / "native-g1")
-        return files
-
-    with monkeypatch.context() as text_only:
-        text_only.setattr(cache, "LAZY_COPY_BYTES", NEVER)
-        parsed = collider_reads(text_only, collision)
-        from_text = prepared()
-    assert parsed["openusd"][0] == "ground_stance" and len(parsed["openusd"]) > 2
-    reads = collider_reads(monkeypatch, collision)
-    from_copy = prepared()
-    # The stance search reads the base packet's file; the packet's evidence and staged copies of it are other
-    # files holding the same bytes, which open the same copy. OpenUSD parses none of them.
-    assert reads == {"openusd": [], "numpy": ["binary_copy"]}
-    assert from_copy == from_text and "native_task_arena_packet_receipt.v1.json" in from_copy

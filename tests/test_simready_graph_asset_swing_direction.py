@@ -27,7 +27,7 @@ import pytest
 
 
 MANIFESTS = (
-    Path(__file__).resolve().parents[1] / "docs" / "arm_decision_proof_v1" / "manifests"
+    Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "arm_decision_proof_v1" / "manifests"
 )
 SPEC = MANIFESTS / "third_scene_840920_task_a_simready_graph_asset_spec.v1.json"
 

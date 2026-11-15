@@ -583,7 +583,7 @@ def materialize(
     if destination.exists():
         require(_read(destination) == result, "result_changed")
     else:
-        from .task_evaluation_configured_controls_progression_worker import _write_immutable
+        from .task_evaluation_configured_controls_source_evidence import _write_immutable
 
         _write_immutable(destination, result)
     return result

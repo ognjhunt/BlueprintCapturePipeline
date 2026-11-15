@@ -566,3 +566,17 @@ def test_the_first_stance_that_carries_is_taken_and_every_attempt_is_kept(tmp_pa
                                                      robot_id="franka_panda", seeds=seeds, **task)
     assert stance is None and report["status"] == "blocked" and len(attempts) == 1
 
+
+def test_the_franka_reach_bound_holds_at_every_sampled_joint_value():
+    from blueprint_pipeline.robot_arm_path_clearance import FRANKA_JOINT_LIMITS_RAD, _arm_model, _frames, grasp_reach_bound
+
+    shoulder, bound = grasp_reach_bound("franka_panda")
+    _, grasp = _arm_model("franka_panda")
+    low, high = (np.array([row[i] for row in FRANKA_JOINT_LIMITS_RAD]) for i in (0, 1))
+    farthest = 0.0
+    for joints in np.random.default_rng(7).uniform(low, high, size=(5000, 7)):
+        frame = _frames(joints)[8]
+        farthest = max(farthest, float(np.linalg.norm(frame[:3, 3] + frame[:3, :3] @ grasp - [0.0, 0.0, shoulder])))
+    assert shoulder == pytest.approx(0.333) and farthest <= bound
+    # Not a loose bound: within 10 cm of the farthest pose sampled.
+    assert bound - farthest < 0.1

@@ -52,7 +52,7 @@ from blueprint_pipeline.native_task_nurec_render_setup import appearance_render_
 from blueprint_pipeline.rigid_robot_free_probe_bundle import PROBE_KIND, current_probe_state
 from blueprint_pipeline.team_embodiment_runtime import record_arena_robot_free_probe
 from blueprint_pipeline.team_robot_free_probe import scored_task_spec
-from tests.test_provider_runtime_import_closure import _real_canary_pair_inputs
+from tests.scripted_check_support import _real_canary_pair_inputs
 from tests.test_rigid_robot_free_probe import FlatSupport, _sealed_contract, rigid_case
 
 REVISION = "sha256:" + "4" * 64
@@ -418,13 +418,10 @@ def test_worker_constants_are_pinned_to_their_control_plane_owners() -> None:
 
 
 def test_the_canonical_allocator_routes_only_this_probe_kind_to_its_isolated_lane() -> None:
-    from blueprint_pipeline import policy_canary_allocator_lane
     from blueprint_pipeline.native_task_arena_allocator_dispatch import isolated_native_task_arena_lane
 
     assert allocator.RIGID_ROBOT_FREE_PROBE_KIND == PROBE_KIND
     assert isolated_native_task_arena_lane(PROBE_KIND) is lane.run_rigid_robot_free_probe_allocator_lane
-    assert (isolated_native_task_arena_lane(policy_canary_allocator_lane.PROBE_KIND)
-            is policy_canary_allocator_lane.run_policy_canary_allocator_lane)
     with pytest.raises(ValueError, match="isolated_native_task_arena_lane_unknown"):
         isolated_native_task_arena_lane("native-task-arena-construction")
 
@@ -716,7 +713,6 @@ def test_a_queued_rigid_scene_is_probed_once_and_its_passed_receipt_admits_teams
     trace = json.loads(trace_path.read_text())
     assert trace["status"] == "recorded" and receipt["physics_probe_digest"] == trace["trace_digest"]
     assert trace_path.stat().st_mode & 0o777 == 0o440
-    assert world["published"] == [world["capture"].resolve()]
     # The GPU host built the scene once, left the robot idle, rendered nothing and loaded no policy.
     assert world["host"].resets == [0] and world["host"].closed is True
     attempt = runner._attempts(runner._job_dir(world["queue"], current_probe_state(world["capture"])))
@@ -1612,30 +1608,6 @@ def test_enqueue_launches_nothing_is_idempotent_and_never_raises(tmp_path, monke
     monkeypatch.setattr(registry, "scene_facts", lambda _profile: (_ for _ in ()).throw(RuntimeError("boom")))
     refused = runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
     assert refused["status"] == "refused" and refused["queued"] is False
-
-
-def test_the_real_registry_queues_nothing_for_a_task_the_probe_cannot_carry(tmp_path, monkeypatch) -> None:
-    packet, _runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path / "scene")
-    capture = tmp_path / "capture"
-    capture.mkdir()
-    probe = tmp_path / "probe"
-    probe.mkdir()
-    value = _sealed({"schema_version": registry.REGISTRY_SCHEMA, "profiles": [{
-        "capture_root": str(capture.resolve()), "task_id": "pick_place", "scenario_id": "nominal",
-        "pair_runtime_inputs_path": str(pair_inputs), "pair_activation_path": str(pair_activation),
-        "robot_free_probe_root": str(probe), "open_loop_horizon": 8, "max_hourly_rate_usd": 0.8,
-        "allowed_founder_approvers": ["founder@blueprint"], "scene_id": "site-req1"}]}, "registry_digest")
-    path = tmp_path / "registry.json"
-    path.write_text(json.dumps(value))
-    path.chmod(0o644)
-    monkeypatch.setenv(registry.REGISTRY_ENV, str(path))
-    # The fixture's frozen task carries no rigid contract the probe can plan, so nothing is queued.
-    outcome = runner.enqueue_rigid_robot_free_probe(capture, queue_root=tmp_path / "queue")
-    assert outcome == {"status": "unavailable_for_task", "queued": False, "capture_root": str(capture.resolve())}
-    assert not (tmp_path / "queue").exists()
-
-
-# --- watchdog scope, inventory and deploy units ------------------------------------------------
 
 
 def test_the_lane_label_is_watchdog_scoped_and_its_exact_names_pass_the_gate() -> None:

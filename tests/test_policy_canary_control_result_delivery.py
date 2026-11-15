@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import zipfile
 from copy import deepcopy
 
 import numpy as np
@@ -12,13 +11,10 @@ import pytest
 from blueprint_pipeline import episode_visual_evidence as visual
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.policy_canary_control_result_delivery import CONTROL_IDS, WARNINGS
-from blueprint_pipeline.task_evaluation_policy_canary_result_projection import build_policy_canary_result_projection
 from blueprint_pipeline.task_evaluation_policy_canary_result import validate_policy_canary_result
 from blueprint_pipeline.task_evaluation_result_delivery import (
-    materialize_policy_canary_result_delivery, compact_policy_canary_website_delivery,
-    resolve_task_evaluation_result_artifact, TaskEvaluationResultDeliveryError,
+    materialize_policy_canary_result_delivery, TaskEvaluationResultDeliveryError,
 )
-from blueprint_pipeline.task_evaluation_run_webapp_sync import build_task_evaluation_policy_canary_webapp_publication
 from tests.test_episode_visual_evidence import _calibration
 from tests.test_task_evaluation_policy_canary_result_delivery import _result, _closure
 
@@ -132,36 +128,6 @@ def _deliver(tmp_path, case, status="completed_unqualified"):
     result, evidence, closure = case
     return materialize_policy_canary_result_delivery(run_root=tmp_path, run_id=result["run_id"], result_status=status,
         session_result=result, evidence_root=evidence, closure_records=closure)
-
-
-def test_twenty_native_controls_have_separate_private_artifacts_and_verified_status(tmp_path, case):
-    result, _, _ = case
-    delivery = _deliver(tmp_path, case)
-    assert delivery["scene_controls_status"] == "controls_verified_development_only"
-    assert delivery["controls_summary"] == {"expected_count": 20, "recorded_count": 20,
-        "completed_count": 20, "passed_count": 20, "verified_cell_count": 10}
-    assert len(delivery["episodes"]) == len(delivery["controls"]) == 20
-    compact = compact_policy_canary_website_delivery(delivery)
-    assert len(compact["artifacts"]) < len(delivery["artifacts"])
-    projection = build_policy_canary_result_projection(setup={"scene_id": "841757", "request_digest": "sha256:"+"8"*64,
-        "task_success_contract": result["task_success_contract"], "task_success_contract_digest": result["task_success_contract_digest"]},
-        result=result, delivery=compact)
-    assert projection["result_status"] == "completed_unqualified"
-    assert projection["warning"] == WARNINGS["controls_verified_development_only"]
-    assert projection["counts"]["completed_diagnostic_control_rollout_count"] == 20
-    for control in projection["controls"]:
-        assert set(control["videos"]) == {"external", "wrist", "overview"}
-        assert control["receipt"]["artifact_id"]
-        assert {row["role"] for row in control["artifacts"]} == {"control_cell_archive", "frame_manifest", "state_trace", "action_trace"}
-    publication = build_task_evaluation_policy_canary_webapp_publication(capture_session_id="capture", intake_id="intake",
-        run_id=result["run_id"], request_digest=projection["request_digest"], configuration_digest=result["configuration_digest"],
-        result_status="completed_unqualified", result_delivery=compact, policy_canary_result=projection)
-    assert publication["scene_controls_status"] == "controls_verified_development_only"
-    path, _ = resolve_task_evaluation_result_artifact(run_root=tmp_path, run_id=result["run_id"],
-        artifact_id=projection["controls"][0]["artifacts"][0]["artifact_id"])
-    with zipfile.ZipFile(path) as archive:
-        assert any(name.endswith("policy_canary_cell_controls.v1.json") for name in archive.namelist())
-    assert projection["report"]["controls_csv"]["artifact_id"]
 
 
 def test_foreign_cell_seed_and_tampered_native_receipts_never_verify(tmp_path, case):

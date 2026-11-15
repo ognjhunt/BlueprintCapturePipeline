@@ -21,7 +21,6 @@ MINUTE = 60.0
 HOUR = 3600.0
 CAPTURE = "walkthrough-req1"
 KEY = "ab" * 16
-CAMPAIGN = "campaign-site-req1-r1"
 
 
 def _budget() -> stall._Budget:
@@ -31,7 +30,7 @@ def _budget() -> stall._Budget:
 def _config(tmp_path: Path, **overrides) -> stall.StallConfig:
     values = {"scene_intent_root": None, "launch_queue_root": None, "launch_state_root": None, "deploy_tool": None,
               "atlas_storage_root": tmp_path / "storage", "team_scene_queue_root": tmp_path / "team",
-              "rigid_probe_queue_root": tmp_path / "rigid", "screening_queue_root": tmp_path / "screening"}
+              "rigid_probe_queue_root": tmp_path / "rigid"}
     values.update(overrides)
     return stall.StallConfig(**values)
 
@@ -511,140 +510,6 @@ def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 
-def _campaign(rows: dict[str, dict], *, updated: float, revision: int = 3, published: int | None = None) -> dict:
-    return {"plan_digest": "sha256:" + "1" * 64, "site_id": "site-req1", "revision": revision,
-            "created_at": _iso(NOW - 2 * 86400), "updated_at": _iso(updated),
-            "published_revision": revision if published is None else published, "published_digest": None,
-            "candidates": rows}
-
-
-def _ledger(tmp_path: Path, campaigns: dict[str, dict]) -> Path:
-    root = tmp_path / "screening"
-    root.mkdir(exist_ok=True)
-    path = root / "screening_ledger.v1.json"
-    path.write_text(json.dumps({"schema_version": "blueprint.beta_policy_screening_ledger.v1",
-                                "campaigns": campaigns, "ledger_digest": "sha256:" + "0" * 64}))
-    return path
-
-
-def _screening(tmp_path: Path, **kwargs):
-    return stall.check_screening(_config(tmp_path), now=NOW, budget=_budget(), **kwargs)
-
-
-def test_a_healthy_screening_ledger_is_quiet(tmp_path: Path) -> None:
-    _ledger(tmp_path, {
-        # A run holds its row for up to its 4 h hard TTL without a ledger change.
-        "running": _campaign({"a": {"status": "running", "blockers": []},
-                              "b": {"status": "pending", "blockers": ["beta_screening_waiting_for_capacity"]}},
-                             updated=NOW - 5 * HOUR),
-        "finished": _campaign({"a": {"status": "completed", "blockers": []},
-                               "b": {"status": "blocked", "blockers": ["beta_screening_gpu_capacity_unavailable"]},
-                               "c": {"status": "unavailable", "blockers": ["candidate_infeasible_measured_geometry"]},
-                               "d": {"status": "deferred", "blockers": []}}, updated=NOW - 30 * 86400),
-    })
-    section, alerts = _screening(tmp_path)
-    assert alerts == []
-    assert section["dispositions"] == {"finished": 1, "watched": 1} and section["campaigns"] == 2
-    assert section["publications_pending"] == 0
-
-
-def test_a_screening_campaign_without_ledger_progress_pages(tmp_path: Path) -> None:
-    _ledger(tmp_path, {
-        CAMPAIGN: _campaign({"a": {"status": "completed", "blockers": []},
-                             "b": {"status": "pending", "blockers": ["beta_screening_waiting_for_capacity"]},
-                             "c": {"status": "reconciliation_required", "blockers": []},
-                             "d": {"status": "waitlisted", "blockers": ["site_screening_budget_insufficient"]}},
-                            updated=NOW - 9 * HOUR),
-        "fresh": _campaign({"a": {"status": "preparing", "blockers": []}}, updated=NOW - 7 * HOUR),
-    })
-    section, [alert] = _screening(tmp_path)
-    assert alert == {"code": "screening_campaign_stalled", "count": 1, "targets": [CAMPAIGN], "target": CAMPAIGN,
-                     "status": "reconciliation_required", "unfinished_rows": 2,
-                     "blockers": ["beta_screening_waiting_for_capacity"], "age_seconds": 9 * 3600,
-                     "threshold_seconds": 8 * 3600}
-    assert section["stalled"] == 1 and section["dispositions"] == {"watched": 2}
-    assert stall.describe(alert) == (
-        "screening campaign without ledger progress 9.0h, 2 unfinished (reconciliation_required) "
-        "[beta_screening_waiting_for_capacity]: campaign-site-req1-r1")
-
-
-def test_screening_money_and_rights_holds_never_page(tmp_path: Path) -> None:
-    _ledger(tmp_path, {
-        # Only the site's allowance or the job's ceiling keeps these rows from running.
-        "waitlisted": _campaign({"a": {"status": "completed", "blockers": []},
-                                 "b": {"status": "waitlisted", "blockers": ["site_screening_budget_insufficient"]}},
-                                updated=NOW - 20 * 86400),
-        # Every row still to run waits on consent.
-        "consent": _campaign({"a": {"status": "pending",
-                                    "blockers": ["beta_screening_current_capture_consent_required"]}},
-                             updated=NOW - 20 * 86400, published=2),
-    })
-    section, alerts = _screening(tmp_path)
-    assert alerts == []
-    assert section["dispositions"] == {"money_approval": 1, "privacy": 1}
-    # Nothing is owed to the website for a job it ended itself: the unpublished revision is not tracked.
-    assert section["publications_pending"] == 1 and section["publications_stalled"] == 0
-    stale = {"consent": NOW - 20 * 86400}
-    assert _screening(tmp_path, remembered=stale)[1] == []
-    # The operator held the screening timer through the door.
-    _ledger(tmp_path, {CAMPAIGN: _campaign({"a": {"status": "launching", "blockers": []}}, updated=NOW - 9 * HOUR)})
-    assert _pages(_screening(tmp_path)[1])
-    assert _screening(tmp_path, holds=_hold(tmp_path, stall.SCREENING_TRIGGER)) == (
-        {"status": "held", "trigger": "blueprint-beta-policy-screening.timer"}, [])
-
-
-def test_a_screening_row_waiting_for_its_timed_replan_is_quiet(tmp_path: Path) -> None:
-    # Refused before allocation for a reason no rule owns: the coordinator plans it again on the shared
-    # schedule. A blocked row is not a row still to run, so the wait is quiet. The ledger records no due
-    # time for the re-plan, so an overdue one is not seen here.
-    _ledger(tmp_path, {CAMPAIGN: _campaign({"a": {"status": "blocked",
-                                                  "blockers": ["beta_screening_prelaunch_refused:scene_unbound"]}},
-                                           updated=NOW - 30 * HOUR)})
-    section, alerts = _screening(tmp_path)
-    assert alerts == [] and section["dispositions"] == {"finished": 1}
-
-
-def test_an_unpublished_screening_revision_pages_once_it_has_been_seen_long_enough(tmp_path: Path) -> None:
-    done = {"a": {"status": "completed", "blockers": []}}
-    _ledger(tmp_path, {CAMPAIGN: _campaign(done, updated=NOW - 6 * HOUR, published=2),
-                       "published": _campaign(done, updated=NOW - 6 * HOUR)})
-    # First seen: the ledger does not say since when (a restart resets published_revision on purpose).
-    memory: dict = {}
-    section, alerts = _screening(tmp_path, memory_out=memory)
-    assert alerts == [] and memory == {CAMPAIGN: NOW} and section["publications_pending"] == 1
-    # Still unpublished 100 minutes of ticks later.
-    later: dict = {}
-    section, [alert] = stall.check_screening(_config(tmp_path), now=NOW + 100 * MINUTE, budget=_budget(),
-                                             remembered=memory, memory_out=later)
-    assert alert == {"code": "screening_publication_stalled", "count": 1, "targets": [CAMPAIGN], "target": CAMPAIGN,
-                     "age_seconds": 6000, "age_is_lower_bound": True, "threshold_seconds": 5400}
-    assert later == {CAMPAIGN: NOW} and section["publications_stalled"] == 1
-    assert stall.describe(alert) == "screening publication undelivered over 100m: campaign-site-req1-r1"
-    # One tick that sees it published forgets it.
-    _ledger(tmp_path, {CAMPAIGN: _campaign(done, updated=NOW - 6 * HOUR)})
-    cleared: dict = {}
-    assert stall.check_screening(_config(tmp_path), now=NOW + 110 * MINUTE, budget=_budget(), remembered=later,
-                                 memory_out=cleared)[1] == [] and cleared == {}
-
-
-def test_an_unreadable_screening_ledger_is_incomplete_not_a_page(tmp_path: Path) -> None:
-    assert _screening(tmp_path) == ({"status": "absent"}, [])
-    (tmp_path / "screening").mkdir()
-    assert _screening(tmp_path) == ({"status": "absent"}, [])  # a queue with no ledger has no campaign
-    path = _ledger(tmp_path, {})
-    path.write_text("{not json")
-    assert _screening(tmp_path) == ({"status": "unreadable"}, [
-        {"code": stall.INCOMPLETE_CODE, "reason": "screening_ledger_unreadable"}])
-    path.write_text(json.dumps({"schema_version": "other.v1", "campaigns": {}}))
-    assert _incomplete(_screening(tmp_path)[1]) == ["screening_ledger_unreadable"]
-    # One campaign that does not read never hides the others.
-    _ledger(tmp_path, {"broken": {"candidates": "?"},
-                       CAMPAIGN: _campaign({"a": {"status": "running", "blockers": []}}, updated=NOW - 9 * HOUR)})
-    section, alerts = _screening(tmp_path)
-    assert section["unreadable"] == 1 and [row["code"] for row in _pages(alerts)] == ["screening_campaign_stalled"]
-    assert _incomplete(alerts) == ["screening_campaign_unreadable"]
-
-
 # --------------------------------------------------------------------------- #
 # A capture whose execution window is over is history, not a stall
 # --------------------------------------------------------------------------- #
@@ -717,45 +582,6 @@ def test_a_capture_the_intent_scan_did_not_reach_is_never_classed_as_closed(tmp_
     assert _incomplete(result["alerts"]).count("execution_window_scan_incomplete") == 1
 
 
-def test_a_store_row_of_a_capture_past_its_window_never_pages(tmp_path: Path) -> None:
-    """A refusal from months ago must not page every hour for good."""
-    _team_status(tmp_path, "blocked", ["team_scene_source_launch_unavailable"], age=60 * 86400)
-    queued = os.stat(_probe_entry(tmp_path)).st_ctime
-    (tmp_path / "rigid/pending" / f"{KEY}.json").write_text(json.dumps({
-        "capture_root": f"/captures/scenes/site-req1/captures/{CAPTURE}", "probe_request_digest": REQUEST_DIGEST}))
-    _ledger(tmp_path, {CAMPAIGN: _campaign({"a": {"status": "pending", "blockers": []}}, updated=NOW - 60 * 86400,
-                                           published=2)})
-    (tmp_path / "screening/plans").mkdir()
-    (tmp_path / "screening/plans" / f"{CAMPAIGN}.json").write_text(json.dumps({"capture_id": CAPTURE}))
-    later = max(NOW, queued) + 9 * HOUR
-    asked: list[int] = []
-
-    def closed() -> set[str]:
-        asked.append(1)
-        return {"walkthrough-other"}
-
-    def run(windows):
-        return (stall.check_team_scene_packets(_config(tmp_path), now=later, budget=_budget(), windows=windows),
-                stall.check_rigid_probes(_config(tmp_path), now=later, budget=_budget(), windows=windows),
-                stall.check_screening(_config(tmp_path), now=later, budget=_budget(), windows=windows,
-                                      remembered={CAMPAIGN: NOW - 86400}))
-
-    for section, alerts in run(closed):
-        assert alerts == [] and section["dispositions"] == {"execution_window": 1}
-    assert asked  # asked only because rows were past their thresholds
-    # The same rows while the capture's window is open, or when no one can say: they page.
-    for windows in (lambda: {CAPTURE}, lambda: None, None):
-        codes = [row["code"] for _section, alerts in run(windows) for row in _pages(alerts)]
-        assert codes == ["team_scene_packet_stalled", "rigid_probe_stalled", "screening_campaign_stalled",
-                         "screening_publication_stalled"]
-    # Rows inside their thresholds never ask at all.
-    asked.clear()
-    fresh = tmp_path / "fresh"
-    moved = os.stat(_team_request(fresh, "pending")).st_ctime
-    assert stall.check_team_scene_packets(_config(fresh), now=moved + MINUTE, budget=_budget(),
-                                          windows=closed)[1] == [] and not asked
-
-
 def test_one_tick_reads_the_windows_from_the_intent_store(tmp_path: Path) -> None:
     _team_status(tmp_path, "blocked", ["team_scene_source_launch_unavailable"], age=30 * HOUR)
     _team_status(tmp_path, "blocked", ["team_scene_source_launch_unavailable"], key="cd" * 16, age=30 * HOUR)
@@ -778,25 +604,51 @@ def test_one_tick_reads_the_windows_from_the_intent_store(tmp_path: Path) -> Non
     assert result["checks"]["team_scene_packets"]["dispositions"] == {"blocked": 1, "execution_window": 2}
 
 
+def test_a_store_row_of_a_capture_past_its_window_never_pages(tmp_path: Path) -> None:
+    """A refusal from months ago must not page every hour for good."""
+    _team_status(tmp_path, "blocked", ["team_scene_source_launch_unavailable"], age=60 * 86400)
+    queued = os.stat(_probe_entry(tmp_path)).st_ctime
+    (tmp_path / "rigid/pending" / f"{KEY}.json").write_text(json.dumps({
+        "capture_root": f"/captures/scenes/site-req1/captures/{CAPTURE}", "probe_request_digest": REQUEST_DIGEST}))
+    later = max(NOW, queued) + 9 * HOUR
+    asked: list[int] = []
+
+    def closed() -> set[str]:
+        asked.append(1)
+        return {"walkthrough-other"}
+
+    def run(windows):
+        return (stall.check_team_scene_packets(_config(tmp_path), now=later, budget=_budget(), windows=windows),
+                stall.check_rigid_probes(_config(tmp_path), now=later, budget=_budget(), windows=windows))
+
+    for section, alerts in run(closed):
+        assert alerts == [] and section["dispositions"] == {"execution_window": 1}
+    assert asked  # asked only because rows were past their thresholds
+    # The same rows while the capture's window is open, or when no one can say: they page.
+    for windows in (lambda: {CAPTURE}, lambda: None, None):
+        codes = [row["code"] for _section, alerts in run(windows) for row in _pages(alerts)]
+        assert codes == ["team_scene_packet_stalled", "rigid_probe_stalled"]
+    # Rows inside their thresholds never ask at all.
+    asked.clear()
+    fresh = tmp_path / "fresh"
+    moved = os.stat(_team_request(fresh, "pending")).st_ctime
+    assert stall.check_team_scene_packets(_config(fresh), now=moved + MINUTE, budget=_budget(),
+                                          windows=closed)[1] == [] and not asked
+
+
 # --------------------------------------------------------------------------- #
 # One tick, configuration and the capacity route
 # --------------------------------------------------------------------------- #
 
 
-def test_one_tick_runs_every_store_check_and_carries_the_publication_memory(tmp_path: Path) -> None:
+def test_one_tick_runs_every_store_check(tmp_path: Path) -> None:
     _atlas_job(tmp_path, updated_at_epoch=NOW - 2 * HOUR, next_attempt_at_epoch=NOW - 2 * HOUR)
-    _ledger(tmp_path, {CAMPAIGN: _campaign({"a": {"status": "completed", "blockers": []}}, updated=NOW - HOUR,
-                                           published=2)})
     first = stall.observe_stalls(_config(tmp_path), now=NOW, unit_reader=lambda _units: {})
-    assert {"atlas_preview", "team_scene_packets", "rigid_probes", "screening"} <= set(first["checks"])
+    assert {"atlas_preview", "team_scene_packets", "rigid_probes"} <= set(first["checks"])
+    assert "screening" not in first["checks"]
     assert [row["code"] for row in _pages(first["alerts"])] == ["atlas_preview_stalled"]
-    assert first["memory"]["screening_publication"] == {CAMPAIGN: NOW}
-    assert first["thresholds_seconds"]["atlas"] == 5400 and first["thresholds_seconds"]["publication"] == 5400
-    assert {first["thresholds_seconds"][name] for name in ("team_scene", "rigid_probe", "screening")} == {8 * 3600}
-    second = stall.observe_stalls(_config(tmp_path), now=NOW + 2 * HOUR, previous=first,
-                                  unit_reader=lambda _units: {})
-    assert {row["code"] for row in _pages(second["alerts"])} == {"atlas_preview_stalled",
-                                                                "screening_publication_stalled"}
+    assert first["thresholds_seconds"]["atlas"] == 5400
+    assert {first["thresholds_seconds"][name] for name in ("team_scene", "rigid_probe")} == {8 * 3600}
     # The door's holds directory comes from the deploy tool, read once for the tick.
     holds = _hold(tmp_path, stall.ATLAS_TRIGGER)
     tool = tmp_path / "deploy_tool.py"
@@ -810,31 +662,27 @@ def test_one_tick_runs_every_store_check_and_carries_the_publication_memory(tmp_
 def test_store_roots_and_thresholds_come_from_the_capacity_units_environment() -> None:
     config = stall.config_from_environment({
         stall.ATLAS_STORAGE_ROOT_ENV: "/srv/handoffs", stall.TEAM_SCENE_QUEUE_ROOT_ENV: "/srv/team",
-        stall.RIGID_PROBE_QUEUE_ROOT_ENV: "/srv/rigid", stall.SCREENING_QUEUE_ROOT_ENV: "relative/never",
-        stall.ATLAS_MINUTES_ENV: "30", stall.SCREENING_MINUTES_ENV: "0", stall.PUBLICATION_MINUTES_ENV: "soon",
+        stall.RIGID_PROBE_QUEUE_ROOT_ENV: "/srv/rigid",
+        stall.ATLAS_MINUTES_ENV: "30", stall.TEAM_SCENE_MINUTES_ENV: "0", stall.RIGID_PROBE_MINUTES_ENV: "soon",
     })
-    assert (config.atlas_storage_root, config.team_scene_queue_root, config.rigid_probe_queue_root,
-            config.screening_queue_root) == (Path("/srv/handoffs"), Path("/srv/team"), Path("/srv/rigid"), None)
+    assert (config.atlas_storage_root, config.team_scene_queue_root, config.rigid_probe_queue_root) == (
+        Path("/srv/handoffs"), Path("/srv/team"), Path("/srv/rigid"))
     assert config.atlas_seconds == 30 * MINUTE
     # Defaults are the two existing waits; an unusable value keeps the default and is reported.
-    assert (config.team_scene_seconds, config.rigid_probe_seconds, config.screening_seconds) == (8 * HOUR,) * 3
-    assert config.publication_seconds == 90 * MINUTE == stall.DEFAULT_PROGRESSION_MINUTES * MINUTE
-    assert config.config_errors == (f"threshold_invalid:{stall.SCREENING_MINUTES_ENV}",
-                                    f"threshold_invalid:{stall.PUBLICATION_MINUTES_ENV}")
+    assert (config.team_scene_seconds, config.rigid_probe_seconds) == (8 * HOUR,) * 2
+    assert config.config_errors == (f"threshold_invalid:{stall.TEAM_SCENE_MINUTES_ENV}",
+                                    f"threshold_invalid:{stall.RIGID_PROBE_MINUTES_ENV}")
     # The capacity unit names each store exactly as the store's own worker unit does.
     units = REPO / "deploy" / "systemd"
     capacity = (units / "blueprint-control-plane-capacity.service").read_text().splitlines()
     for name, owner in ((stall.ATLAS_STORAGE_ROOT_ENV, "blueprint-website-atlas-preview.service"),
                         (stall.TEAM_SCENE_QUEUE_ROOT_ENV, "blueprint-team-scene-packet.service"),
-                        (stall.RIGID_PROBE_QUEUE_ROOT_ENV, "blueprint-rigid-robot-free-probe-runner.service"),
-                        (stall.SCREENING_QUEUE_ROOT_ENV, "blueprint-beta-policy-screening.service")):
+                        (stall.RIGID_PROBE_QUEUE_ROOT_ENV, "blueprint-rigid-robot-free-probe-runner.service")):
         line = next(row for row in capacity if row.startswith(f"Environment={name}="))
         assert line in (units / owner).read_text().splitlines(), name
 
 
 def test_the_mirrored_store_names_are_their_owners() -> None:
-    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-    from blueprint_pipeline import beta_policy_screening_result as result
     from blueprint_pipeline import rigid_robot_free_probe_queue_root as probe_queue
     from blueprint_pipeline import rigid_robot_free_probe_runner as probe_runner
     from blueprint_pipeline import team_scene_capture_root as team_queue
@@ -856,27 +704,18 @@ def test_the_mirrored_store_names_are_their_owners() -> None:
     assert stall.RIGID_PROBE_SUPERSEDED_DIRNAME == probe_runner.SUPERSEDED_DIRNAME
     assert stall.RIGID_PROBE_REFUSAL_RETRY_TRIGGER == probe_runner.REFUSAL_RETRY_TRIGGER
     assert set(stall.TEAM_SCENE_RETRY_FIELDS) == {"automatic_retry", team_worker.REFUSAL_RETRY_FIELD}
-    assert stall.SCREENING_QUEUE_ROOT_ENV == coordinator.QUEUE_ROOT_ENV
-    assert stall.SCREENING_LEDGER_FILENAME == coordinator.LEDGER_FILENAME
-    assert stall.SCREENING_LEDGER_SCHEMA == coordinator.LEDGER_SCHEMA
-    assert stall.SCREENING_LIVE_STATUSES | {stall.SCREENING_WAITLISTED_STATUS} == (
-        result.QUEUED_STATUSES | result.ACTIVE_STATUSES)
-    # The defaults rest on these: a screening run's and a probe attempt's longest hard TTL, the
+    # The defaults rest on these: a probe attempt's longest hard TTL, the
     # team scene worker's own retries, and the Atlas job's own lifetime.
-    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
     from blueprint_pipeline import rigid_robot_free_probe_lane as probe_lane
-    assert stall.DEFAULT_SCREENING_MINUTES * 60 >= 2 * capabilities.DEFAULT_HARD_TTL_SECONDS
     assert stall.DEFAULT_RIGID_PROBE_MINUTES * 60 >= 2 * probe_lane.HARD_TTL_SECONDS + probe_runner.GRANT_REFUSAL_RETRY_SECONDS
     assert stall.DEFAULT_TEAM_SCENE_MINUTES * 60 > sum(team_worker.AUTOMATIC_RETRY_BACKOFF_SECONDS)
     from blueprint_pipeline import job_retry_policy
     # An outage's longest backoff is shorter than the threshold, so a live outage never looks overdue.
     assert stall.DEFAULT_ATLAS_MINUTES * 60 > job_retry_policy.outage_retry_delay(10**6)
     assert stall.DEFAULT_ATLAS_MINUTES * 60 < store.MAXIMUM_JOB_SECONDS
-    assert set(stall._SCREENING_STATUS_ORDER) == stall.SCREENING_LIVE_STATUSES
     # Each store's trigger is one the deploy always arms, so the trigger check watches it too.
     armed, _holds = stall.read_deploy_trigger_contract(REPO / "scripts" / "deploy_control_plane_commit.py")
-    assert {stall.ATLAS_TRIGGER, stall.TEAM_SCENE_TRIGGER, stall.RIGID_PROBE_TRIGGER,
-            stall.SCREENING_TRIGGER} <= set(armed)
+    assert {stall.ATLAS_TRIGGER, stall.TEAM_SCENE_TRIGGER, stall.RIGID_PROBE_TRIGGER} <= set(armed)
 
 
 def test_the_alarm_loads_none_of_the_workers_it_watches() -> None:
@@ -888,7 +727,7 @@ def test_the_alarm_loads_none_of_the_workers_it_watches() -> None:
         "budget=stall._Budget(deadline=float('inf'), events=1, clock=lambda: 0.0))\n"
         "stall.observe_stalls(stall.StallConfig(None, None, None, None, atlas_storage_root=Path(sys.argv[1]), "
         "team_scene_queue_root=Path(sys.argv[1]), rigid_probe_queue_root=Path(sys.argv[1]), "
-        "screening_queue_root=Path(sys.argv[1])), unit_reader=lambda units: {})\n"
+        "), unit_reader=lambda units: {})\n"
         "heavy = sorted(name for name in sys.modules if name.startswith('blueprint_pipeline.') and any(part in name "
         "for part in ('website_atlas', 'atlas_preparation', 'team_scene', 'rigid_robot_free_probe', "
         "'beta_policy_screening', 'paid_resource', 'vast_', 'torch')))\n"
@@ -928,8 +767,7 @@ def test_a_store_stall_pages_on_the_capacity_route_and_repeats_hourly(tmp_path: 
     assert tick(NOW + 3601, [page])["alert_posted"] is True
     more = {**page, "count": 2, "targets": [CAPTURE, "walkthrough-req2"]}
     assert tick(NOW + 3700, [more])["alert_posted"] is True and len(posted) == 3
-    for code in ("team_scene_packet_stalled", "rigid_probe_stalled", "screening_campaign_stalled",
-                 "screening_publication_stalled", "atlas_preview_stalled"):
+    for code in ("team_scene_packet_stalled", "rigid_probe_stalled", "atlas_preview_stalled"):
         assert cap._severity(code) == "page"
         assert stall.describe({"code": code, "target": "t", "age_seconds": 7200, "count": 1})
     # The webhook's summary leads with the stall, as for every stall page.

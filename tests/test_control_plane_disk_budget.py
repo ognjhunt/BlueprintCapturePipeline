@@ -765,7 +765,7 @@ def test_workload_names_are_always_valid_labels():
 # result_artifact_download by the long-running intake service (no start timeout),
 # and handoff_staging by the long-running listener (no start timeout).
 ROLE_WORKER_UNITS = {
-    "embodiment_preparation": ("blueprint-embodiment-preparation.service",),
+    "embodiment_preparation": (),  # its unit, embodiment preparation, is retired
     "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
                            "blueprint-task-evaluation-scene-progression.service"),
     "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",
@@ -773,7 +773,7 @@ ROLE_WORKER_UNITS = {
     "team_scene_landing": ("blueprint-team-scene-packet-remote.service",),
     "launch_activation": ("blueprint-task-evaluation-launch-activation.service",),
     "launch_dispatch": ("blueprint-task-evaluation-launch-dispatcher.service",),
-    "policy_canary_dispatch": ("blueprint-task-evaluation-policy-canary-dispatcher.service",),
+    "policy_canary_dispatch": (),  # its unit, the robot-team canary dispatcher, is retired
     "evidence_offload": ("blueprint-control-plane-storage-gc.service",),
     "experiment_restore": ("blueprint-control-plane-storage-gc.service",),
     "stage_replay": ("blueprint-agent-stage-replay.service",),
@@ -783,9 +783,8 @@ ROLE_WORKER_UNITS = {
     # Held from before the paid scene-configuration allocation until its
     # result is sealed, inside the dispatcher's allocator child.
     "scene_configuration_output": ("blueprint-task-evaluation-launch-dispatcher.service",),
-    # Held from before the Quick-10 session's authority is consumed until its lane
-    # seals, inside the canary dispatcher's allocator child (plan 15, review I3).
-    "policy_canary_output": ("blueprint-task-evaluation-policy-canary-dispatcher.service",),
+    # Its unit, the robot-team canary dispatcher, is retired.
+    "policy_canary_output": (),
 }
 
 

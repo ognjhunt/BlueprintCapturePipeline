@@ -1,14 +1,16 @@
-"""A job no catalog robot fits holds before spend, reads as waiting, and reruns when the robots change.
+"""A job an earlier release held for robot fit reads as waiting and reruns, once, against today's inputs.
 
-The actual listener, lease, ledger, capture preparation stage, status reader and drain run.
-``run_e2e`` stands in for the orchestrator around the website preparation stage, and the scene
-handoff around ``prepare_rigid_native_inputs`` (where the precheck decides) is cut down to what it
-records before registration. Synthetic rooms and catalogs only; no provider call.
+The robot fit precheck read the early trial's catalog and left with the trial (owner, 2026-11-14); jobs
+an earlier release held with it are still on the host. The actual listener, lease, ledger, capture
+preparation stage, status reader and drain run. ``run_e2e`` stands in for the orchestrator around the
+website preparation stage, and the scene handoff around ``prepare_rigid_native_inputs`` is cut down to
+what it records before registration; under ``legacy`` it also records the no-fit precheck and the hold an
+earlier release wrote. Synthetic rooms only; no provider call.
 """
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/website_robot_fit_hold.py
-#   src/blueprint_pipeline/website_robot_fit_precheck.py
+#   src/blueprint_pipeline/website_robot_fit_precheck_projection.py
 #   src/blueprint_pipeline/website_task_context_contracts.py
 #   src/blueprint_pipeline/website_capture_preparation.py
 #   src/blueprint_pipeline/website_preparation_outcome.py
@@ -39,10 +41,49 @@ from blueprint_pipeline.task_evaluation_scene_retirement_generations import capt
 from blueprint_pipeline.website_preparation_status import (
     DELIVERY_FILE, STATUS_V5, STATUS_V6, read_preparation_status, retain_preparation_wakeup,
 )
-from blueprint_pipeline.website_robot_fit_precheck import HOLD_PREFIX
+from blueprint_pipeline.website_task_context_contracts import ROBOT_FIT_HOLD_PREFIX as HOLD_PREFIX
+from tests.test_team_scene_packet import _box, _stage
 from tests.test_website_assessment_resume import WIRE_FIXTURE
 from tests.test_website_preparation_status import prepared_source  # noqa: F401
-from tests.test_website_robot_fit_precheck import fixed_arm_catalog, shelf_scene
+
+FLOOR = {"description": "floor", "aabb_min_xyz": [-3.0, -3.0, 0.0], "aabb_max_xyz": [3.0, 3.0, 0.0]}
+SHELF = {"description": "shelf top", "aabb_min_xyz": [-1.5, 1.2, 2.4], "aabb_max_xyz": [-0.9, 1.6, 2.4]}
+#: What an earlier release recorded beside its hold: the trial's catalog and the team registry then.
+LEGACY_RECHECK_INPUTS = {"catalog_digest": "sha256:" + "c" * 64, "team_registry_digest": None}
+
+
+def shelf_scene(tmp_path: Path) -> tuple[dict[str, Any], Path]:
+    """Pick a box up off the floor and place it on a shelf 2.4 m up: taller than any arm on a floor mount reaches."""
+    directory = tmp_path / "shelf"
+    directory.mkdir(parents=True, exist_ok=True)
+    stage = _stage(directory / "collision.usda", "/Root")
+    _box(stage, "/Root/Floor", (-3.0, -3.0, 0.0), (3.0, 3.0, 0.0))
+    _box(stage, "/Root/Shelf", (-1.5, 1.2, 0.0), (-0.9, 1.6, 2.4))
+    stage.GetRootLayer().Save()
+    value = {"digest": "sha256:" + "1" * 64, "status": "intake_ready",
+             "intake_request": {"task": {"strategy": "pick_and_place", "support": FLOOR,
+                                         "success": {"pregrasp_clearance_m": 0.1}}},
+             "subject": {"aabb_min_xyz": [-0.1, -0.05, 0.0], "aabb_max_xyz": [0.0, 0.05, 0.1]},
+             "destination": {"relation": "on", "position_world_m": [-1.2, 1.4, 2.4], "support": SHELF},
+             "authoring_inputs": {"metric_envelope": {"maximum_dimension_relative_error": 0.25}}}
+    return value, directory / "collision.usda"
+
+
+def _legacy_no_fit_precheck(native_root: Path, preparation_digest: str) -> dict[str, Any]:
+    """The no-fit precheck an earlier release wrote, and the reference its handoff kept."""
+    value = {"schema_version": "website_robot_fit_precheck.v1", "preparation_digest": preparation_digest,
+             "status": "no_fit", "hold_reason": HOLD_PREFIX + "reach", "task_kind": "rigid_pick_place",
+             "physical_world_truth_claimed": False,
+             "counts": {"fit": 0, "no_fit": 1, "unknown": 0, "unavailable": 0},
+             "embodiments": {"franka": {"embodiment": "droid_franka_panda_robotiq_2f85_v1", "verdict": "no_fit",
+                                        "reasons": ["reach"]}},
+             "candidates": [{"embodiment": "franka", "verdict": "no_fit"}],
+             "recheck_inputs": dict(LEGACY_RECHECK_INPUTS), "precheck_digest": ""}
+    value["precheck_digest"] = canonical_digest(value, digest_field="precheck_digest")
+    path = native_root / "robot_fit_precheck.json"
+    write_json(path, value)
+    return {"path": str(path), "digest": value["precheck_digest"], "status": "no_fit",
+            "hold_reason": value["hold_reason"], "counts": value["counts"], "recheck_inputs": value["recheck_inputs"]}
 
 
 def _delivery(root: Path, owner: dict[str, Any], monkeypatch) -> bytes:
@@ -66,9 +107,8 @@ def _delivery(root: Path, owner: dict[str, Any], monkeypatch) -> bytes:
 
 @pytest.fixture
 def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytest fixture
-    """A website job for the shelf above any reach, its catalog the fixed arms only."""
+    """A website job for the shelf above any reach."""
     from blueprint_pipeline import (
-        beta_policy_candidate_catalog,
         website_native_background,
         website_object_observations,
         website_scene_handoff,
@@ -87,8 +127,6 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
            "binding": {"task_context_digest": context["context_digest"]}}
     job["digest"] = canonical_digest(job, digest_field="digest")
     write_json(work / "preparation.json", job)
-    catalogs = {"current": fixed_arm_catalog()}
-    monkeypatch.setattr(beta_policy_candidate_catalog, "load_default_catalog", lambda: catalogs["current"])
     for name in ("prepare_collision_stage", "prepare_appearance_stage"):
         monkeypatch.setattr(website_native_background, name, lambda path: {"stage": "stub"})
     monkeypatch.setattr(website_native_background, "prepare_construction_stages", lambda **_: {"references": []})
@@ -119,10 +157,10 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
                 runtime_inputs={"status": "ready", "digest": "sha256:" + "3" * 64,
                                 "appearance": {"status": "native_appearance_authored"},
                                 "collision": {"path": str(collision)}})
-        precheck = result.get("robot_fit_precheck") or {}
-        if state["legacy"] and precheck.get("status") == "no_fit":
+        if state["legacy"]:
             # A release before 2026-11-12 held a no-fit job here; jobs it held are still on the host.
-            result.update(status="needs_input", blockers=[precheck["hold_reason"]])
+            precheck = _legacy_no_fit_precheck(work / "native", job["digest"])
+            result.update(status="needs_input", blockers=[precheck["hold_reason"]], robot_fit_precheck=precheck)
             ready = False
         if ready:
             result["source_registration"] = {"status": "registered"}
@@ -154,7 +192,7 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
         return listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
                                                 run_e2e=run_e2e)
 
-    return SimpleNamespace(root=root, raw=raw, runs=runs, deliver=deliver, catalogs=catalogs, run_e2e=run_e2e,
+    return SimpleNamespace(root=root, raw=raw, runs=runs, deliver=deliver, run_e2e=run_e2e,
                            selectors=None, state=state)
 
 
@@ -165,22 +203,17 @@ def _held(site) -> dict[str, Any]:
     return listener._read_job_ledger(site.root)
 
 
-def test_a_no_fit_job_is_built_and_tested_with_its_paper_verdict_as_a_flag(site):
-    from blueprint_pipeline.atlas_scene_estimates import preparation_flags
-
+def test_a_job_today_is_built_and_tested_with_no_precheck_and_no_hold(site):
     site.state["legacy"] = False
     ledger = _held(site)
     work = site.root / "pipeline/website_scene_preparation"
     handoff = json.loads((work / "handoff.json").read_text())
-    # The precheck is recorded as before, and the job goes on to registration and the tests.
-    assert handoff["robot_fit_precheck"]["status"] == "no_fit"
-    assert handoff["robot_fit_precheck"]["hold_reason"] == HOLD_PREFIX + "reach"
+    # No precheck is recorded any more, and the job goes on to registration and the tests.
+    assert "robot_fit_precheck" not in handoff and not (work / "native/robot_fit_precheck.json").exists()
     assert HOLD_PREFIX + "reach" not in handoff["blockers"] and handoff["website_intake_outbox"]
     assert ledger["status"] == "completed" and hold.FIELD not in ledger
-    assert read_preparation_status(capture_root=site.root, selectors=site.selectors,
-                                   schema_version=STATUS_V6)["state"] == "handed_off"
-    # The cause travels with the job to its published result.
-    assert "scene_estimate:robot_fit_none:reach" in preparation_flags(work / "preparation.json")
+    status = read_preparation_status(capture_root=site.root, selectors=site.selectors, schema_version=STATUS_V6)
+    assert status["state"] == "handed_off" and status["robot_fit_precheck"] is None
 
 
 def test_a_job_held_under_the_old_rule_reads_as_waiting(site):
@@ -190,8 +223,7 @@ def test_a_job_held_under_the_old_rule_reads_as_waiting(site):
     assert ledger["status"] == "completed" and ledger["attempt_count"] == 1
     assert handoff["blockers"] == [HOLD_PREFIX + "reach"] and "website_intake_outbox" not in handoff
     assert base64.b64decode(ledger[hold.FIELD]["payload_base64"], validate=True) == site.raw
-    assert ledger[hold.FIELD]["recheck_inputs"] == {"catalog_digest": fixed_arm_catalog()["catalog_digest"],
-                                                    "team_registry_digest": None}
+    assert ledger[hold.FIELD]["recheck_inputs"] == LEGACY_RECHECK_INPUTS
     v5 = read_preparation_status(capture_root=site.root, selectors=site.selectors, schema_version=STATUS_V5)
     # A v5 reader sees a job waiting, with no outcome its closed vocabulary does not have.
     assert (v5["state"], v5["code"], v5["outcome"]) == ("awaiting_inputs", "preparation_inputs_pending", None)
@@ -231,7 +263,7 @@ def test_a_job_held_under_the_old_rule_is_rechecked_once_per_release_and_goes_on
     assert pending["robot_fit_rule"] == hold.ROBOT_FIT_RULE  # differs from the hold's inputs, robots unchanged
     assert _reconcile(site)["rechecked"] == 1 and len(site.runs) == 2
     handoff = json.loads((site.root / "pipeline/website_scene_preparation/handoff.json").read_text())
-    assert handoff["robot_fit_precheck"]["status"] == "no_fit" and handoff["website_intake_outbox"]
+    assert "robot_fit_precheck" not in handoff and handoff["website_intake_outbox"]
     assert _reconcile(site) == {"rechecked": 0, "held": 0, "waiting": 0}
 
 
@@ -265,13 +297,19 @@ def test_an_old_hold_the_site_cannot_go_on_with_is_left_exactly_as_it_is(site, m
     assert (site.root / "pipeline/website_scene_preparation/handoff.json").read_text() == handoff
 
 
-def test_a_catalog_change_reruns_the_held_job_once_and_it_goes_on(site):
+def _registry_changes(monkeypatch) -> None:
+    """The operator registers a team body: the registry a hold was decided against changes."""
+    from blueprint_pipeline import team_candidate_quick10_registry as registry
+
+    monkeypatch.setattr(registry, "load_registry", lambda: {"registry_digest": "sha256:" + "a" * 64})
+
+
+def test_a_registry_change_reruns_the_held_job_once_and_it_goes_on(site, monkeypatch):
     _held(site)
-    site.catalogs["current"] = _shipped_catalog()  # the G1 lane on again
+    _registry_changes(monkeypatch)
     pending = hold.pending_recheck(site.root / "pipeline")
     site.state["legacy"] = False
-    assert pending == {"catalog_digest": site.catalogs["current"]["catalog_digest"], "team_registry_digest": None,
-                       "robot_fit_rule": hold.ROBOT_FIT_RULE}
+    assert pending == {"team_registry_digest": "sha256:" + "a" * 64, "robot_fit_rule": hold.ROBOT_FIT_RULE}
     # The preparation stage's input binding now names the changed inputs, so run_e2e reruns it.
     assert hold.preparation_binding_digest(site.root / "pipeline", None) == canonical_digest(
         {"corrections_binding": None, "robot_fit_recheck_inputs": pending})
@@ -280,10 +318,10 @@ def test_a_catalog_change_reruns_the_held_job_once_and_it_goes_on(site):
     assert counts["rechecked"] == 1 and len(site.runs) == 2
     ledger = listener._read_job_ledger(site.root)
     handoff = json.loads((site.root / "pipeline/website_scene_preparation/handoff.json").read_text())
-    # With the G1 lane on, the shelf is unknown: the job goes on to registration.
+    # No precheck holds it any more: the job goes on to registration.
     assert ledger["status"] == "completed" and ledger["attempt_count"] == 2
     assert ledger["attempt_history"][-1][hold.RECHECK_MARK] == pending
-    assert handoff["robot_fit_precheck"]["status"] == "unknown" and handoff["website_intake_outbox"]
+    assert "robot_fit_precheck" not in handoff and handoff["website_intake_outbox"]
     assert read_preparation_status(capture_root=site.root, selectors=site.selectors,
                                    schema_version=STATUS_V6)["state"] == "handed_off"
     assert hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4],
@@ -331,15 +369,9 @@ def test_the_retain_check_accepts_only_the_hold_it_names():
     assert retains_robot_fit_hold(sealed(abstained), context)
 
 
-def _shipped_catalog() -> dict[str, Any]:
-    from blueprint_pipeline.beta_policy_candidate_catalog import load_catalog
-
-    return load_catalog(Path(__file__).resolve().parents[1] / "config" / "beta_policy_candidates.v1.json")
-
-
-def test_a_recheck_that_stops_short_stays_owed_and_bounded(site):
+def test_a_recheck_that_stops_short_stays_owed_and_bounded(site, monkeypatch):
     _held(site)
-    site.catalogs["current"] = _shipped_catalog()
+    _registry_changes(monkeypatch)
     failures = []
 
     def transient(**_):
@@ -351,7 +383,7 @@ def test_a_recheck_that_stops_short_stays_owed_and_bounded(site):
     counts = hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=args, now=now)
     ledger = listener._read_job_ledger(site.root)
     assert counts["rechecked"] == 1 and ledger["status"] == "failed_retryable"
-    assert ledger["attempt_history"][-1][hold.RECHECK_MARK]["catalog_digest"] == site.catalogs["current"]["catalog_digest"]
+    assert ledger["attempt_history"][-1][hold.RECHECK_MARK] == hold.recheck_inputs()
     # Backed off, then owed again until the bound; never a loop.
     assert hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=args,
                                           now=now + 1)["waiting"] == 1
@@ -364,7 +396,7 @@ def test_a_recheck_that_stops_short_stays_owed_and_bounded(site):
 def test_a_recheck_whose_ledger_moved_before_its_claim_is_a_retryable_result(site, monkeypatch):
     """The ledger changes between the reconciler's read and its claim: retryable, no exception, no attempt."""
     _held(site)
-    site.catalogs["current"] = _shipped_catalog()
+    _registry_changes(monkeypatch)
     real = listener.process_handoff_payload
     results = []
 

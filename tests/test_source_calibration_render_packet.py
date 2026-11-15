@@ -121,42 +121,6 @@ def test_source_packet_requires_distinct_paid_authority_before_bundle(tmp_path,m
     assert not args['job_dir'].exists()
 
 
-def test_source_bundle_reaches_actual_canonical_allocator_admission(tmp_path, monkeypatch):
-    from blueprint_pipeline import paid_resource_allocator as allocator
-    from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
-    from scripts.issue_retained_scene_render_paid_attempt_authority import issue_paid_attempt_authority
-    args, _prepared = valid_source_bundle_inputs(tmp_path, monkeypatch)
-    bundle = packet.build_source_calibration_gpu_render_bundle(**args)
-    receipt_path = args['job_dir']/packet.RECEIPT_NAME
-    authority = issue_paid_attempt_authority(bundle_receipt_path=receipt_path,
-        authorized_by='fixture-owner', max_hourly_rate_usd=.5, hard_ttl_seconds=1800)
-    authority_path = tmp_path/'attempt.json'
-    authority_path.write_text(canonical_json(authority))
-    commit = args['expected_source_commit']
-    monkeypatch.setattr(allocator, '_control_plane_checkout_blockers',
-                        lambda: ([], {'orchestrator_source_commit': commit}))
-    observed = []
-    def provider(**kwargs):
-        require_paid_resource_admission_grant(kwargs['paid_resource_admission_grant'],
-                                             resource_class='vast_provider_adapter')
-        assert kwargs['prepared_bundle']['bundle_sha256'] == bundle['bundle_sha256']
-        assert kwargs['paid_attempt_authority']['purpose'] == packet.PURPOSE
-        observed.append(kwargs)
-        return {'status': 'completed', 'provider_mutations_performed': 0}
-    monkeypatch.setattr(allocator, 'run_retained_scene_render_vast', provider)
-    code = allocator.main(['gpu-canary', '--provider', 'vast', '--probe-kind', packet.PROBE_KIND,
-        '--execute', '--expected-source-commit', commit, '--admission-out', str(tmp_path/'admission.json'),
-        '--adapter-output', str(tmp_path/'adapter.json'), '--adp-retained-scene-render-bundle-receipt', str(receipt_path),
-        '--adp-retained-scene-render-attempt-authority', str(authority_path),
-        '--adp-retained-scene-render-job-dir', str(tmp_path/'provider'),
-        '--adp-retained-scene-render-max-hourly-rate-usd', '.5', '--adp-retained-scene-render-hard-ttl-seconds', '1800'])
-    admission = json.loads((tmp_path/'admission.json').read_text())
-    assert code == 0, admission
-    assert len(observed) == 1
-    assert admission['private_scene_derived_input_only'] is False
-    assert admission['full_source_scene_content_upload_authorized'] is True
-
-
 def test_return_and_close_cli_materialize_real_retained_evidence(tmp_path, monkeypatch):
     from blueprint_pipeline.source_calibration_render_return import main, require_source_calibration_closure
     from tests.test_retained_source_calibration_lifecycle import _closed_source_fixture

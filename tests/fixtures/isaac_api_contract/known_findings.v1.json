@@ -1,5 +1,0 @@
-{
-  "schema_version": "isaac_api_contract_known_findings.v1",
-  "policy": "A ratchet: entries only leave. Fix the call and delete its entry; never add one to silence a new finding.",
-  "findings": []
-}

@@ -11,9 +11,6 @@ from blueprint_pipeline.droid_policy_canary_embodiment import (
     apply_droid_policy_canary_profile,
     concrete_droid_task_instruction,
 )
-from blueprint_pipeline.native_task_arena_policy_canary_worker import (
-    _episode_embodiment_parity_diagnostic,
-)
 
 
 def test_droid_profile_binds_official_reset_cameras_and_visible_target() -> None:
@@ -98,62 +95,3 @@ def test_articulated_instruction_names_the_part_and_opening_action() -> None:
     del spec["visible_target_label"]
     with pytest.raises(ValueError, match="articulated_instruction_invalid"):
         concrete_droid_task_instruction(spec)
-
-
-def test_embodiment_parity_records_failed_approach_without_blocking_valid_wiring() -> None:
-    episode = {
-        "state_trace": {
-            "task_state_samples": [
-                {
-                    "grasp_frame_position_world_m": [0.0, 0.0, 0.0],
-                    "task_object_pose_world": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-                },
-                {
-                    "grasp_frame_position_world_m": [0.1, 0.0, 0.0],
-                    "task_object_pose_world": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-                },
-            ]
-        },
-        "queries": [{"any_joint_limit_clamped": False}],
-        "motion_evidence": {"actions_reached_robot": True, "arm_moved": True},
-    }
-
-    passed = _episode_embodiment_parity_diagnostic(
-        episode, observation_support_qualified=True
-    )
-    assert passed["status"] == "passed"
-    assert passed["approach_distance_m"] == pytest.approx(0.1)
-    assert passed["policy_approach_observed"] is True
-
-    episode["state_trace"]["task_state_samples"][1][
-        "grasp_frame_position_world_m"
-    ] = [-0.1, 0.0, 0.0]
-    failed_policy = _episode_embodiment_parity_diagnostic(
-        episode, observation_support_qualified=True
-    )
-    assert failed_policy["status"] == "passed"
-    assert failed_policy["policy_approach_observed"] is False
-    assert failed_policy["approach_distance_m"] == 0.0
-    assert failed_policy["blockers"] == []
-    legacy = _episode_embodiment_parity_diagnostic(
-        episode, observation_support_qualified=True, legacy_approach_gate=True
-    )
-    assert legacy["status"] == "blocked"
-    assert "droid_gripper_did_not_approach_task" in legacy["blockers"]
-    assert "policy_approach_observed" not in legacy
-
-    for row in episode["state_trace"]["task_state_samples"]:
-        row["handle_reference_position_world_m"] = row.pop("task_object_pose_world")[:3]
-    drawer = _episode_embodiment_parity_diagnostic(
-        episode, observation_support_qualified=True
-    )
-    assert drawer["status"] == "passed"
-    assert drawer["initial_gripper_to_task_distance_m"] == pytest.approx(1.0)
-
-    del episode["state_trace"]["task_state_samples"][0]["handle_reference_position_world_m"]
-    del episode["state_trace"]["task_state_samples"][1]["handle_reference_position_world_m"]
-    missing_native_geometry = _episode_embodiment_parity_diagnostic(
-        episode, observation_support_qualified=True
-    )
-    assert missing_native_geometry["status"] == "blocked"
-    assert "droid_gripper_task_distance_unavailable" in missing_native_geometry["blockers"]

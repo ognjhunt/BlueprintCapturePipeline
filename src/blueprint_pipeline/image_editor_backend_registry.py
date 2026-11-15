@@ -31,9 +31,7 @@ REGISTRY_SCHEMA_VERSION = "image_editor_backend_registry.v1"
 #: The registry that ships with the repository.
 DEFAULT_REGISTRY_PATH = (
     Path(__file__).resolve().parents[2]
-    / "docs"
-    / "arm_decision_proof_v1"
-    / "manifests"
+    / "config"
     / "image_editor_backends.v1.json"
 )
 

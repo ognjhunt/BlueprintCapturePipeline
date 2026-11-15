@@ -2,10 +2,11 @@
 
 Every record here is synthetic: it is made by the same builders the replay tools' own unit tests use
 (``tests/test_task_evaluation_downstream_replay.website_job`` for a rigid pick-and-place job,
-``tests/test_website_navigation_intake`` for a navigation job, ``tests/test_atlas_preview_replay`` for an
+``tests/test_atlas_preview_replay`` for an
 Atlas preview job, ``tests/atlas_level_room_fixture`` and ``tests/test_atlas_mesh_registration`` for a
 reconstruction stage's splat and mesh). Frames are seeded noise images and the video is a placeholder:
-none of it comes from a host, a capture, a clip or a retained job.
+none of it comes from a host, a capture, a clip or a retained job. The two navigation records were built
+by an earlier version of this file (with the walking-job intake, since removed) and are kept as they are.
 
 The records name absolute paths (a launch receipt names its result by path, and that path is under the
 receipt's digest), so each record is built at ``<materialize_root>/<record_id>/host`` and the replay set
@@ -72,21 +73,6 @@ def _rigid(host_parent: Path, *, trace: bool, drop: tuple[str, ...] = ()) -> dic
             "registry": job["registry"].relative_to(host).as_posix(),
             "mirror": job["mirror"].relative_to(host).as_posix(),
             "webapp_snapshots": job["webapp"].relative_to(host).as_posix()}
-
-
-def _navigation(host_parent: Path, *, submission_id: str) -> dict[str, Any]:
-    """A navigation job: its intent, prepared by the real progression with no launch (kept as filmed)."""
-    from tests.test_website_navigation_intake import _advance, _request, _staged
-
-    host = host_parent / "host"
-    host.mkdir(parents=True)
-    staged, intent = _staged(host, _request(submission_id=submission_id))
-    progress = _advance(host, staged, intent)
-    if progress.get("status") != "completed":
-        raise RuntimeError(f"navigation progression did not complete: {progress.get('status')}")
-    shutil.rmtree(host / "factory-output", ignore_errors=True)
-    return {"launch_run": "launch-runs/none", "intent_dir": staged["directory"].relative_to(host).as_posix(),
-            "empty_dirs": ["launch-runs/none"]}
 
 
 def _atlas_capture(host_parent: Path, *, request: str) -> SimpleNamespace:
@@ -268,14 +254,14 @@ RECORDS: list[dict[str, Any]] = [
      "input_variety": {"video_resolution": "1080p", "clip_length": "short"},
      "description": "A completed rigid pick-and-place preparation with its robot-free probe trace retained.",
      "build": lambda root: _rigid(root, trace=True),
-     "until": "screening_plan",
-     "expected_stop": {"kind": "completed", "stage": "screening_plan", "code": "until_screening_plan"}},
+     "until": "probe_run",
+     "expected_stop": {"kind": "completed", "stage": "probe_run", "code": "until_probe_run"}},
     {"record_id": "rigid-pick-place-4k-long", "job_kind": "rigid_pick_and_place",
      "input_variety": {"video_resolution": "4k", "clip_length": "long"},
      "description": "A completed rigid pick-and-place preparation with no probe trace: the probe must run, "
                     "so the chain stops where the probe lane would buy its GPU run.",
      "build": lambda root: _rigid(root, trace=False),
-     "until": "screening_plan",
+     "until": "probe_run",
      "expected_stop": {"kind": "would_buy", "stage": "probe_enqueue",
                        "code": "paid_resource_allocator:gpu-canary:rigid-robot-free-probe"}},
     {"record_id": "rigid-pick-place-1080p-long-closure-missing", "job_kind": "rigid_pick_and_place",
@@ -284,22 +270,9 @@ RECORDS: list[dict[str, Any]] = [
                     "the join names the file to pull.",
      "build": lambda root: _rigid(root, trace=True, drop=(
          "launch-runs/scene-website-qualifying/post_teardown_provider_zero_receipt.json",)),
-     "until": "screening_plan",
+     "until": "probe_run",
      "expected_stop": {"kind": "missing_input", "stage": "completion",
                        "code": "{host}/launch-runs/scene-website-qualifying/post_teardown_provider_zero_receipt.json"}},
-    {"record_id": "navigation-4k-short", "job_kind": "navigation",
-     "input_variety": {"video_resolution": "4k", "clip_length": "short"},
-     "description": "A navigation job prepared with its scene kept as filmed (no launch). The post-completion "
-                    "chain is the launched preparation's; its join does not adopt this job, by name.",
-     "build": lambda root: _navigation(root, submission_id="walkthrough-nav-4k-short"),
-     "until": "screening_plan",
-     "expected_stop": {"kind": "refusal", "stage": "completion", "code": "preparation_completion_not_adopted"}},
-    {"record_id": "navigation-1080p-long", "job_kind": "navigation",
-     "input_variety": {"video_resolution": "1080p", "clip_length": "long"},
-     "description": "A second navigation job, as above, under its own submission.",
-     "build": lambda root: _navigation(root, submission_id="walkthrough-nav-1080p-long"),
-     "until": "screening_plan",
-     "expected_stop": {"kind": "refusal", "stage": "completion", "code": "preparation_completion_not_adopted"}},
     # Between "upload accepted" and "scene ready to configure" (2026-11-10 reconstruction changes).
     {"record_id": "atlas-coverage-gap-site-ask", "job_kind": "website_scene_preparation",
      "input_variety": {"video_resolution": "not_applicable", "clip_length": "not_applicable"},

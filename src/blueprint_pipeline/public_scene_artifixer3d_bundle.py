@@ -67,9 +67,7 @@ VGG16_WEIGHTS_SOURCE_URL = "https://download.pytorch.org/models/vgg16-397923af.p
 VGG16_WEIGHTS_SHA256 = "sha256:397923af8e79cdbb6a7127f12361acd7a2f83e06b05044ddf496e83de57a5bf0"
 VGG16_WEIGHTS_SIZE_BYTES = 553_433_881
 RUNTIME_VGG16_WEIGHTS = f"torch_home/hub/checkpoints/{VGG16_WEIGHTS_FILENAME}"
-RUNTIME_EDITOR_REGISTRY_MANIFEST = (
-    "docs/arm_decision_proof_v1/manifests/image_editor_backends.v1.json"
-)
+RUNTIME_EDITOR_REGISTRY_MANIFEST = "config/image_editor_backends.v1.json"
 MANIFEST = "provider_runtime/artifixer3d_bundle_manifest.json"
 RUNTIME_REQUEST = "provider_runtime/artifixer3d_runtime_request.json"
 INPUT_RECEIPT = "provider_runtime/input/public_scene_artifixer3d_candidate_inputs.v3.json"

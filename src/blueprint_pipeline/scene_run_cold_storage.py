@@ -57,7 +57,7 @@ def cold_storage_hold(run_root: str | Path | None = None) -> tuple[str, str]:
     sentence for ``team_scene_packet_blocked``, and its ops alert for held evaluations tells staff.
     """
 
-    from .beta_policy_screening_holds import STALL_HOLD_REASON
+    from .scene_stage_holds import STALL_HOLD_REASON
     from .scene_run_cold_pointer import ARCHIVE_INVALID, archive_invalid
 
     if run_root is not None and archive_invalid(run_root):

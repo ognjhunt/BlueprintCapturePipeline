@@ -11,12 +11,10 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import deployment_embodiment_preparation_contract as contract
-from blueprint_pipeline import deployment_embodiment_preparation_lane as lane
 from blueprint_pipeline import groot_oscar_runpod_watchdog as watchdog
 from blueprint_pipeline import vast_independent_watchdog_control as control
 from blueprint_pipeline import vast_provider_adapter as adapter
 from scripts import gpu_spend_guard as guard
-from tests.test_embodiment_preparation_lane import COMMIT, _dispatch_fixture
 
 PREFIX = contract.INSTANCE_PREFIX
 
@@ -60,53 +58,6 @@ def test_real_adapter_dry_run_accepts_canonical_name_without_api_calls(tmp_path,
     result = adapter.run_vast_provider_adapter(job_dir=tmp_path, mode="dry-run",
         instance_label_prefix=PREFIX, instance_label_exact=name)
     assert result["status"] == "dry_run_ready" and result["api_call_performed"] is False
-
-
-def test_request_to_allocator_to_independent_child_and_exact_cleanup(tmp_path, monkeypatch, child_arm):
-    grant, _, args, trusted = _dispatch_fixture(tmp_path, monkeypatch)
-    name = contract.resource_name(grant)
-    monkeypatch.setattr(lane, "require_paid_resource_admission", lambda *a, **k: "development-only")
-    def transport(**kwargs):
-        assert kwargs["instance_label_exact"] == name and kwargs["instance_label_prefix"] == PREFIX
-        assert kwargs["require_independent_watchdog"] is True
-        handoff, handle = control.arm_independent_vast_watchdog(job_dir=kwargs["job_dir"],
-            max_live_minutes=kwargs["hard_ttl_seconds"] // 60, generated_at="development-only",
-            pod_name_prefix=kwargs["instance_label_prefix"], resource_name_exact=kwargs["instance_label_exact"],
-            deadline_cap_epoch=kwargs["hard_deadline_epoch"])
-        assert handoff["status"] == "armed" and handle.resource_name_exact == name
-        command, armed = child_arm[0]
-        assert armed["resource_name_exact"] == name == armed["pod_name_prefix"]
-        assert armed["deadline_epoch"] <= min(grant["expires_at_epoch"], time.time() + grant["ttl_seconds"])
-        (handle.out_dir / "started_vast_instance_id.txt").write_text("101")
-        assert guard.find_protected_pod_ids([kwargs["job_dir"]], process_cmdlines=[shlex.join(command)]) == {"101"}
-        # Inventory includes a same-family sibling and a prefix lookalike. Neither is owned.
-        rows = [{"id": identity, "label": label, "actual_status": "running"} for identity, label in
-                ((101, name), (102, name + "-extra"), (103, PREFIX + "b" * 32), (104, "unrelated"))]
-        def api_json(**request):
-            assert request["method"] == "GET" and request["path"] == "/instances/"
-            return 200, {"instances": list(rows)}
-        monkeypatch.setattr(adapter, "_api_json", api_json)
-        class Provider:
-            def _key(self):
-                return "development-only-fake-key"
-            def terminate(self, identity):
-                assert identity == "101"
-                rows[0]["actual_status"] = "destroyed"
-                return {"status": "stopped", "http": 204}
-            def inspect(self, identity):
-                assert identity == "101"
-                return {"status": "absent", "instance_id": identity, "api_confirmed": True,
-                        "provider_absence_confirmed": True, "http": 404}
-        result = watchdog.terminate_canary_resources(provider=Provider(), provider_name="vast",
-            pod_name_prefix=name, resource_name_exact=name, armed=armed)
-        assert result["provider_absence_confirmed"] is True
-        assert [item["instance_id"] for item in result["terminations"]] == ["101"]
-        assert all(row["actual_status"] == "running" for row in rows[1:])
-        return {"status": "completed"}
-    assert lane.dispatch(args, ([], {"orchestrator_source_commit": COMMIT}),
-                         transport=transport, trusted_root=trusted) == 0
-    admission = contract.read(Path(args.admission_out))
-    assert admission["allocation_binding"]["resource_name"] == name
 
 
 @pytest.mark.parametrize("name", ["", PREFIX, PREFIX + "a" * 24, PREFIX + "a" * 31,
@@ -205,7 +156,6 @@ def test_source_cache_record_cannot_borrow_live_allocator_watchdog_ownership(tmp
         process_cmdlines=[shlex.join(command), shlex.join(fake_command)], now=time.time()) == {"101"}
     assert guard.find_embodiment_preparation_watchdog_ids(process_cmdlines=[], now=time.time()) == set()
     assert guard.find_expected_serve_pod_ids([workspace]) == {"303"}  # why this tree must not enter the legacy reader
-
 
 
 def test_guard_main_keeps_preparation_cache_out_of_legacy_warm_scan(tmp_path, monkeypatch):

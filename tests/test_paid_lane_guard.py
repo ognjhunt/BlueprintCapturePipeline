@@ -626,3 +626,13 @@ def test_extend_pending_teardown_max_age_preserves_exact_open_obligation(
     assert extended["max_age_seconds"] == 27_000
     assert extended["extensions"][-1]["extension_seconds"] == 7_200
     assert extended["extensions"][-1]["evidence"] == {"new_deadline_epoch": 123.0}
+
+
+def test_a_teardown_record_with_no_provider_name_still_reaches_runpod() -> None:
+    """Launches need an explicit provider; the reaper must still reach a legacy unnamed record."""
+    from blueprint_pipeline import gpu_render_providers, paid_lane_guard
+
+    client = paid_lane_guard._default_provider_client("")
+    assert isinstance(client, gpu_render_providers.RunPodRenderProvider)
+    with pytest.raises(ValueError, match="render_provider_name_required"):
+        gpu_render_providers.get_render_provider("")

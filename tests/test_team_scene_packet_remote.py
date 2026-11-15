@@ -33,8 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(("bodies", "support"), [(False, "flat"), (True, "flat"), (False, "bumpy")],
-                         ids=["franka_only", "registered_bodies", "bumpy_support"])
+@pytest.mark.parametrize(("bodies", "support"), [(False, "flat"), (False, "bumpy")],
+                         ids=["franka_only", "bumpy_support"])
 def test_a_remote_compile_is_byte_identical_to_the_host_compile(tmp_path: Path, monkeypatch, bodies: bool,
                                                                 support: str) -> None:
     """The host's own compile of a request (``cloud_run_shadow``), then the worker's compile of the same envelope

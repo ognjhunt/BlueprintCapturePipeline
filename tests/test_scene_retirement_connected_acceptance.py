@@ -1686,7 +1686,7 @@ def _installed_cohort():
         'task_evaluation_launch_preparation_worker', 'task_evaluation_launch_activation_worker',
         'task_evaluation_episode_compilation_worker', 'task_evaluation_sam31_prefix_adoption',
         'task_evaluation_sam31_preparation_execution', 'task_evaluation_scene_configuration_sam31_preparation_driver',
-        'task_evaluation_launch_dispatcher', 'task_evaluation_policy_canary_dispatcher',
+        'task_evaluation_launch_dispatcher',
         'task_evaluation_scene_configuration_submission_publication', 'website_scene_dispatch',
         'website_native_submission', 'artifixer_completed_training_reuse', 'control_plane_storage_pins')
     special = {'pubsub_handoff_listener': ('stage_handoff_capture', 'process_handoff_payload', 'pull_and_process'),

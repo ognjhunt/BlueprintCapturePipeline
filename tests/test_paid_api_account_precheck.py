@@ -27,27 +27,6 @@ def limit(monkeypatch):
     return state
 
 
-def test_launch_supervisor_waits_uncached_and_asks_again(tmp_path, limit, monkeypatch):
-    from blueprint_pipeline import task_evaluation_launch_supervisor as supervisor
-
-    calls = []
-
-    class Invoker:
-        def invoke(self, spec, prompt):
-            calls.append(prompt)
-            return SimpleNamespace(output={"summary": "ok", "recommended_profile_id": None,
-                                           "human_decision_request": None, "blockers": []},
-                                   provider="openai", model="m", sdk_version="x", trace_id="t")
-
-    snapshot = {"snapshot_digest": "sha256:" + "a" * 64, "admissible_profile_ids": []}
-    waiting = supervisor.run_launch_supervisor(snapshot=snapshot, output_dir=tmp_path, invoker=Invoker(), enabled=True)
-    assert waiting["status"] == supervisor.ACCOUNT_LIMIT_WAIT_STATUS and waiting["blockers"] == [REACHED]
-    assert calls == [] and not list(tmp_path.glob("*.json"))  # nothing invoked, nothing cached
-    limit["blockers"] = []
-    later = supervisor.run_launch_supervisor(snapshot=snapshot, output_dir=tmp_path, invoker=Invoker(), enabled=True)
-    assert later["status"] != supervisor.ACCOUNT_LIMIT_WAIT_STATUS and len(calls) == 1
-
-
 def test_agent_task_is_not_started_while_refused_and_starts_on_a_later_pass(limit, monkeypatch):
     from blueprint_pipeline.agent_execution import production
     from blueprint_pipeline.agent_execution import supervision
@@ -99,20 +78,6 @@ def test_optional_phase2_skill_is_skipped_and_says_why(limit, monkeypatch):
                                                   repo_root=Path("."))
     monkeypatch.setattr(openai_phase2.shutil, "which", lambda _name: pytest.fail("codex looked up"))
     assert codex("qualification_weakness_summarizer", {}) is None
-
-
-def test_arena_live_operator_gate_asks_the_limit_last(limit, monkeypatch):
-    from blueprint_pipeline import arena_result_ingest as arena
-
-    monkeypatch.setattr(arena, "_env_truthy", lambda _name: True)
-    monkeypatch.setattr(arena, "_module_available", lambda _names: True)
-    monkeypatch.setattr(arena, "codex_cli_path", lambda *_args: "/usr/bin/codex")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    assert arena._live_agents_blockers(True) == [REACHED]
-    assert arena._live_codex_blockers(True) == [REACHED]
-    assert arena._live_agents_blockers(False) == ["missing_cli_allow_live_agents_sdk"]  # its own gates first
-    limit["blockers"] = []
-    assert arena._live_agents_blockers(True) == [] and arena._live_codex_blockers(True) == []
 
 
 def test_operator_runtime_refuses_before_any_live_call(limit):

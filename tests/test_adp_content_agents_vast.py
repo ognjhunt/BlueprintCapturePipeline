@@ -20,11 +20,7 @@ import yaml
 
 from blueprint_pipeline import adp_content_agents_vast as content_agents
 from blueprint_pipeline import adp_content_agents_bundle_matrix as content_matrix
-from blueprint_pipeline import (
-    adp_content_agents_codex_advisory_review as codex_advisory,
-)
 from blueprint_pipeline import adp_content_agents_bundle_preflight as bundle_preflight
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.content_agents_execution_route import (
     materialize_content_agents_execution_route,
@@ -36,7 +32,6 @@ from blueprint_pipeline.openai_api_geography import (
     openai_vast_country_allowlist,
     vast_geolocation_country_code,
 )
-from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
 from blueprint_pipeline.simready_cad_agent_contract import (
     INSPECTION_SCHEMA_VERSION,
     file_record,
@@ -57,7 +52,7 @@ from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_outp
 ROOT = Path(__file__).resolve().parents[1]
 TASK_A_FREEZE = (
     ROOT
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+    / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
 AGENT_CAD_CONTENT_BUNDLE_MATRIX = (
     ROOT
@@ -682,7 +677,7 @@ def test_match_v2_variant_rejects_changed_approved_snapshot(tmp_path: Path) -> N
 
 
 def test_match_v2_configs_remove_unproven_aluminum_assertion(tmp_path: Path) -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         "material_agent.yaml": assets / "adp009a_content_agents_material.vast.yaml",
         "texture_agent.yaml": assets / "adp009a_content_agents_texture.vast.yaml",
@@ -1377,154 +1372,6 @@ def test_agent_cad_bundle_matrix_derives_one_to_five_slot_rows_with_routes(
         )
 
 
-def test_codex_advisory_review_is_metadata_only_and_cannot_upgrade_claims(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _fake_source(tmp_path, monkeypatch)
-    legacy_matrix = _agent_cad_content_bundle_matrix(
-        tmp_path=tmp_path,
-        source=source,
-    )
-    matrix = content_matrix.materialize_agent_cad_content_agents_bundle_matrix(
-        bundle_receipt_paths=[
-            Path(str(item["bundle_receipt"]["path"]))
-            for item in legacy_matrix["items"]
-        ],
-        output_path=tmp_path / "matrix-v2.json",
-        generated_at="fixed",
-    )
-    calls: list[object] = []
-
-    def fake_version(command_prefix):
-        calls.append(tuple(command_prefix))
-        return "codex-cli 0.147.0"
-
-    def fake_runner(config):
-        calls.append(config)
-        assert config.model == "gpt-6-luna"
-        assert config.sandbox == "read-only"
-        assert config.codex_ephemeral is True
-        assert config.codex_ignore_user_config is True
-        assert "reference.png" not in config.prompt
-        assert "candidate.step" not in config.prompt
-        return {
-            "final_output": (
-                '{"summary":"metadata-only","codex_local_work":['
-                '"input packet review"],"residual_nvidia_work":['
-                '"released pipeline"],"claim_boundary":"advisory"}'
-            ),
-            "raw_result_type": "fixture_codex_cli",
-        }
-
-    receipt = codex_advisory.run_content_agents_codex_advisory_review(
-        bundle_matrix=matrix,
-        replacement_slot=1,
-        cad_agent_backend_id="earthtojake_text_to_cad",
-        output_path=tmp_path / "codex-review.json",
-        generated_at="fixed",
-        live_codex_host_oauth_authorized=True,
-        codex_command_prefix=("fixture-codex",),
-        runner=fake_runner,
-        version_probe=fake_version,
-    )
-
-    assert calls[0] == ("fixture-codex",)
-    assert receipt["status"] == "completed_metadata_only_advisory_review"
-    assert receipt["codex_operator"]["live_codex_host_oauth_authorized"] is True
-    assert receipt["model_output"]["interpreted_as_deterministic_evidence"] is False
-    assert receipt["request"]["disclosure"] == {
-        "prompt_contains_only": "digest_bound_metadata",
-        "raw_interiorgs_bytes_disclosed": False,
-        "scene_derived_image_bytes_disclosed": False,
-        "cad_step_or_usd_bytes_disclosed": False,
-        "mesh_bytes_disclosed": False,
-        "secrets_or_api_keys_disclosed": False,
-        "provider_upload_performed": False,
-    }
-    assert receipt["claim_boundary"] == {
-        "codex_advisory_review_completed": True,
-        "content_agents_executed": False,
-        "simready_qualified": False,
-        "native_simulator_import_qualified": False,
-        "appearance_materially_qualified": False,
-        "physical_equivalence": False,
-    }
-
-    second_receipt_path = tmp_path / "codex-review-second.json"
-    second_receipt = codex_advisory.run_content_agents_codex_advisory_review(
-        bundle_matrix=matrix,
-        replacement_slot=1,
-        cad_agent_backend_id="pan_chera_multi_agent_cad",
-        output_path=second_receipt_path,
-        generated_at="fixed-second",
-        live_codex_host_oauth_authorized=True,
-        codex_command_prefix=("fixture-codex",),
-        runner=fake_runner,
-        version_probe=fake_version,
-    )
-    advisory_matrix = codex_advisory.materialize_content_agents_codex_advisory_matrix(
-        bundle_matrix=matrix,
-        review_receipt_paths=[tmp_path / "codex-review.json", second_receipt_path],
-        output_path=tmp_path / "codex-review-matrix.json",
-        generated_at="fixed-matrix",
-    )
-    assert advisory_matrix["schema_version"] == codex_advisory.MATRIX_SCHEMA_VERSION
-    assert advisory_matrix["candidate_count"] == 2
-    assert advisory_matrix["items"][1]["review_receipt"]["receipt_digest"] == second_receipt[
-        "receipt_digest"
-    ]
-    assert codex_advisory.validate_content_agents_codex_advisory_matrix(
-        advisory_matrix
-    ) == advisory_matrix
-
-
-def test_codex_advisory_review_blocks_before_operator_without_host_oauth(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A Codex-first route cannot silently fall back to an API-backed runner."""
-
-    source = _fake_source(tmp_path, monkeypatch)
-    legacy_matrix = _agent_cad_content_bundle_matrix(
-        tmp_path=tmp_path,
-        source=source,
-    )
-    matrix = content_matrix.materialize_agent_cad_content_agents_bundle_matrix(
-        bundle_receipt_paths=[
-            Path(str(item["bundle_receipt"]["path"]))
-            for item in legacy_matrix["items"]
-        ],
-        output_path=tmp_path / "matrix-v2.json",
-        generated_at="fixed",
-    )
-
-    def unexpected_runner(_config):
-        raise AssertionError("runner must not be called without host OAuth")
-
-    def unexpected_version(_prefix):
-        raise AssertionError("version probe must not run without host OAuth")
-
-    receipt = codex_advisory.run_content_agents_codex_advisory_review(
-        bundle_matrix=matrix,
-        replacement_slot=1,
-        cad_agent_backend_id="earthtojake_text_to_cad",
-        output_path=tmp_path / "blocked-codex-review.json",
-        generated_at="fixed",
-        live_codex_host_oauth_authorized=False,
-        codex_command_prefix=("fixture-codex",),
-        runner=unexpected_runner,
-        version_probe=unexpected_version,
-    )
-
-    assert receipt["status"] == "blocked_before_metadata_only_advisory_review"
-    assert receipt["blockers"] == [
-        "content_agents_codex_host_oauth_authorization_missing"
-    ]
-    assert receipt["codex_operator"]["api_key_forwarded"] is False
-    assert receipt["claim_boundary"]["codex_advisory_review_completed"] is False
-
-
 def _bundle_receipt_from_item(item: Mapping[str, object]) -> tuple[Path, dict]:
     record = item["bundle_receipt"]
     assert isinstance(record, Mapping)
@@ -2117,111 +1964,6 @@ def test_agent_cad_variant_rejects_changed_projection_usd(
         )
 
 
-def test_checked_in_agent_cad_content_agents_bundle_matrix_is_claim_bounded() -> None:
-    manifest = json.loads(AGENT_CAD_CONTENT_BUNDLE_MATRIX.read_text(encoding="utf-8"))
-
-    assert manifest["receipt_digest"] == canonical_digest(
-        manifest, digest_field="receipt_digest"
-    )
-    assert manifest["schema_version"] == (
-        "third_scene_agent_cad_content_agents_bundle_matrix.v1"
-    )
-    assert manifest["replacement_object_capacity"] == {
-        "minimum": 1,
-        "maximum": 5,
-        "sealed_slots": 2,
-    }
-    assert manifest["candidate_count"] == 4
-    assert {
-        (row["replacement_slot"], row["cad_agent_backend_id"])
-        for row in manifest["items"]
-    } == {
-        (1, "earthtojake_text_to_cad"),
-        (1, "pan_chera_multi_agent_cad"),
-        (2, "earthtojake_text_to_cad"),
-        (2, "pan_chera_multi_agent_cad"),
-    }
-    assert {row["mesh_count"] for row in manifest["items"]} == {15, 40, 79, 135}
-    assert all(
-        row["exact_bundle_entrypoint_rehearsal_status"] == "passed"
-        and row["blockers"] == []
-        and row["agent_output_is_simready_authority"] is False
-        and row["canonical_simready_construction_unresolved"] is True
-        for row in manifest["items"]
-    )
-    assert manifest["claim_boundary"] == {
-        "content_agents_bundles_built": True,
-        "exact_entrypoint_rehearsed": True,
-        "content_agents_executed": False,
-        "simready_qualified": False,
-        "native_simulator_import_qualified": False,
-        "physical_equivalence": False,
-    }
-
-
-def test_bundle_is_deterministic_and_provider_preflight_accepts_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = _fake_source(tmp_path, monkeypatch)
-    reference = _reference_image(tmp_path, monkeypatch)
-    first = content_agents.build_content_agents_vast_bundle(
-        repo_root=ROOT,
-        content_agents_root=source,
-        reference_image_path=reference,
-        job_dir=tmp_path / "first",
-        generated_at="fixed",
-        historical_replay_only=True,
-    )
-    second = content_agents.build_content_agents_vast_bundle(
-        repo_root=ROOT,
-        content_agents_root=source,
-        reference_image_path=reference,
-        job_dir=tmp_path / "second",
-        generated_at="fixed",
-        historical_replay_only=True,
-    )
-
-    assert first["blockers"] == []
-    assert first["status"] == "ready"
-    assert first["bundle_sha256"] == second["bundle_sha256"]
-    assert first["container_image"] == content_agents.DEFAULT_IMAGE
-    assert first["input_usd_normalization"]["default_purpose_bbox_nonempty"] is True
-    assert (
-        first["input_usd_normalization"]["source_input_usd_sha256"]
-        != first["input_usd_sha256"]
-    )
-    assert first["remote_config_contract_validated"] is True
-    assert first["retry_cap"] == 0
-    assert first["execution_role"] == "optional_construction_enrichment"
-    assert first["failure_blocks_native_simulator_qualification"] is False
-    assert first["agent_output_is_simready_authority"] is False
-    assert first["runtime_input_binding"]["relative_path"] == (
-        "input/source_asset.usda"
-    )
-    assert first["joint_agent_plan"] == {
-        "planned": False,
-        "executed_by_content_agents_bundle": False,
-        "reason": "single_rigid_body_has_no_articulation_task",
-        "input_variant": "control_v1",
-        "input_joint_count": 0,
-        "input_rigid_body_count": 1,
-        "input_articulation_root_count": 0,
-        "joint_agent_inapplicable_single_rigid_body": True,
-    }
-    preflight = _blueprint_bundle_preflight(
-        job_dir=tmp_path / "preflight",
-        generated_at="fixed",
-        enable_blueprint_bundle=True,
-        enable_isaac_smoke=False,
-        provider_bundle_kind="adp_content_agents",
-        bundle_path=Path(first["bundle_path"]),
-        provider_bundle_url="https://example.com/bundle.zip?signature=redacted",
-        provider_output_put_url="https://example.com/output.zip?signature=redacted",
-    )
-    assert preflight["status"] == "passed"
-    assert preflight["blockers"] == []
-
-
 def test_bundle_rejects_changed_reference_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2264,7 +2006,7 @@ def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
     after: str,
 ) -> None:
     source = _fake_source(tmp_path, monkeypatch)
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     config_sources = {}
     for name in ("material_agent.yaml", "texture_agent.yaml", "physics_agent.yaml"):
         source_name = "adp009a_content_agents_" + name.removesuffix("_agent.yaml") + ".vast.yaml"
@@ -2284,7 +2026,7 @@ def test_remote_config_contract_rejects_known_paid_runtime_failure_modes(
 
 
 def test_remote_configs_freeze_successor_models_for_both_scene_fixtures() -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     for prefix in ("adp009a_content_agents_", "adp009d_content_agents_articulated_"):
         material = yaml.safe_load((assets / f"{prefix}material.vast.yaml").read_text())
         physics = yaml.safe_load((assets / f"{prefix}physics.vast.yaml").read_text())
@@ -3101,156 +2843,6 @@ def test_content_agents_retains_watchdog_when_created_instance_identity_is_ambig
     assert result["independent_watchdog"]["status"] == "retained_until_hard_ttl"
 
 
-@pytest.mark.parametrize("execute", [False, True])
-def test_canonical_allocator_issues_grant_only_for_execute(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    preflight_value = json.loads(preflight.read_text(encoding="utf-8"))
-    authority_path = None
-    if execute:
-        authority = _content_agents_attempt_authority(
-            receipt=receipt,
-            receipt_value=receipt_value,
-            preflight=preflight,
-            preflight_value=preflight_value,
-        )
-        authority_path = tmp_path / "content-agents-attempt-authority.json"
-        write_json(authority_path, authority)
-    observed: dict = {}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-
-    def fake_run(**kwargs):
-        observed.update(kwargs)
-        return {"status": "completed" if kwargs["execute"] else "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_content_agents_vast", fake_run)
-    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((tmp_path / "consumed").parent))
-    assert (
-        allocator.main(
-            _allocator_args(
-                tmp_path,
-                receipt,
-                preflight,
-                execute=execute,
-                attempt_authority=authority_path,
-            )
-        )
-        == 0
-    )
-    assert observed["execute"] is execute
-    assert observed["machine_avoidlist_path"] is None
-    assert isinstance(observed["paid_resource_admission_grant"], PaidResourceAdmissionGrant) is (
-        execute
-    )
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["retry_cap"] == 0
-    assert admission["private_or_licensed_dataset_bytes_uploaded"] is False
-    assert admission["hard_cap_usd"] == 2.0
-    assert admission["allocation_binding"]["config_preflight_receipt_sha256"]
-    assert admission["paid_attempt_authority_required_for_execute"] is True
-    if execute:
-        assert (
-            admission["authority"]
-            == "explicit_content_agents_paid_attempt_authority_bound"
-        )
-        assert admission["allocation_binding"]["paid_attempt_authority_digest"]
-        assert list((tmp_path / "consumed").glob("content-agents-*.json"))
-    else:
-        assert admission["authority"] == "dry_run_no_paid_authority_required"
-
-
-def test_canonical_allocator_reuses_retained_content_agents_bad_hosts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    state_root = tmp_path / "launch-runs"
-    prior = (
-        state_root
-        / "prior-launch"
-        / "allocator"
-        / "content-agents-job"
-        / "vast_machine_avoidlist.json"
-    )
-    write_json(
-        prior,
-        {
-            "schema_version": "vast_machine_avoidlist.v1",
-            "status": "completed",
-            "machine_ids": [51579],
-            "entries": [{"machine_id": 51579, "reason": "no_progress"}],
-            "raw_secret_values_recorded": False,
-        },
-    )
-    current_job = state_root / "current-launch" / "allocator" / "content-agents-job"
-    args = _allocator_args(tmp_path, receipt, preflight, execute=False)
-    args[args.index("--adp-job-dir") + 1] = str(current_job)
-    observed: dict = {}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    def fake_run(**kwargs: object) -> dict[str, str]:
-        observed.update(kwargs)
-        attempt_avoidlist = Path(str(kwargs["machine_avoidlist_path"]))
-        value = json.loads(attempt_avoidlist.read_text(encoding="utf-8"))
-        value["machine_ids"].append(61680)
-        write_json(attempt_avoidlist, value)
-        return {"status": "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_content_agents_vast", fake_run)
-
-    assert allocator.main(args) == 0
-    shared = (
-        state_root
-        / "provider-machine-avoidlists"
-        / "adp-content-agents-vast-machine-avoidlist.json"
-    )
-    assert observed["machine_avoidlist_path"] == current_job / "vast_machine_avoidlist.json"
-    assert json.loads(shared.read_text(encoding="utf-8"))["machine_ids"] == [51579]
-    assert json.loads(
-        Path(str(observed["machine_avoidlist_path"])).read_text(encoding="utf-8")
-    )["machine_ids"] == [51579, 61680]
-    admission = json.loads((tmp_path / "admission.json").read_text(encoding="utf-8"))
-    assert admission["allocation_binding"]["machine_avoidlist_sha256"] == (
-        "sha256:" + hashlib.sha256(shared.read_bytes()).hexdigest()
-    )
-
-
-def test_canonical_allocator_discloses_public_sage_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path, native_probe=True)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    monkeypatch.setattr(
-        allocator,
-        "run_content_agents_vast",
-        lambda **_kwargs: {"status": "dry_run_ready"},
-    )
-
-    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=False)) == 0
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["authority"] == "dry_run_no_paid_authority_required"
-    assert admission["private_or_licensed_dataset_bytes_uploaded"] is True
-    assert admission["private_or_gated_dataset_bytes_uploaded"] is False
-    assert admission["public_licensed_sage_collision_bytes_uploaded"] is True
-    assert admission["public_licensed_dataset_identity"]["license"] == "CC-BY-NC-4.0"
-    assert admission["input_is_blueprint_owned_parametric_control"] is False
-    assert admission["input_contains_blueprint_owned_parametric_control"] is True
-
-
 def test_content_agents_paid_attempt_authority_is_single_use(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -3397,144 +2989,6 @@ def test_content_agents_authority_binds_same_goal_concurrent_instances(
             hard_ttl_seconds=7200,
             allowed_active_instance_ids=[23, 17],
         )
-
-
-def test_content_agents_execute_requires_paid_attempt_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    observed = {"called": False}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    monkeypatch.setattr(
-        allocator,
-        "run_content_agents_vast",
-        lambda **_kwargs: observed.__setitem__("called", True) or {},
-    )
-
-    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=True)) == 2
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert result["blockers"] == [
-        "paid_resource_admission_has_blockers",
-        "paid_resource_admission_not_admitted",
-    ]
-    assert (
-        "adp_content_agents_paid_attempt_authority_missing"
-        in admission["blockers"]
-    )
-    assert admission["authority"] == "missing_content_agents_paid_attempt_authority"
-    assert admission["paid_attempt_authority_required_for_execute"] is True
-    assert observed["called"] is False
-
-
-def test_content_agents_consumed_authority_blocks_before_provider_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    preflight_value = json.loads(preflight.read_text(encoding="utf-8"))
-    authority = _content_agents_attempt_authority(
-        receipt=receipt,
-        receipt_value=receipt_value,
-        preflight=preflight,
-        preflight_value=preflight_value,
-    )
-    authority_path = tmp_path / "content-agents-attempt-authority.json"
-    write_json(authority_path, authority)
-    consumed_root = tmp_path / "consumed"
-    monkeypatch.setenv("BLUEPRINT_SPEND_AUTHORITY_ROOT", str((consumed_root).parent))
-    content_agents.consume_content_agents_paid_attempt_authority_once(
-        authority, blueprint_commit="a" * 40
-    )
-    observed = {"called": False}
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    monkeypatch.setattr(
-        allocator,
-        "run_content_agents_vast",
-        lambda **_kwargs: observed.__setitem__("called", True) or {},
-    )
-
-    assert (
-        allocator.main(
-            _allocator_args(
-                tmp_path,
-                receipt,
-                preflight,
-                execute=True,
-                attempt_authority=authority_path,
-            )
-        )
-        == 2
-    )
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    assert result["blockers"] == ["adp_content_agents_paid_attempt_authority_consumed"]
-    assert result["provider_mutations_performed"] == 0
-    assert observed["called"] is False
-
-
-def test_canonical_allocator_rejects_mutated_bundle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path, content=b"before")
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    bundle = Path(receipt_value["bundle_path"])
-    bundle.write_bytes(b"after")
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=False)) == 2
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    assert "adp_content_agents_bundle_binding_invalid" in result["blockers"]
-
-
-def test_canonical_allocator_requires_exact_bundle_config_preflight(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-    arguments = _allocator_args(tmp_path, receipt, preflight, execute=False)
-    flag = arguments.index("--adp-content-agents-config-preflight-receipt")
-    del arguments[flag : flag + 2]
-
-    assert allocator.main(arguments) == 2
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    assert "adp_content_agents_config_preflight_receipt" in result["blockers"]
-
-
-def test_canonical_allocator_rejects_changed_preflight_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt, receipt_value = _allocator_bundle(tmp_path)
-    preflight = _passing_config_preflight(tmp_path, receipt_value)
-    (tmp_path / "texture.log").write_text("changed after preflight", encoding="utf-8")
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: ([], {"orchestrator_source_commit": "a" * 40, "checkout_clean": True}),
-    )
-
-    assert allocator.main(_allocator_args(tmp_path, receipt, preflight, execute=False)) == 2
-    result = json.loads((tmp_path / "adapter.json").read_text())
-    assert (
-        "adp_content_agents_config_preflight_execution_invalid:texture"
-        in result["blockers"]
-    )
 
 
 def _executable_preflight_fixture(tmp_path: Path) -> tuple[Path, str]:
@@ -4062,7 +3516,7 @@ def test_articulated_variant_rejects_unadmitted_candidate(tmp_path: Path) -> Non
 def test_articulated_configs_preserve_articulation() -> None:
     """No SimReady pass may re-derive geometry or rebuild the articulation."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     for name in ("material", "texture", "physics"):
         text = (
             assets / f"adp009d_content_agents_articulated_{name}.vast.yaml"
@@ -4084,7 +3538,7 @@ def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
 ) -> None:
     """Scene-specific config inputs are normalized at the reusable seam."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets
         / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
@@ -4107,7 +3561,7 @@ def test_articulated_bundle_normalizes_scene_neutral_runtime_input_names(
 def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) -> None:
     """A movable scene replacement must not reach PhysX as a triangle mesh."""
 
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
         for agent in ("material", "texture", "physics")
@@ -4133,7 +3587,7 @@ def test_scene_configuration_uses_dynamic_safe_mesh_collision(tmp_path: Path) ->
 
 def test_scene_configuration_forwards_object_identity_and_image_conditioning(tmp_path: Path) -> None:
     """The image generator consumes texture.reference_image_uris, not input references."""
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets / f"adp009a_content_agents_{agent}.vast.yaml"
         for agent in ("material", "texture", "physics")
@@ -4162,7 +3616,7 @@ def test_scene_configuration_forwards_object_identity_and_image_conditioning(tmp
 def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
     tmp_path: Path,
 ) -> None:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     sources = {
         f"{agent}_agent.yaml": assets
         / f"adp009d_content_agents_articulated_{agent}.vast.yaml"
@@ -4181,7 +3635,7 @@ def test_articulated_configs_preserve_agent_policy_while_normalizing_inputs(
 
 
 def _articulated_runtime_configs(tmp_path: Path) -> dict:
-    assets = ROOT / "docs" / "arm_decision_proof_v1" / "assets"
+    assets = ROOT / "config" / "content_agents"
     destination = tmp_path / "configs"
     destination.mkdir()
     sources = {
@@ -4560,18 +4014,6 @@ def test_local_preflight_image_admission_is_recipe_bound(monkeypatch) -> None:
         bundle_preflight._inspect_image(docker="docker", image="stray")
 
 
-def test_local_preflight_image_recipe_matches_checked_in_dockerfile() -> None:
-    dockerfile = (
-        ROOT
-        / "docs/arm_decision_proof_v1/assets"
-        / "adp009a_usd_content_agents_linux_arm64.Dockerfile"
-    )
-    observed = "sha256:" + hashlib.sha256(dockerfile.read_bytes()).hexdigest()
-    for recipe in bundle_preflight.LOCAL_IMAGE_ADMITTED_IDS.values():
-        assert recipe["dockerfile_sha256"] == observed
-        assert recipe["content_agents_source_tree"] == content_agents.SOURCE_TREE
-
-
 def test_usd_bbox_probe_script_is_derived_from_the_bundle_input() -> None:
     script = bundle_preflight.usd_bbox_script(
         "adp009d_840796_articulated_refrigerator_candidate.usda"
@@ -4749,7 +4191,7 @@ def test_articulated_agent_configs_describe_the_articulated_object() -> None:
     answering the question it was given.
     """
 
-    assets = ROOT / "docs/arm_decision_proof_v1/assets"
+    assets = ROOT / "config" / "content_agents"
     foreign = ("beverage", "canned", "green can", "soda")
     for name in ("material", "texture", "physics"):
         text = (
@@ -4766,7 +4208,7 @@ def test_articulated_texture_config_targets_a_real_render_material() -> None:
 
     text = (
         ROOT
-        / "docs/arm_decision_proof_v1/assets"
+        / "config/content_agents"
         / "adp009d_content_agents_articulated_texture.vast.yaml"
     ).read_text(encoding="utf-8")
 

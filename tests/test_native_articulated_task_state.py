@@ -15,14 +15,14 @@ ROOT = Path(__file__).parents[1]
 TASK = json.loads(
     (
         ROOT
-        / "docs/arm_decision_proof_v1/manifests"
+        / "tests/fixtures/arm_decision_proof_v1/manifests"
         / "second_scene_840796_scene_task_freeze.v1.json"
     ).read_text(encoding="utf-8")
 )["task_spec"]
 THIRD_SCENE_GRAPH = json.loads(
     (
         ROOT
-        / "docs/arm_decision_proof_v1/manifests"
+        / "tests/fixtures/arm_decision_proof_v1/manifests"
         / "third_scene_840920_task_a_freeze.v1.json"
     ).read_text(encoding="utf-8")
 )["articulation_graph"]

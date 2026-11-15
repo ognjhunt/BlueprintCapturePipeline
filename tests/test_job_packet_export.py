@@ -22,7 +22,7 @@ import pytest
 from blueprint_pipeline import job_packet_export as packet
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.job_packet_export import (
-    EARLY_TRIAL_LABEL, TERMS_LINE, JobInputs, JobPacketRefused, OwnedCaptureApproval, build_job_packet,
+    TERMS_LINE, JobInputs, JobPacketRefused, OwnedCaptureApproval, build_job_packet,
     done_sentence,
 )
 
@@ -223,7 +223,7 @@ def _identity_files(capture: Path, clip: bytes) -> None:
     _write(capture / "pipeline_handoff.json", {"bucket": "PLANTBUCKET", "raw_prefix_uri": f"gs://{STORAGE}/raw"})
 
 
-def _job(tmp_path: Path, clip: bytes, *, trial: str = "zero", simulation: bool = True,
+def _job(tmp_path: Path, clip: bytes, *, simulation: bool = True,
          statement: str | None = CURRENT) -> JobInputs:
     root = tmp_path / "job"
     capture = root / CAPTURE_REL
@@ -287,15 +287,6 @@ def _job(tmp_path: Path, clip: bytes, *, trial: str = "zero", simulation: bool =
                 bundle.writestr(member, data)
         _write(configured / "replacement_asset.usdz", _usd_bytes("Replacement", usdz=True))
         inputs.update(team_scene_dir=team, configured_scene_dir=configured)
-    if trial != "none":
-        succeeded = 0 if trial == "zero" else 3
-        inputs["screening_publication"] = _write(tmp_path / "publication.json", {
-            "site_id": SITE, "status": "completed", "source": {"capture_id": CAPTURE, "storage": f"{HOST}/{STORAGE}"},
-            "candidates": [{"candidate_id": "pi05_droid", "display_name": "π0.5 DROID", "status": "completed",
-                            "episodes_scored": 10, "episodes_succeeded": succeeded}]})
-        _write(tmp_path / "clips" / "manifest.json", {"site_id": SITE, "capture_id": CAPTURE, "root": f"{HOST}/{STORAGE}"})
-        _write(tmp_path / "clips" / "cell_runs" / "01" / f"{CAPTURE}-camera.mp4", b"clip")
-        inputs["review_videos_dir"] = tmp_path / "clips"
     return JobInputs(**inputs)
 
 
@@ -305,12 +296,8 @@ def job(tmp_path, clip_with_sound):
 
 
 @pytest.fixture(autouse=True)
-def _catalog_copy(tmp_path_factory, monkeypatch):
-    """The screening catalog loader refuses a group-writable file; read a private copy, whatever the checkout's umask."""
-    copy_path = tmp_path_factory.mktemp("catalog") / "beta_policy_candidates.v1.json"
-    shutil.copyfile(packet.POLICY_CATALOG_PATH, copy_path)
-    copy_path.chmod(0o644)
-    monkeypatch.setattr(packet, "POLICY_CATALOG_PATH", copy_path)
+def _stop_pipe_readers():
+    """Stop every pipe-reader helper a test started (``_unblock_readers``)."""
     yield
     for stop in _UNBLOCK:
         stop.set()
@@ -434,13 +421,12 @@ def test_the_packet_holds_the_whole_job(tmp_path, job, clip_with_sound) -> None:
     assert "- The site's own success definition: Tray on the shelf" in sheet and "- where: Back room" in sheet
     assert "| UR5e | Universal Robots | fixed arm | fits on published figures | payload (unknown) |" in sheet
     assert "| UR10e | Universal Robots | fixed arm | does not fit | reach (failed) |" in sheet
-    assert EARLY_TRIAL_LABEL in sheet and "| π0.5 DROID | completed | 10 | 0 of 10 |" in sheet
+    assert "Early trial" not in sheet and "early trial" not in sheet
     assert "within 20 cm of the point (3.142, 2.718, 0.900) m, on the back shelf" in sheet
     assert "Carry distance: 0.43–0.76 m in a straight line" in sheet and "0.4–1.8 kg" in sheet
     assert "Reply to the person who sent you this packet" in sheet and "interested; not a fit; would need something" in sheet
     assert ("Status: In this packet: the site's description of the job, the video, without sound, the first look on "
-            "paper, the 3D reconstruction of the site, the simulation of the site, the success rule and the early "
-            "trial's result.") in sheet
+            "paper, the 3D reconstruction of the site, the simulation of the site and the success rule.") in sheet
     assert "everything here comes from one video and a simulation of it." in sheet
     paths = {row["path"] for row in manifest["files"]}
     assert paths == {"JOB_SHEET.md", "README.md", "files/video/video.mp4", "files/object/replacement_asset.usdz",
@@ -451,7 +437,7 @@ def test_the_packet_holds_the_whole_job(tmp_path, job, clip_with_sound) -> None:
                      "files/simulation/team-scene/native-task-packet/collision.usdc",
                      "files/simulation/team-scene/native-task-packet/scene_appearance.usdc",
                      "files/simulation/team-scene/native-task-packet/assets/object.usdz", "files/simulation/scene.usda",
-                     "files/task/success_rule.json", "files/early-trial/clips/clip-01.mp4"}
+                     "files/task/success_rule.json"}
     on_disk = {path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()}
     assert on_disk == paths | {"manifest.json"}
     for row in manifest["files"]:
@@ -510,12 +496,12 @@ def test_nothing_that_says_who_or_where_the_site_is_reaches_the_packet(tmp_path,
     assert SENTENCE in blob  # the site's own sentence is the site's text, included as written
 
 
-def test_a_packet_is_never_held_for_the_simulation_the_success_rule_or_the_trial(tmp_path, job) -> None:
-    manifest = build_job_packet(job(trial="none", simulation=False), output_root=_out(tmp_path))
+def test_a_packet_is_never_held_for_the_simulation_or_the_success_rule(tmp_path, job) -> None:
+    manifest = build_job_packet(job(simulation=False), output_root=_out(tmp_path))
     sheet, readme = _sheet(manifest), (Path(manifest["packet_dir"]) / "README.md").read_text()
     assert ("The simulation of the site with the job's object in it is not finished; it will follow with the success "
-            "rule. No early trial of openly available robot software has been added.") in sheet
-    assert "No success rule is in this packet yet" in sheet and "No early trial of openly available robot software is in this packet." in sheet
+            "rule.") in sheet
+    assert "No success rule is in this packet yet" in sheet and "early trial" not in sheet
     assert "everything here comes from one video." in sheet and "a simulation of it" not in sheet
     assert "team-scene" not in readme and "files/reconstruction/" in readme
 
@@ -535,10 +521,6 @@ def test_a_missing_video_is_said_plainly(tmp_path, job) -> None:
     assert "The video is not in this packet." in sheet and "Not in it: the video." in sheet
 
 
-def test_a_nonzero_trial_and_a_zero_count_are_shown(tmp_path, job) -> None:
-    assert "3 of 10" in _sheet(build_job_packet(job(trial="three"), output_root=_out(tmp_path)))
-
-
 def test_kind_of_job_falls_back_to_fixed_words() -> None:
     assert packet.kind_of_job(None, {}) == "a pick-up-and-put-down job"
     assert packet.kind_of_job(None, {"task_family": SENTENCE}) == "a pick-up-and-put-down job"
@@ -549,9 +531,8 @@ def test_kind_of_job_falls_back_to_fixed_words() -> None:
 def test_check_names_match_the_fit_table_writer() -> None:
     source = (Path(packet.__file__).parent / "website_robot_fit.py").read_text()
     assert set(re.findall(r'_check\("([a-z_]+)"', source)) == set(packet.CHECK_WORDS)
-    from blueprint_pipeline.beta_policy_screening_result import CANDIDATE_STATUSES
     from blueprint_pipeline.website_robot_fit_projection import FIRST_LOOK_VERDICTS
-    assert set(FIRST_LOOK_VERDICTS) == set(packet.VERDICT_WORDS) and CANDIDATE_STATUSES == set(packet.STATUS_WORDS)
+    assert set(FIRST_LOOK_VERDICTS) == set(packet.VERDICT_WORDS)
 
 
 # --- the first look: followed through the handoff's pointer and checked ------------------------------------
@@ -612,12 +593,10 @@ def test_fit_rows_take_names_from_the_catalog_and_leave_out_the_rest(tmp_path, j
 
 def test_repeats_are_left_out_and_large_counts_are_capped(tmp_path, job) -> None:
     inputs = job()
-    _edit(inputs.screening_publication, lambda value: value.update(
-        candidates=value["candidates"] * 3 + [{"candidate_id": "junk"}] * 7))
     _seal_first_look(inputs.capture_dir, rows=_fit_rows() * 4 + [{"model_id": "x", "verdict": "unknown"}] * 42)
     sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
-    assert sheet.count("| π0.5 DROID |") == 1 and sheet.count("| UR5e |") == 1 and sheet.count("| UR10e |") == 1
-    assert "Some rows were left out (9)" in sheet and "Some rows were left out (more than 20)" in sheet
+    assert sheet.count("| UR5e |") == 1 and sheet.count("| UR10e |") == 1
+    assert "Some rows were left out (more than 20)" in sheet
     assert "48" not in _without_packet_number(sheet)
 
 
@@ -1119,24 +1098,14 @@ def _other_video(inputs: JobInputs) -> JobInputs:
     return JobInputs(**{**inputs.__dict__, "video": other})
 
 
-def _clips_of(**fields):
-    def change(inputs):
-        _write(inputs.review_videos_dir / "manifest.json", {"site_id": SITE, "capture_id": CAPTURE, **fields})
-    return change
-
-
 NOT_THIS_JOB = {
     "video_outside": _other_video,
-    "clips_other_site": _clips_of(site_id="site-OTHER"),
-    "clips_other_capture": _clips_of(capture_id="walkthrough-OTHER"),
-    "clips_without_manifest": lambda inputs: (inputs.review_videos_dir / "manifest.json").unlink(),
     "team_other_site": lambda inputs: _edit(inputs.team_scene_dir / "native-task-packet" / "native_task_arena_scene_plan.v1.json",
                                             lambda value: value.update(scene_id="site-OTHER")),
     "contract_other_site": lambda inputs: _edit(inputs.team_scene_dir / "team_scene_inputs.v1.json",
                                                 lambda value: value["task_success_contract"]["scope"].update(site_id="site-OTHER")),
     "configured_other_revision": lambda inputs: _edit(inputs.configured_scene_dir / "configured_scene_revision.v1.json",
                                                       lambda value: value.update(revision_digest="sha256:" + "e" * 64)),
-    "publication_other_site": lambda inputs: _edit(inputs.screening_publication, lambda value: value.update(site_id="site-OTHER")),
 }
 
 
@@ -1152,7 +1121,7 @@ def test_packet_id_is_stable_for_the_same_inputs(tmp_path, job) -> None:
     first = build_job_packet(inputs, output_root=_out(tmp_path, "a"), now=NOW)
     second = build_job_packet(inputs, output_root=_out(tmp_path, "b"), now=NOW)
     assert first["packet_id"] == second["packet_id"] and first["packet_number"] != second["packet_number"]
-    third = build_job_packet(job(root=tmp_path / "t", trial="three"), output_root=_out(tmp_path, "c"), now=NOW)
+    third = build_job_packet(job(root=tmp_path / "t", simulation=False), output_root=_out(tmp_path, "c"), now=NOW)
     assert third["packet_id"] != first["packet_id"]
 
 
@@ -1197,14 +1166,14 @@ def test_a_failure_while_writing_leaves_nothing_behind(tmp_path, job, monkeypatc
 
     def failing_copy(source, target):
         calls.append(target)
-        if len(calls) == 3:
+        if len(calls) == 2:
             raise OSError("disk full")
         Path(target).write_bytes(Path(source).read_bytes())
     monkeypatch.setattr(packet.shutil, "copyfile", failing_copy)
     out = _out(tmp_path)
     with pytest.raises(OSError):
         build_job_packet(job(), output_root=out)
-    assert len(calls) == 3 and list(out.iterdir()) == []
+    assert len(calls) == 2 and list(out.iterdir()) == []
 
 
 def test_the_command_writes_and_refuses(tmp_path, job, capsys) -> None:
@@ -1244,22 +1213,6 @@ def test_duplicate_keys_in_the_task_context_are_refused(tmp_path, job) -> None:
     path.write_text(path.read_text()[:-1] + ', "capture_id": "walkthrough-other"}')
     assert _refused(inputs, tmp_path) == "job_packet_input_unreadable"
 
-
-def test_a_group_writable_catalog_is_a_clean_refusal(tmp_path, job) -> None:
-    packet.POLICY_CATALOG_PATH.chmod(0o664)
-    assert _refused(job(), tmp_path) == "job_packet_policy_catalog_unreadable"
-
-
-@pytest.mark.parametrize(("scored", "succeeded"), [(0, 0), (1001, 3), (5, 6), (True, 0), (10, -1)])
-def test_trial_counts_out_of_bounds_are_left_out(tmp_path, job, scored, succeeded) -> None:
-    inputs = job()
-    _edit(inputs.screening_publication, lambda value: value["candidates"][0].update(
-        episodes_scored=scored, episodes_succeeded=succeeded))
-    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
-    assert "No row of the trial could be shown." in sheet and "Some rows were left out (1)" in sheet
-
-
-# --- the success rule -----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize(("answer", "words"), [
     (None, "no answer from the site is recorded"),
@@ -1321,59 +1274,7 @@ def test_a_reversed_range_is_invalid() -> None:
         contract, object_name="tray", place_label=None)
 
 
-# --- scripted runs and every value the pipeline's builders write ------------------------------------------
-
-SCRIPTED_ID = "blueprint_scripted_kinova_gen3"
-SCRIPTED_KIND = "scripted_simulator_state_baseline"
-LEARNED_ROW = {"candidate_id": "pi05_droid", "status": "completed", "episodes_scored": 10, "episodes_succeeded": 0}
-
-
-def _scripted_row(**fields) -> dict:
-    return {"candidate_id": SCRIPTED_ID, "status": "completed", "episodes_scored": 3, "episodes_succeeded": 3,
-            "execution_evidence_kind": SCRIPTED_KIND, "candidate_policy_queried": False, **fields}
-
-
-def _sheet_with_rows(tmp_path: Path, job, rows: list[dict]) -> str:
-    inputs = job()
-    _edit(inputs.screening_publication, lambda value: value.update(candidates=rows))
-    return _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
-
-
-def _sections(sheet: str) -> tuple[str, str]:
-    trial = sheet.split("## Early trial", 1)[1].split("## ", 1)[0]
-    check = sheet.split(f"## {packet.SCRIPTED_CHECK_TITLE}", 1)[1].split("## ", 1)[0] if packet.SCRIPTED_CHECK_TITLE in sheet else ""
-    return trial, check
-
-
-def test_a_scripted_run_is_a_check_of_the_simulation_never_robot_software(tmp_path, job) -> None:
-    sheet = _sheet_with_rows(tmp_path, job, [LEARNED_ROW, _scripted_row()])
-    trial, check = _sections(sheet)
-    assert "| π0.5 DROID | completed | 10 | 0 of 10 |" in trial
-    assert "Blueprint scripted" not in trial and "left out" not in trial
-    assert packet.SCRIPTED_CHECK_SENTENCE in check and "| Blueprint scripted pick/place — kinova_gen3 | completed | 3 | 3 of 3 |" in check
-    body = _without_packet_number(sheet)
-    assert "13" not in body and "3 of 13" not in body  # the two are never added together
-
-
-def test_a_catalog_scripted_row_without_its_evidence_kind_is_still_not_robot_software(tmp_path, job) -> None:
-    row = _scripted_row()
-    del row["execution_evidence_kind"], row["candidate_policy_queried"]
-    trial, check = _sections(_sheet_with_rows(tmp_path, job, [row]))
-    assert "Blueprint scripted" not in trial and "No row of the trial could be shown." in trial
-    assert "kinova_gen3 | completed | 3 | 3 of 3 |" in check
-
-
-@pytest.mark.parametrize("row", [
-    {**LEARNED_ROW, "execution_evidence_kind": SCRIPTED_KIND},
-    {**LEARNED_ROW, "candidate_policy_queried": False},
-    _scripted_row(execution_evidence_kind="learned_policy"),
-    _scripted_row(candidate_policy_queried=True),
-])
-def test_a_row_whose_kind_disagrees_with_the_catalog_is_left_out(tmp_path, job, row) -> None:
-    trial, check = _sections(_sheet_with_rows(tmp_path, job, [row]))
-    assert "No row of the trial could be shown." in trial and "Some rows were left out (1)" in trial
-    assert "| " not in check
-
+# --- every value the pipeline's builders write -----------------------------------------------------------
 
 def test_every_fit_result_the_writer_uses_is_known() -> None:
     source = (Path(packet.__file__).parent / "website_robot_fit.py").read_text()
@@ -1404,30 +1305,6 @@ def test_the_real_fit_table_loses_no_row(tmp_path, cycle) -> None:
                 if check["check"] == "cycle_time"} == {"not_requested"}
         assert not any("no target given" in line or "cycle time" in line for line in shown)
         assert "Cycle time was not checked: the site gave no target." in lines
-
-
-def _real_publication():
-    from blueprint_pipeline.beta_policy_screening_result import screening_publication
-    from tests.test_beta_scripted_publication import publication_inputs
-    inputs = publication_inputs()
-    scripted = inputs["plan"]["candidates"][0]
-    scripted_summary = inputs["state"]["candidates"].pop(scripted["candidate_id"])
-    learned = {**scripted, "candidate_id": "pi05_droid", "display_name": "x"}
-    del learned["execution_evidence_kind"]
-    learned_summary = copy.deepcopy(scripted_summary)
-    for key in ("execution_evidence_kind", "action_source", "scripted_rollout_count", "learned_policy_rollout_count",
-                "scripted_controller_invoked", "candidate_policy_queried"):
-        del learned_summary["summary"][key]
-    scripted = {**scripted, "candidate_id": SCRIPTED_ID}
-    inputs["plan"]["candidates"] = [learned, scripted]
-    inputs["state"]["candidates"] = {"pi05_droid": learned_summary, SCRIPTED_ID: scripted_summary}
-    return screening_publication(**inputs)
-
-
-def test_the_real_publication_loses_no_row_and_keeps_scripted_apart() -> None:
-    text = "\n".join(packet.trial_lines(_real_publication()))
-    assert "left out" not in text and "π0.5 DROID" in text.split(packet.SCRIPTED_CHECK_TITLE)[0]
-    assert "kinova_gen3" in text.split(packet.SCRIPTED_CHECK_TITLE)[1]
 
 
 # --- the video carries nothing the phone recorded ----------------------------------------------------------
@@ -1537,8 +1414,6 @@ PLANTED_FILES = {
                     "files/object/replacement_asset.usdz", "a storage link inside a zip member"),
     "bundle_member": (lambda inputs: _bundle(inputs, _usd_bytes(f"owned_by_{USER}")),
                       "files/simulation/configured-scene/appearance.usdc", "an owner or organisation id"),
-    "clip_bytes": (lambda inputs: _write(inputs.review_videos_dir / "cell_runs" / "01" / f"{CAPTURE}-camera.mp4",
-                                         b"\x00moov " + CAPTURE.encode()), "files/early-trial/clips/clip-01.mp4", "a job id"),
     "reconstruction_link": (lambda inputs: _write(inputs.capture_dir / SPLAT, f"ply\ncomment {LINK}\nend_header\n".encode()),
                             "files/reconstruction/atlas_depth_splat_levelled.ply", "a web link"),  # its header
     "pull_root_path": (lambda inputs: _write(inputs.capture_dir / COLLISION, str(inputs.pull_root.absolute()).encode()),
@@ -1606,9 +1481,8 @@ def test_the_packets_simulation_files_are_written_not_copied(tmp_path, job) -> N
     assert b"gs://bucket-x" not in shipped and shipped != data
 
 
-def test_a_clip_sidecar_and_a_namespace_link_are_fine(tmp_path, job) -> None:
+def test_a_namespace_link_is_fine(tmp_path, job) -> None:
     inputs = job()
-    _write(inputs.review_videos_dir / "cell_runs" / "01" / f"{CAPTURE}-camera.json", {"source": f"gs://{STORAGE}"})
     _write(inputs.team_scene_dir / "native-task-packet" / "look.usda", '#usda 1.0\n(doc = "http://www.w3.org/2000/svg")\n')
     folder = Path(build_job_packet(inputs, output_root=_out(tmp_path))["packet_dir"])
     assert STORAGE.encode() not in _all_bytes(folder)

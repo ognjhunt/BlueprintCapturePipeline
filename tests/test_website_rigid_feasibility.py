@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.website_rigid_feasibility import enabled_robot_profiles, rigid_task_verdict
+from blueprint_pipeline.website_rigid_feasibility import DEFAULT_ROBOT_PROFILES, rigid_task_verdict
 from tests.test_team_scene_packet import _box, _stage
 
 FLOOR = {"description": "floor", "aabb_min_xyz": [-2.0, -2.0, 0.0], "aabb_max_xyz": [4.0, 4.0, 0.0]}
@@ -141,8 +141,8 @@ def test_an_object_out_of_reach_from_every_clear_stance_abstains_by_the_hard_rea
     assert verdict["blockers"][0].endswith("m_vs_0.990m") and "flags" not in verdict
 
 
-def test_the_default_embodiments_are_the_enabled_screening_candidates():
-    assert DROID in enabled_robot_profiles()
+def test_the_default_embodiment_is_the_droid_arm():
+    assert DEFAULT_ROBOT_PROFILES == (DROID,)
 
 
 def test_a_room_with_no_station_abstains_by_name_instead_of_crashing(tmp_path, monkeypatch):
@@ -180,36 +180,21 @@ def test_a_long_object_with_its_near_end_in_reach_and_its_centre_beyond_is_flagg
                                          and code.endswith("m_vs_0.990m") for code in verdict["advisories"])
     [entry] = verdict["embodiments"]
     assert entry["assumed_contact_beyond"] == reach["task_contact_beyond"] and "reach_held" not in entry
-    # The robot-fit reports read it as the verdict does: flagged, so unknown, never a pass or a refusal.
-    from blueprint_pipeline import website_robot_fit_precheck as precheck
+    # The robot-fit report reads it as the verdict does: flagged, so unknown, never a pass or a refusal.
     from blueprint_pipeline.website_robot_fit import _verdict_reach
 
     assert _verdict_reach(verdict, "franka_panda")["result"] == "unknown"
-    row = _precheck_franka(precheck, verdict)
-    assert (row["verdict"], row["reasons"]) == ("unknown", ["assumed_contact_beyond_reach_bound"])
 
 
-def _precheck_franka(precheck, verdict):
-    original = precheck._reach_bound
-    try:
-        precheck._reach_bound = lambda *_, **__: {"result": "not_ruled_out"}
-        return precheck._franka({}, verdict)
-    finally:
-        precheck._reach_bound = original
-
-
-def test_the_robot_fit_reports_fail_only_where_the_verdict_holds_on_its_reach_proof(tmp_path):
-    from blueprint_pipeline import website_robot_fit_precheck as precheck
+def test_the_robot_fit_report_fails_only_where_the_verdict_holds_on_its_reach_proof(tmp_path):
     from blueprint_pipeline.website_robot_fit import _verdict_reach
 
     held = rigid_task_verdict(preparation=_far_preparation(), collision_path=_wide_table(tmp_path / "far"),
                               robot_profiles=[DROID])
     assert held["status"] == "abstained" and held["embodiments"][0]["reach_held"] is True
     assert _verdict_reach(held, "franka_panda")["result"] == "fail"
-    assert _precheck_franka(precheck, held)["verdict"] == "no_fit"
     # In reach with the centre too: the scripted carry clears or is only flagged, and both reports pass.
     clear = rigid_task_verdict(preparation=_preparation({"relation": "on", "position_world_m": [0.5, 0.3, 0.0]}),
                                collision_path=_room(tmp_path), robot_profiles=[DROID])
     assert clear["status"] in {"clear", "flagged"} and "assumed_contact_beyond" not in clear["embodiments"][0]
     assert _verdict_reach(clear, "franka_panda")["result"] == "pass"
-    assert _precheck_franka(precheck, clear)["verdict"] == "fit"

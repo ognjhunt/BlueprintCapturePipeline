@@ -411,7 +411,9 @@ def test_the_no_spend_unit_has_a_timer_backstop_and_deploy_creates_its_marker_di
     deploy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(deploy)
     assert f"{NO_SPEND}.timer" in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    assert f"{NO_SPEND}.timer" in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    # Robot-team lane: a release now stops and disables both triggers (the remote half stays armed to drain).
+    assert {f"{NO_SPEND}.timer", f"{NO_SPEND}.path"} <= set(deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS)
+    assert f"{NO_SPEND}.timer" not in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
     directories = set(deploy.DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES)
     for kind in ("handoffs", "shadow", "fallback", "recovery"):
         assert {f"{JOBS}/{kind}", f"{JOBS}/{kind}/episode_compilation"} <= directories, kind

@@ -71,12 +71,11 @@ from ambient model files; refinement requires an explicit
 ## Paid resources
 
 The base production profile deliberately leaves
-`BLUEPRINT_ALLOW_GPU_PROVISIONING=false`. Paid CPU builders, model volumes, and GPU
+`BLUEPRINT_ALLOW_GPU_PROVISIONING=false`. Paid CPU builders and GPU
 canaries must be admitted through exactly these commands:
 
 ```bash
 python -m blueprint_pipeline.paid_resource_allocator cpu-build ARGS
-python -m blueprint_pipeline.paid_resource_allocator model-volume ARGS
 python -m blueprint_pipeline.paid_resource_allocator gpu-canary ARGS
 ```
 

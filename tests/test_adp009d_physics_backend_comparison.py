@@ -26,7 +26,6 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     PhysicsBackendContractError,
     build_backend_control_run_receipt,
     build_backend_profile,
-    build_comparison_design_contract,
     build_gravity_real_actuation_contract,
     build_comparison_receipt,
     build_newton_canary_admission,
@@ -37,7 +36,6 @@ from blueprint_pipeline.adp009d_physics_backend_comparison import (
     validate_backend_probe,
     validate_backend_profile,
     validate_comparison_receipt,
-    validate_comparison_design_contract,
     validate_newton_canary_admission,
     validate_gravity_real_actuation,
     validate_newton_dynamics_representable,
@@ -51,7 +49,6 @@ from blueprint_pipeline.adp009d_newton_gripper_drive import (
     build_newton_gripper_drive_candidate,
 )
 from blueprint_pipeline.adp009d_provider_zero import build_provider_zero_receipt
-from blueprint_pipeline.adp009d_control_episode import materialize_control_plan
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.spend_admission_lock import build_spend_admission_lock
 
@@ -675,16 +672,6 @@ def test_newton_robot_inertial_overlay_is_exact_and_digest_bound() -> None:
     )
 
 
-def test_committed_design_is_canonical_and_provider_free() -> None:
-    committed = json.loads(COMMITTED_DESIGN.read_text(encoding="utf-8"))
-
-    assert committed == build_comparison_design_contract()
-    assert validate_comparison_design_contract(committed) == []
-    assert committed["default_physics_backend"] == "physx"
-    assert committed["provider_mutation_performed"] is False
-    assert committed["status"] == "validated_without_provider_launch"
-
-
 def test_newton_actuator_limit_mapping_is_exact_and_non_retuning() -> None:
     mapping = build_newton_actuator_limit_mapping_contract()
 
@@ -696,26 +683,6 @@ def test_newton_actuator_limit_mapping_is_exact_and_non_retuning() -> None:
     assert mapping["mapping_digest"] == canonical_digest(
         mapping, digest_field="mapping_digest"
     )
-
-
-def test_backend_plans_share_semantics_but_not_contact_configuration() -> None:
-    instance_path = (
-        ROOT
-        / "docs/arm_decision_proof_v1/manifests/"
-        "adp009d_canonical_scenario_instance.v1.json"
-    )
-    instance = json.loads(instance_path.read_text(encoding="utf-8"))
-
-    physx = materialize_control_plan(instance, physics_backend="physx")
-    newton = materialize_control_plan(instance, physics_backend="newton")
-
-    assert physx["semantic_plan_digest"] == newton["semantic_plan_digest"]
-    assert physx["plan_digest"] != newton["plan_digest"]
-    assert physx["contact_envelope"] is not None
-    assert newton["contact_envelope"] is None
-    assert newton["backend_contact_configuration"]["contact_model"][
-        "physx_sdf_semantics_inherited"
-    ] is False
 
 
 def test_profile_and_digest_drift_fail_closed() -> None:

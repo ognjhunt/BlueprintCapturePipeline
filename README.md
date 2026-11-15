@@ -117,8 +117,6 @@ stack:
 - `site_task_testbed_compiler.py` for maintained testbed artifacts;
 - `evaluation_run_contract.py` and `evaluation_run_execution.py` for stable
   scene/robot/task/policy/runtime/proof seams;
-- `new_site_task_evaluation_matrix.py` and existing runtime adapters for
-  condition execution;
 - `rank_fidelity_statistics.py` for power and uncertainty discipline;
 - `physical_outcome_learning.py` for immutable physical outcome joins;
 - raw-capture, rights, privacy, provenance, paid-resource, watchdog, teardown,
@@ -150,12 +148,11 @@ Run only the smallest deterministic tests covering a change. The repository fast
 lane and full suite are integration/promotion tools, not default build-loop
 commands. See [`AGENTS.md`](AGENTS.md).
 
-Paid CPU, model-volume, GPU, and provider reconstruction paths remain behind the
+Paid CPU, GPU, and provider reconstruction paths remain behind the
 canonical allocator:
 
 ```bash
 python -m blueprint_pipeline.paid_resource_allocator cpu-build <arguments>
-python -m blueprint_pipeline.paid_resource_allocator model-volume <arguments>
 python -m blueprint_pipeline.paid_resource_allocator gpu-canary <arguments>
 python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <arguments>
 ```

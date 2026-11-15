@@ -8,6 +8,7 @@ It never claims to have excised an observed prim from the background.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -21,10 +22,88 @@ PREFIX = "scene.website_native_inputs"
 APPEARANCE_ADAPTER_ID = "website_prepared_appearance"
 
 
+def _triangle_area(a: tuple[float, float, float], b: tuple[float, float, float], c: tuple[float, float, float]) -> float:
+    ab = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    ac = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+    cross = (
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    )
+    return 0.5 * math.sqrt(sum(value * value for value in cross))
+
+
+def _clip_polygon_to_axis_plane(
+    polygon: list[tuple[float, float, float]],
+    *,
+    axis: int,
+    boundary: float,
+    keep_greater: bool,
+) -> list[tuple[float, float, float]]:
+    """Clip a coplanar polygon against one axis-aligned half-space."""
+
+    if not polygon:
+        return []
+
+    def inside(point: tuple[float, float, float]) -> bool:
+        return point[axis] >= boundary if keep_greater else point[axis] <= boundary
+
+    output: list[tuple[float, float, float]] = []
+    previous = polygon[-1]
+    previous_inside = inside(previous)
+    for current in polygon:
+        current_inside = inside(current)
+        if current_inside != previous_inside:
+            denominator = current[axis] - previous[axis]
+            if abs(denominator) <= 1.0e-15:
+                raise ValueError("adp009d_task_collision_clip_intersection_invalid")
+            fraction = (boundary - previous[axis]) / denominator
+            intersection = tuple(
+                previous[index] + fraction * (current[index] - previous[index])
+                for index in range(3)
+            )
+            output.append(intersection)
+        if current_inside:
+            output.append(current)
+        previous = current
+        previous_inside = current_inside
+    return output
+
+
+def _clip_triangle_to_aabb(
+    triangle: tuple[tuple[float, float, float], ...],
+    *,
+    roi_min: tuple[float, float, float],
+    roi_max: tuple[float, float, float],
+) -> list[tuple[tuple[float, float, float], ...]]:
+    """Return the exact coplanar portion of a triangle inside an AABB."""
+
+    polygon = list(triangle)
+    for axis in range(3):
+        polygon = _clip_polygon_to_axis_plane(
+            polygon,
+            axis=axis,
+            boundary=roi_min[axis],
+            keep_greater=True,
+        )
+        polygon = _clip_polygon_to_axis_plane(
+            polygon,
+            axis=axis,
+            boundary=roi_max[axis],
+            keep_greater=False,
+        )
+    if len(polygon) < 3:
+        return []
+    triangles = [
+        (polygon[0], polygon[index], polygon[index + 1])
+        for index in range(1, len(polygon) - 1)
+    ]
+    return [value for value in triangles if _triangle_area(*value) > 1.0e-12]
+
+
 def exclude_box_interior(triangles, *, minimum, maximum):
     """Subtract an open box, splitting crossing faces without losing outside area."""
     import numpy as np
-    from .adp009d_native_microcheck_bundle import _clip_polygon_to_axis_plane, _clip_triangle_to_aabb
 
     triangles, low, high = (np.asarray(value, dtype=float) for value in (triangles, minimum, maximum))
     if (triangles.ndim != 3 or triangles.shape[1:] != (3, 3) or low.shape != (3,)

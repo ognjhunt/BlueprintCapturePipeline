@@ -15,12 +15,12 @@ from blueprint_pipeline.dual_task_scenario_suite import (
 
 
 def _manifests() -> list[dict]:
-    root = Path(__file__).parents[1] / "docs/arm_decision_proof_v1/manifests"
+    root = Path(__file__).parents[1]
     return [
         json.loads((root / name).read_text())
         for name in (
-            "third_scene_840920_task_a_scenario_suite.v1.json",
-            "third_scene_840920_task_b_scenario_suite.v1.json",
+            "config/trial/third_scene_840920_task_a_scenario_suite.v1.json",
+            "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_b_scenario_suite.v1.json",
         )
     ]
 

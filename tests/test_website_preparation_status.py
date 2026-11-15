@@ -528,9 +528,31 @@ def test_status_v8_carries_the_first_look_and_v7_keeps_the_shape_the_website_on_
         == status_reader.STATUS_V8
 
 
-def test_status_v6_carries_the_robot_fit_precheck_and_its_hold_and_v5_does_not(prepared_source):
-    from blueprint_pipeline.website_robot_fit_precheck import HOLD_PREFIX
-    from tests.test_website_robot_fit_precheck import write_precheck
+def _write_legacy_precheck(root: Path, value: dict, *, context: str) -> dict:
+    """A handoff with its preparation and precheck, as an earlier release's scene handoff left them."""
+    from blueprint_pipeline.common import write_json
+
+    work = root / "pipeline" / "website_scene_preparation"
+    preparation = {"schema_version": "website_scene_preparation.v1", "binding": {"task_context_digest": context}}
+    preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    write_json(work / "preparation.json", preparation)
+    value = {**value, "preparation_digest": preparation["digest"], "precheck_digest": ""}
+    value["precheck_digest"] = canonical_digest(value, digest_field="precheck_digest")
+    path = work / "native" / "robot_fit_precheck.json"
+    write_json(path, value)
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+               "blockers": [value["hold_reason"]] if value["hold_reason"] else [],
+               "scene_id": root.parent.parent.name, "capture_id": root.name,
+               "preparation_path": str(work / "preparation.json"), "preparation_digest": preparation["digest"],
+               "robot_fit_precheck": {"path": str(path), "digest": value["precheck_digest"],
+                                      "status": value["status"], "hold_reason": value["hold_reason"]}}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(work / "handoff.json", handoff)
+    return handoff
+
+
+def test_status_v6_carries_a_retained_robot_fit_precheck_and_its_hold_and_v5_does_not(prepared_source):
+    from blueprint_pipeline.website_task_context_contracts import ROBOT_FIT_HOLD_PREFIX as HOLD_PREFIX
 
     root, owner, context, selected, ledger, _ = prepared_source
     value = {"schema_version": "website_robot_fit_precheck.v1", "status": "no_fit",
@@ -541,7 +563,7 @@ def test_status_v6_carries_the_robot_fit_precheck_and_its_hold_and_v5_does_not(p
              "candidates": [{"candidate_id": "pi05_droid", "embodiment": "droid_franka_panda_robotiq_2f85_v1",
                              "verdict": "no_fit", "causes": ["reach"], "blockers": ["reach"]}],
              "physical_world_truth_claimed": False}
-    write_precheck(root, value, context=context["context_digest"])
+    _write_legacy_precheck(root, value, context=context["context_digest"])
     v6 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
                                               schema_version=status_reader.STATUS_V6)
     assert v6["robot_fit_precheck"]["status"] == "no_fit"
@@ -685,7 +707,6 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
     # The capture's Atlas job is still running, so scene preparation waits on it.
     write_json(root / "pipeline/atlas/preview_job.json", {"state": "processing", "stage": "pose"})
     def held(**kwargs):
-        assert kwargs["pipeline_lane"] == "qualification" and kwargs["run_evaluation_prep"] is False
         assert kwargs["resume_completed_stages"] is True
         runner_calls.append(kwargs)
         result = prepare_website_scene_handoff(descriptor={"scene_id": owner["scene_id"], "capture_id": owner["capture_id"],
@@ -718,7 +739,7 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
                  "simulation": ["owned synthetic member fixture", "fake source download/staging", "fake owner/context HTTP", "local wakeup sink"],
                  "provider_calls": 0, "new_unique_case_credit": 0, "payload": payload,
                  "worker_flags": {"run_e2e_enabled": False, "stage_control_plane": True},
-                 "runner_lane": runner_calls[0]["pipeline_lane"], "website_manifest_source": "browser_self_capture",
+                 "website_manifest_source": "browser_self_capture",
                  "selectors": selected, "status": response.json(), "pending_delivery": pending,
                  "final_delivery": json.loads((root / status_reader.DELIVERY_FILE).read_text()),
                  "ledger": listener._read_job_ledger(root), "native_or_assessment_completion": False}

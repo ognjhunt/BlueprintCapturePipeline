@@ -1,19 +1,13 @@
 from __future__ import annotations
 
 import copy
-import hmac
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
-from blueprint_pipeline import live_pipeline_intake_service as service
 from blueprint_pipeline.company_policy_container_admission import (
-    ADMISSION_ROOT_ENV,
-    ALLOWED_REGISTRIES_ENV,
     CompanyPolicyContainerAdmissionError,
     stage_company_policy_container_admission,
     validate_company_policy_container_admission_request,
@@ -278,47 +272,3 @@ def test_staging_requires_an_allowlisted_nonlocal_registry(tmp_path: Path) -> No
             value=request, root=tmp_path, allowed_registry_hosts=["localhost:5000"]
         )
     assert "company_policy_container_admission_registry_origin_invalid" in excinfo.value.blockers
-
-
-def test_http_intake_requires_signed_admission_and_never_queues(tmp_path: Path, monkeypatch) -> None:
-    root = tmp_path / "admissions"
-    monkeypatch.setenv(ADMISSION_ROOT_ENV, str(root))
-    monkeypatch.setenv(ALLOWED_REGISTRIES_ENV, "registry.acme.example")
-    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "intake-work"))
-    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, "test-intake-token")
-    monkeypatch.setenv(
-        service.INTAKE_CLIENT_SECRETS_ENV,
-        json.dumps({"blueprint-webapp": "test-intake-token"}),
-    )
-    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
-    client = TestClient(service.create_app())
-
-    request_body = json.dumps(_request(), separators=(",", ":")).encode("utf-8")
-    unauthorized = client.post(
-        "/api/live-pipeline/company-policy-containers", content=request_body
-    )
-    assert unauthorized.status_code == 401
-    timestamp = datetime.now(timezone.utc).isoformat()
-    client_id = "blueprint-webapp"
-    nonce = "company-policy-" + "3" * 48
-    signature = hmac.new(
-        b"test-intake-token",
-        f"{timestamp}.{client_id}.{nonce}.".encode("utf-8") + request_body,
-        "sha256",
-    ).hexdigest()
-    response = client.post(
-        "/api/live-pipeline/company-policy-containers",
-        content=request_body,
-        headers={
-            "content-type": "application/json",
-            "x-blueprint-pipeline-timestamp": timestamp,
-            "x-blueprint-pipeline-client-id": client_id,
-            "x-blueprint-pipeline-nonce": nonce,
-            "x-blueprint-pipeline-signature": f"sha256={signature}",
-        },
-    )
-    assert response.status_code == 201, response.text
-    payload = response.json()
-    assert payload["accepted"] is True
-    assert payload["launch_queued"] is False
-    assert not (tmp_path / "task_evaluation_launches").exists()

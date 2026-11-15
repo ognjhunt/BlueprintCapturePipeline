@@ -135,7 +135,7 @@ SAPIEN, PyElastica, Pinocchio/Coal, OpenCV observation, direct-tactile and
 world-model ports, their suite runners, the routed execution stage, the
 site-evidence bridge and compiler, and the Q-SENSOR pairing and observation
 qualification modules were deleted because no production path reached them
-(see git history and `docs/archive/runbooks/measurement-adapter-execution.md`).
+(see `docs/archive/runbooks/measurement-adapter-execution.md` in git history).
 
 The two monitoring modules are intentionally layered rather than competing
 authorities. `measurement_research_monitoring` is the lightweight

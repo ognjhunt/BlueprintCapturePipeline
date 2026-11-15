@@ -114,21 +114,6 @@ def test_content_agents_vast_stays_under_its_source_governance_budget() -> None:
     ).is_file()
 
 
-def test_simready_host_import_stays_under_its_source_governance_budget() -> None:
-    root = Path(__file__).resolve().parents[1]
-    policy = json.loads(
-        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
-    )
-    relative = "src/blueprint_pipeline/simready_cad_agent_host_import.py"
-    importer_source = (root / relative).read_text(encoding="utf-8")
-    line_count = len(importer_source.splitlines())
-    assert line_count <= policy["grandfathered_module_line_limits"][relative]
-    assert "from .simready_cad_agent_host_ownership import (" in importer_source
-    assert (
-        root / "src/blueprint_pipeline/simready_cad_agent_host_ownership.py"
-    ).is_file()
-
-
 def test_vast_adapter_stays_under_its_source_governance_budget() -> None:
     root = Path(__file__).resolve().parents[1]
     policy = json.loads(
@@ -158,29 +143,6 @@ def test_live_intake_stays_under_its_source_governance_budget() -> None:
         root
         / "src/blueprint_pipeline/live_pipeline_intake_runtime_controls.py"
     ).is_file()
-
-
-def test_project_cli_budget_keeps_one_canonical_wam_fixture_entrypoint() -> None:
-    root = Path(__file__).resolve().parents[1]
-    policy = json.loads(
-        (root / "docs/source_governance_policy.json").read_text(encoding="utf-8")
-    )
-    pyproject_source = (root / "pyproject.toml").read_text(encoding="utf-8")
-    canonical = (
-        'blueprint-run-wam-fixture-evaluator = '
-        '"blueprint_pipeline.wam_fixture_evaluator:main"'
-    )
-    assert canonical in pyproject_source
-    assert "blueprint-run-wam-eval-job =" not in pyproject_source
-    result = validate_source_governance(
-        root=root,
-        policy=policy,
-        today=date.fromisoformat(policy["baseline_date"]),
-    )
-    assert not any(
-        blocker.startswith("project_script_budget_exceeded:")
-        for blocker in result["blockers"]
-    )
 
 
 def _bandit_finding(root: Path, *, severity: str = "MEDIUM") -> dict[str, object]:
@@ -1517,9 +1479,6 @@ def test_outbound_http_call_sites_route_through_the_safe_boundary() -> None:
     root = Path(__file__).resolve().parents[1]
     rewired = (
         "src/blueprint_pipeline/gpu_render_providers.py",
-        "src/blueprint_pipeline/isaac_persistent_task_completion_client.py",
-        "src/blueprint_pipeline/wam_strict_action_consistency_scorer_client.py",
-        "scripts/run_isaac_g1_kitchen_parity_eval.py",
     )
     for relative in rewired:
         text = (root / relative).read_text(encoding="utf-8")
@@ -1561,14 +1520,3 @@ def test_archive_cli_requires_explicit_compatible_transport_and_private_files(tm
     secret.chmod(0o644)
     assert archive.main(args) == 1
     assert calls == []
-
-
-def test_retention_workflow_has_no_aws_account_binding_or_implicit_endpoint():
-    text = (Path(__file__).parents[1] / ".github/workflows/release-evidence-retention.yml").read_text()
-    assert "BLUEPRINT_RELEASE_EVIDENCE_AWS_" not in text
-    assert "AWS_ACCESS_KEY_ID:" not in text
-    assert "AWS_SESSION_TOKEN:" not in text
-    for argument in ("--endpoint-url", "--access-key-file", "--secret-key-file"):
-        assert argument in text
-    assert "s3_compatible_archive_configuration_unavailable" in text
-    assert "require_compatible_endpoint" in text

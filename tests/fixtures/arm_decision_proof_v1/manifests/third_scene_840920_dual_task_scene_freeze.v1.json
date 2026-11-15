@@ -1,0 +1,190 @@
+{
+  "schema_version": "dual_task_scene_freeze.v1",
+  "selection_preregistration_digest": "sha256:5a3a9b9e8ff3493f45de80495482948f690e9d6963ca1af9854e7341759e4519",
+  "learned_policy_outcomes_accessed": false,
+  "selected_scene_id": "840920",
+  "candidate_ledger": [
+    {
+      "publisher_scene_id": "840076",
+      "decision": "rejected",
+      "reason": "previous inspection did not expose two independently removable feasible task sources",
+      "previously_used": false,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "840313",
+      "decision": "rejected",
+      "reason": "already used by the canned-beverage kitchen rehearsal",
+      "previously_used": true,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "840411",
+      "decision": "rejected",
+      "reason": "previous inspection did not expose the required articulated and rigid pair",
+      "previously_used": false,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "840796",
+      "decision": "rejected",
+      "reason": "already owned by the ongoing refrigerator rehearsal lane",
+      "previously_used": true,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "840873",
+      "decision": "rejected",
+      "reason": "active deformable-task lane and therefore not unused for this goal",
+      "previously_used": true,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "840874",
+      "decision": "rejected",
+      "reason": "articulation observed but no independent feasible rigid source and base pair",
+      "previously_used": false,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "840920",
+      "decision": "selected",
+      "reason": "unused mixed-use room with distinct washer and notebook task regions",
+      "previously_used": false,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "841151",
+      "decision": "rejected",
+      "reason": "only explicit articulated candidate is a forbidden refrigerator",
+      "previously_used": false,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "841193",
+      "decision": "rejected",
+      "reason": "previous inspection did not expose two independently removable feasible task sources",
+      "previously_used": false,
+      "method_outcomes_consulted": false
+    },
+    {
+      "publisher_scene_id": "841757",
+      "decision": "rejected",
+      "reason": "previous inspection did not expose two independently removable feasible task sources",
+      "previously_used": false,
+      "method_outcomes_consulted": false
+    }
+  ],
+  "source_components": {
+    "interiorgs": {
+      "repository": "https://huggingface.co/datasets/spatialverse/InteriorGS",
+      "revision": "334dfeea4e0241033b4e5de97c01bc7c9c080530",
+      "source_path": "0492_840920/3dgs_compressed.ply",
+      "sha256": "sha256:7de988a6cc1654dee5ed8c735bdc89ab0c5e67d10f6b76f8e65eec75522fc3b9",
+      "size_bytes": 31223241,
+      "supporting_files": {
+        "labels": {
+          "sha256": "sha256:24e8dc1abab348853da20fec39880999bdc84ed1eb479174bc949bed204fb444",
+          "size_bytes": 247565
+        },
+        "structure": {
+          "sha256": "sha256:a85a5ecf3a828cd33e0656be297e5f25e1262e4534d3de91212c77f77bc316e4",
+          "size_bytes": 38164
+        }
+      },
+      "license": "custom gated noncommercial research terms",
+      "terms_digest": "sha256:508b0ec62ff1b5bee3c47524dd36f2402f5f70a09afbe62a4d0041078856356b",
+      "rights_admitted": true,
+      "restrictions": {
+        "redistribution": "forbidden",
+        "raw_private_upload": "forbidden",
+        "derived_private_upload": "goal-authorized minimum derived bytes only",
+        "retention": "bounded to goal then provider zero",
+        "training": "forbidden",
+        "publication": "digest receipts and permitted derived review only"
+      }
+    },
+    "sage_collision": {
+      "repository": "https://huggingface.co/datasets/spatialverse/SAGE-3D_Collision_Mesh",
+      "revision": "3ba75cc7887b62bf84211d5db08adfa64d691597",
+      "source_path": "Collision_Mesh/840920/840920_collision.usd",
+      "sha256": "sha256:9e51c7c4360b5071fdbbb9cebbf61a475cc88802d53b5b2b45df294ec2b7c8fd",
+      "size_bytes": 17929371,
+      "license": "CC-BY-NC-4.0",
+      "rights_admitted": true,
+      "restrictions": {
+        "redistribution": "license and attribution bound",
+        "raw_private_upload": "not required and not authorized for this freeze",
+        "derived_private_upload": "goal-authorized minimum derived bytes only",
+        "retention": "bounded to goal then provider zero",
+        "training": "not authorized",
+        "publication": "noncommercial attribution and license bound"
+      }
+    }
+  },
+  "criterion_results": {
+    "admissible_rights_and_provider_disclosure": {
+      "status": "observed_pass",
+      "evidence_digest": "sha256:a425829398dca6e83313b37487672fc02588161d0d7662829c50d97c9db0bc2b",
+      "remaining_gate": "provider disclosure still requires per-launch receipt"
+    },
+    "complete_topology_around_two_distinct_task_regions": {
+      "status": "observed_pass",
+      "evidence_digest": "sha256:87ec314cf6947fa51ac7dc819f618cfc779e2cebaafd6c74cf357d93148728a9",
+      "remaining_gate": "native task-region path remains a construction gate"
+    },
+    "external_wrist_and_review_overview_camera_coverage": {
+      "status": "conditional_construction_gate",
+      "evidence_digest": "sha256:d807864a2f057fe505e519ba2a5dda317cf8b867bef6d1022362a6ab9afc9347",
+      "remaining_gate": "external preview observed; wrist and overview require native camera readback"
+    },
+    "independent_masks_colliders_replacements_and_task_assumptions": {
+      "status": "conditional_construction_gate",
+      "evidence_digest": "sha256:52750dc12c4d940f016ea849320386d8ab75cf9786b3fb5cb63942ced6a0129e",
+      "remaining_gate": "distinct plans frozen; two removal and replacement receipts still required"
+    },
+    "interiorgs_appearance_availability": {
+      "status": "observed_pass",
+      "evidence_digest": "sha256:87ec314cf6947fa51ac7dc819f618cfc779e2cebaafd6c74cf357d93148728a9",
+      "remaining_gate": "evaluation-authorized renderer qualification remains required"
+    },
+    "one_mechanically_distinct_articulated_task": {
+      "status": "conditional_construction_gate",
+      "evidence_digest": "sha256:1bb74366fa8420d1eeacb200c9e4f08ee0cd1afd11249d477e12fe37c3c0fdd7",
+      "remaining_gate": "observed washer door; hidden mechanism and native sweep remain generated-candidate gates"
+    },
+    "one_rigid_object_manipulation_task": {
+      "status": "conditional_construction_gate",
+      "evidence_digest": "sha256:cf15a57f9efe32e3a7629996112fdbdd32adefc7971149c0ec1661d2c262824f",
+      "remaining_gate": "observed open notebook; locked-hinge asset and native grasp remain gates"
+    },
+    "per_task_franka_reachability_and_collision_free_base_space": {
+      "status": "conditional_construction_gate",
+      "evidence_digest": "sha256:52750dc12c4d940f016ea849320386d8ab75cf9786b3fb5cb63942ced6a0129e",
+      "remaining_gate": "zero-overlap supported analytic bases observed; native path gates remain"
+    },
+    "sage_collision_availability": {
+      "status": "observed_pass",
+      "evidence_digest": "sha256:f49905f265b85fb7ead2f6525abeb836e03e2d379bf6f2b5f7ac91843c0f07aa",
+      "remaining_gate": "exact source collider deletion remains per-task construction gate"
+    },
+    "shared_frame_metric_scale_axes_handedness_or_typed_abstention": {
+      "status": "conditional_construction_gate",
+      "evidence_digest": "sha256:f49905f265b85fb7ead2f6525abeb836e03e2d379bf6f2b5f7ac91843c0f07aa",
+      "remaining_gate": "multi-object identity alignment observed; independent metric scale and handedness abstained"
+    },
+    "support_or_destination_geometry": {
+      "status": "conditional_construction_gate",
+      "evidence_digest": "sha256:b5b06eebc56339a97a797f9f3f6a824a893be97277e21437d9c459b7f7f2ee68",
+      "remaining_gate": "notebook support observed; destination sweep requires native qualification"
+    },
+    "two_distinct_observed_source_objects": {
+      "status": "observed_pass",
+      "evidence_digest": "sha256:52750dc12c4d940f016ea849320386d8ab75cf9786b3fb5cb63942ced6a0129e",
+      "remaining_gate": "independent Gaussian ownership remains to be measured"
+    }
+  },
+  "topology_survey_digest": "sha256:87ec314cf6947fa51ac7dc819f618cfc779e2cebaafd6c74cf357d93148728a9",
+  "reconnaissance_render_digest": "sha256:d807864a2f057fe505e519ba2a5dda317cf8b867bef6d1022362a6ab9afc9347",
+  "scene_freeze_digest": "sha256:08c7fcfa112574d4d3ad692d673563ff2d006271a28ae5898bbd66084fe6a10c"
+}

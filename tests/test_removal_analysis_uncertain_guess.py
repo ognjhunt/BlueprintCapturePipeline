@@ -160,16 +160,6 @@ def test_nothing_the_task_is_about_is_left_as_the_not_observed_stop():
     assert analysis.resolve_uncertain_targets(other) == other
 
 
-def test_guess_codes_reach_the_scene_estimate_flags(tmp_path):
-    from blueprint_pipeline.atlas_scene_estimates import CODES, analysis_guess_flags
-    resolved = analysis.resolve_uncertain_targets(
-        _plan([_box(), SHELF], ["task_target_requires_clarification:cardboard_box_candidate"]))
-    _save(tmp_path / "pipeline/clean_plate", "removal_plan.json", resolved)
-    assert analysis_guess_flags(tmp_path) == {"scene_estimate:task_object_guessed"} <= CODES
-    from blueprint_pipeline.beta_policy_screening_publication_flags import flags_valid
-    assert flags_valid(sorted(CODES))
-
-
 def test_not_observed_ends_as_a_hold_that_asks_for_a_new_video(tmp_path):
     from types import SimpleNamespace
     from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
@@ -316,7 +306,6 @@ def test_a_rerun_at_no_cost_keeps_the_analysis_the_job_has(retained, rerun):  # 
     else:
         _save(retained.capture, "pipeline_job_ledger.json", {"preparation_retry": {"kind": "retries_spent"}})
     assert load_published_analysis(**kwargs) is None and load_rerun_analysis(**kwargs) == built
-
 
 
 def test_a_boxed_task_object_of_another_class_is_kept_as_the_object_the_job_acts_on():

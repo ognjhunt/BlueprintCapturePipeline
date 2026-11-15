@@ -44,15 +44,9 @@ _KNOWN_UNITS = {
     'blueprint-task-evaluation-launch-preparation.service': 'task_evaluation_launch_preparation_worker',
     'blueprint-task-evaluation-launch-activation.service': 'task_evaluation_launch_activation_worker',
     'blueprint-task-evaluation-episode-compilation.service': 'task_evaluation_episode_compilation_worker',
-    'blueprint-task-evaluation-sam31-preparation-execution.service': 'task_evaluation_sam31_preparation_execution',
     'blueprint-task-evaluation-launch-dispatcher.service': 'task_evaluation_launch_dispatcher',
     'blueprint-task-evaluation-launch-reconciler.service': 'task_evaluation_launch_reconciler',
-    'blueprint-task-evaluation-launch-supervisor.service': 'task_evaluation_launch_supervisor',
-    'blueprint-task-evaluation-policy-canary-dispatcher.service': 'task_evaluation_policy_canary_dispatcher',
     'blueprint-task-evaluation-terminal-resource-release.service': 'task_evaluation_terminal_resource_release',
-    'blueprint-existing-policy-canary-watchdog.service': 'operator_policy_canary_continuation',
-    'blueprint-existing-policy-canary-continuation.service': 'operator_policy_canary_continuation',
-    'blueprint-task-evaluation-configured-controls-progression.service': 'task_evaluation_configured_controls_progression_worker',
 }
 _UNIT_PROPERTIES = frozenset(('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID',
                              'ControlPID', 'Job', 'NeedDaemonReload', 'FragmentPath',
@@ -1130,11 +1124,7 @@ _WORKERS = frozenset('blueprint_pipeline.' + name for name in (
     'task_evaluation_sam31_preparation_execution',
     'task_evaluation_launch_dispatcher',
     'task_evaluation_launch_reconciler',
-    'task_evaluation_launch_supervisor',
-    'task_evaluation_policy_canary_dispatcher',
     'task_evaluation_terminal_resource_release',
-    'operator_policy_canary_continuation',
-    'task_evaluation_configured_controls_progression_worker',
 ))
 
 

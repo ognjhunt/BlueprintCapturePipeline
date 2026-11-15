@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import copy
-import hmac
 import hashlib
 import json
 from io import BytesIO
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
-from blueprint_pipeline import live_pipeline_intake_service as service
-from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
 from blueprint_pipeline.task_candidate_control_plane import (
     TaskCandidateControlPlaneError,
     load_task_candidate_control_plane_state,
@@ -279,57 +274,6 @@ def test_stale_candidate_actor_spoof_and_second_approval_fail_closed(tmp_path: P
         submission=_submission(successor, command_id="task-command-successor"),
     )
     assert successor_result["pipeline_approval_status"] == "approved"
-
-
-def test_signed_live_service_consumes_the_published_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manifest = tmp_path / "control" / "manifest.json"
-    manifest.parent.mkdir(parents=True)
-    manifest.write_text("{}", encoding="utf-8")
-    work_dir = tmp_path / "intake-work"
-    token = "test-task-control-secret"
-    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest))
-    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(work_dir))
-    monkeypatch.setenv(
-        service.INTAKE_CLIENT_SECRETS_ENV,
-        json.dumps({"blueprint-webapp": token}),
-    )
-    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
-    monkeypatch.delenv(service.INTAKE_TOKEN_ENV, raising=False)
-    monkeypatch.delenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, raising=False)
-    discovery = _discovery()
-    publish_task_candidate_discovery(
-        state_root=work_dir / "task_candidate_control_plane",
-        capture_session_id="capture-review-1",
-        intake_id="intake-1",
-        discovery=discovery,
-    )
-    submission = _submission(discovery)
-    body = json.dumps(submission, separators=(",", ":"))
-    timestamp = datetime.now(timezone.utc).isoformat()
-    nonce = "task-decision-nonce-1"
-    signature = hmac.new(
-        token.encode("utf-8"),
-        f"{timestamp}.blueprint-webapp.{nonce}.{body}".encode("utf-8"),
-        "sha256",
-    ).hexdigest()
-
-    response = TestClient(service.create_app()).post(
-        "/api/live-pipeline/task-decisions",
-        content=body,
-        headers={
-            "content-type": "application/json",
-            "x-blueprint-pipeline-timestamp": timestamp,
-            "x-blueprint-pipeline-client-id": "blueprint-webapp",
-            "x-blueprint-pipeline-nonce": nonce,
-            "x-blueprint-pipeline-signature": f"sha256={signature}",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["pipeline_approval_status"] == "approved"
-    assert response.json()["decision_evidence_request"] is None
 
 
 def test_discovery_sync_uses_signed_projection_and_preserves_failed_attempt(

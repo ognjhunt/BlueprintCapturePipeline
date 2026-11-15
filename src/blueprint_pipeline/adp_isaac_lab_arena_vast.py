@@ -15,8 +15,6 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Any, Mapping, Callable
 
-from .adp_founder_sim_protocol import admit_founder_sim_execution, build_founder_sim_protocol
-from .adp_isaac_lab_arena_request import build_arena_worker_request
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
 from .native_task_arena_execution_contract import (
     native_task_arena_execution_transport_completed,
@@ -42,7 +40,6 @@ from .vast_independent_watchdog_control import (
     close_independent_vast_watchdog,
 )
 from .vast_create_failure_diagnosis import definite_create_refusal_without_instance
-from .policy_canary_provider_null_closeout import provider_allocation_fields
 from .vast_provider_adapter import (
     DEFAULT_VAST_API_KEY_FILE,
     VAST_API_KEY_FILE_ENV,
@@ -72,37 +69,6 @@ _VAST_MUTATION_ENV = (
 _ADP009D_GATED_BACKBONE_AUTH_ENV = (
     "BLUEPRINT_ADP009D_GATED_BACKBONE_AUTHORIZED"
 )
-
-
-ENTRYPOINT = r"""#!/usr/bin/env bash
-set +e
-RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
-mkdir -p "$OUT_DIR"
-/isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
-runner_rc=$?
-if [ $runner_rc -ne 0 ] && [ ! -f "$OUT_DIR/adp_arena_native_canary.json" ]; then
-/isaac-sim/python.sh - "$OUT_DIR" <<'PY'
-import json
-import sys
-from pathlib import Path
-out = Path(sys.argv[1])
-out.mkdir(parents=True, exist_ok=True)
-(out / "adp_arena_native_canary.json").write_text(json.dumps({
-    "schema_version": "adp_arena_native_canary.v1",
-    "status": "blocked",
-    "blockers": [
-        "adp_arena_runner_failed_without_runtime_result",
-        "blocked_adp_arena_process_exited_without_result"
-    ],
-    "candidate_policy_queried": False,
-    "candidate_outcomes_accessed": False,
-    "provider_zero_required_after_return": True
-}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-PY
-fi
-exit $runner_rc
-"""
 
 
 def _file_sha256(path: Path) -> str:
@@ -136,11 +102,6 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
     value = json.loads(path.read_text(encoding="utf-8"))
     return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _write_executable(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _vast_credential_file_present() -> bool:
@@ -319,76 +280,6 @@ def _vast_authority_environment(*, gated_backbone_authorized: bool = False):
                 os.environ[name] = value
 
 
-def build_arena_native_control_bundle(
-    *, approval_path: str | Path, job_dir: str | Path, generated_at: str | None = None
-) -> dict[str, Any]:
-    """Build a deterministic public-source bundle after exact digest approval."""
-
-    approval_source = Path(approval_path).expanduser().resolve()
-    approval = _read_json(approval_source)
-    protocol = build_founder_sim_protocol()
-    execution_admission = admit_founder_sim_execution(protocol, approval)
-    worker_request = build_arena_worker_request(protocol)
-    job = Path(job_dir).expanduser().resolve()
-    if job.exists():
-        shutil.rmtree(job)
-    runtime = job / "provider_runtime"
-    ensure_dir(runtime)
-    generated = generated_at or utc_now_iso()
-    worker_source = Path(__file__).with_name("adp_arena_native_canary_worker.py")
-    shutil.copy2(worker_source, runtime / "adp_arena_provider_runner.py")
-    _write_executable(runtime / "run_adp_arena_provider_runtime.sh", ENTRYPOINT)
-    write_json(runtime / "founder_sim_protocol.json", protocol)
-    write_json(runtime / "founder_sim_approval_receipt.json", approval)
-    write_json(runtime / "founder_sim_execution_admission.json", execution_admission)
-    write_json(runtime / "arena_worker_request.json", worker_request)
-    readiness = {
-        "schema_version": "adp_arena_provider_bundle.v1",
-        "generated_at": generated,
-        "status": "ready",
-        "protocol_id": protocol["protocol_id"],
-        "protocol_digest": protocol["protocol_digest"],
-        "schedule_digest": protocol["schedule"]["schedule_digest"],
-        "worker_request_digest": worker_request["worker_request_digest"],
-        "approval_receipt_digest": approval.get("approval_receipt_digest"),
-        "container_image": DEFAULT_IMAGE,
-        "control_id": "arena_zero_action_negative",
-        "candidate_policy_queried": False,
-        "candidate_outcomes_accessed": False,
-        "runtime_entrypoint": "provider_runtime/run_adp_arena_provider_runtime.sh",
-        "expected_output_filename": "adp_arena_native_canary.json",
-        "local_bundle_ready_for_remote_staging": True,
-        "provider_zero_required_after_return": True,
-        "retry_cap": 0,
-        "blockers": [],
-        "raw_secret_values_recorded": False,
-    }
-    write_json(runtime / "adp_arena_provider_manifest.json", readiness)
-    bundle_path = job / "adp_arena_provider_runtime_bundle.zip"
-    with zipfile.ZipFile(bundle_path, "w") as archive:
-        for path in sorted(runtime.rglob("*")):
-            if path.is_file():
-                info = zipfile.ZipInfo(
-                    path.relative_to(job).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
-                )
-                info.create_system = 3
-                info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
-                archive.writestr(
-                    info,
-                    path.read_bytes(),
-                    compress_type=zipfile.ZIP_DEFLATED,
-                    compresslevel=9,
-                )
-    receipt = {
-        **readiness,
-        "bundle_path": str(bundle_path),
-        "bundle_sha256": _file_sha256(bundle_path),
-        "bundle_size_bytes": bundle_path.stat().st_size,
-    }
-    write_json(job / "adp_arena_bundle_receipt.json", receipt)
-    return receipt
-
-
 def _cleanup_downloaded_provider_objects(*, staging_dir: Path, output_zip: Path,
                                          adapter: Mapping[str, Any],
                                          provider_zero_confirmed: bool = False) -> dict[str, Any]:
@@ -429,14 +320,7 @@ def _extract_provider_output(
     try:
         with zipfile.ZipFile(path) as archive:
             if result_name == "native_g1_beta_session_result.v1.json":
-                from .native_g1_beta_transport import MAX_OUTPUT_BYTES, MAX_TERMINAL_BYTES
-                members = archive.infolist()
-                if (path.stat().st_size > MAX_OUTPUT_BYTES or sum(member.file_size for member in members) > MAX_OUTPUT_BYTES
-                        or archive.getinfo(result_name).file_size > MAX_TERMINAL_BYTES):
-                    blockers.append(f"{blocker_prefix}_output_read_budget_exceeded")
-                if (len(archive.namelist()) != len(set(archive.namelist()))
-                        or any((member.external_attr >> 16) & 0o170000 == 0o120000 for member in members)):
-                    blockers.append(f"{blocker_prefix}_output_inventory_invalid")
+                blockers.append(f"{blocker_prefix}_native_g1_lane_removed")
             if result_name == "embodiment_asset_preparation_result.v1.json":
                 from .deployment_embodiment_preparation_contract import MAX_OUTPUT_BYTES
                 members = archive.infolist()
@@ -501,8 +385,7 @@ def _provider_execution_transport_completed(
 ) -> bool:
     """Keep dedicated robot result transports separate from task/score claims."""
     if provider_bundle_kind == "native_g1_beta_screening":
-        from .native_g1_beta_transport import RESULT_FILENAME, transport_completed
-        return expected_output_filename == RESULT_FILENAME and transport_completed(execution, manifest=bundle)
+        return False  # The native G1 lane is removed.
     if execution.get("schema_version") == "native_g1_beta_session_result.v1":
         return False
     if provider_bundle_kind == "embodiment_asset_preparation":
@@ -541,6 +424,22 @@ def _candidate_policy_query_blocker(
     if queried is False:
         return f"{blocker_prefix}_candidate_policy_query_required"
     return f"{blocker_prefix}_candidate_policy_query_status_missing"
+
+
+def provider_allocation_fields(*, adapter: Mapping[str, Any], watchdog: Mapping[str, Any],
+                               teardown: Mapping[str, Any], cleanup: Mapping[str, Any]) -> dict[str, Any]:
+    """Promote proven absence only; preserve existing paid/unknown receipt bytes."""
+    if (adapter.get("provider_create_attempted") is False and adapter.get("vast_instance_ids") == []
+            and adapter.get("vast_side_effects_may_have_occurred") is False
+            and ("provider_mutations_performed" not in adapter
+                 or type(adapter["provider_mutations_performed"]) is int and adapter["provider_mutations_performed"] == 0)
+            and watchdog.get("status") == "cancelled_no_allocation"
+            and type(watchdog.get("provider_mutations_performed")) is int and watchdog["provider_mutations_performed"] == 0
+            and teardown.get("vast_instance_ids") == [] and teardown.get("continuing_spend_from_this_run") is False
+            and cleanup.get("all_objects_absent") is True):
+        return {"vast_instance_ids": [], "provider_create_attempted": False,
+                "vast_side_effects_may_have_occurred": False, "provider_mutations_performed": 0}
+    return {}
 
 
 def run_arena_native_control_vast(
@@ -597,7 +496,6 @@ def run_arena_native_control_vast(
     provider_output_member_contract: Any | None = None,
     provider_output_reservation: Any | None = None,
     provider_output_delivery_resolution: Mapping[str, str] | None = None,
-    runtime_control_ready: Callable[[Mapping[str, Any]], Callable[[], None]] | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog.
 
@@ -618,9 +516,8 @@ def run_arena_native_control_vast(
     if provider_output_delivery not in ("download", "stream"):
         raise ValueError("adp_arena_provider_output_delivery_invalid")
     if provider_output_delivery == "stream":
-        if (provider_output_member_contract is None
-                or provider_bundle_kind != "native_task_arena_policy_canary_session"):
-            raise ValueError("adp_arena_provider_output_stream_contract_missing")
+        # Only the early trial's policy-canary session streamed its output; the trial left (owner, 2026-11-14).
+        raise ValueError("adp_arena_provider_output_stream_contract_missing")
     streaming = provider_output_delivery == "stream"
     delivery_record: dict[str, Any] = {}
     if provider_output_delivery_resolution is not None:
@@ -638,13 +535,7 @@ def run_arena_native_control_vast(
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
     generated = utc_now_iso()
-    bundle = (
-        dict(prepared_bundle)
-        if prepared_bundle is not None
-        else build_arena_native_control_bundle(
-            approval_path=approval_path, job_dir=job / "bundle", generated_at=generated
-        )
-    )
+    bundle = dict(prepared_bundle or {})
     bundle_path = Path(str(bundle.get("bundle_path") or "")).expanduser().resolve()
     if (
         bundle.get("status") != "ready"
@@ -1082,7 +973,6 @@ def run_arena_native_control_vast(
                 retain_native_task_arena_warm_session=retain_warm_instance,
                 stale_offer_create_retry_limit=stale_offer_create_retry_limit,
                 provider_runtime_environment=provider_runtime_environment,
-                **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
                 **({"runtime_secret_file_paths": provider_secret_paths} if provider_secret_paths else {}),
                 allowed_geolocation_country_codes=(
                     allowed_geolocation_country_codes
@@ -1402,49 +1292,5 @@ def run_arena_native_control_vast(
 __all__ = [
     "DEFAULT_IMAGE",
     "PROBE_KIND",
-    "build_arena_native_control_bundle",
     "run_arena_native_control_vast",
 ]
-
-def main(argv: list[str] | None = None) -> int:
-    """Build the immutable Isaac Lab Arena native-control bundle.
-
-    Added because the allocator refuses a bundle whose `blueprint_commit` is not
-    the commit the control plane is running, and every deploy moves that commit.
-    A lane whose bundle can only be produced by calling a Python function is
-    launchable exactly once and then never again -- which is the state this lane
-    was in, reading as `ready` everywhere while being unbuildable.
-
-    Performs no provider mutation and rents nothing.
-    """
-
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Build the immutable Isaac Lab Arena native-control bundle.")
-    parser.add_argument("--approval", required=True)
-    parser.add_argument("--job-dir", required=True)
-    args = parser.parse_args(argv)
-    try:
-        receipt = build_arena_native_control_bundle(
-            approval_path=args.approval,
-            job_dir=args.job_dir,
-        )
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(
-            json.dumps(
-                {
-                    "status": "blocked",
-                    "blockers": [str(exc)],
-                    "provider_mutation_performed": False,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 2
-    print(json.dumps(receipt, indent=2, sort_keys=True))
-    return 0 if receipt.get("status") in {"ready", "sealed"} else 2
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

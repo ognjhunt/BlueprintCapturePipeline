@@ -156,7 +156,7 @@ def test_a_prepared_scene_compiles_its_own_half_with_no_robot_placement_or_prior
     assert half["task_success_contract"]["contract_digest"] == half["task_success_contract_digest"]
     # The team registry reads it as a whole scene half: the nominal cell resolves for the DROID interface.
     facts = scene_facts({"team_scene_inputs_path": compiled["path"], "open_loop_horizon": 8})
-    assert facts["prompt"] and facts["max_policy_queries"] > 0 and facts["inputs"] == half
+    assert facts["prompt"] and facts["inputs"] == half
     # Changed packet bytes are never read as the sealed scene.
     receipt = Path(half["base_native_packet"]["path"])
     receipt.chmod(0o644)
@@ -201,11 +201,10 @@ def test_a_scene_is_refused_by_name_before_any_packet(tmp_path) -> None:
 
 def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_registry_reads_it(
         tmp_path, monkeypatch) -> None:
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as source
+    from blueprint_pipeline import task_evaluation_configured_controls_source_evidence as source
     from blueprint_pipeline.team_candidate_quick10_registry import (
         REGISTRY_ENV,
         REGISTRY_SCHEMA,
-        offer_eligibility,
         profile_for_capture,
         scene_facts,
     )
@@ -246,9 +245,7 @@ def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_regis
     assert pending["probe_request_digest"] == prepared["robot_free_probe"]["probe_request_digest"]
     profile = profile_for_capture(capture)
     assert profile["team_scene_inputs_path"] == prepared["path"] and profile["robot_free_probe_root"] == str(run)
-    # The compiled scene is readable, but a paid team offer waits for its actual passed probe.
-    facts, blockers = offer_eligibility(profile)
-    assert facts is None and blockers == ["team_evaluation_robot_free_probe_receipt_missing"]
+    # The compiled scene is readable as the scripted check reads it.
     assert scene_facts(profile)["inputs"] == read_team_scene_inputs(prepared["path"])
 
 
@@ -327,7 +324,7 @@ def test_a_drawer_task_compiles_with_a_station_clear_of_the_drawers_travel(tmp_p
     contract = validate_task_success_contract(half["task_success_contract"], task_kind="articulated_open_close")
     assert contract["provenance"]["author_source"] == "task_owner"
     facts = scene_facts({"team_scene_inputs_path": compiled["path"], "open_loop_horizon": 8})
-    assert facts["prompt"] and facts["max_policy_queries"] > 0 and facts["scene"]["task_spec"]["task_kind"] == (
+    assert facts["prompt"] and facts["scene"]["task_spec"]["task_kind"] == (
         "articulated_open_close")
 
 

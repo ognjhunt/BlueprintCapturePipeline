@@ -19,8 +19,6 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py release-hold blueprint-scene-progression.timer
     python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
     python3 scripts/operator_door.py legacy-owner-census --wait
-    python3 scripts/operator_door.py restore-g1-runtime-source [--apply] --wait
-    python3 scripts/operator_door.py restore-g1-pi-language-assets [--apply] --wait
     python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
         --approval-evidence "<owner approval>" [--apply] --wait
     python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
@@ -409,20 +407,6 @@ def _terminal(state: dict[str, Any]) -> bool | None:
         return observed["status"] == "observed_completed"
     if outcome:
         kind = (state.get("request") or {}).get("kind")
-        public_disposition = {
-            "public-embodiment-preparation": "grant_queued",
-            "install-public-piper-policy": "public_policy_registered",
-            "install-public-yam-policy": "public_policy_registered",
-            "install-public-franka-policy": "public_policy_registered",
-            "install-public-trlc-policy": "public_policy_registered",
-            "install-scripted-robot-baselines": "public_policy_registered",
-            "install-native-g1-policies": "public_policy_registered",
-        }.get(kind)
-        if public_disposition is not None:
-            # Only the bounded enqueue/registration completed, not a simulation.
-            return (outcome.get("status") == "completed"
-                    and type(outcome.get("exit_code")) is int and outcome["exit_code"] == 0
-                    and outcome.get("disposition") == public_disposition)
         if kind == "selected-handoff" and outcome.get("status") == "completed":
             # This proves the bounded command returned, not downstream job completion.
             return type(outcome.get("exit_code")) is int and outcome["exit_code"] == 0
@@ -712,61 +696,6 @@ def _add_wait(parser: argparse.ArgumentParser, timeout: float) -> None:
     parser.add_argument("--poll", type=float, default=15.0)
 
 
-def _embodiment_preparation_request(path: str, *, public_policy: str | None = None) -> dict[str, Any]:
-    """Read an already reviewed sealed grant, with no implicit budget or identity."""
-    def pairs(items):
-        result = {}
-        for key, value in items:
-            if key in result:
-                raise ValueError("duplicate key")
-            result[key] = value
-        return result
-
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 16 * 1024:
-                raise ValueError("invalid file")
-            raw = stream.read(16 * 1024 + 1)
-        request = json.loads(raw, object_pairs_hook=pairs, parse_constant=_invalid_json_constant)
-        fields = {"schema_version", "authorization_id", "release_commit", "embodiment_ids", "max_spend_usd",
-                  "max_hourly_rate_usd", "ttl_seconds", "expires_at_epoch", "authorization_reference", "request_digest"}
-        schema, id_key = "embodiment_asset_preparation_request.v1", "authorization_id"
-        if public_policy:
-            fields = {"schema_version", "installation_id", "release_commit", "preparation_authorization_id",
-                "preparation_publication_digest", "candidate_id", "team_id", "checkpoint_id", "policy_profile",
-                "expected_registry_digest", "authorization_reference", "request_digest"}
-            schema, id_key = "openwam_piper_policy_install_request.v1", "installation_id"
-            if public_policy == "g1":
-                schema = "native_g1_policy_install_request.v1"
-                fields = {"schema_version", "installation_id", "release_commit", "site_id", "source", "candidates",
-                    "publisher_source", "runtime_source", "shared_registry_digest", "expected_registry_digest",
-                    "authorization_reference", "request_digest"}
-            elif public_policy == "yam":
-                schema = "molmoact2_yam_policy_install_request.v1"
-            elif public_policy == "franka":
-                schema = "openwam_franka_policy_install_request.v1"
-            elif public_policy == "trlc":
-                schema = "trlc_pi05_policy_install_request.v1"
-            elif public_policy == "scripted":
-                schema = "scripted_robot_baseline_install_request.v1"
-                fields -= {"candidate_id", "checkpoint_id"}
-        if (len(raw) > 16 * 1024 or not isinstance(request, dict) or set(request) != fields
-                or request["schema_version"] != schema
-                or not isinstance(request[id_key], str)
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", request[id_key]) is None):
-            raise ValueError("invalid grant")
-        payload = json.dumps({key: value for key, value in request.items() if key != "request_digest"},
-                             sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
-        if request["request_digest"] != "sha256:" + hashlib.sha256(payload).hexdigest():
-            raise ValueError("invalid digest")
-        return request
-    except (OSError, UnicodeError, ValueError, RecursionError):
-        code = "public_policy_install" if public_policy else "embodiment_preparation"
-        raise DoorError(2, code + "_request_file_invalid") from None
-
-
 def _scene_window_body(args: argparse.Namespace, *, now: float | None = None) -> dict[str, Any]:
     """A plan unless --apply; the host re-checks every bound against the sealed intent."""
     if re.fullmatch(r"scene-[0-9a-f]{64}", args.intent_id) is None:
@@ -996,20 +925,6 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     _add_wait(confirmation, 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
-    g1_source = commands.add_parser(
-        "restore-g1-runtime-source",
-        help="plan the shared G1 runtime source packet's restore from its retained object-store copy; "
-             "--apply restores it",
-    )
-    g1_source.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
-    _add_wait(g1_source, 2 * 3600 + 600)
-    g1_language = commands.add_parser(
-        "restore-g1-pi-language-assets",
-        help="plan the pi0.5 G1 language files' restore from a verified retained bundle on the host; "
-             "--apply restores them",
-    )
-    g1_language.add_argument("--apply", action="store_true", help="restore; without this only a plan is made")
-    _add_wait(g1_language, 15 * 60 + 600)
     parked = commands.add_parser(
         "retire-parked-delivery",
         help="plan an owner-approved retirement of one parked website preparation delivery; --apply retires it",
@@ -1042,24 +957,6 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         elif action == "renew":
             sub.add_argument("--for", dest="ttl_seconds", type=_scratch_duration, required=True)
         _add_wait(sub, 120)
-    preparation = commands.add_parser("public-embodiment-preparation",
-        help="enqueue one explicitly funded public robot asset batch; its worker may spend within the sealed grant")
-    preparation.add_argument("--request-file", required=True,
-        help="JSON containing exact release, ordered public IDs, budget, expiry and stable authorization ID/digest")
-    _add_wait(preparation, 180)
-    preparation.description = "Wait observes durable grant enqueue only; inspect retained batch results for simulation preparation outcomes."
-    for public_command, public_name in (("install-public-piper-policy", "OpenWAM PiPER"),
-                                       ("install-public-yam-policy", "MolmoAct2 YAM"),
-                                       ("install-public-franka-policy", "OpenWAM single-FR3"),
-                                       ("install-public-trlc-policy", "community TRLC Pi0.5"),
-                                       ("install-scripted-robot-baselines", "Blueprint scripted robot baselines"),
-                                       ("install-native-g1-policies", "Native G1 site policy receipts")):
-        policy_install = commands.add_parser(public_command,
-            help=f"install the fixed public {public_name} registration from retained assets; launches no compute")
-        policy_install.add_argument("--request-file", required=True,
-            help="sealed request binding retained preparation, exact release, public policy identity and registry digest")
-        _add_wait(policy_install, 960 if public_command == "install-native-g1-policies" else
-                  660 if public_command == "install-scripted-robot-baselines" else 360)
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
     selected_modes = selected.add_mutually_exclusive_group()
@@ -1155,10 +1052,6 @@ def run(args: argparse.Namespace) -> int:
         return _submit(body, args)
     elif command == "legacy-owner-census":
         return _submit({"kind": "legacy-owner-census"}, args)
-    elif command == "restore-g1-runtime-source":
-        return _submit({"kind": "restore-g1-runtime-source", "apply": args.apply}, args)
-    elif command == "restore-g1-pi-language-assets":
-        return _submit({"kind": "restore-g1-pi-language-assets", "apply": args.apply}, args)
     elif command == "retire-parked-delivery":
         return _submit({"kind": "retire-parked-delivery", "capture": args.capture,
                         "approval_evidence": args.approval_evidence, "apply": args.apply}, args)
@@ -1168,20 +1061,6 @@ def run(args: argparse.Namespace) -> int:
         return _submit(_scene_budget_body(args), args)
     elif command == "confirm-owner-success-contract":
         return _submit(_owner_success_body(args), args)
-    elif command == "public-embodiment-preparation":
-        request = _embodiment_preparation_request(args.request_file)
-        if not args.operation_key:
-            args.operation_key = "public-embodiment-preparation-" + request["authorization_id"]
-        return _submit({"kind": command, "request": request}, args)
-    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}:
-        request = _embodiment_preparation_request(args.request_file,
-            public_policy={"install-public-yam-policy": "yam", "install-public-piper-policy": "piper",
-                           "install-public-franka-policy": "franka",
-                           "install-public-trlc-policy": "trlc",
-                           "install-scripted-robot-baselines": "scripted", "install-native-g1-policies": "g1"}[command])
-        if not args.operation_key:
-            args.operation_key = command + "-" + request["installation_id"]
-        return _submit({"kind": command, "request": request}, args)
     elif command == "selected-handoff":
         with Path(args.selector_file).open("rb") as stream:
             raw = stream.read(4097)

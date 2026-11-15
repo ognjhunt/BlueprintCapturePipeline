@@ -198,13 +198,13 @@ def build_content_agents_scene_configuration_component(
             "skillpacks/cad_authoring/skills/multi-agent-cad/SKILL.md": (
                 "multi_agent_cad_skill.md"
             ),
-            "docs/arm_decision_proof_v1/assets/adp009a_content_agents_material.vast.yaml": (
+            "config/content_agents/adp009a_content_agents_material.vast.yaml": (
                 "material_agent.yaml"
             ),
-            "docs/arm_decision_proof_v1/assets/adp009a_content_agents_texture.vast.yaml": (
+            "config/content_agents/adp009a_content_agents_texture.vast.yaml": (
                 "texture_agent.yaml"
             ),
-            "docs/arm_decision_proof_v1/assets/adp009a_content_agents_physics.vast.yaml": (
+            "config/content_agents/adp009a_content_agents_physics.vast.yaml": (
                 "physics_agent.yaml"
             ),
         }

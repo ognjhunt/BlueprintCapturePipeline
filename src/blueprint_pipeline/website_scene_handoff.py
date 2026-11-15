@@ -7,7 +7,6 @@ discard completed preparation or label the scene simulator-ready.
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -109,37 +108,6 @@ def _rigid_verdict_and_fit(*, preparation: Mapping[str, Any], collision_path: Pa
                                          collision_path=collision_path)
 
 
-def _robot_fit_precheck(*, preparation: Mapping[str, Any], verdict: Mapping[str, Any] | None,
-                        collision_path: Path, native_root: Path) -> dict[str, Any]:
-    """Whether a robot the screening catalog runs can do the task in this room (``website_robot_fit_precheck``).
-
-    It fails open: a failure is recorded as ``unknown`` and the handoff goes on, since only a ``no_fit``
-    the late checks would also make holds the job. A lost handoff lease stops it, as it stops every write.
-    """
-    try:
-        from .website_robot_fit_hold import team_registry_state
-        from .website_robot_fit_precheck import FILENAME, registered_team_bodies, robot_fit_precheck
-        registry, registry_digest = team_registry_state()
-        try:
-            bodies, flags = (registered_team_bodies(registry) if registry is not None else {}), []
-        except (OSError, ValueError, KeyError, TypeError):
-            bodies, registry_digest = {}, "unreadable"
-        if registry_digest == "unreadable":
-            # The operator's team registry did not read: its bodies stay unknown, never refused.
-            flags = ["team_registry_unreadable"]
-        value = robot_fit_precheck(preparation=preparation, collision_path=collision_path, verdict=verdict,
-                                   team_bodies=bodies, team_registry_digest=registry_digest)
-        write_json(native_root / FILENAME, value)
-        # What a hold was decided against rides on the handoff, so a change reruns it (website_robot_fit_hold).
-        return {"path": str(native_root / FILENAME), "digest": value["precheck_digest"], "status": value["status"],
-                "hold_reason": value["hold_reason"], "counts": value["counts"],
-                "recheck_inputs": value["recheck_inputs"], **({"flags": flags} if flags else {})}
-    except HandoffLeaseError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - unknown never holds a job; this is recorded
-        return {"status": "unknown", "hold_reason": None, "error": type(exc).__name__}
-
-
 def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
                             native_root: Path) -> dict[str, Any]:
     """Where a geometry-only job ends: the capability verdict and the robot fit table, CPU only.
@@ -176,115 +144,6 @@ def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mappi
             "robot_fit_table": fit}
 
 
-def _navigation_consent_refusal(*, capture_root: Path, task_context: Mapping[str, Any],
-                                authority: Mapping[str, Any], now: float) -> str | None:
-    """Why the job's own consent records stop its navigation scene half, or None while they allow it.
-
-    Privacy and rights, read from the records the website gave this job: a withdrawal on this host
-    (``website_atlas_preview_store.capture_withdrawn``, the tombstone or a revoked consent), the task
-    context's capture rights (``website_task_context.json``) and the end of its sponsorship
-    (``website_scene_sponsorship.json``, ``expires_at_epoch``, the website's ``consent_expired``).
-    """
-    from .website_atlas_preview_store import capture_withdrawn
-
-    if capture_withdrawn(capture_root):
-        return "website_capture_withdrawn"
-    rights = task_context.get("capture_rights") if isinstance(task_context.get("capture_rights"), Mapping) else {}
-    if rights.get("derived_scene_generation_allowed") is not True or rights.get("consent_revoked") is not False:
-        return "website_scene_processing_rights_required"
-    expiry = authority.get("expires_at_epoch") if isinstance(authority, Mapping) else None
-    if isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or not math.isfinite(expiry):
-        return "website_scene_execution_authority_required"
-    return "website_scene_consent_expired" if expiry <= now else None
-
-
-def _navigation_scene_inputs(*, result: dict[str, Any], capture_root: Path, root: Path,
-                             navigation: Mapping[str, Any], assets: Mapping[str, Any],
-                             task_context: Mapping[str, Any], authority: Mapping[str, Any],
-                             now: float) -> dict[str, Any] | None:
-    """The G1 lane's scene half for a navigation job, on the controller and with no spend.
-
-    The base packet with the pinned G1 standing at the compiled start, its robot-free probe receipt and
-    the sealed record (``website_navigation_scene_inputs``), kept in the capture's own workspace so the
-    site's withdrawal deletes them, and the team registry's derived row naming the record. The robot is
-    the G1 registration's own pinned Arena USD (``native_g1_site_registration``). Withdrawn, revoked or
-    expired consent writes neither. Returns the written record (``{"path", "record"}``) once both exist,
-    else None; anything else is recorded and is this job's missing piece, never a stop. A lost handoff
-    lease stops it, as it stops every write.
-    """
-    from .website_navigation_scene_inputs import OUTPUT_DIRECTORY
-
-    refusal = _navigation_consent_refusal(capture_root=capture_root, task_context=task_context,
-                                          authority=authority, now=now)
-    if refusal is not None:
-        result["navigation_scene_inputs"] = {"status": "not_written", "reason": refusal}
-        return None
-    try:
-        from . import native_g1_site_registration as registration
-        from .team_candidate_quick10_registry import write_derived_profile
-        from .website_navigation_scene_inputs import derived_profile_row, write_navigation_scene_inputs
-
-        handoff_lease_checkpoint("website_scene_handoff_navigation_scene_inputs")
-        robot = registration._robot_record(registration.load_shared_inputs())
-        written = write_navigation_scene_inputs(navigation_task_spec=navigation, scene_assets=assets,
-                                                robot_record=robot, output_root=root / OUTPUT_DIRECTORY,
-                                                capture_root=capture_root)
-        handoff_lease_checkpoint("website_scene_handoff_navigation_registration")
-        profile = write_derived_profile(derived_profile_row(written, capture_root=capture_root))
-    except HandoffLeaseError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a job; this is its missing piece
-        reason = str(exc) if str(exc) else type(exc).__name__
-        result["navigation_scene_inputs"] = {"status": "failed", "error": reason[:300]}
-        return None
-    record = written["record"]
-    result["navigation_scene_inputs"] = {
-        "status": "written" if profile.get("status") == "written" else "not_registered",
-        "path": written["path"], "digest": record["scene_inputs_digest"],
-        "scene_revision_digest": record["scene_revision_digest"],
-        "robot_free_probe_status": record["robot_free_probe"]["status"], "registry": dict(profile)}
-    return dict(written) if profile.get("status") == "written" else None
-
-
-def _navigation_intake(*, result: dict[str, Any], written: Mapping[str, Any], capture_root: Path,
-                       base_scene: Mapping[str, Any], task_context: Mapping[str, Any],
-                       authority: Mapping[str, Any]) -> tuple[bool, str | None]:
-    """The job's website navigation intake, once its scene half is written: (receipt exists, refusal name).
-
-    The request is the record's digests with the job's own sponsorship: its owner, consent and rights
-    exactly as a rigid intake carries them, and the website's own ``task_confirmed`` reading of the brief
-    (``website_navigation_intake``). The website reserves $0 for it and grants no construction allowance.
-    A typed refusal (an unconfirmed brief is ``website_task_context_not_confirmed``) is recorded and
-    returned, and the job holds by that name. Any other failure is recorded and is this job's missing
-    piece. Once the Pipeline has staged the intent (seen by a later handoff), its receipt is bound here.
-    A lost handoff lease stops it, as it stops every write.
-    """
-    if (authority.get("schema_version") != "website_scene_sponsorship.v1"
-            or not isinstance(authority.get("owner"), Mapping) or not isinstance(authority.get("consent"), Mapping)):
-        result["navigation_intake"] = {"status": "not_requested", "reason": "website_scene_execution_authority_required"}
-        return False, None
-    try:
-        from .website_navigation_intake import bind_navigation_intake_receipt, enqueue_navigation_intake
-
-        handoff_lease_checkpoint("website_scene_handoff_navigation_intake")
-        sent = enqueue_navigation_intake(record_path=written["path"], record=written["record"],
-                                         capture_root=capture_root, task_context=task_context,
-                                         authority=authority, base_scene=base_scene)
-        if sent["status"] == "refused":
-            result["navigation_intake"] = dict(sent)
-            return False, sent["reason"]
-        receipt = bind_navigation_intake_receipt(record_path=written["path"], capture_root=capture_root)
-    except HandoffLeaseError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a job; this is its missing piece
-        reason = str(exc) if str(exc) else type(exc).__name__
-        result["navigation_intake"] = {"status": "failed", "error": reason[:300]}
-        return False, None
-    result["navigation_intake"] = {**sent, "receipt": None if receipt is None else {
-        "receipt_digest": receipt["receipt_digest"], "source": receipt["source"]}}
-    return receipt is not None, None
-
-
 def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[str, Any], preparation_path: Path,
                                 native_root: Path, task_context: Mapping[str, Any], now: float,
                                 runtime_inputs: Mapping[str, Any] | None = None,
@@ -295,14 +154,13 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
 
     Runtime inputs (unless the caller already made them), the collision and
     appearance stages, the construction inputs, the rights admission and the
-    capability verdict, with the informational robot fit table beside it, and
-    the robot fit precheck (``website_robot_fit_precheck``). The
+    capability verdict, with the informational robot fit table beside it. The
     handoff and a renewal re-issue
     (``website_preparation_renewal``) share it, so the inputs bound to a
     preparation's digest cannot drift between them. Records into ``result``
     and returns whether the preparation may be registered: intake ready,
-    appearance authored and no support hold. The capability verdict and the
-    robot fit precheck are recorded and never hold the job.
+    appearance authored and no support hold. The capability verdict is
+    recorded and never holds the job.
     """
     if runtime_inputs is None:
         runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base_scene,
@@ -356,14 +214,6 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
                 # An abstained verdict (no enabled arm, no clear stance found, or the object beyond reach
                 # from every stance it found) is a judgement about the outcome: recorded, never a stop. It
                 # travels as ``scene_estimate:capability_unassessed`` (``atlas_scene_estimates``).
-            # Before ARTISAN and the GPU scene build: whether a catalog robot can do the task here, on paper.
-            # Recorded for the site's first look; it never holds the job (below).
-            precheck = _robot_fit_precheck(preparation=preparation, verdict=verdict, collision_path=collision,
-                                           native_root=native_root)
-        # The precheck is recorded exactly as before (the site's first look reads it), and it never stops the
-        # job (owner, 2026-11-11: the test runs even when no robot fits on paper). A ``no_fit`` travels with
-        # the job as ``scene_estimate:robot_fit_none:<cause>`` (``atlas_scene_estimates.preparation_flags``).
-        result["robot_fit_precheck"] = precheck
         if isinstance(support_hold, str):
             # The object cannot rest where it is scored on the collider the scene would seal: no stage of it
             # can be scored, so nothing is registered, enqueued or paid for (``website_support_pad``).
@@ -532,96 +382,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         from .website_task_semantics import effective_task_profile
         resolved = task_profile_for(effective_task_profile(task_context=context, **semantics_options))
         if resolved is not None and not resolved.requires_manipulation:
-            # The robot moves itself: the scene stays as filmed, and the task compiles from
-            # its own facts (floor, obstacles, the filmed route). Robot and policy are chosen
-            # by the spec's requirements; with none runnable here the hold names each piece.
-            from .task_spec_compiler import requirements as task_requirements
-            from .website_locomotion_task import SPEC_FILE, compile_locomotion_spec, runnable_policy_gap, scene_facts
-            need = task_requirements(locomote=resolved.requires_locomotion, manipulate=False)
-            facts = scene_facts(base_scene=base, camera_path_levelled_m=atlas.get("camera_path_levelled_m") or [])
-            spec = compile_locomotion_spec(task_context=context, facts=facts, requirements=need)
-            write_json(root / SPEC_FILE, spec)
-            # How much room each filmed point has, beside the spec: evidence for where the anchors fell.
-            from .website_locomotion_task import ROUTE_FILE, route_record
-            write_json(root / ROUTE_FILE, route_record(facts))
-            if need["locomote"]:
-                # The G1 checkpoints' goal and scene task, made from the compiled spec
-                # (website_navigation_packet); the hold below names what is still unbuilt.
-                from .website_locomotion_task import NAVIGATION_TASK_FILE
-                from .website_navigation_packet import navigation_task_spec
-                navigation = navigation_task_spec(spec, task_context=context)
-                write_json(root / NAVIGATION_TASK_FILE, navigation)
-                result.update(navigation_task_spec_path=str(root / NAVIGATION_TASK_FILE),
-                              navigation_task_spec_digest=navigation["task_spec_digest"])
-                # The scene as filmed, as Isaac files, on the controller and with no spend
-                # (website_navigation_scene_assets). A failure is this job's missing piece.
-                from .website_locomotion_task import navigation_pieces_built
-                from .website_navigation_scene_assets import FILE as ASSETS_FILE, navigation_scene_assets
-                outputs = {"navigation_task_spec": True, "navigation_scene_assets": False,
-                           "navigation_scene_inputs": False, "navigation_intake_receipt": False}
-                intake_refusal = None
-                try:
-                    assets = navigation_scene_assets(base_scene=base, output_root=root / "navigation_scene")
-                except (ValueError, OSError) as exc:
-                    result["navigation_scene_assets_error"] = str(exc)[:300]
-                else:
-                    write_json(root / ASSETS_FILE, assets)
-                    result.update(navigation_scene_assets_path=str(root / ASSETS_FILE),
-                                  navigation_scene_assets_digest=assets["digest"])
-                    outputs["navigation_scene_assets"] = True
-                    # The G1 lane's scene half: the G1 at the compiled start, its probe receipt and
-                    # the registry row (website_navigation_scene_inputs). A failure is this job's
-                    # missing piece (pipeline:g1_navigation_preparation).
-                    authority = metadata.get("website_scene_execution_authority") or {}
-                    written = _navigation_scene_inputs(
-                        result=result, capture_root=capture_root, root=root, navigation=navigation, assets=assets,
-                        task_context=context, authority=authority, now=now)
-                    outputs["navigation_scene_inputs"] = written is not None
-                    if written is not None:
-                        # Its website intake and, once the intent is staged, the receipt binding its
-                        # screening source (pipeline:navigation_source_identity, for this job only).
-                        outputs["navigation_intake_receipt"], intake_refusal = _navigation_intake(
-                            result=result, written=written, capture_root=capture_root, base_scene=base,
-                            task_context=context, authority=authority)
-                # The pieces built for this job are the outputs it has.
-                built = navigation_pieces_built(outputs)
+            # The robot moves itself (a walking job): no simulation is built for this kind of
+            # job. It keeps its first look on paper and holds with the plain no-profile reason.
+            from .website_task_preparation import profile_preparation_gap
             result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
-                          source_geometry_digest=atlas["source_geometry"]["digest"],
-                          compiled_task_spec_path=str(root / SPEC_FILE), compiled_task_spec_digest=spec["spec_digest"])
-            from .website_locomotion_task import runnable_options
-            options = runnable_options(need, built_pieces=frozenset(built)) if need["locomote"] else None
-            if need["locomote"] and intake_refusal is not None:
-                # The website refused the job's intake by name (an unconfirmed brief is
-                # website_task_context_not_confirmed): the job holds by that name, never passes.
-                from .website_locomotion_hold import navigation_intake_refusal_hold
-                return retain_gap(navigation_intake_refusal_hold(
-                    task_context=context, requirements=need, spec_digest=spec["spec_digest"],
-                    refusal=intake_refusal, options=options, task_semantics=semantics_options["task_semantics"],
-                    source_video_digest=source_video_digest))
-            held = runnable_policy_gap(task_context=context, requirements=need, spec_digest=spec["spec_digest"],
-                                       task_semantics=semantics_options["task_semantics"],
-                                       source_video_digest=source_video_digest, options=options)
-            if held is None and need["locomote"] and outputs["navigation_scene_inputs"] \
-                    and outputs["navigation_intake_receipt"]:
-                # Every runnable option is a G1 navigation checkpoint and its lane inputs exist: the
-                # scene-inputs record (registered) and this job's intake receipt. Screening enters from
-                # the registry row, so the job is handed off, development_only, claiming no result.
-                from .website_locomotion_hold import navigation_preparation
-                handed = navigation_preparation(
-                    task_context=context, spec_digest=spec["spec_digest"], options=options,
-                    scene_inputs=result["navigation_scene_inputs"], receipt=result["navigation_intake"]["receipt"],
-                    task_semantics=semantics_options["task_semantics"], source_video_digest=source_video_digest)
-                if handed is not None:
-                    result.update(status="intake_ready", blockers=[], job_disposition="accepted",
-                                  navigation_preparation=handed)
-                    result["digest"] = canonical_digest(result, digest_field="digest")
-                    write_json(handoff_path, result)
-                    return result
-            if held is None:
-                # A runnable policy exists but its execution route is not built (a body with no lane
-                # here): say so, typed.
-                raise ValueError("website_locomotion_task_execution_route_missing")
-            return retain_gap(held)
+                          source_geometry_digest=atlas["source_geometry"]["digest"])
+            return retain_gap(profile_preparation_gap(context))
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile

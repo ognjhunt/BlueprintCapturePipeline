@@ -19,7 +19,6 @@ from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline import adp_gaussian_excision_vast as excision_vast
 from blueprint_pipeline.paid_attempt_authority import bind_lane_prior_spend
-from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import vast_provider_adapter as vast_adapter
 from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
 from blueprint_pipeline.public_scene_gaussian_excision_audit import (
@@ -1205,126 +1204,6 @@ def test_attempt_and_recovery_receipts_join_files_without_upgrading_claims(
     assert closeout["status"] == "lane_owned_provider_zero"
     assert closeout["global_provider_zero_claimed"] is False
     assert closeout["external_live_instances"][0]["charged_to_this_lane"] is False
-
-
-def test_canonical_allocator_binds_gaussian_excision_bundle(monkeypatch, tmp_path: Path) -> None:
-    bundle = tmp_path / "bundle.zip"
-    bundle.write_bytes(b"immutable-gaussian-excision-runtime")
-    bundle_digest = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
-    receipt = {
-        "status": "ready",
-        "provider_bundle_kind": excision_vast.PROVIDER_BUNDLE_KIND,
-        "container_image": excision_vast.DEFAULT_IMAGE,
-        "blueprint_commit": "a" * 40,
-        "released_code": {
-            "tree": excision_vast.SOURCE_TREE,
-            "source_modified": False,
-        },
-        "hard_cap_usd": 1.5,
-        "hard_ttl_seconds": 3600,
-        "maximum_paid_attempts": 1,
-        "automatic_paid_retry_allowed": False,
-        "provider_zero_required_after_return": True,
-        "dependency_wheelhouse_manifest_digest": "sha256:" + "3" * 64,
-        "provider_network_dependency_install_required": False,
-        "raw_interiorgs_downloaded_bytes_included": False,
-        "private_scene_derived_standard_splat_included": True,
-        "freeze_digest": "sha256:" + "1" * 64,
-        "execution_authority_digest": "sha256:" + "2" * 64,
-        "blockers": [],
-        "bundle_path": str(bundle),
-        "bundle_sha256": bundle_digest,
-    }
-    receipt_path = tmp_path / "receipt.json"
-    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    avoidlist_path = tmp_path / "machine-avoidlist.json"
-    avoidlist_path.write_text(
-        json.dumps(
-            {
-                "schema_version": "vast_machine_avoidlist.v1",
-                "machine_ids": [8207],
-            }
-        ),
-        encoding="utf-8",
-    )
-    avoidlist_digest = "sha256:" + hashlib.sha256(avoidlist_path.read_bytes()).hexdigest()
-    monkeypatch.setattr(
-        allocator,
-        "_control_plane_checkout_blockers",
-        lambda: (
-            [],
-            {"orchestrator_source_commit": "a" * 40, "checkout_clean": True},
-        ),
-    )
-    observed = {}
-
-    def fake_run(**kwargs):
-        observed.update(kwargs)
-        return {"status": "dry_run_ready"}
-
-    monkeypatch.setattr(allocator, "run_gaussian_excision_vast", fake_run)
-    arguments = [
-        "gpu-canary",
-        "--probe-kind",
-        excision_vast.PROBE_KIND,
-        "--provider",
-        "vast",
-        "--admission-out",
-        str(tmp_path / "admission.json"),
-        "--adapter-output",
-        str(tmp_path / "adapter.json"),
-        "--expected-source-commit",
-        "a" * 40,
-        "--adp-gaussian-excision-bundle-receipt",
-        str(receipt_path),
-        "--adp-job-dir",
-        str(tmp_path / "run"),
-        "--adp-max-hourly-rate-usd",
-        "0.60",
-        "--adp-max-spend-usd",
-        "1.50",
-        "--adp-hard-ttl-seconds",
-        "3600",
-        "--adp-machine-avoidlist",
-        str(avoidlist_path),
-    ]
-
-    assert allocator.main(arguments) == 0
-    admission = json.loads((tmp_path / "admission.json").read_text())
-    assert admission["status"] == "admitted"
-    assert admission["allocation_binding"]["bundle_sha256"] == bundle_digest
-    assert admission["allocation_binding"]["machine_avoidlist_sha256"] == avoidlist_digest
-    assert admission["heldout_cameras_accessed_for_classification"] is False
-    assert observed["execute"] is False
-    assert observed["machine_avoidlist_path"] == avoidlist_path
-
-    assert allocator.main([*arguments, "--execute"]) == 2
-    blocked = json.loads((tmp_path / "adapter.json").read_text())
-    blocked_admission = json.loads((tmp_path / "admission.json").read_text())
-    assert "gaussian_excision_paid_attempt_authority_missing" in blocked_admission[
-        "blockers"
-    ]
-    assert blocked["provider_mutations_performed"] == 0
-
-    attempt_authority = _paid_attempt_authority(receipt)
-    attempt_authority_path = tmp_path / "attempt-authority.json"
-    attempt_authority_path.write_text(
-        json.dumps(attempt_authority), encoding="utf-8"
-    )
-    assert (
-        allocator.main(
-            [
-                *arguments,
-                "--execute",
-                "--adp-gaussian-excision-attempt-authority",
-                str(attempt_authority_path),
-            ]
-        )
-        == 0
-    )
-    assert observed["execute"] is True
-    assert observed["paid_attempt_authority"] == attempt_authority
-    assert observed["previous_attempt_receipt"] is None
 
 
 def test_live_gaussian_excision_run_arms_watchdog_and_closes_resources(

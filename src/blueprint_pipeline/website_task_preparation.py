@@ -142,6 +142,8 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
         from .website_operation_coverage import operation_coverage_gap
         return operation_coverage_gap(task_semantics, task_context=task_context,
                                       source_video_digest=source_video_digest)
+    if not mismatch:
+        return profile_preparation_gap(task_context)
     return {
         "code": ("website_task_profile_mechanism_mismatch" if mismatch
                  else "website_native_task_profile_preparation_required"),
@@ -158,6 +160,25 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
         **({"inferred_profile_id": inferred_profile_id} if mismatch else {}),
         **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
            if resolved is not None and mismatch else {}),
+        "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
+    }
+
+
+def profile_preparation_gap(task_context: Mapping[str, Any]) -> dict[str, Any]:
+    """The hold for a job whose family Blueprint has no native task profile for yet.
+
+    The same record a family without a profile gets; a job the robot does by moving
+    itself (a walking job) gets it too: no simulation is built for that kind of job.
+    """
+    return {
+        "code": "website_native_task_profile_preparation_required",
+        "task_family": task_context.get("task_family"),
+        "task_context_digest": task_context.get("context_digest"),
+        "job_disposition": "held_for_preparation",
+        "description": task_context.get("description"),
+        "reason": ("The job remains held while its evaluation is being prepared. Blueprint has no native task "
+                   "profile for this family yet; this is not a finding that robot teams cannot perform the job."),
+        "missing": ["native_task_runtime_adapter", "independent_task_scorer", "reset_contract"],
         "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
     }
 

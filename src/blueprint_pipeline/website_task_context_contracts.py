@@ -100,7 +100,10 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
     code = gap.get("code")
     declared = task_profile_for(family)
     if code == "website_native_task_profile_preparation_required":
-        if declared is not None or handoff.get("provider_mutation_performed") is not False:
+        # No profile for the family, or one the robot does by moving itself (a walking job):
+        # no simulation is built for either (``website_task_preparation.profile_preparation_gap``).
+        if ((declared is not None and declared.requires_manipulation)
+                or handoff.get("provider_mutation_performed") is not False):
             return False
     elif code == "website_task_operation_coverage_unresolved":
         from .website_operation_coverage import operation_coverage_gap

@@ -35,11 +35,11 @@ from blueprint_pipeline.simready_cad_agent_contract import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FREEZE_A = (
     REPO_ROOT
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
+    / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_a_freeze.v1.json"
 )
 FREEZE_B = (
     REPO_ROOT
-    / "docs/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json"
+    / "tests/fixtures/arm_decision_proof_v1/manifests/third_scene_840920_task_b_freeze.v1.json"
 )
 
 

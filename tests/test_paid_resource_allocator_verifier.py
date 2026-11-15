@@ -11,10 +11,6 @@ assert SPEC is not None and SPEC.loader is not None
 verifier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verifier)
 
-GEMINI_EVALUATOR_PAID_SURFACES = {
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
-    "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_transport_canary.py",
-}
 SCENE_CONFIGURATION_ALLOCATOR = (
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py"
 )
@@ -57,15 +53,6 @@ def test_atlas_task_retry_attempt_cannot_be_called_outside_the_allocator_adapter
         "def bypass():\n    return attempt()\n")
     assert verifier._s3_transport_capability_callers(sources, capabilities) - verifier.APPROVED_ATLAS_TASK_CALLERS == {
         ("scripts/bypass.py", "bypass")}
-
-
-def test_selected_g1_controller_is_a_registered_canonical_admission_surface():
-    path = "src/blueprint_pipeline/native_g1_team_paid_policy.py"
-    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text())
-    assert path in verifier.APPROVED_ADMISSION_ISSUERS
-    assert path in verifier.APPROVED_LANE_ADMISSION_BUILDERS
-    assert path in manifest["issuer_allowlist"]["require_paid_resource_admission"]
-    assert path in manifest["issuer_allowlist"]["build_paid_lane_admission"]
 
 
 def test_request_dict_runpod_create_is_discovered_and_unclassified() -> None:
@@ -189,25 +176,6 @@ blueprint-run-runpod-provider-adapter --request x --mode on-demand-pod
     assert verifier._forbidden_operator_doc_commands(canonical) == set()
 
 
-def test_gemini_evaluator_paid_paths_are_registered_as_canonical_surfaces() -> None:
-    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
-    issuer_allowlist = manifest["issuer_allowlist"]
-    assert GEMINI_EVALUATOR_PAID_SURFACES <= verifier.APPROVED_ADMISSION_ISSUERS
-    assert GEMINI_EVALUATOR_PAID_SURFACES <= verifier.APPROVED_LANE_ADMISSION_BUILDERS
-    assert GEMINI_EVALUATOR_PAID_SURFACES <= set(
-        issuer_allowlist["require_paid_resource_admission"]
-    )
-    assert GEMINI_EVALUATOR_PAID_SURFACES <= set(issuer_allowlist["build_paid_lane_admission"])
-    surfaces = {row["path"]: row for row in manifest["surfaces"]}
-    for path in GEMINI_EVALUATOR_PAID_SURFACES:
-        assert surfaces[path]["classification"] == "canonical_adapter"
-        assert {
-            "build_paid_lane_admission",
-            "require_paid_resource_admission",
-            "require_paid_resource_admission_grant",
-        } <= set(surfaces[path]["required_markers"])
-
-
 def test_scene_configuration_paid_surfaces_are_exactly_classified() -> None:
     manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text(encoding="utf-8"))
     issuer_allowlist = manifest["issuer_allowlist"]
@@ -259,16 +227,9 @@ def test_extracted_vast_cli_keeps_the_disable_gate_separately_classified() -> No
     )
 
 
-def test_model_volume_watchdog_handoff_is_machine_enforced() -> None:
+def test_issuer_set_and_remote_build_promotion_are_machine_enforced() -> None:
     blockers = set(verifier.verify())
     assert "paid_resource_admission_issuer_set_mismatch" not in blockers
-    assert "model_volume_watchdog_handoff_schema_missing" not in blockers
-    assert "model_volume_watchdog_process_handoff_missing" not in blockers
-    assert "model_volume_missing_key_terminal_evidence_missing" not in blockers
-    assert "model_volume_ready_handoff_liveness_guard_missing" not in blockers
-    assert "gpu_preflight_model_volume_watchdog_handoff_guard_missing" not in blockers
-    assert "gpu_launch_refresh_drops_model_volume_watchdog_handoff" not in blockers
-    assert "runbook_model_volume_watchdog_handoff_missing" not in blockers
     assert "remote_build_final_tag_promotion_guard_missing" not in blockers
     assert "remote_build_final_tag_promotion_order_invalid" not in blockers
     assert "remote_build_pushes_unvalidated_final_release_tag" not in blockers

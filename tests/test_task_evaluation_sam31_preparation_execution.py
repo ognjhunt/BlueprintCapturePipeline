@@ -242,38 +242,6 @@ def test_external_progress_artifacts_are_reverified_before_rechecking_handler(se
     assert json.loads(Path(intake["result_path"]).read_text())["status"] == "failed"
 
 
-def test_deployer_installs_and_authority_gates_exact_child_units():
-    import ast
-
-    repository = Path(__file__).resolve().parents[1]
-    tree = ast.parse((repository / "scripts/deploy_control_plane_commit.py").read_text())
-    constants = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            if node.targets[0].id in {
-                "DEFAULT_DEPLOYED_SYSTEMD_UNITS", "DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS",
-                "DEFAULT_ALWAYS_ARM_PATH_UNITS", "DEFAULT_ALWAYS_ARM_TIMER_UNITS",
-                "DEFAULT_PAUSED_LANE_DISARM_UNITS",
-            } and isinstance(node.value, ast.Tuple):
-                constants[node.targets[0].id] = ast.literal_eval(node.value)
-    stem = "blueprint-task-evaluation-sam31-preparation-execution"
-    for suffix in ("service", "path", "timer"):
-        name = f"{stem}.{suffix}"
-        assert name in constants["DEFAULT_DEPLOYED_SYSTEMD_UNITS"]
-        assert (repository / "deploy/systemd" / name).is_file()
-    # Paused by the 2026-11-12 frame: a release disarms the whole lane, path and timer.
-    for suffix in ("path", "timer"):
-        assert f"{stem}.{suffix}" not in constants["DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS"]
-        assert f"{stem}.{suffix}" not in constants["DEFAULT_ALWAYS_ARM_PATH_UNITS"]
-        assert f"{stem}.{suffix}" not in constants["DEFAULT_ALWAYS_ARM_TIMER_UNITS"]
-        assert f"{stem}.{suffix}" in constants["DEFAULT_PAUSED_LANE_DISARM_UNITS"]
-    service = (repository / "deploy/systemd" / f"{stem}.service").read_text()
-    assert "-m blueprint_pipeline.task_evaluation_scene_retirement_supervisor --worker blueprint_pipeline.task_evaluation_sam31_preparation_execution -- --source-commit" in service
-    assert "--max-messages 1" in service
-    assert "paid_resource_allocator" not in service
-    assert "TimeoutStartSec=75m" in service
-
-
 def test_real_source_selection_stage_crosses_outer_queue_with_canonical_frame_reference(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_sam31_preparation_stages as stages
     from tests.test_task_evaluation_sam31_preparation_cpu_stages import _fixture as source_fixture
@@ -350,7 +318,6 @@ def test_a_failed_stage_outcome_names_its_blockers_on_the_child_result(setup):
     assert receipt["status"] == "failed"
     assert receipt["blocker"] == "gpu_canary_checkout_not_remote_main;gpu_canary_checkout_promotion_provenance_invalid"
     assert receipt["executor_result"]["blockers"] == refused["blockers"]
-
 
 
 def test_owned_parent_route_uses_owned_cas_and_wakes_same_parent(setup, monkeypatch):

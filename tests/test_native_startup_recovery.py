@@ -1,5 +1,4 @@
 """Native startup recovery reuses the owner's bounded ledger, never live GPUs."""
-import copy
 
 import pytest
 
@@ -7,7 +6,6 @@ from blueprint_pipeline import task_evaluation_native_startup_recovery as recove
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_execution_authority import bind_scene_attempt
 from blueprint_pipeline.task_evaluation_scene_owner_attempt_profiles import make_owner_attempt_record
-from blueprint_pipeline.task_evaluation_scene_configuration_submission_inputs import read
 from tests.test_task_evaluation_scene_recovery import setup, write
 
 
@@ -93,115 +91,6 @@ def test_retained_native_failure_is_eligible_for_real_bounded_reservation(tmp_pa
     with pytest.raises(ValueError, match="successor_already_reserved"):
         recovery.intake.reserve_scene_attempt(**{**args, "attempt_id": "duplicate"})
     assert all(p.read_bytes() == raw for p, raw in old_bytes.items())
-
-
-def test_queued_recovery_resumes_reservation_without_second_debit(tmp_path, monkeypatch):
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
-    from blueprint_pipeline import task_evaluation_configured_controls_progression as progression
-    from blueprint_pipeline import task_evaluation_scene_progression_recovery as ownership
-    owner, prior, evidence, run, launch, activation = fixture(tmp_path)
-    state = tmp_path / "state"
-    def reconcile(**kwargs):
-        return {**evidence, "failure": recovery.record(kwargs["failure_path"])}
-    monkeypatch.setattr(ownership, "reconcile_ownership", reconcile)
-    ids = []
-    def window(**kwargs):
-        ids.append(kwargs["activation_id"])
-        return {}
-    monkeypatch.setattr(worker, "_materialize_phase_release_window", window)
-    def stage(**kwargs):
-        value = copy.deepcopy(activation)
-        value["activation_request"]["activation_id"] = kwargs["activation_id"]
-        value["activation_request"]["authorization"] = kwargs["authorization"]
-        value["status"] = "construction_activation_queued"
-        return seal(value, "progression_digest")
-    monkeypatch.setattr(progression, "stage_configured_controls_activation", stage)
-    monkeypatch.setattr(worker, "_activation_authority", lambda **kwargs: None)
-    args = dict(config={"scene_root": str(tmp_path)}, plan={"submitted_by": "controller", "profile_dir": str(tmp_path)},
-        state=state, launch_root=run.parent, launch=launch, activation=activation,
-        phase={}, base={}, preparation={}, activation_queue_root=tmp_path / "queue", publisher=lambda: None,
-        submitter_factory=lambda: pytest.fail("no activation authority yet"), now=104)
-    assert recovery.advance(**args)[1] == "startup_replacement_activation_queued"
-    reservation_path = state / "startup-recovery" / run.name / "reservation.json"
-    reserved = read(reservation_path)
-    assert reserved["recovery"]["prior_attempt_id"] == prior["attempt_id"]
-    reservation_path.unlink()  # Rehearse interruption after the durable ledger debit.
-    assert recovery.advance(**args)[1] == "awaiting_startup_replacement_activation"
-    assert read(reservation_path) == reserved
-    assert len(list((tmp_path / owner["intent_id"] / "attempts").glob('*.json'))) == 2
-    assert len(ids) == 1
-    assert recovery.effective_launch(state, launch) == launch
-
-
-def test_configuration_uses_existing_ownership_scope():
-    keys = ("provider_guard_path", "ownership_roots", "child_execution_root", "launch_execution_root",
-            "child_queue_root", "launch_queue_root")
-    controls = {"scene_root": "/state/scenes"}
-    progression = {"intent_root": "/state/scenes", **{key: key for key in keys}}
-    assert recovery.configuration(controls, progression) == {"scene_root": "/state/scenes", **{key: key for key in keys}}
-    with pytest.raises(ValueError, match="scene_scope_changed"):
-        recovery.configuration(controls, {**progression, "intent_root": "/other/scenes"})
-
-
-def test_recovery_reuses_preparation_and_submits_once_through_webapp(tmp_path, monkeypatch):
-    from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
-    from blueprint_pipeline import task_evaluation_configured_controls_progression as progression
-    from blueprint_pipeline import task_evaluation_scene_progression_recovery as ownership
-    from tests.test_task_evaluation_configured_controls_progression import (
-        _episode_progression, _preparation_result, _ref, _authorization, _activation_result, _profile)
-    owner, prior, evidence, run, launch, original_activation = fixture(tmp_path)
-    base = _episode_progression(tmp_path)
-    base["expected_production_commit"] = prior["source_commit"]
-    seal(base, "progression_digest")
-    preparation = _preparation_result(base)
-    launch["configured_scene_revision_digest"] = base["configured_scene_revision_digest"]
-    requests = []
-    def intake(**kwargs):
-        request = kwargs["value"]
-        requests.append(request)
-        return {"status": "queued_for_authority_gated_activation", "accepted": True,
-            "activation_id": request["activation_id"], "lane": request["lane"],
-            "provider_mutation_performed_inside_http_request": False,
-            "paid_execution_requested": False, "receipt_digest": "sha256:" + "f" * 64}
-    real_stage = progression.stage_configured_controls_activation
-    def stage(**kwargs):
-        return real_stage(**kwargs, activation_stager=intake)
-    activation = stage(progression=base, preparation_result=preparation, release_window=_ref(60),
-        lineage={"kind": "initial_project", "project_spend_reconciliation": _ref(61), "initial_provider_zero": _ref(62)},
-        authorization={**_authorization(), **original_activation["activation_request"]["authorization"]},
-        lane="native_task_arena_construction", queue_root=tmp_path / "queue", submitted_by="controller",
-        activation_id="native-original")
-    monkeypatch.setattr(progression, "stage_configured_controls_activation", stage)
-    monkeypatch.setattr(ownership, "reconcile_ownership", lambda **kw: {**evidence, "failure": recovery.record(kw["failure_path"])})
-    monkeypatch.setattr(worker, "_materialize_phase_release_window", lambda **kw: _ref(63))
-    state = tmp_path / "state"
-    authorization_path = tmp_path / "launch-authority.json"
-    write(authorization_path, {"rights_scope": "development evaluation", "rights_evidence": _ref(70),
-        "max_spend_usd": 2.25, "expires_at": "2026-08-28T22:30:00.000Z"})
-    submissions = []
-    def submit(request):
-        submissions.append(request)
-        return {"status": "submitted", "launch_id": request["launch_id"],
-                "provider_mutation_performed_inside_web_request": False}
-    args = dict(config={"scene_root": str(tmp_path)}, plan={"submitted_by": "controller", "profile_dir": str(tmp_path)},
-        state=state, launch_root=run.parent, launch=launch, activation=activation,
-        phase={"launch_authority_path": str(authorization_path)}, base=base, preparation=preparation,
-        activation_queue_root=tmp_path / "queue", publisher=lambda: None, submitter_factory=lambda: submit, now=104)
-    assert recovery.advance(**args)[1] == "startup_replacement_activation_queued"
-    replacement = read(state / "startup-recovery" / run.name / "activation.json")
-    profile = _profile(replacement)
-    monkeypatch.setattr(worker, "_activation_authority", lambda **kw: (_activation_result(replacement, profile), profile))
-    successor, status = recovery.advance(**args)
-    assert status == "startup_replacement_launch_queued"
-    assert successor["launch_id"] != launch["launch_id"]
-    assert requests[0]["preparation"] == requests[1]["preparation"]
-    assert requests[0]["authorization"]["scene_owner_attempt"] != requests[1]["authorization"]["scene_owner_attempt"]
-    assert requests[0]["authorization"]["profile_revision"] != requests[1]["authorization"]["profile_revision"]
-    assert successor["submitted_through_webapp"] is True
-    assert recovery.advance(**args) == (successor, None)
-    assert len(submissions) == 1
-    assert recovery.effective_launch(state, launch) == successor
-    assert len(list((tmp_path / owner["intent_id"] / "attempts").glob('*.json'))) == 2
 
 
 @pytest.mark.parametrize('fault', [None, 'dependency', 'execution', 'live', 'unknown_zero', 'tampered_adapter'])

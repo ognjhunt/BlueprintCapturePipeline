@@ -49,10 +49,7 @@ def _allowlist_definition(path: Path) -> set[str]:
 
 
 # Files reviewed by hand that use an allowlisted directory's bare name for some other path.
-REVIEWED = {
-    # ops/launch-readiness/ in the BlueprintCapture and WebApp checkouts, not this repo's docs/.
-    "src/blueprint_pipeline/city_launch_autonomy_harness.py": "launch-readiness",
-}
+REVIEWED: dict[str, str] = {}
 
 
 def _offences(path: Path, value: str) -> list[str]:

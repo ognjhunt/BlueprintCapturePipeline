@@ -22,16 +22,6 @@ from blueprint_pipeline.decision_evidence_execution import (
     execute_evidence_plan,
 )
 from blueprint_pipeline.physical_outcome_learning import join_physical_outcome
-from blueprint_pipeline.task_evaluation_evidence_use import determine_evidence_use
-from blueprint_pipeline.decision_evidence_cli import main as decision_evidence_cli_main
-from blueprint_pipeline.decision_evidence_handoff import verify as verify_webapp_handoff
-from blueprint_pipeline.evaluation_run import (
-    LegacyEvaluationPackSpec,
-    EvaluationRunSpec as LegacyAlias,
-    get_evaluation_pack,
-    legacy_evaluation_pack_to_leaf_spec,
-)
-from blueprint_pipeline.evaluation_run_contract import validate_evaluation_run_spec
 from blueprint_pipeline.task_site_measurement_routing import (
     ALL_CAPABILITY_FIELDS,
     validate_measurement_qualification,
@@ -455,34 +445,6 @@ def _registry() -> tuple[list[dict], list[dict]]:
         _qualification(profiles[5], "deployment_readiness"),
     ]
     return profiles, qualifications
-
-
-def test_legacy_pack_type_is_explicit_and_alias_remains_compatible() -> None:
-    pack = get_evaluation_pack("g1_kitchen")
-    assert isinstance(pack, LegacyEvaluationPackSpec)
-    assert LegacyAlias is LegacyEvaluationPackSpec
-
-
-def test_legacy_pack_translation_requires_runtime_identity_and_emits_canonical_leaf() -> None:
-    pack = get_evaluation_pack("g1_kitchen")
-    with pytest.raises(Exception, match="leaf_scene_content_digest_invalid"):
-        legacy_evaluation_pack_to_leaf_spec(
-            pack,
-            run_id="legacy-1",
-            scene_uri="fixture://scene",
-            scene_content_digest="missing",
-            robot_asset_ref="fixture://g1",
-        )
-    leaf = legacy_evaluation_pack_to_leaf_spec(
-        pack,
-        run_id="legacy-1",
-        scene_uri="fixture://scene",
-        scene_content_digest=SHA_A,
-        robot_asset_ref="fixture://g1",
-    )
-    assert leaf["schema_version"] == "evaluation_run.v1"
-    assert leaf["metadata"]["legacy_defaults_are_qualification_evidence"] is False
-    assert validate_evaluation_run_spec(leaf)["status"] == "passed"
 
 
 def test_contracts_reject_secret_values_before_digesting(
@@ -1333,47 +1295,6 @@ def test_checked_in_json_schemas_validate_control_plane_and_webapp_examples() ->
         from blueprint_pipeline.decision_evidence_contracts import DecisionEnvelope
 
         assert DecisionEnvelope.from_mapping(example).digest == example["decision_envelope_digest"]
-    verification = verify_webapp_handoff(handoff)
-    assert verification["status"] == "passed"
-    assert verification["artifact_count"] == 9
-    assert verification["example_count"] == 3
-
-
-def test_post_training_is_a_gated_evidence_use_not_a_product_or_improvement_claim() -> None:
-    *_, envelope = _execution_fixture()
-    allowed = determine_evidence_use(
-        envelope.to_mapping(),
-        rights={
-            "evaluation_use_allowed": True,
-            "post_training_use_allowed": True,
-            "consent_current": True,
-            "revocation_clear": True,
-        },
-        provenance={"complete": True},
-        robot_action_alignment={"aligned": True},
-        quality={"gate_passed": True},
-        leakage={"heldout_leakage_absent": True},
-    )
-    assert allowed["evaluation_use"]["allowed"] is True
-    assert allowed["post_training_use"]["allowed"] is True
-    assert allowed["standalone_product_created"] is False
-    assert allowed["training_occurred"] is False
-    assert allowed["policy_improved"] is False
-    blocked = determine_evidence_use(
-        envelope.to_mapping(),
-        rights={
-            "evaluation_use_allowed": True,
-            "post_training_use_allowed": False,
-            "consent_current": True,
-            "revocation_clear": True,
-        },
-        provenance={"complete": True},
-        robot_action_alignment={"aligned": True},
-        quality={"gate_passed": True},
-        leakage={"heldout_leakage_absent": True},
-    )
-    assert blocked["evaluation_use"]["allowed"] is True
-    assert blocked["post_training_use"]["allowed"] is False
 
 
 def test_checked_in_rigid_object_vertical_slice_matches_plan_decision_and_learning() -> None:
@@ -1435,143 +1356,6 @@ def test_checked_in_rigid_object_vertical_slice_matches_plan_decision_and_learni
         == fixture["later_physical_outcome"]["creates_new_testbed_version"]
     )
     assert update.new_testbed.to_mapping()["cross_domain_calibration_transfer_enabled"] is False
-
-
-def _write_json(path: Path, value: dict) -> None:
-    path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
-
-
-def test_cli_plan_execute_aggregate_and_fail_closed_authorization(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    testbed, request, profiles, qualifications, _, _, _ = _execution_fixture()
-    testbed_path = tmp_path / "testbed.json"
-    request_path = tmp_path / "request.json"
-    _write_json(testbed_path, testbed)
-    _write_json(request_path, request)
-    profile_paths = []
-    qualification_paths = []
-    adapters = []
-    for index, profile in enumerate(profiles):
-        path = tmp_path / f"profile-{index}.json"
-        _write_json(path, profile)
-        profile_paths.append(path)
-        if profile["method_id"] in {"analytic-reach", "captured-visibility", "fixture-mujoco"}:
-            adapters.append(
-                {
-                    "adapter_reference": profile["adapter_reference"],
-                    "result": _FixtureAdapter(
-                        profile["adapter_reference"],
-                        supports_claim=True,
-                        finding="fixture-supports",
-                    ).execute(method_profile=profile),
-                }
-            )
-    for index, qualification in enumerate(qualifications):
-        path = tmp_path / f"qualification-{index}.json"
-        _write_json(path, qualification)
-        qualification_paths.append(path)
-    plan_dir = tmp_path / "plan"
-    plan_args = [
-        "plan",
-        "--request",
-        str(request_path),
-        "--testbed",
-        str(testbed_path),
-        "--output-dir",
-        str(plan_dir),
-    ]
-    for path in profile_paths:
-        plan_args.extend(["--method-profile", str(path)])
-    for path in qualification_paths:
-        plan_args.extend(["--qualification", str(path)])
-    assert decision_evidence_cli_main(plan_args) == 0
-    assert json.loads(capsys.readouterr().out)["execution_started"] is False
-    registry_path = tmp_path / "fixture-adapters.json"
-    _write_json(
-        registry_path,
-        {"schema_version": "evidence_fixture_adapter_registry.v1", "adapters": adapters},
-    )
-    execute_dir = tmp_path / "execute"
-    execute_args = [
-        "execute",
-        "--plan",
-        str(plan_dir / "evidence_plan.json"),
-        "--request",
-        str(request_path),
-        "--testbed",
-        str(testbed_path),
-        "--fixture-adapter-registry",
-        str(registry_path),
-        "--output-dir",
-        str(execute_dir),
-    ]
-    for path in profile_paths:
-        execute_args.extend(["--method-profile", str(path)])
-    for path in qualification_paths:
-        execute_args.extend(["--qualification", str(path)])
-    assert decision_evidence_cli_main(execute_args) == 2
-    blocked = json.loads(capsys.readouterr().out)
-    assert blocked["status"] == "blocked"
-    assert blocked["physical_robot_run_initiated"] is False
-    assert decision_evidence_cli_main([*execute_args, "--allow-fixture-adapters"]) == 0
-    executed = json.loads(capsys.readouterr().out)
-    result_paths = executed["results"]
-    assert result_paths
-    aggregate_dir = tmp_path / "aggregate"
-    aggregate_args = [
-        "aggregate",
-        "--request",
-        str(request_path),
-        "--testbed",
-        str(testbed_path),
-        "--plan",
-        str(plan_dir / "evidence_plan.json"),
-        "--output-dir",
-        str(aggregate_dir),
-    ]
-    for path in result_paths:
-        aggregate_args.extend(["--result", path])
-    assert decision_evidence_cli_main(aggregate_args) == 0
-    aggregated = json.loads(capsys.readouterr().out)
-    assert aggregated["status"] == "partial_decision"
-    assert (aggregate_dir / "decision_envelope.json").is_file()
-    result_value = json.loads(Path(result_paths[0]).read_text())
-    outcome_path = tmp_path / "physical-outcome.json"
-    _write_json(
-        outcome_path,
-        _physical_outcome(testbed, result_value["result_digest"]),
-    )
-    predictor_path = profile_paths[
-        next(
-            index
-            for index, profile in enumerate(profiles)
-            if profile["method_id"] == "fixture-mujoco"
-        )
-    ]
-    learning_dir = tmp_path / "learning"
-    assert (
-        decision_evidence_cli_main(
-            [
-                "ingest-outcome",
-                "--testbed",
-                str(testbed_path),
-                "--decision",
-                str(aggregate_dir / "decision_envelope.json"),
-                "--outcome",
-                str(outcome_path),
-                "--method-profile",
-                str(predictor_path),
-                "--output-dir",
-                str(learning_dir),
-            ]
-        )
-        == 0
-    )
-    learning = json.loads(capsys.readouterr().out)
-    assert learning["status"] == "updated_append_only"
-    assert learning["historical_decision_mutated"] is False
-    assert learning["cross_domain_transfer_enabled"] is False
 
 
 def test_router_embeds_deterministic_task_site_measurement_route() -> None:

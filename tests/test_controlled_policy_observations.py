@@ -9,7 +9,6 @@ import pytest
 from PIL import Image, PngImagePlugin
 
 from blueprint_pipeline import controlled_policy_observations as controlled
-from blueprint_pipeline import robot_eval_execution as execution
 from tests.test_company_policy_container_contract_v2 import _contract
 
 
@@ -72,19 +71,3 @@ def test_remote_call_has_no_redirects_and_refuses_policy_outcome_claim(monkeypat
         )
 
 
-def test_skill_sequence_is_intent_with_unknown_success(tmp_path):
-    sequence = [{"skill_id": "find_cup"}, {"skill_id": "pick_cup"}, {"skill_id": "place_cup"}]
-    replay = execution._replay_reference_payload(
-        modality="high_level_skill_trace", payload={"ordered_skill_sequence": sequence},
-        capture_root=tmp_path, job_dir=tmp_path,
-    )
-    attempts = execution._normalize_policy_attempts(
-        payload=replay, modality="high_level_skill_trace", observations=[{"observation_id": "obs"}],
-        generated_at="2026-09-28T00:00:00Z", success_source=execution.TEAM_REPORTED,
-    )
-    assert attempts[0]["skills"] == sequence
-    assert attempts[0]["actions"] == []
-    assert attempts[0]["status"] == "submitted_unexecuted"
-    assert attempts[0]["success"] is None
-    assert attempts[0]["metrics"]["execution_evidence_available"] is False
-    assert execution._policy_run_coverage(attempts, ["run-1"])["covered_scenario_eval_run_count"] == 0

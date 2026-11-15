@@ -235,36 +235,18 @@ def test_disk_admission_projection_shares_the_ledgers_floor_footprints_and_liven
     assert finding["required_workspace_basis"] == "measured_p95"
 
 
-def test_handoff_checks_name_each_missing_piece_of_the_canary_chain(tmp_path: Path) -> None:
-    secret = tmp_path / "submit_secret"
-    secret.write_text("s", encoding="utf-8")
-    progression = "blueprint-task-evaluation-configured-controls-progression.service"
+def test_handoff_checks_name_a_held_launch_dispatcher(tmp_path: Path) -> None:
     dispatcher = "blueprint-task-evaluation-launch-dispatcher.service"
     units = {
-        progression: {"effective_environment": {
-            "BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL": "",
-            "BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE": str(secret),
-            "BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL": "https://tryblueprint.io/api/internal/x",
-            "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_CATALOG": "/var/lib/blueprint/pipeline-control-plane/catalog.json",
-        }},
-        "blueprint-pipeline-intake.service": {"effective_environment": {
-            "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH": "/var/lib/blueprint/pipeline-control-plane/other.json",
-        }},
         dispatcher: {"effective_environment": {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "0"}},
     }
 
     findings = preflight.handoff_checks(units, (os.getuid(), os.getgid()))
     codes = sorted(f["code"] for f in findings if f["severity"] == "blocker")
 
-    assert codes == [
-        "launch_dispatcher_execution_hold_present",
-        "launch_profile_catalog_path_disagrees_with_intake",
-        "policy_canary_notification_email_unset",
-    ]
+    assert codes == ["launch_dispatcher_execution_hold_present"]
     # The empty per-launch id is the hands-off state (standing authorization admits): recorded, not blocking.
     assert [f["code"] for f in findings if f["severity"] == "info"] == ["launch_dispatcher_execute_id_unset"]
-    units[progression]["effective_environment"]["BLUEPRINT_POLICY_CANARY_NOTIFICATION_EMAIL"] = "owner@example.com"
-    units["blueprint-pipeline-intake.service"]["effective_environment"]["BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH"] = "/var/lib/blueprint/pipeline-control-plane/catalog.json"
     units[dispatcher]["effective_environment"] = {"BLUEPRINT_TASK_EVALUATION_LAUNCH_EXECUTE": "1"}
     assert [f["code"] for f in preflight.handoff_checks(units, (os.getuid(), os.getgid())) if f["severity"] == "blocker"] == []
 
@@ -500,7 +482,7 @@ def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_cr
     key_file = tmp_path / "vast_api_key"
     key_file.write_text("k\n")
     dispatcher = "blueprint-task-evaluation-launch-dispatcher.service"
-    canary = "blueprint-task-evaluation-policy-canary-dispatcher.service"
+    canary = "blueprint-pubsub-handoff-listener.service"
     units = {
         dispatcher: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file), credit.ENABLED_ENV: "true"}},
         canary: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file)}},
@@ -535,7 +517,7 @@ def test_preflight_refuses_a_paid_unit_without_the_credit_guard_and_reads_the_cr
     ]
 
 
-def test_the_beta_rigid_lane_refuses_a_probe_or_screening_unit_without_the_credit_guard(tmp_path: Path) -> None:
+def test_the_beta_rigid_lane_refuses_a_probe_or_listener_unit_without_the_credit_guard(tmp_path: Path) -> None:
     """Both paid beta lanes reach the Vast adapter; the beta_rigid lane observes them, so each is checked."""
 
     from blueprint_pipeline import provider_credit_admission as credit
@@ -544,7 +526,7 @@ def test_the_beta_rigid_lane_refuses_a_probe_or_screening_unit_without_the_credi
     key_file = tmp_path / "vast_api_key"
     key_file.write_text("k\n")
     probe = "blueprint-rigid-robot-free-probe-runner.service"
-    screening = "blueprint-beta-policy-screening.service"
+    screening = "blueprint-pubsub-handoff-listener.service"
     assert {probe, screening} <= set(BETA_RIGID_UNITS) & set(preflight.PAID_ALLOCATION_UNITS)
     units = {probe: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file)}},
              screening: {"effective_environment": {"VAST_API_KEY_FILE": str(key_file), credit.ENABLED_ENV: "false"}}}

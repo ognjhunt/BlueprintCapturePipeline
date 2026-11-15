@@ -5,8 +5,7 @@ import json
 import logging
 from http import HTTPStatus
 from pathlib import Path
-from types import MethodType, SimpleNamespace
-from urllib.error import HTTPError
+from types import MethodType
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,18 +14,10 @@ from blueprint_pipeline import (
     capture_orchestrator,
     privacy_runner_service,
     run_e2e,
-    runpod_provider_adapter,
     video_to_world_runner_service,
 )
 from blueprint_pipeline.common import PipelineError
-from blueprint_pipeline.paid_resource_admission import (
-    PAID_LANE_ADMISSION_SCHEMA_VERSION,
-    build_paid_lane_admission,
-    require_paid_resource_admission,
-)
 from blueprint_pipeline.runtime_service_app import create_runtime_app
-from blueprint_pipeline.robot_eval_provider_launcher import run_gpu_provider_launcher
-from blueprint_pipeline.runpod_provider_adapter import RUNPOD_API_GATE_ENV, RUNPOD_API_KEY_ENV
 
 
 pytestmark = [pytest.mark.slow, pytest.mark.integration]
@@ -69,35 +60,15 @@ def test_run_e2e_logs_start_completion_and_preflight_failure(
     monkeypatch.setattr(
         run_e2e,
         "run_capture_pipeline",
-        lambda **kwargs: {"status": "completed", "lanes": [kwargs["lane"]]},
-    )
-    # The happy-path logging fixture needs a successful required supervisor;
-    # an empty synthetic capture correctly returns a blocked real supervisor.
-    monkeypatch.setattr(
-        run_e2e,
-        "run_capture_build_supervisor",
-        lambda **_kwargs: {
-            "status": "non_spend_complete",
-            "agent_harness": "openai_agents_sdk",
-            "capture_build_alone_can_start_run": True,
-        },
-    )
-    monkeypatch.setattr(
-        run_e2e,
-        "run_agent_review",
-        lambda **_kwargs: {
-            "artifacts": {"readiness_report": "ready.md"},
-            "final_memo_path": "memo.md",
-            "final_bundle_path": "bundle.zip",
-        },
+        lambda **kwargs: {"status": "completed", "lanes": [kwargs["lane"]], "results": [
+            {"lane": "qualification", "status": "completed", "native_execution_complete": False,
+             "website_scene_preparation": {"status": "prepared"}}]},
     )
 
     with caplog.at_level(logging.INFO, logger="blueprint_pipeline.run_e2e"):
         result = run_e2e.run_end_to_end(
             capture_root=str(capture_root),
             provider="openai",
-            pipeline_lane="all",
-            run_agent_review_stage=True,
         )
 
     assert result["pipeline_status"] == "completed"
@@ -106,7 +77,7 @@ def test_run_e2e_logs_start_completion_and_preflight_failure(
     assert completed.capture_root == str(capture_root)
     assert completed.provider == "openai"
     assert completed.pipeline_status == "completed"
-    assert completed.pipeline_lanes == ["all"]
+    assert completed.pipeline_lanes == ["qualification"]
 
     caplog.clear()
     monkeypatch.setattr(
@@ -146,18 +117,8 @@ def test_capture_pipeline_logs_lane_lifecycle(
     )
     monkeypatch.setattr(
         capture_orchestrator,
-        "resolve_requested_lanes",
-        lambda **_kwargs: ["qualification", "evaluation_prep"],
-    )
-    monkeypatch.setattr(
-        capture_orchestrator,
         "run_qualification_pipeline",
         lambda **_kwargs: {"status": "completed", "lane": "qualification"},
-    )
-    monkeypatch.setattr(
-        capture_orchestrator,
-        "run_evaluation_prep_stage",
-        lambda **_kwargs: {"manifest_path": str(tmp_path / "eval.json")},
     )
 
     with caplog.at_level(logging.INFO, logger="blueprint_pipeline.capture_orchestrator"):
@@ -167,11 +128,11 @@ def test_capture_pipeline_logs_lane_lifecycle(
         )
 
     assert result["status"] == "completed"
-    assert _event_names(caplog).count("capture_pipeline.lane_started") == 2
-    assert _event_names(caplog).count("capture_pipeline.lane_completed") == 2
+    assert _event_names(caplog).count("capture_pipeline.lane_started") == 1
+    assert _event_names(caplog).count("capture_pipeline.lane_completed") == 1
     completed = _records(caplog, "capture_pipeline.completed")[-1]
-    assert completed.lanes == ["qualification", "evaluation_prep"]
-    assert completed.result_count == 2
+    assert completed.lanes == ["qualification"]
+    assert completed.result_count == 1
 
 
 class _RuntimeBackend:
@@ -493,92 +454,3 @@ def _ready_runpod_request(path: Path) -> Path:
     return path
 
 
-@pytest.mark.usefixtures("legacy_runpod_mechanics")
-def test_provider_adapters_log_blocked_completed_and_redacted_failures(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    provider_request = _ready_provider_launch_request(tmp_path / "provider_request.json")
-
-    with caplog.at_level(logging.INFO):
-        blocked = run_gpu_provider_launcher(
-            provider_launch_request_path=provider_request,
-            allow_provider_launch=False,
-        )
-
-    assert blocked["status"] == "blocked"
-    blocked_record = _records(caplog, "robot_eval_provider_launcher.blocked")[-1]
-    assert blocked_record.job_id == "launcher-job-1"
-    assert blocked_record.provider == "runpod"
-    assert blocked_record.blocker_count >= 1
-
-    caplog.clear()
-    monkeypatch.setenv("BLUEPRINT_ALLOW_GPU_PROVIDER_LAUNCH", "true")
-    monkeypatch.setenv("RUNPOD_API_KEY", "secret-runpod-key")
-    side_effect = tmp_path / "legacy-launcher-ran"
-    with caplog.at_level(logging.INFO):
-        disabled = run_gpu_provider_launcher(
-            provider_launch_request_path=provider_request,
-            allow_provider_launch=True,
-            provider_launch_command=f"touch {side_effect}",
-        )
-
-    assert disabled["status"] == "blocked"
-    assert disabled["reason"] == "legacy_provider_command_launcher_disabled"
-    assert disabled["blockers"] == [
-        "legacy_provider_command_launcher_disabled_use_paid_resource_allocator"
-    ]
-    assert side_effect.exists() is False
-    disabled_record = _records(caplog, "robot_eval_provider_launcher.blocked")[-1]
-    assert disabled_record.reason == "legacy_provider_command_launcher_disabled"
-    assert "secret-runpod-key" not in caplog.text
-
-    caplog.clear()
-    runpod_request = _ready_runpod_request(tmp_path / "runpod_request.json")
-    with caplog.at_level(logging.INFO):
-        dry_run = runpod_provider_adapter.run_runpod_provider_adapter(
-            provider_launch_request_path=runpod_request,
-            mode="dry-run",
-            endpoint_id="endpoint-123",
-        )
-    assert dry_run["status"] == "dry_run_ready"
-    assert _records(caplog, "runpod_provider_adapter.completed")[-1].mode == "dry-run"
-
-    caplog.clear()
-    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
-    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "secret-runpod-key")
-
-    def fake_urlopen(request, timeout, policy):  # type: ignore[no-untyped-def]
-        raise HTTPError(
-            request.full_url,
-            401,
-            "unauthorized secret-runpod-key",
-            hdrs=None,
-            fp=SimpleNamespace(read=lambda: b"bad secret-runpod-key"),
-        )
-
-    monkeypatch.setattr(
-        "blueprint_pipeline.safe_outbound_http._open_with_policy", fake_urlopen
-    )
-    with caplog.at_level(logging.INFO):
-        failed = runpod_provider_adapter.run_runpod_provider_adapter(
-            provider_launch_request_path=runpod_request,
-            mode="serverless-run",
-            allow_runpod_api_call=True,
-            endpoint_id="endpoint-123",
-            paid_resource_admission_grant=require_paid_resource_admission(
-                build_paid_lane_admission(
-                    resource_class="runpod_provider_adapter",
-                    blockers=[],
-                ),
-                resource_class="runpod_provider_adapter",
-                expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
-            ),
-        )
-
-    assert failed["status"] == "failed"
-    failure = _records(caplog, "runpod_provider_adapter.failed")[-1]
-    assert failure.job_id == "runpod-job-1"
-    assert failure.http_status_code == 401
-    assert "secret-runpod-key" not in caplog.text

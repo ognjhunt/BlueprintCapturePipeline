@@ -1086,10 +1086,6 @@ def probe_unitree_groot_n17_sonic_runtime(*, generated_at: str | None = None) ->
                 "--policy-host 127.0.0.1 --policy-port 5550 "
                 "--embodiment-tag unitree_g1_sonic --prompt '<task prompt>'"
             ),
-            "run_blueprint_probe": (
-                "python -m blueprint_pipeline.mujoco_g1_wam_vla_policy_endpoint_eval "
-                "--allow-policy-action-model-command-run"
-            ),
         },
         "distinguishes_demo_assets_from_policy_checkpoints": True,
         "blockers": sorted(

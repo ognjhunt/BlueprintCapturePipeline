@@ -106,6 +106,24 @@ def validate_source(run_root: Path, *, load_json: Callable[..., dict[str, Any]] 
     return load_json(result_path, blocker="configured_controls_worker_terminal_result_invalid"), receipt, zero
 
 
+def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    try:
+        with path.open("xb") as stream:
+            stream.write(payload)
+        path.chmod(0o440)
+    except FileExistsError:
+        if path.is_symlink() or path.read_bytes() != payload:
+            raise TaskEvaluationConfiguredControlsProgressionWorkerError(
+                "configured_controls_worker_immutable_conflict"
+            )
+
+
+def _validate_source(run_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    return validate_source(run_root, load_json=_load, sha256=_sha256)
+
+
 def validate_retained_source(run_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """``validate_source`` of an offloaded run, read from the bytes its pointer kept; raises like it.
 

@@ -1051,48 +1051,6 @@ def test_local_sfm_builder_truth_flags_are_append_only(tmp_path: Path) -> None:
     assert "synthetic_geometry_used" in local["provider_warnings"]
 
 
-def test_reconcile_geometry_truth_flags_cannot_weaken() -> None:
-    from blueprint_pipeline.geometry_sources import reconcile_geometry_truth_flags
-
-    # A later relabel that resets fallback_used cannot launder synthetic truth.
-    laundered = {
-        "fallback_used": False,
-        "fallback_kind": "local_sfm_synthetic_dev",
-        "synthetic_geometry": False,
-    }
-    synthetic, fallback_used = reconcile_geometry_truth_flags(laundered)
-    assert synthetic is True
-    assert fallback_used is True
-
-    honest_provider = {"fallback_used": False, "fallback_kind": None}
-    synthetic, fallback_used = reconcile_geometry_truth_flags(honest_provider)
-    assert synthetic is False
-    assert fallback_used is False
-
-
-def test_geometry_export_gate_blocks_synthetic_in_production(monkeypatch) -> None:
-    from blueprint_pipeline.geometry_sources import (
-        SyntheticGeometryExportError,
-        geometry_export_gate,
-    )
-
-    synthetic_summary = {"fallback_used": True, "fallback_kind": "internal_synthetic_geometry"}
-
-    with pytest.raises(SyntheticGeometryExportError):
-        geometry_export_gate(
-            synthetic_summary,
-            export_name="cosmos_training_export",
-            env={"BLUEPRINT_LAUNCH_PROOF_MODE": "production"},
-        )
-
-    stamp = geometry_export_gate(synthetic_summary, export_name="cosmos_training_export", env={})
-    assert stamp["synthetic_geometry"] is True
-    assert stamp["export_allowed_by"] == "synthetic_geometry_dev_allowance"
-
-    clean = geometry_export_gate({"fallback_used": False}, env={"BLUEPRINT_LAUNCH_PROOF_MODE": "production"})
-    assert clean["export_allowed_by"] == "provider_geometry"
-
-
 # --- capture-rights boolean normalization in the geometry descriptor patch ---
 
 _RIGHTS_MISSING = object()

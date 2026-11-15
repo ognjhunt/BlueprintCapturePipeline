@@ -1,4 +1,4 @@
-"""Run local preflight, current package pipeline, and agent review end to end."""
+"""Run a website capture's preflight, materialization and site preparation end to end."""
 
 from __future__ import annotations
 
@@ -12,14 +12,11 @@ from typing import List, Optional
 
 from .handoff_job_state import required_stage_result_blocker
 from .core.handoff_lease import handoff_lease_checkpoint, guarded_handoff_write_json as write_json
-from .agent_runtime.orchestrator import run_agent_review
-from .agent_runtime.openai_phase2 import OpenAIPhase2Config
 from .capture_orchestrator import (
     PipelineConfig,
     run_capture_pipeline,
 )
 from .core.common import PipelineError, read_json_any, utc_now_iso
-from .evaluation_prep_stage import run_evaluation_prep_stage
 from .core.lane_resume import (
     CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION,
     capture_input_fingerprint,
@@ -29,19 +26,10 @@ from .local_capture import resolve_local_capture_context
 from .materialization import materialize_capture_bundle
 from .core.pipeline_settings import PipelineSettings
 from .preflight_capture import build_capture_preflight_report
-from .robot_eval_evaluation_run_adapter import (
-    execute_robot_eval_request_as_evaluation_run,
-)
-from .robot_eval_job_orchestrator import run_robot_eval_job_request_inbox
 from .website_robot_fit_hold import preparation_binding_digest
 from .website_held_handoff_replay import preparation_binding as held_replay_binding
 from .website_task_target_choice import correction_binding_digest
 from .core.stage_outcome import stage_ledger_outcome_kind
-from .task_evaluation_supervisor import (
-    DEFAULT_SUPERVISOR_AGENT_MODEL,
-    capture_supervisor_execution_profile,
-    run_capture_build_supervisor,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -52,6 +40,7 @@ RUN_E2E_RUN_SUMMARY_FILENAME = "run_summary.json"
 RUN_E2E_RUN_SUMMARY_SCHEMA_VERSION = "pipeline_run_summary.v1"
 RUN_E2E_INPUT_FINGERPRINT_SCHEMA_VERSION = CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION
 RUN_E2E_STAGE_RESULT_SNAPSHOT_MAX_BYTES = 512_000
+RUN_E2E_PIPELINE_LANE = "qualification"
 _SENSITIVE_STAGE_SNAPSHOT_KEY_MARKERS = (
     "api_key",
     "authorization",
@@ -65,36 +54,26 @@ _RUN_E2E_STAGE_ORDER = (
     "materialization",
     "capture_pipeline",
     "task_evaluation_supervisor",
-    "agent_review",
-    "evaluation_prep",
-    "support_validation",
-    "robot_eval",
 )
+# The ``requested`` record every website ledger on the host carries; a retry resumes
+# only a ledger whose record matches, so it stays byte-identical.
+_RUN_E2E_REQUESTED = {
+    "task_evaluation_supervisor": True,
+    "agent_review": False,
+    "evaluation_prep": False,
+    "support_validation": False,
+    "robot_eval": False,
+}
+_WEBSITE_NATIVE_HANDOFF = {
+    "status": "skipped",
+    "reason": "website_scene_preparation_uses_native_handoff",
+    "native_execution_complete": False,
+    "proof_state_mutated_by_agent": False,
+}
 
 
 def _string(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-def _mapping(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, Mapping) else {}
-
-
-def _run_legacy_cosmos_predict2_5_validation(
-    *,
-    capture_root: Path,
-    descriptor_gcs_uri: str,
-    cfg: PipelineConfig,
-) -> dict[str, Any]:
-    """Load the retired backend only inside its explicitly admitted compatibility path."""
-
-    from .synthesis.cosmos_benchmark import run_cosmos_zero_shot_validation_lane
-
-    return run_cosmos_zero_shot_validation_lane(
-        capture_root=capture_root,
-        descriptor_gcs_uri=descriptor_gcs_uri,
-        cfg=cfg,
-    )
 
 
 def _completed_website_preparation_only(value: Any) -> bool:
@@ -120,41 +99,6 @@ def _completed_website_preparation_only(value: Any) -> bool:
         and isinstance(preparation, Mapping)
         and bool(preparation)
     )
-
-
-def _pipeline_lane_runs_evaluation_prep(
-    pipeline_lane: str,
-    pipeline_result: Mapping[str, Any],
-) -> bool:
-    if pipeline_lane in {"current", "all", "evaluation_prep", "simulation_automation"}:
-        return True
-    lanes = pipeline_result.get("lanes")
-    return isinstance(lanes, list) and "evaluation_prep" in lanes
-
-
-def _evaluation_prep_result_from_pipeline(
-    pipeline_result: Mapping[str, Any],
-) -> dict[str, Any]:
-    rows = pipeline_result.get("results")
-    if not isinstance(rows, list):
-        return {}
-    for row in rows:
-        if not isinstance(row, Mapping) or row.get("lane") != "evaluation_prep":
-            continue
-        nested = row.get("evaluation_prep_result")
-        if isinstance(nested, Mapping):
-            return dict(nested)
-        return {
-            "status": row.get("status") or "completed_in_capture_pipeline",
-            "manifest_path": row.get("manifest_path"),
-            "satisfied_by_capture_pipeline": True,
-        }
-    return {}
-
-
-def _safe_job_id(value: str) -> str:
-    cleaned = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in value)
-    return cleaned.strip("-_") or "run-e2e-robot-eval"
 
 
 def _run_e2e_stage_ledger_path(capture_root: Path) -> Path:
@@ -229,11 +173,6 @@ def _new_run_e2e_stage_ledger(
     *,
     capture_root: Path,
     provider: str,
-    pipeline_lane: str,
-    run_agent_review_stage: bool,
-    run_evaluation_prep: bool,
-    run_cosmos_validation: bool,
-    robot_eval_requested: bool,
     capture_input_fingerprint: Mapping[str, Any],
 ) -> dict[str, Any]:
     generated_at = utc_now_iso()
@@ -244,36 +183,14 @@ def _new_run_e2e_stage_ledger(
         "updated_at": generated_at,
         "capture_root": str(capture_root),
         "provider": provider,
-        "pipeline_lane": pipeline_lane,
+        "pipeline_lane": RUN_E2E_PIPELINE_LANE,
         "capture_input_fingerprint": dict(capture_input_fingerprint),
-        "requested": {
-            "task_evaluation_supervisor": True,
-            "agent_review": run_agent_review_stage,
-            "evaluation_prep": run_evaluation_prep,
-            "support_validation": run_cosmos_validation,
-            "robot_eval": robot_eval_requested,
-        },
+        "requested": dict(_RUN_E2E_REQUESTED),
         "stage_order": list(_RUN_E2E_STAGE_ORDER),
         "current_stage": None,
         "last_completed_stage": None,
         "failed_stage": None,
         "stages": {name: {"name": name, "status": "pending"} for name in _RUN_E2E_STAGE_ORDER},
-    }
-
-
-def _run_e2e_resume_requested(
-    *,
-    run_agent_review_stage: bool,
-    run_evaluation_prep: bool,
-    run_cosmos_validation: bool,
-    robot_eval_requested: bool,
-) -> dict[str, bool]:
-    return {
-        "task_evaluation_supervisor": True,
-        "agent_review": run_agent_review_stage,
-        "evaluation_prep": run_evaluation_prep,
-        "support_validation": run_cosmos_validation,
-        "robot_eval": robot_eval_requested,
     }
 
 
@@ -487,203 +404,28 @@ def _complete_run_e2e_stage_ledger(
     _write_run_e2e_stage_ledger(capture_root, ledger)
 
 
-def _robot_eval_job_id(
-    *,
-    explicit_job_id: str | None,
-    request_path: str | Path,
-) -> str:
-    if explicit_job_id:
-        return _safe_job_id(explicit_job_id)
-    return _safe_job_id(Path(request_path).stem)
-
-
-def _read_job_artifact(job_result: Mapping[str, Any], name: str) -> dict[str, Any]:
-    job_dir = _string(job_result.get("job_dir"))
-    if not job_dir:
-        return {}
-    path = Path(job_dir) / name
-    if not path.is_file():
-        return {}
-    payload = read_json_any(path)
-    return payload if isinstance(payload, dict) else {}
-
-
-def _robot_eval_provider_runtime_summary(
-    job_result: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    if not job_result:
-        return None
-    provider_request = _read_job_artifact(job_result, "gpu_provider_launch_request.json")
-    cost_ledger = _read_job_artifact(job_result, "gpu_cost_control_ledger.json")
-    remote_closure = _read_job_artifact(
-        job_result,
-        "remote_cloud_execution_closure_manifest.json",
-    )
-    provider_race_handoff = _read_job_artifact(
-        job_result,
-        "gpu_provider_race_handoff.json",
-    )
-    provider_race_launcher_result = _read_job_artifact(
-        job_result,
-        "gpu_provider_race_launcher_result.json",
-    )
-    prelaunch_guard = _mapping(provider_request.get("prelaunch_spend_guard"))
-    provider_race = _mapping(
-        prelaunch_guard.get("provider_race") or provider_request.get("provider_race")
-    )
-    provider_race_launcher_contract = _mapping(provider_race.get("launcher_contract"))
-    launcher_ready = provider_race_launcher_result.get("status") == "ready_for_live_provider_race"
-    runtime_wired = bool(
-        provider_race.get("customer_path_provider_failover_runtime_wired")
-        or provider_race_handoff.get("customer_path_provider_failover_runtime_wired")
-        or launcher_ready
-    )
-    runtime_status = (
-        provider_race_launcher_result.get("status")
-        or provider_race_handoff.get("customer_path_provider_failover_runtime_status")
-        or provider_race_handoff.get("status")
-        or provider_race.get("customer_path_provider_failover_runtime_status")
-        or _mapping(provider_race.get("runtime_readiness")).get("status")
-    )
-    return {
-        "schema_version": "run_e2e_robot_eval_provider_runtime_summary.v1",
-        "job_id": job_result.get("job_id"),
-        "job_dir": job_result.get("job_dir"),
-        "provider": provider_request.get("provider"),
-        "gpu_provider_launch_request_path": (
-            str(Path(str(job_result.get("job_dir"))) / "gpu_provider_launch_request.json")
-            if job_result.get("job_dir")
-            else None
-        ),
-        "gpu_provider_launch_request_status": provider_request.get("status"),
-        "gpu_provider_launch_request_reason": provider_request.get("reason"),
-        "prelaunch_spend_guard": prelaunch_guard or None,
-        "provider_race": provider_race or None,
-        "provider_race_required_for_customer_path": bool(
-            provider_race.get("race_required_for_customer_path")
-            or provider_race_handoff.get("provider_race_required_for_customer_path")
-        ),
-        "customer_path_provider_failover_wired": bool(
-            provider_race.get("customer_path_provider_failover_wired")
-            or provider_race_handoff.get("customer_path_provider_failover_wired")
-            or provider_race_handoff.get("customer_path_provider_failover_handoff_wired")
-        ),
-        "customer_path_provider_failover_runtime_wired": runtime_wired,
-        "customer_path_provider_failover_runtime_status": runtime_status,
-        "provider_race_handoff_status": provider_race_handoff.get("status"),
-        "provider_race_launcher_result_status": provider_race_launcher_result.get("status"),
-        "provider_race_launcher_ready": launcher_ready,
-        "provider_race_execution_proven": (
-            provider_race_launcher_result.get("provider_race_execution_proven") is True
-        ),
-        "provider_race_launcher_available": bool(
-            provider_race.get("provider_race_runtime_launcher_available")
-            or provider_race_launcher_contract.get("provider_race_launcher_available")
-            or provider_race_handoff.get("provider_race_runtime_launcher_available")
-            or provider_race_launcher_result.get("provider_race_launcher_available")
-        ),
-        "provider_race_launcher_command": (
-            provider_race.get("provider_race_launcher_command")
-            or provider_race_launcher_contract.get("provider_race_launcher_command")
-            or provider_race_handoff.get("launcher_command")
-        ),
-        "serial_provider_launch_blocked_unless_override": bool(
-            provider_race.get("customer_path_serial_launch_blocked_unless_override")
-            or provider_race_handoff.get("serial_provider_launch_default_allowed") is False
-        ),
-        "live_provider_calls_performed": bool(
-            provider_request.get("live_provider_calls_performed")
-            or cost_ledger.get("live_provider_calls_performed")
-        ),
-        "gpu_cost_control_ledger_status": cost_ledger.get("status"),
-        "remote_cloud_execution_closure_status": remote_closure.get("status"),
-        "remote_cloud_execution_proven": bool(remote_closure.get("remote_cloud_execution_proven")),
-        "claim_boundary": {
-            "run_e2e_robot_eval_handoff_is_not_provider_execution": True,
-            "provider_race_launcher_result_is_not_provider_execution": bool(
-                provider_race_launcher_result
-            ),
-            "provider_race_execution_proven": (
-                provider_race_launcher_result.get("provider_race_execution_proven") is True
-            ),
-            "live_provider_calls_performed": bool(
-                provider_request.get("live_provider_calls_performed")
-                or cost_ledger.get("live_provider_calls_performed")
-            ),
-            "remote_cloud_execution_proven": bool(
-                remote_closure.get("remote_cloud_execution_proven")
-            ),
-        },
-    }
-
-
 def run_end_to_end(
     *,
     capture_root: str,
     provider: str,
-    openai_phase2_config: Optional[OpenAIPhase2Config] = None,
-    pipeline_lane: str = "current",
-    allow_legacy_pipeline_lanes: bool = False,
-    run_agent_review_stage: bool = False,
-    supervisor_agent_model: str = DEFAULT_SUPERVISOR_AGENT_MODEL,
-    allow_live_supervisor_agents: bool = False,
-    supervisor_inference_budget_usd: float = 0.0,
-    run_evaluation_prep: bool = False,
-    evaluation_prep_provider: str = "manual",
-    run_cosmos_validation: bool = False,
-    robot_eval_job_request: str | None = None,
-    robot_eval_job_id: str | None = None,
-    robot_eval_request_inbox: str | None = None,
-    robot_eval_provisioner: str = "fixture_local",
-    robot_eval_simulator: str = "fixture",
-    robot_eval_evaluation_substrate: str | None = None,
-    robot_eval_budget_usd: float | None = None,
-    allow_robot_eval_gpu_provisioning: bool = False,
-    allow_robot_eval_simulator_execution: bool = False,
     resume_completed_stages: bool = False,
 ) -> dict:
-    if robot_eval_job_request and robot_eval_request_inbox:
-        raise PipelineError(
-            "Pass either robot_eval_job_request or robot_eval_request_inbox, not both."
-        )
-    if run_cosmos_validation and not allow_legacy_pipeline_lanes:
-        raise PipelineError(
-            "legacy_cosmos_predict2_5_validation_requires_allow_legacy_pipeline_lanes"
-        )
-    if allow_live_supervisor_agents and supervisor_inference_budget_usd <= 0:
-        raise PipelineError("live_supervisor_agents_require_positive_inference_budget_usd")
-    supervisor_execution_profile = capture_supervisor_execution_profile(
-        agent_model=supervisor_agent_model,
-        allow_live_agents_sdk=allow_live_supervisor_agents,
-        agent_inference_budget_usd=supervisor_inference_budget_usd,
-    )
     log_event(
         logger,
         logging.INFO,
         "run_e2e.started",
         capture_root=capture_root,
         provider=provider,
-        pipeline_lane=pipeline_lane,
-        allow_legacy_pipeline_lanes=allow_legacy_pipeline_lanes,
-        run_agent_review_stage=run_agent_review_stage,
-        run_evaluation_prep=run_evaluation_prep,
-        run_cosmos_validation=run_cosmos_validation,
+        pipeline_lane=RUN_E2E_PIPELINE_LANE,
     )
     context = resolve_local_capture_context(capture_root)
     capture_input_fingerprint = _capture_input_fingerprint(context)
-    robot_eval_requested = bool(robot_eval_job_request or robot_eval_request_inbox)
-    resume_requested = _run_e2e_resume_requested(
-        run_agent_review_stage=run_agent_review_stage,
-        run_evaluation_prep=run_evaluation_prep,
-        run_cosmos_validation=run_cosmos_validation,
-        robot_eval_requested=robot_eval_requested,
-    )
     stage_ledger = (
         _resume_compatible_run_e2e_stage_ledger(
             capture_root=context.capture_root,
             provider=provider,
-            pipeline_lane=pipeline_lane,
-            requested=resume_requested,
+            pipeline_lane=RUN_E2E_PIPELINE_LANE,
+            requested=_RUN_E2E_REQUESTED,
             capture_input_fingerprint=capture_input_fingerprint,
         )
         if resume_completed_stages
@@ -693,25 +435,11 @@ def run_end_to_end(
         stage_ledger = _new_run_e2e_stage_ledger(
             capture_root=context.capture_root,
             provider=provider,
-            pipeline_lane=pipeline_lane,
-            run_agent_review_stage=run_agent_review_stage,
-            run_evaluation_prep=run_evaluation_prep,
-            run_cosmos_validation=run_cosmos_validation,
-            robot_eval_requested=robot_eval_requested,
             capture_input_fingerprint=capture_input_fingerprint,
         )
         if resume_completed_stages:
             stage_ledger["resume_completed_stages_requested"] = True
             stage_ledger["resume_status"] = "no_compatible_completed_stage_ledger"
-    prior_spend = dict(stage_ledger.get("spend") or {})
-    stage_ledger["spend"] = {
-        "requested_budget_usd": robot_eval_budget_usd,
-        "provisioner": robot_eval_provisioner if robot_eval_requested else None,
-        "live_provider_calls_performed": bool(prior_spend.get("live_provider_calls_performed")),
-        "actual_gpu_seconds": prior_spend.get("actual_gpu_seconds"),
-        "actual_gpu_time_source": prior_spend.get("actual_gpu_time_source"),
-        "cost_control_status": prior_spend.get("cost_control_status"),
-    }
     _write_run_e2e_stage_ledger(context.capture_root, stage_ledger)
 
     def _run_stage(
@@ -731,7 +459,7 @@ def run_end_to_end(
                 stage=stage,
                 input_binding_digest=input_binding_digest,
             )
-            if stage in {"capture_pipeline", "evaluation_prep"} and isinstance(resumed_result, Mapping):
+            if stage == "capture_pipeline" and isinstance(resumed_result, Mapping):
                 if (resumed_result.get("artifact_purpose") != "evaluation_preparation"
                         or resumed_result.get("robot_evaluation_performed") is not False):
                     resumed_result = None
@@ -890,8 +618,7 @@ def run_end_to_end(
         "capture_pipeline",
         lambda: run_capture_pipeline(
             descriptor_gcs_uri=context.descriptor_uri,
-            lane=pipeline_lane,
-            allow_legacy_lanes=allow_legacy_pipeline_lanes,
+            lane=RUN_E2E_PIPELINE_LANE,
             config=PipelineConfig(gcs_root=context.storage_root),
             **({"input_binding_digest": capture_binding} if capture_binding is not None else {}),
         ),
@@ -901,139 +628,19 @@ def run_end_to_end(
         },
         input_binding_digest=capture_binding,
     )
-    if (
-        _completed_website_preparation_only(pipeline)
-        and not run_evaluation_prep
-        and not robot_eval_requested
-        and not run_cosmos_validation
-    ):
-        supervisor = {
-            "status": "skipped",
-            "reason": "website_scene_preparation_uses_native_handoff",
-            "native_execution_complete": False,
-            "proof_state_mutated_by_agent": False,
-        }
+    # Website preparation's native handoff owns execution admission; nothing else runs here.
+    if not _completed_website_preparation_only(pipeline):
+        error = PipelineError("required_stage_not_complete:capture_pipeline:website_scene_preparation_missing")
         _mark_run_e2e_stage(
             stage_ledger, capture_root=context.capture_root,
-            stage="task_evaluation_supervisor", status="skipped",
-            detail=supervisor["reason"], result_snapshot=supervisor,
+            stage="task_evaluation_supervisor", status="failed", error=error,
         )
-    else:
-        supervisor = _run_stage(
-            "task_evaluation_supervisor",
-            lambda: run_capture_build_supervisor(
-                capture_root=context.capture_root,
-                agent_model=supervisor_agent_model,
-                allow_live_agents_sdk=allow_live_supervisor_agents,
-                agent_inference_budget_usd=supervisor_inference_budget_usd,
-            ),
-            artifacts_from_result=lambda value: {
-                "run_id": value.get("run_id") if isinstance(value, Mapping) else None,
-                "terminal_report_path": (
-                    value.get("terminal_report_path") if isinstance(value, Mapping) else None
-                ),
-                "event_ledger_path": (
-                    value.get("event_ledger_path") if isinstance(value, Mapping) else None
-                ),
-            },
-            input_binding_digest=str(supervisor_execution_profile["execution_profile_digest"]),
-        )
-    if run_agent_review_stage:
-        review = _run_stage(
-            "agent_review",
-            lambda: run_agent_review(
-                capture_root=context.capture_root,
-                provider_name=provider,
-                mode="qualification",
-                openai_phase2_config=openai_phase2_config,
-            ),
-            artifacts_from_result=lambda value: {
-                "final_memo_path": (
-                    value.get("final_memo_path") if isinstance(value, Mapping) else None
-                ),
-                "final_bundle_path": (
-                    value.get("final_bundle_path") if isinstance(value, Mapping) else None
-                ),
-            },
-        )
-    else:
-        review = {}
-        _mark_run_e2e_stage(
-            stage_ledger,
-            capture_root=context.capture_root,
-            stage="agent_review",
-            status="skipped",
-            detail="optional_trust_layer_not_requested",
-        )
-
-    evaluation_prep_already_ran = _pipeline_lane_runs_evaluation_prep(
-        pipeline_lane,
-        pipeline,
-    )
-    if run_evaluation_prep and evaluation_prep_already_ran:
-        evaluation_prep_result = _evaluation_prep_result_from_pipeline(pipeline) or {
-            "status": "completed_in_capture_pipeline",
-            "manifest_path": None,
-            "satisfied_by_capture_pipeline": True,
-        }
-        _mark_run_e2e_stage(
-            stage_ledger,
-            capture_root=context.capture_root,
-            stage="evaluation_prep",
-            status="completed",
-            detail="satisfied_by_capture_pipeline",
-            result_snapshot=_json_safe_stage_result_snapshot(evaluation_prep_result),
-        )
-    elif run_evaluation_prep:
-        evaluation_prep_result = _run_stage(
-            "evaluation_prep",
-            lambda: run_evaluation_prep_stage(
-                capture_root=context.capture_root,
-                provider_name=evaluation_prep_provider,
-            ),
-            artifacts_from_result=lambda value: {
-                "manifest_path": (
-                    value.get("manifest_path") if isinstance(value, Mapping) else None
-                )
-            },
-        )
-    else:
-        evaluation_prep_result = None
-    if not run_evaluation_prep:
-        _mark_run_e2e_stage(
-            stage_ledger,
-            capture_root=context.capture_root,
-            stage="evaluation_prep",
-            status="skipped",
-            detail="not_requested",
-        )
-    support_validation_result = (
-        _run_stage(
-            "support_validation",
-            lambda: _run_legacy_cosmos_predict2_5_validation(
-                capture_root=context.capture_root,
-                descriptor_gcs_uri=context.descriptor_uri,
-                cfg=PipelineConfig(gcs_root=context.storage_root),
-            ),
-        )
-        if run_cosmos_validation
-        else None
-    )
-    if not run_cosmos_validation:
-        _mark_run_e2e_stage(
-            stage_ledger,
-            capture_root=context.capture_root,
-            stage="support_validation",
-            status="skipped",
-            detail="not_requested",
-        )
-    support_validation = (
-        {
-            "backend": "cosmos_predict2_5_legacy",
-            "result": support_validation_result,
-        }
-        if support_validation_result is not None
-        else None
+        raise error
+    supervisor = dict(_WEBSITE_NATIVE_HANDOFF)
+    _mark_run_e2e_stage(
+        stage_ledger, capture_root=context.capture_root,
+        stage="task_evaluation_supervisor", status="skipped",
+        detail=supervisor["reason"], result_snapshot=supervisor,
     )
     result = {
         "schema_version": "v1",
@@ -1043,122 +650,8 @@ def run_end_to_end(
         "pipeline_status": pipeline.get("status"),
         "pipeline_lanes": pipeline.get("lanes"),
         "task_evaluation_supervisor": supervisor,
-        "pipeline_summary": review.get("artifacts", {}).get("readiness_report"),
-        "final_memo_path": review.get("final_memo_path"),
-        "final_bundle_path": review.get("final_bundle_path"),
-        "evaluation_prep": evaluation_prep_result,
-        "webapp_sync_result": (
-            evaluation_prep_result.get("webapp_sync_result")
-            if isinstance(evaluation_prep_result, dict)
-            else None
-        ),
-        "site_package_manifest": (
-            evaluation_prep_result.get("site_package_manifest")
-            if isinstance(evaluation_prep_result, dict)
-            else None
-        ),
-        "hosted_review_readiness": (
-            evaluation_prep_result.get("hosted_review_readiness")
-            if isinstance(evaluation_prep_result, dict)
-            else None
-        ),
-        "proof_pack_manifest": (
-            evaluation_prep_result.get("proof_pack_manifest")
-            if isinstance(evaluation_prep_result, dict)
-            else None
-        ),
-        "proof_path_status": (
-            evaluation_prep_result.get("proof_path_status")
-            if isinstance(evaluation_prep_result, dict)
-            else None
-        ),
-        "support_validation": support_validation,
         "run_e2e_stage_ledger_path": str(_run_e2e_stage_ledger_path(context.capture_root)),
     }
-    robot_eval_job = None
-    robot_eval_inbox = None
-    robot_eval_provider_runtime = None
-    if robot_eval_job_request:
-
-        def _robot_eval_job_stage() -> dict[str, Any]:
-            return dict(
-                execute_robot_eval_request_as_evaluation_run(
-                    capture_root=context.capture_root,
-                    job_request=robot_eval_job_request,
-                    job_id=_robot_eval_job_id(
-                        explicit_job_id=robot_eval_job_id,
-                        request_path=robot_eval_job_request,
-                    ),
-                    provisioner=robot_eval_provisioner,
-                    simulator=robot_eval_simulator,
-                    evaluation_substrate=robot_eval_evaluation_substrate,
-                    allow_gpu_provisioning=allow_robot_eval_gpu_provisioning,
-                    allow_simulator_execution=allow_robot_eval_simulator_execution,
-                    budget_usd=robot_eval_budget_usd,
-                )
-            )
-
-        robot_eval_job = _run_stage(
-            "robot_eval",
-            _robot_eval_job_stage,
-            artifacts_from_result=lambda value: {
-                "mode": "job_request",
-                "job_id": value.get("job_id") if isinstance(value, Mapping) else None,
-                "job_dir": value.get("job_dir") if isinstance(value, Mapping) else None,
-                "manifest_path": (
-                    value.get("manifest_path") if isinstance(value, Mapping) else None
-                ),
-            },
-        )
-        robot_eval_provider_runtime = _robot_eval_provider_runtime_summary(robot_eval_job)
-        cost_ledger = _read_job_artifact(robot_eval_job, "gpu_cost_control_ledger.json")
-        stage_ledger["spend"] = {
-            **dict(stage_ledger.get("spend") or {}),
-            "live_provider_calls_performed": bool(cost_ledger.get("live_provider_calls_performed")),
-            "actual_gpu_seconds": cost_ledger.get("actual_gpu_seconds"),
-            "actual_gpu_time_source": cost_ledger.get("actual_gpu_time_source"),
-            "cost_control_status": cost_ledger.get("status"),
-        }
-    elif robot_eval_request_inbox:
-
-        def _robot_eval_inbox_stage() -> dict[str, Any]:
-            return dict(
-                run_robot_eval_job_request_inbox(
-                    capture_root=context.capture_root,
-                    inbox_dir=robot_eval_request_inbox,
-                    provisioner=robot_eval_provisioner,
-                    simulator=robot_eval_simulator,
-                    evaluation_substrate=robot_eval_evaluation_substrate,
-                    allow_gpu_provisioning=allow_robot_eval_gpu_provisioning,
-                    allow_simulator_execution=allow_robot_eval_simulator_execution,
-                    budget_usd=robot_eval_budget_usd,
-                )
-            )
-
-        robot_eval_inbox = _run_stage(
-            "robot_eval",
-            _robot_eval_inbox_stage,
-            artifacts_from_result=lambda value: {
-                "mode": "request_inbox",
-                "status": (value.get("status") if isinstance(value, Mapping) else None),
-                "inbox_dir": robot_eval_request_inbox,
-            },
-        )
-    else:
-        _mark_run_e2e_stage(
-            stage_ledger,
-            capture_root=context.capture_root,
-            stage="robot_eval",
-            status="skipped",
-            detail="not_requested",
-        )
-    result.update(
-        {
-            "robot_eval_job": robot_eval_job,
-            "robot_eval_request_inbox": robot_eval_inbox,
-            "robot_eval_provider_runtime": robot_eval_provider_runtime,
-        }
-    )
     _complete_run_e2e_stage_ledger(
         stage_ledger,
         capture_root=context.capture_root,
@@ -1173,111 +666,20 @@ def run_end_to_end(
         preflight_status=result.get("preflight_status"),
         pipeline_status=result.get("pipeline_status"),
         pipeline_lanes=result.get("pipeline_lanes"),
-        agent_review_enabled=run_agent_review_stage,
-        task_evaluation_supervisor_status=supervisor.get("status"),
-        evaluation_prep_enabled=run_evaluation_prep,
-        legacy_support_validation_enabled=run_cosmos_validation,
-        robot_eval_job_requested=bool(robot_eval_job_request),
-        robot_eval_request_inbox_requested=bool(robot_eval_request_inbox),
     )
     return result
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run a local capture through the current capture-to-package review path"
+        description="Run a local website capture through preflight, materialization and site preparation"
     )
     parser.add_argument("--capture-root", required=True, help="Local capture root path")
     parser.add_argument(
         "--provider",
         required=True,
         choices=("local", "claude", "openai"),
-        help=(
-            "Agent-review provider. Use local for deterministic no-LLM contract "
-            "runs; claude/openai may use configured external review providers."
-        ),
-    )
-    parser.add_argument(
-        "--pipeline-lane",
-        default="current",
-        choices=(
-            "current",
-            "qualification",
-            "evaluation_prep",
-            "simulation_automation",
-            "scene_memory",
-            "retrieval_index",
-            "frame_alignment",
-            "synthesis_coverage_validation",
-            "cosmos_single_capture_smoke",
-            "all",
-        ),
-    )
-    parser.add_argument(
-        "--allow-legacy-pipeline-lanes",
-        action="store_true",
-        help="Explicitly admit a deprecated capture-orchestrator lane.",
-    )
-    parser.add_argument("--openai-phase2-mode", choices=("disabled", "codex_cli"))
-    parser.add_argument("--openai-phase2-model")
-    parser.add_argument("--openai-phase2-codex-bin")
-    parser.add_argument("--openai-phase2-timeout-seconds", type=int)
-    parser.add_argument("--openai-phase2-reasoning-effort")
-    parser.add_argument(
-        "--run-agent-review",
-        action="store_true",
-        help=(
-            "Run the optional agent-review/readiness trust layer. The capture, card, "
-            "package, and Task Evaluation Run product path does not require it."
-        ),
-    )
-    parser.add_argument(
-        "--supervisor-agent-model",
-        default=DEFAULT_SUPERVISOR_AGENT_MODEL,
-        help="OpenAI Agents SDK model used by the required Task Evaluation Supervisor.",
-    )
-    parser.add_argument(
-        "--allow-live-supervisor-agents",
-        action="store_true",
-        help=(
-            "Permit live OpenAI Agents SDK inference for the required supervisor. "
-            "Also requires its environment gate and a positive inference budget."
-        ),
-    )
-    parser.add_argument(
-        "--supervisor-inference-budget-usd",
-        type=float,
-        default=0.0,
-        help="Deterministic maximum reserved inference cost for this supervisor run.",
-    )
-    evaluation_prep_group = parser.add_mutually_exclusive_group()
-    evaluation_prep_group.add_argument(
-        "--run-evaluation-prep",
-        dest="run_evaluation_prep",
-        action="store_true",
-        default=True,
-        help=(
-            "Run evaluation prep and WebApp sync handoff. This is the default for "
-            "the operator CLI; kept for explicitness and backward-compatible scripts."
-        ),
-    )
-    evaluation_prep_group.add_argument(
-        "--skip-evaluation-prep",
-        dest="run_evaluation_prep",
-        action="store_false",
-        help=(
-            "Developer-only escape hatch: stop after agent review and mark "
-            "evaluation_prep skipped in the run_e2e stage ledger."
-        ),
-    )
-    parser.add_argument("--evaluation-prep-provider", default="manual")
-    parser.add_argument(
-        "--run-cosmos-validation",
-        action="store_true",
-        help=(
-            "Deprecated Cosmos-Predict2.5 support validation. Requires "
-            "--allow-legacy-pipeline-lanes and is not a product stage."
-        ),
+        help="Provider name recorded in the run_e2e stage ledger.",
     )
     parser.add_argument(
         "--resume-completed-stages",
@@ -1286,37 +688,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             "Reuse compatible completed run_e2e stage snapshots when retrying a previous local run."
         ),
     )
-    parser.add_argument(
-        "--robot-eval-job-request",
-        help="Optional robot_eval_job_request JSON to hand into the Task Evaluation Run job path.",
-    )
-    parser.add_argument("--robot-eval-job-id")
-    parser.add_argument(
-        "--robot-eval-request-inbox",
-        help="Optional directory of robot eval job requests to process fail-closed.",
-    )
-    parser.add_argument("--robot-eval-provisioner", default="fixture_local")
-    parser.add_argument("--robot-eval-simulator", default="fixture")
-    parser.add_argument("--robot-eval-evaluation-substrate")
-    parser.add_argument("--robot-eval-budget-usd", type=float)
-    parser.add_argument(
-        "--allow-robot-eval-gpu-provisioning",
-        action="store_true",
-        help="Forward the explicit GPU provisioning gate to the robot-eval job builder.",
-    )
-    parser.add_argument(
-        "--allow-robot-eval-simulator-execution",
-        action="store_true",
-        help="Forward the explicit simulator execution gate to the robot-eval job builder.",
-    )
     args = parser.parse_args(argv)
 
     try:
-        settings = PipelineSettings.from_env()
-        settings.validate_cli_admission(
-            allow_gpu_provisioning=bool(args.allow_robot_eval_gpu_provisioning),
-            allow_simulator_execution=bool(args.allow_robot_eval_simulator_execution),
-        )
+        PipelineSettings.from_env()
     except ValueError as exc:
         log_event(
             logger,
@@ -1329,48 +704,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[run-e2e] FAILED: {exc}")
         return 1
 
-    openai_phase2_config = None
-    if any(
-        [
-            args.openai_phase2_mode,
-            args.openai_phase2_model,
-            args.openai_phase2_codex_bin,
-            args.openai_phase2_timeout_seconds,
-            args.openai_phase2_reasoning_effort,
-        ]
-    ):
-        env_default = OpenAIPhase2Config.from_env()
-        openai_phase2_config = OpenAIPhase2Config(
-            mode=args.openai_phase2_mode or env_default.mode,
-            model=args.openai_phase2_model or env_default.model,
-            codex_bin=args.openai_phase2_codex_bin or env_default.codex_bin,
-            timeout_seconds=int(args.openai_phase2_timeout_seconds or env_default.timeout_seconds),
-            reasoning_effort=args.openai_phase2_reasoning_effort or env_default.reasoning_effort,
-        )
-
     try:
         result = run_end_to_end(
             capture_root=args.capture_root,
             provider=args.provider,
-            openai_phase2_config=openai_phase2_config,
-            pipeline_lane=args.pipeline_lane,
-            allow_legacy_pipeline_lanes=bool(args.allow_legacy_pipeline_lanes),
-            run_agent_review_stage=bool(args.run_agent_review),
-            supervisor_agent_model=args.supervisor_agent_model,
-            allow_live_supervisor_agents=bool(args.allow_live_supervisor_agents),
-            supervisor_inference_budget_usd=float(args.supervisor_inference_budget_usd),
-            run_evaluation_prep=bool(args.run_evaluation_prep),
-            evaluation_prep_provider=args.evaluation_prep_provider,
-            run_cosmos_validation=bool(args.run_cosmos_validation),
-            robot_eval_job_request=args.robot_eval_job_request,
-            robot_eval_job_id=args.robot_eval_job_id,
-            robot_eval_request_inbox=args.robot_eval_request_inbox,
-            robot_eval_provisioner=args.robot_eval_provisioner,
-            robot_eval_simulator=args.robot_eval_simulator,
-            robot_eval_evaluation_substrate=args.robot_eval_evaluation_substrate,
-            robot_eval_budget_usd=args.robot_eval_budget_usd,
-            allow_robot_eval_gpu_provisioning=bool(args.allow_robot_eval_gpu_provisioning),
-            allow_robot_eval_simulator_execution=bool(args.allow_robot_eval_simulator_execution),
             resume_completed_stages=bool(args.resume_completed_stages),
         )
     except Exception as exc:
@@ -1390,17 +727,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"[run-e2e] pipeline_lanes={result.get('pipeline_lanes')}")
     supervisor_result = result.get("task_evaluation_supervisor") or {}
     print(f"[run-e2e] task_evaluation_supervisor={supervisor_result.get('status')}")
-    print(f"[run-e2e] final_memo={result['final_memo_path']}")
-    print(f"[run-e2e] final_bundle={result['final_bundle_path']}")
-    if result.get("evaluation_prep"):
-        print(f"[run-e2e] evaluation_prep={result['evaluation_prep']['manifest_path']}")
-    if result.get("support_validation"):
-        support_result = result["support_validation"].get("result") or {}
-        print(f"[run-e2e] support_validation={support_result.get('status')}")
-    if result.get("robot_eval_job"):
-        print(f"[run-e2e] robot_eval_job={result['robot_eval_job']['manifest_path']}")
-    if result.get("robot_eval_request_inbox"):
-        print(f"[run-e2e] robot_eval_request_inbox={result['robot_eval_request_inbox']['status']}")
     return 0
 
 

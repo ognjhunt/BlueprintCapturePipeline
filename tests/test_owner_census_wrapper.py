@@ -81,21 +81,6 @@ def test_wrapper_refuses_before_running_leaf(tmp_path, extra):
     assert done.returncode != 0 and not Path(env["ARG_LOG"]).exists()
 
 
-def test_installer_provisions_only_disabled_metadata_and_retains_existing_paths():
-    text = (DOOR / "install.sh").read_text()
-    assert "door-owner-census.sh" in text
-    assert "# OWNER CONSENT PROVISIONING BEGIN" in text
-    block = text.split("# OWNER CONSENT PROVISIONING BEGIN", 1)[1].split(
-        "# OWNER CONSENT PROVISIONING END", 1
-    )[0]
-    assert '"enabled": false' in block and '"principals": []' in block
-    assert '[ ! -e "$owner_policy" ] && [ ! -L "$owner_policy" ]' in block
-    assert '[ ! -e "$owner_store" ] && [ ! -L "$owner_store" ]' in block
-    assert "0700" in block and "0600" in block and ".owner-consents.lock" in block
-    unit = (DOOR.parents[0] / "systemd/blueprint-operator-door-runner.service").read_text()
-    assert "ReadWritePaths=/var/lib/blueprint-operator-door/requests\n" in unit
-
-
 @pytest.mark.slow
 def test_upgrade_owner_provisioning_preserves_policy_records_and_lock_inode(tmp_path):
     import sys
