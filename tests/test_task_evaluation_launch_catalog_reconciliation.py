@@ -626,3 +626,62 @@ def test_receipt_reports_where_the_pass_spent_its_time(tmp_path: Path) -> None:
                ("profile_parse", "immutable_inputs", "profile_validation", "input_residency"))
     second = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=tmp_path / "catalog.json")
     assert second["status"] == "consistent" and "pass_timing_seconds" in second
+
+
+def _retired_canary_profile(tmp_path: Path, profile_id: str) -> Path:
+    """A published profile of the removed policy-canary lane, as the host still holds them."""
+    path = _profile(tmp_path, profile_id)
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    profile["claim_ceiling"] = "diagnostic_policy_execution"
+    profile["internal_policy_canary_setup"] = {
+        "schema_version": "task_evaluation_internal_policy_canary_setup.v1",
+        "policy_secret": {"secret_file": "secret-file:policy-canary"},
+    }
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    path.write_text(json.dumps(profile, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    return path
+
+
+def test_a_retired_lane_profile_is_history_and_never_stops_the_catalog(tmp_path: Path) -> None:
+    """2026-11-15: the release that removed the policy-canary code met 26 of that lane's
+    profiles on the host. The catalog pass called them malformed, the catalog did not
+    reconcile, and intake, which reconciles in its ExecStartPre, could not start."""
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import (
+        retired_launch_profile_lane,
+        validate_launch_profile,
+    )
+
+    live = _profile(tmp_path, "website-scene-profile")
+    retired = _retired_canary_profile(tmp_path, "team-eval-internal-policy-canary-0de036ac86")
+    retired_document = json.loads(retired.read_text(encoding="utf-8"))
+    assert retired_launch_profile_lane(retired_document) == "internal_policy_canary_setup"
+    assert retired_launch_profile_lane(json.loads(live.read_text(encoding="utf-8"))) is None
+    # The dispatcher's own check still refuses it: leaving it out of the catalog grants nothing.
+    assert "launch_profile_policy_canary_setup_invalid:retired" in validate_launch_profile(retired_document)
+
+    catalog = tmp_path / "catalog.json"
+    receipt = reconcile_public_catalog(profile_dir=live.parent, catalog_path=catalog)
+
+    assert receipt["status"] == "repaired"
+    assert receipt["retired_lane_profiles_not_served"] == 1
+    assert _catalog_ids(catalog) == {"website-scene-profile"}
+    assert retired.is_file(), "the published bytes stay as history"
+    again = reconcile_public_catalog(profile_dir=live.parent, catalog_path=catalog)
+    assert again["status"] == "consistent" and again["retired_lane_profiles_not_served"] == 1
+
+
+def test_a_retired_lane_row_already_served_is_dropped_from_the_catalog(tmp_path: Path) -> None:
+    """The catalog the previous release wrote still lists the retired profiles."""
+    live = _profile(tmp_path, "website-scene-profile")
+    retired = _retired_canary_profile(tmp_path, "team-eval-internal-policy-canary-0f680d3c45")
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps([
+        {"profile_id": "team-eval-internal-policy-canary-0f680d3c45"},
+        {"profile_id": "website-scene-profile"},
+    ]), encoding="utf-8")
+
+    receipt = reconcile_public_catalog(profile_dir=live.parent, catalog_path=catalog)
+
+    assert receipt["profile_ids_removed"] == ["team-eval-internal-policy-canary-0f680d3c45"]
+    assert _catalog_ids(catalog) == {"website-scene-profile"}
+    assert retired.is_file()
