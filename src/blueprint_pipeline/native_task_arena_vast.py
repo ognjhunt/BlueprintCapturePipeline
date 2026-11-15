@@ -51,12 +51,11 @@ def _run_native_task_arena_bounded_vast(
     allowed_machine_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
     retain_warm_instance: bool = False,
-    controlled_policy: bool = False,
 ) -> dict[str, Any]:
     """Run one zero-retry construction gate through the shared Vast transport."""
 
-    expected_mode = "controlled_policy" if controlled_policy else "construction_canary"
-    expected_output = "controlled_native_policy_result.v1.json" if controlled_policy else "native_task_arena_construction_result.v1.json"
+    expected_mode = "construction_canary"
+    expected_output = "native_task_arena_construction_result.v1.json"
     if (
         prepared_bundle.get("schema_version")
         != "native_task_arena_provider_bundle.v1"
@@ -122,7 +121,7 @@ def _run_native_task_arena_bounded_vast(
         vast_launch_lock_file=(
             job / "native_task_arena_paid_launch.lock" if allowed_ids else None
         ),
-        candidate_policy_query_expected=controlled_policy,
+        candidate_policy_query_expected=False,
         preferred_gpu_keywords=NO_POLICY_PREFERRED_GPU_KEYWORDS,
         minimum_driver_version=MINIMUM_DRIVER_VERSION,
         require_independent_watchdog=True,
@@ -136,10 +135,6 @@ def _run_native_task_arena_bounded_vast(
 
 def run_native_task_arena_vast(**kwargs: Any) -> dict[str, Any]:
     return _run_native_task_arena_bounded_vast(**kwargs)
-
-
-def run_controlled_native_policy_vast(**kwargs: Any) -> dict[str, Any]:
-    return _run_native_task_arena_bounded_vast(controlled_policy=True, **kwargs)
 
 
 def run_native_task_arena_destination_qualification_vast(

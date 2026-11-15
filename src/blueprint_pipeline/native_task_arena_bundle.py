@@ -49,7 +49,6 @@ RESULT_SCHEMA_BY_MODE = {
     "runtime_preflight": "native_task_arena_runtime_preflight.v1",
     "construction_canary": "native_task_arena_construction_result.v1",
     "controls": "native_task_arena_control_result.v1",
-    "controlled_policy": "controlled_native_policy_result.v1",
     "rigid_robot_free_probe": "rigid_robot_free_probe_result.v1",
 }
 # Beta L5's robot-free probe belongs to the free beta, not to Arm Decision Proof.
@@ -626,7 +625,6 @@ def build_native_task_arena_bundle(
         "runtime_preflight",
         "construction_canary",
         "controls",
-        "controlled_policy",
         "rigid_robot_free_probe",
     }:
         raise NativeTaskArenaBundleError(

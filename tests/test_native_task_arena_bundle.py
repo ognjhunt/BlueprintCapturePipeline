@@ -74,7 +74,6 @@ def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
         "runtime_preflight",
         "construction_canary",
         "controls",
-        "controlled_policy",
         "rigid_robot_free_probe",
     }
 
