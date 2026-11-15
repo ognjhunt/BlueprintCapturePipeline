@@ -121,11 +121,16 @@ if DISPATCHER_HOLD_ONLY:
     # approved (2026-11-06, verbatim: "yes retire the 7") retiring the parked
     # preparation deliveries: one parked delivery's record moves to its
     # terminal state with that approval on it; nothing is deleted, no compute
-    # starts and no money moves.
+    # starts and no money moves. The owner approved (2026-11-15, verbatim: "i
+    # thought the whole point was that YOU could submit and do everything, i
+    # dont need to do it? and yes - already pre--approve the upgrade/test
+    # videos, etc.") starting internal test jobs through the door: one signed
+    # call to the website's test-job route; the job's spend passes every paid
+    # admission a site's job does, and no limit changes.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
-                           "confirm-owner-success-contract", "retire-parked-delivery"}}
+                           "confirm-owner-success-contract", "retire-parked-delivery", "test-job"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TEST_JOB_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
 _TEST_JOB_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}")
