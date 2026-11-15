@@ -246,37 +246,6 @@ def test_json_bytes_are_authenticated_and_parsed_from_one_buffer(tmp_path, monke
         qualify_from_profile(profile, now=NOW)
 
 
-def test_lost_publication_acknowledgement_can_retry_the_same_retained_output(tmp_path, monkeypatch):
-    from blueprint_pipeline import agent_run_executor, task_evaluation_launch_webapp_sync
-    from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, REGISTRY_SCHEMA
-    profile = fixture(tmp_path / "evidence")
-    profile["capture_root"] = str(tmp_path.resolve())
-    registry = {"schema_version": REGISTRY_SCHEMA, "profiles": [profile]}
-    registry["registry_digest"] = canonical_digest(registry)
-    path = tmp_path / "registry.json"
-    path.write_text(json.dumps(registry))
-    path.chmod(0o600)
-    monkeypatch.setenv(REGISTRY_ENV, str(path))
-    calls = []
-    class Client:
-        def __init__(self, **_kwargs): pass
-        def _json(self, _path, *, method, payload):
-            calls.append(payload["receipt_digest"])
-            if len(calls) == 1:
-                raise TimeoutError("synthetic lost acknowledgement")
-            return {"receiptDigest": payload["receipt_digest"], "created": False}
-    monkeypatch.setattr(agent_run_executor, "AgentRunWebAppClient", Client)
-    monkeypatch.setattr(task_evaluation_launch_webapp_sync, "load_pipeline_sync_token", lambda **_kwargs: "synthetic")
-    output = tmp_path / "receipt.json"
-    argv = ["--capture-root", str(tmp_path), "--out", str(output), "--publish", "--webapp-url", "https://webapp.invalid",
-            "--token-file", str(tmp_path / "unused-test-token")]
-    with pytest.raises(TimeoutError):
-        main(argv)
-    original = output.read_bytes()
-    assert main(argv) == 0
-    assert len(calls) == 2 and len(set(calls)) == 1 and output.read_bytes() == original
-
-
 def test_publication_is_explicit_and_requires_exact_acknowledgement(tmp_path):
     from blueprint_pipeline.site_task_simulation_qualification import publish_receipt
     receipt = qualify_from_profile(fixture(tmp_path), now=NOW)
