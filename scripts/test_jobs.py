@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import importlib.util
 import json
 import sys
@@ -27,7 +26,8 @@ _spec = importlib.util.spec_from_file_location("operator_door_client", Path(__fi
 door = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(door)
 from blueprint_pipeline.internal_test_job_door import (  # noqa: E402 - the door's own rule, one place
-    EXPECTED_JOB_USD, IN_FLIGHT_FOR_SECONDS, MAX_IN_FLIGHT, STOP_LINE)
+    EXPECTED_JOB_USD, IN_FLIGHT_FOR_SECONDS, INTENT_ROOT, MAX_IN_FLIGHT, STOP_LINE)
+from blueprint_pipeline.website_preparation_revision_identity import capture_id as intent_capture  # noqa: E402
 
 HANDOFFS = "/var/lib/blueprint/pubsub-handoffs"
 DEPLOY_WINDOW_HOUR_UTC = 15  # AGENTS.md D-08: the daily deploy window opens at 15:00 UTC
@@ -71,6 +71,13 @@ def capture_root(job: dict) -> str | None:
     return None
 
 
+def _names_capture(intent: dict | None, capture_id: str) -> bool:
+    try:
+        return intent_capture(intent["request"]) == capture_id
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def job_report(job: dict, status: dict) -> dict:
     row = {key: job.get(key) for key in ("label", "footage_id", "job_id", "capture_id", "submitted_at")}
     root = capture_root(job) if job.get("job_id") else None
@@ -90,6 +97,19 @@ def job_report(job: dict, status: dict) -> dict:
             reading = cat_json(f"{root}/pipeline/atlas/task_semantics/{semantics[0]['name']}") or {}
             kind = (reading.get("semantics") or {}).get("task_family")
         manifest = cat_json(f"{root}/pipeline/company_simulation/company_simulation.json")
+        # The scene chain, by the door's rule (``_scene_ended``): ended only when every intent of the capture has.
+        scenes = [(cat_json(f"{INTENT_ROOT}/{entry['name']}/progression.json") or {},
+                   cat_json(f"{INTENT_ROOT}/{entry['name']}/outcome.json") or {}) for entry in ls(str(INTENT_ROOT))
+                  if _names_capture(cat_json(f"{INTENT_ROOT}/{entry['name']}/intent.json"), job["capture_id"])]
+        running = [progress.get("status") for progress, outcome in scenes
+                   if progress.get("status") != "completed" and outcome.get("terminal") is not True]
+        # A completed progression supersedes a retained terminal outcome (task_evaluation_scene_outcome).
+        ended = [outcome.get("reason_code") for progress, outcome in scenes
+                 if progress.get("status") != "completed" and outcome.get("terminal") is True]
+        if running:
+            stage = f"scene:{running[0]}"
+        elif scenes and len(ended) == len(scenes):
+            failure = failure or ended[0]
     if manifest:
         stage, times["package_built"] = "package_built", manifest.get("built_at_epoch")
         refused = manifest.get("refused_by_webapp")
@@ -138,9 +158,7 @@ def submit(args: argparse.Namespace, state: dict) -> None:
             time.sleep(args.poll)
         body = {"kind": "test-job", "idempotency_key": door_key(args.run_id, row["label"]),
                 "label": row["label"], "footage_id": row["footage_id"], "description": row["description"]}
-        # The door client's own operation key for this idempotency key: a lost response is retried, never doubled.
-        key = "test-job-" + hashlib.sha256(body["idempotency_key"].encode()).hexdigest()[:40]
-        accepted = door._json("POST", "/requests", body={**body, "operation_key": key})
+        accepted = door._json("POST", "/requests", body=body)
         result = {}
         for _ in range(120):
             request = door._json("GET", f"/requests/{accepted['id']}")
