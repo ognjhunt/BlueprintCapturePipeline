@@ -180,22 +180,6 @@
       "admission": "src/blueprint_pipeline/website_task_context.py::reserve_website_preparation_spend",
       "note": "a website job's call reserves through retained_gemini_call (reserve_website_preparation_spend runs require_paid_resource_budget first); a run with no website job checks require_paid_resource_budget and blocks the stage by name on a refusal"
     },
-    "src/blueprint_pipeline/dreamlabs_policy_client.py::<module>::dreamlabs_api_url": {
-      "provider": "dreamlabs",
-      "class": "admitted",
-      "request_functions": [
-        "src/blueprint_pipeline/dreamlabs_policy_client.py::DreamLabsPolicyClient.infer"
-      ],
-      "reachable_only_through": [
-        "src/blueprint_pipeline/team_candidate_policy_client.py",
-        "src/blueprint_pipeline/policy_canary_session_bundle_identity.py"
-      ],
-      "enclosing_admission": "the screening or team policy session, which runs the hosted policy client only inside the GPU session its launch admitted (require_paid_resource_admission, account limit included)",
-      "bound": "that session's hard cap and TTL",
-      "via": "src/blueprint_pipeline/team_candidate_policy_client.py::canary_policy_client",
-      "admission": "src/blueprint_pipeline/paid_resource_admission.py::require_paid_resource_admission",
-      "note": "inference is the priced request; the model-metadata GET (discover_model_metadata) is an unpriced listing; policy_canary_session_bundle_identity ships the client into the admitted session bundle"
-    },
     "src/blueprint_pipeline/hosted_image_generation_preflight.py::<module>::openai_api_url": {
       "provider": "openai",
       "class": "admitted",

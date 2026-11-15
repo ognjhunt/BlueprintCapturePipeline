@@ -278,19 +278,10 @@ def test_other_arena_callers_never_stream():
             function = getattr(enclosing.get(node), "name", "<module>")
             if any(name.startswith("provider_output_") for name in _keyword_names(node, (path.name, function))):
                 streaming_calls.append((path.name, function))
-    assert lane_calls >= 9
-    # The policy-canary session runner left with the early trial (2026-11-14); the transport now refuses
-    # stream delivery for every caller, so the one caller left that asks for it fails closed.
-    assert streaming_calls == [
-        ("team_candidate_quick10_vast.py", "run_team_candidate_session_vast"),
-    ]
-    team_tree = ast.parse((SRC / "team_candidate_quick10_vast.py").read_text())
-    team_calls = [node for node in ast.walk(team_tree) if isinstance(node, ast.Call)
-                  and getattr(node.func, "id", None) == "run_arena_native_control_vast"]
-    assert len(team_calls) == 1
-    delivery = next(keyword.value for keyword in team_calls[0].keywords
-                    if keyword.arg == "provider_output_delivery")
-    assert isinstance(delivery, ast.Constant) and delivery.value == "download"
+    assert lane_calls >= 8
+    # The policy-canary session runner and the team session left with the early trial (2026-11-14):
+    # no caller asks the transport for stream delivery.
+    assert streaming_calls == []
     # Only the contract module reads the flag: no other module holds its name as a value.
     readers = sorted(path.name for path, source in sources.items() if members.DELIVERY_ENV in source and any(
         isinstance(node, ast.Constant) and node.value == members.DELIVERY_ENV for node in ast.walk(ast.parse(source))))

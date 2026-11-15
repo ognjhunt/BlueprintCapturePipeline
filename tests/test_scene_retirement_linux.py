@@ -566,6 +566,44 @@ def test_native_fixture_manifest_git_access_is_scoped_and_restored(tmp_path):
     assert builder._run_bounded is original
 
 
+@pytest.mark.parametrize('preexisting', [False, True])
+def test_native_configuration_cleanup_preserves_launch_residency(tmp_path, monkeypatch, preexisting):
+    # ADP-009D/day28: installing the SDK must not turn later workstation
+    # launches into control-plane launches by leaving /etc/blueprint behind.
+    from blueprint_pipeline import host_resident_launch_inputs as residency
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import dispatch_launch_request
+    from tests.test_task_evaluation_launch_dispatcher import _profile, _write_profile_and_request
+    parent = tmp_path / 'etc-blueprint'
+    monkeypatch.setattr(sys.modules[__name__], '_POLICY', parent / 'policy.json')
+    monkeypatch.setattr(residency, 'PRODUCTION_LAUNCH_INPUT_ROOTS', (str(parent),))
+    if preexisting:
+        parent.mkdir()
+    created = _create_native_configuration_parent()
+    _POLICY.write_bytes(b'fixture policy')
+    _POLICY.unlink()
+    _remove_native_configuration_parent(created)
+    assert parent.exists() is preexisting
+    # A scene-configuration launch (the retired policy-canary profile was its earlier fixture).
+    profiles, request_path = _write_profile_and_request(tmp_path, _profile(tmp_path))
+    calls = []
+
+    def dry_run_only(argv):
+        # A stub: nothing is started; only a dry run may be asked for, never --execute.
+        assert '--execute' not in argv, 'provider forbidden'
+        calls.append(list(argv))
+        return 0
+    receipt = dispatch_launch_request(request_path=request_path, profile_dir=profiles,
+        state_root=tmp_path / 'runs', execute=False, allocator_runner=dry_run_only)
+    residency_blockers = [code for code in receipt.get('blockers') or []
+                          if code.startswith('launch_profile_input_not_host_resident:')]
+    if preexisting:
+        assert receipt['status'] == 'blocked', receipt
+        assert 'launch_profile_input_not_host_resident:immutable_input:source_bundle_manifest' in residency_blockers
+        assert calls == []
+    else:
+        assert residency_blockers == [] and receipt['status'] == 'dry_run_completed', receipt
+
+
 def test_native_configuration_cleanup_refuses_unowned_contents(tmp_path, monkeypatch):
     parent = tmp_path / 'etc-blueprint'
     monkeypatch.setattr(sys.modules[__name__], '_POLICY', parent / 'policy.json')

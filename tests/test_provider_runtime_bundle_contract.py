@@ -128,5 +128,3 @@ def test_policy_canary_reuses_the_closed_native_arena_runtime_contract() -> None
         entrypoint_text=entrypoint,
         runner_text=runner,
     ) == []
-
-

@@ -35,19 +35,17 @@ def no_external_calls(event,args):
     if event.startswith('socket.') or event in {'subprocess.Popen','os.system','os.posix_spawn'}:
         raise RuntimeError('schema loading must remain local')
 sys.addaudithook(no_external_calls)
-from blueprint_pipeline import task_evaluation_policy_canary_setup as canary
 from blueprint_pipeline import rigid_task_success_contract_schema as rigid
 from blueprint_pipeline import articulated_task_success_contract_schema as articulated
-for module,loader in ((canary,canary.policy_canary_setup_schema),
-                      (rigid,rigid.rigid_task_success_contract_schema),
+for module,loader in ((rigid,rigid.rigid_task_success_contract_schema),
                       (articulated,articulated.articulated_task_success_contract_schema)):
     assert Path(module.__file__).resolve().is_relative_to(root/'src')
     assert module.SCHEMA_PATH.is_relative_to(root/'src/blueprint_pipeline/_catalog_schemas')
     assert isinstance(loader(),dict)
-print(json.dumps({'schema_loaders_passed':3,'repository_docs_present':False}))
+print(json.dumps({'schema_loaders_passed':2,'repository_docs_present':False}))
 '''
     result = subprocess.run([sys.executable, '-I', '-B', '-c', script, str(tmp_path)],
                             capture_output=True, text=True, timeout=20, check=False,
                             env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
     assert result.returncode == 0, result.stderr
-    assert '"schema_loaders_passed": 3' in result.stdout
+    assert '"schema_loaders_passed": 2' in result.stdout

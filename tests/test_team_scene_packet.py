@@ -156,7 +156,7 @@ def test_a_prepared_scene_compiles_its_own_half_with_no_robot_placement_or_prior
     assert half["task_success_contract"]["contract_digest"] == half["task_success_contract_digest"]
     # The team registry reads it as a whole scene half: the nominal cell resolves for the DROID interface.
     facts = scene_facts({"team_scene_inputs_path": compiled["path"], "open_loop_horizon": 8})
-    assert facts["prompt"] and facts["max_policy_queries"] > 0 and facts["inputs"] == half
+    assert facts["prompt"] and facts["inputs"] == half
     # Changed packet bytes are never read as the sealed scene.
     receipt = Path(half["base_native_packet"]["path"])
     receipt.chmod(0o644)
@@ -324,7 +324,7 @@ def test_a_drawer_task_compiles_with_a_station_clear_of_the_drawers_travel(tmp_p
     contract = validate_task_success_contract(half["task_success_contract"], task_kind="articulated_open_close")
     assert contract["provenance"]["author_source"] == "task_owner"
     facts = scene_facts({"team_scene_inputs_path": compiled["path"], "open_loop_horizon": 8})
-    assert facts["prompt"] and facts["max_policy_queries"] > 0 and facts["scene"]["task_spec"]["task_kind"] == (
+    assert facts["prompt"] and facts["scene"]["task_spec"]["task_kind"] == (
         "articulated_open_close")
 
 
