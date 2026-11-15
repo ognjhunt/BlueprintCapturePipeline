@@ -585,6 +585,15 @@ def test_native_configuration_cleanup_preserves_launch_residency(tmp_path, monke
     assert parent.exists() is preexisting
     # A scene-configuration launch (the retired policy-canary profile was its earlier fixture).
     profiles, request_path = _write_profile_and_request(tmp_path, _profile(tmp_path))
+    # The dispatcher's own tests run on a disk reservation root of their own and a roomy disk
+    # (their autouse fixture); without that the runner's real disk decides the outcome, not residency.
+    import types
+    from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher_module
+    monkeypatch.setenv('BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT', str(tmp_path / 'disk-reservations'))
+    actual_reserve = dispatcher_module.reserve_control_plane_disk
+    monkeypatch.setattr(dispatcher_module, 'reserve_control_plane_disk', lambda role, **kwargs: actual_reserve(
+        role, disk_usage=lambda _path: types.SimpleNamespace(total=200 * 1024**3, used=100 * 1024**3,
+                                                             free=100 * 1024**3), **kwargs))
     calls = []
 
     def dry_run_only(argv):
@@ -601,7 +610,7 @@ def test_native_configuration_cleanup_preserves_launch_residency(tmp_path, monke
         assert 'launch_profile_input_not_host_resident:immutable_input:source_bundle_manifest' in residency_blockers
         assert calls == []
     else:
-        assert residency_blockers == [] and receipt['status'] == 'dry_run_completed', receipt
+        assert residency_blockers == [] and receipt['status'] == 'dry_run_completed', (receipt.get('blockers'), receipt)
 
 
 def test_native_configuration_cleanup_refuses_unowned_contents(tmp_path, monkeypatch):
