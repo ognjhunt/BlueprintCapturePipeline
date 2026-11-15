@@ -185,6 +185,22 @@ Intended design: every upload is written to one record before it is sent, and st
 - **Still running:** `blueprint-scene-stage-maintenance.timer` (first run on this release at 03:40:51Z, clean, nothing to deliver), the intake, scene progression, the scripted check's runner, the Atlas preview timer, withdrawal deletion and the spend guard.
 - **Not checked:** no website job has passed through scene configuration, the scene packet or the scripted check on this release.
 
+## Failed release, rollback and fix on 2026-11-15 (14:16Z to 15:00Z)
+
+Released under the owner's standing permission of 2026-11-15 (release when a merged change is attested and the host reads quiet; verify and record each one).
+
+- **Before, 14:16Z (door status):** active release `16b596a`. Nothing launching, pending, preparing, running or awaiting reconciliation; no publication pending; no paid-launch lock held; no door request; spend guard passed with no live instance; 206 historical failed units. `45a99fb` (#3598) attested on main.
+- **14:16:48Z, `45a99fb` (#3598), FAILED:** request `20261115T141648Z-deploy-5bd85b9e`. The release switched to the new commit and could not restart `blueprint-pipeline-intake.service`; the receipt says `blocked`, `deploy_unit_restart_failed:blueprint-pipeline-intake.service`, and the link stayed on the new commit.
+- **Cause:** intake reconciles the launch-profile catalog in its `ExecStartPre`. The host holds 26 published profiles of the internal policy-canary lane; #3598 removed that lane's code, so the catalog pass called each one malformed (`launch_profile_policy_canary_setup_invalid:retired`), and one invalid profile fails the whole catalog. No test held a profile of a removed lane.
+- **Effect:** intake down from about 14:26Z to 14:43Z (about 17 minutes), in a restart loop. The upload listener and scene progression failed with it. No paid work was in flight and no GPU instance was live; the WebApp's forwards and the listener retry.
+- **14:30:34Z, rollback to `16b596a`:** request `20261115T143034Z-deploy-8fa9b7a9`, deployed about 14:43Z. Intake and the listener came back. Scene progression did not: re-deploying an already-deployed commit rewrote its deploy receipt, and that release's write-once binding no longer matched it (`scene_configuration_submission_input_bytes_mismatch` at the start of every pass). It stayed down until a new commit was released.
+- **The fix, `9c0e726` (#3600):** a published profile of a retired lane is history: the catalog leaves it out and counts it, and the dispatcher still refuses it. Before release it was run over all 560 profiles pulled from the host: 534 project, 26 retired and not served.
+- **14:49:39Z, `9c0e726` (#3599 and #3600):** requested after main's CI attested the commit (request `20261115T144939Z-deploy-f7914d3a`); deployed about 15:00Z.
+- **After, 15:01Z:** active release `9c0e726`, `commit_proven` true, no blockers, 206 failed units (the baseline; nothing new). Intake active since 14:59:29Z. The served catalog has 534 rows and none of the 26 canary profiles. Scene progression's first pass on this release ran from 15:00:34Z to 15:02:40Z and ended successfully (71 s of CPU, 773 MB peak); the upload listener's next run ended successfully. Scene-stage maintenance ran clean at 15:00:34Z. Spend guard passed with no live instance. All 16 retired triggers were already off.
+- **What this release carries since `16b596a`:** #3598 (the early trial's code, the policy-canary family, the agent-run lane and the walking-job modules removed), #3599 (the policy runtime, bundles and lanes removed), #3600 (the catalog fix).
+- **Not checked:** no website job has passed through scene configuration, the scene packet or the scripted check on this release.
+- **Follow-up in work:** the deploy checks the new release's start-up guard before it switches, returns to the previous release by itself when a service cannot start, and a re-deploy of a deployed commit no longer breaks scene progression.
+
 ## Library-aisle navigation run (2026-11-06)
 
 The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.
