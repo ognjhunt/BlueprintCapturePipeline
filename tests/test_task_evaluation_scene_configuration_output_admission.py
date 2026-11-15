@@ -170,6 +170,8 @@ def _write_completed_archive(
     special = {
         "appearance_visual_review_receipt": review,
         "configured_task_thumbnail": thumbnail,
+        # Publication reads stage 5's receipt; an Isaac one is labelled qualified as stage 5 checked it.
+        "native_import_qualification_receipt": b'{"schema_version": "task_evaluation_replacement_native_import_result.v1"}',
     }
     rows, members = [], {}
     for role, name in ROLES.items():

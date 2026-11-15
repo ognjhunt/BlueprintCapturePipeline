@@ -141,7 +141,7 @@
         "asset": {"$ref": "#/$defs/reference"},
         "static_qualification": {"$ref": "#/$defs/reference"},
         "native_import_qualification": {"$ref": "#/$defs/reference"},
-        "physics_authority": {"const": "qualified_replacement_asset"}
+        "physics_authority": {"enum": ["qualified_replacement_asset", "static_candidate_no_simulator_run"]}
       }
     },
     "registration": {

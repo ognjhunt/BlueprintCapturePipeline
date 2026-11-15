@@ -77,6 +77,11 @@ ADMITTED_STAGE_ADAPTER_IDENTITIES = (
     SceneConfigurationAdapterIdentity(
         "rigid_replacement_authoring", "provided_mesh_rigid_authoring", "v1", "no_spend",
     ),
+    # A website rigid job's stage 5 on the host: records that no simulator ran
+    # (``website_scene_without_simulator``).
+    SceneConfigurationAdapterIdentity(
+        "replacement_native_import_qualification", "website_simulator_not_run", "v1", "no_spend",
+    ),
 )
 
 

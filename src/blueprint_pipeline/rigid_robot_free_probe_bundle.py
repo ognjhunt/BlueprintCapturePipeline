@@ -73,7 +73,9 @@ def current_probe_state(capture_root: str | Path) -> dict[str, Any]:
     """What the capture's current team profile asks of the probe now; reads only, spends nothing.
 
     ``status`` is ``probe_required`` (with the planned request), or why no run is
-    wanted: no profile, no probe for this task, an unbound revision, or a
+    wanted: no profile, no probe for this task, an unbound revision, a scene whose
+    stage 5 ran no simulator (``simulator_not_run``, read from the packet's own
+    stage-5 record), or a
     retained receipt of this request that is already decided (never replaced, so
     a run cannot change it). A receipt beside the launch bound to another request
     (another scene revision or task specification, since superseded) is not this
@@ -98,6 +100,11 @@ def current_probe_state(capture_root: str | Path) -> dict[str, Any]:
         facts = scene_facts(profile)
     except (KeyError, OSError, TypeError, ValueError) as exc:
         return {"status": "scene_facts_unavailable", "capture_root": str(root), "reason": str(exc)[:200]}
+    from .website_scene_without_simulator import READINESS_STATUS, packet_ran_no_simulator
+
+    if packet_ran_no_simulator(facts.get("packet_dir")):
+        # The scene's stage 5 ran no simulator: no robot-free probe applies, so none is planned or paid.
+        return {"status": READINESS_STATUS, "capture_root": str(root)}
     scene = facts["scene"]
     revision, task_spec = scene.get("scene_revision_digest"), scene.get("task_spec")
     if not isinstance(revision, str) or not revision.startswith("sha256:") or len(revision) != 71:

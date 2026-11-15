@@ -473,6 +473,9 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
     stages = records.stage_sequence()
     for old, new in zip(stages[:2], (first["stage"], second["stage"]), strict=True):
         old.update(new)
+    # Owner decision 2026-11-15: a rigid website job's scene is built with no GPU; stage 5 records
+    # that no simulator ran. An articulated job keeps the Isaac import.
+    select_stage_five(stages, configurations, articulated=articulated)
     from .website_synthetic_subject import AUTHORING_ADAPTER, AUTHORING_METHOD
     if third.get("authoring_method") == AUTHORING_METHOD:
         # A designed subject's mesh is supplied: authored as given, no provider called.
@@ -641,3 +644,55 @@ def execute_prepared_collision(*, envelope, stage, configuration, configuration_
         *([{"role": "source_cad_authoring_evidence", **_record(observed_root / cad["evidence"]["path"])}]
           if cad else []),
         {"role": "website_background_reuse_receipt", **_record(receipt_path)}])
+
+
+def select_stage_five(stages: list[dict[str, Any]], configurations: list[dict[str, Any]],
+                      *, articulated: bool) -> None:
+    """In place: a rigid website job's stage 5 becomes this adapter; an articulated one keeps Isaac."""
+    if articulated:
+        return
+    from .website_scene_without_simulator import CAPABILITY, ADAPTER_ID, stage_five_configuration
+
+    if stages[4].get("capability") != CAPABILITY:
+        raise ValueError("stage_five_capability_unexpected")
+    stages[4].update(adapter={"id": ADAPTER_ID, "version": "v1"}, execution_class="no_spend")
+    configurations[4] = stage_five_configuration(replacement_identity=configurations[4]["replacement_identity"])
+
+
+def execute_simulator_not_run(*, envelope: Mapping[str, Any], stage: Mapping[str, Any],
+                              configuration: Mapping[str, Any], configuration_path: Path,
+                              dependency_results: tuple[Mapping[str, Any], ...], output_root: Path,
+                              provider_runtime_artifacts: tuple[Mapping[str, Any], ...] = ()) -> Mapping[str, Any]:
+    """Pass stage 4's object on, byte for byte, with a receipt that says no simulator ran."""
+    from .task_evaluation_scene_configuration_adapters import TaskEvaluationSceneConfigurationAdapterError
+    from .task_evaluation_scene_configuration_builtin_adapters import (
+        _copy_artifact, _dependency_artifact, _sha256_and_size, _stage_result,
+    )
+    from .website_scene_without_simulator import ADAPTER_ID, CAPABILITY, configuration_refusal, not_run_receipt
+    refusal = configuration_refusal(configuration, envelope)
+    if (refusal is not None or provider_runtime_artifacts or stage.get("execution_class") != "no_spend"
+            or (stage.get("adapter") or {}).get("id") != ADAPTER_ID or stage.get("capability") != CAPABILITY):
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "website_simulator_not_run_configuration_invalid:" + str(refusal or "stage"))
+    _asset_record, asset = _dependency_artifact(dependency_results, role="statically_qualified_replacement_asset")
+    _static_record, static_receipt = _dependency_artifact(dependency_results, role="static_qualification_receipt")
+    static = json.loads(static_receipt.read_text(encoding="utf-8"))
+    identity = configuration["replacement_identity"]
+    if (static.get("status") != "authored_structure_statically_qualified"
+            or static.get("authored_structure_statically_qualified") is not True
+            or static.get("asset_kind") == "articulated_assembly"
+            or static.get("replacement_identity") != identity
+            or (static.get("replacement_usd") or {}).get("sha256") != _sha256_and_size(asset)[0]):
+        raise TaskEvaluationSceneConfigurationAdapterError("website_simulator_not_run_static_binding_invalid")
+    output_root.mkdir(parents=True, exist_ok=True)
+    four_digest = _sha256_and_size(asset)[0]
+    retained = _copy_artifact(asset, output_root / f"stage_four_replacement_asset{asset.suffix}")
+    receipt = not_run_receipt(replacement_identity=identity, asset_digest=four_digest,
+                              static_qualification_digest=_sha256_and_size(static_receipt)[0])
+    receipt_path = output_root / "simulator_not_run_receipt.v1.json"
+    receipt_path.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    digest, size = _sha256_and_size(receipt_path)
+    return _stage_result(stage=stage, configuration_path=configuration_path, output_artifacts=[
+        {"role": "native_qualified_replacement_asset", **retained},
+        {"role": "native_import_qualification_receipt", "path": str(receipt_path), "digest": digest,
+         "size_bytes": size}])

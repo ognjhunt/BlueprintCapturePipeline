@@ -599,6 +599,9 @@ def _stage_five_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
     identity = configuration.get("replacement_identity")
+    from .website_scene_without_simulator import CONFIGURATION_SCHEMA, configuration_refusal
+    if configuration.get("schema_version") == CONFIGURATION_SCHEMA:
+        return configuration_refusal(configuration, envelope)
     if (
         configuration.get("schema_version")
         != "replacement_native_import_qualification_configuration.v1"

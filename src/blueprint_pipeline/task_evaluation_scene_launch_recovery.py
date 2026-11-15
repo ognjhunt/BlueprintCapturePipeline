@@ -75,6 +75,12 @@ TRANSIENT_BLOCKERS = frozenset({
     "no_vast_offer_in_allowed_geolocation_country",
     "vast_native_offer_search_coverage_incomplete",
 })
+#: $0 refusals inside a chain that runs whole on this host (``host_chain_failed:<type>:<code>``):
+#: the chain did not start, so ``nothing_started`` holds. The rented path never names this blocker.
+HOST_CHAIN_TRANSIENT_CODES = frozenset({
+    "cpu_prestage_workspace_busy", "cpu_prestage_parent_deadline_exhausted",
+    "control_plane_disk_budget_exceeded", "control_plane_disk_budget_lock_busy",
+})
 #: Paid-admission refusals the spend guard clears by itself (account_monthly_spend).
 #: A reached limit is a money stop and is never in this set.
 ADMISSION_TRANSIENT_BLOCKERS = frozenset({
@@ -107,9 +113,10 @@ def transient_launch_failure(result: Any) -> bool:
     if not nothing_started(result) or result.get("cpu_prestage"):
         return False
     blockers = [str(b) for b in result.get("blockers") or []]
-    return (bool(blockers)
-            and any(_code(b) in TRANSIENT_BLOCKERS for b in blockers)
-            and all(_code(b) in TRANSIENT_BLOCKERS or b in DEAD_MACHINE_CONSEQUENCE_BLOCKERS for b in blockers))
+    transient = [b for b in blockers if _code(b) in TRANSIENT_BLOCKERS or (
+        _code(b) == "host_chain_failed" and (b.split(":") + ["", ""])[2] in HOST_CHAIN_TRANSIENT_CODES)]
+    return (bool(transient)
+            and all(b in transient or b in DEAD_MACHINE_CONSEQUENCE_BLOCKERS for b in blockers))
 
 
 def unallocated_teardown(teardown: Any, adapter: Any = None) -> bool:

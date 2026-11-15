@@ -31,6 +31,11 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _role_bytes(role: str) -> bytes:
+    """Opaque bytes per role; stage 5's receipt is read by publication, so it is an Isaac receipt."""
+    return (b'{"schema_version": "task_evaluation_replacement_native_import_result.v1"}' if role == "native_import_qualification_receipt" else (role + "\n").encode())
+
+
 def _artifact(role: str, path: Path) -> dict[str, object]:
     return {
         "role": role,
@@ -224,7 +229,7 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
     rows = []
     for role, name in roles.items():
         path = artifacts / name
-        path.write_bytes((role + "\n").encode())
+        path.write_bytes(_role_bytes(role))
         rows.append(_artifact(role, path))
     rows.extend(_thumbnail_artifacts(artifacts))
     if human_accepted:
@@ -478,7 +483,7 @@ def test_revision_reports_provider_disclosure_truthfully(tmp_path: Path) -> None
     rows = []
     for role, name in names.items():
         path = artifacts / name
-        path.write_bytes((role + "\n").encode())
+        path.write_bytes(_role_bytes(role))
         rows.append(_artifact(role, path))
     rows.extend(_thumbnail_artifacts(artifacts))
     decision = _disclosure_decision(provider=True)
@@ -691,7 +696,7 @@ def _destination_publication_case(
     ]
     for role, name in roles.items():
         path = artifacts / name
-        path.write_bytes((role + "\n").encode())
+        path.write_bytes(_role_bytes(role))
         rows.append(_artifact(role, path))
     rows.extend(_thumbnail_artifacts(artifacts))
 

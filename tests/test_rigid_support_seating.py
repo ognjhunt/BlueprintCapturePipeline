@@ -73,7 +73,8 @@ def _geometry(*, qualified_bounds: bool = True, support_surface: Any = None) -> 
                        "aabb_max_xyz_m": [START[0] + HALF_XY[0], START[1] + HALF_XY[1], SOURCE_Z[1]]},
         static=_sealed({"status": "authored_structure_statically_qualified", "replacement_identity": IDENTITY,
                         "observed_structure": observed}, "result_digest"),
-        native_import=_sealed({"status": "qualified", "replacement_identity": IDENTITY,
+        native_import=_sealed({"schema_version": "task_evaluation_replacement_native_import_result.v1",
+                               "status": "qualified", "replacement_identity": IDENTITY,
                                "native_simulator_import_qualified": True, "blockers": []}, "result_digest"),
         start=START, target=TARGET, strategy="pick_and_place", support_surface=support_surface,
         search_below_m=0.07203071739327313)

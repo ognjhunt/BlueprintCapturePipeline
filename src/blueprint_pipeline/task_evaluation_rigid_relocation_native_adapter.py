@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .website_scene_without_simulator import RECEIPT_SCHEMA as NOT_RUN_RECEIPT_SCHEMA, stage_five_receipt_kind
 from .native_task_robot_contact_topology import ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N
 from .native_franka_action_math import (
     NativeFrankaActionMathError,
@@ -157,11 +158,14 @@ def _source_document(
     contract_path: str,
     expected_reference: Mapping[str, Any],
     expected_schema: str | None = None,
+    accept_simulator_not_run: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read one exact configured document, byte-checked against its reference.
 
     ``expected_schema`` lets a sibling task kind reuse this boundary with its
-    own document schemas; omitting it keeps the rigid relocation map.
+    own document schemas; omitting it keeps the rigid relocation map. Only a
+    caller that opts in (``accept_simulator_not_run``) may read stage 5's
+    not-run record; every other caller refuses it as main does.
     """
     row = references.get(contract_path)
     unresolved_path = Path(
@@ -193,7 +197,8 @@ def _source_document(
         else {SOURCE_SCHEMAS[contract_path]} | (
             {COMPLETED_SCENE_SOURCE_SCHEMAS[contract_path]}
             if contract_path in COMPLETED_SCENE_SOURCE_SCHEMAS else set()
-        )
+        ) | ({NOT_RUN_RECEIPT_SCHEMA} if accept_simulator_not_run
+             and contract_path == NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH else set())
     )
     if (
         not isinstance(value, Mapping)
@@ -491,6 +496,7 @@ def _runtime_geometry(
     strategy: str,
     support_surface: Callable[..., float | None] | None = None,
     search_below_m: float = 0.0,
+    accept_simulator_not_run: bool = False,
 ) -> dict[str, Any]:
     observed = static.get("observed_structure")
     if (
@@ -500,12 +506,22 @@ def _runtime_geometry(
         != canonical_digest(static, digest_field="result_digest")
         or not isinstance(observed, Mapping)
         or not _source_matches_start(source_object, start)
-        or native_import.get("status") != "qualified"
         or native_import.get("replacement_identity") != replacement_identity
-        or native_import.get("native_simulator_import_qualified") is not True
-        or native_import.get("blockers") not in ([], ())
-        or native_import.get("result_digest")
-        != canonical_digest(native_import, digest_field="result_digest")
+        or not (
+            (
+                native_import.get("schema_version")
+                == SOURCE_SCHEMAS[NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH]
+                and native_import.get("status") == "qualified"
+                and native_import.get("native_simulator_import_qualified") is True
+                and native_import.get("blockers") in ([], ())
+                and native_import.get("result_digest")
+                == canonical_digest(native_import, digest_field="result_digest")
+            )
+            # A website rigid job's stage 5 ran no simulator. Only a caller that opts in (the
+            # website package compile) reads its files from that record, by name, never as a
+            # qualification; every other caller refuses it.
+            or (accept_simulator_not_run and stage_five_receipt_kind(native_import) == "not_run")
+        )
         or support.get("status")
         != "frozen_candidate_pending_production_validation"
         or not str(support.get("sage_prim_path") or "").startswith("/")
@@ -806,6 +822,7 @@ def adapt_rigid_relocation_task_template(
     materialized_references: Mapping[str, Mapping[str, Any]],
     diagnostic_controls_input: Mapping[str, Any] | None = None,
     support_surface: Callable[..., float | None] | None = None,
+    accept_simulator_not_run: bool = False,
 ) -> dict[str, Any]:
     """Return one digest-bound native view of exact configured task bytes.
 
@@ -817,6 +834,11 @@ def adapt_rigid_relocation_task_template(
     collider: the replacement is then seated on it at the start, and where a
     correct placement would rest at the goal is recorded against the success
     window. Without it the registered support top is used, as before.
+
+    ``accept_simulator_not_run`` is False for every caller that pays for or
+    scores a robot run: a scene whose stage 5 ran no simulator is refused there
+    exactly as main refuses it (``rigid_relocation_native_adapter_source_contract_invalid``).
+    Only the website package compile, which needs the scene's files, sets it.
     """
 
     diagnostic = diagnostic_controls_input is not None
@@ -903,9 +925,17 @@ def adapt_rigid_relocation_task_template(
                 materialized_references,
                 contract_path=contract_path,
                 expected_reference=expected_reference,
+                accept_simulator_not_run=accept_simulator_not_run,
             )
             documents[contract_path] = document
             bindings.append(binding)
+        native_import = documents[NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH]
+        if (native_import.get("schema_version") == NOT_RUN_RECEIPT_SCHEMA
+                and native_import.get("asset_digest") != revision["replacement"]["asset"]["digest"]):
+            # Opted in: the not-run record must name the revision's own published object.
+            raise TaskEvaluationRigidRelocationNativeAdapterError(
+                "rigid_relocation_native_adapter_simulator_not_run_asset_unbound"
+            )
         replacement_identity = revision["replacement"]["identity"]
         authority_digest = revision["revision_digest"]
 
@@ -913,6 +943,7 @@ def adapt_rigid_relocation_task_template(
         documents=documents, bindings=bindings, task=task, replacement_identity=replacement_identity,
         authority_digest=authority_digest, diagnostic=diagnostic,
         configured_revision=configured_revision, request=request, support_surface=support_surface,
+        accept_simulator_not_run=accept_simulator_not_run,
     )
 
 
@@ -922,6 +953,7 @@ def _adapt_rigid_relocation_documents(
     diagnostic: bool, configured_revision: Mapping[str, Any] | None = None,
     request: Mapping[str, Any] | None = None,
     support_surface: Callable[..., float | None] | None = None,
+    accept_simulator_not_run: bool = False,
 ) -> dict[str, Any]:
     """Shared derivation after the caller verifies its exact authority and document bytes.
 
@@ -1042,6 +1074,7 @@ def _adapt_rigid_relocation_documents(
         strategy=strategy,
         support_surface=support_surface,
         search_below_m=_estimated_support_height_tolerance(template),
+        accept_simulator_not_run=accept_simulator_not_run,
     )
     source_documents = {
         "bindings": bindings,

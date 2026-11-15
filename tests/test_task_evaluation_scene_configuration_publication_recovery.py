@@ -33,9 +33,17 @@ def _reference(seed: str) -> dict[str, object]:
     }
 
 
+HOST_TEARDOWN = {"schema_version": "vast_teardown_manifest.v1", "vast_instance_ids": [],
+                 "continuing_spend_from_this_run": False, "teardown_actions_performed": []}
+
+
+@pytest.mark.parametrize("proof", ["provider_absence_confirmed", "all_host_run", "all_host_run_allocated"])
 def test_recovers_completed_provider_output_without_repeating_provider(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, proof: str
 ) -> None:
+    """A run whose stages completed but whose publication failed is republished at $0: the
+    watchdog proved no provider resource exists, or the run ran whole on the host (no watchdog
+    armed) and its teardown proves nothing was ever allocated."""
     request, queue, _inputs = staged_configuration(tmp_path)
     pending = next((queue / "pending").glob("*.json"))
     envelope = json.loads(pending.read_text(encoding="utf-8"))
@@ -75,7 +83,9 @@ def test_recovers_completed_provider_output_without_repeating_provider(
     provider_path = tmp_path / "immutable_execution" / "provider-result.json"
     _write(provider_path, provider_result)
     teardown_path = tmp_path / "vast_teardown_manifest.json"
-    teardown_path.write_text("teardown", encoding="utf-8")
+    teardown_path.write_text("teardown" if proof == "provider_absence_confirmed" else json.dumps({
+        **HOST_TEARDOWN, "status": "not_required_provider_adapter_never_invoked",
+        **({"vast_instance_ids": [123]} if proof == "all_host_run_allocated" else {})}), encoding="utf-8")
     original_result = {
         "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
         "status": "blocked",
@@ -89,7 +99,8 @@ def test_recovers_completed_provider_output_without_repeating_provider(
         "configured_scene_published": False,
         "full_byte_service_account_readback_passed": False,
         "continuing_spend_from_this_run": False,
-        "independent_watchdog": {"provider_absence_confirmed": True},
+        "independent_watchdog": {"provider_absence_confirmed": True} if proof == "provider_absence_confirmed"
+        else {"status": "not_armed_no_allocation_possible", "provider_contacted": False},
         "object_store_cleanup": {"all_objects_absent": True},
         "scene_construction_queue_finalization": original_finalization,
         "blockers": ["scene_configuration_configured_revision_not_published"],
@@ -187,6 +198,13 @@ def test_recovers_completed_provider_output_without_repeating_provider(
 
     monkeypatch.setattr(recovery, "_publish_completed_configuration", publish)
     output = tmp_path / "recovery"
+    if proof == "all_host_run_allocated":
+        with pytest.raises(ValueError, match="scene_configuration_publication_recovery_binding_invalid"):
+            recovery.recover_completed_configuration_publication(
+                bundle_receipt_path=tmp_path / "unused-bundle-receipt.json", provider_result_path=provider_path,
+                original_result_path=original_result_path, original_launch_receipt_path=original_launch_path,
+                queue_root=queue, output_root=output, recovery_source_commit="a" * 40)
+        return
     result = recovery.recover_completed_configuration_publication(
         bundle_receipt_path=tmp_path / "unused-bundle-receipt.json",
         provider_result_path=provider_path,
