@@ -402,6 +402,10 @@ def test_a_real_compiled_half_is_found_deleted_and_never_compiled_again(tmp_path
     queue, key, capture = real["queue"], real["key"], real["capture"]
     [status] = real["process"]()["results"]
     assert status["status"] == "completed"
+    # A website half compiled now queues no paid probe; an older or operator half's ``record_team_scene`` queued
+    # one with this call, and the withdrawal must find and delete that entry too.
+    assert list(probes.glob("*/*.json")) == []
+    assert runner.enqueue_rigid_robot_free_probe(capture)["queued"] is True
     profile = profile_for_capture(capture)
     inputs_path = profile["team_scene_inputs_path"]
     request = (queue / "processed" / f"{key}.json").read_bytes()
@@ -425,7 +429,7 @@ def test_a_real_compiled_half_is_found_deleted_and_never_compiled_again(tmp_path
         str(real["operator"] / "derived" / f"{real['halves'].name}.json")]
     assert [row[0] for row in section["packet_queue_records"]] == [
         str(queue / "processed" / f"{key}.json"), str(queue / "status" / f"{key}.json")]
-    # The half's record queued the capture's robot-free probe (record_team_scene).
+    # The probe entry queued for the capture's half.
     assert [row[0] for row in section["probe_entries"]] == [str(probes / "pending" / f"{real['halves'].name}.json")]
     with ExitStack() as locks:
         team_scene.hold_packet_queue(locks, queue)

@@ -399,13 +399,15 @@ def test_the_scene_stage_spares_only_a_half_that_records_no_probe(tmp_path, monk
 
     world = prepared_source_queue(tmp_path, monkeypatch)
     if isinstance(record, dict) and record.pop("offer_only_block", False):
-        # A no-GPU revision's request (``probe_unavailable``) whose robot-team offer post failed, retries spent.
+        # A no-GPU revision's request (``probe_unavailable``) whose robot-team offer post failed, retries spent,
+        # under the running release (else a new release's recovery returns it to pending first).
         [processed] = (world["packet_queue"] / "processed").glob("*.json")
         request = {**json.loads(processed.read_text()), "robot_free_readiness_status": "probe_unavailable"}
         processed.write_text(json.dumps(packets._seal(request, "request_digest")))
         status_path = world["packet_queue"] / "status" / processed.name
         status_path.write_text(json.dumps({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"],
-                                           "automatic_retry": {"attempts": 3, "exhausted": True}}))
+                                           "automatic_retry": {"attempts": 3, "exhausted": True},
+                                           packets.RELEASE_COMMIT_FIELD: packets.current_release_commit()}))
     path = tmp_path / "record.json"
     path.write_text(json.dumps({"robot_free_probe": "not_queued", "inputs_digest": "sha256:" + "0" * 64}
                                if record == "unsealed" else _sealed_doc(
