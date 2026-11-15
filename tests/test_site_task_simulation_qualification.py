@@ -277,46 +277,6 @@ def test_lost_publication_acknowledgement_can_retry_the_same_retained_output(tmp
     assert len(calls) == 2 and len(set(calls)) == 1 and output.read_bytes() == original
 
 
-def _qualified_world(tmp_path, monkeypatch):
-    from tests.test_team_candidate_quick10_launch import _world
-    from tests.test_team_embodiment import manifest, write_robot_usd
-    from blueprint_pipeline.team_candidate_quick10_registry import profile_for_request, offer_eligibility
-    model = write_robot_usd(tmp_path / "robot.usda")
-    world = _world(tmp_path, monkeypatch, robot={"manifest": manifest(model, control_hz=15), "model": model})
-    envelope = world["row"]["execution_admission"]
-    request = envelope["canonical_execution_request"]
-    operator = profile_for_request(request)
-    facts, blockers = offer_eligibility(operator)
-    assert not blockers
-    bound = {"capture_id": request["site_package"]["capture_id"],
-             "scene_request_id": envelope["binding"]["scene_request_id"]}
-    source = fixture(tmp_path / "qualification", scene=facts["scene"], model=model.read_bytes(), binding=bound)
-    raw = (Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json").read_bytes()
-    (tmp_path / "qualification" / "scene.json").write_bytes(raw)
-    def update(request):
-        artifact = next(row for row in request["source_artifacts"] if row["role"] == "scene")
-        artifact.update(sha256="sha256:" + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw))
-    _rewrite(source, "request", update)
-    _reauthorize_review(source)
-    receipt = qualify_from_profile(source)
-    source["site_task_qualification"]["receipt_digest"] = receipt["receipt_digest"]
-    registry_path = world["operator"] / "registry.json"
-    registry = json.loads(registry_path.read_text())
-    registry["profiles"][0].update(source)
-    registry["registry_digest"] = canonical_digest(registry, digest_field="registry_digest")
-    registry_path.write_text(json.dumps(registry))
-    envelope["evidence_scope"] = "simulation"
-    envelope["site_task_qualification_receipt"] = receipt
-    envelope["site_task_qualification"] = receipt["qualification"]
-    envelope["binding"].update({key: receipt["binding"][key] for key in
-                               ("scene_request_id", "site_id", "task_id", "capture_id", "testbed_digest_sha256")})
-    envelope["binding"]["capture_digest_sha256"] = receipt["binding"]["source_capture_digest"]
-    frozen = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    world["row"].update(execution_admission_canonical_json=frozen,
-                        execution_admission_digest="sha256:" + hashlib.sha256(frozen.encode()).hexdigest())
-    return world, receipt
-
-
 def test_publication_is_explicit_and_requires_exact_acknowledgement(tmp_path):
     from blueprint_pipeline.site_task_simulation_qualification import publish_receipt
     receipt = qualify_from_profile(fixture(tmp_path), now=NOW)

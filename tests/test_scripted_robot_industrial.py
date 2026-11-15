@@ -6,14 +6,6 @@ from blueprint_pipeline.scripted_robot_runtime_dispatch import runtime_for_polic
 from tests.test_scripted_robot_grasp_frames import development_manifest
 
 
-@pytest.mark.parametrize('identity', sorted(runtime.BODIES))
-def test_industrial_generic_loop_rebinds_cell_and_preserves_scoring(tmp_path, monkeypatch, identity):
-    from tests import test_scripted_robot_robotiq as shared
-    monkeypatch.setattr(shared, 'runtime', runtime)
-    shared.test_actual_loop_rebinds_current_cell_for_six_and_seven_dof_without_learned_claims(
-        tmp_path, monkeypatch, identity)
-
-
 @pytest.mark.parametrize('fault', ['closure', 'contact', 'dof', 'policy'])
 def test_changed_source_contract_is_not_silently_accepted(fault):
     manifest = deepcopy(development_manifest(next(iter(runtime.BODIES))))

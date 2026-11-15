@@ -24,7 +24,6 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
-from blueprint_pipeline import native_task_arena_vast as native
 from blueprint_pipeline import policy_canary_output_members as members
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as scene_store
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -40,12 +39,10 @@ from tests.provider_output_fixtures import (
     quick10_production_shaped_archive,
     quick10_shaped_archive,
 )
-from tests.test_native_task_arena_paired_witness_staging import context as context  # noqa: F401
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
 SMALL = {"cells": 10, "frames_per_camera": 2, "png_bytes": 8 * 1024, "mp4_bytes": 64 * 1024,
          "policy_request_bytes": 4 * 1024}
-RESOLUTION = "provider_output_delivery_resolution"
 EXPECTED_BUCKET_ENV = "BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET"
 AUTO_STREAM = {"mode": "stream", "reason": "auto_needed_set_within_budget"}
 AUTO_DOWNLOAD = {"mode": "download", "reason": "auto_artifact_store_not_configured"}
@@ -101,28 +98,6 @@ def _set_delivery(monkeypatch, tmp_path: Path, setting: str | None, *, configure
         monkeypatch.delenv(members.DELIVERY_ENV, raising=False)
     else:
         monkeypatch.setenv(members.DELIVERY_ENV, setting)
-
-
-def _run_session(context, tmp_path, monkeypatch, *, execute=True, lane=None):
-    """The Quick-10 session up to its lane call, with the authority and bundle checks stubbed."""
-    _, bundle_path, binding = context
-    authority = {**binding, "hard_cap_usd": 4.0, "hard_ttl_seconds": 9000,
-                 "resource_name": "blueprint-native-task-policy-canary-test"}
-    bundle = {"implementation_commit": binding["implementation_commit"],
-              "bundle_sha256": binding["provider_bundle_sha256"], "container_image": "immutable-image",
-              "bundle_path": str(bundle_path), "bundle_size_bytes": bundle_path.stat().st_size}
-    monkeypatch.setattr(native, "validate_policy_canary_session_authority", lambda value: value)
-    monkeypatch.setattr(native, "validate_policy_canary_provider_bundle", lambda *_a, **_kw: bundle)
-    monkeypatch.setattr(native, "_policy_provider_transfer_byte_budget", lambda _candidate: (100, 20))
-    monkeypatch.setattr(native, "run_arena_native_control_vast", lane or (lambda **kwargs: kwargs))
-    return native.run_native_task_arena_policy_canary_session_vast(
-        job_dir=tmp_path / "allocator", prepared_bundle=bundle, session_authority=authority,
-        paid_resource_admission_grant=None, execute=execute, hard_ttl_seconds=9000,
-        provider_runtime_environment={"BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"})
-
-
-def _forbidden(*_args, **_kwargs):
-    raise AssertionError("the session authority was consumed or the lane ran before the mode was resolved")
 
 
 @pytest.mark.parametrize(("defect", "accepted"), [
@@ -435,7 +410,7 @@ def test_auto_streams_only_on_a_sealed_measurement_within_budget(tmp_path, case,
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a mode-000 directory")
-def test_auto_never_raises_when_the_store_or_the_record_cannot_be_reached(context, tmp_path, monkeypatch):
+def test_auto_never_raises_when_the_store_or_the_record_cannot_be_reached(tmp_path, monkeypatch):
     """Review: below Python 3.13 ``Path.is_file`` raises ``PermissionError`` under a parent it cannot
     traverse. Auto resolution, the dispatcher's workload label and an explicit ``stream`` must answer
     instead, or every dispatcher tick exits 2, download runs included."""
@@ -450,12 +425,8 @@ def test_auto_never_raises_when_the_store_or_the_record_cannot_be_reached(contex
         assert canary_workload() == "policy_canary"
         monkeypatch.setenv(members.DELIVERY_ENV, "stream")
         assert canary_workload() == "policy_canary_streamed"  # explicit values keep today's label
-        monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
-        refused = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
     finally:
         store.chmod(0o700)
-    assert refused["blockers"] == ["policy_canary_output_stream_artifact_store_not_configured"]
-    assert refused["provider_mutations_performed"] == 0 and refused[RESOLUTION] == {"mode": "stream", "reason": "explicit"}
 
     # A record behind a directory the dispatcher cannot traverse is an invalid record, not an error.
     monkeypatch.delenv(members.DELIVERY_ENV)

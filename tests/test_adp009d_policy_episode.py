@@ -2401,13 +2401,3 @@ def test_internal_canary_accepts_digest_bound_runtime_camera_gate_without_human_
     ]
 
 
-def _flagged_runtime_gate(**changes) -> dict:
-    """The real beta runtime gate: usable frame structure, integrity not passed."""
-    from tests.test_beta_screening_worker_control import REAL_GATE_BLOCKERS
-
-    value = {**_runtime_observation_gate(), "status": "blocked", "target_semantic_visibility_passed": False,
-             "blockers": sorted(REAL_GATE_BLOCKERS), "policy_observation_integrity_passed": False, **changes}
-    value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
-    return value
-
-

@@ -84,12 +84,43 @@ def _inputs(value, candidate):
             "configuration_digest": candidate["configuration_digest"], "runtime_inputs_digest": "sha256:" + "c" * 64}
 
 
+
+# Website beta screening, capture GPU runs of 2026-11-04/05: every cell reached the
+# pre-policy runtime observation gate and stopped there with these exact blockers,
+# while its frames were structurally usable. None protects privacy, rights or money.
+REAL_GATE_BLOCKERS = (
+    "droid_wrist_task_pixels_below_threshold",
+    *(f"{role}:{target}:composition_support_background_occlusion_requires_review"
+      for role in ("external", "overview") for target in ("task_object", "task_target_marker")),
+    "policy_canary_task_semantic_visibility_failed",
+)
+
+
+def runtime_observation_gate(*, backend_digest, frame_structure_passed=True, blockers=REAL_GATE_BLOCKERS):
+    """The sealed runtime camera gate in the shape the native worker writes it."""
+    value = {"schema_version": "policy_canary_runtime_observation_integrity_gate.v1", "status": "blocked",
+             "run_kind": "internal_policy_canary", "claim_ceiling": "diagnostic_policy_execution",
+             "appearance_render_backend_receipt_digest": backend_digest,
+             "wrist_camera_mount_selection_digest": "sha256:" + "4" * 64,
+             "frame_structure_passed": frame_structure_passed, "target_semantic_visibility_passed": False,
+             # Recorded, as on the real gate, but never in its blocker list.
+             "visual_gate": {"frame_structure_passed": frame_structure_passed,
+                             "policy_observation_integrity_blockers": [
+                                 "native_task_appearance_reference_parity_missing",
+                                 "native_task_human_visual_review_not_approved"]},
+             "human_visual_review_status": "not_required_for_internal_diagnostic_policy_execution",
+             "candidate_policy_loaded": False, "candidate_policy_queried": False,
+             "official_ranking_permitted": False, "scene_promotion_permitted": False,
+             "blockers": sorted(blockers), "policy_observation_integrity_passed": False, "gate_digest": ""}
+    value["gate_digest"] = canonical_digest(value, digest_field="gate_digest")
+    return value
+
+
 def _flags(flagged):
     """What a cell's session records when its usable-frame gate did not pass integrity."""
     if not flagged:
         return {}
     from blueprint_pipeline.native_task_arena_policy_canary_session import observation_quality_flags
-    from tests.test_beta_screening_worker_control import runtime_observation_gate
     gate = runtime_observation_gate(backend_digest="sha256:" + "b" * 64)
     return {"preload_observation_gate": gate, "observation_integrity_flagged": True,
             "observation_quality_flags": observation_quality_flags(gate, run_kind=BETA_RUN_KIND)}

@@ -366,34 +366,30 @@ def test_failed_delivery_names_its_category_for_the_worker_status(tmp_path, rais
     assert status["last_publication_failure"]["category"] == category
 
 
-def test_fresh_deploy_provisions_screening_sandbox_before_timer_can_start(tmp_path):
+def test_fresh_deploy_provisions_the_scene_stage_sandbox_before_its_timer_can_start(tmp_path):
+    """The early trial's units are retired; the scene stage's maintenance pass keeps its hold store in the same
+    root and reads the packet queue. A fresh host gets both before the maintenance timer can start."""
     import os
     from pathlib import Path
     from tests.test_deploy_control_plane_commit import deploy
 
     host = tmp_path / "host"
     (host / "var/lib/blueprint").mkdir(parents=True)
-    units = ("blueprint-beta-policy-screening.service", "blueprint-beta-policy-screening.timer")
+    retired = ("blueprint-beta-policy-screening.service", "blueprint-beta-policy-screening.timer")
+    assert not any(unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS for unit in retired)
+    assert retired[1] in deploy.DEFAULT_RETIRED_TRIGGER_UNITS
+    units = ("blueprint-scene-stage-maintenance.service", "blueprint-scene-stage-maintenance.timer")
     assert all(unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS for unit in units)
     assert units[1] in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
-    # Without the work volume's mount point the deploy refuses rather than create the attempts' root elsewhere.
-    with pytest.raises(deploy.ControlPlaneDeployError, match="beta-policy-screening-work"):
-        deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
-            units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
-    (host / "mnt/blueprint-work").mkdir(parents=True)
     receipt = deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
         units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
-    target = host / "var/lib/blueprint/pipeline-control-plane/beta-policy-screening"
-    assert target.is_dir() and target.stat().st_mode & 0o777 == 0o750
-    work = host / "mnt/blueprint-work/beta-policy-screening-work"
-    assert work.is_dir() and work.stat().st_mode & 0o777 == 0o750
-    registrations = host / "var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations"
-    assert registrations.is_dir() and registrations.stat().st_mode & 0o777 == 0o750
+    for name in ("beta-policy-screening", "team-scene-packets"):
+        target = host / "var/lib/blueprint/pipeline-control-plane" / name
+        assert target.is_dir() and target.stat().st_mode & 0o777 == 0o750
     assert receipt["created"] == [{"unit": units[0], "path": path, "mode": "0750",
         "owner_uid": os.getuid(), "owner_gid": os.getgid()} for path in (
         "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening",
-        "/mnt/blueprint-work/beta-policy-screening-work",
-        "/var/lib/blueprint/pipeline-control-plane/native-g1-site-registrations")]
+        "/var/lib/blueprint/pipeline-control-plane/team-scene-packets")]
     repeated = deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
         units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
     assert repeated["created"] == []
