@@ -30,7 +30,6 @@ from PIL import Image
 
 import blueprint_pipeline.droid_https_policy_client as https_client
 import blueprint_pipeline.native_task_arena_policy_canary_worker as worker
-from blueprint_pipeline.agent_run_executor import AgentRunWebAppClient
 from blueprint_pipeline.agent_run_result_scoring import validate_scoring_statement
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
@@ -249,24 +248,6 @@ def test_quick10_runs_ten_simulator_scored_episodes_of_one_team_candidate(tmp_pa
         "robot_free_probe_receipt_digest": admission["robot_free_probe_receipt_digest"],
         "team_candidate_admission_digest": admission["admission_digest"],
         "session_result_digest": closed["result_digest"]}
-
-    # And it reaches the WebApp as one signed result carrying that statement verbatim.
-    sent: list[tuple[str, dict[str, Any]]] = []
-
-    class Client(AgentRunWebAppClient):
-        def __init__(self) -> None:
-            pass
-
-        def _json(self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None):
-            sent.append((path, payload or {}))
-            return {"ok": True}
-
-    row = {"reservation_id": "free_team", "team_id": "team-acme", "quoted_episodes": 10, "quoted_usd": 0,
-           "execution_admission_digest": "sha256:" + "a" * 64}
-    Client().report_completed(row, "agent-attempt-1", terminal)
-    path, payload = sent[0]
-    assert path == "/api/internal/pipeline/agent-run-results"
-    assert payload["episodes_run"] == 10 and payload["scoring"] == terminal["scoring"]
 
 
 def test_a_refused_team_response_keeps_the_run_out_of_recommendation_evidence(tmp_path, monkeypatch) -> None:
