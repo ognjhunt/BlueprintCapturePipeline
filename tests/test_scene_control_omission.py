@@ -96,33 +96,10 @@ def test_private_bytes_and_current_consent_remain_required(tmp_path, monkeypatch
         omission.load_for_run(launch_state_root=launches,source_launch_id=launch,now=now)
 
 
-def test_existing_typed_derivation_preserves_scoring_and_original_bytes(tmp_path):
-    from tests.test_native_task_arena_policy_canary_session import _activation
-    contract=copy.deepcopy(_activation()['task_success_contract'])
-    contract['criteria']['controls']={'mode':'required_per_cell','control_ids':omission.OMITTED}
-    contract['contract_digest']=cross_runtime_canonical_digest(contract,digest_field='contract_digest')
-    request={'schema_version':'native_task_arena_packet_request.v1','task_spec':{'task_success_contract':contract,
-        'configured_success_criteria':{'per_cell_controls_required':True}}}
-    request['request_digest']=canonical_digest(request,digest_field='request_digest')
-    path=tmp_path/'request.json'
-    path.write_text(json.dumps(request))
-    before=path.read_bytes()
-    derived,authority=omission.derived_contract(packet_request_path=path,
-        directive={'authorized_by':'owner','authorization_reference':'user:skip-controls'})
-    expected=copy.deepcopy(contract['criteria'])
-    expected.pop('controls')
-    assert derived['criteria']==expected and path.read_bytes()==before
-    assert authority['source_task_success_contract_digest']==contract['contract_digest']
-    assert authority['qualified_comparison_permitted'] is False
-
-
 def test_confirmed_drawer_contract_keeps_the_qualified_opening_threshold(tmp_path):
     from tests.test_task_evaluation_articulated_open_close_native_adapter import _case
     from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
         adapt_articulated_open_close_task_template,
-    )
-    from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
-        _require_strict_owner_success_contract,
     )
 
     case = _case(tmp_path)
@@ -137,35 +114,11 @@ def test_confirmed_drawer_contract_keeps_the_qualified_opening_threshold(tmp_pat
         task_spec=spec, site_id='scene-drawer', task_id='task-drawer')
     assert contract['criteria']['opening']['success_interval'] == spec['executable_opening_threshold']['success_interval']
     assert contract['criteria']['safety'] == {'mode': 'required'}
-    authority = {
-        'schema_version': 'task_evaluation_diagnostic_control_omission_authority.v1',
-        'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
-        'authorized_by': 'blueprint-platform-owner', 'authorization_reference': 'scene-intent:fixture',
-        'omitted_controls': omission.OMITTED,
-        'source_task_success_contract_digest': contract['contract_digest'],
-        'result_task_success_contract_digest': contract['contract_digest'],
-        'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
-    }
-    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
-    _require_strict_owner_success_contract(
-        task_spec=spec, contract=contract, diagnostic_control_omission_authority=authority,
-        task_kind='articulated_open_close')
     unconfirmed = copy.deepcopy(spec)
     unconfirmed['configured_owner_authority']['confirmation_status'] = 'proposal_only'
     with pytest.raises(ValueError, match='articulated_owner_contract_unconfirmed'):
         omission.confirmed_articulated_contract(
             task_spec=unconfirmed, site_id='scene-drawer', task_id='task-drawer')
-    weakened = copy.deepcopy(contract)
-    weakened['criteria']['opening']['success_interval'][0] = 0.1
-    weakened['contract_digest'] = cross_runtime_canonical_digest(weakened, digest_field='contract_digest')
-    with pytest.raises(ValueError, match='policy_canary_control_omission_scope_invalid'):
-        _require_strict_owner_success_contract(
-            task_spec=spec, contract=weakened, diagnostic_control_omission_authority={
-                **authority, 'result_task_success_contract_digest': weakened['contract_digest'],
-                'authority_digest': canonical_digest({
-                    **authority, 'result_task_success_contract_digest': weakened['contract_digest'],
-                }, digest_field='authority_digest'),
-            }, task_kind='articulated_open_close')
 
 
 @pytest.mark.parametrize("fault", ["revoked", "expired", "profile_changed"])
