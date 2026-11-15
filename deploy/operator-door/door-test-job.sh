@@ -20,9 +20,9 @@ if [ -r "$env_file" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     [[ "$line" =~ $assignment ]] || continue
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
-    # Only what the call and the month read need: the website URL, the token's file, the month's limit config.
-    case "$key" in PIPELINE_SYNC_WEBAPP_URL | PIPELINE_SYNC_TOKEN_FILE | BLUEPRINT_ACCOUNT_MONTHLY_SPEND_* \
-      | BLUEPRINT_LAUNCH_PROOF_MODE) ;; *) continue ;; esac
+    # Only what the call and the month read need: the website URL, the token or its file, the month's limit config.
+    case "$key" in PIPELINE_SYNC_WEBAPP_URL | PIPELINE_SYNC_TOKEN | PIPELINE_SYNC_TOKEN_FILE \
+      | BLUEPRINT_ACCOUNT_MONTHLY_SPEND_* | BLUEPRINT_LAUNCH_PROOF_MODE) ;; *) continue ;; esac
     if [[ "$value" =~ $double_quoted ]] || [[ "$value" =~ $single_quoted ]]; then value="${BASH_REMATCH[1]}"; fi
     export "$key=$value"
   done <"$env_file"

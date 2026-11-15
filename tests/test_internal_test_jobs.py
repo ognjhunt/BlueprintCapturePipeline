@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -392,6 +393,14 @@ def test_the_door_script_runs_the_release_module_as_the_service_user(test_job_en
     assert calls[0] == "setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --"
     assert calls[2].startswith("job -m blueprint_pipeline.internal_test_job_door --request-json ")
     assert '"$source_dir"/door-test-job.sh' in (ROOT / "deploy/operator-door/install.sh").read_text()
+
+
+def test_the_door_script_passes_every_name_the_call_reads_from_the_env_file():
+    """The env file's path is fixed, so read the allow-list: the URL, and the token or its file (the loader's two)."""
+    script = (ROOT / "deploy/operator-door/door-test-job.sh").read_text()
+    allowed = re.search(r'case "\$key" in (.*?)\) ;;', script, re.S).group(1)
+    names = {name.strip() for name in allowed.replace("\\", " ").split("|")}
+    assert {"PIPELINE_SYNC_WEBAPP_URL", "PIPELINE_SYNC_TOKEN", "PIPELINE_SYNC_TOKEN_FILE"} <= names
 
 
 def test_a_rerun_of_the_same_key_is_a_new_door_request_and_the_host_decides(tmp_path, monkeypatch):
