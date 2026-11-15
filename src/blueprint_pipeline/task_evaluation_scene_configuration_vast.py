@@ -119,6 +119,12 @@ from .task_evaluation_scene_configuration_openai_gate import (
     resolve_stage_scope_attestation,
     stage_paid_resource_class,
 )
+from .task_evaluation_scene_configuration_adapter_recovery import (
+    recover_escaped_adapter_failure as _recover_escaped_adapter_failure,
+)
+from .task_evaluation_scene_configuration_cpu_prestage import (
+    WATCHDOG_NOT_ARMED_STATUS, host_chain_plan, host_chain_watchdog, nothing_staged_cleanup, run_whole_chain_on_host,
+)
 from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
@@ -996,64 +1002,6 @@ def _close_watchdog_after_adapter(
             not instance_ids and adapter.get("provider_create_attempted") is not True
         ),
     )
-def _recover_escaped_adapter_failure(
-    *,
-    provider_run: Path,
-    started_instance_id_path: Path,
-    failure_detail: str,
-) -> tuple[dict[str, Any], bool]:
-    """Preserve post-create identity when adapter finalization escapes.
-
-    The adapter writes the independent watchdog handoff immediately after Vast
-    returns an instance id.  Its own ``finally`` normally destroys that
-    instance and seals the adapter and teardown receipts, but an error while
-    sealing those receipts can escape to this caller.  In that case the
-    handoff is the only durable proof that allocation occurred; calling the
-    unallocated sealer would contradict it.
-    """
-
-    started_path_present = (
-        started_instance_id_path.exists() or started_instance_id_path.is_symlink()
-    )
-    instance_ids: list[int] = []
-    blockers = [f"vast_adapter_failed:{failure_detail}"]
-    if started_path_present:
-        try:
-            if started_instance_id_path.is_symlink():
-                raise ValueError("started instance id path is a symlink")
-            candidate = started_instance_id_path.read_text(encoding="utf-8").strip()
-            instance_id = int(candidate)
-            if instance_id <= 0 or candidate != str(instance_id):
-                raise ValueError("started instance id is not canonical")
-            instance_ids.append(instance_id)
-        except (OSError, ValueError):
-            blockers.append("vast_started_instance_id_evidence_invalid")
-
-    adapter = {
-        "schema_version": "vast_provider_adapter_result.v1",
-        "status": "blocked",
-        "reason": "vast_adapter_finalization_failed",
-        "blockers": blockers,
-        "provider_create_attempted": started_path_present,
-        "vast_side_effects_may_have_occurred": started_path_present,
-        "vast_instance_ids": instance_ids,
-        "retained_owned": False,
-        "continuing_spend_from_this_run": started_path_present,
-        "raw_secret_values_recorded": False,
-    }
-    if started_path_present:
-        try:
-            write_json(
-                provider_run / "vast_provider_adapter_result.json",
-                adapter,
-            )
-        except OSError:
-            adapter["blockers"].append(
-                "vast_adapter_failure_receipt_write_failed"
-            )
-    return adapter, started_path_present
-
-
 @releases_output_on_exit
 def run_scene_configuration_vast(
     *,
@@ -1233,6 +1181,10 @@ def run_scene_configuration_vast(
         resource_class="vast_provider_adapter",
         require_allocation_binding=True,
     )
+    # A recipe with no GPU stage runs whole on this host and rents nothing (owner, 2026-11-15):
+    # no bundle staging, no Vast watchdog, no provider call (``host_chain_plan``).
+    host_chain, cpu_prestage_stage_limit = host_chain_plan(_portable_construction_envelope(
+        receipt), receipt, cpu_prestage_stage_limit, diagnostic_only=diagnostic_only)
     external_cap = sum(float(provider["maximum_cost_usd"])
                        for provider in authority["external_service_spend_caps"].values())
     provider_all_in_cap = float(authority["hard_attempt_spend_cap_usd"]) - external_cap
@@ -1252,7 +1204,8 @@ def run_scene_configuration_vast(
         job=job, receipt=receipt, read_envelope=_portable_construction_envelope,
         expected_upload_bytes=expected_upload_bytes, diagnostic_only=diagnostic_only,
         retain_warm_session=retain_warm_session, api_pretraining=requires_api_pretraining,
-        cpu_prestage=bool(cpu_prestage_stage_limit), disk_usage_provider=disk_usage_provider)
+        cpu_prestage=bool(cpu_prestage_stage_limit), disk_usage_provider=disk_usage_provider,
+        prestage_required=host_chain)
     preallocation_disk_capacity = output_admission.before_allocation(
         _provider_output_disk_capacity,
         destination_directory=provider_run,
@@ -1293,7 +1246,7 @@ def run_scene_configuration_vast(
         expected_upload_bytes
     )
     staging_dir = job / "object_store_staging"
-    staging = stage_wam_provider_bundle_object_store(
+    staging = {"status": "completed"} if host_chain else stage_wam_provider_bundle_object_store(
         job_dir=staging_dir,
         bundle_path=bundle_path,
         key_prefix="blueprint/arm-decision-proof-v1/scene-configuration",
@@ -1336,7 +1289,8 @@ def run_scene_configuration_vast(
             provider_bundle_reference,
             provider_bundle_remote_index,
             provider_bundle_remote_index_path,
-        ) = _seal_provider_bundle_remote_index(
+        ) = (provider_bundle_reference, provider_bundle_remote_index, provider_bundle_remote_index_path
+             ) if host_chain else _seal_provider_bundle_remote_index(
             job=job,
             receipt=receipt,
             staging=staging,
@@ -1369,7 +1323,8 @@ def run_scene_configuration_vast(
             scene_construction_queue_root=scene_construction_queue_root,
             diagnostic_only=diagnostic_only,
         )
-    watchdog_handoff, watchdog = arm_independent_vast_watchdog(
+    watchdog_handoff, watchdog = host_chain_watchdog(
+        job_dir=job, max_live_minutes=live_minutes) if host_chain else arm_independent_vast_watchdog(
         job_dir=job,
         max_live_minutes=live_minutes,
         generated_at=utc_now_iso(),
@@ -1415,8 +1370,8 @@ def run_scene_configuration_vast(
         authority, source_commit=str(receipt["source_commit"])
     )
     if consumption.get("status") != "consumed":
-        cleanup = cleanup_staged_wam_provider_objects(staging_dir)
-        watchdog_close = close_independent_vast_watchdog(
+        cleanup = nothing_staged_cleanup() if host_chain else cleanup_staged_wam_provider_objects(staging_dir)
+        watchdog_close = dict(watchdog_handoff) if host_chain else close_independent_vast_watchdog(
             job_dir=job,
             handle=watchdog,
             instance_ids=[],
@@ -1429,6 +1384,7 @@ def run_scene_configuration_vast(
         if watchdog_close.get("status") not in {
             "provider_terminal",
             "cancelled_no_allocation",
+            WATCHDOG_NOT_ARMED_STATUS,
         }:
             blockers.append("independent_watchdog_not_closed")
         blockers = sorted(set(blockers))
@@ -1510,7 +1466,12 @@ def run_scene_configuration_vast(
                 GPU_PREPARATION_REQUIRED_ENV: "1",
             })
             expected_download_bytes += int(api_pretraining["capsule_bytes"])
-        if cpu_prestage_stage_limit and not diagnostic_only:
+        if host_chain:
+            cpu_prestage = run_whole_chain_on_host(
+                receipt=receipt, authority=authority, job=job, provider_run=provider_run,
+                environment={**dict(os.environ), **runtime_environment},
+                secret_file_paths=runtime_secret_paths, stage_limit=str(cpu_prestage_stage_limit))
+        elif cpu_prestage_stage_limit and not diagnostic_only:
             from .task_evaluation_scene_configuration_cpu_prestage import (
                 PREFIX_BYTES_ENV, PREFIX_SHA_ENV, PREFIX_URL_ENV, STAGE_LIMIT_ENV,
                 prepare_stage_prefix_before_gpu, prestage_stage_limit, prestage_ttl_seconds,
@@ -1543,7 +1504,7 @@ def run_scene_configuration_vast(
             expected_download_bytes += int(cpu_prestage["capsule_bytes"])
         output_admission.hold_before_allocation()
         with _authority_environment():
-            adapter = run_vast_provider_adapter(
+            adapter = {} if host_chain else run_vast_provider_adapter(
                 job_dir=provider_run,
                 mode="live-startup-probe",
                 allow_vast_api_call=True,
@@ -1633,14 +1594,15 @@ def run_scene_configuration_vast(
                 "failure": redacted_failure_detail(exc), "gpu_allocation_attempted": False,
                 "raw_secret_values_recorded": False,
             })
-        adapter, provider_allocation_may_have_occurred = (
+        host_failure = {"blockers": ["host_chain_failed:" + redacted_failure_detail(exc)]}
+        adapter, provider_allocation_may_have_occurred = (host_failure, False) if host_chain else (
             _recover_escaped_adapter_failure(
                 provider_run=provider_run,
                 started_instance_id_path=watchdog.started_instance_id_path,
                 failure_detail=redacted_failure_detail(exc),
             )
         )
-        if not provider_allocation_may_have_occurred:
+        if not provider_allocation_may_have_occurred and not host_chain:  # the host chain sealed its own
             seal_unallocated_provider_teardown(
                 provider_run, reason="vast_adapter_failed"
             )
@@ -1648,7 +1610,7 @@ def run_scene_configuration_vast(
         runtime_secret_cleanup_blockers = _discard_staged_runtime_secrets(
             staged_secret_root
         )
-        cleanup = cleanup_scene_staging(
+        cleanup = nothing_staged_cleanup() if host_chain else cleanup_scene_staging(
             adapter=adapter, staging_dir=staging_dir,
             cleanup=cleanup_staged_wam_provider_objects,
         )
@@ -1669,7 +1631,8 @@ def run_scene_configuration_vast(
             if prestage_cleanup.get("all_objects_absent") is not True:
                 runtime_secret_cleanup_blockers.append("cpu_prestage_staging_cleanup_unproven")
     if output_admission.hold_refused:
-        watchdog_close = close_independent_vast_watchdog(job_dir=job, handle=watchdog, instance_ids=[],
+        watchdog_close = dict(watchdog_handoff) if host_chain else close_independent_vast_watchdog(
+            job_dir=job, handle=watchdog, instance_ids=[],
             provider_teardown_completed=False, provider_allocation_impossible=True)
         return _seal_live_terminal_result(job, output_admission.refused_hold_result(
             authority=authority, consumption=consumption, api_pretraining=api_pretraining,
@@ -1715,7 +1678,7 @@ def run_scene_configuration_vast(
         adapter=adapter,
         teardown=teardown,
         instance_ids=instance_ids,
-    )
+    ) if not host_chain else dict(watchdog_handoff)
     if (
         cleanup.get("all_objects_absent") is not True
         and watchdog_close.get("status") == "provider_terminal"
@@ -1779,6 +1742,7 @@ def run_scene_configuration_vast(
     if watchdog_close.get("status") not in {
         "provider_terminal",
         "cancelled_no_allocation",
+        WATCHDOG_NOT_ARMED_STATUS,
     }:
         blockers.append("independent_watchdog_not_closed")
 

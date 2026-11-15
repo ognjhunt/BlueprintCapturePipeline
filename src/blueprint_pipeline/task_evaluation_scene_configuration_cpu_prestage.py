@@ -328,6 +328,7 @@ def prepare_stage_prefix_before_gpu(
     reservation_root: str | Path | None = None,
     disk_usage: Callable[..., Any] = shutil.disk_usage,
     which: Callable[[str], str | None] = shutil.which,
+    whole_chain: bool = False,
 ) -> dict[str, Any]:
     """Run stages up to ``stage_limit`` on this host and archive the completed prefix.
 
@@ -335,6 +336,11 @@ def prepare_stage_prefix_before_gpu(
     ``work_dir`` with the paid run's composed environment; only the execution
     site differs. A retained receipt for the same bundle, authority and limit
     is returned unchanged. Nothing here allocates a provider.
+
+    With ``whole_chain`` (a recipe with no GPU stage, ``host_chain_plan``) the entrypoint runs with
+    no stage limit, the chain must complete every stage ending at
+    ``stage_limit`` (its last), and no capsule is made: the output archive is
+    the run's provider output.
     """
     from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
 
@@ -346,7 +352,9 @@ def prepare_stage_prefix_before_gpu(
                  and existing.get("bundle_sha256") == bundle_receipt["bundle_sha256"]
                  and existing.get("authority_digest") == authority["authority_digest"]
                  and existing.get("stage_limit") == stage_limit
-                 and _sha(Path(existing["capsule_path"])) == existing["capsule_sha256"], "retained_receipt_invalid")
+                 and (existing.get("whole_chain") is True if whole_chain
+                      else _sha(Path(existing["capsule_path"])) == existing["capsule_sha256"]),
+                 "retained_receipt_invalid")
         return existing
     _require(not (job / "cpu_prestage_output.zip").exists(), "prior_attempt_requires_reconciliation")
     bundle = Path(str(bundle_receipt["bundle_path"]))
@@ -385,7 +393,7 @@ def prepare_stage_prefix_before_gpu(
         "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT": str(runtime),
         "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT": str(output),
         "BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH": str(checkpoint_path),
-        "BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT": stage_limit,
+        "BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT": "" if whole_chain else stage_limit,
         "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": repr(deadline),
         "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_CLOSURE_RESERVE_SECONDS": str(int(closure_reserve_seconds)),
         "PATH": str(python_bin) + ":" + str(environment.get("PATH") or "/usr/local/bin:/usr/bin:/bin"),
@@ -420,38 +428,43 @@ def prepare_stage_prefix_before_gpu(
                 _require(result_path.is_file(), "runner_result_missing")
                 result = _json(result_path)
                 shutil.copyfile(result_path, job / "cpu_prestage_provider_result.json")
-                _require(returncode == 0 and result.get("status") == "completed_prefix"
-                         and result.get("run_id") == bundle_receipt["run_id"]
-                         and result.get("source_commit") == bundle_receipt["source_commit"],
-                         "prefix_not_completed:" + str(result.get("status")))
-                chain = result.get("stage_chain") or {}
-                _require(chain.get("stage_limit") == stage_limit and chain.get("whole_run_completed") is False
-                         and chain.get("status") == "completed_prefix", "prefix_binding_invalid")
-                expected_ids = [str(row["stage_id"]) for row in chain.get("stage_results") or []]
-                _require(bool(expected_ids) and expected_ids[-1] == stage_limit
-                         and len(expected_ids) == int(chain.get("stage_count") or 0), "prefix_results_invalid")
-                artisan = _bundle_manifest(Path(str(bundle_receipt["bundle_path"]))).get("replacement_authoring_backend") == "artisan_v1"
-                binding = _json(output / "stages" / (_ARTISAN_BINDING_NAME if artisan else _BINDING_NAME))
-                _require(binding.get("schema_version") == ("artisan_split_stage_resume_binding.v1" if artisan else "astra_split_stage_resume_binding.v1")
-                         and binding.get("output_root") == str(output / "stages")
-                         and binding.get("prefix_stage_limit") == stage_limit
-                         and binding.get("parent_deadline_epoch") == deadline, "prefix_binding_invalid")
-                capsule = job / "cpu_prestage_capsule.zip"
-                _require(not capsule.exists() and checkpoint_path.is_file(), "checkpoint_missing")
-                shutil.copyfile(checkpoint_path, capsule)
-                transport = {
-                    "schema_version": TRANSPORT_SCHEMA, "work_dir": str(work), "runtime_root": str(runtime),
-                    "output_root": str(output), "run_id": result["run_id"], "source_commit": result["source_commit"],
-                    "bundle_sha256": bundle_receipt["bundle_sha256"], "authority_digest": authority["authority_digest"],
-                    "stage_limit": stage_limit, "completed_stage_ids": expected_ids,
-                    "prefix_deadline_epoch": deadline, "prefix_binding_digest": binding.get("binding_digest"),
-                    "execution_site": "control_plane", "gpu_execution_performed": False,
-                    "new_paid_allocation_authorized": False,
-                }
-                transport["transport_digest"] = canonical_digest(transport, digest_field="transport_digest")
-                with zipfile.ZipFile(capsule, "a", compression=zipfile.ZIP_DEFLATED) as zipped:
-                    zipped.writestr(_TRANSPORT_NAME, canonical_json(transport) + "\n")
-                validate_stage_prefix_capsule(capsule, expected_stage_ids=expected_ids)
+                if whole_chain:
+                    expected_ids = _completed_whole_chain(result, returncode=returncode, stage_limit=stage_limit,
+                                                          bundle_receipt=bundle_receipt, output=output)
+                    capsule, transport = None, None
+                else:
+                    _require(returncode == 0 and result.get("status") == "completed_prefix"
+                             and result.get("run_id") == bundle_receipt["run_id"]
+                             and result.get("source_commit") == bundle_receipt["source_commit"],
+                             "prefix_not_completed:" + str(result.get("status")))
+                    chain = result.get("stage_chain") or {}
+                    _require(chain.get("stage_limit") == stage_limit and chain.get("whole_run_completed") is False
+                             and chain.get("status") == "completed_prefix", "prefix_binding_invalid")
+                    expected_ids = [str(row["stage_id"]) for row in chain.get("stage_results") or []]
+                    _require(bool(expected_ids) and expected_ids[-1] == stage_limit
+                             and len(expected_ids) == int(chain.get("stage_count") or 0), "prefix_results_invalid")
+                    artisan = _bundle_manifest(Path(str(bundle_receipt["bundle_path"]))).get("replacement_authoring_backend") == "artisan_v1"
+                    binding = _json(output / "stages" / (_ARTISAN_BINDING_NAME if artisan else _BINDING_NAME))
+                    _require(binding.get("schema_version") == ("artisan_split_stage_resume_binding.v1" if artisan else "astra_split_stage_resume_binding.v1")
+                             and binding.get("output_root") == str(output / "stages")
+                             and binding.get("prefix_stage_limit") == stage_limit
+                             and binding.get("parent_deadline_epoch") == deadline, "prefix_binding_invalid")
+                    capsule = job / "cpu_prestage_capsule.zip"
+                    _require(not capsule.exists() and checkpoint_path.is_file(), "checkpoint_missing")
+                    shutil.copyfile(checkpoint_path, capsule)
+                    transport = {
+                        "schema_version": TRANSPORT_SCHEMA, "work_dir": str(work), "runtime_root": str(runtime),
+                        "output_root": str(output), "run_id": result["run_id"], "source_commit": result["source_commit"],
+                        "bundle_sha256": bundle_receipt["bundle_sha256"], "authority_digest": authority["authority_digest"],
+                        "stage_limit": stage_limit, "completed_stage_ids": expected_ids,
+                        "prefix_deadline_epoch": deadline, "prefix_binding_digest": binding.get("binding_digest"),
+                        "execution_site": "control_plane", "gpu_execution_performed": False,
+                        "new_paid_allocation_authorized": False,
+                    }
+                    transport["transport_digest"] = canonical_digest(transport, digest_field="transport_digest")
+                    with zipfile.ZipFile(capsule, "a", compression=zipfile.ZIP_DEFLATED) as zipped:
+                        zipped.writestr(_TRANSPORT_NAME, canonical_json(transport) + "\n")
+                    validate_stage_prefix_capsule(capsule, expected_stage_ids=expected_ids)
             finally:
                 # The footprint is the scratch runtime at its peak, so measure it
                 # before the cleanup below returns the work dir to empty.
@@ -462,6 +475,12 @@ def prepare_stage_prefix_before_gpu(
                 from .task_evaluation_scene_configuration_output_archive import write_output_archive
                 write_output_archive(output, job / "cpu_prestage_output.zip")
                 _clear_work_products(work)
+    if whole_chain:
+        return _whole_chain_receipt(receipt_path, bundle_receipt=bundle_receipt, authority=authority,
+                                    result=result, stage_limit=stage_limit, expected_ids=expected_ids,
+                                    work=work, returncode=returncode, log_path=log_path,
+                                    dropped=dropped_environment_names, deadline=deadline,
+                                    source_unpacked_bytes=source_unpacked_bytes, peak_bytes=peak_bytes)
     receipt = {
         "schema_version": RECEIPT_SCHEMA, "status": "completed_prefix_before_gpu_allocation",
         "bundle_sha256": bundle_receipt["bundle_sha256"], "authority_digest": authority["authority_digest"],
@@ -473,6 +492,53 @@ def prepare_stage_prefix_before_gpu(
         "dropped_ambient_environment_names": dropped_environment_names,
         "prefix_deadline_epoch": deadline, "source_unpacked_bytes": source_unpacked_bytes,
         "reserved_peak_bytes": peak_bytes, "gpu_execution_performed": False,
+        "provider_mutations_performed": 0, "execution_site": "control_plane",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    receipt_path.write_text(canonical_json(receipt) + "\n")
+    return receipt
+
+
+def _completed_whole_chain(result: Mapping[str, Any], *, returncode: int, stage_limit: str,
+                           bundle_receipt: Mapping[str, Any], output: Path) -> list[str]:
+    """The stage ids of a whole chain the runner completed, ending at ``stage_limit``; refused otherwise.
+
+    A chain that stopped is refused with the stage it stopped in and the runner's own code, so the
+    blocked scene says which host stage failed and why. Nothing retries it automatically: the
+    failure is none of the classes ``task_evaluation_scene_capacity_recovery`` recovers, so the job
+    parks at ``scene_configuration_failed`` after this one attempt and its paid stage 3.
+    """
+    stages = output / "stages"
+    last_started = max((path.name for path in stages.iterdir() if path.is_dir()), default="no_stage_started"
+                       ) if stages.is_dir() else "no_stage_started"
+    _require(returncode == 0 and result.get("status") == "completed"
+             and result.get("run_id") == bundle_receipt["run_id"]
+             and result.get("source_commit") == bundle_receipt["source_commit"],
+             f"whole_chain_not_completed:{result.get('status')}:{last_started}:"
+             + str((result.get("blockers") or ["no_blocker"])[0]))
+    chain = result.get("stage_chain") or {}
+    expected_ids = [str(row["stage_id"]) for row in chain.get("stage_results") or []]
+    _require(chain.get("status") == "completed" and chain.get("whole_run_completed") is True
+             and chain.get("stage_limit") is None and bool(expected_ids) and expected_ids[-1] == stage_limit
+             and len(expected_ids) == int(chain.get("stage_count") or 0), "whole_chain_results_invalid")
+    return expected_ids
+
+
+def _whole_chain_receipt(receipt_path: Path, *, bundle_receipt: Mapping[str, Any], authority: Mapping[str, Any],
+                         result: Mapping[str, Any], stage_limit: str, expected_ids: list[str], work: Path,
+                         returncode: int, log_path: Path, dropped: list[str], deadline: float,
+                         source_unpacked_bytes: int, peak_bytes: int) -> dict[str, Any]:
+    receipt = {
+        "schema_version": RECEIPT_SCHEMA, "status": "completed_whole_chain_without_gpu", "whole_chain": True,
+        "bundle_sha256": bundle_receipt["bundle_sha256"], "authority_digest": authority["authority_digest"],
+        "run_id": result["run_id"], "source_commit": result["source_commit"], "stage_limit": stage_limit,
+        "completed_stage_ids": expected_ids, "work_dir": str(work),
+        "capsule_path": None, "capsule_sha256": None, "capsule_bytes": None, "transport_digest": None,
+        "provider_result_digest": result.get("result_digest"),
+        "entrypoint_returncode": returncode, "entrypoint_log_path": str(log_path),
+        "dropped_ambient_environment_names": dropped,
+        "prefix_deadline_epoch": deadline, "source_unpacked_bytes": source_unpacked_bytes,
+        "reserved_peak_bytes": peak_bytes, "gpu_execution_performed": False, "gpu_allocated": False,
         "provider_mutations_performed": 0, "execution_site": "control_plane",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
@@ -546,8 +612,92 @@ def consume_stage_prefix_capsule(*, environment: Mapping[str, str], output_root:
     return value
 
 
+
+# --- A recipe with no GPU stage runs whole on this host (owner decision 2026-11-15) -------------
+# A website rigid job's scene is built and packaged here; Blueprint rents no GPU and runs no
+# tests of its own. ``run_scene_configuration_vast`` keeps its one paid attempt (the same authority,
+# admission, OpenAI gates and caps) and, for such a recipe, runs the whole chain through the
+# bundle's own entrypoint whatever ``STAGE_LIMIT_ENV`` names (that setting cuts a prefix off a
+# chain that has a GPU stage; this one has none), stages nothing, arms no Vast watchdog and calls
+# no provider: the prestage's own ``timeout`` enforces the deadline here.
+
+#: Adapters whose stages run on this host. A recipe made only of these rents no machine.
+HOST_ADAPTERS = CPU_ADAPTERS | {"website_simulator_not_run", "native_task_scene_assembly"}
+#: The lane's no-allocation teardown status, which settlement and recovery already read as
+#: "no instance ever existed".
+UNALLOCATED_TEARDOWN_STATUS = "not_required_provider_adapter_never_invoked"
+NOT_INVOKED_STATUS = "not_invoked_every_stage_ran_on_host"
+#: The lane's watchdog record when nothing can be allocated: no process, no provider contacted.
+WATCHDOG_NOT_ARMED_STATUS = "not_armed_no_allocation_possible"
+NO_GPU_REASON = "every stage of this recipe runs on the control-plane host; no GPU stage exists"
+
+
+def host_chain_plan(envelope: Mapping[str, Any], receipt: Mapping[str, Any], configured_limit: str | None, *,
+                    diagnostic_only: bool) -> tuple[bool, str | None]:
+    """``(True, <last stage id>)`` when every stage runs on this host, else ``(False, configured_limit)``."""
+    if diagnostic_only or int(receipt.get("carried_completed_stage_count") or 0) != 0:
+        return False, configured_limit
+    stages = list((envelope.get("recipe") or {}).get("stage_sequence") or [])
+    if stages and all(str((stage.get("adapter") or {}).get("id")) in HOST_ADAPTERS
+                      and stage.get("execution_class") in {"no_spend", "gpu_canary"} for stage in stages):
+        return True, str(stages[-1]["stage_id"])
+    return False, configured_limit
+
+
+def run_whole_chain_on_host(*, receipt: Mapping[str, Any], authority: Mapping[str, Any], job: Path,
+                            provider_run: Path, environment: Mapping[str, str],
+                            secret_file_paths: Mapping[str, str], stage_limit: str) -> dict[str, Any]:
+    """Record that no GPU is allocated, then run all stages here. Raises like the CPU prestage.
+
+    The records come first, so a chain that fails (a busy workspace, a short deadline or disk, or
+    a stage) still leaves the adapter result and teardown that prove nothing was rented.
+    """
+    from .common import utc_now_iso, write_json
+
+    provider_run.mkdir(parents=True, exist_ok=True)
+    common = {"generated_at": utc_now_iso(), "vast_instance_ids": [], "continuing_spend_from_this_run": False,
+              "gpu_allocated": False}
+    write_json(provider_run / "vast_provider_adapter_result.json", {
+        "schema_version": "vast_provider_adapter_result.v1", "status": NOT_INVOKED_STATUS, **common,
+        "run_id": str(receipt["run_id"]), "source_commit": str(receipt["source_commit"]), "reason": NO_GPU_REASON,
+        "provider_called": False, "provider_create_attempted": False, "vast_side_effects_may_have_occurred": False,
+        "retained_owned": False, "blockers": [], "raw_secret_values_recorded": False})
+    write_json(provider_run / "vast_teardown_manifest.json", {
+        "schema_version": "vast_teardown_manifest.v1", "status": UNALLOCATED_TEARDOWN_STATUS, **common,
+        "teardown_actions_performed": [],
+        "zero_continuing_spend_scope": "No provider resource was requested: " + NO_GPU_REASON})
+    return prepare_stage_prefix_before_gpu(
+        bundle_receipt=receipt, authority=authority, job_dir=job, stage_limit=stage_limit,
+        environment=environment, secret_file_paths=secret_file_paths,
+        ttl_seconds=prestage_ttl_seconds(receipt, stage_limit), whole_chain=True)
+
+
+def host_chain_watchdog(*, job_dir: Path, max_live_minutes: int) -> tuple[dict[str, Any], Any]:
+    """The watchdog record and deadline of a run that rents nothing: no process, no Vast call.
+
+    The handle names the watchdog's started-instance file, which nothing writes on this path, so a
+    failure is read as "nothing was allocated", as it is.
+    """
+    import types
+
+    deadline = time.time() + max(1, int(max_live_minutes)) * 60
+    record = {"status": WATCHDOG_NOT_ARMED_STATUS, "watchdog_deadline_epoch": deadline,
+              "independent_process": False, "provider_contacted": False, "provider_mutations_performed": 0,
+              "reason": NO_GPU_REASON, "raw_secret_values_recorded": False}
+    return record, types.SimpleNamespace(deadline_epoch=deadline, started_instance_id_path=(
+        Path(job_dir) / "independent_vast_watchdog" / "started_vast_instance_id.txt"))
+
+
+def nothing_staged_cleanup() -> dict[str, Any]:
+    """The object-store cleanup record of a run that staged nothing."""
+    return {"status": "nothing_staged_every_stage_ran_on_host", "all_objects_absent": True,
+            "objects_staged": 0, "continuing_spend_from_this_run": False, "raw_secret_values_recorded": False}
+
+
 __all__ = [
-    "BUNDLE_DIRNAME", "CPU_ADAPTERS", "CpuPrestageError", "DEFAULT_WORK_DIR", "PREFIX_BYTES_ENV",
+    "BUNDLE_DIRNAME", "CPU_ADAPTERS", "CpuPrestageError", "DEFAULT_WORK_DIR", "HOST_ADAPTERS", "NOT_INVOKED_STATUS",
+    "PREFIX_BYTES_ENV", "WATCHDOG_NOT_ARMED_STATUS", "host_chain_plan", "host_chain_watchdog",
+    "nothing_staged_cleanup", "run_whole_chain_on_host",
     "PREFIX_PATH_ENV", "PREFIX_SHA_ENV", "PREFIX_URL_ENV", "RECEIPT_SCHEMA", "STAGE_LIMIT_ENV", "WORK_DIR_ENV",
     "consume_stage_prefix_capsule", "local_stage_prefix_capsule_opener", "prepare_stage_prefix_before_gpu",
     "prestage_stage_limit",

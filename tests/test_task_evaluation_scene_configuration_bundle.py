@@ -3728,6 +3728,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
             appearance_review, separators=(",", ":")
         ).encode(),
         "configured_task_thumbnail": thumbnail_payload,
+        "native_import_qualification_receipt": b'{"schema_version": "task_evaluation_replacement_native_import_result.v1"}',
     }
 
     def adapter(**kwargs):

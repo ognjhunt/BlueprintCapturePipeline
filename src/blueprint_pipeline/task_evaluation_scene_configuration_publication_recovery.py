@@ -117,6 +117,22 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
             os.close(descriptor)
 
 
+def _no_provider_resource(result: Mapping[str, Any]) -> bool:
+    """The run proves no provider resource exists: the watchdog confirmed absence, or the run ran
+    whole on this host (no watchdog armed) and its teardown proves nothing was ever allocated."""
+    from .task_evaluation_scene_configuration_cpu_prestage import WATCHDOG_NOT_ARMED_STATUS
+    from .task_evaluation_scene_launch_recovery import unallocated_teardown
+
+    watchdog = result.get("independent_watchdog") or {}
+    if watchdog.get("provider_absence_confirmed") is True:
+        return True
+    try:
+        teardown = json.loads(Path(str(result.get("teardown_manifest_path"))).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return watchdog.get("status") == WATCHDOG_NOT_ARMED_STATUS and unallocated_teardown(teardown)
+
+
 def recover_completed_configuration_publication(
     *,
     bundle_receipt_path: str | Path,
@@ -178,10 +194,7 @@ def recover_completed_configuration_publication(
         or receipt.get("bundle_sha256") != original_result.get("bundle_sha256")
         or provider_result.get("source_commit") != original_result.get("source_commit")
         or provider_result.get("run_id") != original_result.get("run_id")
-        or (original_result.get("independent_watchdog") or {}).get(
-            "provider_absence_confirmed"
-        )
-        is not True
+        or not _no_provider_resource(original_result)
         or (original_result.get("object_store_cleanup") or {}).get(
             "all_objects_absent"
         )

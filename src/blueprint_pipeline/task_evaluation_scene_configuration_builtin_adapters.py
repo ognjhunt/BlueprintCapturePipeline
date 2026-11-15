@@ -1474,9 +1474,18 @@ def execute_native_task_scene_assembly(
     replacement_record, replacement = _dependency_artifact(
         dependency_results, role="native_qualified_replacement_asset"
     )
-    native_receipt_record, _native_receipt = _dependency_artifact(
+    native_receipt_record, native_receipt = _dependency_artifact(
         dependency_results, role="native_import_qualification_receipt"
     )
+    # Assembly needs only the files: stage 5's Isaac import (checked by stage 5 itself) or, for a
+    # website rigid job, the record that no simulator ran. The record is accepted by name and
+    # marked in the manifest; it is never read as a qualification. Publication, the last gate,
+    # verifies the record against stage 4's files (``verify_record_binding``).
+    from .website_scene_without_simulator import SimulatorNotRunError, is_not_run_record
+    try:
+        simulator_not_run = is_not_run_record(native_receipt)
+    except SimulatorNotRunError as exc:
+        raise TaskEvaluationSceneConfigurationAdapterError(str(exc)) from exc
     scene_identity = configuration.get("scene_identity")
     replacement_config = configuration.get("replacement")
     robot_mount = configuration.get("robot_mount_interface")
@@ -1561,6 +1570,7 @@ def execute_native_task_scene_assembly(
         "robot_specific_base_registration_included": False,
         "robot_specific_kinematics_included": False,
         "evaluation_episode_executed": False,
+        **({"simulator_run": False} if simulator_not_run else {}),
         "manifest_digest": "",
     }
     manifest["manifest_digest"] = canonical_digest(
@@ -1895,12 +1905,17 @@ def builtin_scene_configuration_adapter_handlers(
                  if identity.adapter_id in {"provided_mesh_appearance_excision", "provided_mesh_rigid_authoring"}}
     from .website_native_background import (
         ADAPTER_ID, execute_prepared_collision, APPEARANCE_ADAPTER_ID, execute_prepared_appearance,
+        execute_simulator_not_run,
     )
     website_identity = next(identity for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
                             if identity.adapter_id == ADAPTER_ID)
     website_appearance_identity = next(identity for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
                                        if identity.adapter_id == APPEARANCE_ADAPTER_ID)
+    from .website_scene_without_simulator import ADAPTER_ID as NOT_RUN_ID
+    not_run_identity = next(identity for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
+                            if identity.adapter_id == NOT_RUN_ID)
     return {
+        not_run_identity: execute_simulator_not_run,
         artifixer_identity: execute_artifixer3d_observed_object_removal,
         sage_identity: execute_sage_exact_prim_excision,
         content_agents_identity: execute_content_agents_rigid_replacement,

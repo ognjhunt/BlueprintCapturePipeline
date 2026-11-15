@@ -356,6 +356,7 @@ class SceneConfigurationOutputAdmission:
         cpu_prefix_phases: list[tuple[str, Path]],
         reservation_root: str | Path,
         disk_usage: Callable[[Path], Any],
+        prestage_required: bool = False,
     ) -> None:
         self.mode = mode
         self.measured = measured
@@ -377,6 +378,9 @@ class SceneConfigurationOutputAdmission:
         self._covered_before_output = 0
         #: Set when the CPU prestage was skipped so the run fits (``before_allocation``).
         self.cpu_prestage_decision: dict[str, Any] | None = None
+        #: The whole chain runs on this host and no GPU can take its stages
+        #: (``task_evaluation_scene_configuration_cpu_prestage.host_chain_plan``): the prestage is never skipped.
+        self.prestage_required = prestage_required
 
     # -- before allocation -------------------------------------------------
 
@@ -397,7 +401,8 @@ class SceneConfigurationOutputAdmission:
         # Only a measured run has phases; ``ceiling`` returns the legacy record untouched.
         if not any(phase == CPU_PRESTAGE_PHASE for phase, _target in configured) or (
             record.get("blockers") != [BUDGET_EXCEEDED_BLOCKER]
-        ):
+        ) or self.prestage_required:
+            # A run with no GPU stage keeps the refusal: typed, $0, retried by capacity recovery.
             return record
         self._cpu_prefix_phases = [row for row in configured if row[0] != CPU_PRESTAGE_PHASE]
         admitted = self._admit_before_allocation(legacy_check, **legacy_arguments)
@@ -567,7 +572,9 @@ class SceneConfigurationOutputAdmission:
         blockers = [*record["blockers"], *cleanup_blockers]
         if cleanup.get("all_objects_absent") is not True:
             blockers.append("object_store_provider_zero_not_proven")
-        if watchdog_close.get("status") not in {"provider_terminal", "cancelled_no_allocation"}:
+        from .task_evaluation_scene_configuration_cpu_prestage import WATCHDOG_NOT_ARMED_STATUS
+        if watchdog_close.get("status") not in {"provider_terminal", "cancelled_no_allocation",
+                                                WATCHDOG_NOT_ARMED_STATUS}:
             blockers.append("independent_watchdog_not_closed")
         return {
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -822,6 +829,7 @@ def open_scene_configuration_output_admission(
     cpu_prestage: bool,
     disk_usage_provider: Callable[[Path], Any] | None = None,
     environment: Mapping[str, str] | None = None,
+    prestage_required: bool = False,
 ) -> SceneConfigurationOutputAdmission:
     """Resolve this run's mode; only a measured run reads its envelope or the ledger."""
 
@@ -855,6 +863,7 @@ def open_scene_configuration_output_admission(
         cpu_prefix_phases=phases,
         reservation_root=values.get(RESERVATION_ROOT_ENV) or DEFAULT_RESERVATION_ROOT,
         disk_usage=disk_usage_provider or shutil.disk_usage,
+        prestage_required=prestage_required,
     )
 
 

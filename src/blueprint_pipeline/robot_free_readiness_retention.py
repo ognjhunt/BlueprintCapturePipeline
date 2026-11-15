@@ -190,11 +190,15 @@ def retain_robot_free_readiness(*, run_root: str | Path, revision_reference: Map
     from . import task_evaluation_scene_rigid_robot_free_readiness as rigid
     from .task_evaluation_rigid_relocation_native_adapter import DEFINITION_CONTRACT_PATH
     from .task_evaluation_scene_robot_free_readiness import robot_free_readiness_for_revision
+    from .website_scene_without_simulator import PHYSICS_AUTHORITY_NOT_RUN, READINESS_STATUS
 
     root = _safe(Path(run_root))
     work = root / WORK_DIRECTORY
     try:
         revision = _revision(revision_reference, revision_digest=revision_digest, fetcher=fetcher)
+        if revision["replacement"].get("physics_authority") == PHYSICS_AUTHORITY_NOT_RUN:
+            # Stage 5 ran no simulator: no robot-free probe applies, so none is scored, kept or queued.
+            return {"status": READINESS_STATUS, "reason": PHYSICS_AUTHORITY_NOT_RUN, "retained": False}
         documents = rigid.fetch_revision_documents(revision=revision, output_root=work, fetcher=fetcher)
         strategy = json.loads(documents[DEFINITION_CONTRACT_PATH].read_text(encoding="utf-8")).get("strategy")
         if strategy == "articulated_open_close":

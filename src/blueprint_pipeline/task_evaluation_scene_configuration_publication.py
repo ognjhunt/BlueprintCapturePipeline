@@ -20,6 +20,7 @@ from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
 from .task_evaluation_surface_target import surface_target_for_web
+from .website_scene_without_simulator import SimulatorNotRunError, physics_authority
 from .task_evaluation_configured_scene_public_projection import (
     ConfiguredScenePublicProjectionError,
     build_public_display_projection,
@@ -61,6 +62,17 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             size += len(chunk)
     return "sha256:" + digest.hexdigest(), size
+
+
+def _physics_authority(artifacts: Mapping[str, Path]) -> str:
+    """``replacement.physics_authority``: an Isaac receipt, or the not-run record bound to stage 4's files."""
+    try:
+        return physics_authority(artifacts["native_import_qualification_receipt"],
+                                 stage_four_asset=artifacts["statically_qualified_replacement_asset"],
+                                 static_receipt=artifacts["static_qualification_receipt"],
+                                 replacement_asset=artifacts["native_qualified_replacement_asset"])
+    except SimulatorNotRunError as exc:
+        raise TaskEvaluationSceneConfigurationPublicationError(str(exc)) from exc
 
 
 def _artifact(
@@ -819,7 +831,8 @@ def publish_configured_scene_revision(
                 key: published["native_import_qualification"][key]
                 for key in ("uri", "digest", "size_bytes")
             },
-            "physics_authority": "qualified_replacement_asset",
+            # A passed Isaac import, or the record that no simulator ran (website rigid job).
+            "physics_authority": _physics_authority(artifacts),
         },
         "registration": {
             "metric": dict(scene["registration"]["metric_registration"]),
