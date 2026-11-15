@@ -688,7 +688,9 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         return emit("awaiting_execution", "paused", ["scene_intent_paused"])
     if intent['request']['task'].get('evaluation_source') is not None:
         return emit('awaiting_execution', 'selected_team_evaluation')
-    from .website_navigation_intake import RESULT_PHASE, is_navigation_request, navigation_preparation_result
+    from .website_navigation_preparation_result import (
+        RESULT_PHASE, is_navigation_request, navigation_preparation_result,
+    )
     if is_navigation_request(intent['request']):
         # A navigation intake keeps its scene as filmed: nothing to construct, configure or pay for
         # (owner, 2026-11-07: it reserves $0 and grants no construction allowance). Its intent

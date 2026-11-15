@@ -194,12 +194,8 @@ def _scene_inputs(profile: Mapping[str, Any]) -> dict[str, Any]:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise TeamCandidateRegistryError(str(exc) or 'family_scene_inputs_unavailable') from exc
     if profile.get("navigation_scene_inputs_path"):
-        from .website_navigation_scene_inputs import read_navigation_scene_inputs
-
-        try:
-            return read_navigation_scene_inputs(Path(profile["navigation_scene_inputs_path"]))
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise TeamCandidateRegistryError(str(exc) or "navigation_scene_inputs_unavailable") from exc
+        # A walking job gets no simulation: an earlier release's navigation scene half is not read.
+        raise TeamCandidateRegistryError("navigation_scene_inputs_unavailable")
     if profile.get("team_scene_inputs_path"):
         from .team_scene_packet import TeamScenePacketError, read_team_scene_inputs
 
@@ -238,8 +234,6 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
                 'embodiment_preset_id': plan['native_runtime_contract']['robot_configuration']['embodiment_id']},
             'prompt': context.get('description'), 'max_policy_queries': None, 'open_loop_horizon': horizon,
             'episode_specs_sha256': canonical_digest(inputs)}
-    if inputs.get("schema_version") == NAVIGATION_SCENE_INPUTS_SCHEMA:
-        return _navigation_scene_facts(profile, inputs=inputs, packet_dir=packet_dir, plan=plan)
     try:
         nominal = _resolved_scene_plan(plan, {**NOMINAL_CELL, "control_diagnostic": inputs["control_diagnostic"]},
                                        task_success_contract=inputs["task_success_contract"])
@@ -267,34 +261,6 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
         "prompt": nominal["task_spec"]["prompt"],
         "max_policy_queries": maximum_policy_queries_for_task_spec(nominal["task_spec"], open_loop_horizon=horizon),
         "open_loop_horizon": horizon,
-        "episode_specs_sha256": canonical_digest(inputs),
-    }
-
-
-def _navigation_scene_facts(profile: Mapping[str, Any], *, inputs: Mapping[str, Any], packet_dir: Path,
-                            plan: Mapping[str, Any]) -> dict[str, Any]:
-    """A navigation job's scene half: the plan's task spec, revision and contract, no Franka DROID cell.
-
-    The record (``website_navigation_scene_inputs``) was reopened and verified by its reader. The robot
-    is the plan's own (the G1 at the compiled start), so no DROID cell is resolved and no query budget
-    is derived from one. The prompt is the checkpoints' trained instruction
-    (``native_g1_navigation_goal.PUBLISHED_TASK_INSTRUCTION``), never the site's sentence. The record
-    names no runtime source: the G1 registration's own record supplies it (its ``runtime_source_gap``).
-    The robot-free probe receipt is retained in the record's own directory, beside the packet. The
-    G1 lane's horizon is its interface contract's (``beta_policy_screening_g1.interface_contract``),
-    so the profile's is passed through as given.
-    """
-    from .native_g1_navigation_goal import PUBLISHED_TASK_INSTRUCTION
-
-    return {
-        "inputs": inputs, "packet_dir": packet_dir, "runtime_source_packet_receipt": None,
-        "robot_free_probe_root": Path(inputs["robot_free_probe"]["path"]).parent,
-        "scene": {"scene_revision_digest": inputs["scene_revision_digest"], "task_spec": plan["task_spec"],
-                  "task_success_contract": inputs["task_success_contract"],
-                  "embodiment_preset_id": plan["robot"]["robot_id"]},
-        "prompt": PUBLISHED_TASK_INSTRUCTION,
-        "max_policy_queries": None,
-        "open_loop_horizon": profile.get("open_loop_horizon"),
         "episode_specs_sha256": canonical_digest(inputs),
     }
 

@@ -60,12 +60,16 @@ One more fact makes any completed preparation stale, held or handed off:
 from __future__ import annotations
 
 import base64
+import json
+import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_navigation_preparation_result import WebsiteNavigationIntakeError
 
 SCHEMA = "website_held_handoff_replay.v1"
 #: Job ledger field holding the exact handoff bytes a replay runs again.
@@ -80,6 +84,75 @@ SOURCE_IDENTITY_MISSING = "pipeline:navigation_source_identity"
 #: request (``idempotency_conflict``): a re-issued intake (``_reissue_refused``).
 REISSUE_MISSING = "pipeline:navigation_intake_reissue"
 _RECORD_FIELDS = frozenset({"schema_version", "payload_base64", "source_payload_sha256", "producer_delivery_key"})
+
+# How an earlier release's walking-job intake receipt reads (it was ``website_navigation_intake``'s);
+# a walking job held on its receipt is re-run once when the receipt binds.
+OUTBOX_SCHEMA = "blueprint.website_navigation_intake_outbox.v1"
+RECEIPT_SCHEMA = "blueprint.website_navigation_intake_receipt.v1"
+RECEIPT_FILENAME = "website_navigation_intake_receipt.v1.json"
+SOURCE_FIELDS = ("scene_intent_id", "scene_intent_digest", "capture_id", "task_id",
+                 "task_context_digest", "scene_revision_digest")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+def _require(condition: bool, code: str) -> None:
+    if not condition:
+        raise WebsiteNavigationIntakeError(code)
+
+
+def _sealed(path: Path, schema: str) -> dict[str, Any]:
+    digest_field = "outbox_digest" if schema == OUTBOX_SCHEMA else "receipt_digest"
+    try:
+        _require(not path.is_symlink() and path.is_file(), "website_navigation_intake_record_unreadable")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise WebsiteNavigationIntakeError("website_navigation_intake_record_unreadable") from exc
+    _require(isinstance(value, dict) and value.get("schema_version") == schema
+             and value.get(digest_field) == canonical_digest(value, digest_field=digest_field),
+             "website_navigation_intake_record_unsealed")
+    return value
+
+
+def receipt_exists(record_path: str | Path) -> bool:
+    """Whether this record's intake receipt is there; a cheap look that reads nothing."""
+    path = Path(record_path).parent / RECEIPT_FILENAME
+    return path.is_file() and not path.is_symlink()
+
+
+def read_navigation_intake_receipt(record_path: str | Path,
+                                   record: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    """The record's intake receipt, sealed and bound to the record; None while there is none.
+
+    ``record``, when given, is the record its reader has just verified; otherwise the record file's
+    own seal and identity are read (not its packet).
+    """
+    record_path = Path(record_path)
+    path = record_path.parent / RECEIPT_FILENAME
+    if not path.exists() and not path.is_symlink():
+        return None
+    receipt = _sealed(path, RECEIPT_SCHEMA)
+    if record is None:
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise WebsiteNavigationIntakeError("website_navigation_intake_record_unreadable") from exc
+        _require(isinstance(record, dict) and record.get("scene_inputs_digest")
+                 == canonical_digest(record, digest_field="scene_inputs_digest"),
+                 "website_navigation_intake_record_unreadable")
+    source = receipt.get("source")
+    _require(isinstance(source, dict) and set(source) == set(SOURCE_FIELDS)
+             and all(isinstance(source[key], str) and source[key] for key in SOURCE_FIELDS)
+             and all(_DIGEST.fullmatch(source[key]) for key in SOURCE_FIELDS if key.endswith("digest"))
+             and receipt.get("scene_id") == record.get("scene_id")
+             and receipt.get("scene_inputs_digest") == record.get("scene_inputs_digest")
+             and receipt.get("scene_revision_digest") == source["scene_revision_digest"]
+             == record.get("scene_revision_digest")
+             and source["task_id"] == record.get("task_id")
+             and source["scene_intent_id"] == (receipt.get("intent") or {}).get("intent_id")
+             and source["scene_intent_digest"] == (receipt.get("intent") or {}).get("intent_digest"),
+             "website_navigation_intake_receipt_record_mismatch")
+    return json.loads(json.dumps(receipt, allow_nan=False))
+
 
 
 def _retained_context(pipeline_root: Path) -> dict[str, Any] | None:
@@ -116,11 +189,9 @@ def _reissue_refused(handoff: dict[str, Any]) -> bool:
             or (gap.get("navigation_intake") or {}).get("reason") != "idempotency_conflict"
             or inputs.get("status") != "written" or not isinstance(inputs.get("path"), str)):
         return False
-    from .website_navigation_intake import OUTBOX_FILENAME
-
     own = Path(inputs["path"]).parent
     return any(path.parent != own and path.is_file() and not path.is_symlink()
-               for path in own.parent.glob(f"*/{OUTBOX_FILENAME}"))
+               for path in own.parent.glob("*/website_navigation_intake_outbox.v1.json"))
 
 
 def _pipeline_missing(handoff: dict[str, Any]) -> list[str]:
@@ -229,8 +300,6 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
             fact = {"kind": "release", "release_commit": release,
                     "recapture_code": registration_recapture_code(root, _handoff(root), _retained_context(root))}
     elif kind == "intake_receipt":
-        from .website_navigation_intake import read_navigation_intake_receipt, receipt_exists
-
         path = (_handoff(root) or {})["navigation_scene_inputs"]["path"]
         receipt = read_navigation_intake_receipt(path) if receipt_exists(path) else None
         if receipt is not None:

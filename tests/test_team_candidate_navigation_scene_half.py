@@ -14,22 +14,15 @@ from typing import Any
 
 import pytest
 
-from blueprint_pipeline import robot_free_probe_gate as gate
 from blueprint_pipeline import team_candidate_quick10_registry as registry
 from blueprint_pipeline import website_navigation_scene_inputs as navigation_inputs
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.native_g1_navigation_goal import PUBLISHED_TASK_INSTRUCTION
 from blueprint_pipeline.team_candidate_quick10_registry import (
     REGISTRY_ENV,
     REGISTRY_SCHEMA,
     TeamCandidateRegistryError,
-    offer_eligibility,
-    profile_for_capture,
-    scene_facts,
-    write_derived_profile,
 )
 from blueprint_pipeline.team_candidate_registry_reader import DERIVED_FIELDS, REQUIRED_DERIVED_FIELDS
-from blueprint_pipeline.team_evaluation_plan import PURPOSES
 from tests.test_website_navigation_scene_inputs import navigation_scene_inputs_arguments
 
 HALVES = ("team_scene_inputs_path", "family_scene_inputs_path", "pair_runtime_inputs_path", "pair_activation_path")
@@ -82,44 +75,6 @@ def test_a_navigation_record_is_one_scene_half_alone() -> None:
 # --- scene facts ------------------------------------------------------------------------------
 
 
-def test_scene_facts_read_a_navigation_record_without_a_franka_droid_plan(inputs, monkeypatch) -> None:
-    written = navigation_inputs.write_navigation_scene_inputs(**inputs)
-    record = written["record"]
-    plan = json.loads((Path(record["packet_root"]) / "native_task_arena_scene_plan.v1.json").read_text())
-    _no_franka_cells(monkeypatch)
-
-    facts = scene_facts(_navigation_profile(written["path"], record))
-
-    assert facts["inputs"] == navigation_inputs.read_navigation_scene_inputs(written["path"])
-    assert facts["packet_dir"] == Path(record["packet_root"])
-    assert record["scene_revision_digest"] == plan["plan_digest"]
-    assert facts["scene"] == {"scene_revision_digest": plan["plan_digest"], "task_spec": plan["task_spec"],
-                              "task_success_contract": record["task_success_contract"],
-                              "embodiment_preset_id": "unitree_g1"}
-    assert facts["scene"]["task_spec"]["task_kind"] == "goal_region_navigation"
-    assert facts["robot_free_probe_root"] == Path(record["robot_free_probe"]["path"]).parent
-    assert (facts["robot_free_probe_root"] / gate.RECEIPT_FILENAME).is_file()
-    # The checkpoints' trained instruction, never the site's sentence.
-    assert facts["prompt"] == PUBLISHED_TASK_INSTRUCTION == "Avoid obstacles and move to the yellow marked area."
-    assert facts["runtime_source_packet_receipt"] is None and record["runtime_source"] is None
-    assert facts["max_policy_queries"] is None and facts["open_loop_horizon"] == 8
-    assert facts["episode_specs_sha256"] == canonical_digest(facts["inputs"])
-
-
-def test_a_navigation_record_that_does_not_verify_refuses_by_its_readers_name(inputs, tmp_path) -> None:
-    written = navigation_inputs.write_navigation_scene_inputs(**inputs)
-    record = written["record"]
-    tampered = {**record, "task_id": "another-task"}
-    path = tmp_path / "tampered.json"
-    path.write_text(json.dumps(tampered))
-    with pytest.raises(TeamCandidateRegistryError, match="^website_navigation_scene_inputs_seal_invalid$"):
-        scene_facts(_navigation_profile(str(path), record))
-    with pytest.raises(TeamCandidateRegistryError, match="^website_navigation_scene_inputs_unreadable$"):
-        scene_facts(_navigation_profile(str(tmp_path / "missing.json"), record))
-    with pytest.raises(TeamCandidateRegistryError, match="^team_candidate_scene_half_ambiguous$"):
-        scene_facts(_navigation_profile(written["path"], record, team_scene_inputs_path="/team.json"))
-
-
 def _registry(tmp_path: Path, monkeypatch) -> Path:
     operator = tmp_path / "operator"
     operator.mkdir()
@@ -132,28 +87,6 @@ def _registry(tmp_path: Path, monkeypatch) -> Path:
     path.chmod(0o600)
     monkeypatch.setenv(REGISTRY_ENV, str(path))
     return operator
-
-
-def test_a_derived_navigation_profile_is_written_read_back_and_never_listed_for_teams(
-        inputs, tmp_path, monkeypatch) -> None:
-    written = navigation_inputs.write_navigation_scene_inputs(**inputs)
-    record = written["record"]
-    _registry(tmp_path, monkeypatch)
-    capture = tmp_path / "captures" / "capture-1"
-    capture.mkdir(parents=True)
-    facts = scene_facts(_navigation_profile(written["path"], record))
-    row = {key: value for key, value in _navigation_profile(written["path"], record).items()
-           if key != "open_loop_horizon"}
-    row.update(capture_root=str(capture), robot_free_probe_root=str(facts["robot_free_probe_root"]))
-    assert write_derived_profile(row)["status"] == "written"
-
-    profile = profile_for_capture(capture)
-    assert profile["navigation_scene_inputs_path"] == written["path"]
-    assert profile["robot_free_probe_root"] == str(facts["robot_free_probe_root"])
-    assert scene_facts(profile) == facts
-    # A team evaluation runs a team's arm on a rigid task's cells; a navigation scene is the G1 lane's.
-    for purpose in PURPOSES:
-        assert offer_eligibility(profile, purpose) == (None, ["team_candidate_navigation_scene_not_a_team_evaluation"])
 
 
 # --- beta planning's robot-free gate ----------------------------------------------------------
@@ -169,24 +102,6 @@ def _plan_screening(record_path: str, record: dict[str, Any], tmp_path: Path) ->
     return build_planning_inputs(catalog=load_default_catalog(), profile=profile,
                                  capture_root=Path(profile["capture_root"]), source=source,
                                  inputs_dir=tmp_path / "screening-inputs")
-
-
-def test_build_planning_inputs_holds_a_navigation_scene_whose_probe_failed(inputs, tmp_path, monkeypatch) -> None:
-    from blueprint_pipeline import native_g1_navigation_goal as navigation_goal
-
-    real = navigation_goal.score_g1_navigation_episode
-
-    def ever_reached(*, task_spec, samples):
-        report = dict(real(task_spec=task_spec, samples=samples))
-        if report["minimum_distance_m"] <= report["goal"]["acceptance_radius_m"]:
-            report["outcome"] = "success"
-        return report
-
-    monkeypatch.setattr(navigation_goal, "score_g1_navigation_episode", ever_reached)
-    written = navigation_inputs.write_navigation_scene_inputs(**inputs)
-    assert written["record"]["robot_free_probe"]["status"] == "failed"
-    with pytest.raises(gate.RobotFreeProbeGateError, match="^team_evaluation_robot_free_probe_not_passed$"):
-        _plan_screening(written["path"], written["record"], tmp_path)
 
 
 # --- the rigid, family and pair halves, byte for byte ------------------------------------------
