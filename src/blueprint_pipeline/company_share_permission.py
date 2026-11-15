@@ -27,7 +27,7 @@ from typing import Any
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .permission_recheck import recheck_requested_since
-from .sharing_statement import covers_sharing, owned_captures, sharing_basis
+from .sharing_statement import covers_sharing, internal_test_label, owned_captures, sharing_basis
 from .website_atlas_preview_store import capture_withdrawn
 
 #: The shared live check sits in the clip's folder, where the website's recheck mark is written too.
@@ -137,6 +137,12 @@ def recorded_statement_version(capture_root: Path) -> str | None:
     return None
 
 
+def recorded_internal_test(capture_root: Path) -> bool:
+    """The task context kept at submission is an internal test job's: ``internal_test.v1`` and its marker."""
+    context = read_json(Path(capture_root) / "pipeline" / "website_task_context.json")
+    return (sharing_basis(context) or {}).get("permission_basis") == "internal_test"
+
+
 def live_rights(identity: Mapping[str, str]) -> Mapping[str, Any]:
     """The WebApp's current ``capture_rights``, projected from the request's current consent."""
     from .website_task_context import load_current_website_task_context
@@ -167,8 +173,10 @@ def record_live(root: Path, identity: Mapping[str, str], check_rights: Callable[
         version = rights.get("statement_version")
         version = version if isinstance(version, str) else None
         granted = rights.get("consent_revoked") is False and rights.get("consent_status") == "granted"
+        # A test job only when the live read and the task context kept at submission both say so.
+        label = internal_test_label(version, rights.get("internal_test")) if recorded_internal_test(root) else None
         outcome = ("rights_refused" if not granted else "covers_sharing" if covers_sharing(version)
-                   else "not_sharing")
+                   else "internal_test" if label is not None else "not_sharing")
         fingerprint = canonical_digest({"statement_version": version, "consent_status": rights.get("consent_status"),
                                         "consent_revoked": rights.get("consent_revoked")})
         reason = {"rights_refused": RIGHTS_REFUSED, "not_sharing": NOT_PERMITTED}.get(outcome)
@@ -176,6 +184,12 @@ def record_live(root: Path, identity: Mapping[str, str], check_rights: Callable[
     value = {"checked_at_epoch": int(now), "outcome": outcome, "reason": reason, "statement_version": version,
              "rights_fingerprint": fingerprint,
              "granted_at_epoch": int(now) if outcome == "covers_sharing" else kept if isinstance(kept, int) else None}
+    # An internal test job's grant is kept apart from the sharing grant, so it can never hold a sharing basis.
+    if outcome == "internal_test":
+        value.update(internal_test_label=label, internal_test_granted_at_epoch=int(now))
+    elif outcome == "unanswered" and isinstance(previous.get("internal_test_granted_at_epoch"), int):
+        value.update(internal_test_label=previous.get("internal_test_label"),
+                     internal_test_granted_at_epoch=previous["internal_test_granted_at_epoch"])
     write_json(check_path(root), value)
     return value
 
@@ -200,7 +214,8 @@ def live_grant_holds(check: Mapping[str, Any], now: float | None = None) -> bool
 def may_be_permitted(root: Path, identity: Mapping[str, str], now: float, owned_list: Path | None = None) -> bool:
     """No network: the snapshot covers sharing, the capture is on Blueprint's own list, the last live read
     granted sharing, or a live read is due. Otherwise a capture gets no directory, file or request."""
-    if covers_sharing(recorded_statement_version(root)) or on_owned_list(identity["capture_id"], owned_list):
+    if (covers_sharing(recorded_statement_version(root)) or on_owned_list(identity["capture_id"], owned_list)
+            or recorded_internal_test(root)):
         return True
     check = read_check(root)
     return live_due(check, now, root) or live_grant_holds(check, now)
@@ -212,7 +227,18 @@ def decided_basis(check: Mapping[str, Any], owned: bool) -> dict[str, Any] | Non
         return {"permission_basis": "site_sharing_statement", "statement_version": check.get("statement_version")}
     if owned and check.get("outcome") == "not_sharing":  # consent definitely granted, Blueprint's own video
         return {"permission_basis": "blueprint_owned_capture", "statement_version": check.get("statement_version")}
+    if check.get("outcome") == "internal_test":
+        return {"permission_basis": "internal_test", "statement_version": check.get("statement_version"),
+                "label": check.get("internal_test_label")}
     return None
+
+
+def internal_test_holds(check: Mapping[str, Any], now: float) -> bool:
+    """An internal test job's basis holds: the last live read (which also checks the task context kept at
+    submission) said so within ``LIVE_GRANT_LIFETIME_SECONDS`` with no definite answer since."""
+    granted = check.get("internal_test_granted_at_epoch")
+    return (check.get("outcome") in ("internal_test", "unanswered") and isinstance(granted, int)
+            and 0 <= now - granted < LIVE_GRANT_LIFETIME_SECONDS)
 
 
 def refused_live(check: Mapping[str, Any], manifest: dict[str, Any], manifest_path: Path,
@@ -239,6 +265,8 @@ def basis_holds(root: Path, capture_id: str, basis: str | None, upload_sha256: s
         return owned_basis_holds(capture_id, upload_sha256, owned_list)
     if basis == "site_sharing_statement":
         return live_grant_holds(check, now)
+    if basis == "internal_test":
+        return internal_test_holds(check, now)
     return False
 
 

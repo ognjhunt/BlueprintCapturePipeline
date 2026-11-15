@@ -1,0 +1,512 @@
+"""Internal test jobs: the ``internal_test`` basis, the door's ``test-job`` request and its runner. Fakes only."""
+# Covers: src/blueprint_pipeline/sharing_statement.py
+# Covers: src/blueprint_pipeline/company_share_permission.py
+# Covers: src/blueprint_pipeline/website_company_clip.py
+# Covers: src/blueprint_pipeline/website_company_simulation.py
+# Covers: src/blueprint_pipeline/capture_original_owner_observer.py
+# Covers: src/blueprint_pipeline/internal_test_job_door.py
+# Covers: deploy/operator-door/operator_door/requests.py
+# Covers: deploy/operator-door/operator_door/spool_runner.py
+# Covers: deploy/operator-door/door-test-job.sh
+# Covers: scripts/operator_door.py
+# Covers: scripts/test_jobs.py
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline import internal_test_job_door as door_job
+from blueprint_pipeline import sharing_statement as statement
+from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+from tests.test_operator_door_scripts import SETPRIV_STUB, _run, _write_stub, env  # noqa: F401 - env is a fixture
+
+TEST = "internal_test.v1"
+MARKER = {"label": "library-aisle", "footage_id": "pexels-854533"}
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# ---------------------------------------------------------------------------------- P1: the basis
+
+@pytest.mark.parametrize(("version", "marker", "basis"), [
+    (TEST, MARKER, {"permission_basis": "internal_test", "statement_version": TEST, "label": "library-aisle"}),
+    (TEST, None, None),                                      # the version without the marker
+    ("2026-11-11.v3", MARKER, None),                         # the marker without the version
+    (TEST, {"label": "library-aisle"}, None),                # a marker that names no footage
+    ("2026-11-12.v4", MARKER, {"permission_basis": "site_sharing_statement", "statement_version": "2026-11-12.v4"}),
+])
+def test_the_internal_test_basis_needs_both_the_version_and_the_marker(version, marker, basis):
+    context = {"capture_rights": {"statement_version": version}, **({"internal_test": marker} if marker else {})}
+    assert statement.sharing_basis(context) == basis
+
+
+def test_internal_test_is_never_a_sharing_version():
+    assert statement.SHARING_STATEMENT_VERSIONS == ("2026-11-12.v4",) and not statement.covers_sharing(TEST)
+
+
+def _test_context(capture: Path, *, marker=MARKER, version=TEST) -> None:
+    path = capture / "pipeline" / "website_task_context.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"capture_rights": {"statement_version": version},
+                                **({"internal_test": marker} if marker else {})}))
+
+
+@pytest.mark.parametrize(("kept_marker", "live_marker", "status"), [
+    (MARKER, MARKER, "published"),
+    (MARKER, None, "not_permitted"),   # the live re-read must agree
+    (None, MARKER, "not_permitted"),   # and so must the task context kept at submission
+])
+def test_a_test_jobs_clip_is_published_only_when_both_reads_agree(tmp_path, kept_marker, live_marker, status):
+    from tests import test_website_company_clip as clips
+
+    capture = clips._capture(tmp_path, version=TEST)
+    _test_context(capture, marker=kept_marker)
+    world = clips.World(rights={**clips._rights(TEST), **({"internal_test": live_marker} if live_marker else {})})
+    first = world.publish(capture)
+    assert first["status"] == status
+    if status == "published":
+        assert world.delivered[0]["permission_basis"] == "internal_test"
+        assert clips._manifest(capture)["permission"]["label"] == "library-aisle"
+        assert world.publish(capture)["status"] == "current" and len(world.delivered) == 1
+
+
+def test_a_test_jobs_zip_is_built_published_kept_and_withdrawn_like_any_job(tmp_path):
+    from tests import test_website_company_simulation as sims
+
+    job = sims.Job(tmp_path, version=TEST)
+    _test_context(job.capture)
+    world = sims.World(job, rights={**dict(sims.World(job).rights, statement_version=TEST), "internal_test": MARKER})
+    assert world.publish()["status"] == "published"
+    assert world.delivered[0]["permission_basis"] == "internal_test"
+    assert sims._manifest(job)["permission"] == {"permission_basis": "internal_test", "statement_version": TEST,
+                                                 "label": "library-aisle"}
+    assert world.publish()["status"] == "current"
+    sims._withdraw(job.capture)
+    assert world.publish()["status"] == "withdrawn"
+
+
+@pytest.mark.parametrize(("second_read", "age", "holds"), [
+    ("unanswered", 60, True),                                        # no answer keeps the grant ...
+    ("unanswered", 2 * 6 * 3600, False),                             # ... only for its lifetime
+    (OSError("website_capture_withdrawn"), 60, False),               # a definite no ends it at once
+])
+def test_a_test_jobs_grant_is_kept_through_no_answer_for_its_lifetime_only(tmp_path, second_read, age, holds):
+    from blueprint_pipeline import company_share_permission as permission
+    from tests import test_website_company_clip as clips
+
+    capture = clips._capture(tmp_path, version=TEST)
+    _test_context(capture)
+    identity = permission.capture_identity(capture)
+    rights = {**clips._rights(TEST), "internal_test": MARKER}
+    permission.record_live(capture, identity, lambda _identity: rights, 1_000)
+    failure = OSError("timeout") if second_read == "unanswered" else second_read
+    check = permission.record_live(capture, identity, lambda _identity: (_ for _ in ()).throw(failure), 1_000 + age)
+    assert permission.internal_test_holds(check, 1_000 + age) is holds
+    assert permission.basis_holds(capture, identity["capture_id"], "internal_test", None, 1_000 + age) is holds
+
+
+# ---------------------------------------------------------------------- P2: the intake read
+
+@pytest.mark.parametrize(("marker", "admitted"), [(MARKER, True), (None, False), ({"label": "x"}, False)])
+def test_the_owner_read_admits_internal_test_only_with_its_marker(marker, admitted):
+    from blueprint_pipeline.capture_original_owner_observer import _SOURCE_KEYS, CaptureOwnerObservationError
+    from tests.test_capture_original_owner_observer import attested_under, validate_original
+
+    value = attested_under(TEST)
+    if marker is not None:
+        value["capture_rights"]["internal_test"] = marker
+    value["source_projection_digest"] = cross_runtime_canonical_digest({key: value[key] for key in _SOURCE_KEYS})
+    value["observation_digest"] = cross_runtime_canonical_digest(value, digest_field="observation_digest")
+    if admitted:
+        assert validate_original(value) == value
+    else:
+        with pytest.raises(CaptureOwnerObservationError):
+            validate_original(value)
+
+
+# ------------------------------------------------------------------------ P3: the door request
+
+sys.path.insert(0, str(ROOT / "deploy" / "operator-door"))
+
+REQUEST = {"kind": "test-job", "idempotency_key": "20261201:library", "label": "library-aisle",
+           "footage_id": "pexels-854533", "description": "Move the blue book to the top shelf."}
+
+
+@pytest.mark.parametrize(("change", "valid"), [
+    ({}, True), ({"task_target_hint": "blue book"}, False),
+    ({"label": "../x"}, False), ({"footage_id": "Pexels_1"}, False), ({"idempotency_key": "short"}, False),
+    ({"description": "  "}, False), ({"description": "x" * 2001}, False),
+    ({"spend_usd": 5}, False), ({"label": None}, False),
+])
+def test_the_door_validates_a_test_job_like_the_website(change, valid):
+    from operator_door.requests import RequestRefused, required_scope, validate_request
+
+    assert required_scope("test-job") == "operate"
+    body = {**REQUEST, **change}
+    if valid:
+        assert validate_request(body) == {k: body[k] for k in sorted(body)}
+    else:
+        with pytest.raises(RequestRefused, match="^test_job_fields_invalid$"):
+            validate_request(body)
+
+
+def test_the_door_runs_it_with_the_network_and_only_the_sync_token_of_the_provider_secrets():
+    from operator_door.config import DoorConfig
+    from operator_door.spool_runner import _LAUNCHES, _scene_window_properties
+
+    launch, config = _LAUNCHES["test-job"], DoorConfig()
+    properties = launch.properties(config, {})
+    assert launch.script == "door-test-job.sh" and "PrivateNetwork=yes" not in properties
+    assert properties[:-2] == _scene_window_properties(config, {}) and properties[-2:] == (
+        "TemporaryFileSystem=/etc/blueprint/provider-secrets:ro",
+        "BindReadOnlyPaths=/etc/blueprint/provider-secrets/pipeline_sync_token")
+
+
+class Website:
+    """The website's signed route: one job per key, as ``internal-test-jobs.ts`` answers."""
+
+    def __init__(self, fail: Exception | None = None, footage_status: int = 201):
+        self.calls, self.fail, self.footage_status = [], fail, footage_status
+
+    def __call__(self, body):
+        self.calls.append(dict(body))
+        if self.fail:
+            raise self.fail
+        job = "itest-" + "a" * 39 + str(len(self.calls))
+        return {"ok": True, "created": True, "job_id": job, "capture_id": f"walkthrough-{job}",
+                "footage": {"state": "copied", "code": None, "status": self.footage_status}}
+
+
+NOW = 1_800_000_000
+
+
+def _ask(tmp_path, website, *, month=lambda: None, now=NOW, **change):
+    return door_job.run({**REQUEST, **change}, door_request_id="r", ledger_root=tmp_path / "ledger",
+                        handoff_root=tmp_path / "handoffs", intent_root=tmp_path / "intents", transport=website,
+                        month=month, now=lambda: now)
+
+
+def _busy(tmp_path, now=NOW):
+    return door_job.in_flight(tmp_path / "ledger", tmp_path / "handoffs", now, tmp_path / "intents")
+
+
+def test_a_test_job_returns_only_its_names(tmp_path):
+    assert set(_ask(tmp_path, Website())) == {"door_outcome", "job_id", "capture_id", "label"}
+
+
+@pytest.mark.parametrize("change", [{"label": "other"}, {"footage_id": "other"}, {"description": "Another job."}])
+def test_the_same_key_is_the_same_job_and_a_changed_ask_under_it_is_refused(tmp_path, change):
+    website = Website()
+    first = _ask(tmp_path, website)
+    assert _ask(tmp_path, website) == first and len(website.calls) == 1
+    with pytest.raises(door_job.Refused, match="test_job_idempotency_key_reused"):
+        _ask(tmp_path, website, **change)
+
+
+@pytest.mark.parametrize(("website", "error", "holds_slot"), [
+    (Website(fail=ValueError("test_job_webapp_http_404:internal_test_footage_not_found")), door_job.Refused, False),
+    (Website(footage_status=422), door_job.Refused, False),          # created, but the copy was refused
+    (Website(fail=ValueError("test_job_webapp_http_503")), ValueError, True),   # unknown: keeps its slot
+    (Website(fail=OSError("connection reset")), OSError, True),
+])
+def test_only_an_ask_whose_outcome_is_unknown_keeps_its_slot(tmp_path, website, error, holds_slot):
+    with pytest.raises(error):
+        _ask(tmp_path, website)
+    assert _busy(tmp_path) == (["library-aisle"] if holds_slot else [])
+    assert _ask(tmp_path, Website())["door_outcome"] == "submitted"  # the same key, asked again
+
+
+def _finish(tmp_path, result, *, delivered=None, ledger=None):
+    """The job's capture on the host, with its package manifest and preparation ledger as given."""
+    capture = (tmp_path / "handoffs" / "bucket" / "scenes" / f"site-{result['job_id']}" / "captures"
+               / result["capture_id"])
+    (capture / "pipeline" / "company_simulation").mkdir(parents=True)
+    (capture / "pipeline/company_simulation/company_simulation.json").write_text(json.dumps({"delivered": delivered}))
+    if ledger:
+        (capture / "pipeline_job_ledger.json").write_text(json.dumps(ledger))
+
+
+def _scene(tmp_path, result, *, progression=None, terminal_reason=None, name="scene-1"):
+    from blueprint_pipeline.task_evaluation_scene_outcome import _decision, record_outcome
+
+    directory = tmp_path / "intents" / name
+    directory.mkdir(parents=True)
+    intent = {"intent_id": name, "intent_digest": "sha256:" + "1" * 64,
+              "request": {"submission_id": result["capture_id"]}}
+    (directory / "intent.json").write_text(json.dumps(intent))
+    if progression:
+        (directory / "progression.json").write_text(json.dumps({"status": progression}))
+    if terminal_reason:
+        record_outcome(directory, intent, _decision(terminal_reason), now=NOW)
+
+
+@pytest.mark.parametrize(("finish", "third_allowed"), [
+    ({}, False),
+    ({"ledger": "terminal_success"}, False),             # preparation done; the scene chain still runs
+    ({"scene": {"progression": "running"}}, False),
+    ({"scene": {"terminal_reason": "pipeline_fault"}}, False),   # a fault a fix can still re-drive
+    ({"delivered": True}, True),
+    ({"ledger": "terminal_authority_ended"}, True),
+    ({"scene": {"progression": "completed"}}, True),
+    ({"scene": {"terminal_reason": "retry_cap_exhausted"}}, True),
+    # every intent of the capture must have ended, whatever order the folders list in
+    ({"scenes": [{"terminal_reason": "retry_cap_exhausted", "name": "scene-a"},
+                 {"progression": "running", "name": "scene-b"}]}, False),
+    ({"scenes": [{"progression": "running", "name": "scene-a"},
+                 {"terminal_reason": "retry_cap_exhausted", "name": "scene-b"}]}, False),
+])
+def test_a_third_job_waits_while_two_are_in_flight(tmp_path, finish, third_allowed):
+    website = Website()
+    first = _ask(tmp_path, website, idempotency_key="20261201:one")
+    _ask(tmp_path, website, idempotency_key="20261201:two")
+    _finish(tmp_path, first, delivered={"at": 1} if finish.get("delivered") else None,
+            ledger={"status": finish["ledger"]} if finish.get("ledger") else None)
+    for scene in ([finish["scene"]] if finish.get("scene") else finish.get("scenes", [])):
+        _scene(tmp_path, first, **scene)
+    if third_allowed:
+        assert _ask(tmp_path, website, idempotency_key="20261201:three")["door_outcome"] == "submitted"
+    else:
+        with pytest.raises(door_job.Refused, match="test_job_two_in_flight"):
+            _ask(tmp_path, website, idempotency_key="20261201:three")
+
+
+def test_a_retry_of_an_unknown_outcome_reads_the_month(tmp_path):
+    with pytest.raises(ValueError):
+        _ask(tmp_path, Website(fail=ValueError("test_job_webapp_http_503")))
+    with pytest.raises(door_job.Refused, match="^test_job_month_stop_line$"):
+        _ask(tmp_path, Website(), month=lambda: "test_job_month_stop_line")
+
+
+@pytest.mark.parametrize(("first", "kept_time"), [
+    (Website(fail=ValueError("test_job_webapp_http_404:internal_test_footage_not_found")), False),  # refused
+    (Website(fail=ValueError("test_job_webapp_http_503")), False),  # unknown, but its window has passed
+])
+def test_a_key_asked_again_after_its_window_is_a_new_job_with_its_own_slot(tmp_path, first, kept_time):
+    with pytest.raises(ValueError):
+        _ask(tmp_path, first)
+    later = NOW + door_job.IN_FLIGHT_FOR_SECONDS + 1
+    _ask(tmp_path, Website(), now=later)
+    assert _busy(tmp_path, later) == ["library-aisle"]
+
+
+def test_an_ask_never_sent_holds_no_slot(tmp_path, monkeypatch):
+    monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
+    with pytest.raises(door_job.Refused, match="^test_job_not_sent:test_job_webapp_url_missing$"):
+        _ask(tmp_path, door_job.post_test_job)
+    assert _busy(tmp_path) == []
+
+
+def test_a_job_stops_counting_after_the_in_flight_window(tmp_path):
+    _ask(tmp_path, Website())
+    assert _busy(tmp_path, NOW + door_job.IN_FLIGHT_FOR_SECONDS - 1) == ["library-aisle"]
+    assert _busy(tmp_path, NOW + door_job.IN_FLIGHT_FOR_SECONDS) == []
+
+
+def test_two_door_runs_at_once_cannot_both_take_the_last_slot(tmp_path):
+    import threading
+    import time
+
+    _ask(tmp_path, Website(), idempotency_key="20261201:one")
+    gate, outcomes, count = threading.Barrier(2), [], door_job.in_flight
+
+    def slow_count(*args):  # widen the window between the count and the row's write
+        busy = count(*args)
+        time.sleep(0.3)
+        return busy
+
+    def ask(key):
+        gate.wait()
+        try:
+            outcomes.append(_ask(tmp_path, Website(), idempotency_key=key)["door_outcome"])
+        except door_job.Refused as exc:
+            outcomes.append(str(exc))
+    threads = [threading.Thread(target=ask, args=(key,)) for key in ("20261201:two", "20261201:three")]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(door_job, "in_flight", slow_count)
+        [thread.start() for thread in threads]
+        [thread.join() for thread in threads]
+    assert sorted(outcomes) == ["submitted", "test_job_two_in_flight"]
+
+
+def test_a_new_job_is_refused_when_the_month_says_so_and_a_known_one_is_not(tmp_path):
+    website = Website()
+    first = _ask(tmp_path, website)
+    with pytest.raises(door_job.Refused, match="^test_job_month_stop_line$"):
+        _ask(tmp_path, website, idempotency_key="20261201:two", month=lambda: "test_job_month_stop_line")
+    assert _ask(tmp_path, website, month=lambda: "test_job_month_stop_line") == first  # no new job: no month read
+
+
+@pytest.mark.parametrize(("blockers", "counted", "line", "refusal"), [
+    (["account_monthly_spend_limit_reached"], "100", "300", "test_job_month_closed:account_monthly_spend_limit_reached"),
+    ([], "279.99", "300", None),
+    ([], "280", "300", "test_job_month_stop_line"),     # counted + one job's $20 reaches the line
+    ([], None, "300", "test_job_month_closed:account_monthly_spend_report_missing_or_invalid"),
+    ([], "no policy", "300", "test_job_month_closed:account_monthly_spend_limit_not_configured"),  # fail closed
+])
+def test_the_door_reads_the_month_from_the_hosts_own_report(monkeypatch, blockers, counted, line, refusal):
+    from blueprint_pipeline import account_monthly_spend as month
+
+    policy = None if counted == "no policy" else {"report_path": "r"}
+    monkeypatch.setattr(month, "admission_blockers", lambda environ=None: blockers)
+    monkeypatch.setattr(month, "configured_policy", lambda environ=None: (policy, None, None))
+    monkeypatch.setattr(month, "read_report", lambda path: {"counted_usd": counted,
+                                                            "alert_lines_usd": {door_job.STOP_LINE: line}})
+    assert door_job.month_refusal() == refusal
+
+
+def test_the_stop_line_is_an_existing_alert_line_read_by_door_and_runner():
+    from blueprint_pipeline.account_monthly_spend import ALERT_PERCENTS
+
+    assert door_job.STOP_LINE in {str(percent) for percent in ALERT_PERCENTS}
+    assert _runner().STOP_LINE is door_job.STOP_LINE and _runner().EXPECTED_JOB_USD is door_job.EXPECTED_JOB_USD
+
+
+@pytest.fixture()
+def test_job_env(env, tmp_path):  # noqa: F811 - the scripts module's fixture
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "job-python", "#!/bin/bash\nprintf 'job %s\\n' \"$*\" >> \"$STUB_LOG\"\n"
+                                         "printf '%s\\n' \"${FAKE_JOB:-}\"\nexit \"${FAKE_TOOL_RC:-0}\"\n")
+    return {**env, "DOOR_VENV_PYTHON": str(tmp_path / "job-python"), "DOOR_CONTROL_PLANE_REPO": str(repository),
+            "DOOR_SERVICE_USER": "blueprint", "DOOR_TEST_JOB_REQUEST": json.dumps(REQUEST)}
+
+
+@pytest.mark.parametrize(("rc", "status", "code"), [(0, "submitted", None), (2, "refused", "test_job_refused"),
+                                                    (1, "failed", "test_job_failed")])
+def test_the_door_script_runs_the_release_module_as_the_service_user(test_job_env, rc, status, code):
+    request_id = "20261201T120000Z-test-job-0000abcd"
+    done, outcome, calls = _run("door-test-job.sh", test_job_env, DOOR_REQUEST_ID=request_id,
+                                FAKE_JOB=json.dumps({"door_outcome": status}), FAKE_TOOL_RC=str(rc))
+    assert (done, outcome["status"], outcome["code"]) == (rc, status, code)
+    assert calls[0] == "setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --"
+    assert calls[2].startswith("job -m blueprint_pipeline.internal_test_job_door --request-json ")
+    assert '"$source_dir"/door-test-job.sh' in (ROOT / "deploy/operator-door/install.sh").read_text()
+
+
+def test_the_client_sends_one_operation_per_key(monkeypatch):
+    client = _module(ROOT / "scripts" / "operator_door.py", "operator_door_client_t1")
+    sent = []
+    monkeypatch.setattr(client, "_submit", lambda body, args: sent.append((body, args.operation_key)) or 0)
+    argv = ["test-job", "--idempotency-key", REQUEST["idempotency_key"], "--label", REQUEST["label"],
+            "--footage-id", REQUEST["footage_id"], "--description", REQUEST["description"]]
+    for _ in range(2):
+        assert client.run(client.build_parser().parse_args(argv)) == 0
+    assert sent[0] == sent[1] and sent[0][0] == REQUEST
+
+
+# ------------------------------------------------------------------------------ P4: the runner
+
+def _runner():
+    return _module(ROOT / "scripts" / "test_jobs.py", "test_jobs_t1")
+
+
+def _status(counted, *, line="300", allowed=True):
+    return {"spend_guard": {"account_monthly_spend": {"counted_usd": counted, "alert_lines_usd": {"100": line},
+                                                      "admission_allowed": allowed, "blockers": []}}}
+
+
+@pytest.mark.parametrize(("status", "refused"), [
+    (_status(279.0), False),
+    (_status(280.0), True),                    # counted (spend plus held) + 20 reaches the stop line
+    (_status(10.0, allowed=False), True),      # the limit already closed admission
+    ({"spend_guard": {}}, True),               # unreadable: never submit on a guess
+])
+def test_the_runner_reads_the_doors_stop_line_before_each_submit(status, refused):
+    assert (_runner().spend_refusal(status) is not None) == refused
+
+
+@pytest.mark.parametrize("label", ["rigid pick 1080p", "a", "x" * 80, "A.b_c-d e"])
+def test_every_allowed_label_gives_a_key_the_door_accepts(label):
+    from operator_door.requests import _TEST_JOB_KEY, _TEST_JOB_LABEL
+
+    assert _TEST_JOB_LABEL.fullmatch(label) and _TEST_JOB_KEY.fullmatch(_runner().door_key("20261201", label))
+
+
+ROOT_PATH = "/var/lib/blueprint/pubsub-handoffs/b/scenes/site-itest-1/captures/walkthrough-itest-1"
+
+
+def _job_report(monkeypatch, manifest, *, jobs=(), submitted_at=1, ledger=None):
+    runner = _runner()
+    files = {f"{ROOT_PATH}/pipeline_job_ledger.json": ledger or {"status": "processing"},
+             f"{ROOT_PATH}/pipeline/atlas/task_semantics/s.json": {"semantics": {"task_family": "rigid_pick_place"}},
+             f"{ROOT_PATH}/pipeline/company_simulation/company_simulation.json": manifest}
+    listing = {runner.HANDOFFS: [{"name": "b"}], ROOT_PATH: [{"name": "pipeline_job_ledger.json", "mtime": 4}],
+               f"{ROOT_PATH}/pipeline/atlas/task_semantics": [{"name": "s.json"}]}
+    monkeypatch.setattr(runner, "cat_json", lambda path: files.get(path))
+    monkeypatch.setattr(runner, "ls", lambda path: listing.get(path, []))
+    status = {"spend_guard": {"account_monthly_spend": {"jobs": list(jobs)}}}
+    report = runner.job_report({"label": "library-aisle", "footage_id": "pexels-854533", "job_id": "itest-1",
+                                "capture_id": "walkthrough-itest-1", "submitted_at": submitted_at}, status)
+    return runner, report
+
+
+def test_the_runner_reports_a_job_from_the_hosts_own_records(monkeypatch):
+    manifest = {"simulation_revision": "sha256:" + "r" * 64, "built_at_epoch": 5, "delivered": {"at": 6},
+                "package": {"digest": "sha256:" + "d" * 64},
+                "permission": {"permission_basis": "internal_test", "label": "library-aisle"}}
+    runner, report = _job_report(monkeypatch, manifest, jobs=[
+        {"job_id": "itest-1", "by_provider_settled_usd": {"world_labs": 9.0}, "held_usd": 0.0, "settled_usd": 9.0},
+        {"job_id": "capture-other", "by_provider_settled_usd": {"openai": 4.0}}])
+    assert (report["kind"], report["stage"], report["first_failure"]) == ("rigid_pick_place", "package_delivered", None)
+    assert report["zip_digest"] == "sha256:" + "d" * 64 and report["permission"]["label"] == "library-aisle"
+    assert [row["job_id"] for row in report["spend"]] == ["itest-1"]
+    assert report["times"] == {"submitted": 1, "preparation_updated": 4, "package_built": 5}
+    assert runner.done(report)
+
+
+@pytest.mark.parametrize(("manifest", "ledger", "submitted_at", "failure", "done"), [
+    ({"built_at_epoch": 5}, None, NOW, None, False),                                   # still going
+    ({"refused_by_webapp": {"reason": "website_company_simulation_not_permitted"}}, None, NOW,
+     "website_company_simulation_not_permitted", True),
+    ({}, {"status": "terminal_authority_ended"}, NOW, "terminal_authority_ended", True),
+    ({}, {"status": "terminal_success"}, NOW, None, False),
+    ({}, None, 1, "stalled: no package and no ending after the door's in-flight window", True),
+])
+def test_follow_ends_with_a_clear_state(monkeypatch, manifest, ledger, submitted_at, failure, done):
+    import time as clock
+
+    monkeypatch.setattr(clock, "time", lambda: NOW + 60)
+    runner, report = _job_report(monkeypatch, manifest, ledger=ledger, submitted_at=submitted_at)
+    assert report["first_failure"] == failure and runner.done(report) is done
+    assert report["spend"] is None  # not in the status's top jobs: "spend not shown", never $0.00
+
+
+
+
+def test_the_runner_never_runs_more_than_two_at_once():
+    with pytest.raises(SystemExit):
+        _runner().main(["submit", "--state", "s.json", "--matrix", "m.json", "-k", "3"])
+
+
+def test_the_runner_stops_at_a_refusal_and_follow_ends_on_it(tmp_path, monkeypatch):
+    runner, posts = _runner(), []
+    matrix = tmp_path / "jobs.json"
+    matrix.write_text(json.dumps({"jobs": [{"label": f"job {n}", "footage_id": "f", "description": "d"}
+                                           for n in range(2)]}))
+
+    def door_json(method, route, query=None, body=None):
+        if route == "/status":
+            return _status(10.0)
+        if method == "POST":
+            posts.append(body)
+            return {"id": "req-1"}
+        return {"outcome": {"status": "refused", "result": "/r.json"}}
+    monkeypatch.setattr(runner.door, "_json", door_json)
+    monkeypatch.setattr(runner, "cat_json", lambda path: {"door_outcome": "refused", "code": "test_job_two_in_flight"})
+    monkeypatch.setattr(runner, "ls", lambda path: [])
+    state = tmp_path / "run.json"
+    assert runner.main(["submit", "--matrix", str(matrix), "--state", str(state), "--poll", "0"]) == 0
+    assert len(posts) == 1  # the second row is never sent after the first was refused
+    job = json.loads(state.read_text())["jobs"][0]
+    assert runner.done(runner.job_report(job, {}))  # follow ends on it at once

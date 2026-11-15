@@ -98,9 +98,10 @@ def test_recording_rights_statement_versions_are_a_closed_set():
     from blueprint_pipeline.capture_original_owner_observer import RECORDING_RIGHTS_STATEMENT_VERSIONS
 
     # WebApp `client/src/lib/recordingRightsStatement.ts` names the first three; v4 (2026-11-12) is the statement that
-    # shares a job with approved deployment companies, accepted here before the website records it.
+    # shares a job with approved deployment companies, accepted here before the website records it. An internal
+    # test job's grant is accepted only with its marker (tests/test_internal_test_jobs.py).
     assert RECORDING_RIGHTS_STATEMENT_VERSIONS == frozenset({"2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3",
-                                                             "2026-11-12.v4"})
+                                                             "2026-11-12.v4", "internal_test.v1"})
 
 
 def test_every_sharing_statement_version_is_an_accepted_recording_statement():

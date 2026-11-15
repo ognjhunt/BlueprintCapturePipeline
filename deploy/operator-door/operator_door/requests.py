@@ -93,6 +93,8 @@ _SCOPES = {
     "confirm-owner-success-contract": "operate",
     # Retires one parked website preparation delivery on the owner's recorded approval.
     "retire-parked-delivery": "operate",
+    # Starts one internal test job through the website's signed internal route; its spend passes every paid admission.
+    "test-job": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -125,6 +127,9 @@ if DISPATCHER_HOLD_ONLY:
                            "extend-scene-execution-window", "extend-scene-execution-budget",
                            "confirm-owner-success-contract", "retire-parked-delivery"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+_TEST_JOB_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
+_TEST_JOB_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}")
+_TEST_JOB_FOOTAGE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
 ACTIVATION_HOLD_OVERRIDE = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
@@ -561,6 +566,15 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if type(apply) is not bool:
             raise RequestRefused("parked_delivery_apply_invalid")
         return {"kind": kind, "capture": capture, "approval_evidence": evidence, "apply": apply}
+    if kind == "test-job":
+        # The website route's own patterns (Blueprint-WebApp server/routes/internal-test-jobs.ts).
+        required = {"kind", "idempotency_key", "label", "footage_id", "description"}
+        if (set(body) != required or not all(isinstance(body[key], str) for key in required - {"kind"})
+                or not _TEST_JOB_KEY.fullmatch(body["idempotency_key"]) or not _TEST_JOB_LABEL.fullmatch(body["label"])
+                or not _TEST_JOB_FOOTAGE.fullmatch(body["footage_id"])
+                or not 1 <= len(body["description"].strip()) <= 2000):
+            raise RequestRefused("test_job_fields_invalid")
+        return {key: body[key] for key in sorted(body)}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")

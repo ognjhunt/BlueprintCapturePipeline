@@ -25,6 +25,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SHARING_STATEMENT_VERSIONS: tuple[str, ...] = ("2026-11-12.v4",)
+#: An internal test job's recording grant (WebApp ``internalTestJob.ts``): never a sharing version. With the job's
+#: ``internal_test`` marker it is the ``internal_test`` basis: the clip and zip are built and published to the website,
+#: which shows a test job to no company.
+INTERNAL_TEST_VERSION = "internal_test.v1"
 OWNED_CAPTURES_SCHEMA = "blueprint_owned_captures.v1"
 OWNED_CAPTURES_PATH = Path(__file__).resolve().parents[2] / "config" / "blueprint_owned_captures.v1.json"
 _ROW_KEYS = frozenset({"capture_id", "approved_by", "approved_on", "evidence", "video_sha256_prefix"})
@@ -82,6 +86,15 @@ def owned_captures(path: Path | None = None) -> tuple[dict[str, str], str | None
     return owned, None
 
 
+def internal_test_label(version: Any, marker: Any) -> str | None:
+    """The test job's label when the version is exactly ``internal_test.v1`` and the marker names a label and a
+    footage id; else None (one without the other is no basis)."""
+    if version != INTERNAL_TEST_VERSION or not isinstance(marker, Mapping):
+        return None
+    label, footage = marker.get("label"), marker.get("footage_id")
+    return label if isinstance(label, str) and label and isinstance(footage, str) and footage else None
+
+
 def sharing_basis(task_context: Mapping[str, Any], *, video_sha256: str | None = None,
                   owned_list: Path | None = None) -> dict[str, Any] | None:
     """The rule that lets this capture's video be shared, or None.
@@ -90,12 +103,16 @@ def sharing_basis(task_context: Mapping[str, Any], *, video_sha256: str | None =
     context's ``capture_rights.statement_version`` covers sharing; else
     ``{"permission_basis": "blueprint_owned_capture", "capture_id": ...}`` when its ``capture_id``
     is on the allow-list and the digest of the upload the video is made from begins with its row's
-    ``video_sha256_prefix``; else None.
+    ``video_sha256_prefix``; else ``{"permission_basis": "internal_test", ...}`` for an internal test job
+    (``internal_test_label``); else None.
     """
     rights = task_context.get("capture_rights") if isinstance(task_context, Mapping) else None
     version = rights.get("statement_version") if isinstance(rights, Mapping) else None
     if covers_sharing(version):
         return {"permission_basis": "site_sharing_statement", "statement_version": version}
+    label = internal_test_label(version, task_context.get("internal_test"))
+    if label is not None:
+        return {"permission_basis": "internal_test", "statement_version": version, "label": label}
     capture_id = task_context.get("capture_id") if isinstance(task_context, Mapping) else None
     owned, _flag = owned_captures(owned_list)
     if type(capture_id) is not str or capture_id not in owned:
