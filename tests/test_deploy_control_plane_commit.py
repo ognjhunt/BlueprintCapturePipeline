@@ -2801,6 +2801,8 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     lock = _lock(tmp_path)
     observed: list[str] = []
 
+    # The agent worker's retirement reads and changes systemd; covered by its own tests.
+    monkeypatch.setattr(deploy, "_retire_agent_execution", lambda **_kwargs: {"status": "test_host_step_stub"})
     monkeypatch.setattr(deploy, "_move_source_checkout", lambda *args: None)
     monkeypatch.setattr(
         deploy,
