@@ -24,7 +24,6 @@ REQUIRED_SOURCES = (
     "src/blueprint_pipeline/control_plane_leased_scratch.py",
     "src/blueprint_pipeline/control_plane_arena_scratch.py",
     "src/blueprint_pipeline/native_g1_development_pair.py",
-    "scripts/arena_construction_launch_chain.sh",
     "scripts/install_live_pipeline_control_plane.sh",
 )
 LANE_ROOTS = ("/mnt/blueprint-work/lanes", "/var/lib/blueprint/task-evaluation-inputs/lanes")

@@ -278,7 +278,7 @@ def test_other_arena_callers_never_stream():
             function = getattr(enclosing.get(node), "name", "<module>")
             if any(name.startswith("provider_output_") for name in _keyword_names(node, (path.name, function))):
                 streaming_calls.append((path.name, function))
-    assert lane_calls >= 8
+    assert lane_calls >= 4
     # The policy-canary session runner and the team session left with the early trial (2026-11-14):
     # no caller asks the transport for stream delivery.
     assert streaming_calls == []

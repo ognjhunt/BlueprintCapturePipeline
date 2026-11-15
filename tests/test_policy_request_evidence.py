@@ -191,24 +191,3 @@ def test_actual_groot_wire_records_science_but_never_transport_credentials():
     assert client.api_token not in json.dumps(retained)
     assert validate_request_evidence(retained[0])["serialization_verified"] is True
 
-
-def test_actual_openpi_client_observes_vendor_serialization_before_inference_result(tmp_path):
-    from blueprint_pipeline.openpi_droid_policy_runtime import OpenPIWebsocketDroidPolicyClient, load_policy_spec
-    from tests.test_openpi_droid_policy_runtime import _cohort, _runtime_metadata
-    spec = load_policy_spec(_cohort(tmp_path), policy_id="pi0_fast_droid_jointpos_polaris")
-    sent, retained = [], []
-    class Vendor:
-        def __init__(self, **kwargs):
-            self._ws = SimpleNamespace(send=sent.append, close=lambda: None)
-        def get_server_metadata(self):
-            return _runtime_metadata(spec)
-        def infer(self, observation):
-            self._ws.send(encode_wire_message(observation))
-            return {"actions": np.zeros((10, 8))}
-    client = OpenPIWebsocketDroidPolicyClient(spec=spec, host="127.0.0.1", port=8000,
-        client_factory=Vendor, wire_decoder=decode_wire_message)
-    client.bind_request_evidence_sink(retained.append)
-    client.infer(request())
-    assert len(sent) == len(retained) == 1
-    assert validate_request_evidence(retained[0])["serialization_verified"] is True
-    assert client.candidate_policy_queried is True

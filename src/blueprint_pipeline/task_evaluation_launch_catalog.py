@@ -44,6 +44,7 @@ from .task_evaluation_launch_dispatcher import (
     PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
     TaskEvaluationLaunchError,
     catalog_launch_profile_descriptor,
+    retired_launch_profile_lane,
     validate_launch_profile,
     validate_public_launch_profile_descriptor,
     verify_profile_immutable_inputs,
@@ -99,6 +100,7 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
 def _project_published_profiles(
     profile_dir: str | Path,
     timings: dict[str, float] | None = None,
+    retired: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], set[tuple[str, str]]]:
     """Every published profile's descriptor, and the ones whose owner state this
     process could not judge: ``scene_execution_owner_store_missing`` means its
@@ -138,6 +140,17 @@ def _project_published_profiles(
             raise LaunchCatalogError(
                 f"published_profile_invalid:{path.name}:unparseable"
             ) from exc
+        # A published profile of a lane the product no longer runs is immutable
+        # history. Today's validator has no rules for it, so judging it would call
+        # every one malformed. It is left out of the served catalog and counted;
+        # a launch that names it is still refused by the dispatcher. On 2026-11-15
+        # the 26 policy-canary profiles on the host failed this pass after that
+        # lane's code was removed, the catalog did not reconcile, and intake, which
+        # reconciles in its ExecStartPre, could not start.
+        if isinstance(profile, dict) and retired_launch_profile_lane(profile) is not None:
+            if retired is not None:
+                retired.append(path.name)
+            continue
         # A malformed profile cannot be projected at all and still fails the
         # whole catalog. Missing bytes are a different kind of problem: the
         # document is well formed and this host simply does not have what it
@@ -268,7 +281,8 @@ def reconcile_public_catalog(
     """
     catalog = Path(catalog_path).expanduser().resolve()
     timings: dict[str, float] = {}
-    descriptors, unjudged = _project_published_profiles(profile_dir, timings)
+    retired: list[str] = []
+    descriptors, unjudged = _project_published_profiles(profile_dir, timings, retired)
 
     try:
         current = catalog.read_bytes()
@@ -287,7 +301,7 @@ def reconcile_public_catalog(
                 carried += 1
     expected = _catalog_bytes(descriptors)
     owner_state = {"owner_state_unjudged": len(unjudged), "owner_state_carried_forward": carried,
-                   "pass_timing_seconds": timings}
+                   "retired_lane_profiles_not_served": len(retired), "pass_timing_seconds": timings}
 
     if current == expected:
         return {

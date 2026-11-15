@@ -127,25 +127,6 @@ def test_groot_uses_only_the_current_checkpoint_requested_camera_frames() -> Non
     }
 
 
-def test_pi05_observation_satisfies_the_existing_droid_validator() -> None:
-    """The output must pass the repository's own DROID contract check."""
-
-    from blueprint_pipeline.droid_policy_bridge import validate_droid_observation
-
-    observation = build_droid_observation(
-        candidate_id="pi05_droid",
-        camera_rgb={
-            DROID_EXTERIOR_VIEW_1: _isaac_frame(),
-            DROID_WRIST_VIEW: _isaac_frame(),
-        },
-        joint_position=_JOINTS,
-        gripper_position=0.04,
-        prompt="pick up the can",
-    )
-
-    assert validate_droid_observation(observation) == []
-
-
 def test_a_three_view_candidate_names_the_frozen_contract_it_violates() -> None:
     """Cosmos wants a camera the ADP-009D scene deliberately removed."""
 

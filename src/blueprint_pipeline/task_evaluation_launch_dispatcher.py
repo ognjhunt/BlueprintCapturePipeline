@@ -630,6 +630,18 @@ def _validate_launch_profile(
     return sorted(set(blockers))
 
 
+#: Keys that mark a published profile of a lane the product no longer runs. Such a profile is
+#: immutable history: the catalog does not serve it, and a launch that names it is refused
+#: (``launch_profile_policy_canary_setup_invalid:retired``, ``policy_canary_launch_retired``).
+RETIRED_LAUNCH_PROFILE_MARKERS = ("internal_policy_canary_setup",)
+
+
+def retired_launch_profile_lane(profile: Mapping[str, Any]) -> str | None:
+    """The retired lane a published profile belongs to, or None for a profile of a live lane."""
+
+    return next((key for key in RETIRED_LAUNCH_PROFILE_MARKERS if key in profile), None)
+
+
 def validate_launch_profile_structure(value: Mapping[str, Any]) -> list[str]:
     """Validate a profile document without reopening its bound local evidence.
 

@@ -4,9 +4,6 @@ import json
 from pathlib import Path
 
 
-from blueprint_pipeline.adp009d_policy_candidate_admission import (
-    EXPECTED_CANDIDATES,
-)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
@@ -63,66 +60,4 @@ _FROZEN_INVENTORY = (
     Path(__file__).resolve().parents[1]
     / "config/trial/openpi_polaris_checkpoint_inventory.json"
 )
-
-
-def test_pi05_checkpoint_identity_satisfies_the_spec_that_refused_the_stock_one(
-    tmp_path: Path,
-) -> None:
-    """The whole point of ratifying: the provisioned URI must now be describable.
-
-    The stock checkpoint failed `checkpoint_uri_not_frozen_openpi_polaris`, so
-    no execution spec could name what the lane fetched and still satisfy the
-    episode client.
-    """
-
-    import json
-
-    from blueprint_pipeline.openpi_droid_policy_runtime import (
-        load_policy_spec_from_execution_spec,
-    )
-
-    record = EXPECTED_CANDIDATES["pi05_droid"]
-    inventory = json.loads(_FROZEN_INVENTORY.read_text(encoding="utf-8"))
-    entry = next(
-        row
-        for row in inventory["entries"]
-        if row["policy_id"] == "pi05_droid_jointpos_polaris"
-    )
-    path = tmp_path / "execution_spec.json"
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": "native_task_arena_policy_execution_spec.v1",
-                "candidate_id": "pi05_droid",
-                "policy_spec": {
-                    "policy_id": "pi05_droid_jointpos_polaris",
-                    "config_name": "pi05_droid_jointpos_polaris",
-                    # The URI this lane actually provisions.
-                    "checkpoint_uri": record["checkpoint_repository"],
-                    "checkpoint_object_manifest_sha256": entry[
-                        "legacy_object_manifest_sha256"
-                    ],
-                    "checkpoint_generation_manifest_sha256": entry[
-                        "generation_manifest_sha256"
-                    ],
-                    "checkpoint_inventory_sha256": inventory["inventory_sha256"],
-                    "checkpoint_object_count": entry["object_count"],
-                    "checkpoint_size_bytes": entry["size_bytes"],
-                    "action_space": "joint_position",
-                    "action_chunk_rows": 15,
-                    "open_loop_horizon": 8,
-                    "openpi_revision": inventory["openpi_revision"],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    spec = load_policy_spec_from_execution_spec(path)
-
-    assert spec.policy_id == entry["policy_id"]
-    assert spec.config_name == "pi05_droid_jointpos_polaris"
-    assert spec.checkpoint_uri == record["checkpoint_repository"]
-    assert spec.checkpoint_size_bytes == record["checkpoint_total_bytes"]
-    assert len(spec.server_metadata()) == 14
 

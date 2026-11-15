@@ -70,8 +70,7 @@ def test_g1_python_provider_is_appended_without_loading_sdk_controller(tmp_path,
 def test_every_native_launch_names_its_controller_and_franka_consumers_require_pink():
     package = Path(launch.__file__).parent
     required = {"native_task_arena_construction_worker.py", "native_task_arena_controls_worker.py",
-                "native_task_arena_policy_worker.py", "native_task_arena_runtime_preflight_worker.py",
-                "controlled_native_isaac.py"}
+                "native_task_arena_runtime_preflight_worker.py"}
     seen = set()
     for source in package.glob("*.py"):
         tree = ast.parse(source.read_text())

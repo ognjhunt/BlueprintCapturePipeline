@@ -174,26 +174,6 @@ def test_runtime_secret_bootstrap_keeps_urls_out_of_public_environment(context, 
     assert sum(name.endswith('_FILE') and 'PAIRED' in name for name in env) == 3
 
 
-def test_capacity_matches_actual_query_frames_and_review_stride(context):
-    import numpy as np
-    from blueprint_pipeline.adp009d_policy_episode import _project_media_reserve_bytes
-    _, _, binding = context
-    basis = binding['capacity_basis']
-    assert basis['review_frame_stride_steps'] == 8
-    assert basis['policy_master_width'] == 640 and basis['policy_master_height'] == 360
-    rgb = np.zeros((360, 640, 3), dtype=np.uint8)
-    overview = np.zeros((720, 1280, 3), dtype=np.uint8)
-    recorded = sum(_project_media_reserve_bytes(
-        camera_rgb={'external': rgb, 'wrist': rgb}, evaluation_images={'external': rgb, 'wrist': rgb, 'overview': overview},
-        max_policy_queries=basis['maximum_policy_queries'][candidate],
-        open_loop_horizon=basis['open_loop_horizon'][candidate], settle_window_samples=20)
-        for candidate in ('pi05_droid', 'groot_n17_droid'))
-    assert recorded < binding['maximum_archive_bytes'] < recorded * 1.1
-    assert 'provider_bundle_uncompressed_bytes' not in basis
-    with pytest.raises(ValueError, match='capacity_binding_invalid'):
-        paired.validate_binding({**binding, 'maximum_archive_bytes': 1_000_000_000})
-
-
 def test_capacity_rehashes_sealed_bundle_and_rejects_missing_overview(context, tmp_path):
     _, path, binding = context
     bundle = {'bundle_path': str(path), 'bundle_size_bytes': path.stat().st_size,

@@ -170,7 +170,11 @@ def test_a_bundle_module_has_an_entrypoint_or_is_a_named_gap(path: Path) -> None
 
 
 #: Authority materializers with no command line. Named, not skipped.
-AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT: set[str] = set()
+AUTHORITY_MODULES_WITHOUT_AN_ENTRYPOINT: set[str] = {
+    # The allocator refuses every native Task Arena kind (RETIRED_NATIVE_TASK_ARENA_PROBE_KINDS),
+    # so no production path authorizes one; its issuing script left with the policy lane.
+    "native_task_arena_paid_authority.py",
+}
 
 
 def _authority_materializers() -> list[tuple[Path, str]]:

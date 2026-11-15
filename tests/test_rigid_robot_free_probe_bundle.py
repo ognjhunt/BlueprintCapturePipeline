@@ -292,8 +292,7 @@ def test_the_probe_bundle_builds_where_the_packets_arm_cannot_reach_and_records_
     assert report["arena_scene_plan_digest"] == json.loads((world["packet"] / PLAN).read_text())["plan_digest"]
 
 
-@pytest.mark.parametrize(("mode", "candidate"), [("policy", "pi05_droid"), ("policy_diagnostic", "pi05_droid"),
-                                                 ("controls", None), ("construction_canary", None)])
+@pytest.mark.parametrize(("mode", "candidate"), [("controls", None), ("construction_canary", None)])
 def test_every_other_bundle_still_refuses_where_the_packets_arm_cannot_reach(tmp_path, monkeypatch, mode,
                                                                             candidate) -> None:
     world = build_world(tmp_path, monkeypatch)
@@ -326,9 +325,9 @@ def test_the_probe_keeps_the_physics_gate_and_records_the_policy_camera_gate(tmp
     assert report["advisories"] == hidden["blockers"]
     receipt = json.loads((bundle / BUNDLE_RECEIPT_FILENAME).read_text())
     assert receipt["evidence_only_checks"]["scene_camera_visibility"] == "blocked"
-    # A policy reads that camera, so its run is still refused.
+    # Every other run still refuses that camera.
     with pytest.raises(NativeTaskArenaBundleError) as error:
-        _bundle(world, tmp_path / "policy-job", "policy", "pi05_droid")
+        _bundle(world, tmp_path / "controls-job", "controls", None)
     assert error.value.errors == (
         "native_task_arena_bundle_scene_camera_blocked:scene_camera_contact_occluded_by_scene:external:37%",)
 

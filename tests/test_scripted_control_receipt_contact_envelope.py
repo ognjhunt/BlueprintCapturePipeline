@@ -59,17 +59,3 @@ def test_a_receipt_built_without_the_helper_is_still_refused() -> None:
             {"schema_version": "adp009d_scripted_control_ik_receipt.v1"}
         )
 
-
-def test_isaac_runtime_binds_the_envelope_into_the_scripted_control_receipt() -> None:
-    """Pin the actual producer, not just the helper it should call."""
-    from pathlib import Path
-
-    import blueprint_pipeline.adp009d_isaac_runtime as runtime
-
-    source = Path(runtime.__file__).read_text(encoding="utf-8")
-    marker = '"schema_version": "adp009d_scripted_control_ik_receipt.v1"'
-    assert marker in source
-    block = source.split(marker, 1)[1][:600]
-    assert "contact_envelope_receipt_fields()" in block, (
-        "the scripted-control receipt must bind the approved contact envelope"
-    )
