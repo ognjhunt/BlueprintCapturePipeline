@@ -394,15 +394,23 @@ def test_the_door_script_runs_the_release_module_as_the_service_user(test_job_en
     assert '"$source_dir"/door-test-job.sh' in (ROOT / "deploy/operator-door/install.sh").read_text()
 
 
-def test_the_client_sends_one_operation_per_key(monkeypatch):
+def test_a_rerun_of_the_same_key_is_a_new_door_request_and_the_host_decides(tmp_path, monkeypatch):
+    """No operation key is forced: the door runs a rerun again, and the host's ledger returns the same job for a
+    ``submitted`` row and asks the website again for a ``submit_failed`` one. ``--operation-key`` still works."""
     client = _module(ROOT / "scripts" / "operator_door.py", "operator_door_client_t1")
     sent = []
-    monkeypatch.setattr(client, "_submit", lambda body, args: sent.append((body, args.operation_key)) or 0)
+    monkeypatch.setattr(client, "_submit", lambda body, args: sent.append(args.operation_key) or 0)
     argv = ["test-job", "--idempotency-key", REQUEST["idempotency_key"], "--label", REQUEST["label"],
             "--footage-id", REQUEST["footage_id"], "--description", REQUEST["description"]]
-    for _ in range(2):
-        assert client.run(client.build_parser().parse_args(argv)) == 0
-    assert sent[0] == sent[1] and sent[0][0] == REQUEST
+    for extra in ([], [], ["--operation-key", "chosen-operation-key-1"]):
+        assert client.run(client.build_parser().parse_args(argv + extra)) == 0
+    assert sent == [None, None, "chosen-operation-key-1"]
+    flaky = Website(fail=ValueError("test_job_webapp_http_503"))
+    with pytest.raises(ValueError):
+        _ask(tmp_path, flaky)
+    website = Website()
+    first = _ask(tmp_path, website)  # the submit_failed row is posted again
+    assert _ask(tmp_path, website) == first and len(website.calls) == 1  # the submitted row is not
 
 
 # ------------------------------------------------------------------------------ P4: the runner
@@ -436,13 +444,19 @@ def test_every_allowed_label_gives_a_key_the_door_accepts(label):
 ROOT_PATH = "/var/lib/blueprint/pubsub-handoffs/b/scenes/site-itest-1/captures/walkthrough-itest-1"
 
 
-def _job_report(monkeypatch, manifest, *, jobs=(), submitted_at=1, ledger=None):
+def _job_report(monkeypatch, manifest, *, jobs=(), submitted_at=1, ledger=None, scenes=()):
     runner = _runner()
     files = {f"{ROOT_PATH}/pipeline_job_ledger.json": ledger or {"status": "processing"},
              f"{ROOT_PATH}/pipeline/atlas/task_semantics/s.json": {"semantics": {"task_family": "rigid_pick_place"}},
              f"{ROOT_PATH}/pipeline/company_simulation/company_simulation.json": manifest}
     listing = {runner.HANDOFFS: [{"name": "b"}], ROOT_PATH: [{"name": "pipeline_job_ledger.json", "mtime": 4}],
-               f"{ROOT_PATH}/pipeline/atlas/task_semantics": [{"name": "s.json"}]}
+               f"{ROOT_PATH}/pipeline/atlas/task_semantics": [{"name": "s.json"}],
+               str(runner.INTENT_ROOT): [{"name": f"scene-{n}"} for n in range(len(scenes) + 1)]}
+    files[f"{runner.INTENT_ROOT}/scene-{len(scenes)}/intent.json"] = {"request": {"submission_id": "walkthrough-other"}}
+    for n, (progression, outcome) in enumerate(scenes):
+        intent = f"{runner.INTENT_ROOT}/scene-{n}"
+        files.update({f"{intent}/intent.json": {"request": {"submission_id": "walkthrough-itest-1"}},
+                      f"{intent}/progression.json": progression, f"{intent}/outcome.json": outcome})
     monkeypatch.setattr(runner, "cat_json", lambda path: files.get(path))
     monkeypatch.setattr(runner, "ls", lambda path: listing.get(path, []))
     status = {"spend_guard": {"account_monthly_spend": {"jobs": list(jobs)}}}
@@ -510,3 +524,16 @@ def test_the_runner_stops_at_a_refusal_and_follow_ends_on_it(tmp_path, monkeypat
     assert len(posts) == 1  # the second row is never sent after the first was refused
     job = json.loads(state.read_text())["jobs"][0]
     assert runner.done(runner.job_report(job, {}))  # follow ends on it at once
+
+
+@pytest.mark.parametrize(("scenes", "stage", "failure", "done"), [
+    ([({"status": "running"}, None)], "scene:running", None, False),
+    ([({"status": "blocked"}, {"terminal": True, "reason_code": "retry_cap_exhausted"})], "preparation:terminal_success",
+     "retry_cap_exhausted", True),
+    ([({"status": "blocked"}, {"terminal": True, "reason_code": "retry_cap_exhausted"}), ({"status": "running"}, None)],
+     "scene:running", None, False),                     # one intent still runs: not ended, as the door reads it
+])
+def test_follow_reads_the_scene_chain_after_a_successful_preparation(monkeypatch, scenes, stage, failure, done):
+    runner, report = _job_report(monkeypatch, {}, ledger={"status": "terminal_success"}, submitted_at=NOW,
+                                 scenes=[(p, o or {}) for p, o in scenes])
+    assert (report["stage"], report["first_failure"], runner.done(report)) == (stage, failure, done)

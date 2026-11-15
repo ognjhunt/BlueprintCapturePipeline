@@ -1069,8 +1069,6 @@ def run(args: argparse.Namespace) -> int:
     elif command == "test-job":
         body = {"kind": "test-job", "idempotency_key": args.idempotency_key, "label": args.label,
                 "footage_id": args.footage_id, "description": args.description}
-        # The same key is the same request: a lost response is retried, never doubled.
-        args.operation_key = "test-job-" + hashlib.sha256(args.idempotency_key.encode()).hexdigest()[:40]
         return _submit(body, args)
     elif command == "selected-handoff":
         with Path(args.selector_file).open("rb") as stream:
