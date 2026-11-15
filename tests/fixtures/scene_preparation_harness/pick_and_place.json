@@ -1,0 +1,183 @@
+{
+ "activation_request": {
+  "activation_id": "website-e6668e18f500169e8a373d38-0662bb89-20260919t120000z-8e5d5466f641-activation-auto",
+  "authorization": {
+   "authorized_by": "owner-1",
+   "profile_revision": "scene-fea7183199323c4c",
+   "reference": "scene-intent:sha256:e6668e18f500169e8a373d38b267b6981f09550dfb81a71f1632fce27f9ec137"
+  },
+  "expected_production_commit": "0662bb89ff29df030dd893a0b170edbdd27a30d5",
+  "lane": "task_evaluation_scene_configuration",
+  "lineage": [
+   "initial_provider_zero",
+   "kind",
+   "project_spend_reconciliation"
+  ],
+  "preparation": {
+   "preparation_id": "website-e6668e18f500169e8a373d38-0662bb89-20260919t120000z-8e5d5466f641-preparation",
+   "request_digest": "sha256:163dd37045b787fdcb08a79b198ff261f49e05189bd214184e61d9216b05a6ac"
+  },
+  "release_window": [
+   "digest",
+   "size_bytes",
+   "uri"
+  ],
+  "requested_mutations": {
+   "catalog_synchronization": true,
+   "profile_publication": true,
+   "standing_authorization": true
+  },
+  "schema_version": "task_evaluation_launch_activation_request.v1",
+  "team_namespace": "website-e6668e18f500169e8a373d38"
+ },
+ "attempts": [
+  {
+   "attempt_id": "scene-configuration-163dd37045b787fdcb08a79b",
+   "counts_as_paid_attempt": true,
+   "maximum_spend_usd": 11.0,
+   "provider": "vast",
+   "status": "reserved"
+  },
+  {
+   "attempt_id": "source-8e5d5466f6413598e64eddf8",
+   "counts_as_paid_attempt": null,
+   "maximum_spend_usd": 0,
+   "provider": "control_plane",
+   "status": "preparation_only"
+  }
+ ],
+ "hard_stop": null,
+ "intent": {
+  "strategy": "pick_and_place"
+ },
+ "launch_submissions": [
+  {
+   "profile_digest": "sha256:189458cbd6a4d34fbac389cb68685fc2064f6274fdaf58537ae1eb09a09ccf31",
+   "rights": {
+    "evidence": {
+     "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+     "uri": "s3://blueprint/task-evaluation/production-inputs/ns/evaluation_run_spec.json"
+    },
+    "scope": "recorded-owner-rights"
+   },
+   "spend": {
+    "max_spend_usd": 11.0
+   }
+  }
+ ],
+ "outcome": null,
+ "preparation_request": {
+  "hard_cap_usd": 11.0,
+  "normalised_digest": "sha256:163dd37045b787fdcb08a79b198ff261f49e05189bd214184e61d9216b05a6ac",
+  "preparation_id": "website-e6668e18f500169e8a373d38-0662bb89-20260919t120000z-8e5d5466f641-preparation",
+  "scene_id": "site-req1",
+  "task_id": "website-15e7ce50bcaa3260cfbb"
+ },
+ "preparation_result": {
+  "configuration_render_inputs_result_digest": "sha256:fa7152fb4e7cdd68e58fec355824c3dbcd3c1e76ff71106a28c8b7f57a9fc48d",
+  "construction_recipe_digest": "sha256:c41824a688bfdcd71720b9c7b9729ca5b03fc986c1c0f17ba85e5af50189aab4",
+  "run_mode": "scene_configuration",
+  "status": "queued_for_production_scene_configuration"
+ },
+ "reconciler": {
+  "rows": [
+   {
+    "blockers": [],
+    "provider_zero_confirmed": true,
+    "status": "provider_zero_confirmed"
+   },
+   {
+    "blockers": [],
+    "provider_zero_confirmed": null,
+    "status": "webapp_sync_succeeded"
+   }
+  ],
+  "status": "passed"
+ },
+ "status": {
+  "blockers": [],
+  "phase": "scene_prepared",
+  "status": "completed"
+ },
+ "task_kind": "pick_and_place",
+ "team_scene_requests": 1,
+ "ticks": [
+  {
+   "passes": [
+    [
+     {
+      "blockers": [],
+      "phase": "source_preparation",
+      "status": "running"
+     }
+    ],
+    [
+     {
+      "blockers": [],
+      "phase": "scene_configuration",
+      "status": "awaiting_execution"
+     }
+    ]
+   ],
+   "progression": {
+    "blockers": [],
+    "phase": "scene_configuration",
+    "status": "awaiting_execution"
+   },
+   "worker": [
+    {
+     "blockers": null,
+     "status": "queued_for_production_scene_configuration"
+    }
+   ]
+  },
+  {
+   "passes": [
+    [
+     {
+      "blockers": [],
+      "phase": "scene_configuration",
+      "status": "awaiting_execution"
+     }
+    ],
+    [
+     {
+      "blockers": [],
+      "phase": "scene_configuration",
+      "status": "awaiting_execution"
+     }
+    ]
+   ],
+   "progression": {
+    "blockers": [],
+    "phase": "scene_configuration",
+    "status": "awaiting_execution"
+   },
+   "worker": []
+  },
+  {
+   "passes": [
+    [
+     {
+      "blockers": [],
+      "phase": "scene_prepared",
+      "status": "completed"
+     }
+    ],
+    [
+     {
+      "blockers": [],
+      "phase": "scene_prepared",
+      "status": "completed"
+     }
+    ]
+   ],
+   "progression": {
+    "blockers": [],
+    "phase": "scene_prepared",
+    "status": "completed"
+   },
+   "worker": []
+  }
+ ]
+}
