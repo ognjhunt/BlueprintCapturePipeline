@@ -1,0 +1,1011 @@
+{
+ "schema_version": "artisan_openai_tool_schemas.v1",
+ "tools": {
+  "coding": [
+   {
+    "description": "Read workspace files (model.py, tasks, reports, or authored Blender scripts), selected candidate artifacts, or public SDK docs/examples. SDK implementation source is unavailable. Use offset/limit for a 1-based line window.",
+    "name": "read_file",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "limit": {
+       "minimum": 1,
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "offset": {
+       "minimum": 1,
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ],
+     "type": "object"
+    },
+    "strict": false,
+    "type": "function"
+   },
+   {
+    "description": "Read deterministic gate evidence with identity validation. Unlike read_file, this returns FRESH or STALE for motion evidence and/or the exact candidate physics report.",
+    "name": "read_gate_evidence",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "scope": {
+       "enum": [
+        "motion",
+        "candidate",
+        "all"
+       ],
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "scope"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Overwrite an entire file. Default target is model.py (the SDK source of truth). Pass `path` = blender/<name>.py to author a headless-Blender bpy script (for run_blender) when you need organic/freeform geometry the CAD SDK cannot express. Pass `path` = tasks.json to author the downstream manipulation-task spec (see the Manipulation tasks section of your system prompt); it does not affect the compile gate.",
+    "name": "write_file",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "content": {
+       "type": "string"
+      },
+      "path": {
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "content",
+      "path"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Apply one or more exact-string edits to a file in a SINGLE call (default model.py; pass `path`=blender/<name>.py to edit a Blender script). `edits` is an ordered list of {old_str, new_str, replace_all?}: by default each old_str must occur EXACTLY ONCE. Set `replace_all` to true only when every occurrence should change. Ambiguous edits report every line/column. ATOMIC \u2014 if any edit is invalid or missing, NOTHING is written. Successful calls return a bounded unified diff. BATCH all of this turn's changes into one call instead of many single-edit calls.",
+    "name": "replace",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "edits": {
+       "items": {
+        "additionalProperties": false,
+        "properties": {
+         "new_str": {
+          "type": "string"
+         },
+         "old_str": {
+          "type": "string"
+         },
+         "replace_all": {
+          "type": [
+           "boolean",
+           "null"
+          ]
+         }
+        },
+        "required": [
+         "old_str",
+         "new_str",
+         "replace_all"
+        ],
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "path": {
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "edits",
+      "path"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Build organic/freeform geometry (soft cushions, upholstery, molded shells \u2014 shapes the CAD SDK cannot express) by running a headless-Blender bpy script you authored at blender/<name>.py (via write_file). The script must build a single watertight MESH object and call export_result(obj); `bpy`, `bmesh`, `mathutils` are in scope. The driver decimates to a triangle budget and stages inputs/<out_name>.obj \u2014 attach it as ONE OF A PART'S VISUALS via mesh_from_input('<out_name>') (it can coexist with primitive visuals on the same part). If THIS script owns interfaces later consumed by placement, pass placement-relevant semantic Anchors through export_result(obj, anchors=[...]) and resolve them with semantic_anchor; decorative Meshes need none. Geometry only; set color via the SDK Visual. Returns the mesh report (tris/watertight/components/aabb/dims/anchor_count) so you can verify geometry and placement metadata.",
+    "name": "run_blender",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "out_name": {
+       "type": "string"
+      },
+      "script": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "script",
+      "out_name"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Search the SDK example corpus. Optionally filter by joint_type (revolute|prismatic|continuous|fixed).",
+    "name": "find_examples",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "joint_type": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "query": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "query",
+      "joint_type"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Keyword-search the INSTALLED CadQuery API only, so signatures are version-exact. Use this for CadQuery methods/selectors/classes on the public API surface, e.g. lookup_cadquery_api(\"revolve\"), lookup_cadquery_api(\"slot2D\"), lookup_cadquery_api(\"max Z face\"), lookup_cadquery_api(\"bevel corner\"). It returns the few matches most likely to fit your intent: qualified name, signature, and one-line doc. Do NOT use it for Artisan SDK helpers/classes such as MotionLimits, TestContext, mesh_from_cadquery, Material, Part, or Articulation; read model_contract.md or the SDK docs for those. Pass full=true to read ONE entry's complete docstring + signature; pass klass to scope the search to a CadQuery class available in the installed package, such as Workplane, Solid, Sketch, or selectors.",
+    "name": "lookup_cadquery_api",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "full": {
+       "type": [
+        "boolean",
+        "null"
+       ]
+      },
+      "klass": {
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "query": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "query",
+      "full",
+      "klass"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Keyword-search the INSTALLED Blender bpy API (operators + bmesh.ops + modifier types) so names/args are version-exact \u2014 use it BEFORE writing a blender/<name>.py script, e.g. lookup_blender_api(\"solidify thickness\"), lookup_blender_api(\"decimate\"), lookup_blender_api(\"subsurf levels\"), lookup_blender_api(\"displace texture\"), lookup_blender_api(\"bmesh bridge loops\"). Returns the few most relevant matches: qualified name, signature/args, one-line description. Pass full=true to read ONE entry's complete doc + arg list. For Blender authoring only \u2014 use lookup_cadquery_api for CadQuery and read_file/model_contract.md for the SDK model API.",
+    "name": "lookup_blender_api",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "full": {
+       "type": [
+        "boolean",
+        "null"
+       ]
+      },
+      "query": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "query",
+      "full"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Inspect the current model.py geometry WITHOUT the pass/fail gate. Call with NO args to get the bare structure (parts, joints, axes, limits). Pass `code` (a short Python snippet ending in exactly one `emit(value)`) to MEASURE geometry: helpers injected into scope include part(name)/visual(...), aabb(obj)/dims(obj)/center(obj), pair_report(a,b)/overlap_report(a,b)/mount_report(child,parent), find_clearance_risks(...), geometry_connectivity_report(part). Use this to ROOT-CAUSE an overlap/size/floating issue \u2014 e.g. `emit(overlap_report(part('a'), part('b')))` or `emit(dims(part('lamp_head')))` \u2014 before repositioning geometry.",
+    "name": "probe_model",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "code": {
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "code"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "RENDER your current model.py so you can SEE it (you otherwise only have probe numbers \u2014 rendering closes that blind spot for wrong shape/identity, wrong world orientation (lying vs standing), or a floating/penetrating part). `views` are named presets (front/side/top/perspective, each optionally with an `_open` or `_closed` suffix \u2014 `_open` drives every moving joint to its limit at once); `focus=[part_or_joint,...]` aims the camera at and zooms into the named parts/joints (use the real names from probe_model). The image comes back AS THIS TOOL'S RESULT \u2014 exactly like probe_model/compile output, with no extra delay \u2014 so look at it when you next act (don't say you've seen it in the same turn you call it). Use it to VERIFY a suspected visual/spatial fault before AND after an edit; prefer ONE targeted batch over many calls, and still use probe_model for exact dims/overlap numbers. `segment`=true recolours each PART a distinct flat colour (a 'semantic map') so a part buried inside another reads as a foreign colour the dark faithful materials hide \u2014 use it to confirm a suspected penetration / that two parts only touch where they should.",
+    "name": "request_render",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "focus": {
+       "items": {
+        "type": "string"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "segment": {
+       "type": [
+        "boolean",
+        "null"
+       ]
+      },
+      "views": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "required": [
+      "views",
+      "focus",
+      "segment"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Compile model.py through Artisan (URDF export + schema validate + FCL rest-pose overlap + isolated-part / scale QC + run_tests). Call before finishing. For complete blocker or placement evidence, use read_file('reports/compile_findings.json'); for complete candidate-warning strings, use read_file('reports/physics_validation.json'). Treat either report as current only when its model_sha256 matches the current model.py.",
+    "name": "compile_model",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {},
+     "required": [],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "File a short structured note FOR THE REVIEWAGENT: what you changed this round, which overlaps/contacts/choices are intentional-by-design (with the reason), and any incoming issue you believe is a false positive (with your reasoning). Call this ONLY when the harness asks (a <handoff_ready> prompt after the motion self-check passes) \u2014 filing it hands off to the ReviewAgent. Do NOT file it during repair iterations.",
+    "name": "record_handoff_note",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "changed": {
+       "type": "string"
+      },
+      "intentional": {
+       "items": {
+        "type": "string"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "pushback": {
+       "items": {
+        "type": "string"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "changed",
+      "intentional",
+      "pushback"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   }
+  ],
+  "design": [
+   {
+    "description": "Submit the completed intake JSON. It is validated and stored as the blueprint asset_brief before engineering authoring begins.",
+    "name": "submit_intake",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "content": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "content"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Submit the complete engineering blueprint JSON (the filled template). It is validated immediately; on failure you get the errors and must fix and resubmit. A valid submission proceeds to self-review.",
+    "name": "write_blueprint",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "content": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "content"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Submit the agent-led review of the current blueprint. PASS releases P1; REDO requires a complete revised blueprint in this conversation.",
+    "name": "submit_blueprint_selfcheck",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "blueprint_sha256": {
+       "type": "string"
+      },
+      "checks": {
+       "items": {
+        "additionalProperties": false,
+        "properties": {
+         "area": {
+          "type": "string"
+         },
+         "rationale": {
+          "type": "string"
+         },
+         "verdict": {
+          "enum": [
+           "PASS",
+           "REDO"
+          ],
+          "type": "string"
+         }
+        },
+        "required": [
+         "area",
+         "verdict",
+         "rationale"
+        ],
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "decision": {
+       "enum": [
+        "PASS",
+        "REDO"
+       ],
+       "type": "string"
+      },
+      "findings": {
+       "items": {
+        "additionalProperties": false,
+        "properties": {
+         "evidence": {
+          "type": "string"
+         },
+         "problem": {
+          "type": "string"
+         },
+         "required_revision": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "problem",
+         "evidence",
+         "required_revision"
+        ],
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "summary": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "decision",
+      "summary",
+      "checks",
+      "findings",
+      "blueprint_sha256"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   }
+  ],
+  "review": [
+   {
+    "description": "Read model.py (ground every claim in the real source), qa_tests.py, the blueprint, the CodingAgent's tasks.json (the downstream manipulation spec \u2014 verify its bindings), selected candidate artifacts, or public SDK docs/examples. Reads are restricted to the workspace, selected artifacts, and public references; SDK implementation source is unavailable. Use offset/limit for a 1-based line window.",
+    "name": "read_file",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "limit": {
+       "minimum": 1,
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "offset": {
+       "minimum": 1,
+       "type": [
+        "integer",
+        "null"
+       ]
+      },
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ],
+     "type": "object"
+    },
+    "strict": false,
+    "type": "function"
+   },
+   {
+    "description": "Read deterministic gate evidence with identity validation. Returns FRESH or STALE independently for motion evidence and exact candidate physics.",
+    "name": "read_gate_evidence",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "scope": {
+       "enum": [
+        "motion",
+        "candidate",
+        "all"
+       ],
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "scope"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Inspect the model WITHOUT a pass/fail gate. NO args \u2192 the STRUCTURE (real part/joint names + axes/limits, so `target`/`code_ref` are exact). Pass `code` (a short Python snippet ending in exactly one `emit(value)`) to MEASURE geometry and verify a render suspicion \u2014 helpers in scope include part(name)/visual(...), aabb/dims/center, pair_report(a,b)/overlap_report(a,b)/mount_report(child,parent)/geometry_connectivity_report(...) (signatures: read_file(\"probe_tooling\")). Prefer this over authoring a throwaway qa_test just to read one number.",
+    "name": "probe_model",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "code": {
+       "type": [
+        "string",
+        "null"
+       ]
+      }
+     },
+     "required": [
+      "code"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Write the WHOLE qa_tests.py (one `def qa_tests(ctx):`). Use this for the FIRST version or a full rewrite; for small round-to-round changes prefer edit_test. The file persists across rounds (goalpost stability).",
+    "name": "write_test",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "content": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "content"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Incrementally edit qa_tests.py: replace the first exact occurrence of old_str with new_str (like a surgical patch). Prefer this over rewriting the whole file when adding/adjusting one assertion.",
+    "name": "edit_test",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "new_str": {
+       "type": "string"
+      },
+      "old_str": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "old_str",
+      "new_str"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Run the current qa_tests.py against the model. Returns {ok, failures:[{name,details}], error}.",
+    "name": "run_tests",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {},
+     "required": [],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Render the build; the image comes back as this tool's result, visible when you next act (same as any tool's output, no extra delay). `views`: named presets (front/side/top/perspective, optional _open/_closed). `pose`: joint->value to drive a specific configuration (motion sweep). `camera`: a free angle {azimuth_deg,elevation_deg,distance_mult}. `focus`: part/joint name(s) to AIM the camera at and ZOOM into (a joint = a tight close-up on its pivot); combine with views/camera for a clean line of sight \u2014 a PAID render, so use crop_region for a free zoom of an existing image first. `segment`=true recolours each PART a distinct flat colour (a 'semantic map') so a part buried inside another reads as a foreign colour the dark realism materials hide \u2014 use it to verify any overlap/declared contact.",
+    "name": "request_render",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "camera": {
+       "additionalProperties": false,
+       "description": "Free camera angle: azimuth_deg + elevation_deg orbit the object; distance_mult scales framing distance (>1 pulls back, <1 zooms in). Omit for the default view.",
+       "properties": {
+        "azimuth_deg": {
+         "type": [
+          "number",
+          "null"
+         ]
+        },
+        "distance_mult": {
+         "type": [
+          "number",
+          "null"
+         ]
+        },
+        "elevation_deg": {
+         "type": [
+          "number",
+          "null"
+         ]
+        }
+       },
+       "required": [
+        "azimuth_deg",
+        "elevation_deg",
+        "distance_mult"
+       ],
+       "type": [
+        "object",
+        "null"
+       ]
+      },
+      "focus": {
+       "items": {
+        "type": "string"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "pose": {
+       "additionalProperties": {
+        "type": "number"
+       },
+       "description": "Joint name -> position map (free-form), e.g. {'input_shaft_spin': 0.785}, to drive a specific configuration for a motion-sweep render. Radians for revolute/continuous, metres for prismatic. Omit (or {}) for the rest pose. Pose the DRIVER of a coupled mechanism; the follower tracks it automatically.",
+       "type": [
+        "object",
+        "null"
+       ]
+      },
+      "segment": {
+       "type": [
+        "boolean",
+        "null"
+       ]
+      },
+      "views": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "required": [
+      "views",
+      "pose",
+      "camera",
+      "focus",
+      "segment"
+     ],
+     "type": "object"
+    },
+    "strict": false,
+    "type": "function"
+   },
+   {
+    "description": "Zoom a sub-region of a rendered image to inspect a small/contact feature (hinge seam, latch, rim). Coordinates are NORMALIZED 0..1 with the ORIGIN at the TOP-LEFT, where 0.5 is the center; coarse is fine.",
+    "name": "crop_region",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "image": {
+       "description": "Name of the rendered image to crop (e.g. 'perspective_open.png').",
+       "type": "string"
+      },
+      "x1": {
+       "description": "Left edge (0=left, 0.5=center).",
+       "maximum": 1,
+       "minimum": 0,
+       "type": "number"
+      },
+      "x2": {
+       "description": "Right edge (>x1).",
+       "maximum": 1,
+       "minimum": 0,
+       "type": "number"
+      },
+      "y1": {
+       "description": "Top edge (0=top, 0.5=center).",
+       "maximum": 1,
+       "minimum": 0,
+       "type": "number"
+      },
+      "y2": {
+       "description": "Bottom edge (>y1).",
+       "maximum": 1,
+       "minimum": 0,
+       "type": "number"
+      }
+     },
+     "required": [
+      "image",
+      "x1",
+      "y1",
+      "x2",
+      "y2"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   },
+   {
+    "description": "Finish the review with the structured verdict. Provide overall realism_rating (0-10), rubric scores for THIS phase's dimensions (0-10 each; you'll be told which \u2014 score others only if you gathered evidence, never a guess), a summary, and the issues you found. You do NOT state a proceed/revise decision: it is DERIVED from your scores + issue severities (a blocking issue, or any gating dim < 5, routes a redo). Complete every required evidence step before submitting.",
+    "name": "submit_review",
+    "parameters": {
+     "additionalProperties": false,
+     "properties": {
+      "dynamics_adjudications": {
+       "items": {
+        "additionalProperties": false,
+        "properties": {
+         "evidence": {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         "finding_code": {
+          "type": "string"
+         },
+         "issue_id": {
+          "type": [
+           "string",
+           "null"
+          ]
+         },
+         "joint": {
+          "type": "string"
+         },
+         "rationale": {
+          "type": "string"
+         },
+         "verdict": {
+          "enum": [
+           "acceptable",
+           "blocking"
+          ],
+          "type": "string"
+         }
+        },
+        "required": [
+         "joint",
+         "finding_code",
+         "verdict",
+         "rationale",
+         "evidence",
+         "issue_id"
+        ],
+        "type": "object"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "issues": {
+       "items": {
+        "additionalProperties": false,
+        "properties": {
+         "code_ref": {
+          "additionalProperties": false,
+          "properties": {
+           "file": {
+            "type": [
+             "string",
+             "null"
+            ]
+           },
+           "line": {
+            "type": [
+             "integer",
+             "null"
+            ]
+           },
+           "symbol": {
+            "type": [
+             "string",
+             "null"
+            ]
+           }
+          },
+          "required": [
+           "file",
+           "symbol",
+           "line"
+          ],
+          "type": [
+           "object",
+           "null"
+          ]
+         },
+         "evidence": {
+          "items": {
+           "type": "string"
+          },
+          "type": [
+           "array",
+           "null"
+          ]
+         },
+         "issue_id": {
+          "type": [
+           "string",
+           "null"
+          ]
+         },
+         "problem": {
+          "type": [
+           "string",
+           "null"
+          ]
+         },
+         "required_change": {
+          "type": [
+           "string",
+           "null"
+          ]
+         },
+         "severity": {
+          "enum": [
+           "blocking",
+           "major",
+           "minor"
+          ],
+          "type": [
+           "string",
+           "null"
+          ]
+         },
+         "target": {
+          "type": [
+           "string",
+           "null"
+          ]
+         }
+        },
+        "required": [
+         "issue_id",
+         "severity",
+         "target",
+         "problem",
+         "required_change",
+         "evidence",
+         "code_ref"
+        ],
+        "type": "object"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "realism_rating": {
+       "type": "integer"
+      },
+      "rubric": {
+       "additionalProperties": false,
+       "properties": {
+        "contacts_clearances": {
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "kinematics": {
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "manip_annotation": {
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "material_finish": {
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "part_decomposition": {
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "proportion_fidelity": {
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "reference_parity": {
+         "type": [
+          "integer",
+          "null"
+         ]
+        }
+       },
+       "required": [
+        "proportion_fidelity",
+        "part_decomposition",
+        "contacts_clearances",
+        "kinematics",
+        "reference_parity",
+        "material_finish",
+        "manip_annotation"
+       ],
+       "type": "object"
+      },
+      "stability_adjudications": {
+       "items": {
+        "additionalProperties": false,
+        "properties": {
+         "evidence": {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         "finding_code": {
+          "type": "string"
+         },
+         "issue_id": {
+          "type": [
+           "string",
+           "null"
+          ]
+         },
+         "pose": {
+          "type": "string"
+         },
+         "rationale": {
+          "type": "string"
+         },
+         "verdict": {
+          "enum": [
+           "acceptable",
+           "blocking"
+          ],
+          "type": "string"
+         }
+        },
+        "required": [
+         "pose",
+         "finding_code",
+         "verdict",
+         "rationale",
+         "evidence",
+         "issue_id"
+        ],
+        "type": "object"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "summary": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "realism_rating",
+      "rubric",
+      "summary",
+      "issues",
+      "stability_adjudications",
+      "dynamics_adjudications"
+     ],
+     "type": "object"
+    },
+    "strict": true,
+    "type": "function"
+   }
+  ]
+ },
+ "upstream_revision": "ad322b5b31e50bdb84155520f09622c00c6056c3"
+}

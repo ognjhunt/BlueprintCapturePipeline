@@ -1,0 +1,181 @@
+Send the review agent's request_render tool non-strict; its schema is unchanged.
+
+On 2026-11-13 a paid scene-configuration run stopped in ARTISAN's review phase
+(P5_review) when the OpenAI Responses API refused a request with HTTP 400
+invalid_function_parameters: "Invalid schema for function 'request_render': At
+schema path /properties/pose/type/0, object schema must define properties".
+The review tool's `pose` is a free-form joint name -> value map
+({"type": "object", "additionalProperties": {"type": "number"}}). The codec sends
+every tool except read_file with "strict": true, and strict function calling
+cannot express a map. The API had accepted the same schema earlier in the same
+phase and in earlier runs; it now refuses it.
+
+The tool definition declares itself non-strict and the codec honours that, as it
+already does for read_file. Nothing the model sees changes except the strict
+flag: the description, the parameters and the codec's normalisation (every
+property listed as required, optional ones nullable) are byte-identical, so the
+prompts that write `pose={joint: value}` stay true. The coding agent's
+request_render (no `pose`) stays strict. Other providers' converters read only
+tool["function"] and ignore the new key.
+
+Without strict mode the API no longer guarantees the argument shape, and
+`_request_render` converted its arguments before its own `try`, so a malformed
+call (a null or text pose value, a pose sent as a list or a string, views or
+focus that are not lists of strings, arguments that are not an object) raised
+out of the tool loop and ended the run. It now checks the shape first and answers
+a malformed call with one ERROR sentence naming the expected shape; a well-formed
+call is handled exactly as before. read_file, non-strict upstream, raised the same
+way on a path that is not a string or arguments that are not an object, in both
+the coding and the review harness; it now answers those with an ERROR too.
+
+Applied after 0002-gpt-6-1-sol.patch, against
+physicalvision/Artisan@ad322b5b31e50bdb84155520f09622c00c6056c3.
+
+diff --git a/pipeline/harness_review.py b/pipeline/harness_review.py
+--- a/pipeline/harness_review.py
++++ b/pipeline/harness_review.py
+@@ -2,6 +2,7 @@
+ 
+ import json
+ import logging
++import math
+ import re
+ import subprocess
+ from blueprint_pipeline.task_object_artisan_hooks import sandbox_subprocess_run
+@@ -207,6 +208,44 @@
+ 
+ SYSTEM_PROMPT = load_review_prompt("system.md")
+ 
++#: read_file is sent non-strict upstream; a malformed call gets this error back.
++READ_FILE_SHAPE_ERROR = (
++    "ERROR: read_file takes an object: path=\"<file or page name>\" (a string), optional "
++    "offset and limit (whole numbers >= 1). Call it again in that shape."
++)
++#: request_render is sent non-strict (its ``pose`` map cannot be strict), so the API no longer
++#: guarantees its argument shape: a malformed call gets this error back instead of raising.
++REQUEST_RENDER_SHAPE_ERROR = (
++    "ERROR: request_render takes an object: views=[view names] (required), optional "
++    "focus=[part or joint names], pose={joint name: number}, camera={azimuth_deg, "
++    "elevation_deg, distance_mult} and segment=true/false. Call it again in that shape."
++)
++
++
++def _request_render_arguments_error(args: Any) -> str | None:
++    """None for a well-formed request_render call; otherwise the error the model can act on."""
++    if not isinstance(args, dict):
++        return REQUEST_RENDER_SHAPE_ERROR
++    for key in ("views", "focus"):
++        value = args.get(key)
++        if value is not None and not (
++            isinstance(value, list) and all(isinstance(item, str) for item in value)
++        ):
++            return REQUEST_RENDER_SHAPE_ERROR
++    pose = args.get("pose")
++    if pose is not None and not (
++        isinstance(pose, dict)
++        and all(
++            isinstance(name, str)
++            and isinstance(value, (int, float))
++            and not isinstance(value, bool)
++            and math.isfinite(value)
++            for name, value in pose.items()
++        )
++    ):
++        return REQUEST_RENDER_SHAPE_ERROR
++    return None
++
+ 
+ def _review_tool_schemas() -> list[dict[str, Any]]:
+     def fn(name: str, desc: str, props: dict, required: list[str]) -> dict:
+@@ -219,6 +258,9 @@
+             },
+         }
+ 
++    def non_strict(tool: dict) -> dict:
++        return {**tool, "strict": False}
++
+     s = {"type": "string"}
+     line = {"type": "integer", "minimum": 1}
+     num = {"type": "number"}
+@@ -283,7 +325,10 @@
+             {},
+             [],
+         ),
+-        fn(
++        # `pose` is a free-form joint -> value map, which strict function calling
++        # cannot express: the API refuses it (HTTP 400 invalid_function_parameters).
++        # The tool is sent non-strict, its schema unchanged (Blueprint 2026-11-15).
++        non_strict(fn(
+             "request_render",
+             "Render the build; the image comes back as this tool's result, visible when you "
+             "next act (same as any tool's output, no extra delay). `views`: named "
+@@ -326,7 +371,7 @@
+                 "segment": {"type": "boolean"},
+             },
+             ["views"],
+-        ),
++        )),
+         fn(
+             "crop_region",
+             "Zoom a sub-region of a rendered image to inspect a small/contact "
+@@ -931,6 +976,9 @@
+ 
+     @guarded_inspection
+     def _request_render(self, args: dict[str, Any]) -> tuple[str, list[Path]]:
++        malformed = _request_render_arguments_error(args)
++        if malformed is not None:
++            return malformed, []
+         views = [str(v) for v in (args.get("views") or [])]
+         if not views:
+             return "ERROR: provide at least one view name.", []
+@@ -1210,6 +1258,9 @@
+     def _dispatch_simple(self, name: str, args: dict[str, Any]) -> tuple[str, str]:
+         try:
+             if name == "read_file":
++                if not isinstance(args, dict) or not isinstance(args.get("path", ""), str):
++                    # read_file is sent non-strict: a malformed call is answered, never raised.
++                    return READ_FILE_SHAPE_ERROR, READ_FILE_SHAPE_ERROR
+                 return self._read_file(
+                     args["path"],
+                     offset=args.get("offset"),
+diff --git a/pipeline/harness_sdk.py b/pipeline/harness_sdk.py
+--- a/pipeline/harness_sdk.py
++++ b/pipeline/harness_sdk.py
+@@ -851,6 +851,13 @@
+     return "\n".join(f"L{i}: {line}" for i, line in enumerate(lines, 1))
+ 
+ 
++#: read_file is sent non-strict upstream; a malformed call gets this error back.
++READ_FILE_SHAPE_ERROR = (
++    "ERROR: read_file takes an object: path=\"<file or page name>\" (a string), optional "
++    "offset and limit (whole numbers >= 1). Call it again in that shape."
++)
++
++
+ def read_file_window(
+     text: str,
+     *,
+@@ -1902,6 +1909,9 @@
+             return f"ERROR: tool {name!r} not permitted for {self.ROLE}"
+         try:
+             if name == "read_file":
++                if not isinstance(args, dict) or not isinstance(args.get("path", ""), str):
++                    # read_file is sent non-strict: a malformed call is answered, never raised.
++                    return READ_FILE_SHAPE_ERROR
+                 return self._read_file(
+                     args["path"],
+                     offset=args.get("offset"),
+diff --git a/pipeline/llm/openai_codec.py b/pipeline/llm/openai_codec.py
+--- a/pipeline/llm/openai_codec.py
++++ b/pipeline/llm/openai_codec.py
+@@ -205,7 +205,9 @@
+                         else {"type": "object", "properties": {}},
+                         required_override=required_override,
+                     ),
+-                    "strict": False if is_read_file else True,
++                    # A tool may declare itself non-strict (its schema is not
++                    # expressible under strict function calling).
++                    "strict": not (is_read_file or tool.get("strict") is False),
+                 }
+             )
+     return converted

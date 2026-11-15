@@ -74,8 +74,52 @@ inspection dependencies do not match candidate". A reference whose manifest is
 outside the workspace is refused. `patches/artisan/0002-gpt-6-1-sol.patch` prices
 and admits `gpt-6.1-sol` (text, compaction and image envelope) and lets it run
 at `xhigh` and `max` reasoning, as upstream already allowed for `gpt-6-astra`.
+`patches/artisan/0005-request-render-non-strict.patch` sends the review agent's
+`request_render` non-strict: its `pose` (joint name to number) is a free-form
+map, which OpenAI's strict function calling cannot express, and the API refused
+it with HTTP 400 `invalid_function_parameters` on 2026-11-13. Without strict mode
+the API no longer guarantees the argument shape, so `request_render` and
+`read_file` (non-strict upstream) check their arguments first and answer a
+malformed call with one ERROR sentence instead of raising out of the tool loop.
 Design/Coding/Review, CAD, collision construction, simulation, repair, review
 and exports remain upstream implementations.
+
+### Strict tool schemas and their snapshot
+
+Every tool the OpenAI codec sends with `strict: true` must be expressible under
+strict function calling (`src/blueprint_pipeline/artisan_strict_tool_schemas.py`):
+object schemas define `properties`, set `additionalProperties: false` and require
+every property; optional values use the codec's nullable `type` list; only the
+keywords in `ALLOWED_KEYWORDS` appear; enum values match their type; depth and
+size stay inside our reading of OpenAI's limits. `config/artisan_openai_tool_schemas.v1.json`
+is every tool the pinned upstream with every patch sends, by agent role. CI
+checks the snapshot; the component builder recomputes it from the real patched
+source and refuses a source whose tools differ from it or break a rule.
+
+A patch or an upstream revision that changes any tool (a description included)
+must regenerate the snapshot in the same change, from a tree with every patch in
+`UPSTREAM_PATCHES` applied:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.artisan_strict_tool_schemas \
+  --source <patched upstream tree> --revision <ARTISAN_REVISION>
+```
+
+A stale or invalid snapshot stops a deploy at $0, while the toolchain is built and
+before the drain, with the old release still serving. The deploy reports
+`deploy_scene_configuration_runtime_invalid:scene_configuration_target_release_provision_failed`;
+the specific `artisan_tool_schema_snapshot_stale` or
+`artisan_strict_tool_schema_invalid:<role>:<tool>:<path>:<rule>` is in the stderr
+the deploy prints beside it, which the operator door keeps with the request.
+
+Possible next enforcement target (not enforced): `read_gate_evidence.scope` and
+`submit_review.issues[].severity` are typed `["string", "null"]` (the codec's
+nullable transform) but their enums hold no `null`, so the model can never send
+null and the type list is wider than the values. Before the checker requires a
+nullable enum to include `null`, or the codec to stop widening an enum, check that
+both handlers already treat a missing or null value as the default
+(`scope or "all"`; a severity the review gate validates) and that no prompt asks
+for null.
 
 `ARTISAN_MODELS` (owner direction 2026-11-02): `gpt-6.1-sol` at `max` reasoning
 for design, coding and review; `gpt-6.1-sol` for compaction (which sends no
