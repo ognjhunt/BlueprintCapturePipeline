@@ -34,7 +34,6 @@ LANES_WITHOUT_AN_INDEPENDENT_WATCHDOG = frozenset(
         "adp_aura_author_smoke_vast",
         "unitree_groot_n17_sonic_vast_image_canary",
         "unitree_groot_n17_sonic_vast_policy_command",
-        "vast_authorized_probe_runner",
         # The direct CLI remains intentionally unwatched because paid mutation
         # is hard-disabled there.  Keep tracking the same behavior after its
         # argument-parsing shell moved out of ``vast_provider_adapter``.
