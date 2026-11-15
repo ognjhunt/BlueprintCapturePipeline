@@ -23,6 +23,7 @@ from blueprint_pipeline.task_object_authoring_backend import ARTISAN_BACKEND, AR
 from blueprint_pipeline.task_object_authoring_contracts import require, file_record
 from blueprint_pipeline.task_evaluation_scene_configuration_artisan_runtime import MANIFEST, SCHEMA
 from blueprint_pipeline.artisan_vendor_reuse import SITE_IGNORE, vendor_copy_function
+from blueprint_pipeline.artisan_strict_tool_schemas import require_strict_tools
 from blueprint_pipeline.immutable_file_digest import sha256_file
 from blueprint_pipeline.immutable_tree_walk import path_order, walk_tree
 from blueprint_pipeline.provision_phase_clock import mark_phase
@@ -36,8 +37,11 @@ PREFLIGHT_TIMEOUT_SECONDS = 300
 
 #: Applied in this order to the pinned upstream archive. 0001 confines
 #: generated code; 0002 prices and admits gpt-6.1-sol and its max reasoning
-#: effort (owner direction 2026-11-02). The sealed manifest records each digest.
-UPSTREAM_PATCHES = ("0001-confine-generated-code.patch", "0002-gpt-6-1-sol.patch")
+#: effort (owner direction 2026-11-02); 0005 sends the review agent's
+#: request_render non-strict (its free-form ``pose`` map is refused in strict
+#: mode). The sealed manifest records each digest.
+UPSTREAM_PATCHES = ("0001-confine-generated-code.patch", "0002-gpt-6-1-sol.patch",
+                    "0005-request-render-non-strict.patch")
 PATCH_DIRECTORY = "upstream_patches"
 
 
@@ -185,6 +189,10 @@ def build_artisan_scene_configuration_component(*, repository_root, expected_blu
             zipped.extractall(source)
         archive.unlink()
         patches = apply_upstream_patches(repository, source, staging)
+        # Every tool the patched source sends strict must be expressible in strict mode and match the
+        # reviewed snapshot (``artisan_strict_tool_schemas``): a bad tool stops the build, not a paid run.
+        require_strict_tools(source, revision=ARTISAN_REVISION,
+                             snapshot=repository / "config/artisan_openai_tool_schemas.v1.json")
         mark_phase("artisan_source_unpacked")
         site_copy = vendor_copy_function(reuse, kind="site_packages", source_root=libraries) if reuse else None
         shutil.copytree(libraries, staging / "runtime/site_packages", ignore=SITE_IGNORE,
