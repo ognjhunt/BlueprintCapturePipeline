@@ -143,7 +143,6 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
                                      source_video_digest: str | None = None,
                                      atlas_auxiliary: bool = False,
                                      retained_admission: Mapping[str, Any] | None = None,
-                                     unallocated_continuation_path: str | Path | None = None,
                                      retain_admission: Callable[[Mapping[str, Any]], None] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
@@ -185,15 +184,11 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
         raise ValueError("website_preparation_spend_receipt_invalid")
     if value.get("status") == "already_reserved" and retained_admission is not None:
         # Reuse requires the original authenticated admission. Atlas retains
-        # its upload/submission intent; GPU recovery additionally proves that
-        # the previous dispatch never called the provider or allocated a worker.
+        # its upload/submission intent.
         retained = {key: item for key, item in retained_admission.items() if key != "source_commit"}
         if retained != {**value, "status": "admitted"}:
             raise ValueError("website_preparation_retained_admission_mismatch")
-        if (resource_class, provider) == ("gpu_render", "vast") and unallocated_continuation_path is not None:
-            from .policy_canary_unallocated_resume import validate_unallocated_funding_reuse
-            validate_unallocated_funding_reuse(unallocated_continuation_path, funding_admission=retained)
-        elif (resource_class, provider) != ("provider_reconstruction_api", "world_labs_atlas"):
+        if (resource_class, provider) != ("provider_reconstruction_api", "world_labs_atlas"):
             raise ValueError("website_preparation_retained_admission_mismatch")
         value = retained
     if (retain_admission is not None and value.get("status") == "admitted"

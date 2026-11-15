@@ -171,32 +171,6 @@ def _plan_screening(record_path: str, record: dict[str, Any], tmp_path: Path) ->
                                  inputs_dir=tmp_path / "screening-inputs")
 
 
-def test_build_planning_inputs_robot_free_gate_admits_the_navigation_receipt(inputs, tmp_path, monkeypatch) -> None:
-    """The real planner, from the profile through scene facts and its own gate call, to every candidate."""
-    written = navigation_inputs.write_navigation_scene_inputs(**inputs)
-    record = written["record"]
-    _no_franka_cells(monkeypatch)
-
-    planning = _plan_screening(written["path"], record, tmp_path)
-
-    receipt = json.loads(Path(record["robot_free_probe"]["path"]).read_text())
-    scene = planning["scene"]
-    assert scene["task_kind"] == "goal_region_navigation"
-    assert scene["robot_free_probe_status"] == "passed" and receipt["status"] == "passed"
-    assert scene["robot_free_probe_digest"] == receipt["receipt_digest"] == record["robot_free_probe"]["receipt_digest"]
-    assert scene["scene_revision_digest"] == record["scene_revision_digest"]
-    sealed = json.loads(Path(scene["scene_inputs"]["path"]).read_text())
-    assert sealed["beta_robot_free_probe_receipt"] == receipt and sealed["beta_task_kind"] == "goal_region_navigation"
-    # The G1 lane is removed: a walking job keeps its robot-free scene, nothing is bound or quoted,
-    # and the G1 rows say why.
-    capabilities = planning["capabilities"]
-    assert capabilities["candidate_bindings"] == {} and planning["cost_quotes"] == {}
-    assert {key: value for key, value in capabilities["candidate_blockers"].items() if key.startswith("humanoidarena_")} \
-        == dict.fromkeys(("humanoidarena_dp_g1_dex3_sonic", "humanoidarena_pi05_g1_dex3_sonic",
-                          "humanoidarena_dp_g1_dex3_sonic_vision_navi", "humanoidarena_pi05_g1_dex3_sonic_vision_navi"),
-                         ["g1_beta_screening_lane_removed"])
-
-
 def test_build_planning_inputs_holds_a_navigation_scene_whose_probe_failed(inputs, tmp_path, monkeypatch) -> None:
     from blueprint_pipeline import native_g1_navigation_goal as navigation_goal
 
@@ -294,32 +268,3 @@ def test_every_legacy_scene_half_combination_is_decided_as_before() -> None:
         assert registry._one_scene_half(profile) is _legacy_one_scene_half(profile), profile
 
 
-def test_rigid_family_and_pair_scene_facts_are_byte_for_byte_unchanged(tmp_path, monkeypatch) -> None:
-    from tests.test_provider_runtime_import_closure import _real_canary_pair_inputs
-    from tests.test_team_candidate_quick10_launch import _team_scene_record
-    from tests.test_website_task_family_scene_inputs import source_fixture
-
-    def never(*_args, **_kwargs):
-        raise AssertionError("a rigid, family or pair half read a navigation record")
-
-    monkeypatch.setattr(navigation_inputs, "read_navigation_scene_inputs", never)
-    monkeypatch.setattr(registry, "_navigation_scene_facts", never)
-    _packet, _runtime, pair_inputs, pair_activation = _real_canary_pair_inputs(tmp_path / "pair")
-    packet, runtime, team_inputs, _activation = _real_canary_pair_inputs(tmp_path / "rigid")
-    team_half = _team_scene_record(packet, runtime, json.loads(team_inputs.read_text()))
-    (tmp_path / "family").mkdir()
-    source_fixture(tmp_path / "family", monkeypatch)
-    family = profile_for_capture(tmp_path / "family")
-    assert family["family_scene_inputs_path"]
-    profiles = {
-        "pair": {"pair_runtime_inputs_path": str(pair_inputs), "pair_activation_path": str(pair_activation),
-                 "open_loop_horizon": 8},
-        "rigid": {"team_scene_inputs_path": str(team_half), "open_loop_horizon": 8},
-        "family": family,
-    }
-    for name, profile in profiles.items():
-        assert _bytes(registry._scene_inputs(profile)) == _bytes(_legacy_scene_inputs(profile)), name
-        facts = registry.scene_facts(profile)
-        assert _bytes(facts) == _bytes(_legacy_scene_facts(profile)), name
-        assert "robot_free_probe_root" not in facts, name
-    assert registry.scene_facts(profiles["rigid"])["scene"]["task_spec"]["task_kind"] == "rigid_pick_place"

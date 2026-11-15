@@ -19,7 +19,6 @@ BETA_RIGID_ENTRIES = {
     "blueprint-task-evaluation-scene-progression.service": "blueprint_pipeline.task_evaluation_scene_retirement_supervisor",
     "blueprint-team-scene-packet.service": "blueprint_pipeline.team_scene_packet_worker",
     "blueprint-rigid-robot-free-probe-runner.service": "blueprint_pipeline.rigid_robot_free_probe_runner",
-    "blueprint-beta-policy-screening.service": "blueprint_pipeline.beta_policy_screening_worker",
     "blueprint-scene-stage-maintenance.service": "blueprint_pipeline.scene_stage_maintenance",
 }
 BETA_RIGID_UNITS = tuple(BETA_RIGID_ENTRIES)
@@ -41,12 +40,6 @@ _PATHS = {
         ("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE", f"{ROOT}/rigid-robot-free-probes", "write"),
         # New attempts' bundles and allocator job directories (the work volume).
         ("BLUEPRINT_RIGID_ROBOT_FREE_PROBE_WORK_ROOT", "/mnt/blueprint-work/rigid-robot-free-probe-work", "write"),
-    ),
-    "blueprint-beta-policy-screening.service": (
-        ("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", f"{ROOT}/beta-policy-screening", "write"),
-        ("BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT", "/mnt/blueprint-work/beta-policy-screening-work", "write"),
-        # Named by the unit while it drains; its pass no longer returns team halves to pending.
-        ("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", f"{ROOT}/team-scene-packets", "write"),
     ),
     "blueprint-scene-stage-maintenance.service": (
         # The scene stage's holds, source states and cursors (scene_stage_holds).

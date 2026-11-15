@@ -27,10 +27,7 @@ no-spend worker, woken by its path unit, does the rest on the CPU:
   what only the operator fixes, in the registry's ``derived_profiles.packet_inputs``
   block: the DROID profile (path and digest), the runtime-source receipt, and
   the root compiled halves are written under. A registry without that block
-  keeps this off, by name; an invalid block refuses. Every team body the
-  derived defaults register for screening is compiled with the scene too, so
-  each gets its own station (``registered_embodiments``), chosen with its own
-  arm where its registered robot model is intact (``registered_embodiment_models``);
+  keeps this off, by name; an invalid block refuses;
 - a website job's ``proposal_only`` success thresholds compile as the owner's
   only through the owner's sealed confirmation under the request's own intent
   (``owner_success_confirmation_scope``: the intent must be the request's, and
@@ -919,61 +916,6 @@ def packet_inputs(registry: Mapping[str, Any]) -> dict[str, Any] | None:
     return {**files, "droid_profile_digest": str(block["droid_profile_digest"]), "output_root": output}
 
 
-def registered_embodiments(registry: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
-    """The team bodies registered for screening, once each, so the scene also compiles their own stations.
-
-    Each is a ``screening_candidates.<id>.robot_policy.manifest`` under the derived defaults, the rows every
-    derived scene's screening reads. One whose bytes changed or that does not validate is named and skipped.
-    """
-
-    from .beta_policy_screening_launch import _bound_path, _read
-    from .team_candidate_quick10_registry import _derived_settings
-    from .team_embodiment import validate_embodiment_manifest
-
-    configured = ((_derived_settings(registry) or {}).get("defaults") or {}).get("screening_candidates") or {}
-    manifests: dict[str, dict[str, Any]] = {}
-    unreadable: list[str] = []
-    for key, settings in sorted(configured.items()):
-        registration = settings.get("robot_policy") if isinstance(settings, Mapping) else None
-        if not isinstance(registration, Mapping) or not isinstance(registration.get("manifest"), Mapping):
-            continue
-        try:
-            manifest = validate_embodiment_manifest(_read(_bound_path(registration["manifest"])))
-        except (OSError, ValueError, KeyError, TypeError):
-            unreadable.append(str(key))
-            continue
-        manifests[manifest["embodiment_digest"]] = manifest
-    return [manifests[digest] for digest in sorted(manifests)], unreadable
-
-
-def registered_embodiment_models(registry: Mapping[str, Any]) -> dict[str, Path]:
-    """Each registered body's own robot model, by embodiment digest, so its station is chosen with its own arm.
-
-    A model is kept only when its bytes are still the registration's bound record and that record is the
-    manifest's declared model; any other is left out, and that body's station keeps its declared reach.
-    """
-
-    from .beta_policy_screening_launch import _bound_path, _read
-    from .team_candidate_quick10_registry import _derived_settings
-    from .team_embodiment import validate_embodiment_manifest
-
-    configured = ((_derived_settings(registry) or {}).get("defaults") or {}).get("screening_candidates") or {}
-    models: dict[str, Path] = {}
-    for _key, settings in sorted(configured.items()):
-        registration = settings.get("robot_policy") if isinstance(settings, Mapping) else None
-        if not isinstance(registration, Mapping) or not all(
-                isinstance(registration.get(field), Mapping) for field in ("manifest", "model")):
-            continue
-        try:
-            manifest = validate_embodiment_manifest(_read(_bound_path(registration["manifest"])))
-            if registration["model"].get("sha256") != manifest["model"]["sha256"]:
-                continue
-            models.setdefault(manifest["embodiment_digest"], _bound_path(registration["model"]))
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-    return models
-
-
 def owner_success_confirmation_scope(request: Mapping[str, Any], *,
                                     intent_root: str | Path | None = None) -> tuple[dict[str, Any] | None, str | None]:
     """The request's own sealed intent, where an owner's success confirmation is kept, or None and why.
@@ -1428,9 +1370,6 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             if assumed is not None:
                 status[assumption.FIELD] = assumed
         else:
-            embodiments, unreadable = registered_embodiments(registry)
-            if unreadable:
-                status["embodiment_manifests_unreadable"] = unreadable
             owner_scope, unbound = owner_success_confirmation_scope(request)
             if unbound is not None:
                 # Recorded, never a blocker: an unbound request compiles without its intent's records.
@@ -1441,8 +1380,7 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
                                               collected=collected, remote=remote))
             else:
                 status.update(_compile(root, request, status=status, capture=capture, inputs=inputs, fetcher=fetcher,
-                                       embodiments=embodiments,
-                                       models=registered_embodiment_models(registry) if embodiments else None,
+                                       embodiments=(), models=None,
                                        owner_scope=owner_scope, remote=remote,
                                        assumed_before=assumed is not None))
         if isinstance(status.get(assumption.FIELD), Mapping):
@@ -1465,9 +1403,7 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
         # The type alone hides a full disk or a missing input; keep a redacted, trimmed message.
         return {**status, "status": "blocked", "blockers": [blocker], "error": error_description(exc)}
     published = publish_agent_execution_offer(capture, transport=offer_transport)
-    status["offer"] = {"status": published.get("status"), "reason": published.get("reason"),
-                       "team_evaluation_listed": bool((published.get("offer") or {}).get("team_evaluation")),
-                       "team_candidate_offer_refused": published.get("team_candidate_offer_refused")}
+    status["offer"] = {"status": published.get("status"), "reason": published.get("reason")}
     if published.get("status") == "failed":
         # The half is recorded; a requeue reuses it and only publishes again.
         return {**status, "status": "blocked", "blockers": ["team_scene_offer_publication_failed"]}
@@ -1846,9 +1782,7 @@ __all__ = [
     "owner_success_confirmation_scope",
     "packet_inputs",
     "process_team_scene_queue",
-    "registered_embodiment_models",
     "refusal_retry_cause",
-    "registered_embodiments",
     "request_key",
     "requeue_transient_blocked",
     "requeue_unfinished",

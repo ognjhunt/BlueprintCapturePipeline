@@ -174,29 +174,6 @@ def test_runtime_secret_bootstrap_keeps_urls_out_of_public_environment(context, 
     assert sum(name.endswith('_FILE') and 'PAIRED' in name for name in env) == 3
 
 
-def test_paired_wrapper_binds_private_slot_and_budgets_roundtrip_bytes(context, tmp_path, monkeypatch):
-    from blueprint_pipeline import native_task_arena_vast as native
-    _, bundle_path, binding = context
-    authority = {**binding, 'hard_cap_usd': 4., 'hard_ttl_seconds': 9000,
-                 'resource_name': 'blueprint-native-task-policy-canary-test'}
-    bundle = {'implementation_commit': binding['implementation_commit'],
-              'bundle_sha256': binding['provider_bundle_sha256'], 'container_image': 'immutable-image',
-              'bundle_path': str(bundle_path), 'bundle_size_bytes': bundle_path.stat().st_size}
-    monkeypatch.setattr(native, 'validate_policy_canary_session_authority', lambda value: value)
-    monkeypatch.setattr(native, 'validate_policy_canary_provider_bundle', lambda *a, **kw: bundle)
-    monkeypatch.setattr(native, '_policy_provider_transfer_byte_budget', lambda candidate: (100, 20))
-    monkeypatch.setattr(native, 'run_arena_native_control_vast', lambda **kwargs: kwargs)
-    result = native.run_native_task_arena_policy_canary_session_vast(job_dir=tmp_path,
-        prepared_bundle=bundle, session_authority=authority, paid_resource_admission_grant=None,
-        execute=False, hard_ttl_seconds=9000,
-        provider_runtime_environment={'BLUEPRINT_ADP009D_CAMERA_RESOLUTION': '640x360'})
-    assert result['paired_witness_binding'] == binding
-    assert result['expected_provider_upload_bytes'] == 8_000_000_000 + binding['maximum_archive_bytes']
-    assert result['expected_provider_download_bytes'] == 200 + binding['maximum_archive_bytes']
-    assert result['provider_runtime_environment'] == {'BLUEPRINT_ADP009D_CAMERA_RESOLUTION': '640x360'}
-    assert result['stale_offer_create_retry_limit'] == 0
-
-
 def test_capacity_matches_actual_query_frames_and_review_stride(context):
     import numpy as np
     from blueprint_pipeline.adp009d_policy_episode import _project_media_reserve_bytes
@@ -215,33 +192,6 @@ def test_capacity_matches_actual_query_frames_and_review_stride(context):
     assert 'provider_bundle_uncompressed_bytes' not in basis
     with pytest.raises(ValueError, match='capacity_binding_invalid'):
         paired.validate_binding({**binding, 'maximum_archive_bytes': 1_000_000_000})
-
-
-def test_oversized_pair_rejected_before_authority_consumption_or_provider_call(context, tmp_path, monkeypatch):
-    from blueprint_pipeline import native_task_arena_vast as native
-    _, path, binding = context
-    with zipfile.ZipFile(path) as archive:
-        plan = json.loads(archive.read(paired.PLAN_MEMBER))
-    plan['cadence']['maximum_action_steps'] = 10000
-    with zipfile.ZipFile(path, 'w') as archive:
-        archive.writestr(paired.PLAN_MEMBER, json.dumps(plan))
-        for candidate in ('pi05_droid', 'groot_n17_droid'):
-            archive.writestr(f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json",
-                             json.dumps({'max_policy_queries': 10000, 'open_loop_horizon': 1}))
-    bundle = {'bundle_path': str(path), 'bundle_size_bytes': path.stat().st_size,
-              'bundle_sha256': 'sha256:'+hashlib.sha256(path.read_bytes()).hexdigest(),
-              'implementation_commit': 'c'*40, 'container_image': 'immutable-image'}
-    authority = {**binding, 'hard_cap_usd': 4., 'hard_ttl_seconds': 9000}
-    monkeypatch.setattr(native, 'validate_policy_canary_session_authority', lambda value: value)
-    monkeypatch.setattr(native, 'validate_policy_canary_provider_bundle', lambda *a, **kw: bundle)
-    def forbidden(*args, **kwargs):
-        raise AssertionError('admission must reject before consuming authority or staging')
-    monkeypatch.setattr(native, 'consume_session_authority_once', forbidden)
-    monkeypatch.setattr(native, 'run_arena_native_control_vast', forbidden)
-    with pytest.raises(ValueError, match='capacity_exceeds_preallocation_ceiling'):
-        native.run_native_task_arena_policy_canary_session_vast(job_dir=tmp_path, prepared_bundle=bundle,
-            session_authority=authority, paid_resource_admission_grant=None, execute=True,
-            hard_ttl_seconds=9000, provider_runtime_environment={'BLUEPRINT_ADP009D_CAMERA_RESOLUTION': '640x360'})
 
 
 def test_capacity_rehashes_sealed_bundle_and_rejects_missing_overview(context, tmp_path):

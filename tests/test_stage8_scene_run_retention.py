@@ -167,6 +167,23 @@ def test_once_testing_is_final_the_run_goes_cold_on_the_two_day_rule(world):
     assert _reason(world) is None
 
 
+def test_with_the_trial_retired_no_testing_record_is_written_so_the_run_is_kept(world):
+    """The early trial's timer is retired (2026-11-14): nothing writes the testing record any more.
+
+    A job with no record is simply not testing-final, so the storage collector keeps its source run
+    (planner amendment A3): nothing is deleted sooner, even when every screening row has ended.
+    """
+    state = copy.deepcopy(world["campaign"]["state"])
+    for row in state["candidates"].values():
+        if row["status"] == "deferred":
+            row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
+    world["ledger"](state)
+    intent_id = world["request"]["intent_id"]
+    assert not (world["screening"] / open_jobs.TESTING_RECORD_FILENAME).exists()
+    assert open_jobs.testing_final(intent_id, screening_queue_root=world["screening"]) is False
+    assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
+
+
 @pytest.mark.parametrize("fault", ["ledger_changed_since", "record_tampered", "record_unreadable"])
 def test_a_testing_record_the_gc_cannot_trust_keeps_the_run(world, fault):
     state = copy.deepcopy(world["campaign"]["state"])

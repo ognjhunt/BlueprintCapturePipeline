@@ -7,18 +7,6 @@ from tests.test_scripted_robot_grasp_frames import development_manifest
 
 
 @pytest.mark.parametrize("identity", sorted(runtime.BODIES))
-def test_generic_loop_rebinds_current_cell_and_preserves_independent_score(
-    tmp_path, monkeypatch, identity
-):
-    from tests import test_scripted_robot_robotiq as shared
-
-    monkeypatch.setattr(shared, "runtime", runtime)
-    shared.test_actual_loop_rebinds_current_cell_for_six_and_seven_dof_without_learned_claims(
-        tmp_path, monkeypatch, identity
-    )
-
-
-@pytest.mark.parametrize("identity", sorted(runtime.BODIES))
 def test_each_stand_in_body_binds_its_own_arm_dof(identity):
     from blueprint_pipeline.deployment_embodiment_runtime_configuration import runtime_profiles
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -104,13 +105,25 @@ def job_window_closed(context: Mapping[str, Any]) -> bool:
     consent's expiry). Unknown or unreadable is not closed: the launch preflight still decides."""
     import time
 
-    from .beta_policy_screening_control import _deadline
-
     try:
         deadline = _deadline(context)
     except ValueError:
         return False
     return deadline is not None and deadline <= time.time()
+
+
+
+def _deadline(current: Mapping[str, Any]) -> float | None:
+    rights = current.get("capture_rights") or {}
+    candidates = [current.get("execution_deadline_at_ms"), rights.get("consent_expires_at_epoch")]
+    values = []
+    for index, value in enumerate(candidates):
+        if value is None:
+            continue
+        if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
+            raise ValueError("beta_screening_control_deadline_invalid")
+        values.append(float(value) / 1000 if index == 0 else float(value))
+    return min(values) if values else None
 
 
 _REQUEST_STATES = ("pending", "processing", "processed")
@@ -149,8 +162,7 @@ def _scene_preparation_holds(root: Path, packet_root: Path, *, max_sources: int,
     ``holds/settled/`` once the website acknowledged its hold, or under ``holds/superseded/`` once a newer
     request of its intent exists; nothing is deleted.
     """
-    from .beta_policy_screening_coordinator import _read, _write
-    from .scene_stage_holds import scene_preparation_probe_failed, settle_hold
+    from .scene_stage_holds import _read, _write, scene_preparation_probe_failed, settle_hold
     from .team_scene_packet_worker import HOLDS_DIRNAME, _read_json, request_key, validated_request
 
     directory = packet_root / HOLDS_DIRNAME
@@ -235,11 +247,11 @@ def scene_stage_pass(*, queue_root: str | Path, packet_queue_root: str | Path,
     ``queue_root`` is where the holds, the source states and their cursors have always been kept (the
     screening queue root); ``packet_queue_root`` is the team scene packet queue.
     """
-    from .beta_policy_screening_coordinator import _lock, _read, _root, _write
     from .rigid_robot_free_probe_runner import _running_release, enqueue_rigid_robot_free_probe, source_commit
     from .scene_run_cold_storage import COLD_STORAGE, cold_storage_hold, in_cold_storage, require_on_disk
     from .scene_stage_holds import (
-        RELEASE, WINDOW_CLOSED, blocked_since, packet_hold, probe_hold, settle_hold, stalled_source_hold,
+        RELEASE, WINDOW_CLOSED, _lock, _read, _root, _write, blocked_since, packet_hold, probe_hold, settle_hold,
+        stalled_source_hold,
     )
     from .task_evaluation_configured_controls_source_evidence import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
@@ -393,8 +405,7 @@ def scene_stage_pass(*, queue_root: str | Path, packet_queue_root: str | Path,
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV, _root
-    from .scene_stage_holds import deliver_holds
+    from .scene_stage_holds import QUEUE_ROOT_ENV, _root, deliver_holds
     from .team_scene_packet_worker import QUEUE_ROOT_ENV as PACKET_QUEUE_ENV
 
     parser = argparse.ArgumentParser(description=__doc__)

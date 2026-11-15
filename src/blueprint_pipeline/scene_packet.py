@@ -391,6 +391,38 @@ def _task_motion(task_spec: Mapping[str, Any], *, definition: Mapping[str, Any],
     return motion
 
 
+#: The line ``Usd.Stage.Export`` and ``Flatten`` add to a layer's documentation: it names the host file it was
+#: flattened from (``task_object_articulated_packaging`` flattens every articulated object), so the company
+#: download's identity scan refuses the file. It says nothing about the object.
+FLATTEN_PROVENANCE = "Generated from Composed Stage of root layer "
+
+
+def _without_flatten_provenance(path: Path, root: Path) -> Path:
+    """The object file without its flatten-provenance line, written beside the run's evidence; else ``path``.
+
+    Only the layer documentation changes: the layer is exported by Sdf (which adds no such line), so every prim,
+    property and value is the source's. A layer that refers to another file is left as it is (its references are
+    relative to where it stands), and the download's scan still reads it.
+    """
+    from pxr import Sdf
+
+    layer = Sdf.Layer.FindOrOpen(str(path))
+    if layer is None:
+        return path
+    lines = layer.documentation.split("\n")
+    kept = [line for line in lines if not line.startswith(FLATTEN_PROVENANCE)]
+    if kept == lines or layer.GetCompositionAssetDependencies():
+        return path
+    target = root / "runtime-object" / ("replacement.usda" if path.suffix == ".usda" else "replacement.usdc")
+    target.parent.mkdir(mode=0o750)
+    copy = Sdf.Layer.CreateAnonymous(target.suffix)
+    copy.TransferContent(layer)
+    copy.documentation = "\n".join(kept).rstrip("\n")
+    if not copy.Export(str(target)):
+        raise ScenePacketError("team_scene_articulated_object_write_failed")
+    return target
+
+
 def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, Any], replacement: Path, root: Path,
                       owner_scope: Mapping[str, Any] | None) -> dict[str, Any]:
     """The open/close task as the website episode compiler builds it, with the part's sweep the station avoids."""
@@ -424,6 +456,7 @@ def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, A
     contact = next(phase for phase in trajectory["phases"] if phase["phase_id"] == "handle_contact")
     runtime, adaptation = compiler._derive_runtime_joint_overlay(
         task_spec=task_spec, task_definition=definition, replacement_path=replacement, output_root=root)
+    runtime = _without_flatten_provenance(runtime, root)
     construction = materialize_articulated_construction_inputs(
         task_spec=task_spec, definition=definition, asset=runtime, asset_digest=compiler._sha256_and_size(runtime)[0],
         link_prim_paths=sources[STATIC_QUALIFICATION_CONTRACT_PATH]["link_prim_paths"])

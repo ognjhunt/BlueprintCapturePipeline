@@ -533,9 +533,7 @@ def test_an_assumed_half_goes_on_to_its_probe_and_is_offered_once_the_probe_pass
     assert state["status"] == "probe_required"
     [entry] = (tmp_path / "rigid-robot-free-probes" / "pending").glob("*.json")
     assert _record(entry)["probe_request_digest"] == state["request"]["request_digest"]
-    assert first["offer"]["team_candidate_offer_refused"] == "team_evaluation_robot_free_probe_receipt_missing"
-    # The probe lane passes it; the redelivered request reuses the half, still marked as assumed, and the
-    # job's offer now lists the team evaluation: every gate after the packet admits the assumed contract.
+    # The probe lane passes it; the redelivered request reuses the half, still marked as assumed.
     profile = profile_for_capture(world["capture"])
     (world["job"].run / gate.RECEIPT_FILENAME).write_text(json.dumps(_passed_rigid_probe(profile)))
     shutil.copyfile(world["queue"] / "processed" / f"{world['key']}.json",
@@ -544,7 +542,6 @@ def test_an_assumed_half_goes_on_to_its_probe_and_is_offered_once_the_probe_pass
     assert (again["status"], again["outcome"]) == ("completed", "already_compiled")
     assert again["team_scene_inputs_path"] == first["team_scene_inputs_path"]
     assert again[assumption.FIELD] == first[assumption.FIELD]
-    assert again["offer"]["status"] == "published" and again["offer"]["team_evaluation_listed"] is True
 
 
 def test_the_remote_compile_carries_the_website_flag_and_returns_the_marker(tmp_path, monkeypatch):

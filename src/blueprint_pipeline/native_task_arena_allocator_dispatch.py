@@ -1,117 +1,25 @@
-"""Small closed dispatch table for Native Task Arena allocator modes."""
+"""Small closed dispatch for the Native Task Arena allocator lane that remains."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
-from .controlled_native_policy_bundle import (
-    PROBE_KIND as CONTROLLED_POLICY_PROBE_KIND, load_verified_controlled_native_policy_bundle)
-from .native_task_arena_construction_bundle import (
-    PROBE_KIND as CONSTRUCTION_PROBE_KIND,
-    load_verified_native_task_arena_construction_bundle,
-)
-from .native_task_arena_controls_bundle import (
-    PROBE_KIND as CONTROLS_PROBE_KIND,
-    load_verified_native_task_arena_controls_bundle,
-)
-from .native_task_arena_destination_qualification_bundle import (
-    PROBE_KIND as DESTINATION_QUALIFICATION_PROBE_KIND,
-    load_verified_native_task_arena_destination_qualification_bundle,
-)
-from .native_task_arena_policy_bundle import (
-    PROBE_KIND as POLICY_PROBE_KIND,
-    load_verified_native_task_arena_policy_bundle,
-)
-from .native_task_arena_policy_diagnostic_bundle import (
-    PROBE_KIND as POLICY_DIAGNOSTIC_PROBE_KIND,
-    load_verified_native_task_arena_policy_diagnostic_bundle,
-)
-from .native_task_arena_runtime_preflight_bundle import (
-    PROBE_KIND as RUNTIME_PREFLIGHT_PROBE_KIND,
-    load_verified_native_task_arena_runtime_preflight_bundle,
-)
 from .rigid_robot_free_probe_bundle import PROBE_KIND as RIGID_ROBOT_FREE_PROBE_KIND
-from .native_task_arena_vast import (
-    POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES,
-    run_native_task_arena_controls_vast, run_controlled_native_policy_vast,
-    run_native_task_arena_destination_qualification_vast,
-    run_native_task_arena_policy_diagnostic_vast,
-    run_native_task_arena_policy_vast,
-    run_native_task_arena_runtime_preflight_vast,
-    run_native_task_arena_vast,
-)
-
-
-_MODE_BY_PROBE_KIND = {
-    CONTROLLED_POLICY_PROBE_KIND: "controlled_policy",
-    RUNTIME_PREFLIGHT_PROBE_KIND: "runtime_preflight",
-    DESTINATION_QUALIFICATION_PROBE_KIND: "destination_qualification",
-    CONSTRUCTION_PROBE_KIND: "construction_canary",
-    CONTROLS_PROBE_KIND: "controls",
-    POLICY_PROBE_KIND: "policy",
-    POLICY_DIAGNOSTIC_PROBE_KIND: "policy_diagnostic",
-}
-NATIVE_TASK_ARENA_PROBE_KINDS = tuple(_MODE_BY_PROBE_KIND)
-_LOADER_BY_PROBE_KIND: dict[str, Callable[..., dict[str, Any]]] = {
-    CONTROLLED_POLICY_PROBE_KIND: load_verified_controlled_native_policy_bundle,
-    RUNTIME_PREFLIGHT_PROBE_KIND: load_verified_native_task_arena_runtime_preflight_bundle,
-    DESTINATION_QUALIFICATION_PROBE_KIND: load_verified_native_task_arena_destination_qualification_bundle,
-    CONSTRUCTION_PROBE_KIND: load_verified_native_task_arena_construction_bundle,
-    CONTROLS_PROBE_KIND: load_verified_native_task_arena_controls_bundle,
-    POLICY_PROBE_KIND: load_verified_native_task_arena_policy_bundle,
-    POLICY_DIAGNOSTIC_PROBE_KIND: load_verified_native_task_arena_policy_diagnostic_bundle,
-}
-_RUNNER_BY_PROBE_KIND: dict[str, Callable[..., dict[str, Any]]] = {
-    CONTROLLED_POLICY_PROBE_KIND: run_controlled_native_policy_vast,
-    RUNTIME_PREFLIGHT_PROBE_KIND: run_native_task_arena_runtime_preflight_vast,
-    DESTINATION_QUALIFICATION_PROBE_KIND: run_native_task_arena_destination_qualification_vast,
-    CONSTRUCTION_PROBE_KIND: run_native_task_arena_vast,
-    CONTROLS_PROBE_KIND: run_native_task_arena_controls_vast,
-    POLICY_PROBE_KIND: run_native_task_arena_policy_vast,
-    POLICY_DIAGNOSTIC_PROBE_KIND: run_native_task_arena_policy_diagnostic_vast,
-}
-
-
-def native_task_arena_probe_mode(probe_kind: str) -> str:
-    return _MODE_BY_PROBE_KIND[probe_kind]
-
-
-def native_task_arena_verified_bundle_loader(
-    probe_kind: str,
-) -> Callable[..., dict[str, Any]]:
-    return _LOADER_BY_PROBE_KIND[probe_kind]
-
-
-def native_task_arena_vast_runner(probe_kind: str) -> Callable[..., dict[str, Any]]:
-    return _RUNNER_BY_PROBE_KIND[probe_kind]
 
 
 def isolated_native_task_arena_lane(probe_kind: str) -> Callable[..., int]:
     """The isolated lane module that owns ``probe_kind``'s whole allocator branch.
 
-    The paired policy-canary/team session and (beta L5) the rigid robot-free
-    probe each admit, fund and run their own single capped session. Imports
-    stay lazy so the allocator's module load is unchanged.
+    The rigid robot-free probe (beta L5) admits, funds and runs its own single
+    capped session. The import stays lazy so the allocator's module load is
+    unchanged.
     """
 
-    if probe_kind == RIGID_ROBOT_FREE_PROBE_KIND:
-        from .rigid_robot_free_probe_lane import run_rigid_robot_free_probe_allocator_lane
-
-        return run_rigid_robot_free_probe_allocator_lane
-    from .policy_canary_allocator_lane import PROBE_KIND, run_policy_canary_allocator_lane
-
-    if probe_kind != PROBE_KIND:
+    if probe_kind != RIGID_ROBOT_FREE_PROBE_KIND:
         raise ValueError("isolated_native_task_arena_lane_unknown:" + str(probe_kind))
-    return run_policy_canary_allocator_lane
+    from .rigid_robot_free_probe_lane import run_rigid_robot_free_probe_allocator_lane
+
+    return run_rigid_robot_free_probe_allocator_lane
 
 
-__all__ = [
-    "NATIVE_TASK_ARENA_PROBE_KINDS",
-    "POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES",
-    "RIGID_ROBOT_FREE_PROBE_KIND",
-    "isolated_native_task_arena_lane",
-    "native_task_arena_probe_mode",
-    "native_task_arena_vast_runner",
-    "native_task_arena_verified_bundle_loader",
-]
+__all__ = ["RIGID_ROBOT_FREE_PROBE_KIND", "isolated_native_task_arena_lane"]

@@ -22,7 +22,7 @@
    "tools": [
     {
      "tool": "task_evaluation_downstream_replay",
-     "until": "screening_plan",
+     "until": "probe_enqueue",
      "inputs": {
       "launch_run": "launch-runs/scene-website-qualifying",
       "intent_dir": "intents/scene-8d4f549f6526a335a28ba235cf0e9b771b2ccaf750c58ed601f4915194ef17c2",
@@ -33,8 +33,8 @@
      },
      "expected_stop": {
       "kind": "completed",
-      "stage": "screening_plan",
-      "code": "until_screening_plan"
+      "stage": "probe_enqueue",
+      "code": "until_probe_enqueue"
      }
     }
    ]

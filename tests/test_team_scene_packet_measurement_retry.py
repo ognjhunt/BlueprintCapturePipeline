@@ -105,7 +105,6 @@ def _world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *failures: BaseExcep
     monkeypatch.setattr(worker, "resolve_capture_root", lambda _request: tmp_path / "capture")
     monkeypatch.setattr(worker, "_current_half", lambda profile, revision: "/halves/first/team_scene_inputs.v1.json")
     monkeypatch.setattr(worker, "owner_success_confirmation_scope", lambda _request: ({"intent": {}, "directory": "/x"}, None))
-    monkeypatch.setattr(worker, "registered_embodiments", lambda _registry: ([], []))
     monkeypatch.setattr(worker, "_compile", compile_half)
     monkeypatch.setattr(agent_execution_offer, "publish_agent_execution_offer",
                         lambda capture, transport=None: {"status": "published"})

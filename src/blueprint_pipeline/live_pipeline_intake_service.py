@@ -1637,8 +1637,6 @@ def create_app() -> FastAPI:
         manifest_path_provider=_manifest_path, resolve_client_root=_server_capture_root_for_client)
     from .website_atlas_preview_http import register_website_atlas_preview_routes
     register_website_atlas_preview_routes(app, require_admission=_require_admission)
-    from .beta_screening_review_videos_http import register_beta_screening_review_video_routes
-    register_beta_screening_review_video_routes(app, require_admission=_require_admission)
 
     @app.post(
         "/api/live-pipeline/task-evaluation-launches",

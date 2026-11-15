@@ -40,7 +40,6 @@ from .vast_independent_watchdog_control import (
     close_independent_vast_watchdog,
 )
 from .vast_create_failure_diagnosis import definite_create_refusal_without_instance
-from .policy_canary_provider_null_closeout import provider_allocation_fields
 from .vast_provider_adapter import (
     DEFAULT_VAST_API_KEY_FILE,
     VAST_API_KEY_FILE_ENV,
@@ -427,6 +426,22 @@ def _candidate_policy_query_blocker(
     return f"{blocker_prefix}_candidate_policy_query_status_missing"
 
 
+def provider_allocation_fields(*, adapter: Mapping[str, Any], watchdog: Mapping[str, Any],
+                               teardown: Mapping[str, Any], cleanup: Mapping[str, Any]) -> dict[str, Any]:
+    """Promote proven absence only; preserve existing paid/unknown receipt bytes."""
+    if (adapter.get("provider_create_attempted") is False and adapter.get("vast_instance_ids") == []
+            and adapter.get("vast_side_effects_may_have_occurred") is False
+            and ("provider_mutations_performed" not in adapter
+                 or type(adapter["provider_mutations_performed"]) is int and adapter["provider_mutations_performed"] == 0)
+            and watchdog.get("status") == "cancelled_no_allocation"
+            and type(watchdog.get("provider_mutations_performed")) is int and watchdog["provider_mutations_performed"] == 0
+            and teardown.get("vast_instance_ids") == [] and teardown.get("continuing_spend_from_this_run") is False
+            and cleanup.get("all_objects_absent") is True):
+        return {"vast_instance_ids": [], "provider_create_attempted": False,
+                "vast_side_effects_may_have_occurred": False, "provider_mutations_performed": 0}
+    return {}
+
+
 def run_arena_native_control_vast(
     *,
     approval_path: str | Path,
@@ -481,7 +496,6 @@ def run_arena_native_control_vast(
     provider_output_member_contract: Any | None = None,
     provider_output_reservation: Any | None = None,
     provider_output_delivery_resolution: Mapping[str, str] | None = None,
-    runtime_control_ready: Callable[[Mapping[str, Any]], Callable[[], None]] | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog.
 
@@ -502,9 +516,8 @@ def run_arena_native_control_vast(
     if provider_output_delivery not in ("download", "stream"):
         raise ValueError("adp_arena_provider_output_delivery_invalid")
     if provider_output_delivery == "stream":
-        if (provider_output_member_contract is None
-                or provider_bundle_kind != "native_task_arena_policy_canary_session"):
-            raise ValueError("adp_arena_provider_output_stream_contract_missing")
+        # Only the early trial's policy-canary session streamed its output; the trial left (owner, 2026-11-14).
+        raise ValueError("adp_arena_provider_output_stream_contract_missing")
     streaming = provider_output_delivery == "stream"
     delivery_record: dict[str, Any] = {}
     if provider_output_delivery_resolution is not None:
@@ -960,7 +973,6 @@ def run_arena_native_control_vast(
                 retain_native_task_arena_warm_session=retain_warm_instance,
                 stale_offer_create_retry_limit=stale_offer_create_retry_limit,
                 provider_runtime_environment=provider_runtime_environment,
-                **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
                 **({"runtime_secret_file_paths": provider_secret_paths} if provider_secret_paths else {}),
                 allowed_geolocation_country_codes=(
                     allowed_geolocation_country_codes

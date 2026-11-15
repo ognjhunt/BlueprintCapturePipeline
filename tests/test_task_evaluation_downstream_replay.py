@@ -270,12 +270,11 @@ def test_a_completed_website_scene_replays_to_its_screening_plan_and_names_it(tm
     # The join closed the launch and queued its team half; readiness passed on the retained trace.
     assert stages["completion"]["outcome"]["team_scene_request"]["status"] == "enqueued"
     assert stages["readiness"]["outcome"]["status"] == "passed"
-    # The team half was compiled in the replay root, and the offer was recorded, never sent.
+    # The team half was compiled in the replay root. No team listing is offered any more (the early
+    # trial left, 2026-11-14) and this capture has no episode specs, so nothing would be sent.
     assert stages["team_packet"]["outcome"]["outcome"] == "compiled"
     assert Path(stages["team_packet"]["outcome"]["team_scene_inputs_path"]).is_relative_to(Path(report["run_root"]))
-    [offer] = report["recorded_effects"]
-    assert (offer["boundary"], offer["operation"], offer["capture_id"]) == (
-        "webapp", "agent-execution-offer", CAPTURE)
+    assert report["recorded_effects"] == []
     # A decided receipt wants no probe run, so nothing was queued for the paid lane.
     assert stages["probe_enqueue"]["outcome"]["probe_state"] == "receipt_decided"
     # The plan the screening worker froze, within the job's dollar ceiling.

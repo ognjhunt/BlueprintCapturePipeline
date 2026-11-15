@@ -260,33 +260,6 @@ def test_recognizer_returns_only_its_own_vocabulary_for_an_untampered_result(tmp
     assert setup_failure.sealed_setup_failure_blocker(result) is None
 
 
-@pytest.mark.parametrize("case", ["beta_flagged", "flags_not_the_gates", "internal_canary"])
-def test_a_beta_gate_the_session_continued_past_is_not_named_the_gate_stage(tmp_path: Path, case: str) -> None:
-    from tests.test_beta_screening_worker_control import REAL_GATE_BLOCKERS, runtime_observation_gate
-    inputs = _inputs(tmp_path)
-    gate = runtime_observation_gate(backend_digest="sha256:" + "b" * 64)
-    flags = sorted(REAL_GATE_BLOCKERS)
-    # Stopped after the gate and before any policy load frame (for example a strict control gate).
-    child = _blocked_child(
-        inputs, 1, run_kind=session.RUN_KIND if case == "internal_canary" else session.BETA_RUN_KIND,
-        preload_observation_gate=gate, observation_integrity_flagged=True,
-        observation_quality_flags=flags[:1] if case == "flags_not_the_gates" else flags,
-        session_failure_source_trace=[{"file": "native_task_arena_policy_canary_session.py",
-                                       "function": "execute_paired_session", "line": 1}])
-    child_root = _write_child(tmp_path, 1, child,
-                              ["static_preflight_passed", "isaac_launch_started", "isaac_launch_completed"])
-    failure = setup_failure.cell_setup_failure(child=child, inputs=inputs, index=1, child_root=child_root,
-                                               output_root=tmp_path)
-    assert failure["observation_gate_blockers"] == flags
-    if case == "beta_flagged":
-        assert failure["stage"] == "policy_load" and failure["observation_gate_verdict"] == "flagged"
-        assert failure["observation_quality_flags"] == flags
-    else:  # Unchanged: a refusal the session did not continue past names the gate.
-        assert failure["stage"] == "observation_gate" and failure["observation_gate_verdict"] == "refused"
-        assert "observation_quality_flags" not in failure
-
-
-
 @pytest.mark.parametrize("exit_code, signal_number", [
     (139, 11), (-11, 11), (135, 7), (-7, 7), (134, 6), (132, 4), (136, 8), (1, None), (0, None),
     (137, None), (-9, None), (143, None), ("139", None), (None, None)])

@@ -164,6 +164,17 @@ Intended design: every upload is written to one record before it is sent, and st
 - **Not live:** #3591 (targeted cuts, round 2); it goes out with the next deploy.
 - **WebApp:** [#1300](https://github.com/ognjhunt/Blueprint-WebApp/pull/1300) (the robot-team evaluation product line leaves the WebApp) was held until the units above were confirmed stopped, and merged at about 16:46Z.
 
+## Second deploy on 2026-11-14 (outside the D-08 window, on the owner's word)
+
+- **Why outside the window:** the owner said "release now" at about 22:13Z. D-08 batches deploys because a deploy rebuilds a website attempt that is mid-flight and pauses paid launches for about seven minutes. Neither applied: no job was in flight and no GPU instance was live. This was one release on the owner's word, not a standing change to D-08.
+- **Before, 22:13Z (door status and requests):** active release `7e4f6c6`. No activation hold, no paid-launch lock held, no door request pending. Screening ledger: nothing launching, pending, preparing, running or awaiting reconciliation; no publication pending; last ledger progress 4.7 days earlier. Spend guard passed with no live instance. 206 historical failed units.
+- **22:14:05Z, `efefe8a` (#3596):** requested after main's CI attested the commit (request `20261114T221405Z-deploy-713daf66`); the door found no live scene-configuration activation to hold for; deployed at 22:28:08Z.
+- **What this release carries since `7e4f6c6`:** #3591, #3593, #3594 and #3595 (robot-team lanes, humanoid leftovers and the canonical 3DGS lane removed; a smaller scene packet stage built beside the old one and not used) and #3596 (the scene stage's duties in their own unit; the early trial drains).
+- **After, 22:29Z:** active release `efefe8a`, `commit_proven` true, no blockers, no new failed unit (206 before and after), spend guard passed, no live instance. All 14 retired triggers read off in the receipt.
+- **The new unit:** `blueprint-scene-stage-maintenance.timer` is active. Its first run (22:28:06Z) took 12 s and 57 MB, delivered one hold update that the WebApp acknowledged (a hold released for a job whose scripted check had passed), and ran the success-rule confirmation exchange with nothing to ask.
+- **The early trial in drain:** its first tick on this release (22:31:57Z, after the spend guard's run it is ordered behind) started nothing and took 18 s of wall time, 17 s of CPU and 34 MB. On the previous release a tick took about 3 minutes of CPU and up to 884 MB.
+- **Not checked:** no website job has passed through scene configuration, the scene packet or the scripted check on this release. The operator door lists the new unit only after a door upgrade.
+
 ## Library-aisle navigation run (2026-11-06)
 
 The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.

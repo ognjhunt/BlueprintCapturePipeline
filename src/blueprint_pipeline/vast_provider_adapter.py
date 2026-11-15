@@ -195,7 +195,6 @@ from .vast_provider_output_recovery import (
     recover_provider_output_before_teardown,
 )
 from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress, remote_progress_probe_for_bundle
-from .beta_screening_control_delivery import RuntimeControlRelay, runtime_control_probe
 from .vast_signal_guard import OneStopSignal
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
 from .vast_provider_bundle_digest_guard import DOWNLOAD_REPORT_OPTION, provider_bundle_digest_guard, stage_prefix_capsule_step
@@ -2455,15 +2454,6 @@ def _session_budget_guard(
     return guard
 
 
-def _validate_policy_canary_provider_manifest(
-    payload: object,
-) -> dict[str, Any]:
-    # Both session run kinds (frozen pair, one team candidate) share this kind.
-    from .policy_canary_session_bundle_identity import validate_policy_canary_provider_manifest
-
-    return validate_policy_canary_provider_manifest(payload)
-
-
 def _blueprint_bundle_preflight(
     *,
     job_dir: Path,
@@ -2965,33 +2955,6 @@ def _blueprint_bundle_preflight(
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
                     retained_render_manifest = read_render_manifest(archive, provider_bundle_kind)
-                    if provider_bundle_kind == "native_task_arena_policy_canary_session":
-                        readiness_member = (
-                            "provider_runtime/adp_arena_provider_manifest.json"
-                        )
-                        readiness_source = "immutable_bundle_member"
-                        try:
-                            native_manifest = json.loads(
-                                archive.read(readiness_member).decode("utf-8")
-                            )
-                            readiness = _validate_policy_canary_provider_manifest(
-                                native_manifest
-                            )
-                            from .policy_canary_session_bundle_identity import (
-                                run_kind_entrypoint_blockers, run_kind_required_entries, verify_family_operator_input_bytes,
-                            )
-                            required_entries.update(run_kind_required_entries(readiness))
-                            blockers.extend(run_kind_entrypoint_blockers(readiness, entrypoint_text))
-                            verify_family_operator_input_bytes(readiness, archive.read)
-                        except (
-                            KeyError,
-                            TypeError,
-                            ValueError,
-                            json.JSONDecodeError,
-                        ):
-                            blockers.append(
-                                "native_task_arena_policy_canary_provider_manifest_invalid"
-                            )
                     if provider_bundle_kind == "native_task_arena":
                         readiness_member = (
                             "provider_runtime/adp_arena_provider_manifest.json"
@@ -6327,9 +6290,6 @@ def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
     return _probe
 
 
-_runtime_control_probe = runtime_control_probe  # Preserve the retained helper import surface.
-
-
 def _remote_progress_probe_for_bundle(provider_bundle_kind: str, job_dir: Path, *, cell_count: int = 10):
     return remote_progress_probe_for_bundle(provider_bundle_kind, job_dir, cell_count=cell_count, probe=probe_policy_canary_remote_progress)
 
@@ -7106,11 +7066,9 @@ def run_vast_provider_adapter(
     provider_output_collector: Callable[..., Mapping[str, Any]] | None = None,
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
-    runtime_control_ready: Callable[[Mapping[str, Any]], Callable[[], None]] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
-    runtime_control_relay = RuntimeControlRelay(ready=runtime_control_ready, provider_bundle_kind=provider_bundle_kind, resource_name=instance_label_exact)
     if retain_native_task_arena_warm_session and provider_bundle_kind != "native_task_arena":
         raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
     if (
@@ -8308,7 +8266,7 @@ def run_vast_provider_adapter(
 
     ignore_local_probe_signals = _env_truthy(
         "BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN"
-    ) and runtime_control_ready is None
+    )
     ignored_signal_counts: dict[str, int] = {}
     one_stop = OneStopSignal(resolved_job_dir)  # The first signal unwinds into teardown; later ones never interrupt it.
 
@@ -8967,7 +8925,6 @@ def run_vast_provider_adapter(
         )
         progress_probe = _remote_progress_probe_for_bundle(provider_bundle_kind, resolved_job_dir,
             cell_count=bundle_preflight.get("policy_cell_count") or 10)
-        progress_probe = runtime_control_relay.wrap(progress_probe, job_dir=resolved_job_dir, instance_id=instance_id)
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,
             api_key=api_key,
@@ -9830,7 +9787,6 @@ def run_vast_provider_adapter(
         )
     finally:
         one_stop.teardown()
-        runtime_control_relay.close()  # Unsubscribe before exact owned provider teardown, including interrupted sinks.
         if provider_bundle_kind in {"native_task_arena", "native_task_arena_policy_canary_session"}:
             try:
                 from .company_policy_network_lease import close_policy_network  # noqa: PLC0415

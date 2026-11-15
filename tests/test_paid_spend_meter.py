@@ -11,8 +11,9 @@ import pytest
 
 from blueprint_pipeline import paid_spend_meter as meter
 from blueprint_pipeline import paid_spend_meter_sources as sources
-from blueprint_pipeline.beta_policy_screening_coordinator import LEDGER_FILENAME, LEDGER_SCHEMA
-from blueprint_pipeline.beta_policy_screening_settlement import SETTLEMENT_BASIS, SETTLEMENT_SCHEMA
+from blueprint_pipeline.screening_retained_ledger import (
+    LEDGER_FILENAME, LEDGER_SCHEMA, SETTLEMENT_BASIS, SETTLEMENT_SCHEMA,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,

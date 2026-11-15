@@ -1540,7 +1540,7 @@ def _terminal_index_findings(units: Mapping[str, dict[str, Any]]) -> list[dict[s
 # Every unit that can allocate Vast (it reaches the adapter); a lane checks the ones it selects.
 PAID_ALLOCATION_UNITS: tuple[str, ...] = tuple(f"blueprint-{name}.service" for name in (
     "task-evaluation-launch-dispatcher",
-    "rigid-robot-free-probe-runner", "beta-policy-screening",
+    "rigid-robot-free-probe-runner",
     "pubsub-handoff-listener",
     "agent-run-dispatcher"))
 

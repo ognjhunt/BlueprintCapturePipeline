@@ -465,19 +465,19 @@ def test_deletion_waits_for_a_running_preview_step_and_then_holds_it_off(world, 
 
 def test_deletion_waits_for_a_review_video_retention_pass_and_then_deletes_its_videos(world):
     import fcntl
-    from blueprint_pipeline import beta_screening_review_videos as videos
-    base = world["capture"] / "pipeline" / videos.DIRNAME
+    from blueprint_pipeline.screening_retained_ledger import REVIEW_VIDEOS_DIRNAME, REVIEW_VIDEOS_LOCK_NAME
+    base = world["capture"] / "pipeline" / REVIEW_VIDEOS_DIRNAME
     (base / "screen-0123/videos").mkdir(parents=True)
-    (base / videos.LOCK_NAME).touch()
+    (base / REVIEW_VIDEOS_LOCK_NAME).touch()
     (base / "screen-0123/videos/00-run-external.mp4").write_bytes(b"synthetic render")
     plan = _plan(world)
-    with (base / videos.LOCK_NAME).open("a") as lock:
+    with (base / REVIEW_VIDEOS_LOCK_NAME).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         with pytest.raises(deletion.WithdrawalDeletionError, match="review_videos_busy"):
             _apply(world, plan)
     assert world["store"].deleted == []
     _apply(world, plan)
-    assert not (base / "screen-0123/videos/00-run-external.mp4").exists() and not (base / videos.LOCK_NAME).exists()
+    assert not (base / "screen-0123/videos/00-run-external.mp4").exists() and not (base / REVIEW_VIDEOS_LOCK_NAME).exists()
 
 
 def test_deletion_holds_every_revision_lock_and_releases_earlier_locks_on_busy_refusal(world, monkeypatch):

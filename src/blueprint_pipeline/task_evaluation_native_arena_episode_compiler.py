@@ -30,6 +30,7 @@ from .task_evaluation_articulated_open_close_native_adapter import (
 from .task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 from .decision_evidence_contracts import canonical_digest
 from .gaussian_field_quality import (
+    field_array_view,
     gaussian_quality_is_qualified,
     measure_gaussian_field_quality,
 )
@@ -1037,7 +1038,7 @@ def _apply_task_volume_clearance(native_appearance: Mapping[str, Any], *, volume
     import numpy as np
     from pxr import Usd, UsdGeom, Vt
 
-    from .scene_appearance_task_clearance import clearance_plan
+    from .scene_appearance_task_clearance import CHUNK_ROWS, apply_press, streamed_clearance_plan
 
     source = Path(str(native_appearance["path"]))
     try:
@@ -1052,15 +1053,25 @@ def _apply_task_volume_clearance(native_appearance: Mapping[str, Any], *, volume
             "schema_version": "scene_appearance_task_clearance.v3", "status": "not_assessed_field_unreadable",
             "flags": [], "pressed_count": 0, "source_assets_mutated": False})
     field = fields[0]
-    local = np.asarray(field.GetAttribute("positions").Get(), dtype=np.float64).reshape(-1, 3)
-    opacities = np.asarray(field.GetAttribute("opacities").Get(), dtype=np.float64)
+    # The field is read in blocks of CHUNK_ROWS particles from USD's own arrays (no whole copy), so
+    # the working set does not grow with the field; only the pressed positions are authored whole.
+    local = field_array_view(field.GetAttribute("positions").Get()).reshape(-1, 3)
+    opacities = field_array_view(field.GetAttribute("opacities").Get())
     # USD matrices act on row vectors: world = [local, 1] @ M.
     matrix = np.asarray(UsdGeom.Xformable(field).ComputeLocalToWorldTransform(Usd.TimeCode.Default()), float)
-    world = local @ matrix[:3, :3] + matrix[3, :3]
     # The largest standard deviation in world metres: the field's activated scales times its frame's scale.
     frame_scale = abs(float(np.linalg.det(matrix[:3, :3]))) ** (1.0 / 3.0)
-    sigma = np.asarray(field.GetAttribute("scales").Get(), dtype=np.float64).reshape(-1, 3).max(axis=1) * frame_scale
-    plan = clearance_plan(positions_world=world, sigma_world=sigma, opacities=opacities, volumes=volumes)
+    scales = field_array_view(field.GetAttribute("scales").Get()).reshape(-1, 3)
+    np.asarray(scales[:1], dtype=np.float64).max(axis=1)  # an empty field fails here, as a whole read does
+
+    def world(start: int, stop: int) -> np.ndarray:
+        return np.asarray(local[start:stop], dtype=np.float64) @ matrix[:3, :3] + matrix[3, :3]
+
+    plan = streamed_clearance_plan(
+        count=local.shape[0], positions=world,
+        sigma=lambda start, stop: np.asarray(scales[start:stop], dtype=np.float64).max(axis=1) * frame_scale,
+        sigma_shape=(scales.shape[0],), opacities=lambda start, stop: np.asarray(opacities[start:stop], dtype=np.float64),
+        opacity_shape=opacities.shape, volumes=volumes)
     receipt = dict(plan["receipt"])
     result = dict(native_appearance)
     receipt["source_particlefield_digest"] = _sha256_and_size(source)[0]
@@ -1071,8 +1082,14 @@ def _apply_task_volume_clearance(native_appearance: Mapping[str, Any], *, volume
     # Author on the session layer so the shared root layer is never edited; Export flattens both.
     stage.SetEditTarget(stage.GetSessionLayer())
     # Back to the field's own frame; colour, size and opacity stay exactly as they were.
-    pressed_local = (plan["positions_world"] - matrix[3, :3]) @ np.linalg.inv(matrix[:3, :3])
-    field.GetAttribute("positions").Set(Vt.Vec3fArray.FromNumpy(pressed_local.astype(np.float32)))
+    inverse = np.linalg.inv(matrix[:3, :3])
+    pressed_local = np.empty((local.shape[0], 3), dtype=np.float32)
+    for start in range(0, local.shape[0], CHUNK_ROWS):
+        stop = min(start + CHUNK_ROWS, local.shape[0])
+        pressed_local[start:stop] = ((apply_press(world(start, stop), start, plan) - matrix[3, :3]) @ inverse
+                                     ).astype(np.float32)
+    field.GetAttribute("positions").Set(Vt.Vec3fArray.FromNumpy(pressed_local))
+    del pressed_local
     directory = output_root / "native-appearance-clearance"
     try:
         directory.mkdir(mode=0o750, exist_ok=False)

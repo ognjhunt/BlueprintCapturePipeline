@@ -1,6 +1,5 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/beta_screening_review_videos.py
-#   src/blueprint_pipeline/beta_screening_review_videos_http.py
 #   src/blueprint_pipeline/beta_policy_screening_launch.py
 #   src/blueprint_pipeline/beta_policy_screening_result.py
 #   src/blueprint_pipeline/beta_policy_screening_coordinator.py
@@ -17,7 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import Request  # module level: the route test's dependency annotation must resolve
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
 from blueprint_pipeline import beta_screening_review_videos as videos
@@ -344,33 +342,6 @@ def test_an_altered_manifest_serves_nothing(world):
     with pytest.raises(PreviewUnavailable):
         videos.open_video(request_id="job-1", capture_id="walkthrough-job-1", digest=reference["videos"][0]["sha256"],
                           storage_root=world.storage)
-
-
-def test_the_signed_read_serves_inline_uncached_video_only_to_the_webapp(world, monkeypatch):
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from blueprint_pipeline import beta_screening_review_videos_http as http
-
-    def admission(request: Request):
-        request.state.intake_client_id = request.headers.get("x-test-client", "")
-    app = FastAPI()
-    http.register_beta_screening_review_video_routes(app, require_admission=admission)
-    video = _retain(world)["videos"][0]
-    monkeypatch.setenv(http.HANDOFF_STORAGE_ROOT_ENV, str(world.storage))
-    client = TestClient(app)
-    url = (f"/api/live-pipeline/beta-screening-review-videos/{video['sha256'][7:]}"
-           "?request_id=job-1&capture_id=walkthrough-job-1")
-    signed = {"x-blueprint-pipeline-signature": "sha256=x", "x-test-client": "blueprint-webapp"}
-    response = client.get(url, headers=signed)
-    assert response.status_code == 200 and len(response.content) == video["size_bytes"]
-    assert hashlib.sha256(response.content).hexdigest() == video["sha256"][7:]
-    assert response.headers["content-type"] == "video/mp4"
-    assert response.headers["cache-control"] == "private, no-store"
-    assert response.headers["content-disposition"] == "inline"
-    assert client.get(url, headers={**signed, "x-test-client": "robot-team"}).status_code == 403
-    assert client.get(url, headers={"x-test-client": "blueprint-webapp"}).status_code == 403
-    assert client.get(url.replace("job-1&", "job-2&"), headers=signed).status_code == 404
-    assert client.get(url.replace(video["sha256"][7:], "f" * 64), headers=signed).status_code == 404
 
 
 def test_mp4_duration_reads_both_header_versions_and_refuses_anything_else(tmp_path):

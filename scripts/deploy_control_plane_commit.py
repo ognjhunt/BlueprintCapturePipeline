@@ -468,8 +468,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-team-scene-packet-remote.timer",
     "blueprint-team-scene-packet-remote.path",
-    "blueprint-beta-policy-screening.service",
-    "blueprint-beta-policy-screening.timer",
     # The scene stage's no-spend maintenance pass: packet recovery and requeue, the site's
     # success-rule exchange, held notices, cold-storage restore and probe queueing.
     "blueprint-scene-stage-maintenance.service",
@@ -577,10 +575,6 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-task-evaluation-launch-preparation.timer",
-    # The drained early trial: it settles, reconciles and publishes what it owes
-    # and launches nothing (beta_policy_screening_worker). This does not release
-    # the paid agent dispatcher's existing explicit hold.
-    "blueprint-beta-policy-screening.timer",
     # No-spend: the scene stage's maintenance pass (scene_stage_maintenance). It
     # recovers and requeues team halves, runs the site's success-rule exchange,
     # delivers held notices, restores an open job's run and only queues a probe.
@@ -671,6 +665,8 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     "blueprint-team-evaluation-runner.path",
     "blueprint-task-evaluation-configured-controls-progression.path",
     "blueprint-task-evaluation-configured-controls-progression.timer",
+    # Blueprint's own early trial of open robot software (owner, 2026-11-14).
+    "blueprint-beta-policy-screening.timer",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the

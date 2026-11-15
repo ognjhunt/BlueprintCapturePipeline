@@ -522,14 +522,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         team_remote_unit = unit_dir / f"blueprint-team-scene-packet-remote{suffix}"
         team_remote_unit.write_text(body, encoding="utf-8")
         team_remote_units.append(team_remote_unit)
-    screening_service = unit_dir / "blueprint-beta-policy-screening.service"
-    screening_service.write_text(
-        "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-beta-policy-screening\n", encoding="utf-8"
-    )
-    screening_timer = unit_dir / "blueprint-beta-policy-screening.timer"
-    screening_timer.write_text(
-        "[Timer]\nOnUnitInactiveSec=1min\n", encoding="utf-8"
-    )
     scene_stage_units = []
     for suffix, body in ((".service", "[Service]\nExecStart=/usr/bin/blueprint-scene-stage-maintenance\n"),
                          (".timer", "[Timer]\nOnUnitInactiveSec=1min\n")):
@@ -659,8 +651,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         team_scene_service,
         team_scene_path,
         *team_remote_units,
-        screening_service,
-        screening_timer,
         *scene_stage_units,
         *additional_sources[10:],
         storage_gc_service,
@@ -737,8 +727,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-team-scene-packet-remote.service",
         "blueprint-team-scene-packet-remote.timer",
         "blueprint-team-scene-packet-remote.path",
-        "blueprint-beta-policy-screening.service",
-        "blueprint-beta-policy-screening.timer",
         "blueprint-scene-stage-maintenance.service",
         "blueprint-scene-stage-maintenance.timer",
         "blueprint-task-evaluation-scene-progression.service",
@@ -790,7 +778,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
-        "blueprint-beta-policy-screening.timer",
         "blueprint-scene-stage-maintenance.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
