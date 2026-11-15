@@ -1017,7 +1017,8 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                 return _refused_live(check, manifest, manifest_path, retract)
             basis = (manifest.get("permission") or {}).get("permission_basis")
             if ((basis == "blueprint_owned_capture" and owned)
-                    or (basis == "site_sharing_statement" and permission.live_grant_holds(check, now()))):
+                    or (basis == "site_sharing_statement" and permission.live_grant_holds(check, now()))
+                    or (basis == "internal_test" and permission.internal_test_holds(check, now()))):
                 return {"status": "current", "simulation_revision": revision}
             permission.take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}

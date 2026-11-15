@@ -32,6 +32,7 @@ laptop too. Standard library only.
         --owner-organization-id O --approved-by U --approval-evidence "<owner approval>" --wait   # preview
     python3 scripts/operator_door.py confirm-owner-success-contract ... --apply --apply-ack sha256:<preview apply_ack> \
         --ack confirm-owner-success-contract --wait
+    python3 scripts/operator_door.py test-job --idempotency-key K --label L --footage-id F --description "..." --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -78,7 +79,7 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
                 "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded",
-                "confirmed", "already_confirmed", "already_restored", "already_retired"}
+                "confirmed", "already_confirmed", "already_restored", "already_retired", "submitted"}
 GITHUB_API = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline"
 # The only job that attests a main commit. Its success is what a deploy's verification needs.
 ATTESTING_JOB = "SBOM, license, and provenance contract"
@@ -957,6 +958,10 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         elif action == "renew":
             sub.add_argument("--for", dest="ttl_seconds", type=_scratch_duration, required=True)
         _add_wait(sub, 120)
+    test_job = commands.add_parser("test-job", help="start one internal test job from the website's test footage")
+    for flag in ("--idempotency-key", "--label", "--footage-id", "--description"):
+        test_job.add_argument(flag, required=True)
+    _add_wait(test_job, 600)
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
     selected_modes = selected.add_mutually_exclusive_group()
@@ -1061,6 +1066,12 @@ def run(args: argparse.Namespace) -> int:
         return _submit(_scene_budget_body(args), args)
     elif command == "confirm-owner-success-contract":
         return _submit(_owner_success_body(args), args)
+    elif command == "test-job":
+        body = {"kind": "test-job", "idempotency_key": args.idempotency_key, "label": args.label,
+                "footage_id": args.footage_id, "description": args.description}
+        # The same key is the same request: a lost response is retried, never doubled.
+        args.operation_key = "test-job-" + hashlib.sha256(args.idempotency_key.encode()).hexdigest()[:40]
+        return _submit(body, args)
     elif command == "selected-handoff":
         with Path(args.selector_file).open("rb") as stream:
             raw = stream.read(4097)

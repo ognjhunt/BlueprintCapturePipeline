@@ -264,6 +264,18 @@ def _scene_window_properties(config: DoorConfig, _request: dict[str, Any]) -> tu
             "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane " + str(Path(config.spool_root) / "results"))
 
 
+def _test_job_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SERVICE_USER": "blueprint", "DOOR_TEST_JOB_REQUEST": json.dumps(request, sort_keys=True)}
+
+
+def _test_job_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """The window extension's sandbox, with only the Pipeline sync token left of the provider secrets."""
+    secrets = "/etc/blueprint/provider-secrets"  # the one hidden path the window's sandbox leaves visible
+    return (*_scene_window_properties(config, _request), f"TemporaryFileSystem={secrets}:ro",
+            f"BindReadOnlyPaths={secrets}/pipeline_sync_token")
+
+
 def _scene_budget_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
             "DOOR_SERVICE_USER": "blueprint",
@@ -411,6 +423,11 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         lambda request: hashlib.sha256((request["capture"] + ("/apply" if request["apply"] else "/plan"))
                                        .encode("utf-8")).hexdigest()[:12],
         _parked_delivery_environment, _parked_delivery_properties),
+    # Named by a hash of the key. The signed website call needs the network and the Pipeline sync token; it
+    # reads the month report and writes its ledger under the control-plane state and its result.
+    "test-job": _LaunchSpec("blueprint-operator-door-test-job", "door-test-job.sh", "5min",
+                            lambda request: hashlib.sha256(request["idempotency_key"].encode("utf-8")).hexdigest()[:12],
+                            _test_job_environment, _test_job_properties),
     "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
                                 lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
                                                                 .encode("utf-8")).hexdigest()[:12],

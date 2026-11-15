@@ -672,7 +672,8 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
                 if check["outcome"] == "rights_refused":
                     return _refused_live(check, manifest, manifest_path, retract)
             # A recorded definite "no" (this pass's read or the simulation package's) stops any basis.
-            if check.get("outcome") != "rights_refused" and (owned or live_grant_holds(check, now())):
+            if check.get("outcome") != "rights_refused" and (owned or live_grant_holds(check, now())
+                                                             or permission.internal_test_holds(check, now())):
                 return {"status": "current", "clip_revision": revision}
             if check.get("outcome") == "rights_refused":
                 return _refused_live(check, manifest, manifest_path, retract)

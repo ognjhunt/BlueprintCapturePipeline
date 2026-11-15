@@ -17,7 +17,7 @@ from urllib.parse import quote, urlsplit
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .safe_outbound_http import pinned_api_policy, request as safe_request
-from .sharing_statement import SHARING_STATEMENT_VERSIONS
+from .sharing_statement import INTERNAL_TEST_VERSION, SHARING_STATEMENT_VERSIONS, internal_test_label
 from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 
@@ -46,9 +46,10 @@ _SOURCE_KEYS = (
 # The statements that also share a job in full with approved deployment
 # companies (v4, 2026-11-12, and any later one) are listed once, in
 # `sharing_statement.SHARING_STATEMENT_VERSIONS`, and accepted here from there.
-# Any other version is refused.
+# An internal test job's grant (`internal_test.v1`) is accepted with its marker
+# in the rights (below). Any other version is refused.
 RECORDING_RIGHTS_STATEMENT_VERSIONS = frozenset({"2026-09-18.v1", "2026-11-02.v2", "2026-11-11.v3",
-                                                 *SHARING_STATEMENT_VERSIONS})
+                                                 *SHARING_STATEMENT_VERSIONS, INTERNAL_TEST_VERSION})
 
 
 OWNER_OBSERVATION_REASON_CODES = frozenset({
@@ -247,11 +248,14 @@ def validate_observation(
             or attestation["statement_version"] not in RECORDING_RIGHTS_STATEMENT_VERSIONS
             or not _iso(attestation["recorded_at_iso"])):
         _refuse("capture_owner_attestation_invalid")
+    test_job = attestation["statement_version"] == INTERNAL_TEST_VERSION
     rights = _object(value["capture_rights"], {
         "derived_scene_generation_allowed", "data_licensing_allowed",
         "capture_contributor_payout_eligible", "consent_status", "consent_revoked",
-        "consent_scope", "statement_version", "recorded_at_iso",
+        "consent_scope", "statement_version", "recorded_at_iso", *(("internal_test",) if test_job else ()),
     })
+    if test_job and internal_test_label(INTERNAL_TEST_VERSION, rights["internal_test"]) is None:
+        _refuse("capture_owner_attestation_invalid")
     if (rights["derived_scene_generation_allowed"] is not True
             or rights["data_licensing_allowed"] is not False
             or rights["capture_contributor_payout_eligible"] is not False

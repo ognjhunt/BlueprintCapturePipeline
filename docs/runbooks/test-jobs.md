@@ -1,0 +1,96 @@
+# Internal test jobs (real host, real money)
+
+A test job is a whole real job, started from Blueprint's own test footage instead of a site's upload. It runs
+through every real stage and every paid admission a site's job does. It is never shown to a deployment company
+and nothing about it is sent to anyone. For a $0 check of the code paths, use `test-job-matrix.md` instead.
+
+The existing monthly limit is the brake; no cap, limit or price is raised for test jobs.
+
+## Footage
+
+Test footage lives in the website's storage bucket, one folder per clip:
+
+```
+internal-test-footage/<footage_id>/walkthrough.mp4   (or .mov, exactly one of the two)
+internal-test-footage/<footage_id>/source.json
+```
+
+`footage_id` is lower-case letters, digits and hyphens (at most 64). Only the owner, or a person the owner names,
+adds a clip; a cloud session cannot write to the bucket. Any video may be used for internal tests (owner,
+2026-11-15). Keep `source.json` beside it anyway so the next reader knows where it came from:
+
+```json
+{"source_page": "https://...", "licence_text": "the licence line exactly as the page states it",
+ "sha256": "<hex of the video file>", "added_by": "<name>", "added_at": "YYYY-MM-DD"}
+```
+
+## Run one job
+
+```bash
+python3 scripts/operator_door.py test-job --idempotency-key 20261201:library-aisle --label library-aisle \
+  --footage-id pexels-854533 --description "Move the blue book from the cart to the top shelf." --wait
+```
+
+The door answers with the job id, its capture id and the label. The same key always gives the same job; the same
+key with another label, footage or description is refused.
+
+## Run a batch
+
+Write a matrix file:
+
+```json
+{"jobs": [{"label": "library-aisle", "footage_id": "pexels-854533", "description": "Move the blue book ..."},
+          {"label": "kitchen-push", "footage_id": "pexels-3773483", "description": "Push the tray ..."}]}
+```
+
+```bash
+python3 scripts/test_jobs.py submit --matrix jobs.json -k 2 --state run.json
+python3 scripts/test_jobs.py follow --state run.json --report report.json
+python3 scripts/test_jobs.py report --state run.json
+```
+
+`submit` starts the rows in order, never more than two at a time. Before each one it reads `door status` and
+stops when the month's counted spend (spend plus held reservations) plus one job's expected spend ($20) would
+reach the stop line; the door checks the same against the host's own spend report and refuses
+`test_job_month_stop_line`, or `test_job_month_closed:<reason>` when paid admission is closed. The stop line is one
+of the account's existing alert lines, `STOP_LINE` in `src/blueprint_pipeline/internal_test_job_door.py`: `"100"`
+is the monthly limit itself. `submit` also stops at any refusal or missing answer rather than going on. It waits through the hour
+of the daily deploy window (15:00 UTC). `run.json` remembers what was started, so running `submit` again skips
+rows already started. The key is the run id and the label with spaces made hyphens, so the labels "a b" and
+"a-b" in one run share a key; give them different labels.
+
+## Two at a time
+
+The host has 8 GB of memory and no swap. The door refuses a third test job while two are in flight
+(`test_job_two_in_flight`). A job stops counting when the website refused it (nothing was made), when its zip
+has been delivered, when its preparation ended for good (`pipeline_job_ledger.json` `terminal_*` other than
+`terminal_success`), when its scene finished or ended for good (the scene intent's `progression.json` reads
+`completed`, or its `outcome.json` is terminal), or 7 days after it was asked for. An ask whose answer was lost
+keeps its slot until it is asked again with the same key.
+
+## What it costs
+
+About $15-20 for a rigid job on today's prices: World Labs $6-14 (seen on recent jobs), upstream reading up to
+$5, object authoring $3.5-5; its scene is built on the host with no rented GPU. A door or drawer job also rents a
+GPU for its scene. The month's $300 limit counts test jobs like any other job.
+
+## Reading the report
+
+One line per job: label, the job kind the Atlas review returned, the stage reached, settled spend ("spend not
+shown" when `door status`, which lists only its top jobs, does not name the job), the first failure code
+(including a package the website refused, and "stalled" for a job with no package and no ending after 7 days)
+and the start of the zip digest. The JSON adds the footage id, job and capture ids, times (asked
+for, job ledger last changed, package built), spend by provider (settled and held, from `door status`, matched by
+job or capture id) and the package's `permission` (`internal_test`, with the label).
+
+A test job is found again by its label in: the website's request (`internal_test.label`), the capture's task
+context (`pipeline/website_task_context.json`), the clip and package manifests (`permission.label`), the
+permission check (`pipeline/company_clip/statement_check.json`) and the door's ledger
+(`/var/lib/blueprint/pipeline-control-plane/internal-test-jobs/`). Spend rows carry the job id, not the label.
+Nothing here deletes anything; retiring a test job's files is an owner-approved retirement like any other.
+
+## When the monthly limit refuses
+
+`submit` and the door refuse and say why; nothing is queued. A job already running keeps its own reservations and its next
+paid step is refused at admission with `account_monthly_spend_limit_reached`, exactly as a site's job would be.
+Do not raise any limit for a test. Wait for the next month, or ask the owner.
