@@ -19,8 +19,15 @@ from .adp_task_scoring import (
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .articulated_task_success_contract_schema import task_success_contract_schema
 
-
 CONTROL_IDS = ("zero_action_negative", "deterministic_scripted_positive")
+
+
+def controls_required(contract: Mapping[str, Any]) -> bool:
+    """Moved unchanged from ``native_policy_canary_control_gate`` when the internal canary left."""
+    return (contract.get("criteria") or {}).get("controls") == {
+        "mode": "required_per_cell", "control_ids": list(CONTROL_IDS)}
+
+
 WARNINGS = {
     "controls_omitted_by_user": "Controls omitted at the user's request — diagnostic results remain unqualified.",
     "configured_controls_pending": "Controls pending — results are unqualified.",
@@ -189,7 +196,6 @@ def validate_policy_canary_result(value: Mapping[str, Any]) -> dict[str, Any]:
             raise TaskEvaluationPolicyCanaryResultError("policy_canary_result_required_controls_unverified")
     elif result["scene_controls_status"] == "controls_omitted_by_user":
         omission = result.get("control_omission") or {}
-        from .native_policy_canary_control_gate import controls_required
         if (omission.get("task_success_contract_digest") != task_success_contract["contract_digest"]
                 or controls_required(task_success_contract)
                 or counts["diagnostic_control_rollout_count"] != 0

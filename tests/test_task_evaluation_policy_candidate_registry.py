@@ -7,7 +7,9 @@ import dataclasses
 import pytest
 
 from blueprint_pipeline import task_evaluation_policy_candidate_registry as registry
-from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import CANDIDATE_IDS
+
+#: The retired policy-canary setup's frozen pair (``task_evaluation_policy_canary_scene_setup.CANDIDATE_IDS``).
+CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 
 
 def test_the_registry_never_overstates_what_can_run() -> None:

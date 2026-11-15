@@ -40,7 +40,7 @@ WARNINGS = {
 
 def control_omission_from_runtime_inputs(runtime_inputs, *, error_factory=ValueError):
     """Join one identical, validated omission authority across the entire matrix."""
-    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+    from .policy_canary_scene_resolution import validate_control_omission_authority
 
     cells = runtime_inputs.get("cells") or []
     omitted = [cell.get("control_diagnostic", {}).get("omission_authority") for cell in cells
@@ -60,7 +60,7 @@ def control_omission_from_runtime_inputs(runtime_inputs, *, error_factory=ValueE
 
 def build_control_diagnostic(contract, *, omission=None):
     """Produce the same typed per-cell control fact later retained in delivery."""
-    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+    from .policy_canary_scene_resolution import validate_control_omission_authority
 
     strict = contract["criteria"].get("controls", {}).get("mode") == "required_per_cell"
     if omission is None:
@@ -75,8 +75,8 @@ def build_control_diagnostic(contract, *, omission=None):
 
 def materialize_control_omission(*, authority, contract, result, delivery_root,
                                 add_artifact, write_immutable, error_factory):
-    from .native_policy_canary_control_gate import controls_required
-    from .native_task_arena_policy_canary_session import validate_control_omission_authority
+    from .task_evaluation_policy_canary_result import controls_required
+    from .policy_canary_scene_resolution import validate_control_omission_authority
 
     try:
         admitted = validate_control_omission_authority(

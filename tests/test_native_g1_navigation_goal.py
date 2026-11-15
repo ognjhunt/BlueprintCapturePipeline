@@ -13,7 +13,7 @@ from blueprint_pipeline.native_g1_navigation_goal import (
     validate_g1_navigation_goal,
     validate_g1_navigation_goal_authority,
 )
-from tests.test_task_evaluation_policy_canary_setup import _setup as canary_setup
+from tests.policy_canary_setup_support import public_setup as canary_setup
 
 
 def _task_spec() -> dict:

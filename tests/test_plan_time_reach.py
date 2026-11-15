@@ -13,26 +13,12 @@ import math
 import numpy as np
 import pytest
 
-from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-from blueprint_pipeline.beta_policy_screening_plan import (
-    build_screening_plan,
-    validate_screening_plan,
-)
 from blueprint_pipeline.robot_arm_path_clearance import (
     SCRIPTED_CARRY_FLAG,
     arm_reach_bound,
     carry_grasps,
-    reach_insufficient_code,
     rigid_reach_shortfall,
 )
-from blueprint_pipeline.website_candidate_feasibility import (
-    _decide_fixed,
-    bound_station,
-    candidate_feasibility,
-    infeasible_blockers,
-    is_measured_refusal,
-)
-from tests.test_beta_policy_screening_plan import NOW, inputs, scene
 
 STATION = {"position_world_m": [0.4674, -0.7031, 0.8166], "orientation_xyzw": [0.0, 0.0, 0.9782156, 0.2075915]}
 #: A station across the room: the whole tray is beyond the chain bound at both ends.
@@ -118,111 +104,6 @@ def test_the_place_is_measured_wherever_the_task_accepts_the_object():
     assert turned["status"] == "within_bound" and turned["place_region"]["yaw_free_rad"] == pytest.approx(math.pi)
     nearest = {row["phase"]: row["object_nearest_distance_m"] for row in turned["phases"]}
     assert nearest["place"] < {row["phase"]: row["object_nearest_distance_m"] for row in held["phases"]}["place"]
-
-
-def test_droid_candidates_proven_out_of_reach_at_the_packet_station_are_infeasible_before_any_quote():
-    feasibility = candidate_feasibility(scene_plan=_plan(station=FAR),
-                                        catalog=_catalog("pi05_droid", "groot_n17_droid"), profile={})
-    row = feasibility["candidates"]["pi05_droid"]
-    assert row["status"] == "infeasible" and row["reach_source"] == "franka_chain_reach_bound"
-    # Named by the object's nearest point at its farthest phase, not the task's contact.
-    pick = row["reach"]["phases"][0]
-    assert row["blockers"] == [reach_insufficient_code("pick", pick["object_nearest_distance_m"],
-                                                       row["reach"]["reach_bound_m"])]
-    assert row["blockers"][0].startswith("robot_reach_insufficient:pick:1.") and row["blockers"][0].endswith("m_vs_0.990m")
-    assert infeasible_blockers(feasibility) == {"pi05_droid": row["blockers"], "groot_n17_droid": row["blockers"]}
-    assert is_measured_refusal(row["blockers"][0]) and not is_measured_refusal("screening_gpu_memory_floor_unrentable")
-
-
-def test_a_tray_whose_centre_is_out_of_reach_but_near_edge_is_in_reach_is_infeasible_as_the_gate_refuses_it(
-        monkeypatch):
-    # capture-447: the task's contact (the tray's centre) is beyond the bound at both ends from the packet's
-    # station, though its near edge is in reach. The bundle's gate refuses that packet, so planning does too.
-    from blueprint_pipeline import team_scene_packet
-    from blueprint_pipeline.robot_arm_path_clearance import reach_refusal_code
-
-    station = {**STATION, "stance_digest": "sha256:" + "c" * 64}
-    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {
-        "robot_station": station, "robot_station_search": {"cleared": False, "results": [
-            {"stance_digest": station["stance_digest"], "status": "blocked",
-             "blockers": ["robot_rigid_pick_place_unreachable:approach"]}]}})
-    feasibility = candidate_feasibility(scene_plan=_plan(), catalog=_catalog("pi05_droid", "groot_n17_droid"),
-                                        profile={})
-    row = feasibility["candidates"]["pi05_droid"]
-    assert row["status"] == "infeasible" and row["reach_source"] == "franka_chain_reach_bound"
-    assert row["reach"]["task_contact_beyond"] == ["place", "pick"] and row["reach"]["beyond"] == []
-    place = next(item for item in row["reach"]["phases"] if item["phase"] == "place")
-    assert row["blockers"] == [reach_refusal_code(row["reach"])] == [
-        reach_insufficient_code("place", place["distance_m"], row["reach"]["reach_bound_m"])]
-    assert infeasible_blockers(feasibility) == {"pi05_droid": row["blockers"], "groot_n17_droid": row["blockers"]}
-    assert is_measured_refusal(row["blockers"][0])
-
-
-@pytest.mark.parametrize("status, expected, blockers, flags", [
-    ("clear", "feasible", [], None),
-    ("blocked", "feasible", [], [SCRIPTED_CARRY_FLAG]),
-    (None, "feasible", [], ["packet_station_search_not_recorded"])])
-def test_within_the_bound_the_packet_gates_own_search_is_evidence_and_a_miss_is_never_a_refusal(
-        monkeypatch, status, expected, blockers, flags):
-    from blueprint_pipeline import team_scene_packet
-
-    near = {**STATION, "position_world_m": [0.1, -0.5, 0.8166], "stance_digest": "sha256:" + "b" * 64}
-    recorded = {} if status is None else {"robot_station": near, "robot_station_search": {
-        "cleared": status == "clear", "results": [{"stance_digest": near["stance_digest"], "status": status,
-            "blockers": [] if status == "clear" else ["robot_rigid_pick_place_unreachable:lift"]}]}}
-    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: recorded)
-    plan = _plan(station={key: near[key] for key in ("position_world_m", "orientation_xyzw")})
-    row = candidate_feasibility(scene_plan=plan, catalog=_catalog("pi05_droid"), profile={})["candidates"]["pi05_droid"]
-    assert (row["status"], row["blockers"], row.get("flags")) == (expected, blockers, flags)
-    assert row["reach_source"] == ("packet_station_search" if status == "clear" else "franka_chain_reach_bound")
-
-
-def test_a_candidate_on_another_arm_an_articulated_task_or_the_g1_lane_is_not_measured_with_the_franka():
-    catalog = {"candidates": [{"candidate_id": "other", "interface": {"robot_profile_id": "someone_elses_arm"}},
-                              {"candidate_id": "g1", "interface": {"robot_profile_id": DROID}}]}
-    rows = candidate_feasibility(scene_plan=_plan(), catalog=catalog,
-                                 profile={"screening_candidates": {"g1": {"native_g1": {}}}})["candidates"]
-    assert rows["other"] == rows["g1"] == {"status": "unassessed",
-                                           "blockers": ["embodiment_reach_manifest_not_registered"]}
-    push = candidate_feasibility(scene_plan=_plan(strategy="planar_push"), catalog=_catalog("pi05_droid"), profile={})
-    assert push["candidates"]["pi05_droid"]["blockers"] == ["packet_arm_reach_task_unmodeled"]
-
-
-def test_a_measured_own_arm_solve_outranks_the_declared_reach_either_way():
-    declared_ok = {"status": "feasible", "blockers": [], "reach_m": 1.453, "station_basis": "scene_packet_station"}
-    proven = {"status": "out_of_reach", "beyond_reach": {"arm": "arm", "phase_id": "place", "distance_m": 1.0619,
-                                                          "reach_bound_m": 0.9}}
-    row = _decide_fixed(declared_ok, proven)
-    assert (row["status"], row["blockers"], row["reach_source"]) == (
-        "infeasible", ["robot_reach_insufficient:place:1.062m_vs_0.900m"], "own_arm_model")
-    declared_short = {**declared_ok, "status": "infeasible", "blockers": ["team_embodiment_station_out_of_reach"]}
-    row = _decide_fixed(declared_short, {"status": "passed"})
-    assert (row["status"], row["blockers"], row["reach_source"]) == ("feasible", [], "own_arm_model")
-    # Its run binds it where it was solved, so the declared figure no longer vetoes the binding.
-    plan = _plan()
-    assert bound_station(row, plan) == ({key: STATION[key] for key in ("position_world_m", "orientation_xyzw")}, True)
-    # A search miss or no model leaves the declared verdict, and the row says which source decided.
-    for arm in ({"status": "flagged"}, {"status": "unassessed", "reason": "task_phases_unavailable"}, None):
-        row = _decide_fixed(declared_ok, arm)
-        assert (row["status"], row["reach_source"]) == ("feasible", "declared_reach_m")
-        assert bound_station(row, plan) == (None, False)
-
-
-def test_an_infeasible_reach_is_listed_never_quoted_and_the_site_reads_it_as_measured(tmp_path):
-    catalog, capabilities, quotes = inputs()
-    code = "robot_reach_insufficient:place:1.107m_vs_0.990m"
-    capabilities["candidate_infeasible"] = {row["candidate_id"]: [code] for row in catalog["candidates"]}
-    value = build_screening_plan(catalog, scene(), campaign_id="campaign1", capabilities=capabilities,
-                                 cost_quotes=quotes, now=NOW)
-    assert {row["status"] for row in value["candidates"]} == {"infeasible"}
-    assert value["maximum_planned_cost_usd"] == "0.00" and validate_screening_plan(value) == value
-    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
-    [published] = coordinator.pending_publications(queue_root=tmp_path)
-    # Nothing is reserved, the campaign ends blocked, and every row carries the measured-geometry marker
-    # the site's outcome reads as infeasible (WebApp screeningCandidateState), with the measured numbers.
-    assert published["status"] == "blocked" and published["budget"]["committed_upper_bound_usd"] == "0"
-    assert all(row["status"] == "unavailable" and row["blockers"] == [coordinator.INFEASIBLE_BLOCKER, code]
-               for row in published["candidates"])
 
 
 def test_the_carry_grasps_are_the_tasks_own_then_the_intakes_tilted_and_side_on_ones():
@@ -498,38 +379,6 @@ def _wide_plan(station, spec):
             "task_spec": spec}
 
 
-def test_planning_refuses_the_recorded_capture_447_station_by_the_gates_own_reason(monkeypatch):
-    # Nearest point 0.729 m at the place, contact 1.086 m, bound 0.990 m: infeasible, named as the gate names it.
-    from blueprint_pipeline import team_scene_packet
-
-    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {
-        "robot_station": OLD_STATION, "robot_station_search": {"cleared": False, "results": [
-            {"stance_digest": OLD_STATION["stance_digest"], "status": "blocked",
-             "blockers": ["robot_rigid_pick_place_unreachable:carry"]}]}})
-    row = candidate_feasibility(scene_plan=_wide_plan(OLD_STATION, _wide_spec()), catalog=_catalog("pi05_droid"),
-                                profile={})["candidates"]["pi05_droid"]
-    assert row["reach"]["status"] == "within_bound" and row["reach"]["task_contact_beyond"] == ["place"]
-    assert (row["status"], row["blockers"], row["reach_source"]) == (
-        "infeasible", [CODE_447], "franka_chain_reach_bound")
-
-
-@pytest.mark.parametrize("status, source, flags", [("clear", "packet_station_search", None),
-                                                   ("blocked", "franka_chain_reach_bound", [SCRIPTED_CARRY_FLAG])])
-def test_planning_a_carry_comfortably_in_reach_is_unchanged(monkeypatch, status, source, flags):
-    from blueprint_pipeline import team_scene_packet
-
-    box = {"minimum": [-0.03, -0.03, -0.03], "maximum": [0.03, 0.03, 0.03]}
-    spec = _wide_spec(start=[0.5, 0.0, SHOULDER_Z, 0.0, 0.0, 0.0, 1.0], target=[0.4, 0.3, SHOULDER_Z],
-                      contact=[0.0, 0.0, 0.0], bounds=box)
-    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {
-        "robot_station": OLD_STATION, "robot_station_search": {"cleared": status == "clear", "results": [
-            {"stance_digest": OLD_STATION["stance_digest"], "status": status,
-             "blockers": [] if status == "clear" else ["robot_rigid_pick_place_unreachable:carry"]}]}})
-    row = candidate_feasibility(scene_plan=_wide_plan(OLD_STATION, spec), catalog=_catalog("pi05_droid"),
-                                profile={})["candidates"]["pi05_droid"]
-    assert (row["status"], row["blockers"], row["reach_source"], row.get("flags")) == ("feasible", [], source, flags)
-
-
 # A put-down the success contract accepts anywhere in a region: its nominal target 1.02 m from the shoulder,
 # beyond the 0.990 m bound, while the region's nearest edge is 0.88 m away.
 SMALL_BOX = {"minimum": [-0.03, -0.03, -0.03], "maximum": [0.03, 0.03, 0.03]}
@@ -542,71 +391,6 @@ def _region_spec():
     criteria = {"destination_containment": {"mode": "required", "position_bounds_world_m": region},
                 "orientation": {"mode": "required", "reference_xyzw": [0.0, 0.0, 0.0, 1.0], "tolerance_rad": 0.0}}
     return {**spec, "task_success_contract": {"criteria": criteria}}
-
-
-def test_a_nominal_put_down_beyond_reach_inside_an_accepted_region_in_reach_is_flagged_never_held(monkeypatch):
-    from blueprint_pipeline.robot_arm_path_clearance import (
-        NOMINAL_CONTACT_FLAG,
-        contact_reach_status,
-        object_reach_inputs,
-        reach_refused,
-        rigid_carry_verdict,
-    )
-    from blueprint_pipeline.team_scene_packet import _carrying_station
-
-    spec = _region_spec()
-    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
-    place = next(row for row in reach["phases"] if row["phase"] == "place")
-    assert place["distance_m"] == pytest.approx(1.02, abs=5e-4) and reach["task_contact_beyond"] == ["place"]
-    assert place["contact_admissible_distance_m"] == pytest.approx(0.88, abs=5e-4)
-    assert reach["task_contact_admissible_beyond"] == [] and not reach_refused(reach)
-    assert contact_reach_status(reach) == "flagged"
-    miss = {"status": "blocked", "blockers": ["robot_rigid_pick_place_unreachable:carry"]}
-    verdict = rigid_carry_verdict(miss, reach)
-    assert verdict["status"] == "flagged" and verdict["blockers"] == []
-    assert verdict["flags"] == [SCRIPTED_CARRY_FLAG, NOMINAL_CONTACT_FLAG]
-    assert verdict["advisories"][-1] == f"{NOMINAL_CONTACT_FLAG}:place:1.020m_vs_0.990m"
-    # Planning agrees: feasible, flagged.
-    from blueprint_pipeline import team_scene_packet
-
-    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {
-        "robot_station": OLD_STATION, "robot_station_search": {"cleared": False, "results": [
-            {"stance_digest": OLD_STATION["stance_digest"], **miss}]}})
-    row = candidate_feasibility(scene_plan=_wide_plan(OLD_STATION, spec), catalog=_catalog("pi05_droid"),
-                                profile={})["candidates"]["pi05_droid"]
-    assert (row["status"], row["flags"]) == ("feasible", [SCRIPTED_CARRY_FLAG, NOMINAL_CONTACT_FLAG])
-    # A stance that reaches the nominal target too ranks first, whatever the search's own rank.
-    ahead = {**OLD_STATION, "position_world_m": [0.3, 0.0, 0.0], "stance_digest": "sha256:" + "a" * 64}
-    tried = _scripted(monkeypatch, clears=False)
-    station, record = _carrying_station([OLD_STATION, ahead], task_spec=spec, collision="unused.usda",
-                                        profile=PANDA_RESET)
-    assert tried == [ahead["stance_digest"], OLD_STATION["stance_digest"]] and station is ahead
-    assert record["stances_in_reach"] == 2 and NOMINAL_CONTACT_FLAG not in record["flags"]
-    # Alone, the region-only stance stands, flagged.
-    station, record = _carrying_station([OLD_STATION], task_spec=spec, collision="unused.usda", profile=PANDA_RESET)
-    assert station is OLD_STATION and record["flags"] == [SCRIPTED_CARRY_FLAG, NOMINAL_CONTACT_FLAG]
-
-
-def test_without_the_objects_box_a_contact_beyond_the_bound_is_unassessed_and_flagged_never_held(monkeypatch):
-    from blueprint_pipeline.robot_arm_path_clearance import (
-        contact_reach_status,
-        object_reach_inputs,
-        rigid_carry_verdict,
-    )
-
-    spec = _wide_spec(bounds=None)
-    reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=OLD_STATION, **object_reach_inputs(spec))
-    assert reach["status"] == "unassessed" and reach["task_contact_beyond"] == ["place"]
-    assert contact_reach_status(reach) == "unassessed"
-    verdict = rigid_carry_verdict({"status": "blocked", "blockers": ["robot_rigid_pick_place_unreachable:carry"]},
-                                  reach)
-    assert verdict["status"] == "flagged" and verdict["blockers"] == [] and verdict["flags"] == [SCRIPTED_CARRY_FLAG]
-    from blueprint_pipeline import team_scene_packet
-
-    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {})
-    row = candidate_feasibility(scene_plan=_wide_plan(OLD_STATION, spec), catalog=_catalog("pi05_droid"),
-                                profile={})["candidates"]["pi05_droid"]
-    assert row["status"] == "unassessed" and row["blockers"] == ["packet_station_search_not_recorded"]
 
 
 def test_the_recorded_capture_447_numbers_are_still_held_by_name():

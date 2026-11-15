@@ -85,57 +85,6 @@ def _run(*argv: str) -> tuple[int, str]:
     return code, out.getvalue()
 
 
-def _public_policy_request(*, yam=False):
-    from operator_door.public_policy_registration_contract import digest
-    value = {"schema_version": "openwam_piper_policy_install_request.v1", "installation_id": "development-only",
-        "release_commit": "a" * 40, "preparation_authorization_id": "development-only-assets",
-        "preparation_publication_digest": "sha256:" + "b" * 64,
-        "candidate_id": "openwam_alpha_piper_bimanual", "team_id": "blueprint-public-models",
-        "checkpoint_id": "openwam-alpha-piper-12bfca6f", "policy_profile": "openwam_alpha_real_piper.v1",
-        "expected_registry_digest": "sha256:" + "c" * 64, "authorization_reference": "development_only public policy request"}
-    if yam:
-        value.update(schema_version="molmoact2_yam_policy_install_request.v1", candidate_id="molmoact2_bimanual_yam",
-            checkpoint_id="molmoact2-bimanual-yam-8dcbed66", policy_profile="molmoact2_bimanual_yam.v1")
-    value["request_digest"] = digest(value)
-    return value
-
-
-@pytest.mark.parametrize("yam", [False, True])
-def test_public_policy_install_cli_http_keeps_exact_request_and_retry_identity(door, tmp_path, monkeypatch, yam):
-    request = _public_policy_request(yam=yam)
-    path = tmp_path / "request.json"
-    path.write_text(json.dumps(request))
-    kind = "install-public-yam-policy" if yam else "install-public-piper-policy"
-    args = (kind, "--request-file", str(path))
-    code, output = _run(*args)
-    assert code == 0
-    request_id = json.loads(output)["id"]
-    retry_code, retry = _run(*args)
-    assert retry_code == 0 and json.loads(retry)["id"] == request_id
-    saved = json.loads((door["state"] / "requests" / "pending" / (request_id + ".json")).read_text())
-    assert saved["request"] == {"kind": kind, "request": request}
-    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
-    assert _run(*args)[0] == 3
-
-
-def test_public_policy_install_cli_rejects_unsealed_or_duplicate_fields_without_network(tmp_path, monkeypatch):
-    path = tmp_path / "request.json"
-    request = _public_policy_request()
-    request["expected_registry_digest"] = "sha256:" + "d" * 64
-    path.write_text(json.dumps(request))
-    monkeypatch.setattr(client, "_request", lambda *_a, **_k: pytest.fail("malformed request reached network"))
-    assert _run("install-public-piper-policy", "--request-file", str(path))[0] == 2
-    path.write_text('{"installation_id":"first",' + json.dumps(_public_policy_request())[1:])
-    assert _run("install-public-piper-policy", "--request-file", str(path))[0] == 2
-
-
-def test_public_policy_install_cli_rejects_wrong_fixed_model_operation_before_http(tmp_path, monkeypatch):
-    path = tmp_path / "request.json"
-    path.write_text(json.dumps(_public_policy_request()))
-    monkeypatch.setattr(client, "_request", lambda *_a, **_k: pytest.fail("wrong profile reached network"))
-    assert _run("install-public-yam-policy", "--request-file", str(path))[0] == 2
-
-
 def test_whoami_prints_identity_json(door: dict[str, Any]) -> None:
     code, out = _run("whoami")
     assert code == 0 and json.loads(out) == {"name": "cloud", "scopes": ["deploy", "operate", "read"]}
@@ -654,40 +603,6 @@ def test_wait_fails_on_a_refusal(door: dict[str, Any]) -> None:
     assert code == 1
 
 
-@pytest.mark.parametrize("kind", ["install-public-piper-policy",
-    "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"])
-@pytest.mark.parametrize("change,expected", [({}, 0), ({"status": "failed"}, 1),
-    ({"exit_code": 2}, 1), ({"exit_code": False}, 1), ({"exit_code": None}, 1),
-    ({"disposition": "wrong_operation"}, 1)])
-def test_public_operation_submit_wait_reports_only_its_completed_command(
-    door: dict[str, Any], tmp_path: Path, kind: str, change: dict, expected: int,
-) -> None:
-    if kind == "install-scripted-robot-baselines":
-        from tests.test_operator_door_scripted_registration import request
-        value, disposition = request(), "public_policy_registered"
-    else:
-        from tests.test_operator_door_public_policy_registration import request
-        value = request(yam=kind == "install-public-yam-policy", franka=kind == "install-public-franka-policy")
-        disposition = "public_policy_registered"
-    path = tmp_path / "public-operation.json"
-    path.write_text(json.dumps(value))
-    arguments = (kind, "--request-file", str(path))
-    code, output = _run(*arguments)
-    assert code == 0
-    request_id = json.loads(output)["id"]
-    root = door["state"] / "requests"
-    (root / "pending" / f"{request_id}.json").rename(root / "completed" / f"{request_id}.json")
-    outcome = {"status": "completed", "exit_code": 0, "disposition": disposition, **change}
-    (root / "results" / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
-
-    # Retry the exact submission through real HTTP and its actual --wait path.
-    # A completed enqueue/registration does not claim the simulator ran.
-    code, output = _run(*arguments, "--wait", "--poll", "0.01", "--timeout", "5")
-    final = json.loads(output)
-    assert code == expected and final["id"] == request_id and final["outcome"] == outcome
-    assert not list((root / "pending").glob("*.json"))
-
-
 def test_scope_refusal_on_post_exits_3(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("deploy", SHA)[0] == 3
@@ -962,40 +877,6 @@ def test_selected_handoff_cli_discovers_original_selectors_without_execution(doo
             _run(*args, flag)
     assert _run(*args, "--atlas-status-digest", "sha256:" + "c" * 64)[0] == 2
     assert _run(*args, "--resume-request", "20261009T154718Z-selected-handoff-9ef60661")[0] == 2
-
-
-def test_franka_policy_cli_http_preserves_exact_model_batch_and_retry(door, tmp_path, monkeypatch):
-    from tests.test_operator_door_public_policy_registration import request
-    value = request(franka=True)
-    path = tmp_path / "request.json"
-    path.write_text(json.dumps(value))
-    arguments = ("install-public-franka-policy", "--request-file", str(path))
-    code, output = _run(*arguments)
-    assert code == 0
-    request_id = json.loads(output)["id"]
-    retry_code, retry = _run(*arguments)
-    assert retry_code == 0 and json.loads(retry)["id"] == request_id
-    saved = json.loads((door["state"] / "requests" / "pending" / (request_id + ".json")).read_text())
-    assert saved["request"] == {"kind": "install-public-franka-policy", "request": value}
-    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
-    assert _run(*arguments)[0] == 3
-
-
-def test_scripted_batch_cli_http_binds_exact_batch_and_idempotent_operation(door, tmp_path, monkeypatch):
-    from tests.test_operator_door_scripted_registration import request
-    value = request()
-    path = tmp_path / "request.json"
-    path.write_text(json.dumps(value))
-    arguments = ("install-scripted-robot-baselines", "--request-file", str(path))
-    code, output = _run(*arguments)
-    assert code == 0
-    request_id = json.loads(output)["id"]
-    retry_code, retry = _run(*arguments)
-    assert retry_code == 0 and json.loads(retry)["id"] == request_id
-    saved = json.loads((door["state"] / "requests" / "pending" / (request_id + ".json")).read_text())
-    assert saved["request"] == {"kind": "install-scripted-robot-baselines", "request": value}
-    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
-    assert _run(*arguments)[0] == 3
 
 
 def _scene_window_args(*extra: str, expires: str | None = None) -> list[str]:

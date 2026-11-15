@@ -6,34 +6,26 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
-from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
-from blueprint_pipeline import beta_policy_screening_worker as worker
 from blueprint_pipeline import rigid_robot_free_probe_runner as runner
 from blueprint_pipeline import scene_stage_holds as holds
 from blueprint_pipeline import scene_stage_maintenance as maintenance
 from blueprint_pipeline import team_scene_packet_worker as packets
 from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
 from blueprint_pipeline.scene_run_cold_storage import COLD_STORAGE
-from tests.test_beta_policy_screening_worker import prepared_source_queue
+from tests.scene_stage_support import prepared_source_queue
 
 RELEASE = "a" * 40
 SPENT = {"refusal_retry": {"attempts": 6, "exhausted": True}}
 
 
 @pytest.fixture
-def no_trial(monkeypatch):
-    """Every trial-side entry point fails the test if the maintenance pass reaches it."""
-    def forbidden(name):
-        def call(*_args, **_kwargs):
-            raise AssertionError(f"the maintenance pass called the trial's {name}")
-        return call
+def no_trial():
+    """The maintenance pass loads no module of the removed early trial."""
+    import sys
 
-    for module, name in ((coordinator, "process_screening_queue"), (coordinator, "enqueue_screening_campaign"),
-                         (coordinator, "supersede_campaign"), (worker, "close_queued_rows"),
-                         (capabilities, "build_planning_inputs"), (worker, "enqueue_prepared_scenes"),
-                         (worker, "deliver_publications"), (worker, "publish_screening")):
-        monkeypatch.setattr(module, name, forbidden(name))
+    yield
+    loaded = sorted(name for name in sys.modules if name.startswith("blueprint_pipeline.beta_policy_screening_"))
+    assert not loaded, loaded
 
 
 def _block(world, status):
@@ -150,12 +142,3 @@ def test_the_requeue_goes_through_its_one_function(tmp_path, monkeypatch, no_tri
     monkeypatch.setattr(maintenance, "recover_scene_packets", lambda root: calls.append(root) or {"status": "idle"})
     result = maintenance.scene_stage_pass(queue_root=world["screening_queue"], packet_queue_root=world["packet_queue"])
     assert calls == [world["packet_queue"]] and result["team_scene_packet_requeue"] == {"status": "idle"}
-
-
-def test_the_trial_worker_no_longer_does_the_scene_stage_duties():
-    import inspect
-
-    source = inspect.getsource(worker.main)
-    for duty in ("enqueue_prepared_scenes", "deliver_holds", "requeue_transient_blocked",
-                 "enqueue_rigid_robot_free_probe", "_restore_source_run"):
-        assert duty not in source, duty

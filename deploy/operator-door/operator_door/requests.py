@@ -58,7 +58,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import DoorConfig
-from .public_policy_registration_contract import validate_request as validate_public_policy_registration
 from .admitted_controls import DISPATCHER_HOLD_ONLY
 from .hostinfo import UNIT_NAME
 from .secrets_guard import redact_lines
@@ -86,11 +85,6 @@ _SCOPES = {
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
     "selected-handoff": "operate",
-    "install-public-piper-policy": "operate",
-    "install-public-yam-policy": "operate",
-    "install-public-franka-policy": "operate",
-    "install-public-trlc-policy": "operate",
-    "install-scripted-robot-baselines": "operate",
     # One owner-approved, time-only extension of a sealed scene intent's window.
     "extend-scene-execution-window": "operate",
     # One owner-approved spend/attempt ceiling grant for a sealed scene intent.
@@ -128,7 +122,6 @@ if DISPATCHER_HOLD_ONLY:
     # starts and no money moves.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
                            "confirm-owner-success-contract", "retire-parked-delivery"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -290,13 +283,6 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
     required_scope(kind)
-    if kind in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines"}:
-        _only(body, ("kind", "request"))
-        try:
-            request = validate_public_policy_registration(body.get("request"), operation=kind)
-        except ValueError as error:
-            raise RequestRefused(str(error)) from error
-        return {"kind": kind, "request": request}
     if kind in ("retire-scene", "restore-scene"):
         fields = {"kind", "intent_id", "consent_id", "expected_sha256", "expected_size_bytes"}
         if kind == "retire-scene":

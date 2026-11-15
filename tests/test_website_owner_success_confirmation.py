@@ -126,7 +126,6 @@ def _republish(job: Any, tmp_path: Path, monkeypatch, **values: Any) -> dict[str
 
 
 def test_the_owner_confirms_on_the_website_and_the_team_packet_proceeds(tmp_path, monkeypatch) -> None:
-    from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import _require_strict_owner_success_contract
     from blueprint_pipeline.team_scene_packet import read_team_scene_inputs
 
     job, inputs, queue, key = _queued(tmp_path, monkeypatch)
@@ -176,7 +175,7 @@ def test_the_owner_confirms_on_the_website_and_the_team_packet_proceeds(tmp_path
     assert contract["provenance"]["author_id"] == "owner-success-confirmation:" + row["confirmation_digest"]
     packet = Path(compiled["path"]).parent / "native-task-packet"
     plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
-    _require_strict_owner_success_contract(task_spec=plan["task_spec"], contract=contract)
+    assert plan["task_spec"]["task_success_contract"] == contract
     # A later pass sends nothing more for a confirmed job.
     (queue / "pending" / f"{key}.json").rename(queue / "processed" / f"{key}.json")
     calls = webapp.calls

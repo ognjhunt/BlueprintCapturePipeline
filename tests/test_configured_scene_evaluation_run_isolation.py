@@ -98,27 +98,3 @@ def test_plans_for_same_scene_keep_independent_future_launches(tmp_path, monkeyp
     assert len(list((tmp_path / "plans").glob("*.json"))) == 2
     assert plans[0]["source_launch_receipt_digest"] == plans[1]["source_launch_receipt_digest"]
     assert plans[0]["artifact_inventory"] == plans[1]["artifact_inventory"]
-
-
-def test_handoff_uses_the_same_per_request_state_directory(tmp_path, monkeypatch):
-    from blueprint_pipeline import task_evaluation_policy_canary_handoff as handoff
-    from blueprint_pipeline.configured_scene_run_identity import progression_directory
-    secret = tmp_path / "credential"
-    secret.write_text("test-only-credential")
-    secret.chmod(0o600)
-    observed = []
-    monkeypatch.setattr(handoff, "advance_policy_canary_handoff", lambda **kw: observed.append(kw) or {})
-    for run_id in ("one", "two"):
-        handoff.advance_policy_canary_handoff_for_plan(
-            plan={"source_launch_id": "shared-source", "expected_production_commit": "b" * 40,
-                "evaluation_run_id": run_id, "profile_dir": str(tmp_path / "profiles")},
-            progression_root=tmp_path / "progression", launch_state_root=tmp_path / "launches",
-            episode_compilation_queue_root=tmp_path / "compilation", activation_intent_root=tmp_path / "intents",
-            repo_root=tmp_path, webapp_secret_file=secret, webapp_endpoint="https://example.invalid/api",
-            webapp_catalog_out=tmp_path / "catalog", notification_email="test@example.invalid",
-            publisher_factory=lambda: None,
-        )
-    assert observed[0]["state_root"] != observed[1]["state_root"]
-    for call in observed:
-        assert call["state_root"].name == progression_directory("b" * 40, call["evaluation_run_id"])
-        assert call["source_launch_id"] == "shared-source"

@@ -33,7 +33,9 @@ def test_unknown_checkpoint_inventory_refuses_before_source_or_reservation(tmp_p
 
 
 def test_admitted_inventory_uses_same_digests_as_real_canary_setup(tmp_path, monkeypatch):
-    from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import EXPECTED_CANDIDATES, CANDIDATE_IDS
+    from blueprint_pipeline.adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
+
+    CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")  # the retired canary setup's pair, frozen
     assert supported_policy_candidates() == [{"id": name, "artifact_digest":
         EXPECTED_CANDIDATES[name]["checkpoint_inventory_digest"]} for name in CANDIDATE_IDS]
     config, _, _, now = _config(tmp_path, monkeypatch)

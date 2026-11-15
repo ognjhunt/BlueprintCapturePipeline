@@ -566,38 +566,6 @@ def test_native_fixture_manifest_git_access_is_scoped_and_restored(tmp_path):
     assert builder._run_bounded is original
 
 
-@pytest.mark.parametrize('preexisting', [False, True])
-def test_native_configuration_cleanup_preserves_launch_residency(tmp_path, monkeypatch, preexisting):
-    # ADP-009D/day28: installing the SDK must not turn later workstation
-    # launches into control-plane launches by leaving /etc/blueprint behind.
-    from blueprint_pipeline import host_resident_launch_inputs as residency
-    from blueprint_pipeline.task_evaluation_launch_dispatcher import dispatch_launch_request
-    from tests.test_task_evaluation_policy_canary_preparation_dispatch import _profile_and_request
-    parent = tmp_path / 'etc-blueprint'
-    monkeypatch.setattr(sys.modules[__name__], '_POLICY', parent / 'policy.json')
-    monkeypatch.setattr(residency, 'PRODUCTION_LAUNCH_INPUT_ROOTS', (str(parent),))
-    if preexisting:
-        parent.mkdir()
-    created = _create_native_configuration_parent()
-    _POLICY.write_bytes(b'fixture policy')
-    _POLICY.unlink()
-    _remove_native_configuration_parent(created)
-    assert parent.exists() is preexisting
-    profile, request = _profile_and_request(tmp_path)
-    profiles = tmp_path / 'profiles'
-    profiles.mkdir()
-    (profiles / (profile['profile_id'] + '.json')).write_text(json.dumps(profile))
-    request_path = tmp_path / 'request.json'
-    request_path.write_text(json.dumps(request))
-    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT', str(tmp_path / 'queue'))
-    receipt = dispatch_launch_request(request_path=request_path, profile_dir=profiles,
-        state_root=tmp_path / 'runs', execute=True,
-        allocator_runner=lambda _: (_ for _ in ()).throw(AssertionError('provider forbidden')))
-    assert receipt['status'] == ('blocked' if preexisting else 'queued_for_no_spend_preparation'), receipt
-    if preexisting:
-        assert 'launch_profile_input_not_host_resident:immutable_input:source_bundle_manifest' in receipt['blockers']
-
-
 def test_native_configuration_cleanup_refuses_unowned_contents(tmp_path, monkeypatch):
     parent = tmp_path / 'etc-blueprint'
     monkeypatch.setattr(sys.modules[__name__], '_POLICY', parent / 'policy.json')

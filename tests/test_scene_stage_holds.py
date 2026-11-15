@@ -15,7 +15,7 @@ from blueprint_pipeline.decision_evidence_contracts import (
     canonical_digest,
     cross_runtime_canonical_digest,
 )
-from tests.test_beta_policy_screening_worker import prepared_source_queue
+from tests.scene_stage_support import prepared_source_queue
 
 RELEASE, NEXT_RELEASE = "a" * 40, "b" * 40
 
@@ -168,7 +168,7 @@ def test_maintenance_holds_a_team_half_no_pass_will_retry_and_lets_a_new_release
 
 
 def test_scene_preparation_failed_receipt_is_kept_and_held_without_a_team_half(tmp_path, monkeypatch):
-    from tests.test_beta_policy_screening_worker import source_world
+    from tests.scene_stage_support import source_world
 
     source, context = source_world(tmp_path / "partition", monkeypatch)
     queue = tmp_path / "packets"
@@ -274,7 +274,7 @@ def test_an_error_or_unreadable_state_keeps_a_hold_and_never_releases_it(tmp_pat
 def test_a_newer_scene_revision_of_the_intent_supersedes_a_held_older_one_without_churn(tmp_path, monkeypatch):
     import os
 
-    from tests.test_beta_policy_screening_worker import source_world
+    from tests.scene_stage_support import source_world
 
     source, _context = source_world(tmp_path / "partition", monkeypatch)
     queue, screening = tmp_path / "packets", tmp_path / "screening"
@@ -304,7 +304,7 @@ def test_a_newer_scene_revision_of_the_intent_supersedes_a_held_older_one_withou
 
 
 def test_held_requests_rotate_under_a_cursor_and_are_set_aside_once_acknowledged(tmp_path, monkeypatch):
-    from tests.test_beta_policy_screening_worker import source_world
+    from tests.scene_stage_support import source_world
 
     source, _context = source_world(tmp_path / "partition", monkeypatch)
     queue, screening = tmp_path / "packets", tmp_path / "screening"

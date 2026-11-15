@@ -127,7 +127,6 @@ def test_the_packet_carries_the_derived_field_its_receipt_and_a_backend_bound_to
     from pxr import Usd
 
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    from blueprint_pipeline.native_task_arena_policy_canary_worker import appearance_render_backend_from_plan
     from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
         _sha256_and_size, apply_task_volume_clearance, packet_appearance_variant,
     )
@@ -154,11 +153,6 @@ def test_the_packet_carries_the_derived_field_its_receipt_and_a_backend_bound_to
     backend = variant["render_backend"]
     assert backend["particlefield_digest"] == digest
     assert backend["backend_digest"] == canonical_digest(backend, digest_field="backend_digest")
-    # The policy worker reads the packet's scene appearance by the derived file's digest and accepts it.
-    plan = {"objects": [{"name": "scene_appearance", "semantic_role": "scene_appearance", "sha256": digest[7:]}],
-            "appearance_frame_alignment": {"status": "aligned", "representation": "particlefield_3d_gaussian_splat"}}
-    sealed = appearance_render_backend_from_plan(plan, packet_request={"appearance_variant": variant})
-    assert sealed["derived_asset_digest"] == digest
 
 
 def test_with_nothing_inside_the_packet_keeps_the_exact_field(tmp_path) -> None:

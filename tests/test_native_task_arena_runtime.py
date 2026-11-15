@@ -764,7 +764,7 @@ def test_builder_preserves_official_droid_policy_cameras_and_adds_target_marker(
 def test_camera_variation_without_custom_start_uses_official_droid_sensor(monkeypatch, yaw_pi, expected_x):
     from blueprint_pipeline.policy_canary_scene_resolution import resolved_scene_plan
     from blueprint_pipeline.native_task_arena_readback import read_native_task_arena_scenario_parameters
-    from tests.test_task_evaluation_policy_canary_setup import _setup
+    from tests.policy_canary_setup_support import public_setup as _setup
 
     _install_fake_native_runtime(monkeypatch)
     plan = _sealed_scene_plan()

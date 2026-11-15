@@ -395,16 +395,6 @@
       "via": "src/blueprint_pipeline/task_object_astra_worker.py::budgeted_invoker",
       "admission": "src/blueprint_pipeline/task_evaluation_supervisor/inference_reservations.py::record_reservation"
     },
-    "src/blueprint_pipeline/team_candidate_quick10_admission.py::_dream_config::dreamlabs_api_url": {
-      "provider": "dreamlabs",
-      "class": "not_paid",
-      "reason": "allowed-origin value in a policy config; no request"
-    },
-    "src/blueprint_pipeline/team_candidate_rights.py::validate_provider_disclosure::dreamlabs_api_url": {
-      "provider": "dreamlabs",
-      "class": "not_paid",
-      "reason": "origin value compared in a disclosure check; no request"
-    },
     "src/blueprint_pipeline/website_assembly_coverage.py::classify_frames.invoke::gemini_client_construction": {
       "provider": "gemini",
       "class": "admitted",
@@ -450,12 +440,6 @@
       "via": "src/blueprint_pipeline/paid_resource_allocator.py::run_admitted_atlas_task",
       "admission": "src/blueprint_pipeline/website_atlas_tasks.py::reserve_website_preparation_spend",
       "note": "only the allocator's sponsored Atlas task entry may reach it (ATLAS_TASK_CAPABILITIES)"
-    },
-    "src/blueprint_pipeline/website_candidate_ranking.py::_gemini.invoke::gemini_client_construction": {
-      "provider": "gemini",
-      "class": "admitted",
-      "via": "src/blueprint_pipeline/website_candidate_ranking.py::retained_gemini_call",
-      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
     },
     "src/blueprint_pipeline/website_capture_withdrawal_provider_copies.py::production_deleters.gemini::gemini_client_construction": {
       "provider": "gemini",

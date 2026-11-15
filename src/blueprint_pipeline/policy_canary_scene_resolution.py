@@ -10,6 +10,7 @@ stays inside its line budget.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
 from copy import deepcopy
@@ -74,6 +75,39 @@ def _quaternion_product_xyzw(a: list[float], b: list[float]) -> list[float]:
         aw * bz + ax * by - ay * bx + az * bw,
         aw * bw - ax * bx - ay * by - az * bz,
     ]
+
+
+class PolicyCanarySessionError(ValueError):
+    """Raised before paid execution when the paired-session contract is invalid."""
+
+
+# ``native_task_arena_policy_canary_session.RUN_KIND`` and ``CLAIM_CEILING`` when the canary left.
+RUN_KIND = "internal_policy_canary"
+CLAIM_CEILING = "diagnostic_policy_execution"
+
+
+def _digest(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == 71 and text.startswith("sha256:") and all(
+        character in "0123456789abcdef" for character in text[7:]
+    )
+
+
+def validate_control_omission_authority(value: Mapping[str, Any], *, contract_digest: str) -> dict[str, Any]:
+    authority = json.loads(json.dumps(dict(value), allow_nan=False))
+    if (authority.get("schema_version") != "task_evaluation_diagnostic_control_omission_authority.v1"
+            or authority.get("run_kind") != RUN_KIND
+            or authority.get("claim_ceiling") != CLAIM_CEILING
+            or not str(authority.get("authorized_by") or "").strip()
+            or not str(authority.get("authorization_reference") or "").strip()
+            or authority.get("omitted_controls") != ["zero_action_negative", "deterministic_scripted_positive"]
+            or not _digest(authority.get("source_task_success_contract_digest"))
+            or authority.get("result_task_success_contract_digest") != contract_digest
+            or authority.get("task_scoring_criteria_changed") is not False
+            or authority.get("qualified_comparison_permitted") is not False
+            or authority.get("authority_digest") != canonical_digest(authority, digest_field="authority_digest")):
+        raise PolicyCanarySessionError("policy_canary_control_omission_authority_invalid")
+    return authority
 
 
 def _resolved_family_scene_plan(base, cell, task_success_contract):
@@ -146,9 +180,6 @@ def resolved_scene_plan(
     )
     control = cell.get("control_diagnostic") or {}
     if control.get("mode") == "nonblocking_omitted_by_user":
-        from blueprint_pipeline.native_task_arena_policy_canary_session import (
-            validate_control_omission_authority,
-        )
         from blueprint_pipeline.native_task_camera_start_configuration import (
             validate_camera_start_configuration,
         )

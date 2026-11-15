@@ -16,8 +16,7 @@ import pytest
 
 import blueprint_pipeline.launch_immutable_input_writer as writer
 import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher
-from blueprint_pipeline import beta_policy_screening_files, native_task_runtime_source_packet
-from blueprint_pipeline import task_evaluation_scene_configuration_python_wheelhouse as wheelhouse
+from blueprint_pipeline import native_task_runtime_source_packet
 from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
     STAGING_RECEIPT_ENV,
     ImmutableInputResolutionError,
@@ -168,13 +167,3 @@ def test_runtime_source_member_identity_is_read_in_blocks(tmp_path, monkeypatch)
             len(wheel), _digest(wheel))
         with pytest.raises(KeyError):
             native_task_runtime_source_packet._member_size_and_sha256(archive, "wheels/missing.whl")
-
-
-def test_screening_record_and_wheel_digest_are_the_whole_bytes_identity(tmp_path, no_whole_reads):
-    data = os.urandom(3 * (1 << 20) + 5)
-    collider = tmp_path / "collision.usda"
-    collider.write_bytes(data)
-    no_whole_reads.append(tmp_path)
-    assert beta_policy_screening_files._record(collider) == {
-        "path": str(collider.resolve()), "size_bytes": len(data), "sha256": _digest(data)}
-    assert wheelhouse._file_sha256(collider) == _digest(data)

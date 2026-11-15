@@ -10,13 +10,10 @@ import pytest
 
 from blueprint_pipeline import task_evaluation_launch_activation_worker as activation_worker
 from blueprint_pipeline import task_evaluation_launch_preparation_worker as preparation_worker
-from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
 from blueprint_pipeline.control_plane_storage_pins import (
     PINS_ROOT_ENV,
-    load_storage_pins,
     pin_activation_best_effort,
     pin_path,
-    write_storage_pin,
 )
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_episode_compilation_worker import (
@@ -165,38 +162,4 @@ def test_activation_pin_depends_on_preparation_and_compilation_and_never_raises(
     assert (
         'if terminal_state == "prepared":\n'
         "            storage_pins.pin_activation_best_effort(request, activation_base)"
-    ) in source
-
-
-def test_terminal_dispatch_receipt_releases_the_activation_pin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pins = tmp_path / "pins"
-    write_storage_pin(pins_root=pins, kind="preparation", owner_id="prep-1", paths=[tmp_path / "p"])
-    write_storage_pin(
-        pins_root=pins,
-        kind="activation",
-        owner_id="activation-1",
-        paths=[tmp_path / "a"],
-        depends_on=[{"kind": "preparation", "owner_id": "prep-1"}],
-    )
-    monkeypatch.setenv(PINS_ROOT_ENV, str(pins))
-
-    dispatcher._release_activation_storage_pin(tmp_path / "dispatches" / "activation-1")
-
-    statuses = {(pin["kind"], pin["owner_id"]): pin["status"] for pin in load_storage_pins(pins)}
-    assert statuses == {
-        ("preparation", "prep-1"): "released",
-        ("activation", "activation-1"): "released",
-    }
-    monkeypatch.delenv(PINS_ROOT_ENV)
-    dispatcher._release_activation_storage_pin(tmp_path / "dispatches" / "nothing")
-
-    # The release follows the terminal receipt of an executed dispatch, and only that one.
-    source = Path(dispatcher.__file__).read_text(encoding="utf-8")
-    assert source.count('_write_exclusive(root / "dispatch_receipt.json", receipt)') == 2
-    assert (
-        '_write_exclusive(root / "dispatch_receipt.json", receipt)\n'
-        "    _release_activation_storage_pin(root)\n"
-        "    _event_and_sync("
     ) in source

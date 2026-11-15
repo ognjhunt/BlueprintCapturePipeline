@@ -11,10 +11,9 @@ copies of pulled files, until ``--until`` or its first stop:
    the team half;
 3. ``team_packet``: ``team_scene_packet_worker`` compiles the team half, writes
    the derived registry row and republishes the job's offer;
-4. ``probe_enqueue``: the probe the compile queued; going on, the probe runner's
-   next pass is tried and its paid allocator is the stop;
-5. ``screening_plan``: ``enqueue_prepared_scenes`` plans within the job's dollar
-   ceiling and queues the plan (never the worker's ``main``, which launches).
+4. ``probe_enqueue``: the probe the compile queued;
+5. ``probe_run``: the probe runner's next pass is tried and its paid allocator is
+   the stop.
 
 ``first_stop.kind`` is ``completed`` (``--until`` reached), ``would_buy`` (a paid
 call, named and never made), ``external_effect`` (a write the replay cannot stand
@@ -67,7 +66,7 @@ from .decision_evidence_contracts import canonical_digest
 
 SCHEMA = "task_evaluation_downstream_replay_report.v1"
 REPORT_FILENAME = "downstream_replay_report.v1.json"
-STAGES = ("completion", "readiness", "team_packet", "probe_enqueue", "screening_plan")
+STAGES = ("completion", "readiness", "team_packet", "probe_enqueue", "probe_run")
 STOP_KINDS = ("completed", "would_buy", "external_effect", "missing_input", "refusal", "error")
 # Where the scene progression and team units read the operator registry (blueprint-embodiment-preparation.service).
 REGISTRY_HOST_PATH = "/etc/blueprint/team-evaluation-registry.json"
@@ -594,11 +593,6 @@ class _Harness:
         return self
 
     def _install(self, stack: ExitStack) -> None:
-        from . import beta_policy_screening_capabilities as capabilities
-        from . import beta_policy_screening_coordinator as coordinator
-        from . import beta_policy_screening_family_sources as family_sources
-        from . import beta_policy_screening_job_ceiling as job_ceiling
-        from . import beta_policy_screening_worker as screening
         from . import paid_resource_admission as paid_admission
         from . import rigid_robot_free_probe_lane as lane
         from . import rigid_robot_free_probe_runner as runner
@@ -611,8 +605,7 @@ class _Harness:
         from . import team_scene_packet_worker as packets
         from . import website_task_context as control
 
-        retain, enqueue, captures = (retention.retain_robot_free_readiness, runner.enqueue_rigid_robot_free_probe,
-                                     family_sources._profile_captures)
+        retain, enqueue = retention.retain_robot_free_readiness, runner.enqueue_rigid_robot_free_probe
 
         def retained(**kwargs: Any) -> Any:
             if self.until == "completion":
@@ -636,10 +629,6 @@ class _Harness:
                                                                            "probe_request_digest")}})
             return value
 
-        def this_capture() -> list[str]:
-            # Other captures' registered family scenes are outside this job's replay.
-            return [capture for capture in captures() if self.capture_copy and capture == str(self.capture_copy)]
-
         for module, name, value in (
                 (control, "website_webapp_request", self.webapp),
                 (deferred_inputs, "default_reference_fetcher", self.fetch),
@@ -648,19 +637,14 @@ class _Harness:
                 (lane, "driver_ceiling_blockers", self.host_gate("driver_ceiling_blockers")),
                 (lane, "launch_environment_blockers", self.host_gate("launch_environment_blockers")),
                 (retention, "retain_robot_free_readiness", retained),
-                (runner, "enqueue_rigid_robot_free_probe", probe_enqueued),
-                (family_sources, "_profile_captures", this_capture)):
+                (runner, "enqueue_rigid_robot_free_probe", probe_enqueued)):
             _swap(stack, module, name, value)
         for module, names in ((source_evidence, ("_validate_source",)),
                               (attempt_binding, ("require_scene_execution_binding",)),
                               (intake, ("_require", "_read")),
                               (packets, ("_compile", "resolve_capture_root", "packet_inputs", "validated_request")),
                               (registry, ("profile_for_capture",)),
-                              (runner, ("_process_entry",)),
-                              (screening, ("require_current_source",)),
-                              (capabilities, ("build_planning_inputs",)),
-                              (job_ceiling, ("plan_within_job_ceiling",)),
-                              (coordinator, ("enqueue_screening_campaign",))):
+                              (runner, ("_process_entry",))):
             for name in names:
                 _swap(stack, module, name, self.recorded(getattr(module, name)))
         self._guard(stack)
@@ -761,19 +745,16 @@ def _stage_inputs(originals: Mapping[str, Path | None], run: Path) -> dict[str, 
         registry_copy.parent.mkdir(parents=True)
         rewrites = _rewrite_registry(registry, registry_copy, run=run, capture=capture,
                                      capture_copy=capture_copy, launch=launch, launch_copy=launch_copy)
-    for name in ("team-scene-packets", "rigid-robot-free-probes", "beta-policy-screening"):
+    for name in ("team-scene-packets", "rigid-robot-free-probes"):
         (state / name).mkdir(parents=True, exist_ok=True)
     return {"launch_copy": launch_copy, "intent_copy": intent_copy, "capture_copy": capture_copy,
             "registry_copy": registry_copy, "partition": inputs / "partition" if capture_copy else None,
             "packet_queue": state / "team-scene-packets", "probe_queue": state / "rigid-robot-free-probes",
-            "screening_queue": state / "beta-policy-screening", "configuration_rewrites": rewrites}
+            "configuration_rewrites": rewrites}
 
 
 def _environment(staged: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
     """What the deployed units set, with every root pointed at the replay; and what is left unset."""
-    from .beta_policy_candidate_catalog import CATALOG_ENV
-    from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV as SCREENING_ENV
-    from .beta_policy_screening_coordinator import WORK_ROOT_ENV as SCREENING_WORK_ENV
     from .rigid_robot_free_probe_lane import ENABLE_ENV
     from .rigid_robot_free_probe_runner import QUEUE_ENV as PROBE_ENV
     from .rigid_robot_free_probe_runner import WORK_ENV as PROBE_WORK_ENV
@@ -783,17 +764,16 @@ def _environment(staged: Mapping[str, Any]) -> tuple[dict[str, str], list[str]]:
 
     # The team compile reads the request's own intent (an owner's success confirmation lives there).
     values = {PACKET_ENV: str(staged["packet_queue"]), PROBE_ENV: str(staged["probe_queue"]),
-              SCREENING_ENV: str(staged["screening_queue"]), ENABLE_ENV: "1",
-              INTENT_ROOT_ENV: str(staged["intent_copy"].parent),
-              # The screening worker's automatic G1 registration writes its service rows here, never on the host's.
-              SITE_REGISTRATION_ROOT_ENV: str(Path(staged["screening_queue"]).parent / "native-g1-site-registrations")}
+              ENABLE_ENV: "1", INTENT_ROOT_ENV: str(staged["intent_copy"].parent),
+              # Site registration rows are read here, never on the host's.
+              SITE_REGISTRATION_ROOT_ENV: str(Path(staged["packet_queue"]).parent / "native-g1-site-registrations")}
     if staged["partition"] is not None:
         values[CAPTURE_PARTITION_ENV] = str(staged["partition"])
     if staged["registry_copy"] is not None:
         values[REGISTRY_ENV] = str(staged["registry_copy"])
-    # The reviewed catalog in this tree, as a deploy of it would install. The lanes' work-volume
-    # roots are unset, so every attempt the replay stages stays inside its own queue copy.
-    unset = [CATALOG_ENV, SCREENING_WORK_ENV, PROBE_WORK_ENV,
+    # The lanes' work-volume roots are unset, so every attempt the replay stages stays inside its own
+    # queue copy.
+    unset = [PROBE_WORK_ENV,
              *(name for name in (CAPTURE_PARTITION_ENV, REGISTRY_ENV) if name not in values)]
     return values, unset
 
@@ -805,16 +785,6 @@ def _digest(path: Path | None) -> str | None:
 
 
 # -------------------------------------------------------------------- chain
-
-
-def _plan_summary(queue: Path, campaign_id: str) -> dict[str, Any]:
-    path = queue / "plans" / f"{campaign_id}.json"
-    plan = json.loads(path.read_text(encoding="utf-8"))
-    return {"path": str(path), "campaign_id": campaign_id, "plan_digest": plan.get("plan_digest"),
-            "budget_usd": plan.get("budget_usd"), "budget_basis": plan.get("budget_basis"),
-            "maximum_planned_cost_usd": plan.get("maximum_planned_cost_usd"),
-            "candidates": [{key: row.get(key) for key in ("candidate_id", "status", "blockers", "max_cost_usd")}
-                           for row in plan.get("candidates") or []]}
 
 
 def _progression(directory: Path, intent: Mapping[str, Any]) -> dict[str, Any]:
@@ -835,7 +805,6 @@ def _progression(directory: Path, intent: Mapping[str, Any]) -> dict[str, Any]:
 
 def _run_chain(harness: _Harness, staged: Mapping[str, Any], *, until: str,
                capture_given: bool, registry_given: bool) -> dict[str, Any]:
-    from . import beta_policy_screening_worker as screening
     from . import rigid_robot_free_probe_runner as runner
     from . import team_scene_packet_worker as packets
     from . import task_evaluation_scene_intake as intake
@@ -968,23 +937,7 @@ def _run_chain(harness: _Harness, staged: Mapping[str, Any], *, until: str,
         reason = (row.get("blockers") or [row.get("reason") or (row.get("detail") or {}).get("reason")])[0]
         return end(harness.refusal("probe_enqueue", str(reason or f"rigid_robot_free_probe_{state}"), runner=row))
     passed("probe_enqueue", **probe_outcome)
-
-    # 5. The screening plan, as the screening timer's source pass builds it (never its main).
-    sources, stop = harness.run_stage("screening_plan", lambda: screening.enqueue_prepared_scenes(
-        queue_root=staged["screening_queue"], packet_queue_root=staged["packet_queue"]))
-    if stop is not None:
-        return end(stop)
-    source = next((row for row in sources.get("sources") or [] if row.get("request_key") == request["request_key"]),
-                  None)
-    if source is None:
-        return end(harness.refusal("screening_plan", "beta_screening_source_not_adopted"))
-    if source.get("status") not in {"enqueued", "already_enqueued"}:
-        code = str((source.get("blockers") or ["beta_screening_source_blocked"])[0])
-        return end(harness.refusal("screening_plan", code, error=source.get("error"),
-                                   scene_packet=source.get("scene_packet")))
-    passed("screening_plan", **{key: source.get(key) for key in ("status", "campaign_id", "candidate_order",
-                                                               "robot_free_probe_status")})
-    return completed("screening_plan", plan=_plan_summary(staged["screening_queue"], source["campaign_id"]))
+    return completed("probe_run")
 
 
 # ------------------------------------------------------------------- replay

@@ -12,9 +12,7 @@ from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
 from blueprint_pipeline.native_task_nurec_render_setup import (
     appearance_render_path_from_plan, prepare_site_appearance_renderer,
 )
-from blueprint_pipeline.native_task_arena_policy_canary_worker import appearance_render_backend_from_plan
 from blueprint_pipeline.native_task_arena_runtime_preflight_worker import _plain_nurec_volume_contract
-from blueprint_pipeline.appearance_render_backend import validate_appearance_render_backend
 
 
 def surface(path):
@@ -48,9 +46,6 @@ def test_geometry_compiler_alignment_and_renderer_agree_without_conversion(tmp_p
     assert appearance_render_path_from_plan(plan) == "usd_geometry"
     preflight = _plain_nurec_volume_contract(tmp_path, plan)
     assert preflight["passed"] and preflight["render_path"] == "usd_geometry"
-    backend = appearance_render_backend_from_plan(plan)
-    assert validate_appearance_render_backend(backend) == backend
-    assert backend["development_only"] and backend["kind"] == "isaac_usd_geometry"
     assert prepare_site_appearance_renderer(simulation_app=None, plan=plan)["status"] == "not_required"
     assert source.read_bytes() == original
     # A valid USD file is not enough: actual occupied bounds must fit the task.

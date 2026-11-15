@@ -152,21 +152,6 @@ def test_unmapped_public_model_keeps_existing_fetch_without_storage_access(selec
     assert not client.calls
 
 
-def test_launch_private_selection_cannot_call_anonymous_fetch(selected, monkeypatch):
-    from blueprint_pipeline import team_candidate_quick10_launch as launch
-    calls = []
-    monkeypatch.setattr(launch, "verify_model_file", lambda manifest, path: {"sha256": selected.row["sha256"]})
-    monkeypatch.setattr(launch, "read_model_structure", lambda path: {})
-    monkeypatch.setattr(launch, "team_embodiment_binding", lambda *args, **kwargs: {"checked": True})
-    monkeypatch.setattr(launch, "_read", lambda path: {})
-    selected.manifest["base"] = {"mode": "fixed"}
-    binding = launch._stage_robot_model(job_dir=selected.target.parent / "job", manifest=selected.manifest,
-        facts={"packet_dir": str(selected.target.parent)}, fetch=lambda *args: calls.append(args),
-        profile=selected.profile, team_id="team-one", checkpoint_id="checkpoint-one", storage_client=Client(selected))
-    assert binding == {"checked": True} and not calls
-    assert (selected.target.parent / "job/team_robot_model_delivery.json").is_file()
-
-
 def test_derived_profile_cannot_choose_private_model_authority():
     from blueprint_pipeline.team_candidate_quick10_registry import DERIVED_FIELDS, OPERATOR_FIELDS
     assert "private_robot_models" in OPERATOR_FIELDS

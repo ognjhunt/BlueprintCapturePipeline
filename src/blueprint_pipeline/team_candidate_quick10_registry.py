@@ -15,8 +15,7 @@ intact) binds one capture to:
 - the directory the scene's robot-free probe receipt is retained in (read
   only through ``robot_free_probe_gate.retained_probe_receipt``);
 - the open-loop horizon, hourly-rate ceiling and hard TTL of a run;
-- the founder approvers whose free-beta funding approval may launch a run;
-- one sealed rights record per admitted team checkpoint.
+- the founder approvers whose free-beta funding approval may launch a run.
 
 A scene need not be written in by hand: when the registry names a
 ``derived_profiles`` root, a sealed row holding a prepared scene's own records
@@ -27,20 +26,10 @@ it has compiled a prepared scene. A scored matrix's salt is an HMAC of the
 scene revision under the operator's key file; without one, scored evaluations
 stay unlisted. An operator row always wins.
 
-:func:`offer_eligibility` is the one rule both the offer publisher and the
-launch apply (``team_evaluation_plan``): the scene's packet resolves its
-nominal cell, strict per-cell controls are not required, the scene's secret matrix
-salt is present, and the robot-free probe passed at the inputs' current
-scene revision for the scene's task before any paid team allocation. Missing,
-unavailable, or failed probes keep the evaluation unlisted. While the platform
-owner's control-trial pause stands (``task_evaluation_control_stage_policy``),
-a contract that requires per-cell controls runs without that criterion under
-the typed diagnostic omission (``beta_policy_screening_control_omission``), as
-beta screening does: the probe stays bound to the source contract, and the
-scene facts carry the source contract and the omission authority, which the
-admission seals into the run.
-
-Anything else fails closed with a typed reason, and that offer is not listed.
+:func:`scene_facts` is what the scripted check (``rigid_robot_free_probe_bundle``)
+reads of a scene: its packet resolves the nominal cell on Blueprint's DROID Franka.
+Anything else fails closed with a typed reason. A scene half the early trial froze
+(an internal Quick-10 pair) is no longer read.
 
 Reading and owner-checking the registry itself lives in
 ``team_candidate_registry_reader`` (re-exported here), so the CPU intake lane
@@ -59,7 +48,6 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
-from .team_candidate_quick10_staging import TeamCandidateStagingError, scene_inputs_from_frozen_pair
 from .team_candidate_registry_reader import (
     DERIVED_FIELDS,
     DERIVED_SCHEMA,
@@ -75,7 +63,6 @@ from .team_candidate_registry_reader import (
     _site_screening_profile,
     load_registry,
 )
-from .team_evaluation_plan import PURPOSES, SCORED
 from .team_robot_free_probe import scored_task_spec
 
 # The scene's nominal cell: what the prompt and query budget are read from.
@@ -179,11 +166,6 @@ def profile_for_request(request: Mapping[str, Any]) -> dict[str, Any] | None:
     return profile
 
 
-def rights_record(profile: Mapping[str, Any], *, team_id: str, checkpoint_id: str) -> dict[str, Any] | None:
-    path = (profile.get("team_rights") or {}).get(f"{team_id}/{checkpoint_id}")
-    return _read(Path(path)) if path else None
-
-
 def _scene_inputs(profile: Mapping[str, Any]) -> dict[str, Any]:
     if not _one_scene_half(profile):
         raise TeamCandidateRegistryError("team_candidate_scene_half_ambiguous")
@@ -203,18 +185,14 @@ def _scene_inputs(profile: Mapping[str, Any]) -> dict[str, Any]:
             return read_team_scene_inputs(Path(profile["team_scene_inputs_path"]))
         except (OSError, ValueError, TeamScenePacketError) as exc:
             raise TeamCandidateRegistryError("team_scene_inputs_unavailable") from exc
-    try:
-        return scene_inputs_from_frozen_pair(Path(profile["pair_runtime_inputs_path"]),
-                                             Path(profile["pair_activation_path"]))
-    except (KeyError, OSError, ValueError, TeamCandidateStagingError) as exc:
-        raise TeamCandidateRegistryError("team_candidate_frozen_quick10_inputs_unavailable") from exc
+    # The early trial's frozen internal Quick-10 pair is not read any more (the trial left, 2026-11-14).
+    raise TeamCandidateRegistryError("team_candidate_frozen_quick10_inputs_unavailable")
 
 
 def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
     """Everything a team run needs from the scene's half of the evaluation (no network)."""
 
-    from .adp009d_policy_episode import maximum_policy_queries_for_task_spec
-    from .native_task_arena_policy_canary_worker import _resolved_scene_plan
+    from .policy_canary_scene_resolution import resolved_scene_plan
 
     inputs = _scene_inputs(profile)
     packet_dir = Path(inputs["base_native_packet"]["path"]).parent
@@ -232,10 +210,10 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
             'scene': {**plan, 'scene_revision_digest': inputs['scene_revision_digest'], 'task_spec': plan['task_spec'],
                 'task_success_contract': inputs['task_success_contract'],
                 'embodiment_preset_id': plan['native_runtime_contract']['robot_configuration']['embodiment_id']},
-            'prompt': context.get('description'), 'max_policy_queries': None, 'open_loop_horizon': horizon,
+            'prompt': context.get('description'), 'open_loop_horizon': horizon,
             'episode_specs_sha256': canonical_digest(inputs)}
     try:
-        nominal = _resolved_scene_plan(plan, {**NOMINAL_CELL, "control_diagnostic": inputs["control_diagnostic"]},
+        nominal = resolved_scene_plan(plan, {**NOMINAL_CELL, "control_diagnostic": inputs["control_diagnostic"]},
                                        task_success_contract=inputs["task_success_contract"])
     except (KeyError, RuntimeError, TypeError, ValueError) as exc:
         raise TeamCandidateRegistryError("team_candidate_droid_franka_cells_unavailable") from exc
@@ -259,77 +237,9 @@ def scene_facts(profile: Mapping[str, Any]) -> dict[str, Any]:
                   "task_success_contract": inputs["task_success_contract"],
                   "embodiment_preset_id": DROID_POLICY_CANARY_PRESET_ID},
         "prompt": nominal["task_spec"]["prompt"],
-        "max_policy_queries": maximum_policy_queries_for_task_spec(nominal["task_spec"], open_loop_horizon=horizon),
         "open_loop_horizon": horizon,
         "episode_specs_sha256": canonical_digest(inputs),
     }
-
-
-def offer_eligibility(profile: Mapping[str, Any] | None,
-                      purpose: str = SCORED) -> tuple[dict[str, Any] | None, list[str]]:
-    """The scene facts when this evaluation purpose may be listed and launched, else every reason.
-
-    Under the standing control-trial pause, a per-cell-controls contract is listed with the
-    result contract in ``inputs`` and ``scene``, and ``scene`` keeps ``source_task_success_contract``
-    and ``diagnostic_control_omission_authority``. Without the pause it is refused, as before,
-    with ``team_candidate_strict_controls_runtime_unavailable``.
-    """
-
-    from .beta_policy_screening_control_omission import omit_paused_controls
-    from .native_policy_canary_control_gate import controls_required
-    from .robot_free_probe_gate import (
-        RobotFreeProbeGateError,
-        require_robot_free_probe,
-        retained_probe_receipt,
-        task_success_contract_binding,
-    )
-
-    if profile is None:
-        return None, ["team_candidate_profile_missing"]
-    if purpose not in PURPOSES:
-        return None, ["team_candidate_evaluation_purpose_invalid"]
-    try:
-        facts = scene_facts(profile)
-        receipt = retained_probe_receipt(Path(profile["robot_free_probe_root"]))
-    except (KeyError, OSError, ValueError) as exc:
-        return None, [str(exc) or "team_candidate_scene_facts_unavailable"]
-    if facts["inputs"].get("schema_version") == NAVIGATION_SCENE_INPUTS_SCHEMA:
-        # A team evaluation runs a team's arm on a rigid task's cells; a navigation scene is screened
-        # by the G1 lane alone (``beta_policy_screening_capabilities.build_planning_inputs``).
-        return None, ["team_candidate_navigation_scene_not_a_team_evaluation"]
-    blockers = []
-    source = facts["inputs"]["task_success_contract"]
-    # Under the platform owner's standing pause, a contract that requires per-cell controls runs
-    # without that criterion under the typed diagnostic omission; otherwise it is unchanged.
-    contract, omission = omit_paused_controls(source)
-    if controls_required(contract):
-        blockers.append("team_candidate_strict_controls_runtime_unavailable")
-    task_spec = facts["scene"]["task_spec"] if isinstance(facts["scene"]["task_spec"], Mapping) else {}
-    try:
-        # The probe scored the scene's own (source) contract; it stays bound to it.
-        facts["probe"] = require_robot_free_probe(
-            receipt, scene_revision_digest=facts["scene"]["scene_revision_digest"],
-            task_spec_digest=canonical_digest(dict(task_spec)), task_kind=task_spec.get("task_kind"),
-            task_success_contract_digest=task_success_contract_binding(task_spec.get("task_kind"), source))
-        facts["probe_receipt"] = receipt
-    except RobotFreeProbeGateError as exc:
-        facts["probe"], facts["probe_receipt"] = None, receipt
-        blockers.append(str(exc))
-    salt = profile.get("scored_matrix_salt")
-    if purpose == SCORED and (not isinstance(salt, str) or len(salt) < 32):
-        blockers.append("team_scored_matrix_salt_missing")
-    if blockers:
-        return None, blockers
-    if omission is not None:
-        # The run is staged, admitted and scored with the result contract; the scene keeps the
-        # source it was probed with and the authority, which the admission carries into the run.
-        facts["inputs"] = {**facts["inputs"], "task_success_contract": contract,
-                           "task_success_contract_digest": contract["contract_digest"]}
-        facts["scene"] = {**facts["scene"], "task_success_contract": contract,
-                          "source_task_success_contract": source,
-                          "diagnostic_control_omission_authority": omission}
-        facts["episode_specs_sha256"] = canonical_digest(facts["inputs"])
-    return facts, []
 
 
 __all__ = [
@@ -343,10 +253,8 @@ __all__ = [
     "REQUIRED_DERIVED_FIELDS",
     "TeamCandidateRegistryError",
     "load_registry",
-    "offer_eligibility",
     "profile_for_capture",
     "profile_for_request",
-    "rights_record",
     "scene_facts",
     "write_derived_profile",
 ]
