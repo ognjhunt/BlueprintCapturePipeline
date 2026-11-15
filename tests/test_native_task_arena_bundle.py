@@ -13,13 +13,8 @@ from blueprint_pipeline import (
     native_task_arena_construction_bundle as construction_bundle_module,
 )
 from blueprint_pipeline import native_task_arena_controls_bundle as controls_bundle_module
-from blueprint_pipeline import native_task_arena_policy_bundle as policy_bundle_module
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.adp009d_policy_rights import build_candidate_policy_rights
-from blueprint_pipeline.adp009d_scene_policy_readiness import (
-    load_scene_policy_readiness,
-)
 from blueprint_pipeline.native_task_arena_bundle import (
     NativeTaskArenaBundleError,
     _entrypoint,
@@ -41,20 +36,6 @@ from blueprint_pipeline.native_task_arena_execution_contract import (
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
     native_task_arena_execution_transport_completed,
 )
-from blueprint_pipeline.native_task_arena_policy_bundle import (
-    ADP009D_POLICY_READINESS_PATH,
-    ADP009D_SCENARIO_SUITE_PATH,
-    build_native_task_arena_policy_bundle,
-    build_native_task_policy_execution_spec,
-    load_verified_native_task_arena_policy_bundle,
-    materialize_native_task_policy_execution_spec,
-    validate_native_task_policy_execution_spec,
-)
-from blueprint_pipeline.native_task_arena_runtime_preflight_bundle import (
-    RESULT_FILENAME as RUNTIME_PREFLIGHT_RESULT_FILENAME,
-    build_native_task_arena_runtime_preflight_bundle,
-    load_verified_native_task_arena_runtime_preflight_bundle,
-)
 from blueprint_pipeline.native_task_arena_destination_qualification_bundle import (
     RESULT_FILENAME as DESTINATION_RESULT_FILENAME,
     build_native_task_arena_destination_qualification_bundle,
@@ -65,9 +46,6 @@ from blueprint_pipeline.native_task_arena_runtime_preflight_worker import (
 )
 from blueprint_pipeline.native_task_arena_vast import (
     run_native_task_arena_controls_vast,
-    run_native_task_arena_policy_diagnostic_vast,
-    run_native_task_arena_policy_vast,
-    run_native_task_arena_runtime_preflight_vast,
     run_native_task_arena_vast,
 )
 from blueprint_pipeline.native_task_runtime_source_packet import (
@@ -76,10 +54,6 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     materialize_native_task_runtime_source_packet,
 )
 from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
-from blueprint_pipeline.droid_policy_bridge import OPENPI_SOURCE_REVISION
-from blueprint_pipeline.groot_n17_droid_policy_runtime import (
-    GrootN17DroidPolicySpec,
-)
 from blueprint_pipeline.vast_provider_adapter import (
     _blueprint_bundle_preflight,
     _probe_env,
@@ -100,8 +74,6 @@ def test_native_execution_contract_freezes_all_modes_and_candidates() -> None:
         "runtime_preflight",
         "construction_canary",
         "controls",
-        "policy",
-        "policy_diagnostic",
         "controlled_policy",
         "rigid_robot_free_probe",
     }
@@ -817,319 +789,6 @@ def _qualified_controls(root: Path, scene: dict, construction: Path) -> Path:
     return path
 
 
-def _policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
-    construction_result = json.loads(construction.read_text())
-    control_result = json.loads(controls.read_text())
-    inventory = json.loads(
-        (
-            Path(__file__).resolve().parents[1]
-            / "config/trial/openpi_polaris_checkpoint_inventory.json"
-        ).read_text(encoding="utf-8")
-    )
-    entry = next(
-        row
-        for row in inventory["entries"]
-        if row["policy_id"] == "pi05_droid_jointpos_polaris"
-    )
-    spec = {
-        "schema_version": "native_task_arena_policy_execution_spec.v1",
-        "candidate_id": "pi05_droid",
-        "task_id": scene["task_id"],
-        "cell_id": scene["scenario"]["cell_id"],
-        "prompt": "Open the articulated fixture.",
-        "scene_plan_digest": scene["plan_digest"],
-        "construction_result_digest": construction_result["result_digest"],
-        "control_result_digest": control_result["result_digest"],
-        "control_pair_digest": control_result["control_pair"]["pair_digest"],
-        "policy_endpoint": {
-            "host": "127.0.0.1",
-            "port": 8000,
-            "credential_env": "BLUEPRINT_PI05_API_KEY",
-        },
-        "policy_spec": {
-            "policy_id": "pi05_droid_jointpos_polaris",
-            "config_name": "pi05_droid_jointpos_polaris",
-            "checkpoint_uri": entry["checkpoint_uri"],
-            "checkpoint_object_manifest_sha256": entry[
-                "legacy_object_manifest_sha256"
-            ],
-            "checkpoint_generation_manifest_sha256": entry[
-                "generation_manifest_sha256"
-            ],
-            "checkpoint_inventory_sha256": inventory["inventory_sha256"],
-            "checkpoint_object_count": entry["object_count"],
-            "checkpoint_size_bytes": entry["size_bytes"],
-            "action_space": "joint_position",
-            "action_chunk_rows": 15,
-            "open_loop_horizon": 8,
-            "openpi_revision": OPENPI_SOURCE_REVISION,
-        },
-        "policy_identity_receipt": {"identity_verified": True},
-        "max_policy_queries": 56,
-        "open_loop_horizon": 8,
-        "overview_camera_policy_input": False,
-        "policy_may_grade_itself": False,
-        "execution_authority": "qualified_controls_evaluation",
-        "execution_spec_digest": "",
-    }
-    readiness = load_scene_policy_readiness(
-        ADP009D_POLICY_READINESS_PATH,
-        scenario_suite_path=ADP009D_SCENARIO_SUITE_PATH,
-    )
-    spec["candidate_rights_binding"] = build_candidate_policy_rights(
-        readiness,
-        candidate_id="pi05_droid",
-        policy_spec=spec["policy_spec"],
-        runtime_robot_id=scene["robot"]["robot_id"],
-        scene_plan_digest=scene["plan_digest"],
-    )
-    spec["execution_spec_digest"] = canonical_digest(
-        spec, digest_field="execution_spec_digest"
-    )
-    return spec
-
-
-def _groot_policy_spec(scene: dict, construction: Path, controls: Path) -> dict:
-    spec = _policy_spec(scene, construction, controls)
-    groot = GrootN17DroidPolicySpec()
-    spec.update(
-        {
-            "candidate_id": "groot_n17_droid",
-            "policy_endpoint": {
-                "host": "127.0.0.1",
-                "port": 5555,
-                "credential_env": "BLUEPRINT_GROOT_API_TOKEN",
-            },
-            "policy_spec": {
-                "model_id": groot.model_id,
-                "embodiment_tag": groot.embodiment_tag,
-                "groot_source_revision": groot.groot_source_revision,
-                "checkpoint_revision": groot.checkpoint_revision,
-                "open_loop_horizon": groot.open_loop_horizon,
-            },
-            "policy_identity_receipt": {
-                "status": "runtime_measurement_required",
-                "relative_path": (
-                    "adp009d_groot_worker_identity.groot_n17_droid.json"
-                ),
-            },
-        }
-    )
-    readiness = load_scene_policy_readiness(
-        ADP009D_POLICY_READINESS_PATH,
-        scenario_suite_path=ADP009D_SCENARIO_SUITE_PATH,
-    )
-    spec["candidate_rights_binding"] = build_candidate_policy_rights(
-        readiness,
-        candidate_id="groot_n17_droid",
-        policy_spec=spec["policy_spec"],
-        runtime_robot_id=scene["robot"]["robot_id"],
-        scene_plan_digest=scene["plan_digest"],
-    )
-    spec["execution_spec_digest"] = canonical_digest(
-        spec, digest_field="execution_spec_digest"
-    )
-    return spec
-
-
-@pytest.mark.parametrize("host", ["0.0.0.0", "policy.example", "10.0.0.7"])
-def test_policy_execution_spec_refuses_non_loopback_endpoint(
-    tmp_path: Path, host: str
-) -> None:
-    _, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    spec = _groot_policy_spec(scene, construction, controls)
-    spec["policy_endpoint"]["host"] = host
-    spec["execution_spec_digest"] = canonical_digest(
-        spec, digest_field="execution_spec_digest"
-    )
-
-    with pytest.raises(ValueError, match="native_task_policy_endpoint_invalid"):
-        validate_native_task_policy_execution_spec(spec)
-
-
-def test_groot_execution_spec_rejects_stale_processor_history_contract(
-    tmp_path: Path,
-) -> None:
-    _, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    spec = _groot_policy_spec(scene, construction, controls)
-    spec["candidate_rights_binding"]["interface_identity"][
-        "policy_input_schema"
-    ]["frame_history"] = [-15, 0]
-    spec["candidate_rights_binding"]["rights_receipt_digest"] = canonical_digest(
-        spec["candidate_rights_binding"], digest_field="rights_receipt_digest"
-    )
-    spec["execution_spec_digest"] = canonical_digest(
-        spec, digest_field="execution_spec_digest"
-    )
-
-    with pytest.raises(
-        ValueError, match="native_task_policy_spec_or_identity_invalid"
-    ):
-        validate_native_task_policy_execution_spec(spec)
-
-
-def test_policy_bundle_requires_exact_qualified_construction_and_controls(
-    tmp_path: Path,
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    policy_spec = _policy_spec(scene, construction, controls)
-    receipt = build_native_task_arena_policy_bundle(
-        job_dir=tmp_path / "policy-bundle",
-        packet_dir=packet,
-        construction_result_path=construction,
-        control_result_path=controls,
-        policy_execution_spec=policy_spec,
-        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
-        implementation_commit="d" * 40,
-        generated_at="fixed",
-    )
-
-    assert receipt["execution_mode"] == "policy"
-    assert receipt["policy_candidate_id"] == "pi05_droid"
-    assert receipt["candidate_policy_queried"] is False
-    assert receipt["policy_execution_spec_digest"] == policy_spec[
-        "execution_spec_digest"
-    ]
-    assert receipt["policy_execution_authority"] == (
-        "qualified_controls_evaluation"
-    )
-    assert receipt["policy_rights_binding"] == policy_spec[
-        "candidate_rights_binding"
-    ]
-    assert receipt["expected_output_filename"] == (
-        "native_task_arena_policy_result.v1.json"
-    )
-    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
-        names = set(archive.namelist())
-        assert {
-            "provider_runtime/runtime_inputs/adp009d_scene_840920_policy_readiness.v1.json",
-            "provider_runtime/runtime_inputs/third_scene_840920_task_a_scenario_suite.v1.json",
-            "provider_runtime/runtime_inputs/native_task_arena_construction_result.v1.json",
-            "provider_runtime/runtime_inputs/native_task_arena_control_result.v1.json",
-            "provider_runtime/runtime_inputs/native_task_arena_policy_execution_spec.v1.json",
-        }.issubset(names)
-        assert {
-            "provider_runtime/adp009d_policy_provisioning.pi05_droid.sh",
-            "provider_runtime/adp009d_policy_execution_spec.json",
-            "provider_runtime/adp009d_openpi_checkpoint_inventory.json",
-            "provider_runtime/adp009d_policy_server_worker.py",
-            "provider_runtime/adp009d_checkpoint_fetch_worker.py",
-            "provider_runtime/adp009d_provisioning_preflight.py",
-            "provider_runtime/adp009d_groot_wire_wheels.py",
-            "provider_runtime/openpi_droid_policy_runtime.py",
-            "provider_runtime/droid_policy_bridge.py",
-        }.issubset(names)
-        entrypoint = archive.read(
-            "provider_runtime/run_adp_arena_provider_runtime.sh"
-        ).decode()
-        assert 'export RUNTIME_DIR OUT_DIR' in entrypoint
-        assert "trap teardown_policy_server EXIT INT TERM HUP" in entrypoint
-        assert "--terminate-ready-server" in entrypoint
-        assert (
-            'adp009d_policy_server_receipt.$POLICY_CANDIDATE_ID.json'
-            in entrypoint
-        )
-        assert entrypoint.index("policy_provisioning:started") < entrypoint.index(
-            '"$RUNTIME_DIR/adp_arena_provider_runner.py"'
-        )
-        provisioning = archive.read(
-            "provider_runtime/adp009d_policy_provisioning.pi05_droid.sh"
-        ).decode()
-        assert "BLUEPRINT_ADP009D_POLICY_PROVISIONED:pi05_droid" in provisioning
-        assert "XLA_PYTHON_CLIENT_PREALLOCATE=\"false\"" in provisioning
-        worker = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
-        assert "840313" not in worker
-        assert "840796" not in worker
-        assert "refrigerator" not in worker
-    loaded = load_verified_native_task_arena_policy_bundle(
-        tmp_path
-        / "policy-bundle/native_task_arena_provider_bundle_receipt.v1.json",
-        expected_implementation_commit="d" * 40,
-    )
-    assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
-
-    receipt_path = (
-        tmp_path
-        / "policy-bundle/native_task_arena_provider_bundle_receipt.v1.json"
-    )
-    tampered = json.loads(receipt_path.read_text(encoding="utf-8"))
-    tampered["container_image"] = "registry.invalid/image@sha256:" + "0" * 64
-    tampered["input_digest"] = canonical_digest(
-        {
-            key: value
-            for key, value in tampered.items()
-            if key not in {"bundle_path", "bundle_size_bytes", "bundle_sha256"}
-        },
-        digest_field="input_digest",
-    )
-    receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
-    with pytest.raises(ValueError, match="native_task_policy_bundle_image_mismatch"):
-        load_verified_native_task_arena_policy_bundle(
-            receipt_path,
-            expected_implementation_commit="d" * 40,
-        )
-    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-
-    control_result = json.loads(controls.read_text())
-    control_result["controls_qualified"] = False
-    control_result["result_digest"] = canonical_digest(
-        control_result, digest_field="result_digest"
-    )
-    controls.write_text(json.dumps(control_result))
-    spec = _policy_spec(scene, construction, controls)
-    with pytest.raises(ValueError, match="native_task_policy_controls_not_qualified"):
-        build_native_task_arena_policy_bundle(
-            job_dir=tmp_path / "blocked-policy-bundle",
-            packet_dir=packet,
-            construction_result_path=construction,
-            control_result_path=controls,
-            policy_execution_spec=spec,
-            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
-            implementation_commit="d" * 40,
-        )
-
-
-def test_policy_bundle_rejects_self_digested_forged_rights_projection(
-    tmp_path: Path,
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    spec = _policy_spec(scene, construction, controls)
-    spec["candidate_rights_binding"]["rights"]["provider_use_status"] = (
-        "caller_asserted_but_not_authoritative"
-    )
-    spec["candidate_rights_binding"]["rights_receipt_digest"] = canonical_digest(
-        spec["candidate_rights_binding"], digest_field="rights_receipt_digest"
-    )
-    spec["execution_spec_digest"] = canonical_digest(
-        spec, digest_field="execution_spec_digest"
-    )
-
-    # The narrow syntax validator deliberately has no filesystem authority;
-    # the bundle gate must compare it to the separately bound readiness bytes.
-    validate_native_task_policy_execution_spec(spec)
-    with pytest.raises(
-        ValueError,
-        match="candidate_policy_rights_authoritative_projection_mismatch",
-    ):
-        build_native_task_arena_policy_bundle(
-            job_dir=tmp_path / "forged-policy-bundle",
-            packet_dir=packet,
-            construction_result_path=construction,
-            control_result_path=controls,
-            policy_execution_spec=spec,
-            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
-            implementation_commit="d" * 40,
-        )
-
-
 @pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
 def test_policy_provisioning_shell_failures_retain_typed_media_gap(
     candidate_id: str,
@@ -1157,300 +816,6 @@ def test_policy_provisioning_shell_failures_retain_typed_media_gap(
         assert '"status": "unavailable_before_first_observation"' in result_writer
         assert '"type": "before_first_observation"' in result_writer
         assert f'"reason": "{reason}"' in result_writer
-
-
-def test_policy_execution_spec_can_be_sealed_without_calling_an_endpoint(
-    tmp_path: Path,
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    request = _policy_spec(scene, construction, controls)
-    request.pop("execution_spec_digest")
-    output = tmp_path / "policy-execution-spec.json"
-
-    result = materialize_native_task_policy_execution_spec(
-        request=request, output_path=output
-    )
-
-    assert json.loads(output.read_text(encoding="utf-8")) == result
-    assert result["candidate_id"] == "pi05_droid"
-    assert result["execution_spec_digest"] == canonical_digest(
-        result, digest_field="execution_spec_digest"
-    )
-    with pytest.raises(ValueError, match="output_exists"):
-        materialize_native_task_policy_execution_spec(
-            request=request, output_path=output
-        )
-
-
-def test_policy_bundle_cli_forwards_explicit_authority_paths(
-    tmp_path: Path, monkeypatch
-) -> None:
-    spec = tmp_path / "policy-spec.json"
-    spec.write_text("{}", encoding="utf-8")
-    observed = {}
-    monkeypatch.setattr(
-        policy_bundle_module,
-        "build_native_task_arena_policy_bundle",
-        lambda **kwargs: observed.update(kwargs) or {"status": "ready"},
-    )
-
-    exit_code = policy_bundle_module.main(
-        [
-            "--job-dir",
-            str(tmp_path / "job"),
-            "--packet-dir",
-            str(tmp_path / "packet"),
-            "--construction-result",
-            str(tmp_path / "construction.json"),
-            "--control-result",
-            str(tmp_path / "controls.json"),
-            "--runtime-source-packet-receipt",
-            str(tmp_path / "runtime.json"),
-            "--implementation-commit",
-            "a" * 40,
-            "--policy-execution-spec",
-            str(spec),
-            "--scene-policy-readiness-path",
-            str(tmp_path / "readiness.json"),
-            "--scenario-suite-path",
-            str(tmp_path / "suite.json"),
-        ]
-    )
-
-    assert exit_code == 0
-    assert observed["scene_policy_readiness_path"] == str(
-        tmp_path / "readiness.json"
-    )
-    assert observed["scenario_suite_path"] == str(tmp_path / "suite.json")
-
-
-@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
-def test_provider_free_spec_builder_derives_each_frozen_candidate(
-    tmp_path: Path, candidate_id: str
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    output = tmp_path / f"{candidate_id}.execution-spec.json"
-
-    result = build_native_task_policy_execution_spec(
-        candidate_id=candidate_id,
-        scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
-        construction_result_path=construction,
-        control_result_path=controls,
-        output_path=output,
-    )
-
-    assert result["candidate_id"] == candidate_id
-    assert result["task_id"] == scene["task_id"]
-    assert result["prompt"] == scene["task_spec"]["prompt"]
-    assert result["max_policy_queries"] == 56
-    assert result["policy_may_grade_itself"] is False
-    assert result["execution_spec_digest"] == canonical_digest(
-        result, digest_field="execution_spec_digest"
-    )
-    assert json.loads(output.read_text(encoding="utf-8")) == result
-    if candidate_id == "pi05_droid":
-        assert result["policy_spec"]["checkpoint_uri"].endswith(
-            "/polaris/pi05_droid_jointpos_polaris"
-        )
-    else:
-        assert result["policy_identity_receipt"] == (
-            policy_bundle_module.GROOT_RUNTIME_IDENTITY_DECLARATION
-        )
-
-
-def test_qualified_policy_spec_refuses_target_absent_reset_external_camera(
-    tmp_path: Path,
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    value = json.loads(construction.read_text(encoding="utf-8"))
-    external = next(
-        camera
-        for camera in value["camera_snapshots"][0]["cameras"]
-        if camera["role"] == "external"
-    )
-    external["observability"].update(
-        {
-            "passed": False,
-            "semantic_passed": False,
-            "pixel_count": 0,
-            "pixel_fraction": 0.0,
-            "bbox_xyxy": None,
-            "centroid_within_margin": False,
-            "claim": "camera_observes_task_object_without_site_appearance",
-            "blockers": ["native_task_camera_semantic_framing_below_threshold"],
-        }
-    )
-    value["result_digest"] = canonical_digest(
-        value, digest_field="result_digest"
-    )
-    construction.write_text(json.dumps(value), encoding="utf-8")
-    controls = _qualified_controls(tmp_path, scene, construction)
-
-    with pytest.raises(
-        ValueError,
-        match="native_task_policy_start_camera_role_not_observable:external",
-    ):
-        build_native_task_policy_execution_spec(
-            candidate_id="pi05_droid",
-            scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
-            construction_result_path=construction,
-            control_result_path=controls,
-            output_path=tmp_path / "must-not-exist.json",
-        )
-
-
-@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
-def test_provider_free_spec_cli_seals_each_frozen_candidate(
-    tmp_path: Path, candidate_id: str
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    output = tmp_path / f"{candidate_id}.cli-execution-spec.json"
-
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "scripts/materialize_native_task_arena_policy_execution_spec.py",
-            "--candidate-id",
-            candidate_id,
-            "--scene-plan",
-            str(packet / "native_task_arena_scene_plan.v1.json"),
-            "--construction-result",
-            str(construction),
-            "--control-result",
-            str(controls),
-            "--output",
-            str(output),
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert json.loads(completed.stdout)["candidate_id"] == candidate_id
-    assert json.loads(output.read_text(encoding="utf-8"))["candidate_id"] == (
-        candidate_id
-    )
-
-
-def test_provider_free_spec_cli_fails_closed_before_controls_qualify(
-    tmp_path: Path,
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    control_result = json.loads(controls.read_text(encoding="utf-8"))
-    control_result["controls_qualified"] = False
-    control_result["result_digest"] = canonical_digest(
-        control_result, digest_field="result_digest"
-    )
-    controls.write_text(json.dumps(control_result), encoding="utf-8")
-    output = tmp_path / "must-not-exist.json"
-
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "scripts/materialize_native_task_arena_policy_execution_spec.py",
-            "--candidate-id",
-            "pi05_droid",
-            "--scene-plan",
-            str(packet / "native_task_arena_scene_plan.v1.json"),
-            "--construction-result",
-            str(construction),
-            "--control-result",
-            str(controls),
-            "--output",
-            str(output),
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 2
-    assert "native_task_policy_controls_not_qualified" in completed.stdout
-    assert not output.exists()
-
-
-def test_groot_execution_spec_refuses_predeclared_verified_runtime_identity(
-    tmp_path: Path,
-) -> None:
-    """Checkpoint bytes do not exist on the worker when the spec is sealed."""
-
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    request = _groot_policy_spec(scene, construction, controls)
-    request["policy_identity_receipt"] = {
-        "status": "verified",
-        "checkpoint_files_sha256": "4" * 64,
-        "environment_lock_sha256": "5" * 64,
-    }
-    request.pop("execution_spec_digest")
-
-    with pytest.raises(
-        ValueError, match="native_task_policy_spec_or_identity_invalid"
-    ):
-        materialize_native_task_policy_execution_spec(
-            request=request,
-            output_path=tmp_path / "dishonest-groot-execution-spec.json",
-        )
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "error"),
-    (
-        (
-            "prompt",
-            "Open a different appliance.",
-            "native_task_policy_prompt_task_spec_mismatch",
-        ),
-        (
-            "max_policy_queries",
-            55,
-            "native_task_policy_shared_query_budget_mismatch",
-        ),
-        (
-            "execution_authority",
-            None,
-            "native_task_policy_execution_authority_invalid",
-        ),
-    ),
-)
-def test_policy_bundle_binds_prompt_and_shared_query_budget_to_task(
-    tmp_path: Path,
-    field: str,
-    value,
-    error: str,
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    spec = _policy_spec(scene, construction, controls)
-    spec[field] = value
-    spec["execution_spec_digest"] = canonical_digest(
-        spec, digest_field="execution_spec_digest"
-    )
-
-    with pytest.raises(ValueError, match=error):
-        build_native_task_arena_policy_bundle(
-            job_dir=tmp_path / f"blocked-{field}",
-            packet_dir=packet,
-            construction_result_path=construction,
-            control_result_path=controls,
-            policy_execution_spec=spec,
-            runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
-            implementation_commit="d" * 40,
-        )
 
 
 def test_qualified_construction_builds_one_complete_controls_bundle(
@@ -1735,7 +1100,7 @@ def test_packet_asset_tamper_fails_before_bundle_creation(tmp_path: Path) -> Non
     )
 
 
-def test_policy_mode_requires_an_exact_candidate_binding(tmp_path: Path) -> None:
+def test_the_retired_policy_mode_is_refused(tmp_path: Path) -> None:
     packet = _packet(tmp_path, scene_id="840796")
     worker = tmp_path / "worker.py"
     worker.write_text("VALUE = 1\n", encoding="utf-8")
@@ -1751,7 +1116,7 @@ def test_policy_mode_requires_an_exact_candidate_binding(tmp_path: Path) -> None
         )
 
     assert excinfo.value.errors == (
-        "native_task_arena_bundle_policy_binding_invalid",
+        "native_task_arena_bundle_execution_mode_invalid",
     )
 
 
@@ -1843,73 +1208,6 @@ def test_construction_bundle_binds_customer_supplied_digest_pinned_image(
         ],
     )
     assert loaded["container_image"] == image
-
-
-def test_runtime_preflight_bundle_reuses_exact_packet_and_stops_before_motion(
-    tmp_path: Path,
-) -> None:
-    receipt = build_native_task_arena_runtime_preflight_bundle(
-        job_dir=tmp_path / "runtime-preflight",
-        packet_dir=_packet(tmp_path, scene_id="840920"),
-        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
-        implementation_commit="e" * 40,
-        generated_at="fixed",
-    )
-    assert receipt["execution_mode"] == "runtime_preflight"
-    assert receipt["expected_output_filename"] == RUNTIME_PREFLIGHT_RESULT_FILENAME
-    assert receipt["container_image"] == NATIVE_TASK_ARENA_IMAGE
-    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
-        names = set(archive.namelist())
-        worker = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
-        extracted = tmp_path / "runtime-preflight-extracted"
-        archive.extractall(extracted)
-    assert "native_task_arena_runtime_preflight_worker.py" not in names
-    assert "task_motion_executed" in worker
-    assert "task_motion_executed\"] = True" not in worker
-    assert worker.index("(output_root / RESULT_FILENAME).write_text") < worker.index(
-        "simulation_app.close()"
-    )
-    assert (
-        "provider_runtime/blueprint_pipeline/native_task_torch_runtime_lock.py"
-        in names
-    )
-    assert "provider_runtime/blueprint_pipeline/rigid_frame_transforms.py" in names
-    loaded = load_verified_native_task_arena_runtime_preflight_bundle(
-        tmp_path
-        / "runtime-preflight/native_task_arena_provider_bundle_receipt.v1.json",
-        expected_implementation_commit="e" * 40,
-        expected_packet_receipt_digest=receipt["packet_receipt_digest"],
-        expected_runtime_source_packet_digest=receipt["runtime_source_packet"][
-            "receipt_digest"
-        ],
-    )
-    assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
-    preflight = _blueprint_bundle_preflight(
-        job_dir=tmp_path / "runtime-preflight-static",
-        generated_at="fixed",
-        enable_blueprint_bundle=True,
-        enable_isaac_smoke=True,
-        provider_bundle_kind="native_task_arena",
-        bundle_path=Path(receipt["bundle_path"]),
-        provider_bundle_url="https://example.com/bundle.zip?sig=redacted",
-        provider_output_put_url="https://example.com/output.zip?sig=redacted",
-    )
-    assert preflight["blockers"] == []
-    assert preflight["status"] == "passed"
-    entrypoint = (
-        extracted / "provider_runtime/run_adp_arena_provider_runtime.sh"
-    ).read_text(encoding="utf-8")
-    assert 'if [ ! -f "$OUT_DIR/native_task_arena_runtime_preflight.v1.json" ]' in entrypoint
-    assert '"worker_exit_code": runner_rc' in entrypoint
-    from blueprint_pipeline.native_task_arena_construction_worker import (
-        _load_and_verify_manifest,
-    )
-
-    verified_manifest = _load_and_verify_manifest(
-        extracted / "provider_runtime",
-        expected_execution_mode="runtime_preflight",
-    )
-    assert verified_manifest["execution_mode"] == "runtime_preflight"
 
 
 def test_destination_qualification_bundle_binds_policy_free_native_inputs(
@@ -2125,48 +1423,6 @@ def test_runtime_preflight_accepts_sealed_particlefield_alignment(tmp_path: Path
     assert result["render_path"] == "particlefield_3d_gaussian_splat"
     assert result["particlefield_alignment_receipt_present"] is True
     assert result["spg_graph_execution_required"] is False
-
-
-def test_runtime_preflight_transport_is_ada_only_and_requires_no_task_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from blueprint_pipeline import native_task_arena_vast as module
-
-    observed: dict = {}
-    monkeypatch.setattr(
-        module,
-        "run_arena_native_control_vast",
-        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
-    )
-    result = run_native_task_arena_runtime_preflight_vast(
-        job_dir=tmp_path / "preflight-run",
-        prepared_bundle={
-            "schema_version": "native_task_arena_provider_bundle.v1",
-            "status": "ready",
-            "execution_mode": "runtime_preflight",
-            "policy_candidate_id": None,
-            "candidate_policy_queried": False,
-            "expected_output_filename": RUNTIME_PREFLIGHT_RESULT_FILENAME,
-            "container_image": NATIVE_TASK_ARENA_IMAGE,
-        },
-        paid_resource_admission_grant=None,
-        execute=False,
-    )
-    assert result["status"] == "dry_run_ready"
-    assert observed["preferred_gpu_keywords"] == (
-        "L40S",
-        "RTX 6000 Ada",
-        "RTX 4090",
-    )
-    assert observed["min_gpu_ram_mb"] == 24_000
-    assert "RTX A6000" not in observed["preferred_gpu_keywords"]
-    assert observed["gpu_selection_policy"] == {
-        "policy_id": "native_task_arena_runtime_preflight_ada_only",
-        "allowed_gpu_keywords": ("L40S", "6000ADA", "RTX 4090"),
-        "reason": "NuRec runtime preflight is qualified only on Ada GPUs",
-        "minimum_cuda_max_good": 12.8,
-    }
-    assert observed["candidate_policy_query_expected"] is False
 
 
 def test_runtime_preflight_ada_policy_accepts_provider_slug_and_rejects_a6000() -> None:
@@ -2421,127 +1677,6 @@ def test_real_controls_bundle_passes_preflight_and_imports_cleanly(
     _assert_bundle_has_isolated_import_closure(tmp_path, receipt, name="controls")
 
 
-@pytest.mark.parametrize("candidate_id", ["pi05_droid", "groot_n17_droid"])
-def test_real_policy_bundles_pass_preflight_and_import_cleanly(
-    tmp_path: Path, candidate_id: str
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    spec = build_native_task_policy_execution_spec(
-        candidate_id=candidate_id,
-        scene_plan_path=packet / "native_task_arena_scene_plan.v1.json",
-        construction_result_path=construction,
-        control_result_path=controls,
-        output_path=tmp_path / f"{candidate_id}.execution-spec.json",
-    )
-    receipt = build_native_task_arena_policy_bundle(
-        job_dir=tmp_path / f"policy-{candidate_id}",
-        packet_dir=packet,
-        construction_result_path=construction,
-        control_result_path=controls,
-        policy_execution_spec=spec,
-        runtime_source_packet_receipt=_runtime_source_packet(tmp_path),
-        implementation_commit="6" * 40,
-        generated_at="fixed",
-    )
-
-    preflight = _native_bundle_preflight(
-        tmp_path, receipt, name=f"policy-{candidate_id}"
-    )
-    assert preflight["status"] == "passed"
-    assert preflight["blockers"] == []
-    names = _assert_bundle_has_isolated_import_closure(
-        tmp_path, receipt, name=f"policy-{candidate_id}"
-    )
-    assert "provider_runtime/blueprint_pipeline/policy_ranking_thesis.py" not in names
-    assert not any(Path(name).name == "policy_canary_interrupted_cell_recovery.py" for name in names)
-    assert not any(Path(name).name == "native_policy_canary_diagnostic_continuation.py" for name in names)
-
-
-@pytest.mark.parametrize(
-    "execution_mode,missing_module",
-    [
-        ("construction_canary", "articulated_control_planner.py"),
-        ("controls", "adp009d_contact_envelope.py"),
-        ("policy", "adp009d_droid_action_execution.py"),
-    ],
-)
-def test_preflight_rejects_one_missing_runtime_module_per_execution_mode(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    execution_mode: str,
-    missing_module: str,
-) -> None:
-    packet, scene = _articulated_packet(tmp_path)
-    runtime_source_packet = _runtime_source_packet(tmp_path)
-    construction = _qualified_construction(tmp_path, scene)
-    controls = _qualified_controls(tmp_path, scene, construction)
-    if execution_mode == "construction_canary":
-        monkeypatch.setattr(
-            construction_bundle_module,
-            "CONSTRUCTION_RUNTIME_MODULE_NAMES",
-            tuple(
-                name
-                for name in construction_bundle_module.CONSTRUCTION_RUNTIME_MODULE_NAMES
-                if name != missing_module
-            ),
-        )
-        receipt = build_native_task_arena_construction_bundle(
-            job_dir=tmp_path / execution_mode,
-            packet_dir=packet,
-            runtime_source_packet_receipt=runtime_source_packet,
-            implementation_commit="5" * 40,
-            generated_at="fixed",
-        )
-    elif execution_mode == "controls":
-        monkeypatch.setattr(
-            controls_bundle_module,
-            "CONTROLS_RUNTIME_MODULE_NAMES",
-            tuple(
-                name
-                for name in controls_bundle_module.CONTROLS_RUNTIME_MODULE_NAMES
-                if name != missing_module
-            ),
-        )
-        receipt = build_native_task_arena_controls_bundle(
-            job_dir=tmp_path / execution_mode,
-            packet_dir=packet,
-            construction_result_path=construction,
-            runtime_source_packet_receipt=runtime_source_packet,
-            implementation_commit="5" * 40,
-            generated_at="fixed",
-        )
-    else:
-        monkeypatch.setattr(
-            policy_bundle_module,
-            "POLICY_EXTRA_RUNTIME_MODULE_NAMES",
-            tuple(
-                name
-                for name in policy_bundle_module.POLICY_EXTRA_RUNTIME_MODULE_NAMES
-                if name != missing_module
-            ),
-        )
-        receipt = build_native_task_arena_policy_bundle(
-            job_dir=tmp_path / execution_mode,
-            packet_dir=packet,
-            construction_result_path=construction,
-            control_result_path=controls,
-            policy_execution_spec=_policy_spec(scene, construction, controls),
-            runtime_source_packet_receipt=runtime_source_packet,
-            implementation_commit="5" * 40,
-            generated_at="fixed",
-        )
-
-    preflight = _native_bundle_preflight(
-        tmp_path, receipt, name=f"missing-{execution_mode}"
-    )
-    expected_member = f"provider_runtime/blueprint_pipeline/{missing_module}"
-    assert preflight["status"] == "blocked"
-    assert "provider_runtime_bundle_required_entries_missing" in preflight["blockers"]
-    assert expected_member in preflight["missing_zip_entries"]
-
-
 def test_preflight_rejects_unknown_native_result_filename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2735,20 +1870,6 @@ def test_construction_vast_adapter_can_retain_warm_instance(
             "blueprint-native-task-controls-",
             None,
         ),
-        (
-            run_native_task_arena_policy_vast,
-            "policy",
-            "native_task_arena_policy_result.v1.json",
-            "blueprint-native-task-policy-",
-            "pi05_droid",
-        ),
-        (
-            run_native_task_arena_policy_diagnostic_vast,
-            "policy_diagnostic",
-            "native_task_arena_policy_diagnostic_result.v1.json",
-            "blueprint-native-task-policy-diagnostic-",
-            "pi05_droid",
-        ),
     ),
 )
 def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
@@ -2799,83 +1920,7 @@ def test_each_native_task_arena_stage_requires_its_exact_watchdog_scope(
         assert observed["expected_provider_upload_bytes"] == 1_000_000_000
 
 
-def test_policy_vast_adapter_marks_candidate_query_and_external_allowlist(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from blueprint_pipeline import native_task_arena_vast as module
-
-    observed: dict = {}
-    monkeypatch.setattr(
-        module,
-        "run_arena_native_control_vast",
-        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
-    )
-    prepared = {
-        "schema_version": "native_task_arena_provider_bundle.v1",
-        "execution_mode": "policy",
-        "policy_candidate_id": "pi05_droid",
-        "candidate_policy_queried": False,
-        "expected_output_filename": "native_task_arena_policy_result.v1.json",
-        "container_image": "image@sha256:" + "a" * 64,
-    }
-
-    run_native_task_arena_policy_vast(
-        job_dir=tmp_path / "policy",
-        prepared_bundle=prepared,
-        paid_resource_admission_grant=None,
-        execute=False,
-        allowed_active_instance_ids=(47373597,),
-        provider_runtime_environment={
-            "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
-        },
-    )
-
-    assert observed["candidate_policy_query_expected"] is True
-    assert observed["allowed_active_instance_ids"] == (47373597,)
-    assert observed["object_store_key_prefix"].endswith("/policy/pi05_droid")
-    assert observed["vast_launch_lock_file"] is None
-    assert observed["provider_runtime_environment"] == {
-        "BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"
-    }
-
-
-def test_policy_vast_adapter_refuses_unallowlisted_provider_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from blueprint_pipeline import native_task_arena_vast as module
-
-    called = False
-
-    def fake_run(**_kwargs):
-        nonlocal called
-        called = True
-        return {"status": "dry_run_ready"}
-
-    monkeypatch.setattr(module, "run_arena_native_control_vast", fake_run)
-    prepared = {
-        "schema_version": "native_task_arena_provider_bundle.v1",
-        "execution_mode": "policy",
-        "policy_candidate_id": "pi05_droid",
-        "candidate_policy_queried": False,
-        "expected_output_filename": "native_task_arena_policy_result.v1.json",
-        "container_image": "image@sha256:" + "a" * 64,
-    }
-
-    with pytest.raises(
-        ValueError, match="native_task_arena_policy_runtime_environment_invalid"
-    ):
-        run_native_task_arena_policy_vast(
-            job_dir=tmp_path / "policy",
-            prepared_bundle=prepared,
-            paid_resource_admission_grant=None,
-            execute=False,
-            provider_runtime_environment={"HOME": "/tmp/provider-home"},
-        )
-
-    assert called is False
-
-
-def test_controls_and_policy_share_the_canonical_provider_semaphore(
+def test_controls_use_the_canonical_provider_semaphore(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from blueprint_pipeline import native_task_arena_vast as module
@@ -2900,14 +1945,6 @@ def test_controls_and_policy_share_the_canonical_provider_semaphore(
         "expected_output_filename": "native_task_arena_control_result.v1.json",
         "container_image": "image@sha256:" + "a" * 64,
     }
-    policy = {
-        "schema_version": "native_task_arena_provider_bundle.v1",
-        "execution_mode": "policy",
-        "policy_candidate_id": "pi05_droid",
-        "candidate_policy_queried": False,
-        "expected_output_filename": "native_task_arena_policy_result.v1.json",
-        "container_image": "image@sha256:" + "a" * 64,
-    }
 
     run_native_task_arena_controls_vast(
         job_dir=tmp_path / "controls",
@@ -2916,18 +1953,10 @@ def test_controls_and_policy_share_the_canonical_provider_semaphore(
         execute=False,
         allowed_active_instance_ids=(48606888,),
     )
-    run_native_task_arena_policy_vast(
-        job_dir=tmp_path / "policy",
-        prepared_bundle=policy,
-        paid_resource_admission_grant=None,
-        execute=False,
-        allowed_active_instance_ids=(48606888, 48607367),
-    )
 
-    assert [row["vast_launch_lock_file"] for row in observed] == [None, None]
+    assert [row["vast_launch_lock_file"] for row in observed] == [None]
     assert [row["allowed_active_instance_ids"] for row in observed] == [
         (48606888,),
-        (48606888, 48607367),
     ]
     expected_slots = [
         canonical_lock,
@@ -2945,12 +1974,6 @@ def test_controls_and_policy_share_the_canonical_provider_semaphore(
             "controls",
             "native_task_arena_control_result.v1.json",
             None,
-        ),
-        (
-            run_native_task_arena_policy_vast,
-            "policy",
-            "native_task_arena_policy_result.v1.json",
-            "pi05_droid",
         ),
     ),
 )
@@ -3003,47 +2026,6 @@ def test_shared_semaphore_links_remain_retry_zero_when_authority_is_consumed(
     assert result["status"] == "blocked"
     assert result["retry_cap"] == 0
     assert result["provider_mutations_performed"] == 0
-
-
-def test_groot_policy_vast_requires_and_forwards_gated_backbone_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from blueprint_pipeline import native_task_arena_vast as module
-
-    observed: dict = {}
-    monkeypatch.setattr(
-        module,
-        "run_arena_native_control_vast",
-        lambda **kwargs: observed.update(kwargs) or {"status": "dry_run_ready"},
-    )
-    prepared = {
-        "schema_version": "native_task_arena_provider_bundle.v1",
-        "execution_mode": "policy",
-        "policy_candidate_id": "groot_n17_droid",
-        "candidate_policy_queried": False,
-        "expected_output_filename": "native_task_arena_policy_result.v1.json",
-        "container_image": "image@sha256:" + "a" * 64,
-    }
-
-    with pytest.raises(ValueError, match="gated_backbone_authority_missing"):
-        run_native_task_arena_policy_vast(
-            job_dir=tmp_path / "missing",
-            prepared_bundle=prepared,
-            paid_resource_admission_grant=None,
-            execute=False,
-        )
-
-    run_native_task_arena_policy_vast(
-        job_dir=tmp_path / "authorized",
-        prepared_bundle=prepared,
-        paid_resource_admission_grant=None,
-        execute=False,
-        authorize_gated_backbone=True,
-    )
-
-    assert observed["forward_hf_token"] is True
-    assert observed["expected_provider_download_bytes"] == 25_303_924_439
-    assert observed["expected_provider_upload_bytes"] == 1_000_000_000
 
 
 def test_bundle_rejects_an_unpinned_runtime_image(tmp_path: Path) -> None:

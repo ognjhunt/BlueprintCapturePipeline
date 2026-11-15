@@ -8,14 +8,19 @@ from blueprint_pipeline import native_task_arena_vast as native
 from scripts import gpu_spend_guard as guard
 
 
+# The retired runtime-preflight producer named its instances with this prefix; a retained
+# instance still carries it, so the guard's owner lookup is checked against it unchanged.
+RETIRED_RUNTIME_PREFLIGHT_PREFIX = "blueprint-task-evaluation-native-arena-preflight-"
+
+
 def prefix_from_producer(tmp_path, monkeypatch, lane="runtime_preflight"):
+    if lane == "runtime_preflight":
+        return RETIRED_RUNTIME_PREFLIGHT_PREFIX
     observed = {}
     monkeypatch.setattr(
         native, "run_arena_native_control_vast", lambda **kwargs: observed.update(kwargs) or {}
     )
-    producer = (native.run_native_task_arena_vast if lane == "construction_canary"
-                else native.run_native_task_arena_runtime_preflight_vast)
-    producer(
+    native.run_native_task_arena_vast(
         job_dir=tmp_path,
         execute=False,
         prepared_bundle={

@@ -56,21 +56,6 @@
       ]
     },
     {
-      "path": "scripts/arena_construction_launch_chain.sh",
-      "sha256": "d92b3b0c825d912530150a7a6c50fff3a6ac773dc152c8d6eee3979d95ce4635",
-      "responsibility": "payload_consumer",
-      "output_class": "lane_scratch",
-      "admission_method": "prepare admitted arena attempt then mkdir-payload CLI",
-      "characterization_tests": [
-        "tests/test_arena_construction_launch_scripts.py",
-        "tests/test_control_plane_arena_scratch.py"
-      ],
-      "review_reference": "2026-09-29: independent merged-source SPEC and separate QUALITY at dde688e800cff7bfc5466a41b0aa339ccdc88adc; exact current bytes and responsibilities in handoff evidence 12-whole-feature-independent-merged-SPEC-GO-dde688e80-20260929.md, 12-two-unregistered-writers-independent-SPEC-GO-dde688e80-20260929.md, and 12-eight-writer-independent-QUALITY-GO-dde688e80-20260929.md; hosted CI and native Linux are separate gates",
-      "historical_exceptions": [
-        "Historical predecessor folders are resolved read-only; cp and subsequent file writes are outside the descriptor guarantee."
-      ]
-    },
-    {
       "path": "scripts/install_live_pipeline_control_plane.sh",
       "sha256": "212dfe90ac05f4ba888c91b2b20a5a1d95525e4431b9040691fee3bffc5faaa2",
       "responsibility": "parent_provisioning",

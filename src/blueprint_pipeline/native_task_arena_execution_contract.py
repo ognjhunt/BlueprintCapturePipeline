@@ -205,76 +205,6 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_arena_control_sweep_worker.py",
 )
 
-POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
-    "policy_execution_evidence.py",
-    # Family execution has its own native-state scorer and qualified factory;
-    # none of these modules substitutes the Franka rigid episode adapter.
-    "task_family_native_contracts.py",
-    "task_family_native_runtime.py",
-    "task_family_native_controls.py",
-    "task_family_control_omission.py",
-    "task_family_policy_execution.py",
-    "task_family_policy_worker_execution.py",
-    "task_family_result_admission.py",
-    "task_family_policy_https_client.py",
-    "droid_https_policy_client.py",
-    "task_family_scoring.py",
-    "task_evaluation_task_family_native_adapter.py",
-    "common.py",
-    "native_task_arena_controls_admission.py",
-    "native_task_construction_result_validation.py",
-    "native_g1_navigation_goal.py",
-    "native_task_asset_composition_gate.py",
-    "native_task_composition_diagnostic.py",
-    "native_task_composition_worker.py",
-    "adp009d_isaac_runtime.py",
-    "adp009d_approach_capture.py",
-    "adp009d_hold_trace.py",
-    "adp009d_newton_collision_adapter.py",
-    # Imported by the worker evidence for typed episode failure codes (#3388).
-    "team_policy_episode_outcome.py",
-    "task_object_native_settle_gate.py",
-    "task_object_native_settle_runtime.py",
-    "policy_canary_scene_resolution.py",
-    "policy_scientific_reset.py",
-    "policy_request_evidence.py",
-    "policy_interface_binding.py",
-    "policy_paired_summary.py",
-    "adp009d_policy_episode.py",
-    "policy_episode_events.py",
-    "beta_robolab_runtime.py",
-    "adp009d_policy_episode_evidence.py",
-    "adp009d_policy_episode_native_validation.py",
-    "adp009d_droid_action_execution.py",
-    # Imported as ``.adp009d_groot_worker_identity`` by the GR00T runtime and
-    # by the rights module inside the package; the flat root copy used by the
-    # provisioning script does not satisfy a package-relative import.
-    "adp009d_groot_worker_identity.py",
-    "adp009d_policy_rights.py",
-    "droid_policy_bridge.py",
-    "droid_policy_canary_embodiment.py",
-    "task_instruction.py",
-    "groot_n17_wire_client.py",
-    "openpi_droid_policy_runtime.py",
-    "policy_episode_trace_evidence.py",
-    "policy_episode_lifecycle.py",
-    # Policy sessions perform the same native camera-mount sweep as the
-    # render-only preflight before either model client is loaded.
-    "native_task_arena_runtime_preflight_worker.py",
-    "native_task_wrist_camera_mount_sweep.py",
-    "native_task_rtx_streaming_guard.py",
-)
-
-POLICY_RUNTIME_MODULE_NAMES = tuple(
-    sorted(
-        {
-            *CONTROLS_RUNTIME_MODULE_NAMES,
-            *POLICY_EXTRA_RUNTIME_MODULE_NAMES,
-        }
-    )
-)
-
-
 # Beta L5: the rigid robot-free probe records in the team scene with the robot
 # idle and queries no policy. Exactly the static import closure of its worker
 # (``rigid_robot_free_probe_worker``), the runtime-source provisioner and the
@@ -341,18 +271,6 @@ EXECUTION_MODE_CONTRACTS = {
     "controls": NativeTaskArenaExecutionContract(
         expected_output_filename="native_task_arena_control_result.v1.json",
         runtime_module_names=CONTROLS_RUNTIME_MODULE_NAMES,
-    ),
-    "policy": NativeTaskArenaExecutionContract(
-        expected_output_filename="native_task_arena_policy_result.v1.json",
-        runtime_module_names=POLICY_RUNTIME_MODULE_NAMES,
-        policy_candidate_required=True,
-    ),
-    "policy_diagnostic": NativeTaskArenaExecutionContract(
-        expected_output_filename=(
-            "native_task_arena_policy_diagnostic_result.v1.json"
-        ),
-        runtime_module_names=POLICY_RUNTIME_MODULE_NAMES,
-        policy_candidate_required=True,
     ),
     "rigid_robot_free_probe": NativeTaskArenaExecutionContract(
         expected_output_filename="rigid_robot_free_probe_result.v1.json",
@@ -554,8 +472,6 @@ __all__ = [
     "NATIVE_TASK_ARENA_RESULT_FILENAMES",
     "NATIVE_TASK_ARENA_POLICY_CANDIDATES",
     "NativeTaskArenaExecutionContract",
-    "POLICY_EXTRA_RUNTIME_MODULE_NAMES",
-    "POLICY_RUNTIME_MODULE_NAMES",
     "RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES",
     "RUNTIME_PREFLIGHT_MODULE_NAMES",
     "native_task_arena_execution_transport_completed",

@@ -68,40 +68,6 @@ def test_resealed_completeness_claim_and_nonfinite_values_refuse():
         snapshot(physics={"dt": float("nan")})
 
 
-@pytest.mark.parametrize("candidate", ["pi05_droid", "groot_n17_droid"])
-def test_real_episode_stops_camera_reset_carryover_before_policy_query(tmp_path, candidate):
-    from tests.test_adp009d_policy_episode import _LifecycleEnvironment, _LifecyclePolicy, _run
-    from blueprint_pipeline.adp009d_policy_episode import PolicyEpisodeError
-    env, policy = _LifecycleEnvironment(), _LifecyclePolicy()
-    def read():
-        value = snapshot(candidate)
-        if env.reset_count >= 2:
-            return snapshot(candidate, cameras={"external": {"pose": [1., 1., 2.], "resolution": [64, 32]}})
-        return value
-    with pytest.raises(PolicyEpisodeError, match="scientific_reset_mismatch"):
-        _run(environment=env, policy=policy, candidate_id=candidate, max_policy_queries=1,
-            settle_window_samples=1, media_output_dir=tmp_path, episode_id="reset-camera",
-            require_complete_multicamera_media=True, require_prestart_readiness=True,
-            scientific_reset_reader=read)
-    assert policy.observations == []
-
-
-def test_uniformly_wrong_initial_reset_cannot_be_its_own_reference(tmp_path):
-    from tests.test_adp009d_policy_episode import _LifecycleEnvironment, _LifecyclePolicy, _run
-    from blueprint_pipeline.adp009d_policy_episode import PolicyEpisodeError
-    class WrongInitialState(_LifecycleEnvironment):
-        def read_object_sample(self):
-            sample = super().read_object_sample()
-            sample["can_pose_world"][0] += .1
-            return sample
-    policy = _LifecyclePolicy()
-    with pytest.raises(PolicyEpisodeError, match="reset_owner_contract_mismatch"):
-        _run(environment=WrongInitialState(), policy=policy, max_policy_queries=1,
-            settle_window_samples=1, media_output_dir=tmp_path, episode_id="wrong-initial",
-            require_complete_multicamera_media=True, require_prestart_readiness=True)
-    assert policy.observations == []
-
-
 def test_native_reader_measures_physx_values_and_does_not_treat_static_assets_as_bodies():
     from types import SimpleNamespace as NS
     import numpy as np

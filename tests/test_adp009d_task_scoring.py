@@ -1128,14 +1128,6 @@ def test_numpy_inputs_are_accepted_verbatim() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_scene_constants_match_the_isaac_runtime_and_approach_capture() -> None:
-    from blueprint_pipeline import adp009d_approach_capture as approach
-
-    assert SUPPORT_PLANE_Z_M == approach.SUPPORT_HEIGHT_M
-    assert APPROVED_CAN_TOP_ABOVE_SUPPORT_M == approach.APPROVED_CAN_TOP_ABOVE_SUPPORT_M
-    assert (START[0], START[1]) == approach.CAN_AXIS_XY_M
-
-
 def test_scoring_never_imports_a_simulator_or_a_learned_judge() -> None:
     from blueprint_pipeline import adp009d_task_scoring
 

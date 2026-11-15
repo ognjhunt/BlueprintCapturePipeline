@@ -91,17 +91,6 @@ def test_no_clear_pose_leaves_the_scene_without_a_right_exterior_and_says_why():
     assert unmeasured["reason"] == "droid_exterior_right_unmeasured:scene_camera_appearance_not_a_gaussian_splat"
 
 
-def test_a_candidate_is_fresh_on_the_views_it_reads_only():
-    from blueprint_pipeline.adp009d_policy_episode import _policy_views_fresh
-
-    observed, stale = {"status": "observed"}, {"status": "stale"}
-    three = {"external": observed, "wrist": observed, "exterior_right": stale}
-    assert _policy_views_fresh(three, "pi05_droid") is True  # it never reads the right exterior
-    assert _policy_views_fresh(three, "cosmos3_edge_policy_droid") is False
-    assert _policy_views_fresh({"external": observed, "wrist": observed}, "cosmos3_edge_policy_droid") is False
-    assert _policy_views_fresh({**three, "exterior_right": observed}, "cosmos3_edge_policy_droid") is True
-
-
 class _ArenaCameraCfg:
     """Pinned Arena's rig parent (``isaaclab_arena/utils/cameras.py`` at ``ARENA_COMMIT``, sha256
     9d7ff0ee...): the tiling choice is a property over a ``ClassVar`` an instance shadows. It has no

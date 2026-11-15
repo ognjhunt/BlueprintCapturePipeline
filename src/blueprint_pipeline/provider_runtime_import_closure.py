@@ -42,9 +42,6 @@ CONTROL_PLANE_ONLY_LAZY_IMPORTS: frozenset[tuple[str, str]] = frozenset(
         # ``_validation_errors`` on the measurement routing contract classes;
         # provider workers only compute digests from this module.
         ("decision_evidence_contracts.py", "task_site_measurement_routing"),
-        # ``validate_candidate_policy_rights_authorities`` runs at profile
-        # materialization on the control plane, never on a provider.
-        ("adp009d_policy_rights.py", "adp009d_scene_policy_readiness"),
         # Physics backend comparison admission runs on the control plane.
         ("adp009d_physics_backend_comparison.py", "spend_admission_lock"),
         # Control-search funnel packet reads run on the control plane.
@@ -53,9 +50,6 @@ CONTROL_PLANE_ONLY_LAZY_IMPORTS: frozenset[tuple[str, str]] = frozenset(
         # the control plane.  The provider calls only the registry geometry and
         # native-render selection functions; it never materializes a packet.
         ("native_task_wrist_camera_mount_sweep.py", "native_task_arena_packet"),
-        # ``stage_robolab_source`` builds the provider bundle on the control
-        # plane; the worker only verifies the wheel bytes it was given.
-        ("beta_robolab_runtime.py", "pinned_wheel_cache"),
         # Remote cuRobo candidate generation allocates from the control plane.
         ("task_evaluation_curobo_candidate_generator.py", "gpu_render_providers"),
         (

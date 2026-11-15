@@ -58,8 +58,8 @@ def _repo(tmp_path: Path) -> tuple[Path, str, str]:
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.email", "canary@example.invalid")
     _git(root, "config", "user.name", "Canary Test")
-    runtime = root / "src/blueprint_pipeline/openpi_droid_policy_runtime.py"
-    test = root / "tests/test_openpi_droid_policy_runtime.py"
+    runtime = root / "src/blueprint_pipeline/groot_n17_wire_client.py"
+    test = root / "tests/test_groot_n17_wire_client.py"
     runtime.parent.mkdir(parents=True)
     test.parent.mkdir(parents=True)
     runtime.write_text("BASE = True\n", encoding="utf-8")
@@ -137,7 +137,7 @@ def test_overlay_seals_exact_failure_test_and_applies_only_to_staging(
     execution_release = canary_hotfix_execution_release(verified)
     staging = tmp_path / "provider-runtime"
     staging.mkdir()
-    destination = staging / "openpi_droid_policy_runtime.py"
+    destination = staging / "groot_n17_wire_client.py"
     destination.write_text("BASE = True\n", encoding="utf-8")
 
     applied = apply_canary_hotfix_overlay(
