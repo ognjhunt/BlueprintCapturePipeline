@@ -53,7 +53,6 @@ _COHORT_CALLS={
     'task_evaluation_sam31_preparation_execution':'process_sam31_phase_queue',
     'task_evaluation_scene_configuration_sam31_preparation_driver':'advance_sam31_preparation',
     'task_evaluation_launch_dispatcher':'dispatch_launch_request process_launch_queue',
-    'task_evaluation_policy_canary_dispatcher':'dispatch_policy_canary_activation process_policy_canary_activation_results process_policy_canary_dispatch_queue',
     'task_evaluation_scene_configuration_submission_publication':'publish_scene_configuration_submission',
     'website_scene_dispatch':'materialize_website_attempt register_website_preparation resolve_website_source',
     'website_native_submission':'materialize_website_submission validate_website_publication verified_submission_inputs',

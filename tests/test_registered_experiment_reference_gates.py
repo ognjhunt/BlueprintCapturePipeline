@@ -99,12 +99,6 @@ CASES = [
         {"value": VALUE, "queue_root": "/unused"},
     ),
     (
-        "task_evaluation_policy_canary_handoff_state",
-        "write_immutable",
-        {"path": None, "value": VALUE},
-    ),
-    ("task_evaluation_policy_canary_handoff_state", "seal_state", {"path": None, "value": VALUE}),
-    (
         "task_evaluation_sam31_preparation_queue",
         "advance_sam31_for_preparation",
         {"queue_root": None, "envelope_context": VALUE, "approved_roots": ()},
