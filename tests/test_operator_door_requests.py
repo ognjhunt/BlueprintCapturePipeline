@@ -71,7 +71,7 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
         assert error.value.code == code
 
 
-def test_no_unit_request_starts_a_retired_trigger_or_its_service() -> None:
+def test_no_unit_request_starts_a_retired_trigger_or_the_agent_run_dispatcher() -> None:
     """The founder's stop of the agent-run dispatcher stays true once it is retired."""
 
     for unit in ("blueprint-agent-run-dispatcher.timer", "blueprint-agent-run-dispatcher.service",

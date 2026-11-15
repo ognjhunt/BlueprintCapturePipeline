@@ -172,7 +172,7 @@ _BASELINE_TRIGGER_SAFETY = re.compile(r"spend-guard|watchdog|teardown|reaper|pro
 # and only root can remove it from the host. Until then the door may hold
 # exactly these, also under the dispatcher-only profile, and their hold may
 # require an explicit release, so a retired unit stays off past the deadline
-# and across a reboot. No unit request starts or restarts one, nor its service.
+# and across a reboot. No unit request starts or restarts one.
 # None protects money or cleanup; each kept its hold guard while it was shipped.
 RETIRED_HOLD_UNITS = (
     "blueprint-pipeline-control-plane.timer",
@@ -193,7 +193,8 @@ RETIRED_HOLD_UNITS = (
     "blueprint-agent-run-dispatcher.timer",
 )
 EXPLICIT_RELEASE_UNITS = RETIRED_HOLD_UNITS
-_RETIRED_UNIT_STEMS = frozenset(unit.rsplit(".", 1)[0] for unit in RETIRED_HOLD_UNITS)
+# No unit request starts a retired trigger, nor the founder-stopped agent-run dispatcher's service.
+_NEVER_STARTED_UNITS = frozenset({*RETIRED_HOLD_UNITS, "blueprint-agent-run-dispatcher.service"})
 _LOG_TAIL_LINES = 200
 
 
@@ -357,7 +358,7 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("unit_is_door")
         if action not in _UNIT_ACTIONS:
             raise RequestRefused("unit_action_invalid")
-        if action in ("start", "restart") and unit.rsplit(".", 1)[0] in _RETIRED_UNIT_STEMS:
+        if action in ("start", "restart") and unit in _NEVER_STARTED_UNITS:
             raise RequestRefused("unit_retired")
         if action in _TRIGGER_ONLY_ACTIONS:
             # Pausing a trigger never kills a running job; stopping a service could.
