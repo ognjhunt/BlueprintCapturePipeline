@@ -15,7 +15,9 @@ This module holds the rule so the next such tool is found without a paid call:
 - ``upstream_tool_schemas`` computes, from a patched upstream source tree and without importing
   it, the exact tools the OpenAI codec sends for the design, coding and review agents: it
   executes only the three tool-list functions and the codec's conversion functions, read from
-  the source by their syntax tree, with any module constant they name read as a literal.
+  the source by their syntax tree, with any module constant they name read as a literal. A
+  function holding an import, a ``global`` or ``nonlocal`` statement or an underscore-prefixed
+  attribute is refused before it runs; the rest sees only ``PURE_BUILTINS`` and ``copy.deepcopy``.
 - ``SNAPSHOT`` (``config/artisan_openai_tool_schemas.v1.json``) is that output for the pinned
   upstream with every patch applied. CI checks the snapshot; the component builder recomputes it
   from the real patched source and refuses to seal a component whose tools differ from the
@@ -30,10 +32,12 @@ from __future__ import annotations
 
 import __future__
 import ast
+import builtins
 import copy
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 SCHEMA_VERSION = "artisan_openai_tool_schemas.v1"
@@ -61,6 +65,10 @@ MAX_NESTING_DEPTH = 10
 MAX_TOTAL_PROPERTIES = 5_000
 MAX_TOTAL_ENUM_VALUES = 1_000
 _MAX_NAME_RESOLUTIONS = 32
+#: Pure built-ins only (no import, open, eval, exec, compile, getattr, reflection or I/O); widening is reviewed.
+PURE_BUILTINS = ("any", "all", "bool", "dict", "enumerate", "float", "frozenset", "int", "isinstance", "len",
+                 "list", "max", "min", "range", "set", "sorted", "str", "tuple", "zip")
+_NOT_PLAIN = (ast.Import, ast.ImportFrom, ast.Global, ast.Nonlocal)
 
 
 class ArtisanToolSchemaError(ValueError):
@@ -204,12 +212,17 @@ def _functions(source_root: Path, relative: str, names: tuple[str, ...]) -> dict
     found = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     if sorted(node.name for node in found) != sorted(names):
         raise ArtisanToolSchemaError(f"artisan_tool_schema_function_missing:{relative}")
-    namespace: dict[str, Any] = {"copy": copy, "Any": Any, "__builtins__": __builtins__}
+    for node in found:
+        if any(isinstance(item, _NOT_PLAIN) or (isinstance(item, ast.Attribute) and item.attr.startswith("_"))
+               for item in ast.walk(node)):
+            raise ArtisanToolSchemaError(f"artisan_tool_schema_function_not_plain:{relative}:{node.name}")
+    namespace: dict[str, Any] = {"copy": SimpleNamespace(deepcopy=copy.deepcopy), "Any": Any,
+                                 "__builtins__": {name: getattr(builtins, name) for name in PURE_BUILTINS}}
     try:
         # Annotations stay unevaluated, as in the upstream module (``from __future__ import annotations``).
         code = compile(ast.Module(body=found, type_ignores=[]), str(path), "exec",
                        flags=__future__.annotations.compiler_flag, dont_inherit=True)
-        exec(code, namespace)  # noqa: S102 - pinned upstream
+        exec(code, namespace)  # only the checked functions of the pinned upstream
     except (NameError, SyntaxError, TypeError) as error:
         raise ArtisanToolSchemaError(f"artisan_tool_schema_function_unreadable:{relative}") from error
     return {"namespace": namespace, "relative": relative}
@@ -225,6 +238,8 @@ def _call(source_root: Path, loaded: Mapping[str, Any], name: str, *args: Any) -
             if not missing or missing in namespace:
                 raise ArtisanToolSchemaError(f"artisan_tool_schema_name_unresolved:{name}") from error
             namespace[missing] = _module_constant(source_root, loaded["relative"], missing)
+        except AttributeError as error:  # e.g. copy.copy: only copy.deepcopy is exposed
+            raise ArtisanToolSchemaError(f"artisan_tool_schema_attribute_unavailable:{name}:{error.name}") from error
     raise ArtisanToolSchemaError(f"artisan_tool_schema_name_unresolved:{name}")
 
 

@@ -479,6 +479,18 @@
       "reviewed_on": "2026-11-06",
       "severity": "MEDIUM",
       "test_id": "B103"
+    },
+    {
+      "disposition": "mitigated_by_control",
+      "expires_on": "2027-02-04",
+      "filename": "src/blueprint_pipeline/artisan_strict_tool_schemas.py",
+      "fingerprint": "a408dccc563c92f66314f69fb3084e675276a46c2bb5113d0c8154c8777d4f77",
+      "line_number": 225,
+      "owner": "@ognjhunt",
+      "reason": "Runs only seven named top-level functions (three tool-list builders and four codec converters) taken by syntax tree from the pinned ARTISAN archive (revision and tree id checked, clean, extracted fresh from git archive) after the repository's digest-recorded patches; no module-level upstream code runs. Before compile a function is refused by name if its body holds an import, a global or nonlocal statement, or an underscore-prefixed attribute; built-ins are a fixed list of pure functions without import, open, eval, exec, compile or getattr; copy exposes deepcopy only; module constants are read with ast.literal_eval only. No caller-provided or job-provided text is executed, and the same build installs this source for the paid stage. Recorded 2026-11-15 with the stage 3 tool-schema change by the engineering session working under the owner's instruction to continue; not yet individually confirmed by the owner, and listed for confirmation at the next triage review.",
+      "reviewed_on": "2026-11-15",
+      "severity": "MEDIUM",
+      "test_id": "B102"
     }
   ],
   "fingerprint_policy": "filename_test_id_ast_scope_column_issue_text_canonical_code_and_source_anchor",

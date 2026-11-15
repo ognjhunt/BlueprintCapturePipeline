@@ -95,6 +95,11 @@ size stay inside our reading of OpenAI's limits. `config/artisan_openai_tool_sch
 is every tool the pinned upstream with every patch sends, by agent role. CI
 checks the snapshot; the component builder recomputes it from the real patched
 source and refuses a source whose tools differ from it or break a rule.
+To compute the tools it executes only the seven named tool-list and codec
+functions, taken by syntax tree: a function holding an import, a `global` or
+`nonlocal` statement or an underscore-prefixed attribute is refused by name
+before it runs, and the rest sees only the pure built-ins in `PURE_BUILTINS`
+and `copy.deepcopy` (widening either is a reviewed change).
 
 A patch or an upstream revision that changes any tool (a description included)
 must regenerate the snapshot in the same change, from a tree with every patch in

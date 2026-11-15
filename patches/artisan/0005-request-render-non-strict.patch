@@ -34,15 +34,7 @@ physicalvision/Artisan@ad322b5b31e50bdb84155520f09622c00c6056c3.
 diff --git a/pipeline/harness_review.py b/pipeline/harness_review.py
 --- a/pipeline/harness_review.py
 +++ b/pipeline/harness_review.py
-@@ -2,6 +2,7 @@
- 
- import json
- import logging
-+import math
- import re
- import subprocess
- from blueprint_pipeline.task_object_artisan_hooks import sandbox_subprocess_run
-@@ -207,6 +208,44 @@
+@@ -207,6 +207,44 @@
  
  SYSTEM_PROMPT = load_review_prompt("system.md")
  
@@ -77,7 +69,7 @@ diff --git a/pipeline/harness_review.py b/pipeline/harness_review.py
 +            isinstance(name, str)
 +            and isinstance(value, (int, float))
 +            and not isinstance(value, bool)
-+            and math.isfinite(value)
++            and abs(value) <= sys.float_info.max
 +            for name, value in pose.items()
 +        )
 +    ):
@@ -87,7 +79,7 @@ diff --git a/pipeline/harness_review.py b/pipeline/harness_review.py
  
  def _review_tool_schemas() -> list[dict[str, Any]]:
      def fn(name: str, desc: str, props: dict, required: list[str]) -> dict:
-@@ -219,6 +258,9 @@
+@@ -219,6 +257,9 @@
              },
          }
  
@@ -97,7 +89,7 @@ diff --git a/pipeline/harness_review.py b/pipeline/harness_review.py
      s = {"type": "string"}
      line = {"type": "integer", "minimum": 1}
      num = {"type": "number"}
-@@ -283,7 +325,10 @@
+@@ -283,7 +324,10 @@
              {},
              [],
          ),
@@ -109,7 +101,7 @@ diff --git a/pipeline/harness_review.py b/pipeline/harness_review.py
              "request_render",
              "Render the build; the image comes back as this tool's result, visible when you "
              "next act (same as any tool's output, no extra delay). `views`: named "
-@@ -326,7 +371,7 @@
+@@ -326,7 +370,7 @@
                  "segment": {"type": "boolean"},
              },
              ["views"],
@@ -118,7 +110,7 @@ diff --git a/pipeline/harness_review.py b/pipeline/harness_review.py
          fn(
              "crop_region",
              "Zoom a sub-region of a rendered image to inspect a small/contact "
-@@ -931,6 +976,9 @@
+@@ -931,6 +975,9 @@
  
      @guarded_inspection
      def _request_render(self, args: dict[str, Any]) -> tuple[str, list[Path]]:
@@ -128,7 +120,7 @@ diff --git a/pipeline/harness_review.py b/pipeline/harness_review.py
          views = [str(v) for v in (args.get("views") or [])]
          if not views:
              return "ERROR: provide at least one view name.", []
-@@ -1210,6 +1258,9 @@
+@@ -1210,6 +1257,9 @@
      def _dispatch_simple(self, name: str, args: dict[str, Any]) -> tuple[str, str]:
          try:
              if name == "read_file":

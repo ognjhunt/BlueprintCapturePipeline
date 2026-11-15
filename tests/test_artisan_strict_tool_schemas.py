@@ -12,6 +12,7 @@ import ast
 import copy
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -232,7 +233,7 @@ def _render_check():
     added = "\n".join(_added_lines("pipeline/harness_review.py"))
     start = added.index("REQUEST_RENDER_SHAPE_ERROR = (")
     end = added.index("    return None\n", added.index("def _request_render_arguments_error(")) + len("    return None\n")
-    namespace = {"math": __import__("math"), "Any": object}
+    namespace = {"sys": __import__("sys"), "Any": object}
     exec(added[start:end], namespace)  # noqa: S102 - the patch's own added lines
     return namespace["_request_render_arguments_error"], namespace["REQUEST_RENDER_SHAPE_ERROR"]
 
@@ -248,6 +249,9 @@ RENDER_CASES = {
     "pose numeric string": ({"views": ["front"], "pose": {"j": "0.5"}}, False),
     "pose boolean": ({"views": ["front"], "pose": {"j": True}}, False),
     "pose infinite": ({"views": ["front"], "pose": {"j": float("inf")}}, False),
+    "pose not a number": ({"views": ["front"], "pose": {"j": float("nan")}}, False),
+    # Valid JSON, but too large for a float: math.isfinite would raise OverflowError on it.
+    "pose huge integer": ({"views": ["front"], "pose": {"j": json.loads("1" + "0" * 400)}}, False),
     "pose list": ({"views": ["front"], "pose": [{"joint": "j", "value": 0.5}]}, False),
     "pose string": ({"views": ["front"], "pose": "j=0.5"}, False),
     "pose nested": ({"views": ["front"], "pose": {"j": {"value": 0.5}}}, False),
@@ -306,6 +310,7 @@ def test_a_malformed_read_file_call_gets_an_error_in_both_harnesses(path):
     ({"type": "string", "enum": ["a", 1]}, "enum_value_type_mismatch"),
     ({"type": "integer", "enum": [1, 2.5]}, "enum_value_type_mismatch"),
     ({"type": "string", "enum": []}, "enum_value_type_mismatch"),
+    ({"type": "integer", "enum": [1, True]}, "enum_value_type_mismatch"),  # a boolean is not an integer
 ])
 def test_each_added_rule_names_what_breaks_it(field, rule):
     found = tools.strict_tool_violations([_tool("t", _strict_object({"field": field}))])
@@ -358,3 +363,36 @@ def test_an_unknown_name_in_a_tool_function_is_a_named_refusal(tmp_path):
     path.write_text(path.read_text().replace("def _tool_schemas(x=UNKNOWN_NAME):",
                                              "def _tool_schemas() -> UnknownType:"))
     assert tools.upstream_tool_schemas(source)["coding"][0]["name"] == "read"
+
+
+def test_properties_and_enum_values_under_arrays_and_any_of_count_toward_the_limits():
+    wide = _strict_object({f"p{i}": {"type": "string"} for i in range(tools.MAX_TOTAL_PROPERTIES + 1)})
+    under_items = _strict_object({"list": {"type": "array", "items": wide}})
+    assert "items::total_properties_exceeded" in tools.strict_tool_violations([_tool("items", under_items)])
+    enum = {"type": "string", "enum": [str(i) for i in range(tools.MAX_TOTAL_ENUM_VALUES + 1)]}
+    under_any_of = _strict_object({"either": {"anyOf": [enum, {"type": "null"}]}})
+    assert "any::total_enum_values_exceeded" in tools.strict_tool_violations([_tool("any", under_any_of)])
+
+
+# --- what the executed tool functions may do -------------------------------------------------
+
+def _tool_function_with(tmp_path: Path, line: str) -> Path:
+    source = _fake_upstream(tmp_path / "fixed", pose_strict=False)
+    path = source / "pipeline/harness_sdk.py"
+    path.write_text(path.read_text().replace("def _tool_schemas():\n", f"def _tool_schemas():\n    {line}\n"))
+    return source
+
+
+@pytest.mark.parametrize(("line", "code"), [
+    ("import os", "function_not_plain:pipeline/harness_sdk.py:_tool_schemas"),
+    ("def inner():\n        from os import path", "function_not_plain:pipeline/harness_sdk.py:_tool_schemas"),
+    ("global DIMS", "function_not_plain:pipeline/harness_sdk.py:_tool_schemas"),
+    ("().__class__", "function_not_plain:pipeline/harness_sdk.py:_tool_schemas"),
+    ("open('/dev/null').close()", "name_unresolved:pipeline/harness_sdk.py:open"),
+    ("__import__('os')", "name_unresolved:pipeline/harness_sdk.py:__import__"),
+    ("copy.copy([])", "attribute_unavailable:_tool_schemas:copy"),
+])
+def test_a_tool_function_that_reaches_beyond_plain_code_is_a_named_refusal(tmp_path, line, code):
+    source = _tool_function_with(tmp_path, line)
+    with pytest.raises(tools.ArtisanToolSchemaError, match="^artisan_tool_schema_" + re.escape(code) + "$"):
+        tools.upstream_tool_schemas(source)
