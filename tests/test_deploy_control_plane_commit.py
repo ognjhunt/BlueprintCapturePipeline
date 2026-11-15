@@ -601,9 +601,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     for name in (
         "system-blueprintbatch.slice", "blueprint-unit-failure@.service",
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
-        "blueprint-agent-execution.service",
-        "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
-        "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-provider-billing-reconciler.service", "blueprint-provider-billing-reconciler.timer",
@@ -632,7 +629,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
 
     expected = []
     for source in (
-        *additional_sources[:8],
+        *additional_sources[:4],
         service,
         path_unit,
         preparation_service,
@@ -652,7 +649,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         team_scene_path,
         *team_remote_units,
         *scene_stage_units,
-        *additional_sources[8:],
+        *additional_sources[4:],
         storage_gc_service,
         storage_gc_timer,
         *withdrawal_deletion_units,
@@ -698,10 +695,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-unit-failure@.service",
         "blueprint-pubsub-handoff-listener.service",
         "blueprint-pubsub-handoff-listener.timer",
-        "blueprint-agent-execution.service",
-        "blueprint-agent-stage-replay.service",
-        "blueprint-agent-stage-replay.timer",
-        "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-launch-dispatcher.service",
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-preparation.service",
@@ -777,8 +770,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-scene-stage-maintenance.timer",
-        "blueprint-agent-stage-replay.timer",
-        "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-team-scene-packet-remote.timer",
@@ -1688,7 +1679,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_service_account_ids": lambda _account: None,
         "_restart_units": lambda _units: [],
         "_verify_intake_runtime": lambda *_args, **_kwargs: {"commit_proven": True},
-        "_activate_agent_execution": lambda **_kwargs: {},
+        "_retire_agent_execution": lambda **_kwargs: {"status": "test_host_step_stub"},
         "_restore_installed_path_units": lambda _installed, **_kwargs: [],
         "_retire_unshipped_triggers": lambda _units: [],
     }
@@ -4659,64 +4650,87 @@ def test_unit_sandbox_provisioning_skips_absent_release_units_and_needs_an_accou
         deploy._install_unit_sandbox_paths(release_path=release, root_prefix=tmp_path / "host2")
 
 
-def test_admitted_agent_worker_is_enabled_started_and_proven(tmp_path, monkeypatch):
-    from tests.test_agent_production_service import fixture
-    _, _, _, config_path = fixture(tmp_path)
+def _fake_agent_worker_systemd(load_state="loaded"):
+    state = {"enabled": "enabled", "active": "active"}
     calls = []
-    def systemctl(argv, **kwargs):
-        calls.append(argv)
-        state = 'enabled' if argv[1] == 'is-enabled' else 'active'
-        return SimpleNamespace(returncode=0, stdout=state + '\n', stderr='')
-    monkeypatch.setattr(deploy.subprocess, 'run', systemctl)
-    result = deploy._activate_agent_execution(expected_commit='a' * 40, config_path=config_path)
-    assert result['activated'] and result['enabled'] == 'enabled' and result['state'] == 'active'
-    unit = 'blueprint-agent-execution.service'
-    assert ['systemctl', 'enable', unit] in calls
-    assert ['systemctl', 'restart', unit] in calls
-    assert ['systemctl', 'is-enabled', unit] in calls
-    assert ['systemctl', 'is-active', unit] in calls
+
+    def systemctl(argv, **_kwargs):
+        calls.append(tuple(argv))
+        verb = argv[1]
+        if verb == "show":
+            out = load_state
+        elif verb == "is-enabled":
+            out = state["enabled"]
+        elif verb == "is-active":
+            out = state["active"]
+        elif verb == "stop":
+            state["active"] = "inactive"
+            out = ""
+        elif verb == "disable":
+            state["enabled"] = "disabled"
+            out = ""
+        else:
+            pytest.fail(f"unexpected systemctl call: {argv}")
+        return SimpleNamespace(returncode=0, stdout=out + "\n", stderr="")
+
+    return systemctl, calls, state
 
 
-def test_unconfigured_or_undrained_release_never_activates_agent(tmp_path, monkeypatch):
+def test_drained_agent_worker_is_stopped_disabled_and_recorded_retired(tmp_path, monkeypatch):
     from tests.test_agent_production_service import fixture
     from blueprint_pipeline.agent_execution import release
+
     service, task, _, config_path = fixture(tmp_path)
     service.enqueue(task.task_id, "fixture-client")
-    calls = []
-    monkeypatch.setattr(release, 'drain', lambda *args, **kwargs: {'status': 'reconciliation_pending'})
-    monkeypatch.setattr(deploy, '_systemd_unit_state', lambda unit: {'state': 'active'})
-    monkeypatch.setattr(deploy.subprocess, 'run', lambda *args, **kwargs: calls.append(args))
-    assert deploy._activate_agent_execution(expected_commit='a' * 40, config_path=tmp_path / 'absent')['activated'] is False
-    with pytest.raises(deploy.ControlPlaneDeployError, match='agent_configuration_requires_clean_drain'):
-        deploy._activate_agent_execution(expected_commit='b' * 40, config_path=config_path)
+    service.journal.set_state(task.task_id, "completed", result={"output": {"summary": "retained"}})
+    monkeypatch.setattr(release.time, "sleep", lambda seconds: service.service.tick())
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda unit: {"state": "active"})
+    drained = deploy._drain_agent_execution_before_release_switch(expected_commit="b" * 40, config_path=config_path)
+    assert drained["status"] == "drained" and drained["remaining_task_ids"] == []
+    monkeypatch.undo()
+    systemctl, calls, state = _fake_agent_worker_systemd()
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    result = deploy._retire_agent_execution(pre_activation_drain=drained, config_path=config_path)
+    unit = "blueprint-agent-execution.service"
+    assert result["status"] == "retired"
+    assert result["worker"]["outcome"] == "retired"
+    assert result["worker"]["after"] == {"enabled": "disabled", "state": "inactive"}
+    assert result["pre_activation_drain"]["status"] == "drained"
+    assert ("systemctl", "stop", unit) in calls and ("systemctl", "disable", unit) in calls
+    assert not any(call[1] in {"start", "restart", "enable"} for call in calls)
+    assert state == {"enabled": "disabled", "active": "inactive"}
+    # The worker is retired, not rebound: the config keeps the commit it was drained from.
+    assert json.loads(config_path.read_text())["source_commit"] == "a" * 40
+
+
+@pytest.mark.parametrize("drain_status", ["drained", "reconciliation_pending"])
+def test_pending_agent_cleanup_refuses_the_release_and_leaves_the_worker_running(tmp_path, monkeypatch, drain_status):
+    from tests.test_agent_production_service import fixture
+
+    service, task, _, config_path = fixture(tmp_path)
+    service.enqueue(task.task_id, "fixture-client")  # an open task whose session still needs cleanup
+    systemctl, calls, state = _fake_agent_worker_systemd()
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_agent_cleanup_reconciliation_pending"):
+        deploy._retire_agent_execution(pre_activation_drain={"status": drain_status}, config_path=config_path)
     assert calls == []
+    assert state == {"enabled": "enabled", "active": "active"}
 
 
-@pytest.mark.parametrize('terminal', [False, True])
-def test_deploy_drains_prior_agent_tasks_before_adopting_release(tmp_path, monkeypatch, terminal):
-    from tests.test_agent_production_service import fixture
-    from blueprint_pipeline.agent_execution import release
-    service, task, _, config_path = fixture(tmp_path)
-    service.enqueue(task.task_id, "fixture-client")
-    if terminal:
-        service.journal.set_state(task.task_id, 'completed', result={'output': {'summary': 'Retained observation'}})
-    calls = []
-    def systemctl(argv, **kwargs):
-        calls.append(argv)
-        state = 'enabled' if argv[1] == 'is-enabled' else 'active'
-        return SimpleNamespace(returncode=0, stdout=state + '\n', stderr='')
-    monkeypatch.setattr(deploy.subprocess, 'run', systemctl)
-    # The installed worker runs independently under its own service account.
-    monkeypatch.setattr(release.time, 'sleep', lambda seconds: service.service.tick())
-    result = deploy._activate_agent_execution(expected_commit='b' * 40, config_path=config_path)
-    assert result['release_cleanup']['status'] == 'drained'
-    assert result['configuration_adoption']['status'] == 'adopted'
-    state = service.journal.task(task.task_id)
-    assert state['state'] == ('completed' if terminal else 'cancelled') and state['cleanup_state'] == 'deleted'
-    if terminal:
-        assert state['result']['output']['summary'] == 'Retained observation'
-    assert json.loads(config_path.read_text())['source_commit'] == 'b' * 40
-    assert ['systemctl', 'restart', 'blueprint-agent-execution.service'] in calls
+@pytest.mark.parametrize("load_state", ["loaded", "not-found"])
+def test_absent_agent_config_is_not_configured_and_an_installed_worker_is_still_disabled(tmp_path, monkeypatch, load_state):
+    systemctl, calls, state = _fake_agent_worker_systemd(load_state)
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    result = deploy._retire_agent_execution(pre_activation_drain={"status": "not_configured"},
+                                            config_path=tmp_path / "absent.json")
+    assert result["status"] == "not_configured"
+    unit = "blueprint-agent-execution.service"
+    if load_state == "not-found":
+        assert result["worker"]["outcome"] == "absent"
+        assert calls == [("systemctl", "show", "--property=LoadState", "--value", unit)]
+    else:
+        assert result["worker"]["outcome"] == "retired"
+        assert state == {"enabled": "disabled", "active": "inactive"}
 
 
 def test_deploy_drains_agent_before_switching_away_from_its_worker(tmp_path, monkeypatch):

@@ -113,23 +113,6 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         "CPUQuota=200%",
     )
     for unit in SYSTEMD_DIR.glob("*.service"):
-        if unit.name in {"blueprint-agent-execution.service", "blueprint-agent-stage-replay.service"}:
-            text = unit.read_text(encoding="utf-8")
-            narrower = ("RestrictAddressFamilies=", "ReadWritePaths=", "TasksMax=", "MemoryMax=", "CPUQuota=")
-            for control in required_controls:
-                if not control.startswith(narrower):
-                    assert control in text, (unit.name, control)
-            assert "TasksMax=128" in text and "CPUQuota=100%" in text
-            assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution\n" in text
-            assert "ReadWritePaths=/var/lib/blueprint\n" not in text
-            if unit.name == "blueprint-agent-stage-replay.service":
-                assert "PrivateNetwork=true" in text and "RestrictAddressFamilies=AF_UNIX\n" in text
-                assert "MemoryMax=4G" in text
-                assert "InaccessiblePaths=-/etc/blueprint/provider-secrets" in text
-            else:
-                assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n" in text
-                assert "MemoryMax=2G" in text
-            continue
         if unit.name in {"blueprint-completed-replay-cache-gc.service", "blueprint-scene-project-spend-refresh.service"}:
             text = unit.read_text(encoding="utf-8")
             for control in ("NoNewPrivileges=true", "PrivateDevices=true", "PrivateNetwork=true",
@@ -397,9 +380,7 @@ HOST_MEMORY = {
     "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G", "722M"),
     "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G", "32M"),
     "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G", "62M"),
-    "blueprint-agent-execution.service": ("200", "1G", "2G", "202M"),
     "blueprint-task-evaluation-episode-compilation.service": ("200", "3G", "4G", "60M"),
-    "blueprint-agent-stage-replay.service": ("200", "3G", "4G", "116M"),
     "blueprint-provider-billing-reconciler.service": ("-200", "3G", "4G", "1.7G"),
     "blueprint-pipeline-intake.service": ("-200", "2G", "3G", "1.5G"),
     "blueprint-task-evaluation-episode-compilation-remote.service": ("-200", "1G", "2G", "424M"),
@@ -519,7 +500,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-scene-stage-maintenance.service",
     "blueprint-task-evaluation-episode-compilation.service",
     "blueprint-task-evaluation-episode-compilation-remote.service",
-    "blueprint-agent-stage-replay.service",
     # Not a job mover, but bulk reads and uploads every 15 minutes: bounded with them so it never starves the host.
     "blueprint-control-plane-state-backup.service",
 )
@@ -527,7 +507,6 @@ BATCH_SLICE_UNITS = (
 #: safe, while the batch units sit at their bound.
 OUTSIDE_BATCH_SLICE = {
     "blueprint-pipeline-intake.service": "always on: the WebApp's signed intake",
-    "blueprint-agent-execution.service": "always on: a continuous service",
     "blueprint-operator-door.service": "always on: the door to the host",
     "blueprint-operator-door-runner.service": "the door's runner",
     "blueprint-operator-door-hold-sweep.service": "the door's hold sweep",

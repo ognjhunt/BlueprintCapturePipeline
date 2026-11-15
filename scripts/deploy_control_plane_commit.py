@@ -436,10 +436,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-unit-failure@.service",
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-pubsub-handoff-listener.timer",
-    "blueprint-agent-execution.service",
-    "blueprint-agent-stage-replay.service",
-    "blueprint-agent-stage-replay.timer",
-    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
@@ -577,10 +573,6 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # recovers and requeues team halves, runs the site's success-rule exchange,
     # delivers held notices, restores an open job's run and only queues a probe.
     "blueprint-scene-stage-maintenance.timer",
-    "blueprint-agent-stage-replay.timer",
-    # Wakes the same no-network offline replay oneshot as its timer, so it
-    # carries the timer's authority rather than the no-spend watcher category.
-    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-scene-progression.timer",
     # Follow, collect and tear down a remote compilation (compute-zero and
     # provider-zero) already handed off before its host half was paused: money.
@@ -666,6 +658,10 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     # Agent runs (robot-team runs, deleted): founder stop since 2026-10-02. The
     # door keeps holding the dispatcher timer; no release starts it.
     "blueprint-agent-run-dispatcher.timer",
+    # The agent service's offline replay of a retained stage for its own
+    # recovery tasks (the agent service is retired; a job retries by itself).
+    "blueprint-agent-stage-replay.timer",
+    "blueprint-agent-stage-replay.path",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the
@@ -3784,39 +3780,61 @@ def _drain_agent_execution_before_release_switch(
     return result
 
 
-def _activate_agent_execution(*, expected_commit: str, config_path: str | Path = "/etc/blueprint/agent-execution.json") -> dict[str, Any]:
-    """An admitted config activates the worker; absent config never grants inference."""
+AGENT_EXECUTION_UNIT = "blueprint-agent-execution.service"
+
+
+def _stop_and_disable_agent_worker() -> dict[str, Any]:
+    """Stop and disable the agent worker if the host has it; refuse unless it ends off."""
+
+    try:
+        load = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["systemctl", "show", "--property=LoadState", "--value", AGENT_EXECUTION_UNIT],
+            capture_output=True, text=True, check=False, timeout=15,
+        ).stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        load = "unknown"
+    if load == "not-found":
+        return {"unit": AGENT_EXECUTION_UNIT, "load_state": load, "outcome": "absent"}
+    before = _systemd_unit_state(AGENT_EXECUTION_UNIT)
+    for verb in ("stop", "disable"):
+        _systemctl_verb(verb, AGENT_EXECUTION_UNIT, timeout=45)
+    after = _systemd_unit_state(AGENT_EXECUTION_UNIT)
+    if after["state"] != "inactive" or after["enabled"] == "enabled":
+        raise ControlPlaneDeployError("deploy_agent_worker_not_retired")
+    return {"unit": AGENT_EXECUTION_UNIT, "load_state": load, "before": before, "after": after,
+            "outcome": "already_off" if before["state"] == "inactive" and before["enabled"] != "enabled"
+            else "retired"}
+
+
+def _retire_agent_execution(
+    *, pre_activation_drain: Mapping[str, Any],
+    config_path: str | Path = "/etc/blueprint/agent-execution.json",
+) -> dict[str, Any]:
+    """Turn the agent worker off for good once nothing it owns still needs cleanup.
+
+    The agent service is retired (robot-team runs are removed).  Its worker is
+    stopped only after the pre-switch drain and with no task left whose provider
+    session still needs the worker's cleanup protocol; otherwise the release is
+    refused and the worker keeps running.  The config file is left in place.
+    """
     path = Path(config_path)
     if not path.exists():
-        return {"status": "not_configured", "activated": False}
-    from blueprint_pipeline.agent_execution.production import ProductionAgentService, ProductionConfig, _read_private
-    config = ProductionConfig.model_validate_json(_read_private(path))
-    from blueprint_pipeline.agent_execution.release import adopt_drained_config, drain, pending_cleanup
+        return {"status": "not_configured", "worker": _stop_and_disable_agent_worker(),
+                "pre_activation_drain": dict(pre_activation_drain)}
+    from blueprint_pipeline.agent_execution.production import ProductionConfig, _read_private
+    from blueprint_pipeline.agent_execution.release import pending_cleanup
     from blueprint_pipeline.agent_execution.journal import AgentJournal
-    cleanup = {"status": "not_required"}
+    if pre_activation_drain.get("status") not in {"drained", "already_bound"}:
+        raise ControlPlaneDeployError("deploy_agent_cleanup_reconciliation_pending")
     try:
-        if config.source_commit != expected_commit and pending_cleanup(AgentJournal(config.state_root)):
-            # A completed observer can still own its provider session. Drain
-            # through the journal's normal cancellation/cleanup protocol; never
-            # rewrite terminal records or infer provider deletion from completion.
-            if _systemd_unit_state("blueprint-agent-execution.service").get("state") != "active":
-                raise ControlPlaneDeployError("deploy_agent_cleanup_worker_not_active")
-            service = ProductionAgentService(path, source_commit=config.source_commit)
-            cleanup = drain(service, target_source_commit=expected_commit, timeout_seconds=30, drive_worker=False)
-            if cleanup["status"] != "drained":
-                raise ControlPlaneDeployError("deploy_agent_cleanup_reconciliation_pending")
-        adoption = adopt_drained_config(path, expected_commit=expected_commit)
+        config = ProductionConfig.model_validate_json(_read_private(path))
+        pending = pending_cleanup(AgentJournal(config.state_root))
     except Exception as exc:
         raise ControlPlaneDeployError("deploy_agent_configuration_requires_clean_drain") from exc
-    unit = "blueprint-agent-execution.service"
-    subprocess.run(["systemctl", "enable", unit], check=True, capture_output=True, text=True, timeout=20)
-    _restart_units((unit,))
-    observed = _systemd_unit_state(unit)
-    if observed.get("enabled") != "enabled" or observed.get("state") != "active":
-        raise ControlPlaneDeployError("deploy_agent_worker_not_enabled_and_active")
-    return {"status": "active", "activated": True, "unit": unit, "source_commit": expected_commit,
-            "enabled": observed["enabled"], "state": observed["state"], "configuration_adoption": adoption,
-            "release_cleanup": cleanup}
+    if pending:
+        raise ControlPlaneDeployError("deploy_agent_cleanup_reconciliation_pending")
+    return {"status": "retired", "worker": _stop_and_disable_agent_worker(),
+            "pre_activation_drain": dict(pre_activation_drain)}
 
 
 _DRAINABLE_SERVICE = re.compile(r"blueprint-[A-Za-z0-9_.@-]+\.service")
@@ -5720,8 +5738,7 @@ def deploy_control_plane_commit(
             intake_version_url, expected_commit=commit
         )
         _mark_stage("intake_restarted_and_proven")
-        agent_execution = _activate_agent_execution(expected_commit=commit)
-        agent_execution["pre_activation_drain"] = agent_pre_activation_drain
+        agent_execution = _retire_agent_execution(pre_activation_drain=agent_pre_activation_drain)
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
