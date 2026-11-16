@@ -506,6 +506,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         if atlas.get("job_object_rule") and JOB_OBJECT_RULE not in flags:
             # The planner's removals were not applied: nothing was taken out of the room scan.
             flags = [*flags, JOB_OBJECT_RULE]
+        # The scene source's own flags last (the gap views not filled in), each once.
+        flags = list(dict.fromkeys([*flags, *(atlas.get("flags") or [])]))
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only, flags=flags)

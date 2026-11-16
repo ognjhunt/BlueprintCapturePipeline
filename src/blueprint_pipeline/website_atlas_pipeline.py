@@ -48,6 +48,25 @@ _AMENDMENT_RECORD = ("approval_reference", "expires_at_epoch", "authorization_di
 ROUTE_ENV = "BLUEPRINT_WEBSITE_ATLAS_ROUTE"
 ROUTES = ("full", "geometry_only")
 
+#: A preserved capture whose generated gap views were not admitted goes on without them (the room package is the
+#: floor): the flag its result, the scene source and the room record carry.
+SCENE_COMPLETION_NOT_ADMITTED = "scene_completion_not_admitted"
+#: Completion outcomes that take that floor, by code: the review did not pass or its views did not register.
+#: Default-deny: any other stop (money, privacy, a changed binding, a source recovery) stays as it was.
+COMPLETION_FLOOR_REASONS = frozenset({"atlas_completion_visual_review_required",
+                                      "atlas_generated_view_registration_unresolved"})
+#: Raised codes that take it: nothing more may be bought for the review (``website_gemini_receipts``).
+COMPLETION_FLOOR_ERRORS = frozenset({"website_gemini_unanswered_dispatches_exhausted"})
+
+
+def completion_floor(completion: dict, splat_root: Path) -> dict:
+    """A completion that stopped for a floor reason, as one that admitted nothing; any other, unchanged."""
+    reason = completion.get("reason")
+    if completion.get("status") != "needs_input" or reason not in COMPLETION_FLOOR_REASONS | COMPLETION_FLOOR_ERRORS:
+        return completion
+    return {"status": "completed", "generated_geometry_admitted": False, "not_admitted_reason": reason,
+            "splat_root": str(splat_root), "completion": dict(completion), "generated_roots": []}
+
 
 def _job_route(output_root: Path, *, purchased: bool) -> str:
     """The job's route, chosen once: a geometry-only job records it before its first purchase.
@@ -663,12 +682,18 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                        if row.get("decision") == "time_spread_view"} if plan.is_file() else set())
             reference = ({"reference_frame_ids": [f["frame_id"] for f in frames if f["frame_id"] not in spread]}
                          if spread else {})
-            completion = run_sponsored_website_atlas_automation(preserved_capture=True, **reference,
-                pose_root=source_root, pose=pose, frames=frames, review=review,
-                root=output_root / 'preserved_completion', job_root=output_root, context=task_context,
-                configuration=_current_configuration(task_context, source_digest, configuration), splat_root=splat_root,
-                source_survey_path=source_survey_path, checkpoint=completion_checkpoint,
-                experimental=experimental, max_polls=max_polls)
+            try:
+                completion = run_sponsored_website_atlas_automation(preserved_capture=True, **reference,
+                    pose_root=source_root, pose=pose, frames=frames, review=review,
+                    root=output_root / 'preserved_completion', job_root=output_root, context=task_context,
+                    configuration=_current_configuration(task_context, source_digest, configuration),
+                    splat_root=splat_root, source_survey_path=source_survey_path, checkpoint=completion_checkpoint,
+                    experimental=experimental, max_polls=max_polls)
+            except ValueError as exc:
+                if str(exc) not in COMPLETION_FLOOR_ERRORS:
+                    raise
+                completion = {'status': 'needs_input', 'reason': str(exc)}
+            completion = completion_floor(completion, splat_root)
             write_json(output_root / 'preserved_completion/controller_state.json', completion)
             if completion['status'] == 'processing':
                 return completion
@@ -773,6 +798,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 'geometry_recovery': {key: completion['geometry_recovery'][key]
                                       for key in ('digest', 'exportable_samples', 'added_geometry_pixels')}}
                if completion.get('generated_geometry_rejected') else {}),
+            **({'generated_geometry_rejected': SCENE_COMPLETION_NOT_ADMITTED, 'not_admitted_reason':
+                completion['not_admitted_reason']} if completion.get('not_admitted_reason') else {}),
             **({'admission_digest': completion['admission']['digest'],
                 'admission_relative_path': str(Path(completion['admission_path']).relative_to(output_root))}
                if admitted_completion else {})}
