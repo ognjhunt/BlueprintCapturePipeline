@@ -6,6 +6,7 @@ downstream stages. This assembler validates their inputs, not their outcomes.
 
 from __future__ import annotations
 
+from .artisan_provider_choice import artisan_text_provider
 from .task_object_authoring_backend import ARTISAN_BACKEND, default_backend, frozen_authoring_cap
 
 import argparse
@@ -491,9 +492,14 @@ def materialize_scene_configuration_submission(
                                          records.runtime_health_protocol(source_commit=commit)),
             "requirements": {"cpu_cores": 8, "memory_gib": 32, "gpu_count": 1, "disk_gib": 64},
             "network": {"default": "deny", "allowlist": (["api.anthropic.com"]
-                if configs[2].get("authoring_model_provider") == "anthropic" else ["api.openai.com"])},
+                if configs[2].get("authoring_model_provider") == "anthropic" else
+                # ARTISAN text on Anthropic; the design board stays on OpenAI.
+                ["api.openai.com", "api.anthropic.com"] if artisan_text_provider(configs[2]) == "anthropic"
+                else ["api.openai.com"])},
             "secret_refs": (["secret-file:anthropic_api_key"]
-                if configs[2].get("authoring_model_provider") == "anthropic" else ["secret-file:openai_api_key"]),
+                if configs[2].get("authoring_model_provider") == "anthropic" else
+                ["secret-file:openai_api_key", "secret-file:anthropic_api_key"]
+                if artisan_text_provider(configs[2]) == "anthropic" else ["secret-file:openai_api_key"]),
             "mounts": [{"source": release_ref, "container_path": "/inputs/release-binding.json",
                         "mode": "read_only"}, {"container_path": "/outputs", "mode": "output"}],
             "output_limit_bytes": 20_000_000_000},
@@ -523,6 +529,9 @@ def materialize_scene_configuration_submission(
         request["replacement_authoring_backend"] = configs[2]["authoring_backend"]
     if configs[2].get("authoring_model_provider") == "anthropic":
         request["replacement_authoring_model_provider"] = "anthropic"
+    if artisan_text_provider(configs[2]) == "anthropic":
+        # One reservation and one cap (the OpenAI official gate's); the meter bounds both providers' sum.
+        request["replacement_authoring_text_provider"] = "anthropic"
     if configs[2].get("authoring_agent_runtime") == "openai_agents_api":
         request["replacement_authoring_agent_runtime"] = "openai_agents_api"
         request["replacement_authoring_model"] = "gpt-6.1-sol"

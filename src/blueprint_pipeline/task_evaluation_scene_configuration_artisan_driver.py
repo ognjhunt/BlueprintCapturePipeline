@@ -10,6 +10,8 @@ import sys
 import shutil
 import time
 
+# The Anthropic text key file and the US-region uplift the repository's Claude invoker prices with.
+from .claude_opus_authoring_invoker import KEY_FILE_ENV as ANTHROPIC_KEY_FILE_ENV, _US_GEO_MULTIPLIER
 from .decision_evidence_contracts import canonical_digest
 from .task_object_authoring_backend import ARTISAN_BACKEND, frozen_authoring_cap
 from .task_object_authoring_contracts import (
@@ -39,6 +41,9 @@ CONTROLLER_ENVIRONMENT = ("PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_
                           "http_proxy", "https_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
 #: What the controller imports before it reads its credential or calls a model.
 CONTROLLER_IMPORT_PROBE = "import ssl, openai, blueprint_pipeline.task_object_artisan_bridge"
+#: An attempt whose frozen models name Anthropic also needs its SDK; the driver
+#: runs this before it reserves or reads a credential.
+ANTHROPIC_CONTROLLER_IMPORT_PROBE = CONTROLLER_IMPORT_PROBE + ", anthropic"
 
 
 def package_import_roots(package):
@@ -301,6 +306,9 @@ def _execute(values, output, runner, cost_gate_factory):
     deadline = min(float(values[STAGE_DEADLINE_EPOCH_ENV]),
                    float(values.get(PARENT_DEADLINE_EPOCH_ENV) or values[STAGE_DEADLINE_EPOCH_ENV])) - 600
     scope = scene_configuration_openai_stage_scope(values, stage="content_agents")
+    # The text provider is the one frozen into the request; the image models stay on OpenAI.
+    provider = request["authoring_models"].get("provider", "openai")
+    require(provider in ("openai", "anthropic"), "artisan_text_provider_invalid")
     source = package / "artisan_source"
     workspace = runtime / "workspace"
     workspace.mkdir(exist_ok=True)
@@ -314,6 +322,13 @@ def _execute(values, output, runner, cost_gate_factory):
     system_reads = ("/usr", "/bin", "/lib", "/lib64", "/etc/fonts", "/etc/ld.so.cache", "/etc/localtime", "/proc/self")
     require(not any(key_path.is_relative_to(Path(p).resolve()) for p in [str(workspace), *read_roots, *system_reads]),
             "artisan_credential_inside_generated_read_root")
+    anthropic_key_path = None
+    if provider == "anthropic":
+        require(bool(str(values.get(ANTHROPIC_KEY_FILE_ENV) or "").strip()), "artisan_anthropic_credential_missing")
+        anthropic_key_path = Path(values[ANTHROPIC_KEY_FILE_ENV]).resolve()
+        require(not any(anthropic_key_path.is_relative_to(Path(p).resolve())
+                        for p in [str(workspace), *read_roots, *system_reads]),
+                "artisan_credential_inside_generated_read_root")
     upstream_run_id = (continuation["source_upstream_run_id"] if continuation is not None
                        else "pl_" + request["request_digest"][7:39])
     generated_workspace = workspace / "data/cache/runs" / upstream_run_id / "workspace"
@@ -331,6 +346,9 @@ def _execute(values, output, runner, cost_gate_factory):
         "project_id": values.get("OPENAI_PROJECT_ID"),
         "object_kind": "articulated_assembly" if configuration["schema_version"].startswith("articulated_") else "rigid_body",
         "model_configuration": request["authoring_models"],
+        **({"anthropic_api_key_file": str(anthropic_key_path),
+            "anthropic_us_inference_geo_multiplier": _US_GEO_MULTIPLIER}
+           if anthropic_key_path is not None else {}),
         "sandbox": {"write_root": str(generated_workspace), "read_roots": read_roots, "import_roots": import_roots,
                     "trusted_asset_roots": [str(source / "sdk/assets")],
                     "write_paths": [str(generated_workspace / name) for name in ("assets", "inputs", "blender", "renders", "tmp", "xdg", "cache", "blueprint_sandbox_ipc")],
@@ -379,10 +397,17 @@ def _execute(values, output, runner, cost_gate_factory):
             argv += ["run", "--prompt-file", str(prompt_path), "--run-id", upstream_run_id]
             for frame in frames:
                 argv += ["--image", str(frame)]
-        argv += ["--workspace", str(workspace), "--max-cost-usd", str(upstream_cap), "--provider", "openai"]
+        argv += ["--workspace", str(workspace), "--max-cost-usd", str(upstream_cap), "--provider", provider]
+        if provider == "anthropic":
+            probe = runner([str(Path(sys.executable).resolve()), "-S", "-c", ANTHROPIC_CONTROLLER_IMPORT_PROBE],
+                cwd=workspace, env=controller_environment(values, import_roots, interpreter["library_environment"]),
+                timeout=CONFINED_PREFLIGHT_TIMEOUT_SECONDS, check=False, capture_output=True, text=True)
+            require(probe.returncode == 0, "artisan_anthropic_controller_import_failed")
         gate = cost_gate_factory(environment=values, stage="content_agents", run_id=stage_input["run_id"],
             request_digest=file_record(input_path)["sha256"], candidate_digest=request["source_candidate"]["digest"],
             output_root=runtime / "official_openai_cost", max_cost_usd=attempt_cap)
+        # The one reservation, also for an Anthropic attempt: Anthropic's calls are bounded and
+        # priced by the meter under the same cap (no official Anthropic reading in this cut).
         if gate.reservation_path.exists():
             gate._validated_reservation()
         else:
@@ -403,6 +428,10 @@ def _execute(values, output, runner, cost_gate_factory):
             log = (finished.stdout or "") + "\n" + (finished.stderr or "")
             if secret:
                 log = log.replace(secret, "[redacted]")
+            if anthropic_key_path is not None:
+                anthropic_secret = anthropic_key_path.read_text().strip()
+                if anthropic_secret:
+                    log = log.replace(anthropic_secret, "[redacted]")
             (runtime / ("controller-" + str(len(list(runtime.glob("controller-*.log")))) + ".log")).write_text(log)
             require(terminal_file.is_file(), "artisan_terminal_record_missing")
             terminal = read_json(terminal_file)

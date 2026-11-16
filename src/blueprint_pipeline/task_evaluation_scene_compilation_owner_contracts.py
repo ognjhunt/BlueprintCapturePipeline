@@ -38,7 +38,7 @@ PREPARATION_HANDOFF_FIELDS = {'run_mode', 'configured_scene_revision_digest', 'c
 NATIVE_PREPARATION_REQUEST_FIELDS = {'construction', 'controller', 'execution_adapter', 'expected_production_commit',
     'policy_canary_activation', 'policy_run_configuration', 'policy_run_selection', 'policy_run_setup', 'preparation_id',
     'publication', 'replacement_authoring_agent_runtime', 'replacement_authoring_backend', 'replacement_authoring_model',
-    'replacement_authoring_model_provider', 'robot', 'run_id', 'run_mode', 'runtime', 'scene', 'scene_intent_digest',
+    'replacement_authoring_model_provider', 'replacement_authoring_text_provider', 'robot', 'run_id', 'run_mode', 'runtime', 'scene', 'scene_intent_digest',
     'schema_version', 'sensors', 'spend', 'task', 'team_namespace'}
 NATIVE_ACTIVATION_REQUEST_FIELDS = {'activation_id', 'authorization', 'capture_session_id', 'episode_interpretation_authority',
     'episode_interpretation_source_rights_admission', 'expected_production_commit', 'intake_id', 'lane', 'lineage',

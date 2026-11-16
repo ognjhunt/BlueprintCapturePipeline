@@ -1095,7 +1095,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       now: float, task_semantics: Mapping[str, Any] | None = None,
                                       evaluation_inputs: Mapping[str, Any] | None = None,
                                       synthetic_authoring_backend: str = "pinned_cad_primitive_v1",
-                                      atlas_route: str = "full") -> dict[str, Any]:
+                                      atlas_route: str = "full",
+                                      artisan_provider_choice: Any = None) -> dict[str, Any]:
     """``atlas_route="geometry_only"``: the Atlas job kept the scene as filmed
     (``website_atlas_pipeline.ROUTE_ENV``). The preparation is for the robot fit check
     only and never an intake (``GEOMETRY_ONLY_BLOCKER``); a captured rigid subject's box
@@ -1579,6 +1580,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         raise ValueError("website_authoring_backend_invalid")
     if authoring_provider not in {"openai", "anthropic"}:
         raise ValueError("website_authoring_provider_invalid")
+    # The host's sealed choice for a both-providers ARTISAN grant (``artisan_provider_choice``). The
+    # handoff passes how to make it, so it is made here, after every gap (a room package) has returned.
+    from .artisan_provider_choice import choice_for_grant
+    if callable(artisan_provider_choice):
+        artisan_provider_choice = artisan_provider_choice()
+    artisan_choice = choice_for_grant(artisan_provider_choice, grant=spend, backend=authoring_backend)
+    artisan_on_anthropic = (artisan_choice or {}).get("provider") == "anthropic"
     contract = None
     if body is not None:
         from .authoring_frame_budget import FrameBudgetError, fit_reference_frames
@@ -1588,7 +1596,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             contract = fit_reference_frames(
                 assembly_contract({**coverage, "body_bounds": body}, articulation_kind=articulation_kind,
                                   source_to_simulator_scale=scale),
-                provider=authoring_provider, output_root=output_root / "reference_frames")
+                provider="anthropic" if artisan_on_anthropic else authoring_provider,
+                output_root=output_root / "reference_frames")
         except (ValueError, FrameBudgetError) as exc:
             blockers.append(str(exc))
         if contract is not None and grounding is not None:
@@ -1821,6 +1830,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 or not consent["provider_terms_reference"]):
             blockers.append("website_anthropic_provider_terms_authority_required")
         authoring_configuration["authoring_model_provider"] = "anthropic"
+    if artisan_on_anthropic:  # frozen into the stage configuration with the Claude text models
+        from .artisan_provider_choice import ARTISAN_CLAUDE_MODELS
+        authoring_configuration.update(artisan_provider_choice=dict(artisan_choice),
+                                       authoring_models=dict(ARTISAN_CLAUDE_MODELS))
     if any(spend.get(key) is not None for key in ("authoring_agent_runtime", "authoring_model", "agents_api_policy")):
         if (authoring_provider != "openai"
                 or spend.get("authoring_agent_runtime") != "openai_agents_api"
@@ -1871,7 +1884,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                       "max_retries": scene_configuration_max_retries(spend),
                       "expires_at_epoch": spend["expires_at_epoch"],
                       "allowed_providers": (["vast", "openai", "anthropic"]
-                                            if authoring_provider == "anthropic" else ["vast", "openai"]),
+                                            if authoring_provider == "anthropic" or artisan_on_anthropic
+                                            else ["vast", "openai"]),
                       "policy_candidates": [],
                       "claim_scope": CLAIM_CEILING},
         "consent": consent,
@@ -1905,6 +1919,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         **({"website_preparation_authority": dict(spend)} if task_context.get("confirmed") is False else {}),
         **({"authoring_provider_terms_reference": terms} if authoring_provider == "anthropic" and
             isinstance(terms, str) else {}),
+        **({"authoring_provider_terms_reference": artisan_choice["anthropic_provider_terms_reference"]}
+           if artisan_on_anthropic else {}),
+        **({"artisan_provider_choice": dict(artisan_choice)} if artisan_choice is not None else {}),
         "binding": {"task_context_digest": task_context["context_digest"], "task_masks_digest": task_masks["digest"],
                     "source_geometry_digest": source_geometry["digest"],
                     "removal_manifest_digest": canonical_digest(removal_manifest),

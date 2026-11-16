@@ -356,6 +356,11 @@
       "via": "src/blueprint_pipeline/task_evaluation_scene_configuration_astra_driver.py::execute_astra_component",
       "admission": "src/blueprint_pipeline/task_evaluation_scene_configuration_openai_gate.py::scene_configuration_openai_stage_gate"
     },
+    "src/blueprint_pipeline/task_object_artisan_bridge.py::<module>::openai_api_url": {
+      "provider": "openai",
+      "class": "not_paid",
+      "reason": "the OpenAI host the bridge's availability client is pinned to; that client only reads models (GET /v1/models/{model}), the billed requests are upstream's own, metered under the stage's OpenAI gate"
+    },
     "src/blueprint_pipeline/task_object_artisan_bridge.py::main::openai_client_construction": {
       "provider": "openai",
       "class": "admitted",

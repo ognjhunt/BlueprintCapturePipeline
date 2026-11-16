@@ -61,6 +61,18 @@ def _with_cap(configuration: Mapping[str, Any], cap: float) -> dict[str, Any]:
     return {**configuration, "authoring_budget": {**configuration["authoring_budget"], "maximum_cost_usd": cap}}
 
 
+def _current_models(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    """The release's models for this configuration: Claude's only under the job's sealed Anthropic choice."""
+    from .artisan_provider_choice import ARTISAN_CLAUDE_MODELS, validate_choice
+    choice = configuration.get("artisan_provider_choice")
+    try:
+        if choice is not None and validate_choice(choice)["provider"] == "anthropic":
+            return dict(ARTISAN_CLAUDE_MODELS)
+    except ValueError:
+        pass
+    return dict(ARTISAN_MODELS)
+
+
 def with_owner_artisan_cap(configuration: dict[str, Any], cap: float | None) -> dict[str, Any]:
     """``configuration`` with its ARTISAN cap raised to ``cap``, or rebound to the release's models.
 
@@ -71,9 +83,9 @@ def with_owner_artisan_cap(configuration: dict[str, Any], cap: float | None) -> 
 
     if not _cumulative_artisan(configuration):
         return configuration
-    if configuration.get("authoring_models") != ARTISAN_MODELS:
+    if configuration.get("authoring_models") != _current_models(configuration):
         rebound = _with_cap(configuration, ARTISAN_AUTHORING_CAP_USD if cap is None else cap)
-        return {**rebound, "authoring_models": dict(ARTISAN_MODELS)}
+        return {**rebound, "authoring_models": _current_models(configuration)}
     if cap is None or cap <= frozen_authoring_cap(configuration):
         return configuration
     return _with_cap(configuration, cap)
@@ -98,9 +110,10 @@ def same_except_owner_cap(stored: Mapping[str, Any], derived: Mapping[str, Any])
     try:
         if without_cap(stored) != without_cap(derived):
             return False
-        if derived.get("authoring_models") != ARTISAN_MODELS:
-            return stored.get("authoring_models") == ARTISAN_MODELS and frozen_authoring_cap(stored) > 0
-        return (stored.get("authoring_models") == ARTISAN_MODELS
+        current = _current_models(derived)
+        if derived.get("authoring_models") != current:
+            return stored.get("authoring_models") == current and frozen_authoring_cap(stored) > 0
+        return (stored.get("authoring_models") == current
                 and frozen_authoring_cap(stored) > frozen_authoring_cap(derived))
     except ValueError:
         return False

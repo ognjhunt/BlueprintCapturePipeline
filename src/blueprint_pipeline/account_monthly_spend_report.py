@@ -61,6 +61,10 @@ GCP_REPORT_MAX_AGE_SECONDS = 30 * 60
 _AUDIT_NAME_FORMAT = "%Y%m%dT%H%M%S.%fZ"
 
 
+#: Providers counted only from the journal's list-price settlements (no bill is read for them).
+METERED_ONLY_BASES = {"anthropic": "metered_list_price_not_officially_read"}
+
+
 def _reading(status: str, month_usd: Decimal | None = None, **extra: Any) -> dict[str, Any]:
     return {"status": status, "month_usd": month_usd, **extra}
 
@@ -347,6 +351,8 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
         observed_at = reading.get("observed_at") if reconciled is not None and counted == reconciled else None
         row = {"reconciled_month_usd": None if reconciled is None else usd(reconciled),
                "metered_settled_usd": usd(metered),
+               # A provider whose bill is not read: its list-price meter is what counts.
+               **({"cost_basis": METERED_ONLY_BASES[name]} if name in METERED_ONLY_BASES else {}),
                **{key: reading[key] for key in ("reason", "baseline_at", "source", "carried_forward")
                   if reading.get(key)}}
         before = prior_providers.get(name) if isinstance(prior_providers.get(name), Mapping) else {}

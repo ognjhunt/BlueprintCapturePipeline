@@ -293,6 +293,16 @@ def _validate_launch_preparation_request(
                     or request["runtime"]["secret_refs"] != ["secret-file:openai_api_key"]))):
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_agents_api_authoring_scope_invalid")
+        # ARTISAN text on Anthropic under the one OpenAI reservation: the website's prepared job,
+        # both hosts, both keys, and no separate Anthropic cap (the meter bounds the sum).
+        artisan_anthropic = "replacement_authoring_text_provider" in request
+        if artisan_anthropic and (request["replacement_authoring_text_provider"] != "anthropic"
+                or anthropic_selected or agents_api_selected or not prepared_website
+                or request.get("replacement_authoring_backend") != "artisan_v1"
+                or request["runtime"]["network"]["allowlist"] != ["api.openai.com", "api.anthropic.com"]
+                or request["runtime"]["secret_refs"] != ["secret-file:openai_api_key", "secret-file:anthropic_api_key"]):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_artisan_anthropic_scope_invalid")
         if anthropic_selected and (not prepared_website
                 or request.get("replacement_authoring_backend") != "astra_cad_blender_v1"
                 or request["runtime"]["network"]["allowlist"] != ["api.anthropic.com"]
@@ -339,6 +349,8 @@ def _validate_launch_preparation_request(
         if "replacement_authoring_backend" in request:
             raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_backend_forbidden")
         if "replacement_authoring_model_provider" in request:
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_provider_forbidden")
+        if "replacement_authoring_text_provider" in request:
             raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_provider_forbidden")
         if "replacement_authoring_agent_runtime" in request or "replacement_authoring_model" in request:
             raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_runtime_forbidden")

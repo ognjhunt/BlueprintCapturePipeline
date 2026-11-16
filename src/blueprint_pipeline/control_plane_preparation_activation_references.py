@@ -532,7 +532,7 @@ class _Interpretation:
             "schema_version scene_intent_digest run_mode expected_production_commit preparation_id team_namespace run_id "
             "scene robot construction controller task sensors runtime execution_adapter publication spend "
             "policy_run_setup policy_run_selection policy_run_configuration policy_canary_activation "
-            "replacement_authoring_backend replacement_authoring_model_provider replacement_authoring_agent_runtime replacement_authoring_model")
+            "replacement_authoring_backend replacement_authoring_model_provider replacement_authoring_text_provider replacement_authoring_agent_runtime replacement_authoring_model")
         _check(_identifier(request.get("run_id")), "supported_request_invalid")
         _check(_enum(request.get("run_mode"), {"scene_configuration", "destination_qualification", "episode_evaluation"}), "supported_request_invalid")
         refs = {}

@@ -144,8 +144,11 @@ def _scoped_key() -> str:
         mode = os.fstat(stream.fileno()).st_mode
         if not stat.S_ISREG(mode) or mode & 0o077:
             raise ClaudeAuthoringBlocked("claude_key_file_permissions_invalid")
-        value = stream.read(16_384).strip()
-        too_long = bool(stream.read(1))
+        try:
+            value = stream.read(16_384).strip()
+            too_long = bool(stream.read(1))
+        except UnicodeDecodeError:
+            raise ClaudeAuthoringBlocked("claude_key_file_invalid") from None
     if too_long:
         raise ClaudeAuthoringBlocked("claude_key_file_invalid")
     if not value:

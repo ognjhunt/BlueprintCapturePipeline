@@ -51,6 +51,19 @@ def _bind_assembly_scene_instance(*, template, preparation, configuration):
         template["scene_instance_pose_world"] = preparation["scene_instance_pose_world"]
 
 
+def _launch_capture_root(preparation_path):
+    """The capture folder of a preparation that is about to launch, or ``None`` for an unknown layout.
+
+    A development-test preparation sits one folder below its preparation
+    (``.../website_scene_preparation[/revisions/<hex>]/development_test/preparation.json``).
+    """
+    from .website_preparation_revision import capture_root_for_preparation
+    path = Path(preparation_path)
+    if path.name == "preparation.json" and path.parent.name == "development_test":
+        return capture_root_for_preparation(path.parent.parent / "preparation.json")
+    return capture_root_for_preparation(path)
+
+
 @scene_participant()
 def verified_submission_inputs(task, *, now=None):
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
@@ -64,6 +77,11 @@ def verified_submission_inputs(task, *, now=None):
     # expiry and revocation were independently checked by reopen_scene_intent.
     rights = construction_rights_admission(preparation=preparation, task_context=context,
                                           now=intent["accepted_at_epoch"])
+    if "anthropic_provider_terms_reference" in rights:
+        # Just before launch, whatever route the preparation took: the site's withdrawal ledger names
+        # Anthropic first. A preparation whose site cannot be found holds the launch.
+        from .website_scene_handoff import name_anthropic_for_site
+        name_anthropic_for_site(rights, _launch_capture_root(paths["preparation"]))
     construction = prepare_construction_stages(runtime_inputs_path=paths["runtime_inputs"],
                                                preparation_path=paths["preparation"])
     return intent, preparation, context, rights, construction, paths
@@ -366,6 +384,8 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         scene_configuration_publication=toolchain, splat_render_publication=renderer,
         release_admission_mode=release_admission_mode))
     health_ref = stage.json("runtime/health.json", records.runtime_health_protocol(source_commit=commit))
+    from .artisan_provider_choice import artisan_text_provider
+    artisan_on_anthropic = artisan_text_provider(construction["configurations"][2]) == "anthropic"
     request = {"schema_version": "task_evaluation_launch_preparation_request.v1", "run_mode": "scene_configuration",
         "expected_production_commit": commit, "preparation_id": run_id + "-preparation",
         "team_namespace": team, "run_id": run_id, "scene_intent_digest": intent["intent_digest"],
@@ -395,9 +415,12 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
             "health_protocol": health_ref, "requirements": {"cpu_cores": 8, "memory_gib": 32, "gpu_count": 1, "disk_gib": 64},
             "network": {"default": "deny", "allowlist": (["api.anthropic.com"]
                 if construction["configurations"][2].get("authoring_model_provider") == "anthropic"
+                # ARTISAN text on Anthropic; the design board stays on OpenAI.
+                else ["api.openai.com", "api.anthropic.com"] if artisan_on_anthropic
                 else ["api.openai.com"])},
             "secret_refs": (["secret-file:anthropic_api_key"]
                 if construction["configurations"][2].get("authoring_model_provider") == "anthropic"
+                else ["secret-file:openai_api_key", "secret-file:anthropic_api_key"] if artisan_on_anthropic
                 else ["secret-file:openai_api_key"]),
             "mounts": [{"source": release_ref, "container_path": "/inputs/release-binding.json", "mode": "read_only"},
                        {"container_path": "/outputs", "mode": "output"}], "output_limit_bytes": 20_000_000_000},
@@ -417,6 +440,9 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
     if construction["configurations"][2].get("authoring_model_provider") == "anthropic":
         request["replacement_authoring_model_provider"] = "anthropic"
+    if artisan_on_anthropic:
+        # One reservation and one cap (the OpenAI official gate's); the meter bounds both providers' sum.
+        request["replacement_authoring_text_provider"] = "anthropic"
     if construction["configurations"][2].get("authoring_agent_runtime") == "openai_agents_api":
         request["replacement_authoring_agent_runtime"] = "openai_agents_api"
         request["replacement_authoring_model"] = "gpt-6.1-sol"

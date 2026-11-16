@@ -214,6 +214,24 @@ def test_sponsored_claude_choice_requires_its_separate_digest_bound_terms(monkey
             module.load_website_scene_sponsorship(task_context=context(), now=1000)
 
 
+def test_a_both_providers_grant_is_accepted_and_names_no_single_provider(monkeypatch):
+    value = {**sponsorship(), "authoring_providers": ["openai", "anthropic"],
+             "anthropic_provider_terms_reference": "sha256:" + "a" * 64,
+             "privacy_policy_version": "2026-11-13.1", "site_consents": []}
+    value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
+    monkeypatch.setattr(module, "website_webapp_request", lambda **_: value)
+    assert module.load_website_scene_sponsorship(task_context=context(), now=1000) == value
+    for changes in ({"authoring_providers": ["openai", "openai"]}, {"authoring_providers": ["anthropic"]},
+                    {"authoring_provider": "anthropic"}, {"authoring_provider": "openai"},
+                    {"anthropic_provider_terms_reference": "unverified"}, {"privacy_policy_version": 1},
+                    {"site_consents": {}}):
+        bad = {**value, **changes}
+        bad["authority_digest"] = canonical_digest(bad, digest_field="authority_digest")
+        monkeypatch.setattr(module, "website_webapp_request", lambda **_: bad)
+        with pytest.raises(ValueError, match="authoring_provider_invalid"):
+            module.load_website_scene_sponsorship(task_context=context(), now=1000)
+
+
 def test_sponsored_agents_api_choice_requires_complete_digest_bound_policy(monkeypatch):
     policy = {"schema_version": "scene_configuration_agents_api_policy.v1",
               "disclosure_scope": "task_asset_source_frames_and_metric_envelope",

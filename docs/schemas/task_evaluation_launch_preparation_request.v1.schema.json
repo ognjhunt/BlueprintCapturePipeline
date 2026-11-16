@@ -1315,6 +1315,9 @@
     "replacement_authoring_model_provider": {
       "const": "anthropic"
     },
+    "replacement_authoring_text_provider": {
+      "const": "anthropic"
+    },
     "replacement_authoring_agent_runtime": {
       "const": "openai_agents_api"
     },

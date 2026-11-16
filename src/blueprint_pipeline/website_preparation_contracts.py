@@ -202,6 +202,10 @@ def validate_preparation_request(*, request, task_context, authority, now, valid
     expected_providers = ["vast", "openai"]
     if authority.get("authoring_provider") == "anthropic":
         expected_providers.append("anthropic")
+    from .artisan_provider_choice import both_providers_granted
+    if both_providers_granted(authority) and execution.get("allowed_providers") == ["vast", "openai", "anthropic"]:
+        # A both-providers grant: the host's choice (frozen in the preparation) named Anthropic.
+        expected_providers.append("anthropic")
     if (
         not (preparation_consent_valid(request)
              or (confirmed_task is True and confirmed_preparation_scope(request)))

@@ -92,8 +92,9 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     from .website_native_background import derived_stage_three_configuration
     from .website_owner_authoring_cap import same_except_owner_cap
     # The control plane may have raised the ARTISAN cap to the owner's deployed value.
-    _require(same_except_owner_cap(third, derived_stage_three_configuration(
-        runtime=runtime, preparation=preparation, observation_manifest_path=observed_path)),
+    from .artisan_provider_choice import as_rebound
+    _require(same_except_owner_cap(third, as_rebound(third, derived_stage_three_configuration(
+        runtime=runtime, preparation=preparation, observation_manifest_path=observed_path))),
         "object_configuration_transition_invalid")
     observed = json.loads(observed_path.read_text())
     # A designed subject is authored from its supplied mesh: whole, with no observed frames.

@@ -9,6 +9,16 @@ import sys
 from .task_object_artisan_hooks import CONTEXT_ENV
 from .task_object_artisan_metering import Meter, install_metering
 
+#: OpenAI's own API, passed explicitly so ``OPENAI_BASE_URL`` cannot redirect an Anthropic attempt's image checks.
+OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+
+
+def _scoped_key(path_text) -> str:
+    key_path = Path(path_text)
+    if key_path.is_symlink() or not key_path.is_file() or key_path.stat().st_mode & 0o077:
+        raise ValueError("artisan_scoped_credential_file_invalid")
+    return key_path.read_text().strip()
+
 
 def main() -> int:
     context = json.loads(Path(os.environ["BLUEPRINT_ARTISAN_BRIDGE_CONTEXT_FILE"]).read_text())
@@ -17,10 +27,14 @@ def main() -> int:
     # tracked hook preflights confinement before its first model request.
     # Canonical scoped credential exists only in this controller. The generated
     # worker's environment and OS read roots exclude its file and value.
-    key_path = Path(context["api_key_file"])
-    if key_path.is_symlink() or not key_path.is_file() or key_path.stat().st_mode & 0o077:
-        raise ValueError("artisan_scoped_credential_file_invalid")
-    os.environ["OPENAI_API_KEY"] = key_path.read_text().strip()
+    os.environ["OPENAI_API_KEY"] = _scoped_key(context["api_key_file"])
+    # The text provider is the frozen configuration's; the image models stay on OpenAI.
+    provider = context["model_configuration"].get("provider", "openai")
+    if provider == "anthropic":
+        os.environ["ANTHROPIC_API_KEY"] = _scoped_key(context["anthropic_api_key_file"])
+        os.environ["ANTHROPIC_CONTEXT_COMPACTION"] = "0"
+    elif provider != "openai" or "anthropic_api_key_file" in context:
+        raise ValueError("artisan_text_provider_invalid")
     if context.get("project_id"):
         os.environ["OPENAI_PROJECT_ID"] = context["project_id"]
     os.environ["ARTISAN_BLENDER_BIN"] = context["sandbox"]["blender"]
@@ -33,14 +47,24 @@ def main() -> int:
     # Read-only availability checks precede the first billed request. Retain
     # server observations; model support in a local registry is insufficient.
     from openai import OpenAI
-    with OpenAI(max_retries=0, timeout=30) as client:
-        availability = {model: client.models.retrieve(model).id for model in
-                        set(models["text_models"].values()) | {models["compaction_model"],
-                            models["image_model"], models["image_tool_model"]}}
+    if provider == "anthropic":
+        # The text model was read, unbilled, on the host when the job was chosen; here the board's models.
+        with OpenAI(max_retries=0, timeout=30, base_url=OPENAI_API_BASE_URL) as client:
+            availability = {model: client.models.retrieve(model).id for model in
+                            {models["image_model"], models["image_tool_model"]}}
+    else:
+        with OpenAI(max_retries=0, timeout=30) as client:
+            availability = {model: client.models.retrieve(model).id for model in
+                            set(models["text_models"].values()) | {models["compaction_model"],
+                                models["image_model"], models["image_tool_model"]}}
     meter = Meter(Path(context["usage_file"]),
         maximum_cost_usd=context["maximum_cost_usd"], maximum_requests=context["maximum_requests"],
         deadline_epoch=context["deadline_epoch"])
-    install_metering(meter)
+    if provider == "anthropic":
+        install_metering(meter, provider,
+                         us_inference_geo_multiplier=context.get("anthropic_us_inference_geo_multiplier"))
+    else:
+        install_metering(meter, provider)
     from artisan.cli import main as upstream_main
     status = upstream_main(sys.argv[1:])
     from pipeline.state import load_checkpoint

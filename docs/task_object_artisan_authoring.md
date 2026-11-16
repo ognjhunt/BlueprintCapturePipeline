@@ -74,6 +74,10 @@ inspection dependencies do not match candidate". A reference whose manifest is
 outside the workspace is refused. `patches/artisan/0002-gpt-6-1-sol.patch` prices
 and admits `gpt-6.1-sol` (text, compaction and image envelope) and lets it run
 at `xhigh` and `max` reasoning, as upstream already allowed for `gpt-6-astra`.
+`patches/artisan/0003-claude-opus-5-5.patch` prices and admits `claude-opus-5-5`
+in upstream's Anthropic adapter, used only for a job the host chose for Anthropic
+(`artisan_provider_choice`). It changes no tool and not the OpenAI codec, so the
+strict tool snapshot is unchanged.
 `patches/artisan/0005-request-render-non-strict.patch` sends the review agent's
 `request_render` non-strict: its `pose` (joint name to number) is a free-form
 map, which OpenAI's strict function calling cannot express, and the API refused
@@ -134,6 +138,54 @@ https://developers.openai.com/api/docs/models/gpt-6.1-sol on 2026-11-02. A
 website job whose stage 3 froze earlier models is rebound to these models and
 their cap on its next attempt (`website_owner_authoring_cap`); a continuation
 resumes only a source with the same models.
+
+## Anthropic for the text roles, chosen per job
+
+`src/blueprint_pipeline/artisan_provider_choice.py` chooses once per website grant, on the host,
+before preparation: Anthropic only for a both-providers grant, with the host setting
+`BLUEPRINT_ARTISAN_PREFER_ANTHROPIC=1`, an owner-only `ANTHROPIC_API_KEY_FILE`, the Pipeline's own
+privacy rule and the existing unbilled model read (`claude_opus_model_preflight`); OpenAI
+otherwise, with the reason. The choice is made inside compile, only once it has found no gap, so a job
+that ships as a room package (navigation, an unknown kind) never chooses, writes no choice record and
+names no provider in the site's ledger. No paid request is made to choose. The privacy rule admits only the
+listed Privacy versions (today `2026-11-13.1`), or an older or unstated version with the typed
+consent. A new Privacy version is added to that list deliberately; until then new jobs under it
+use OpenAI. The design board stays on OpenAI. One reservation and one cap: the meter bounds both
+providers' sum. Every Anthropic Messages request is pinned to US-only inference (`inference_geo: "us"`,
+as the repository's other Claude paths), so its bound and price carry that 1.1x uplift, and only
+because the request sends it; input is bounded at the 5-minute cache-write rate, the dearest one a
+request can incur. Anthropic's part
+reaches the account's month at list price as its own provider row (`artisan_anthropic_month`,
+`metered_list_price_not_officially_read`); a hold that cannot be written stops the attempt before
+authoring. An attempt that ends on Anthropic's refusal for lack of funds turns the rest of its
+grant to OpenAI (a sealed successor record). Each attempt and renewal reads the host setting and
+the key file again: with the setting off, or the key file gone or no longer owner-only, the grant
+gets the same sealed successor, as `host_setting_off_after_choice` or
+`anthropic_key_file_unusable_after_choice`. A job moved to OpenAI stays on OpenAI, even when the
+setting and key return; only a new grant chooses again. A key file that is not UTF-8 is an unusable
+key (`model_read:claude_key_file_invalid`). The rebind is read when an attempt is submitted: a key
+removed after submission and before the host stages it stops that one attempt, and nothing is sent.
+The withdrawal planner saves the site's ledger only under the withdrawal lock, from a fresh read
+there. Upstream pins Anthropic's own host and the controller
+inherits no Anthropic setting, so no base URL or header can redirect it.
+
+Known gap: if the successor record cannot be written, the grant's next attempt goes to Anthropic
+again. Its first Messages call is refused at $0 and its settlement tries the write again. That is $0
+at Anthropic only: when stage 3 does not run in the host CPU prestage, each such retry also pays for
+the rented machine until stage 3 fails. It is bounded by the grant's paid-attempt limit and the
+existing caps.
+
+What only a paid run can prove:
+
+- Funds are found by the first real authoring call, not before: an account without credit loses
+  one attempt (its GPU or host time until that call) at a metered cost near zero, and the grant's
+  later attempts run on OpenAI. Upstream's CLI catches the meter's typed error and writes its
+  terminal record; the refused call is the meter's last row, at $0, marked
+  `upstream_rejected_request_no_funds`.
+- A key or model the unbilled read refuses shows as `"reason": "model_read:<code>"` in the
+  choice record (for example `model_read:claude_model_metadata_unavailable`), and the job runs on OpenAI.
+- Whether a real response reports `inference_geo`, `speed` and `service_tier` in its usage; a response
+  that does not is counted at its bound until the official cost is read.
 
 ## Inputs and authority
 

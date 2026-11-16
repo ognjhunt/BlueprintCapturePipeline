@@ -22,6 +22,7 @@ from blueprint_pipeline.task_object_authoring_contracts import file_record
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/build_task_evaluation_scene_configuration_artisan_component.py"
 SOL_PATCH = (ROOT / "patches/artisan/0002-gpt-6-1-sol.patch").read_text()
+OPUS_PATCH = (ROOT / "patches/artisan/0003-claude-opus-5-5.patch").read_text()
 
 
 def _builder():
@@ -41,6 +42,7 @@ def test_every_listed_patch_is_tracked_and_confinement_comes_first():
     builder = _builder()
     assert builder.UPSTREAM_PATCHES[0] == "0001-confine-generated-code.patch"
     assert builder.UPSTREAM_PATCHES[1] == "0002-gpt-6-1-sol.patch"
+    assert builder.UPSTREAM_PATCHES[2] == "0003-claude-opus-5-5.patch"
     assert sorted(path.name for path in (ROOT / "patches/artisan").glob("*.patch")) == list(builder.UPSTREAM_PATCHES)
 
 
@@ -110,3 +112,39 @@ def test_the_sol_patch_admits_every_configured_text_role_and_the_max_effort():
     assert client.count('"gpt-6-astra", "gpt-6.1-sol"}:') == 2
     providers = _added(SOL_PATCH, "pipeline/providers.py")
     assert '"gpt-6.1-sol",' in providers and "requires the OpenAI gpt-6-astra or gpt-6.1-sol model" in providers
+
+
+def _hunks(patch: str) -> dict[str, list[str]]:
+    """Each file the patch touches, with its changed (``+``/``-``) lines."""
+    files: dict[str, list[str]] = {}
+    current = None
+    for line in patch.splitlines():
+        if line.startswith("+++ b/"):
+            current = line[len("+++ b/"):]
+            files[current] = []
+        elif line.startswith("--- a/"):
+            continue
+        elif current is not None and line[:1] in {"+", "-"}:
+            files[current].append(line)
+    return files
+
+
+def test_the_opus_patch_touches_only_the_anthropic_path():
+    hunks = _hunks(OPUS_PATCH)
+    assert set(hunks) == {"pipeline/cost.py", "pipeline/llm/anthropic.py", "pipeline/providers.py"}
+    # Nothing is removed from the OpenAI code it shares a file with: an OpenAI job is unchanged.
+    assert [line for line in hunks["pipeline/cost.py"] if line.startswith("-")] == []
+    assert [line for line in hunks["pipeline/providers.py"] if line.startswith("-")] == []
+
+
+def test_the_opus_patch_prices_claude_opus_5_5_at_the_list_price():
+    # The meter bounds and prices every Anthropic call from this row: a wrong price breaks the one cap.
+    added = _added(OPUS_PATCH, "pipeline/cost.py")
+    table = ast.literal_eval(re.search(r"ANTHROPIC_OPUS_5_5_PRICING: dict\[str, float\] = (\{.*?\n\})",
+                                       added, re.S).group(1))
+    # Anthropic list price for claude-opus-5-5, read 2026-11-13 at platform.claude.com/docs/en/about-claude/pricing.
+    listed = {"input": 4.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0, "output": 20.0}
+    assert table == {"input_uncached": listed["input"], "input_cached": listed["cache_read"],
+                     "input_cache_write": listed["cache_write"], "input_cache_write_1h": listed["cache_write_1h"],
+                     "output": listed["output"]}
+    assert '"claude-opus-5-5": ANTHROPIC_OPUS_5_5_PRICING,' in added
