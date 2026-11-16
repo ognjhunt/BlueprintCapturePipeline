@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import re
+import time
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
@@ -20,6 +21,8 @@ from .website_assessment_resume import MAX_BYTES, _payload_bytes, _require
 
 #: What the capture orchestrator raises while the capture's Atlas job is still processing.
 WAIT_ERROR = "website_scene_preparation: website_atlas_job_processing"
+#: What it raises once that job stopped for input; a wait too while the job may be reopened.
+NEEDS_INPUT_ERROR = "website_scene_preparation: website_atlas_job_needs_input"
 SCHEMA = "website_reconstruction_resume.v1"
 FIELD = "reconstruction_resume"
 REVIEW_SCHEMA = "website_preparation_resume_review.v1"
@@ -37,7 +40,7 @@ def atlas_wait(exc: BaseException) -> bool:
             return False
         seen.add(id(current))
         try:
-            if str(current) == WAIT_ERROR:
+            if str(current) in (WAIT_ERROR, NEEDS_INPUT_ERROR):
                 return True
         except Exception:  # noqa: BLE001 - an unprintable error is no typed wait
             return False
@@ -60,8 +63,10 @@ def resume_record(listener, *, exc, payload, payload_digest, producer_delivery_k
     try:
         if producer_delivery_key is None or not atlas_wait(exc):
             return None
-        # The orchestrator's word is checked against the job it waited on.
-        if read_job(Path(capture_root) / "pipeline" / "atlas" / JOB_FILE).get("state") != "processing":
+        # The orchestrator's word is checked against the job it waited on: it still runs, or it stopped
+        # for input and may yet be reopened (``reopenable``).
+        job = read_job(Path(capture_root) / "pipeline" / "atlas" / JOB_FILE)
+        if job.get("state") != "processing" and not reopenable(job, Path(capture_root)):
             return None
         raw = _payload_bytes(listener, payload, payload_digest)
     except Exception:  # noqa: BLE001 - an unarmed wait falls back to Pub/Sub's own retries
@@ -163,18 +168,38 @@ def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) ->
             and record.get("producer_delivery_key") == producer_delivery_key)
 
 
-def _final(job) -> bool:
-    """The worker's own notion of done: terminal and not waiting to re-check authority."""
+def reopenable(job, capture_root: Path) -> bool:
+    """An Atlas job that stopped for input and may yet be reopened: the wait holds until it is ready.
+
+    The same reasons ``retry_failed_job`` reopens, within the job's seven days, on a capture not
+    withdrawn. Past that, or for a reason only a new video clears, it is final, as before 2026-11-16.
+    """
+    from .atlas_preparation_job_control import _NEEDS_NEW_CAPTURE, _NOT_RETRYABLE
+    from .website_atlas_preview_store import MAXIMUM_JOB_SECONDS, capture_withdrawn
+    enqueued = job.get("enqueued_at_epoch")
+    return (job.get("state") == "needs_input" and job.get("reason") not in _NEEDS_NEW_CAPTURE | _NOT_RETRYABLE
+            and type(enqueued) in (int, float) and time.time() - enqueued <= MAXIMUM_JOB_SECONDS
+            and not capture_withdrawn(capture_root))
+
+
+def _final(job, capture_root: Path, *, waited_on_processing: bool = False) -> bool:
+    """The worker's own notion of done: terminal, not waiting to re-check authority, and not reopenable.
+
+    A wait armed while the job was processing (``WAIT_ERROR``) replays once when the job stops for input,
+    reopenable or not: that run records the needs-input failure, which the status reports as needing
+    Blueprint. It then waits as a needs-input wait until the job is reopened and ready.
+    """
     from .website_atlas_preview_store import TERMINAL
-    return job.get("state") in TERMINAL and not job.get("retry_at_epoch")
+    return (job.get("state") in TERMINAL and not job.get("retry_at_epoch")
+            and (waited_on_processing or not reopenable(job, capture_root)))
 
 
 def reconcile_waiting_reconstructions(listener, *, storage_root: Path, process_args, limit=1):
     """Replay each waiting capture's own handoff once its Atlas job is final; at most ``limit`` per tick."""
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
-    from .website_atlas_preview_store import JOB_FILE, read_job
+    from .website_atlas_preview_store import JOB_FILE, capture_withdrawn, read_job
     from .website_preparation_recovery import note_recovery
-    from .website_preparation_status import _read, _root, read_preparation_status
+    from .website_preparation_status import _read, _root, delivery_retired, read_preparation_status
     counts = {"resumed": 0, "pending": 0}
     # Include same-job source revisions; admission below still rechecks each birth.
     jobs = sorted(path for path in Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}")
@@ -188,9 +213,10 @@ def reconcile_waiting_reconstructions(listener, *, storage_root: Path, process_a
             _root(root)
             _require(not (root / listener.JOB_LEDGER_FILENAME).is_symlink())
             before = listener._read_job_ledger(root)
-            if not armed(before):
+            if not armed(before) or capture_withdrawn(root) or delivery_retired(root, before):
+                # A withdrawn capture, or a retired delivery, ends the wait: never replayed.
                 continue
-            if not _final(read_job(job_path)):
+            if not _final(read_job(job_path), root, waited_on_processing=before.get("last_error") == WAIT_ERROR):
                 counts["pending"] += 1
                 continue
             record = before[FIELD]

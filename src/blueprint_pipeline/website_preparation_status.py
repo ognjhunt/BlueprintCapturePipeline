@@ -177,6 +177,19 @@ _NOT_OWED_EXPLANATIONS = frozenset({NOT_OWED_EXPLANATION, NOT_OWED_CLOSED_EXPLAN
 MAX_RETIREMENT_EVIDENCE = 500
 
 
+def delivery_retired(capture_root: Path, ledger: Mapping[str, Any]) -> bool:
+    """Whether the capture's status delivery is retired at the ledger's current revision.
+
+    Terminal for that revision (``RETIRED_STATE``): the owner retired it, or no report is owed. Its
+    waits end with it, and the drains never stage it again; a newer revision is a new delivery.
+    """
+    try:
+        delivery = _read_delivery(Path(capture_root) / DELIVERY_FILE)
+    except Exception:  # noqa: BLE001 - no readable retirement: the wait stays live
+        return False
+    return delivery["state"] == RETIRED_STATE and delivery["revision"] == ledger.get("revision")
+
+
 def _read_delivery(path: Path) -> dict[str, Any]:
     """Only a valid scheduling record may receive canonical retry bookkeeping."""
     value = _read(path)
@@ -292,8 +305,9 @@ def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
     terminal = current_terminal(ledger) if status != "terminal_authority_ended" else None
     if terminal is not None:
         return "failed_terminal", terminal["reason"]
-    from .website_reconstruction_resume import armed
-    if armed(ledger) and current_overdue(ledger) is None:
+    from .website_reconstruction_resume import NEEDS_INPUT_ERROR, armed
+    # A wait on an Atlas job that needs input moves only when Blueprint reopens it: it reports as before.
+    if armed(ledger) and ledger.get("last_error") != NEEDS_INPUT_ERROR and current_overdue(ledger) is None:
         # The attempt waits only on its capture's Atlas job and resumes by itself when the job is final
         # (``website_reconstruction_resume``): the normal reconstruction wait, not a failure to report.
         # A wait past the Atlas job's window (overdue) still reports as before, and so does the v1

@@ -11,6 +11,7 @@ stages before the handoff. No provider call.
 """
 import base64
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -169,6 +170,81 @@ def test_a_job_waiting_to_recheck_authority_is_not_final(waiting, monkeypatch):
                                                      process_args={"provider": "openai"}) == {"resumed": 0, "pending": 1}
 
 
+REOPENABLE = "atlas_scene_planner_abstained"
+
+
+def _replays(root):
+    calls = []
+    args = {"provider": "openai", "run_evaluation_prep": False,
+            "run_e2e": lambda **kwargs: calls.append(kwargs) or {"status": "completed"}}
+    return calls, lambda: resume.reconcile_waiting_reconstructions(listener, storage_root=root.parents[4],
+                                                                   process_args=args)
+
+
+def test_a_reopened_atlas_job_replays_the_preparation_once_after_ready_and_never_while_it_needs_input(waiting):
+    """Armed while Atlas processed; Atlas stops for input; Blueprint reopens it; it turns ready."""
+    from blueprint_pipeline.website_preparation_status import _v2_state
+    root, owner, context, _, _ = waiting
+    runs = []
+
+    def orchestrated(**kwargs):
+        runs.append("needs_input")
+        return _orchestrated(root, owner, context)(**kwargs)
+    drain = lambda run_e2e: resume.reconcile_waiting_reconstructions(  # noqa: E731
+        listener, storage_root=root.parents[4],
+        process_args={"provider": "openai", "run_evaluation_prep": False, "run_e2e": run_e2e})
+    now = time.time()
+    _job(root, "needs_input", reason=REOPENABLE, enqueued_at_epoch=now)
+    # One replay records the needs-input failure: the status asks for Blueprint, never "preparing".
+    drain(orchestrated)
+    ledger = listener._read_job_ledger(root)
+    assert runs == ["needs_input"] and ledger["last_error"] == resume.NEEDS_INPUT_ERROR and resume.armed(ledger)
+    assert _v2_state(ledger) == ("failed_retryable", None)
+    # Then it waits: no replay while Atlas still needs input, nor while the reopened job processes.
+    assert drain(orchestrated) == {"resumed": 0, "pending": 1} and len(runs) == 1
+    _job(root, "processing", reason=None, enqueued_at_epoch=now)  # reopened (``retry_failed_job``)
+    assert drain(orchestrated) == {"resumed": 0, "pending": 1} and len(runs) == 1
+    _job(root, "ready", enqueued_at_epoch=now)
+    completed = lambda **_: runs.append("ready") or {"status": "completed"}  # noqa: E731
+    assert drain(completed) == {"resumed": 1, "pending": 0} and runs == ["needs_input", "ready"]
+    assert drain(completed) == {"resumed": 0, "pending": 0} and len(runs) == 2
+    assert listener._read_job_ledger(root)["status"] == "completed"
+
+
+@pytest.mark.parametrize("reason, armed", [(REOPENABLE, True), ("atlas_insufficient_overlapping_distinct_views", False)])
+def test_a_run_that_meets_an_atlas_job_needing_input_waits_only_while_it_may_be_reopened(waiting, reason, armed):
+    root, owner, context, raw, _ = waiting
+    _job(root, "needs_input", reason=reason, enqueued_at_epoch=time.time())
+    with pytest.raises(PipelineError, match="website_atlas_job_needs_input"):
+        listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
+                                         run_e2e=_orchestrated(root, owner, context))
+    ledger = listener._read_job_ledger(root)
+    assert ledger["last_error"] == resume.NEEDS_INPUT_ERROR and resume.armed(ledger) is armed
+    assert ledger["lease_token"] is None
+
+
+def test_an_expired_or_withdrawn_capture_ends_the_wait(waiting, monkeypatch):
+    from blueprint_pipeline import website_atlas_preview_store as store
+    root = waiting[0]
+    calls, drain = _replays(root)
+    _job(root, "needs_input", reason=REOPENABLE, enqueued_at_epoch=time.time())
+    monkeypatch.setattr(store, "capture_withdrawn", lambda _root: True)
+    # Withdrawn: never replayed and never counted as waiting; the withdrawal's deletion removes it.
+    assert drain() == {"resumed": 0, "pending": 0} and calls == []
+    monkeypatch.setattr(store, "capture_withdrawn", lambda _root: False)
+    # A retired status delivery ends the wait the same way.
+    from blueprint_pipeline import website_preparation_status as status
+    live = status.delivery_retired
+    monkeypatch.setattr(status, "delivery_retired", lambda _root, _ledger: True)
+    _job(root, "ready")
+    assert drain() == {"resumed": 0, "pending": 0} and calls == []
+    monkeypatch.setattr(status, "delivery_retired", live)
+    # Past the job's seven days it can no longer be reopened: final, replayed once as before.
+    _job(root, "needs_input", reason=REOPENABLE, enqueued_at_epoch=time.time() - MAXIMUM_JOB_SECONDS - 1)
+    assert drain() == {"resumed": 1, "pending": 0} and len(calls) == 1
+    assert resume.FIELD not in listener._read_job_ledger(root)
+
+
 @pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 @pytest.mark.parametrize("change", ["payload", "source", "active", "wrong_error", "owner", "context"])
 def test_a_changed_source_ledger_or_authority_is_never_replayed(waiting, monkeypatch, change):
@@ -240,6 +316,7 @@ def test_only_the_whole_atlas_wait_counts_anywhere_in_the_chain():
     assert resume.atlas_wait(PipelineError("outer")) is False
     assert not resume.atlas_wait(StageError("website_scene_preparation", "website_atlas_job_processing,other"))
     assert not resume.atlas_wait(StageError("website_scene_preparation", "website_atlas_job_failed"))
+    assert resume.atlas_wait(StageError("website_scene_preparation", "website_atlas_job_needs_input"))
 
 
 def test_a_wait_after_a_real_failure_or_a_dead_attempt_still_arms(waiting):
@@ -395,3 +472,21 @@ def test_a_real_retryable_failure_or_an_overdue_wait_reports_as_before(waiting):
     late = stopped + timedelta(seconds=MAXIMUM_JOB_SECONDS + terminal.silence_seconds() + 60)
     overdue = terminal.record_unretried_preparation(waiting[0], alive_since=stopped, now=late)
     assert resume.armed(overdue) and _v2_state(overdue)[0] != "preparing"
+
+
+@pytest.mark.parametrize("error, state", [(resume.WAIT_ERROR, "preparing"), (resume.NEEDS_INPUT_ERROR, "failed_retryable")])
+def test_a_wait_on_an_atlas_job_that_needs_input_reports_as_needing_attention(waiting, error, state):
+    """Only a reopen by Blueprint moves it: the site is not told it is being prepared, and Blueprint is told."""
+    from blueprint_pipeline.website_preparation_status import _v2_state
+    ledger = listener._read_job_ledger(waiting[0])
+    ledger = {**ledger, "last_error": error, resume.FIELD: {**ledger[resume.FIELD], "error": error}}
+    assert resume.armed(ledger) and _v2_state(ledger) == (state, None)
+
+
+def test_a_withdrawn_capture_job_is_never_reopenable(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_preview_store as store
+    job = {"state": "needs_input", "reason": REOPENABLE, "enqueued_at_epoch": time.time()}
+    monkeypatch.setattr(store, "capture_withdrawn", lambda _root: False)
+    assert resume.reopenable(job, tmp_path) and not resume._final(job, tmp_path)
+    monkeypatch.setattr(store, "capture_withdrawn", lambda _root: True)
+    assert not resume.reopenable(job, tmp_path) and resume._final(job, tmp_path)

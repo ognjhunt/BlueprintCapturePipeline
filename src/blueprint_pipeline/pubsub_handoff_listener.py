@@ -54,6 +54,45 @@ from .core.security_controls import (
 from .website_capture_entry import is_website_capture_manifest
 
 logger = logging.getLogger(__name__)
+#: The ``extra`` fields a listener log line prints (``main``): identifiers, codes, counts and the
+#: bounded error descriptions (``bounded_error``). Any other field a call passes (ledger error text,
+#: message attributes, evidence paths) never reaches the journal.
+LOG_FIELDS = frozenset({
+    "scene_id", "capture_id", "message_id", "payload_sha256", "observation_digest", "status", "blockers",
+    "queue_disposition", "delivery_attempt", "max_delivery_attempts", "retry_defer_seconds", "retry_count",
+    "terminal_code", "stage", "recovery", "consecutive_failures", "error_type", "staging_reason",
+    "staging_error", "owner_observation_reason", "owner_observation_error",
+})
+# A URL or an e-mail address is dropped from a printed value even after redaction.
+_LOG_SCRUB = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S*|[^\s@\"']+@[^\s@\"']+")
+
+
+def _log_value(value: Any) -> Any:
+    from .bounded_error import bounded_error_text
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_log_value(item) for item in value[:10]]
+    return _LOG_SCRUB.sub("<redacted>", bounded_error_text(value))
+
+
+class _FieldsFormatter(logging.Formatter):
+    """The message, then its allowed ``extra`` fields (``LOG_FIELDS``) as one JSON object."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:  # noqa: N802 - logging API
+        fields = {key: _log_value(value) for key, value in sorted(vars(record).items()) if key in LOG_FIELDS}
+        text = super().formatMessage(record)
+        return f"{text} {json.dumps(fields, sort_keys=True)}" if fields else text
+
+
+def _install_log_fields() -> None:
+    """Warnings and above to stderr, as Python's last-resort handler printed them, with their fields."""
+    package = logging.getLogger(__name__.rsplit(".", 1)[0])
+    if not any(isinstance(handler.formatter, _FieldsFormatter) for handler in package.handlers):
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.WARNING)
+        handler.setFormatter(_FieldsFormatter("%(message)s"))
+        package.addHandler(handler)
 
 
 def run_end_to_end(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -2036,6 +2075,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--scene-id")
     parser.add_argument("--capture-id")
     args = parser.parse_args(argv)
+    _install_log_fields()
 
     storage_root = args.storage_root or Path(tempfile.gettempdir()) / "blueprint-pubsub-handoffs"
     if args.status:

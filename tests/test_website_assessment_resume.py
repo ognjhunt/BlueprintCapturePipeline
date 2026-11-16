@@ -195,6 +195,28 @@ def test_pending_preflight_retains_exact_bytes_and_never_claims_another_attempt(
     assert listener._read_job_ledger(root) == before
 
 
+@pytest.mark.parametrize("retired", [True, False])
+def test_a_retired_status_delivery_ends_the_assessment_wait(waiting, monkeypatch, retired):
+    from blueprint_pipeline import website_preparation_status as status
+    root = waiting[0]
+    _ready(waiting, monkeypatch)
+    path = root / status.DELIVERY_FILE
+    delivery = json.loads(path.read_text())
+    ledger = listener._read_job_ledger(root)
+    if retired:  # As the owner's door retirement writes it (website_preparation_delivery_retirement).
+        delivery.update(state=status.RETIRED_STATE, revision=ledger["revision"], retired_at_epoch=1.0,
+                        retired_reason=status.RETIRED_REASON, retirement_approval_evidence="owner approval")
+    write_json(path, delivery)
+    assert status.delivery_retired(root, ledger) is retired
+    # A retirement of an older revision never hides this revision's live delivery.
+    assert status.delivery_retired(root, {**ledger, "revision": ledger["revision"] + 1}) is False
+    calls = []
+    monkeypatch.setattr(listener, "process_handoff_payload",
+                        lambda *_, **__: calls.append(1) or {"status": "capture_source_membership_unavailable_retryable"})
+    resume.reconcile_waiting_assessments(listener, storage_root=root.parents[4], process_args={"provider": "openai"})
+    assert len(calls) == (0 if retired else 1)
+
+
 @pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 def test_completed_assessment_resumes_same_original_payload_after_empty_pubsub(waiting, monkeypatch):
     root, _, _, raw, _ = waiting
