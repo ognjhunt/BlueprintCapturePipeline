@@ -18,6 +18,8 @@
   "notes": {
    "furniture_removed": "movable item(s) the site agreed to move are not in the collision file; they still appear in the appearance file.",
    "appearance_quality_not_passed": "The appearance file did not pass Blueprint's image quality check; it is included as it is.",
+   "support_region_not_held": "At part of the destination area the surface in the collision file does not hold the object where the success rule counts it as placed: it would tip off an edge or rest higher or lower than the rule allows. Blueprint did not test this.",
+   "support_not_held": "Where the object starts or is placed, the surface in the collision file does not hold it as the success rule expects. Blueprint did not test this.",
    "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video."
   }
  },
@@ -384,6 +386,44 @@
      "furniture_removed"
     ],
     "readme_sha256": "sha256:c25e7561d4e8edd902455cd9a467488ac57c5b2e9c08b08df49980939dd36e8d"
+   }
+  },
+  {
+   "label": "held-support-ships-with-the-flag",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "zip": {
+    "support_held": [
+     "rigid_support_goal_region_rest_outside_success_window"
+    ]
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "readme_variant": [
+     "not_run",
+     "support_region_not_held"
+    ],
+    "readme_sha256": "sha256:fe3eb33c64aaa5c150f206c275e8837a8900969281c6ffacef9412b974c4c069"
    }
   },
   {
