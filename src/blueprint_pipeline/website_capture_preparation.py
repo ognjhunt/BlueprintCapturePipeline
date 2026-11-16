@@ -118,16 +118,8 @@ def run_website_capture_preparation(
         f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
     ))
     if clean_plate.get("status") not in {"noop", "objects_removed"}:
-        if (clean_plate.get("blockers") == ["task_relevant_target_not_observed"]
-                and isinstance(stated.get("context_digest"), str)):
-            # The analysis found nothing the task is about in this video: the same video gives the same
-            # answer, so the job ends as a hold that asks the site to film again with the object in view.
-            from .website_recapture_required import NOT_OBSERVED_CODE, retain_recapture_hold
-            stop = retain_recapture_hold(capture_root=capture_root, task_context=stated, code=NOT_OBSERVED_CODE)
-            write_json(pipeline_dir / "provider_run_manifest.json", {"schema_version": "v1", "provider_name": None,
-                       "status": "not_requested", "website_scene_preparation": stop})
-            return {"status": "completed", "lane": "qualification", "website_scene_preparation": stop,
-                    "native_execution_complete": False}
+        # (A video the analysis finds nothing of the task in is no stop: the clean plate goes on with nothing
+        # removed and the handoff ships the room package.)
         raise StageError("clean_plate", ",".join(clean_plate.get("blockers") or ["website_preparation_pending"]))
     privacy_processing.update(
         status=clean_plate.get("privacy_status"),

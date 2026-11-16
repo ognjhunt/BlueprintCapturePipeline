@@ -152,6 +152,7 @@ NO_RULE = ("This package includes no success rule from Blueprint for this job; t
            "on the job's page.")
 OBJECTS_TAKEN_OUT = "{count} object(s) the job involves were taken out of the room scan and are not in this package."
 OBJECTS_IN_SCAN = "The job's objects are part of the room scan; they are not separate files."
+NOT_FOUND = "Blueprint did not find what the job is about in the video."
 ROOM_RECORD_SCHEMA = "blueprint.room_package_inputs.v1"
 #: A one-object job no task profile models (``website_scene_handoff``; the gaps of its ``ROOM_GAPS``, pinned equal
 #: by a test): its object is built on the rigid path and its half's sealed record says the rule is withheld, and
@@ -390,7 +391,8 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
     room = ({"plan_digest": record.get("plan_digest"), "success_rule_defined": record.get("success_rule_defined") is True,
              "success_rule_assumed": record.get("success_rule_assumed") is True,
              **({"objects": int(objects["count"]), "objects_in_scan": objects.get("in_package") == "part_of_room_scan"}
-                if isinstance(objects.get("count"), int) and objects["count"] > 0 else {})}
+                if isinstance(objects.get("count"), int) and objects["count"] > 0 else {}),
+             **({"not_found": True} if "task_relevant_target_not_observed" in (record.get("flags") or []) else {})}
             if record.get("schema_version") == ROOM_RECORD_SCHEMA else None)
     return {**({"removed_items": len(items)} if isinstance(items, list) and items else {}),
             **({"appearance_quality": "not_passed"} if absent.get("appearance_quality") == "not_passed" else {}),
@@ -844,6 +846,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
                if source.get("support_not_held") and not withheld else []),
              *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,
+                *([NOT_FOUND] if room.get("not_found") else []),
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"] else OBJECTS_TAKEN_OUT.format(count=room["objects"])]
                   if room.get("objects") else [])] if room is not None else []),
              *([NO_RULE] if withheld else [])]

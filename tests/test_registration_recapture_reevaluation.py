@@ -62,8 +62,26 @@ def test_a_registration_hold_is_reevaluated_once_per_release(tmp_path, monkeypat
 def test_a_stop_decided_by_what_the_video_shows_is_not_reevaluated(tmp_path, monkeypatch, code):
     from blueprint_pipeline import team_scene_packet_worker
     pipeline = _job(tmp_path, code)
+    if code == "website_task_object_not_observed":
+        # Only the scene review's own abstention (it keeps the observed room as evidence) stays as it is.
+        path = pipeline / "website_scene_preparation/handoff.json"
+        handoff = {**json.loads(path.read_text()), "observed_room_evidence": {"abstention_reasons": ["x"]}}
+        handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+        path.write_text(json.dumps(handoff))
     monkeypatch.setattr(team_scene_packet_worker, "current_release_commit", lambda: "c" * 40)
     assert held.held_kind(pipeline) is None and held.arrived_fact(pipeline) is None
+
+
+def test_nothing_found_in_the_video_is_reevaluated_once_per_release(tmp_path, monkeypatch):
+    """Since 2026-11-16 the clean plate goes on when the analysis finds nothing of the task: a hold an earlier
+    release wrote for it is looked at again by the next release, on the analysis the job has, at $0."""
+    from blueprint_pipeline import team_scene_packet_worker
+    pipeline = _job(tmp_path, "website_task_object_not_observed")
+    monkeypatch.setattr(team_scene_packet_worker, "current_release_commit", lambda: "c" * 40)
+    assert held.held_kind(pipeline) == "registration_recapture"
+    fact = held.arrived_fact(pipeline)
+    assert (fact["kind"], fact["release_commit"], fact["recapture_code"]) == (
+        "release", "c" * 40, "website_task_object_not_observed")
 
 
 def test_without_a_release_there_is_nothing_to_look_at_again(tmp_path, monkeypatch):
@@ -124,6 +142,24 @@ def _withdraw(site):  # noqa: F811
                  "request_id": scene.name[5:], "consent_revoked_at": "2026-11-12T09:00:00Z"}
     tombstone["digest"] = canonical_digest(tombstone, digest_field="digest")
     write_json(scene / "website_withdrawal/tombstone.json", tombstone)
+
+
+def test_a_job_held_because_nothing_was_found_is_run_once_and_only_once_per_release(site):  # noqa: F811
+    import time
+
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline.common import write_json
+    _confirm(site)
+    site.state["registration"] = "website_task_object_not_observed"
+    site.state["release"] = "e" * 40
+    site.deliver()  # the hold an earlier release wrote, its bytes kept
+    write_json(site.root / "pipeline/website_scene_sponsorship.json", {"expires_at_epoch": time.time() + 86_400})
+    assert _handoff(site)["blockers"] == ["website_task_object_not_observed"]
+    assert listener._read_job_ledger(site.root)[held.FIELD]["schema_version"] == held.SCHEMA
+    site.state["release"] = "9" * 40
+    runs = len(site.runs)
+    assert site.reconcile()["replayed"] == 1 and len(site.runs) == runs + 1
+    assert site.reconcile()["replayed"] == 0 and len(site.runs) == runs + 1  # the same release: never twice
 
 
 def test_an_open_held_registration_job_runs_once_on_the_new_release_and_continues(site):  # noqa: F811

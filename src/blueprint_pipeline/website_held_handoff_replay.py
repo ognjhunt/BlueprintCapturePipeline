@@ -209,16 +209,20 @@ def registration_recapture_code(root: Path, handoff: dict[str, Any] | None,
 
     Registration is decided on the capture's retained geometry alone (CPU, nothing bought), and a release
     can decide it differently (capture-39ecdc97, 2026-11-12: held by a pose search that counted a
-    turned-over scene as a candidate). Only the registration stops qualify: the front-normal stop and the
-    Atlas coverage and scale asks depend on what the video shows, or on paid reviews, and stay as they are.
+    turned-over scene as a candidate). So is the object not being found in the video
+    (``NOT_OBSERVED_CODE``) when the video analysis found it: since 2026-11-16 a release goes on without it
+    (``clean_plate_stage``), on the analysis the job already has. The front-normal stop and the Atlas coverage and scale asks depend on what
+    the video shows, or on paid reviews, and stay as they are.
     """
-    from .website_recapture_required import REGISTRATION_CODES, retains_recapture_required
+    from .website_recapture_required import NOT_OBSERVED_CODE, REGISTRATION_CODES, retains_recapture_required
     from .website_task_context_lineage import binding_contexts
 
     if handoff is None or context is None:
         return None
     code = (handoff.get("recapture_required") or {}).get("code")
-    if code not in REGISTRATION_CODES or not any(
+    # The scene review's own "not visible" abstention (``website_observed_room_limit``) keeps its hold as it is.
+    from_analysis = code == NOT_OBSERVED_CODE and "observed_room_evidence" not in handoff
+    if (code not in REGISTRATION_CODES and not from_analysis) or not any(
             retains_recapture_required(handoff, bound) for bound in binding_contexts(root, context)):
         return None
     return code

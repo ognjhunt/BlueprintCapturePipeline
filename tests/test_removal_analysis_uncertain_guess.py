@@ -160,26 +160,25 @@ def test_nothing_the_task_is_about_is_left_as_the_not_observed_stop():
     assert analysis.resolve_uncertain_targets(other) == other
 
 
-def test_not_observed_ends_as_a_hold_that_asks_for_a_new_video(tmp_path):
-    from types import SimpleNamespace
-    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
+def test_a_not_observed_hold_reads_as_the_ask_for_a_new_video(tmp_path):
+    """Since 2026-11-16 the clean plate goes on when the analysis finds nothing of the task
+    (``tests/test_website_nothing_found_in_the_video``); the code still arises from the scene review's
+    abstention, and a hold carrying it reads as before."""
+    from blueprint_pipeline.core.handoff_lease import guarded_handoff_write_json
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.website_preparation_outcome import read_preparation_outcome
-    from blueprint_pipeline.website_recapture_required import NOT_OBSERVED_CODE, retains_recapture_required
+    from blueprint_pipeline.website_recapture_required import FIELD, NOT_OBSERVED_CODE, record, retains_recapture_required
     from tests.test_qualification_coverage_edges import _descriptor
     from tests.test_website_task_sentence_wait import NAMED
     descriptor = _descriptor(metadata={"site_task_context": NAMED})
     context = {**NAMED, "scene_id": descriptor.scene_id, "capture_id": descriptor.capture_id}
-    descriptor = _descriptor(metadata={"site_task_context": context})
     capture = tmp_path / "scenes" / descriptor.scene_id / "captures" / descriptor.capture_id
-    (capture / "pipeline").mkdir(parents=True)
-    result = run_website_capture_preparation(
-        descriptor=descriptor, capture_root=capture, pipeline_dir=capture / "pipeline", source_video=None,
-        derived_scene_generation_allowed=True, gates=[],
-        prepare_media=lambda **_: {"status": "blocked", "blockers": ["task_relevant_target_not_observed"]},
-        check_privacy=lambda **_: SimpleNamespace(passed=True),
-        make_gate=lambda _name, passed, _detail: SimpleNamespace(passed=passed))
-    handoff = result["website_scene_preparation"]
-    assert result["status"] == "completed" and handoff["blockers"] == [NOT_OBSERVED_CODE]
+    handoff = {"schema_version": "website_scene_handoff.v1", "scene_id": context["scene_id"],
+               "capture_id": context["capture_id"], "status": "needs_input", "blockers": [NOT_OBSERVED_CODE],
+               FIELD: record(NOT_OBSERVED_CODE, task_context_digest=context["context_digest"]),
+               "simulator_ready": False, "provider_mutation_performed": False, "claim_ceiling": "development_only"}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    guarded_handoff_write_json(capture / "pipeline/website_scene_preparation/handoff.json", handoff)
     assert retains_recapture_required(handoff, context)
     def outcome():
         return read_preparation_outcome(capture_root=capture, task_context_digest=context["context_digest"],
