@@ -328,11 +328,6 @@ ROOM_GAPS = frozenset({"website_native_task_profile_preparation_required", "webs
 #: The other "no model for this job" findings that ship the room package, each flagged on its record by its code.
 MISMATCH = "website_task_profile_mechanism_mismatch"
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
-#: The stops a job whose rule is withheld (``rule_withheld``) still stops on: privacy, rights and money. Any other
-#: reason its object cannot be built or placed leaves the object out: the room package, the reason a flag.
-WITHHELD_HARD_STOPS = frozenset({
-    "website_scene_execution_authority_required", "website_scene_processing_rights_required",
-    "website_agents_api_signed_authority_required", "website_anthropic_provider_terms_authority_required"})
 
 
 def sealed_rule_withheld(capture_root: Path | None) -> dict[str, Any] | None:
@@ -775,10 +770,11 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             raise
         if ("rule_withheld" in result and preparation["status"] != "intake_ready"
                 and not preparation.get("native_task_preparation_gap")
-                and not set(preparation["blockers"]) & (WITHHELD_HARD_STOPS | REGISTRATION_REFUSALS)):
+                and not set(preparation["blockers"]) & REGISTRATION_REFUSALS):
             # Anything else that stops the object (no internal place, no support, a size the published figures
-            # refute): the room package, the object left out and the reason a flag. A registration refusal is a
-            # blocker only in development-test mode, which places the object on its estimated frame instead.
+            # refute, an authoring admission unmet: nothing was spent or sent for it): the room package, as main
+            # ships this job, the object left out and the reason a flag. A registration refusal is a blocker only
+            # in development-test mode, which places the object on its estimated frame instead.
             return room_package(None, flags=preparation["blockers"])
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"

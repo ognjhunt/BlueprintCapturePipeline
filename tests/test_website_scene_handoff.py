@@ -600,11 +600,13 @@ def test_one_removed_object_of_a_job_no_profile_models_is_built_with_its_rule_wi
 
 
 def _through_compile(tmp_path, monkeypatch, *, family="unimplemented_task_family", place=True, refusal=None,
-                     stop=True, spend=None):
+                     stop=True, spend=None, rights=None):
     """One removed rigid object through the handoff and the real compile (on that compile's own test geometry,
     ``tests/test_website_task_preparation``), with the provider choice the handoff hands compile recorded.
     ``refusal``: the registration refuses with that code. ``stop``: end the handoff once compile returns (what
-    follows is the existing rigid path)."""
+    follows is the existing rigid path; ``"ready"``: only once compile returns an intake-ready preparation).
+    ``spend``: the grant compile reads, kept by reference so a later pass can change it. ``rights``: the
+    context's capture rights."""
     from blueprint_pipeline import website_task_preparation as preparation
     from blueprint_pipeline.website_registration_admissibility import RegistrationRefusal
     from tests.test_website_task_preparation import _arguments, _masks
@@ -622,7 +624,7 @@ def _through_compile(tmp_path, monkeypatch, *, family="unimplemented_task_family
         monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: kw["task_masks"])
     (tmp_path / "geometry").mkdir()
     fixture = _arguments(tmp_path / "geometry", lambda geometry: {"task_masks": _masks(geometry, destination=place)})
-    fixture["task_context"].update(task_family=family)
+    fixture["task_context"].update(task_family=family, **({"capture_rights": rights} if rights is not None else {}))
     fixture["spend"] = fixture["spend"] if spend is None else spend
     fixture["task_context"]["context_digest"] = canonical_digest(fixture["task_context"], digest_field="context_digest")
     if not place:  # no named destination and no spot left on the start surface
@@ -638,7 +640,7 @@ def _through_compile(tmp_path, monkeypatch, *, family="unimplemented_task_family
     def compile_on_its_geometry(**kw):
         compiled.append(real(**{**fixture, "output_root": kw["output_root"]},
                              **{key: kw[key] for key in ("rule_withheld", "artisan_provider_choice") if key in kw}))
-        if stop:
+        if stop is True or (stop == "ready" and compiled[-1]["status"] == "intake_ready"):
             raise _Compiled
         return compiled[-1]
     monkeypatch.setattr(handoff, "compile_website_scene_preparation", compile_on_its_geometry)
@@ -705,14 +707,68 @@ def test_development_test_mode_still_places_a_withheld_job_s_object_that_does_no
     assert "website_registration_poor_fit" in compiled[0]["blockers"] and packaged == []
 
 
-def test_a_withheld_job_still_stops_on_money_rights_and_privacy(tmp_path, monkeypatch, ready_atlas):
-    """The room-package floor is for the object only: a job with no execution authority stops as any job does."""
+def _unmet(code, spend):
+    """The grant or context with one authoring admission unmet (``authoring_admission_blockers``)."""
+    if code == "website_scene_execution_authority_required":
+        spend.pop("owner")
+    elif code == "website_anthropic_provider_terms_authority_required":
+        spend.update(authoring_provider="anthropic", replacement_authoring_backend="astra_cad_blender_v1")
+    elif code == "website_agents_api_signed_authority_required":
+        spend.update(authoring_agent_runtime="openai_agents_api")
+    return {"derived_scene_generation_allowed": False} if code == "website_scene_processing_rights_required" else None
+
+
+ADMISSIONS = ("website_scene_execution_authority_required", "website_scene_processing_rights_required",
+              "website_agents_api_signed_authority_required", "website_anthropic_provider_terms_authority_required")
+
+
+@pytest.mark.parametrize("code", ADMISSIONS)
+def test_an_unmet_authoring_admission_leaves_a_withheld_job_its_room_package_and_spends_nothing(
+        tmp_path, monkeypatch, ready_atlas, code):
+    """Each admission the object's authoring needs stops the object, not the job: with one unmet the job ships
+    the room package main ships it today, the object left out and the code a flag. Nothing is spent or sent for
+    the object: no provider choice, no provider named in the withdrawal ledger, no rights admission, no intake.
+    A later pass with the admission met builds the object: its choice made then, once, and no second package."""
     from tests.test_website_task_preparation import SPEND
-    kwargs, asked, compiled, packaged = _through_compile(
-        tmp_path, monkeypatch, stop=False, spend={key: value for key, value in SPEND.items() if key != "owner"})
-    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
-                        lambda *_, **__: (_ for _ in ()).throw(_Compiled()))  # past the room-package floor
+    spend = json.loads(json.dumps(SPEND))
+    rights = _unmet(code, spend)
+    kwargs, asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, stop="ready", spend=spend,
+                                                         rights=rights)
+    named = []
+    monkeypatch.setattr(handoff, "name_anthropic_for_site", lambda *a, **k: named.append(a) or True)
+    monkeypatch.setattr("blueprint_pipeline.website_scene_dispatch.register_website_preparation",
+                        lambda **_: pytest.fail("registered"))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert code in compiled[0]["blockers"]
+    assert result["status"] == "room_package_written"
+    assert "website_intake_outbox" not in result
+    assert [{key: call[key] for key in ("task_profile", "task_masks", "objects_in_scan", "flags")}
+            for call in packaged] == [{"task_profile": None, "task_masks": None, "objects_in_scan": False,
+                                       "flags": compiled[0]["blockers"]}]
+    assert asked == []
+    assert named == []
+    assert not list(tmp_path.rglob("rights_admission.json"))
+    if rights is not None:
+        return  # the context's rights are the site's own; a new context is a new job
+    spend.clear()
+    spend.update(json.loads(json.dumps(SPEND)))  # the grant arrives: the next pass builds the object
     with pytest.raises(_Compiled):
         handoff.prepare_website_scene_handoff(**kwargs)
-    assert "website_scene_execution_authority_required" in compiled[0]["blockers"]
+    assert compiled[-1]["intake_request"] is not None
+    assert len(asked) == 1
+    assert len(packaged) == 1
+
+
+@pytest.mark.parametrize("code", ADMISSIONS)
+def test_a_modelled_job_with_an_unmet_authoring_admission_waits_as_today(tmp_path, monkeypatch, ready_atlas, code):
+    from tests.test_website_task_preparation import SPEND
+    spend = json.loads(json.dumps(SPEND))
+    rights = _unmet(code, spend)
+    kwargs, _, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop=False,
+                                                     spend=spend, rights=rights)
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
+                        lambda *_, **__: (_ for _ in ()).throw(_Compiled()))  # held as before, never the room
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert code in compiled[0]["blockers"]
     assert packaged == []
