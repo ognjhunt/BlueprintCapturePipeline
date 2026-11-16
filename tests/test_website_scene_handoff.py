@@ -45,6 +45,35 @@ def atlas_ready(tmp_path):
             "source_pose_digest": "sha256:" + "1" * 64, "background_pose_digest": "sha256:" + "2" * 64}
 
 
+def room_recorder(monkeypatch) -> list:
+    """Each call the handoff makes to ``write_room_package``, for tests whose fixture collider is not a real room
+    (the real room package: ``tests/test_website_scene_handoff_navigation``)."""
+    calls: list = []
+    monkeypatch.setattr(handoff, "write_room_package", lambda **kw: calls.append(kw) or {
+        "inputs_digest": "sha256:" + "9" * 64, "task_kind": "not_defined_by_blueprint",
+        "task_profile": kw["task_profile"] or "none", "success_rule_defined": False, "success_rule_assumed": False})
+    return calls
+
+
+def install_family_runtimes(tmp_path, monkeypatch) -> None:
+    """A host whose runtime catalog registers every task family: a family job compiles its own route as before."""
+    from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+    from blueprint_pipeline.task_family_scoring import FAMILY_ALIASES
+    from tests.test_website_early_task_holds import _catalog
+    root = tmp_path / "runtime-catalog"
+    root.mkdir(exist_ok=True)
+    monkeypatch.setenv(CATALOG_PATH_ENV, str(_catalog(root, sorted(FAMILY_ALIASES))))
+
+
+def retained_hold(context, gap) -> dict:
+    """A hold an earlier release wrote at the handoff (as ``retain_gap`` wrote it), which still reads as held."""
+    value = {"schema_version": "website_scene_handoff.v1", "status": "needs_input", "blockers": [gap["code"]],
+             "scene_id": context["scene_id"], "capture_id": context["capture_id"], "simulator_ready": False,
+             "visual_reconstruction_ready": True, "native_task_preparation_gap": gap}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    return value
+
+
 @pytest.fixture
 def ready_atlas(tmp_path, monkeypatch):
     ready = atlas_ready(tmp_path)
@@ -54,7 +83,7 @@ def ready_atlas(tmp_path, monkeypatch):
     return ready
 
 
-def test_novel_family_retains_the_scene_without_masks_authoring_or_a_substitute_task(
+def test_novel_family_ships_the_room_package_without_masks_authoring_or_a_substitute_task(
         tmp_path, monkeypatch, ready_atlas):
     kwargs = inputs(tmp_path)
     context = kwargs["descriptor"]["metadata"]["site_task_context"]
@@ -69,13 +98,13 @@ def test_novel_family_retains_the_scene_without_masks_authoring_or_a_substitute_
     monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", unexpected)
     monkeypatch.setattr(handoff, "compile_website_scene_preparation", unexpected)
     monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", unexpected)
+    packaged = room_recorder(monkeypatch)
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert result["status"] == "needs_input"
-    assert result["blockers"] == ["website_native_task_profile_preparation_required"]
-    gap = result["native_task_preparation_gap"]
-    assert gap["job_disposition"] == "held_for_preparation"
-    assert gap["task_family"] == "unimplemented_task_family" and gap["description"] == "Fold the towels"
-    assert gap["task_context_digest"] == context["context_digest"]
+    # Not held since 2026-11-16 (any job is accepted): the room package, with no rule of Blueprint's.
+    assert (result["status"], result["blockers"], result["job_disposition"]) == ("room_package_written", [], "accepted")
+    [call] = packaged
+    assert call["task_profile"] is None and call["task_masks"] is None and call["task_context"] == context
+    assert result["room_package"]["success_rule_defined"] is False and "native_task_preparation_gap" not in result
     assert result["visual_reconstruction_ready"] is True and result["simulator_ready"] is False
     assert result["provider_mutation_performed"] is False
     assert "runtime_inputs" not in result and "website_intake_outbox" not in result
@@ -124,11 +153,15 @@ def test_synthetic_subject_profile_ignores_its_supports_mechanism(tmp_path, monk
 
     monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", coverage)
     monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", lambda **_: pytest.fail("No native intake was prepared"))
+    packaged = room_recorder(monkeypatch)
     result = handoff.prepare_website_scene_handoff(**kwargs)
     if family == "articulated_open_close":
-        assert result["blockers"] == ["website_task_profile_mechanism_mismatch"] and not calls
-        assert result["native_task_preparation_gap"]["inferred_profile_id"] == "rigid_pick_place"
-        assert holds_native_task_preparation(result, context)
+        # Not held since 2026-11-16: the room package, flagged with the mismatch.
+        assert result["status"] == "room_package_written" and not calls
+        assert [call["flags"] for call in packaged] == [[handoff.MISMATCH]]
+        gap = handoff.native_task_preparation_gap(context, inferred_profile_id="rigid_pick_place")
+        assert gap["inferred_profile_id"] == "rigid_pick_place"
+        assert holds_native_task_preparation(retained_hold(context, gap), context)
     else:
         assert result["blockers"] == ["coverage_pending"] and calls == ["coverage"]
         assert "native_task_preparation_gap" not in result
@@ -136,8 +169,8 @@ def test_synthetic_subject_profile_ignores_its_supports_mechanism(tmp_path, monk
 
 
 @pytest.mark.parametrize("family,mechanism", [("articulated_open_close", ""), ("rigid_pick_and_place", "prismatic")])
-def test_mechanism_mismatch_is_held_before_coverage_and_native_preparation(tmp_path, monkeypatch, ready_atlas,
-                                                                        family, mechanism):
+def test_mechanism_mismatch_ships_the_room_before_coverage_and_native_preparation(tmp_path, monkeypatch, ready_atlas,
+                                                                              family, mechanism):
     from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
     kwargs = inputs(tmp_path)
     context = kwargs["descriptor"]["metadata"]["site_task_context"]
@@ -153,11 +186,15 @@ def test_mechanism_mismatch_is_held_before_coverage_and_native_preparation(tmp_p
     monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", unexpected)
     monkeypatch.setattr(handoff, "compile_website_scene_preparation", unexpected)
     monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", unexpected)
+    packaged = room_recorder(monkeypatch)
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert result["blockers"] == ["website_task_profile_mechanism_mismatch"]
-    assert holds_native_task_preparation(result, context)
+    assert (result["status"], result["blockers"]) == ("room_package_written", [])
+    assert [(call["task_profile"], call["flags"]) for call in packaged] == [(family, [handoff.MISMATCH])]
     assert "runtime_inputs" not in result and "website_intake_outbox" not in result
     assert "provider_mutation_performed" not in result
+    inferred = "rigid_pick_place" if family == "articulated_open_close" else "articulated_open_close"
+    gap = handoff.native_task_preparation_gap(context, inferred_profile_id=inferred)
+    assert holds_native_task_preparation(retained_hold(context, gap), context)  # a retained hold still reads
 
 
 @pytest.mark.parametrize("family,mechanism", [("rigid_pick_and_place", ""), ("articulated_open_close", "prismatic")])
@@ -209,12 +246,13 @@ def test_a_later_real_compiler_mismatch_is_retained_without_a_native_intake(
     monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", revised_coverage)
     monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", lambda **kw: kw["task_masks"])
     monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", lambda **_: pytest.fail("A held compiler result has no native intake"))
+    packaged = room_recorder(monkeypatch)
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert result["blockers"] == ["website_task_profile_mechanism_mismatch"]
+    assert result["status"] == "room_package_written"
+    assert [call["flags"] for call in packaged] == [[handoff.MISMATCH]]
     preparation = json.loads((tmp_path / "pipeline/website_scene_preparation/preparation.json").read_text())
     assert preparation["intake_request"] is None
-    assert result["native_task_preparation_gap"] == preparation["native_task_preparation_gap"]
-    assert holds_native_task_preparation(result, context)
+    assert holds_native_task_preparation(retained_hold(context, preparation["native_task_preparation_gap"]), context)
     assert "runtime_inputs" not in result and "provider_mutation_performed" not in result
 
 
@@ -475,3 +513,25 @@ def test_records_a_base_scene_from_another_atlas_result_named_are_kept_once_befo
     handoff.retain_superseded_records(capture_root=tmp_path, root=root, atlas_result_digest=rebuilt)
     assert (archive / "handoff.json").read_bytes() == old[preparation / "handoff.json"]
     assert all(path.is_file() for path in old)
+
+
+@pytest.mark.parametrize("pending", [True, False])
+def test_an_unresolved_reading_waits_only_while_a_clarification_can_still_resolve_it(tmp_path, monkeypatch,
+                                                                                    ready_atlas, pending):
+    """The default (observational) handoff buys no clarification: a reading one could still resolve keeps its
+    hold for the capture stage's run, which buys it; one nothing can resolve ships the room package."""
+    kwargs = inputs(tmp_path)
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    context.update(task_family="general_task", description="Restock the shelves.")
+    ready_atlas["source_geometry"]["binding"] = {"source_video_digest": "sha256:" + "5" * 64}
+    gap = {"code": "website_task_operation_coverage_unresolved", "task_family": "general_task"}
+    monkeypatch.setattr("blueprint_pipeline.website_task_semantics.load_task_semantics", lambda **_: {"reading": 1})
+    monkeypatch.setattr(handoff, "native_task_preparation_gap", lambda *_, **__: gap)
+    monkeypatch.setattr("blueprint_pipeline.website_operation_coverage.clarification_request",
+                        lambda *_, **__: {"scope": "operation_coverage"} if pending else None)
+    packaged = room_recorder(monkeypatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    if pending:
+        assert (result["status"], result["blockers"], packaged) == ("needs_input", [gap["code"]], [])
+    else:
+        assert result["status"] == "room_package_written" and len(packaged) == 1

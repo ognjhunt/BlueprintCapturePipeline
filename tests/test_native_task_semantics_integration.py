@@ -197,6 +197,9 @@ def test_resolved_general_task_mechanism_gap_remains_a_verified_hold(tmp_path):
 
 @pytest.mark.parametrize("family", ["cloth_folding", "multi_step"])
 def test_derived_registered_family_crosses_handoff_and_compiler_to_specific_preparation(tmp_path, monkeypatch, family):
+    # The family's runtime is installed: its own route, as before (none installed ships the room package).
+    from tests.test_website_scene_handoff import install_family_runtimes
+    install_family_runtimes(tmp_path, monkeypatch)
     from blueprint_pipeline import website_scene_handoff as handoff
     from blueprint_pipeline.website_task_context_contracts import retains_task_family_preparation
     from tests.test_task_semantics_catalog_composition import _family_arguments

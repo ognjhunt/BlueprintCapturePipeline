@@ -138,6 +138,18 @@ SUPPORT_REGION_NOT_HELD = ("At part of the destination area the surface in the c
                            "higher or lower than the rule allows. Blueprint did not test this.")
 SUPPORT_NOT_HELD = ("Where the object starts or is placed, the surface in the collision file does not hold it as "
                     "the success rule expects. Blueprint did not test this.")
+#: A room package (``website_scene_handoff.write_room_package``): a job with no object of its own in the package. Its
+#: README says what the room is, whether the rule is Blueprint's assumption or there is none, and where the job's
+#: objects are. The site's own words are not in it: companies read them on the job's page, where the WebApp removes
+#: the site's name, address and contact details first (``companyJobPage.ts``), which the Pipeline cannot repeat.
+ROOM_NOT_RUN = "The room is as reconstructed from the video; Blueprint ran no robot, policy or simulator in it."
+GOAL_ESTIMATED = ("The goal region was estimated from the video; its radius and how long the robot must stay in it "
+                  "are assumed, not stated by the site.")
+NO_RULE = ("This package includes no success rule from Blueprint for this job; the job as the site described it is "
+           "on the job's page.")
+OBJECTS_TAKEN_OUT = "{count} object(s) the job involves were taken out of the room scan and are not in this package."
+OBJECTS_IN_SCAN = "The job's objects are part of the room scan; they are not separate files."
+ROOM_RECORD_SCHEMA = "blueprint.room_package_inputs.v1"
 #: The stage-4 record a rigid website object passes (``task_object_artisan_candidate``, ``_usd_findings``).
 RIGID_STATIC_SCHEMA = "task_evaluation_rigid_replacement_static_qualification.v1"
 _USD = frozenset({".usd", ".usda", ".usdc", ".usdz"})
@@ -234,7 +246,13 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
         source = _half(Path(status["team_scene_inputs_path"]).parent, status, estimates=object_estimates(root))
         if source is not None:
             return source
-    return None
+    # Else the room package the scene handoff wrote (``website_scene_handoff.write_room_package``), when sealed.
+    handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
+    path = (handoff.get("room_package") or {}).get("path")
+    record = (_inside(root, Path(path)) if isinstance(path, str) and handoff.get("status") == "room_package_written"
+              and handoff.get("digest") == canonical_digest(handoff, digest_field="digest") else None)
+    source = _half(record.parent, {"team_scene_inputs_path": str(record)}) if record is not None else None
+    return source if source is not None and source.get("room") is not None else None
 
 
 def object_estimates(capture_root: Path) -> Mapping[str, Any] | None:
@@ -276,7 +294,16 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
             rows = placements(plan)
             axis = up_axis(plan, packet=packet)
             rule = neutral_rule(_with_sealed_rule(plan, scene, status), estimates=estimates, packet=packet)
-            if rule is None:
+            room = source.get("room")
+            if room is not None and (
+                    name != SCENE_PACKAGE[0] or room["plan_digest"] != plan.get("plan_digest")
+                    or (rule is not None) != room["success_rule_defined"]
+                    or any(isinstance(row, Mapping) and row.get("semantic_role") == "task_object"
+                           for row in plan.get("objects") or [])):
+                # Only a real room package ships with no rule and no /World/Object: its own plan (the one its
+                # sealed record names), no object row, and a rule exactly when its record says it has one.
+                raise StageRefused("scene_stage_room_record_mismatch")
+            if rule is None and room is None:
                 raise StageRefused("scene_stage_success_rule_missing")
             for placement, raw in zip(rows, plan["objects"], strict=True):
                 role = placement["role"]
@@ -337,10 +364,17 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
     absent = record.get("robot_station_absent") if isinstance(record.get("robot_station_absent"), Mapping) else {}
     support = record.get("task_support_pad") if isinstance(record.get("task_support_pad"), Mapping) else {}
     reasons = [str(reason) for reason in support.get("reasons") or []] if support.get("status") == "held" else []
+    objects = record.get("job_objects") if isinstance(record.get("job_objects"), Mapping) else {}
+    room = ({"plan_digest": record.get("plan_digest"), "success_rule_defined": record.get("success_rule_defined") is True,
+             "success_rule_assumed": record.get("success_rule_assumed") is True,
+             **({"objects": int(objects["count"]), "objects_in_scan": objects.get("in_package") == "part_of_room_scan"}
+                if isinstance(objects.get("count"), int) and objects["count"] > 0 else {})}
+            if record.get("schema_version") == ROOM_RECORD_SCHEMA else None)
     return {**({"removed_items": len(items)} if isinstance(items, list) and items else {}),
             **({"appearance_quality": "not_passed"} if absent.get("appearance_quality") == "not_passed" else {}),
             **({"support_not_held": "region" if set(reasons) == {"rigid_support_goal_region_rest_outside_success_window"}
-                else "start_or_goal"} if support.get("status") == "held" else {})}
+                else "start_or_goal"} if support.get("status") == "held" else {}),
+            **({"room": room} if room is not None else {})}
 
 
 def _stage_documents(packet: Path, plan: Mapping[str, Any]) -> tuple[Any, Any]:
@@ -396,7 +430,8 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         "plan_digest": source.get("plan_digest") if source.get("refusal") else None,
         # Only a wording that differs from the packages before it names a new revision.
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
-        **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held") if source.get(key)}})
+        **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room")
+           if source.get(key)}})
 
 
 # --- what must never leave --------------------------------------------------------------------------------------
@@ -719,9 +754,14 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
             units: Mapping[str, tuple[str | None, float | None]],
             offsets: Mapping[str, Any] | None = None) -> str:
     """Only what is true of the package in front of it."""
-    lines = ["Simulation of one job", "", "What this is", "",
-             "A simulation of the site a deployment company was asked about, with the job's object in it,",
-             "and the rule for what counts as the job done. Test in your own tools.", "",
+    room = source.get("room")
+    what = (["A simulation of the site a deployment company was asked about, with the job's object in it,",
+             "and the rule for what counts as the job done. Test in your own tools."] if room is None else
+            ["A simulation of the site a deployment company was asked about, with the job's goal region and an",
+             "assumed rule for reaching it. Test in your own tools."] if room["success_rule_defined"] else
+            ["A simulation of the site a deployment company was asked about. The job, as the site described it,",
+             "is on the job's page. Test in your own tools."])
+    lines = ["Simulation of one job", "", "What this is", "", *what, "",
              "How the pieces fit", "",
              "- scene.usda: open this one. It places every part below at its position, in /World."]
     hidden = []
@@ -737,8 +777,14 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     if any(name.lower().endswith((".png", ".jpg", ".jpeg")) for name in names):
         lines.append("- Textures were rewritten without their colour profile and EXIF data, so a photo that relied on "
                      "an EXIF rotation shows unrotated.")
-    lines += ["- success_rule.json: what counts as done, as numbers, with the run's timing and the object's",
-              "  start position and size where known.", "- README.txt: this file.", ""]
+    if room is None:
+        lines += ["- success_rule.json: what counts as done, as numbers, with the run's timing and the object's",
+                  "  start position and size where known."]
+    elif room["success_rule_defined"]:
+        lines += ["- success_rule.json: the goal region (surface_target: radius_m around surface_position_world_m,",
+                  "  the middle of the goal's footprint at the lowest point of it the video shows) and how long",
+                  "  the robot must stay within it (settling.stable_seconds)."]
+    lines += ["- README.txt: this file.", ""]
     lines += ["Each part's file is referenced on a child prim, /World/<part>/Asset, under the part's position and",
               "orientation in the simulation, which are on /World/<part>. The file keeps its own root transform."]
     for prim, note in sorted((offsets or {}).items()):
@@ -769,7 +815,10 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([FURNITURE_REMOVED.format(count=source["removed_items"])] if source.get("removed_items") else []),
              *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
-               if source.get("support_not_held") else [])]
+               if source.get("support_not_held") else []),
+             *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,
+                *([OBJECTS_IN_SCAN if room["objects_in_scan"] else OBJECTS_TAKEN_OUT.format(count=room["objects"])]
+                  if room.get("objects") else [])] if room is not None else [])]
     lines += textwrap.wrap(" ".join(notes), width=100) if notes else []
     if (source.get("rule") or {}).get("object_estimates_from_video"):
         lines.append("The object's mass and friction in success_rule.json are ranges estimated from the video.")
@@ -826,16 +875,17 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
             write_stage(staging / "scene.usda", rows, axis=source["axis"])
         except StageRefused as error:
             raise PackageRefused("website_company_simulation_" + str(error).removeprefix("scene_stage_")) from None
-        rule = dict(source["rule"])
-        if offsets:
-            rule["part_notes"] = {f"/World/{prim}": {"own_root_offset": offset}
-                                  for prim, offset in sorted(offsets.items())}
-        (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
-                                                   encoding="utf-8")
+        if source["rule"] is not None:
+            rule = dict(source["rule"])
+            if offsets:
+                rule["part_notes"] = {f"/World/{prim}": {"own_root_offset": offset}
+                                      for prim, offset in sorted(offsets.items())}
+            (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
+                                                       encoding="utf-8")
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
         (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units, offsets), encoding="utf-8")
         on_time()
-        _resolves_inside(staging)
+        _resolves_inside(staging, room=source.get("room") is not None)
         findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time,
                              words_except=("README.txt", "scene.usda"), closed=True)
         on_time()
@@ -861,8 +911,9 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
             "files": names, "max_bytes": int(max_bytes)}
 
 
-def _resolves_inside(staging: Path) -> None:
-    """``scene.usda`` opens, and every layer and file it uses resolves inside the package."""
+def _resolves_inside(staging: Path, *, room: bool = False) -> None:
+    """``scene.usda`` opens, and every layer and file it uses resolves inside the package; it places the job's
+    object, unless it is a room package (no object of its own)."""
     from pxr import Usd, UsdUtils
     scene = staging / "scene.usda"
     try:
@@ -870,7 +921,7 @@ def _resolves_inside(staging: Path) -> None:
         stage = Usd.Stage.Open(str(scene), Usd.Stage.LoadNone)
     except Exception:  # noqa: BLE001 - any failure is a refusal
         raise PackageRefused("website_company_simulation_scene_unreadable", "scene.usda") from None
-    if stage is None or unresolved or not stage.GetPrimAtPath("/World/Object").IsValid():
+    if stage is None or unresolved or not (room or stage.GetPrimAtPath("/World/Object").IsValid()):
         raise PackageRefused("website_company_simulation_reference_missing", "scene.usda")
     for item in [*(layer.realPath for layer in layers), *assets]:
         path = Path(str(item).split("[", 1)[0])

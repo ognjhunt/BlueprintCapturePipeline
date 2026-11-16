@@ -5,18 +5,16 @@
 #   src/blueprint_pipeline/website_scene_handoff.py
 #   src/blueprint_pipeline/website_task_context_contracts.py
 #   src/blueprint_pipeline/task_family_native_runtime.py
-"""A website task Blueprint cannot evaluate holds right after its Atlas review; nothing is paid.
+"""No website task is held right after its Atlas review any more (owner direction 2026-11-16).
 
-No native profile (close a door) or no installed runtime (wipe a counter) used to buy
-the full Atlas scene and only then hold at the handoff. The review has already read the
-whole job, so the hold now comes before any World Labs stage, the capture stage keeps it
-without its clean-plate analysis, and the hold resumes once the capability ships. A job
-Blueprint can evaluate (capture-447's rigid same-table move) is unchanged. Synthetic only.
+No native profile (close a door) or no installed runtime (wipe a counter) used to hold here,
+before any World Labs stage. Any job is now accepted: it buys its scene, and the handoff ships
+one Blueprint has no profile or runtime for as the room package. A handoff hold an earlier
+release wrote still reads as held. Synthetic only.
 """
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,12 +26,7 @@ from blueprint_pipeline import website_early_task_hold as early
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
-from blueprint_pipeline.website_paid_work_stop import (
-    TaskPreparationHeld,
-    refuse_paid_work_when_held,
-)
 from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
-from tests.test_website_preparation_status import prepared_source  # noqa: F401  (fixture, by name)
 
 TRAY = "Pick up the wooden tray from the dining table and place it at the other end of the same table."
 DOOR = "Close the cabinet door under the sink."
@@ -117,22 +110,12 @@ def _held(job, kind):
 
 
 @pytest.mark.parametrize("kind", sorted(CANNOT_EVALUATE))
-def test_a_task_we_cannot_evaluate_holds_after_the_review_before_any_scene_stage(job, kind):
-    context, result, code = _held(job, kind)
-    assert job.bought == []  # no pose, generated view, splat, mesh or background automation
-    assert result["status"] == "needs_input" and result["stage"] == early.STAGE and result["blockers"] == [code]
-    assert result["splat_available"] is False and result["mesh_available"] is False
-    record = json.loads((job.root / early.HOLD_FILE).read_text())
-    assert record["digest"] == canonical_digest(record, digest_field="digest") == result["task_preparation_hold"]["digest"]
-    assert record["hold_point"] == "after_atlas_review" and record["scene_purchased"] is False
-    gap = record["gap"]
-    assert gap["code"] == code and gap["job_disposition"] == "held_for_preparation"
-    assert gap["task_context_digest"] == context["context_digest"] and "task_semantics" in gap
-    if code == early.FAMILY_RUNTIME_GAP:
-        assert gap["task_family_profile"] == "wiping" and gap["required_task_families"] == ["wiping"]
-        assert gap["runtime_catalog"] == {"configured": False, "catalog_digest": None, "task_families": []}
-    # Nothing to clean up or archive: no Atlas asset was ever made for it.
-    assert not any((job.root / name).exists() for name in ("automation", "generated", "splat", "mesh", "result.json"))
+def test_no_task_is_held_after_its_review_any_more_it_buys_its_scene(job, kind):
+    """Owner direction 2026-11-16: any job is accepted; the handoff ships what Blueprint has no profile for as the
+    room package (``tests/test_website_scene_handoff_navigation``), so nothing is held before the scene."""
+    context, result, _code = _held(job, kind)
+    assert job.bought == ["automation"] and result == {"status": "processing", "stage": "automation"}
+    assert not (job.root / "task_preparation_hold.json").exists()
 
 
 def _catalog(tmp_path, families):
@@ -161,13 +144,13 @@ def test_a_task_we_can_evaluate_or_cannot_yet_decide_buys_its_scene_as_before(jo
         context = job.start("general_task", WIPE, _semantics("wiping", [("wiping", "Wipe the kitchen counter")]))
     result = job.run(context)
     assert job.bought == ["automation"] and result == {"status": "processing", "stage": "automation"}
-    assert not (job.root / early.HOLD_FILE).exists()
+    assert not (job.root / "task_preparation_hold.json").exists()
 
 
 def test_a_job_that_already_started_its_scene_keeps_the_late_hold(job):
     (job.root / "pose" / "atlas_pose").mkdir(parents=True)
     _, result, _ = _held(job, "door")
-    assert job.bought == ["automation"] and not (job.root / early.HOLD_FILE).exists()
+    assert job.bought == ["automation"] and not (job.root / "task_preparation_hold.json").exists()
 
 
 def test_an_unreadable_runtime_catalog_holds_nothing(job, tmp_path, monkeypatch):
@@ -179,101 +162,6 @@ def test_an_unreadable_runtime_catalog_holds_nothing(job, tmp_path, monkeypatch)
     assert job.bought == ["automation"]
 
 
-def _preview_job(job, result):
-    from blueprint_pipeline.website_atlas_preview import advance_preparation_step
-    value = {"schema_version": "website_atlas_preview_job.v1", "request_id": "synthetic-job",
-             "scene_id": "site-synthetic-job", "capture_id": "walkthrough-synthetic-job", "state": "processing",
-             "reason": None, "stage": "queued", "revision": 1, "revised_at_epoch": 0, "updated_at_epoch": 0,
-             "transient_failures": 0, "enqueued_at_epoch": 0, "next_attempt_at_epoch": 0, "retry_at_epoch": None}
-    stepped = advance_preparation_step(value, job_dir=job.root, source_video=job.video, task_context={},
-                                       checkpoint=lambda *_: None, now=lambda: 100, run_step=lambda: result)
-    write_json(job.root / "preview_job.json", stepped)
-    (job.root / "preview.lock").touch()
-    return stepped
-
-
-@pytest.mark.parametrize("kind", sorted(CANNOT_EVALUATE))
-def test_the_preview_and_capture_stages_keep_the_hold_and_a_retry_resumes_it(job, monkeypatch, kind):
-    from blueprint_pipeline.website_reconstruction_resume import _final
-    context, result, code = _held(job, kind)
-    preview = _preview_job(job, result)
-    # Terminal, so the capture's waiting handoff replays; not failed, and no archive.
-    assert (preview["state"], preview["reason"], preview["stage"]) == ("needs_input", code, early.STAGE)
-    assert _final(preview, job.capture) and preview.get("archive") is None
-    held = early.retain_task_preparation_hold(capture_root=job.capture, task_context=context, source_video=job.video)
-    assert held["status"] == "needs_input" and held["blockers"] == [code]
-    assert held["visual_reconstruction_ready"] is False and held["provider_mutation_performed"] is False
-    assert held["task_preparation_hold"]["hold_point"] == "after_atlas_review"
-    assert holds_native_task_preparation(held, context)
-    stored = json.loads((job.capture / "pipeline/website_scene_preparation/handoff.json").read_text())
-    assert stored == held
-
-    def tampered(change):
-        value = deepcopy(held)
-        change(value)
-        value["digest"] = canonical_digest(value, digest_field="digest")
-        return holds_native_task_preparation(value, context)
-
-    assert not tampered(lambda value: value.pop("task_preparation_hold"))
-    assert not tampered(lambda value: value["task_preparation_hold"].update(hold_point="after_atlas_scene"))
-    if code == early.FAMILY_RUNTIME_GAP:
-        # Never decided once a scene exists: the late form of this code is refused.
-        assert not tampered(lambda value: value.update(visual_reconstruction_ready=True))
-        assert not tampered(lambda value: value["native_task_preparation_gap"].update(task_family_profile="pouring"))
-        assert not tampered(lambda value: value["native_task_preparation_gap"]["runtime_catalog"].update(
-            task_families=["wiping"]))
-    else:
-        assert not tampered(lambda value: value["native_task_preparation_gap"].update(unsupported_operations=[]))
-    # A retry reopens the job: the capture stage waits for it rather than keeping a stale hold.
-    from blueprint_pipeline.website_atlas_preview import retry_failed_job
-    reopened = retry_failed_job(job.root / "preview_job.json", now=lambda: 200)
-    assert reopened["state"] == "processing"
-    assert early.retain_task_preparation_hold(capture_root=job.capture, task_context=context) is None
-
-
-def test_once_the_runtime_ships_the_retried_job_buys_its_scene_without_another_review(job, tmp_path, monkeypatch):
-    context, result, _ = _held(job, "wipe")
-    assert job.bought == []
-    monkeypatch.setenv(CATALOG_PATH_ENV, str(_catalog(tmp_path, ["wiping"])))
-    assert job.run(context) == {"status": "processing", "stage": "automation"}
-    # run_sponsored_website_atlas_plan was never called: the retained review was reused.
-    assert job.bought == ["automation"]
-
-
-def test_the_capture_stage_holds_before_its_clean_plate_analysis(job):
-    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
-    context, result, code = _held(job, "door")
-    _preview_job(job, result)
-    descriptor = SimpleNamespace(metadata={"site_task_context": context}, requested_outputs=["preview_simulation"])
-    pipeline_dir = job.capture / "pipeline"
-    value = run_website_capture_preparation(
-        descriptor=descriptor, capture_root=job.capture, pipeline_dir=pipeline_dir, source_video=job.video,
-        derived_scene_generation_allowed=True, gates=[],
-        prepare_media=lambda **_: pytest.fail("no clean-plate analysis for a held task"),
-        check_privacy=lambda **_: pytest.fail("nothing is processed"), make_gate=lambda *_: None)
-    assert value["status"] == "completed" and value["native_execution_complete"] is False
-    assert value["website_scene_preparation"]["blockers"] == [code]
-    assert holds_native_task_preparation(value["website_scene_preparation"], context)
-    manifest = json.loads((pipeline_dir / "provider_run_manifest.json").read_text())
-    assert manifest["status"] == "not_requested"
-
-
-def test_the_handoff_keeps_a_hold_that_arrived_while_the_clean_plate_ran(job, monkeypatch):
-    from blueprint_pipeline import website_scene_handoff as handoff
-    context, result, code = _held(job, "door")
-    _preview_job(job, result)
-    removal = job.capture / "pipeline/removal.json"
-    write_json(removal, {"entries": []})
-    monkeypatch.setattr(handoff, "native_task_preparation_gap", lambda *_, **__: pytest.fail("no scene to read"))
-    value = handoff.prepare_website_scene_handoff(
-        descriptor={"capture_id": context["capture_id"], "scene_id": context["scene_id"],
-                    "metadata": {"site_task_context": context}},
-        clean_plate={"privacy_verified": True, "status": "objects_removed", "task_masks": {},
-                     "removal_manifest_path": str(removal), "input_video_path": str(job.video)},
-        capture_root=job.capture, now=1800000000)
-    assert value["blockers"] == [code] and holds_native_task_preparation(value, context)
-
-
 def test_a_scene_bought_before_this_change_keeps_its_late_hold_readable():
     """The late form (visual reconstruction ready, no early record) is unchanged."""
     context = _context("general_task", DOOR)
@@ -282,7 +170,8 @@ def test_a_scene_bought_before_this_change_keeps_its_late_hold_readable():
     semantics = task_semantics_from_receipt(receipt=_receipt(context, source, semantics=_semantics(
         "door_closing", [("door_closing", "Close the cabinet door")])), task_context=context,
         source_video_digest=source)
-    gap = early.early_task_preparation_gap(context, task_semantics=semantics, source_video_digest=source)
+    from blueprint_pipeline.website_task_preparation import native_task_preparation_gap
+    gap = native_task_preparation_gap(context, task_semantics=semantics, source_video_digest=source)
     value = {"schema_version": "website_scene_handoff.v1", "status": "needs_input", "blockers": [gap["code"]],
              "scene_id": context["scene_id"], "capture_id": context["capture_id"], "simulator_ready": False,
              "visual_reconstruction_ready": True, "native_task_preparation_gap": gap}
@@ -304,211 +193,3 @@ def test_installed_runtimes_list_the_catalogs_families(tmp_path, monkeypatch):
     monkeypatch.setenv(CATALOG_PATH_ENV, "relative/catalog.json")
     assert installed_task_family_runtimes() is None
     assert Path(path).is_file()
-
-
-@pytest.mark.parametrize("schema", ["website_preparation_status.v1", "website_preparation_status.v3"])
-def test_the_status_reader_reports_an_early_hold_as_awaiting_inputs(request, schema):
-    from blueprint_pipeline import pubsub_handoff_listener as listener
-    from blueprint_pipeline.website_preparation_status import read_preparation_status
-    from tests import test_website_preparation_status as status_tests
-    source = request.getfixturevalue("prepared_source")
-    root, owner, context, selected, ledger, _ = source
-    context["task_family"] = "unimplemented_task_family"  # a declared family with no native profile
-    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
-    selected["task_context_digest"] = context["context_digest"]
-    write_json(root / "pipeline/website_task_context.json", context)
-    gap = early.early_task_preparation_gap(context, task_semantics=None, source_video_digest=None)
-    assert gap["code"] == early.PROFILE_GAP
-    record = {"schema_version": early.SCHEMA, "hold_point": early.HOLD_POINT, "capture_id": owner["capture_id"],
-              "scene_id": owner["scene_id"], "task_context_digest": context["context_digest"],
-              "source_video_digest": "sha256:" + "a" * 64, "gap": gap, "scene_purchased": False}
-    record["digest"] = canonical_digest(record, digest_field="digest")
-    write_json(root / "pipeline/atlas" / early.HOLD_FILE, record)
-    write_json(root / "pipeline/atlas/preview_job.json", {"schema_version": "website_atlas_preview_job.v1",
-               "state": "needs_input", "stage": early.STAGE, "reason": gap["code"]})
-    handoff = early.retain_task_preparation_hold(capture_root=root, task_context=context)
-    assert handoff is not None and handoff["visual_reconstruction_ready"] is False
-    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
-        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
-                                                     "website_scene_preparation": handoff},
-        owner="synthetic-worker", token=ledger["lease_token"], ledger_update={"status": "completed"})
-    result = read_preparation_status(capture_root=root, selectors=selected, schema_version=schema)
-    assert result["state"] == "awaiting_inputs" and result["code"] == "preparation_inputs_pending"
-    if schema.endswith("v3"):
-        assert result["outcome"] is None  # a preparation hold is not a robot verdict
-    assert status_tests._post(source).json()["state"] == "awaiting_inputs"
-
-
-# --- What the hold cost, and no new upstream spend while it stands (WP-12) ---------------------------
-
-def _row(binding, provider, *, source, context, settled=None, maximum=1.0):
-    return {"allocation_binding_digest": "sha256:" + binding * 64, "provider": provider, "maximum_cost_usd": maximum,
-            "settled_cost_usd": settled, "accounted_cost_usd": maximum if settled is None else settled,
-            "request_count": 1, "status": "held" if settled is None else "settled", "task_context_digest": context,
-            "source_video_digest": source, "atlas_authorization_digest": None,
-            "settlement_digest": None if settled is None else "sha256:" + "e" * 64}
-
-
-def _ledger(rows, *, native):
-    return {"schema_version": "website_native_preparation_accounting.v1" if native
-            else "website_atlas_allowance_accounting.v1",
-            "source_scope": "request_native_preparation_ledger" if native else "request_atlas_allowance",
-            "external_capture_assessment_costs": "not_in_preparation_ledger", "reservations": rows,
-            "request_count": len(rows),
-            "settled_cost_usd": sum(row["accounted_cost_usd"] for row in rows if row["status"] == "settled"),
-            "held_cost_usd": sum(row["accounted_cost_usd"] for row in rows if row["status"] == "held"),
-            "reserved_or_settled_cost_usd": sum(row["accounted_cost_usd"] for row in rows)}
-
-
-def _hold_at(job, monkeypatch, configuration, *, intake=1_000, now=1_600):
-    from blueprint_pipeline import website_task_context as wtc
-    write_json(job.root / "preview_job.json", {"schema_version": "website_atlas_preview_job.v1",
-                                               "enqueued_at_epoch": intake, "state": "processing"})
-    reads = []
-
-    def getter(context, source, *, create=True):
-        reads.append(create)
-        if isinstance(configuration, Exception):
-            raise configuration
-        return configuration
-    monkeypatch.setattr(wtc, "load_atlas_configuration", getter)
-    monkeypatch.setattr(early.time, "time", lambda: now)
-    context, _, _ = _held(job, "door")
-    assert reads == [False]  # the read-only getter: no allowance is created or reserved
-    return context, json.loads((job.root / early.HOLD_FILE).read_text())
-
-
-def test_the_hold_record_carries_its_time_and_the_settled_spend_by_ledger(job, monkeypatch):
-    other = "sha256:" + "9" * 64
-    context = _context("general_task", CANNOT_EVALUATE["door"][0])
-    mine = context["context_digest"]
-    configuration = {
-        "allowance_accounting": _ledger([_row("1", "openai", source=job.source, context=mine, settled=0.42),
-                                         _row("2", "openai", source=other, context=other, settled=0.9)], native=False),
-        "native_preparation_accounting": _ledger([
-            _row("3", "google", source=None, context=mine, settled=0.05),
-            _row("4", "meta", source=job.source, context=mine, maximum=0.64),
-            _row("5", "google", source=other, context=other, settled=0.3)], native=True)}
-    _, record = _hold_at(job, monkeypatch, configuration)
-    assert record["digest"] == canonical_digest(record, digest_field="digest")
-    spend = record["spend_before_hold"]
-    assert (spend["intake_at_epoch"], spend["held_at_epoch"], spend["seconds_since_intake"]) == (1_000, 1_600, 600)
-    assert spend["ledgers"]["atlas_review"] == {"status": "read", "source_scope": "request_atlas_allowance",
-                                                "settled_cost_usd": 0.42, "held_cost_usd": 0, "reservation_count": 1}
-    assert spend["ledgers"]["upstream"] == {"status": "read", "source_scope": "request_native_preparation_ledger",
-                                            "settled_cost_usd": 0.05, "held_cost_usd": 0.64, "reservation_count": 2}
-
-
-@pytest.mark.parametrize("case", ["getter_refused", "upstream_missing"])
-def test_an_unreadable_ledger_is_recorded_as_unknown_never_zero(job, monkeypatch, case):
-    configuration = (ValueError("website_task_context_unreachable") if case == "getter_refused"
-                     else {"allowance_accounting": _ledger([], native=False)})
-    _, record = _hold_at(job, monkeypatch, configuration)
-    ledgers = record["spend_before_hold"]["ledgers"]
-    unknown = {"settled_cost_usd": None, "held_cost_usd": None, "reservation_count": None}
-    assert ledgers["upstream"]["status"] == "unreadable" and unknown.items() <= ledgers["upstream"].items()
-    if case == "getter_refused":
-        assert ledgers["atlas_review"]["status"] == "unreadable" and ledgers["atlas_review"]["reason"] == "ValueError"
-    else:
-        assert ledgers["atlas_review"]["settled_cost_usd"] == 0 and ledgers["atlas_review"]["status"] == "read"
-
-
-def test_an_unknown_intake_time_stays_unknown(job, monkeypatch):
-    _, record = _hold_at(job, monkeypatch, {}, intake="later")
-    assert record["spend_before_hold"]["seconds_since_intake"] is None
-    assert record["spend_before_hold"]["intake_at_epoch"] is None
-
-
-def test_a_held_job_reserves_no_new_upstream_spend_and_a_resumed_job_does(job, monkeypatch):
-    from blueprint_pipeline import paid_resource_admission as admission
-    from blueprint_pipeline import website_task_context as wtc
-    from blueprint_pipeline.website_atlas_preview import retry_failed_job
-    context, result, _ = _held(job, "door")
-    _preview_job(job, result)
-
-    class Reached(Exception):
-        pass
-
-    def budget(**_):
-        raise Reached
-    monkeypatch.setattr(admission, "require_paid_resource_budget", budget)
-
-    def reserve():
-        wtc.reserve_website_preparation_spend(task_context=context, binding_digest="sha256:" + "c" * 64,
-            maximum_cost_usd=0.1, request_count=1, resource_class="evaluator_api", provider="google")
-    with (early.stop_paid_work_when_held(capture_root=job.capture, task_context=context),
-          pytest.raises(TaskPreparationHeld)):
-        reserve()  # refused before the budget check, the WebApp hold or any provider
-    with pytest.raises(Reached):
-        reserve()  # outside a guarded lane, nothing changes
-    retry_failed_job(job.root / "preview_job.json", now=lambda: 200)
-    with (early.stop_paid_work_when_held(capture_root=job.capture, task_context=context),
-          pytest.raises(Reached)):
-        reserve()  # resumed: the stop was never a marker
-
-
-def _clean_plate(tmp_path, monkeypatch, *, held_after):
-    """A website clean plate whose two paid calls record a charge once past the hold check."""
-    from blueprint_pipeline import website_atlas_task_selection as selection
-    from blueprint_pipeline.clean_plate_removal_analysis_gemini import build_removal_plan
-    from tests.test_clean_plate_stage import _make_capture
-    capture = _make_capture(tmp_path)
-    state, charged = {"held": held_after == 0}, []
-
-    def paid(kind):
-        refuse_paid_work_when_held()  # what reserve_website_preparation_spend does first
-        charged.append(kind)
-        state["held"] = state["held"] or len(charged) >= held_after
-
-    monkeypatch.setattr(early, "_standing_hold", lambda **_: ({}, {}) if state["held"] else None)
-    monkeypatch.setattr(selection, "load_retained_uncertain_analysis", lambda **_: None)
-    monkeypatch.setattr(selection, "resolve_retained_target_selection", lambda *, plan, **_: plan)
-    plan = build_removal_plan(targets=[{
-        "target_id": "box", "semantic_label": "blue box", "target_class": "movable_object",
-        "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
-        "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
-    }], status="completed", model="test", processing="agentic")
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.analyze_removal_targets",
-                        lambda **_: paid("gemini_analysis") or plan)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames",
-                        lambda **_: {"status": "estimated", "frames": [{"frame_id": "f0"}]})
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks",
-                        lambda **_: paid("sam_masks") or {"targets": []})
-    from blueprint_pipeline.clean_plate_stage import run_clean_plate_stage
-    result = run_clean_plate_stage(capture_root=capture, website_source_video=capture / "raw/walkthrough.mp4",
-                                   task_context=_context("general_task", DOOR),
-                                   privacy_processing={"status": "pending_website_review"})
-    return capture, result, charged
-
-
-@pytest.mark.parametrize("held_after", [0, 1])
-def test_a_clean_plate_call_after_the_hold_is_not_made(tmp_path, monkeypatch, held_after):
-    capture, result, charged = _clean_plate(tmp_path, monkeypatch, held_after=held_after)
-    # Held before the analysis: nothing bought. Held while it ran: the analysis finished, no masks.
-    assert charged == ["gemini_analysis"][:held_after]
-    assert result["status"] == result["mode"] == "held_for_task_preparation"
-    assert result["blockers"] == ["website_task_preparation_held"] and result["task_masks"] is None
-    # No stage record is left behind, so a resumed job runs its clean plate again.
-    assert not (capture / "pipeline/clean_plate/clean_plate_stage_manifest.json").exists()
-
-
-def test_a_clean_plate_before_any_hold_buys_as_before(tmp_path, monkeypatch):
-    _, result, charged = _clean_plate(tmp_path, monkeypatch, held_after=99)
-    assert charged == ["gemini_analysis", "sam_masks"]
-    assert result["status"] == "objects_removed" and result["mode"] == "task_masks_ready"
-
-
-def test_a_hold_that_appears_while_the_clean_plate_runs_ends_the_capture_stage_held(job):
-    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
-    context, result, code = _held(job, "door")
-
-    def media(**_):
-        _preview_job(job, result)  # the Atlas lane holds the job while the clean plate runs
-        return {"status": "held_for_task_preparation", "blockers": ["website_task_preparation_held"]}
-    descriptor = SimpleNamespace(metadata={"site_task_context": context}, requested_outputs=["preview_simulation"])
-    value = run_website_capture_preparation(
-        descriptor=descriptor, capture_root=job.capture, pipeline_dir=job.capture / "pipeline",
-        source_video=job.video, derived_scene_generation_allowed=True, gates=[], prepare_media=media,
-        check_privacy=lambda **_: pytest.fail("nothing is processed"), make_gate=lambda *_: None)
-    assert value["status"] == "completed" and value["website_scene_preparation"]["blockers"] == [code]
-    assert holds_native_task_preparation(value["website_scene_preparation"], context)

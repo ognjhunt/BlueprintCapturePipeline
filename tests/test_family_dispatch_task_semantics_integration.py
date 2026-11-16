@@ -21,6 +21,9 @@ from tests.test_website_task_family_packet import family_preparation
 
 @pytest.mark.parametrize("authoring_provider", ["openai", "anthropic"])
 def test_source_bound_general_task_dispatches_unconfirmed_family_under_retained_authority(tmp_path, monkeypatch, authoring_provider):
+    # The family's runtime is installed: its own route, as before (none installed ships the room package).
+    from tests.test_website_scene_handoff import install_family_runtimes
+    install_family_runtimes(tmp_path, monkeypatch)
     from blueprint_pipeline.website_scene_handoff import prepare_website_scene_handoff
 
     args, _old_preparation, _runtime = family_preparation(tmp_path)

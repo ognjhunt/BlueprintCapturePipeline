@@ -260,6 +260,30 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
     )
 
 
+def retains_room_package(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
+    """A job handed to the company package as the room package (``website_scene_handoff.write_room_package``).
+
+    Its handoff is this context's, sealed and accepted, and its sealed record names the same context. It claims no
+    result: the record says whether a rule exists and whether Blueprint assumed it.
+    """
+    import json
+    from pathlib import Path
+    try:
+        package = handoff.get("room_package") or {}
+        record = json.loads(Path(package["path"]).read_text())
+        return (handoff.get("schema_version") == "website_scene_handoff.v1"
+                and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+                and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
+                and handoff.get("status") == "room_package_written" and handoff.get("blockers") == []
+                and handoff.get("job_disposition") == "accepted" and handoff.get("simulator_ready") is False
+                and record.get("inputs_digest") == package.get("inputs_digest")
+                == canonical_digest(record, digest_field="inputs_digest")
+                and record.get("task_context_digest") == task_context.get("context_digest")
+                == canonical_digest(task_context, digest_field="context_digest"))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False
+
+
 def retains_navigation_preparation(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
     """A navigation job handed to the G1 screening lane (``website_locomotion_hold.navigation_preparation``).
 

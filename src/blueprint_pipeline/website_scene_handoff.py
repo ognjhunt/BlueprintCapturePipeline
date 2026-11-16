@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .core.handoff_lease import (
     HandoffLeaseError, guarded_handoff_write_json as write_json, guarded_handoff_write_track_json as write_track_json,
@@ -273,6 +273,143 @@ def retain_superseded_records(*, capture_root: Path, root: Path, atlas_result_di
     return archive
 
 
+#: Owner direction 2026-11-16: any job is accepted; what is missing is estimated and flagged, and the job keeps
+#: going. A job the robot does by moving itself (navigation), and one Blueprint has no task profile, no installed
+#: runtime or no one-object model for, gets the room package: the room as reconstructed, the job as the site wrote
+#: it and, for navigation, the goal region with an assumed rule. The company builder reads it from the handoff.
+ROOM_PACKAGE = "room_package_written"
+ROOM_RECORD = "room_package_inputs.v1.json"
+#: The navigation rule's two assumed numbers: how near the goal centre the robot's base must stop, and for how long.
+GOAL_RADIUS_M, GOAL_DWELL_SECONDS = 0.5, 2.0
+#: The handoff gaps that mean "no task profile": ``website_task_preparation.profile_preparation_gap`` and an operation
+#: reading naming no family (``website_operation_coverage``).
+ROOM_GAPS = frozenset({"website_native_task_profile_preparation_required", "website_task_operation_coverage_unresolved"})
+#: The other "no model for this job" findings that ship the room package, each flagged on its record by its code.
+MISMATCH = "website_task_profile_mechanism_mismatch"
+RUNTIME_GAP = "website_task_family_runtime_preparation_required"
+
+
+def _sim_frame(*, base_scene: Mapping[str, Any], source_geometry: Mapping[str, Any],
+               focus: Mapping[str, Any] | None) -> tuple[float, Any, Any]:
+    """Metres per runtime unit, runtime-to-simulator (Z up) and the source-to-runtime registration (or None).
+
+    As compile frames a scene (``compile_website_scene_preparation``): the base scene's declared scale, else the
+    registration's. Registration runs only when a goal must be placed or no scale is declared; a goal that does not
+    register is left out (None), a scene with neither scale is refused.
+    """
+    import numpy as np
+
+    from .website_task_preparation import _UP_INDEX, register_source_to_runtime
+    mpu = base_scene.get("meters_per_unit")
+    matrix = None
+    if focus is not None or mpu is None:
+        anchor = base_scene.get("anchor")
+        anchor = ({**anchor, "meters_per_unit": mpu, "up_axis": base_scene["up_axis"],
+                   "ground_plane_offset_m": base_scene.get("ground_plane_offset_m")}
+                  if isinstance(anchor, Mapping) and mpu is not None else None)
+        try:
+            registration = register_source_to_runtime(
+                source_geometry=source_geometry, collision_mesh_path=Path(base_scene["collision_mesh_path"]),
+                anchor=anchor, focus_bounds=focus, up_axis=base_scene["up_axis"])
+        except ValueError:
+            if mpu is None:
+                raise
+        else:
+            matrix = np.asarray(registration["source_to_runtime"])
+            mpu = 1.0 / registration["scale"] if mpu is None else mpu
+    up_sign = -1 if base_scene["up_axis"] == "-Y" else 1
+    runtime_to_sim = np.eye(4)
+    runtime_to_sim[:3, :3] = float(mpu) * (np.array([[1, 0, 0], [0, 0, -up_sign], [0, up_sign, 0]])
+                                           if _UP_INDEX[base_scene["up_axis"]] == 1 else np.eye(3))
+    return float(mpu), runtime_to_sim, matrix
+
+
+def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[str, Any],
+                       source_geometry: Mapping[str, Any], removal: Mapping[str, Any], output_root: Path,
+                       task_profile: str | None, task_masks: Mapping[str, Any] | None = None,
+                       objects_in_scan: bool = False, flags: Sequence[str] = ()) -> dict[str, Any]:
+    """The room package's half (``scene-package/``: the room's collision and look, the plan) and its sealed record.
+
+    CPU only, buys nothing. A navigation job (``task_masks`` given) whose reading names exactly one goal mask gets
+    a goal region: that mask's visible bounds lifted onto the scene by the registration compile uses, its footprint
+    centred at its lowest point (the floor it stands on), and the rule "stop within ``GOAL_RADIUS_M`` of it for
+    ``GOAL_DWELL_SECONDS``", both numbers assumed. Any other job ships no rule of Blueprint's: the record says so,
+    and the site's words stay on the job's page, the one place they are shown redacted. The job's objects are counted, never placed: taken out of the scan by the
+    clean plate, or part of it on a geometry-only route.
+    """
+    import shutil
+
+    import numpy as np
+
+    from .local_reconstruction_adapters import _sha256_file
+    from .scene_package_stage import placements
+    from .team_scene_robot_absent import DIRECTORY, PLAN_FILENAME, PLAN_SCHEMA, PROBE_FIELD, PROBE_NOT_QUEUED
+    from .website_native_appearance import prepare_native_appearance
+    from .website_scene_runtime_inputs import normalize_runtime_collision
+    from .website_task_preparation import _runtime_bounds
+    for key in ("splat", "collision_mesh"):
+        if _sha256_file(Path(base_scene[key + "_path"])) != base_scene[key + "_digest"]:
+            raise ValueError("website_base_scene_changed")
+    goals = [row for row in (task_masks or {}).get("targets") or []
+             if row.get("target_role") == "destination" and isinstance(row.get("estimated_visible_bounds"), Mapping)]
+    focus = goals[0]["estimated_visible_bounds"] if task_masks is not None and len(goals) == 1 else None
+    mpu, runtime_to_sim, matrix = _sim_frame(base_scene=base_scene, source_geometry=source_geometry, focus=focus)
+    room = {"binding": {key + "_digest": base_scene[key + "_digest"] for key in ("splat", "collision_mesh")},
+            "coordinate_frame": {"declared_meters_per_unit": mpu, "declared_up_axis": base_scene["up_axis"],
+                                 "physical_scale_measured": False, "runtime_to_simulator": runtime_to_sim.tolist()}}
+    room["digest"] = canonical_digest(room, digest_field="digest")
+    collision_root, normalized = normalize_runtime_collision(preparation=room, base_scene=base_scene,
+                                                             output_root=output_root)
+    appearance = prepare_native_appearance(preparation=room, base_scene=base_scene, output_root=output_root / "appearance")
+    goal = None
+    if focus is not None and matrix is not None:
+        low, high = (np.asarray(corner) @ runtime_to_sim[:3, :3].T for corner in _runtime_bounds(focus, matrix))
+        low, high = np.minimum(low, high), np.maximum(low, high)
+        goal = {"basis": "goal_mask_bounds_registered_footprint_centre_at_its_lowest_point",
+                "centre_world_m": [float((low[0] + high[0]) / 2), float((low[1] + high[1]) / 2), float(low[2])],
+                "radius_m": GOAL_RADIUS_M, "dwell_seconds": GOAL_DWELL_SECONDS, "radius_and_dwell": "assumed"}
+    elif task_masks is not None:
+        goal = {"basis": "goal_not_placed:" + ("no_single_goal_mask" if focus is None else "goal_not_registered")}
+    packet = output_root / "half" / DIRECTORY
+    if packet.exists():
+        shutil.rmtree(packet)
+    rows = []
+    for role, source, visible in (("scene_collision", collision_root / normalized["output"]["relative_path"], False),
+                                  ("scene_appearance", Path(appearance["artifact"]["path"]), True)):
+        target = packet / "assets" / f"{role}{source.suffix}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        rows.append({"name": role, "semantic_role": role, "usd_path": f"assets/{target.name}",
+                     "sha256": _sha256_file(target), "size_bytes": target.stat().st_size, "visible": visible,
+                     "pose_world": {"position_world_m": [0.0, 0.0, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}})
+    ruled = goal is not None and "centre_world_m" in goal
+    task_kind = "goal_region_navigation" if task_masks is not None else "not_defined_by_blueprint"
+    criteria = ({"surface_target": {"surface_position_world_m": goal["centre_world_m"], "radius_m": GOAL_RADIUS_M},
+                 "settling": {"stable_seconds": GOAL_DWELL_SECONDS}} if ruled else None)
+    plan = {"schema_version": PLAN_SCHEMA, "scene_id": task_context.get("scene_id"),
+            "task_id": "website-" + task_context["context_digest"][7:27], "task_kind": task_kind,
+            "task_spec": {"task_kind": task_kind, **({"task_success_contract": {"criteria": criteria}} if ruled else {})},
+            "asset_directory": "assets", "objects": rows,
+            "appearance_frame_alignment": {"representation": "particlefield_3d_gaussian_splat"},
+            "robot": None, "cameras": [], "stage_5": None, "stage_4": None, "plan_digest": ""}
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    placements(plan)
+    write_json(packet / PLAN_FILENAME, plan)
+    removed = [row for row in removal.get("entries") or [] if row.get("task_effect") == "manipulated"]
+    record = {"schema_version": "blueprint.room_package_inputs.v1",
+              "task_context_digest": task_context["context_digest"], "task_kind": task_kind,
+              "task_profile": task_profile or "none", "success_rule_defined": ruled, "success_rule_assumed": ruled,
+              **({"goal_region": goal} if goal is not None else {}),
+              "job_objects": {"count": len(removed), "in_package": "part_of_room_scan" if objects_in_scan
+                              else "taken_out_of_room_scan"} if removed else None,
+              **({"flags": list(flags)} if flags else {}), PROBE_FIELD: PROBE_NOT_QUEUED,
+              "robot_included": False, "simulator_run": False, "plan_digest": plan["plan_digest"],
+              "inputs_digest": ""}
+    record["inputs_digest"] = canonical_digest(record, digest_field="inputs_digest")
+    write_json(output_root / "half" / ROOM_RECORD, record)
+    return record
+
+
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
                                  capture_root: Path, now: float,
                                  allow_operation_coverage_review: bool = False,
@@ -298,6 +435,27 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         write_json(handoff_path, result)
         return result
 
+    def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
+                     flags: Sequence[str] = ()) -> dict[str, Any]:
+        # Not held: the room package goes to the company builder (``write_room_package``).
+        record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
+                                    removal=removal, output_root=root / "room_package", task_profile=profile,
+                                    task_masks=masks, objects_in_scan=geometry_only, flags=flags)
+        result.update(status=ROOM_PACKAGE, blockers=[], job_disposition="accepted",
+                      geometry_backend=atlas["source_geometry"]["geometry_backend"],
+                      source_geometry_digest=atlas["source_geometry"]["digest"],
+                      room_package={"path": str(root / "room_package" / "half" / ROOM_RECORD),
+                                    **{key: record[key] for key in ("inputs_digest", "task_kind", "task_profile",
+                                                                    "success_rule_defined", "success_rule_assumed")}})
+        result["digest"] = canonical_digest(result, digest_field="digest")
+        write_json(handoff_path, result)
+        return result
+
+    def room_for(gap: Mapping[str, Any]) -> dict[str, Any]:
+        # A gap that says Blueprint has no model for the job, by code: the job's declared profile, flagged.
+        declared = gap.get("task_family") if gap["code"] == MISMATCH else gap.get("inferred_profile_id")
+        return room_package(declared, flags=[gap["code"]])
+
     try:
         if clean_plate.get("privacy_verified") is not True or clean_plate.get("status") not in {"noop", "objects_removed"}:
             raise ValueError("website_scene_preparation_pending")
@@ -311,13 +469,6 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         atlas = atlas_scene_source(capture_root=capture_root, output_root=root / "atlas")
         handoff_lease_checkpoint("website_scene_handoff_after_source")
         if atlas["status"] != "ready":
-            # The Atlas lane held the task after its review, before buying the scene.
-            from .website_early_task_hold import retain_task_preparation_hold
-            video = clean_plate.get("input_video_path")
-            held = retain_task_preparation_hold(capture_root=capture_root, task_context=context,
-                                                source_video=Path(video) if isinstance(video, str) else None)
-            if held is not None:
-                return held
             result.update(status="awaiting_reconstruction" if atlas["status"] == "pending" else "needs_input",
                 blockers=[atlas["reason"]], geometry_backend=None, provider_mutation_performed=False,
                 visual_reconstruction_ready=False,
@@ -368,6 +519,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 semantics = clarified["task_semantics"]
         semantics_options = {"task_semantics": semantics, "source_video_digest": source_video_digest}
         gap = native_task_preparation_gap(context, **semantics_options)
+        if gap is not None and gap["code"] in ROOM_GAPS:
+            from .website_operation_coverage import clarification_request
+            if semantics is None or clarification_request(semantics, task_context=context,
+                                                          source_video_digest=source_video_digest) is None:
+                # No task profile, nor one a clarification could still find: never turned into pick/place,
+                # the job ships as the room package.
+                return room_package(None)
         if gap is not None:
             # Retain the completed reconstruction and original task. Missing
             # adapter/scoring support cannot turn a different job into pick/place.
@@ -377,13 +535,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         from .task_profile_contracts import task_profile_for
         from .website_task_semantics import effective_task_profile
         resolved = task_profile_for(effective_task_profile(task_context=context, **semantics_options))
-        if resolved is not None and not resolved.requires_manipulation:
-            # The robot moves itself (a walking job): no simulation is built for this kind of
-            # job. It keeps its first look on paper and holds with the plain no-profile reason.
-            from .website_task_preparation import profile_preparation_gap
-            result.update(geometry_backend=atlas["source_geometry"]["geometry_backend"],
-                          source_geometry_digest=atlas["source_geometry"]["digest"])
-            return retain_gap(profile_preparation_gap(context))
+        navigation = resolved is not None and not resolved.requires_manipulation
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile
@@ -428,6 +580,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result['digest'] = canonical_digest(result, digest_field='digest')
             write_json(handoff_path, result)
             return result
+        if navigation:
+            # The robot moves itself: the room, and the goal region lifted from the reading's goal mask.
+            return room_package(resolved.profile_id, masks)
+        if family is not None:
+            from .website_early_task_hold import task_family_runtime_gap
+            if task_family_runtime_gap(context, **semantics_options) is not None:
+                # No runtime for the family is installed here: its route cannot run, so the room package instead.
+                return room_package(family, flags=[RUNTIME_GAP])
         if family is not None and geometry_only:
             # The fit check models one rigid subject; a family task is recorded, never assessed.
             result.update(status="needs_input", blockers=[GEOMETRY_ONLY_BLOCKER],
@@ -484,18 +644,16 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         if inferred is not None:
             gap = native_task_preparation_gap(context, inferred_profile_id=inferred, **semantics_options)
             if gap is not None:
-                # Catch a contradictory profile before coverage/spec callbacks.
-                # Earlier mask work may have called a provider, so do not reset
-                # provider_mutation_performed to false on this later path.
-                result["source_geometry_digest"] = geometry["digest"]
-                return retain_gap(gap)
+                # The reading and the object disagree (the only gap left here): fitted to neither, the room
+                # package, flagged, before coverage or spec callbacks buy anything.
+                return room_for(gap)
         if synthetic is None:
             # Several task objects, or a soft one, under a one-rigid-object or one-opening
             # profile: held here, before coverage, spec research and authoring buy anything for it.
             gap = native_task_subject_gap(context, subjects=subjects, targets=targets, **semantics_options)
             if gap is not None:
-                result["source_geometry_digest"] = geometry["digest"]
-                return retain_gap(gap)
+                # Not narrowed to one rigid object: the room package, the objects counted, no rule of Blueprint's.
+                return room_for(gap)
             # Rigid or unknown goes on; the reading, its source and an unknown's flag stay on the record.
             rigidity = subject_rigidity(context, subjects=subjects, targets=targets, **semantics_options)
             if rigidity is not None:
@@ -544,9 +702,9 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                       preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
                       thumbnail=preparation["thumbnail"], base_scene_path=str(root / "base_scene.json"))
         if isinstance(preparation.get("native_task_preparation_gap"), Mapping):
-            # Later source-bound evidence can also reveal a mismatch. A held
-            # compiler output has no native intake and must not enter runtime preparation.
-            return retain_gap(preparation["native_task_preparation_gap"])
+            # Later source-bound evidence can also reveal a mismatch: no native intake, so no runtime preparation.
+            # Every gap compile writes says only that Blueprint has no model for the job: the room package, flagged.
+            return room_for(preparation["native_task_preparation_gap"])
         if geometry_only:
             result["fit_check"] = geometry_only_fit_check(preparation=preparation, base_scene=base,
                                                           native_root=root / "fit_check")

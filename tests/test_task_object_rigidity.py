@@ -112,12 +112,17 @@ def _handoff(tmp_path, monkeypatch, entry):
     return kwargs, context
 
 
-def test_the_handoff_holds_a_classified_soft_object_and_re_derives_it(tmp_path, monkeypatch, ready):
-    kwargs, context = _handoff(tmp_path, monkeypatch, {"target_id": "toy", "semantic_label": "plush toy",
-                                                       "rigidity": "deformable", "rigidity_reason": "squashes"})
+def test_a_classified_soft_object_ships_the_room_and_a_retained_hold_re_derives(tmp_path, monkeypatch, ready):
+    from tests.test_website_scene_handoff import retained_hold, room_recorder
+    entry = {"target_id": "toy", "semantic_label": "plush toy", "rigidity": "deformable", "rigidity_reason": "squashes"}
+    kwargs, context = _handoff(tmp_path, monkeypatch, entry)
     monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
-                        lambda **_: pytest.fail("a held object buys no coverage"))
+                        lambda **_: pytest.fail("a soft object is not authored as a rigid one: no coverage"))
+    packaged = room_recorder(monkeypatch)
     result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written" and [call["task_profile"] for call in packaged] == ["rigid_pick_place"]
+    result = retained_hold(context, preparation.native_task_subject_gap(
+        context, subjects=[{"task_effect": "manipulated", **entry}], targets={"toy": {"target_id": "toy"}}))
     assert result["blockers"] == [DEFORMABLE] and holds_native_task_preparation(result, context)
 
     def tampered(change):
@@ -153,7 +158,9 @@ def test_the_handoff_records_the_reading_and_flags_unknown_without_holding(tmp_p
     kwargs, _ = _handoff(tmp_path, monkeypatch, {"target_id": "mug", **entry})
     reached = []
     # The job goes on past the subject holds to coverage, spec research and compile; compile
-    # is stubbed to stop there with a held preparation, so the handoff record is returned.
+    # is stubbed to stop there with a gap, which ships the room package (recorded here).
+    from tests.test_website_scene_handoff import room_recorder
+    packaged = room_recorder(monkeypatch)
     for name in ("website_assembly_coverage.attach_assembly_coverage", "website_object_spec_research.attach_object_specs"):
         monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: reached.append(1) or kw["task_masks"])
     monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation", lambda value, **_: value)
@@ -161,7 +168,8 @@ def test_the_handoff_records_the_reading_and_flags_unknown_without_holding(tmp_p
         "status": "needs_input", "blockers": ["fixture_stop"], "digest": "sha256:" + "0" * 64, "thumbnail": None,
         "native_task_preparation_gap": {"code": "fixture_stop"}})
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert reached == [1, 1] and result["blockers"] == ["fixture_stop"]
+    assert reached == [1, 1] and result["status"] == "room_package_written"
+    assert [call["flags"] for call in packaged] == [["fixture_stop"]]
     reading = result["task_object_rigidity"]
     assert reading["target_id"] == "mug" and reading["rigidity"] == entry.get("rigidity", "unknown")
     assert reading["source"] == ("object_analysis" if "rigidity" in entry else "label_word_backstop")
