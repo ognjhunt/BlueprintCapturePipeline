@@ -1584,9 +1584,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     # The host's sealed choice for a both-providers ARTISAN grant (``artisan_provider_choice``). The
     # handoff passes how to make it, so it is made here, after every gap (a room package) has returned.
     from .artisan_provider_choice import choice_for_grant
-    if callable(artisan_provider_choice):  # a withheld rule with no place: the room package, so no choice
-        no_place = rule_withheld is not None and "task_destination_pose_required" in blockers
-        artisan_provider_choice = None if no_place else artisan_provider_choice()
+    if callable(artisan_provider_choice):  # a withheld rule's object stopped here is left out: no choice
+        left_out = rule_withheld is not None and bool(blockers)  # the room package (``website_scene_handoff``)
+        artisan_provider_choice = None if left_out else artisan_provider_choice()
     artisan_choice = choice_for_grant(artisan_provider_choice, grant=spend, backend=authoring_backend)
     artisan_on_anthropic = (artisan_choice or {}).get("provider") == "anthropic"
     contract = None

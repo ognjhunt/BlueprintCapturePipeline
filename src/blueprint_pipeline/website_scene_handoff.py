@@ -240,7 +240,9 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
         verdict = None
         # One read scope for every search below: a USDA text collider is read once (``usd_binary_read_cache``).
         with read_scope():
-            if preparation["intake_request"]["task"]["strategy"] == "pick_and_place":
+            # A job whose rule is withheld has no destination the site described: no verdict, no fit table.
+            withheld = "rule_withheld" in result or sealed_rule_withheld(capture_root) is not None
+            if preparation["intake_request"]["task"]["strategy"] == "pick_and_place" and not withheld:
                 # Abstain before the owner is asked to pay when no enabled embodiment can carry the
                 # task; one the gate cannot model is unassessed and never refused.
                 verdict, fit = _rigid_verdict_and_fit(preparation=preparation, collision_path=collision,
@@ -326,6 +328,23 @@ ROOM_GAPS = frozenset({"website_native_task_profile_preparation_required", "webs
 #: The other "no model for this job" findings that ship the room package, each flagged on its record by its code.
 MISMATCH = "website_task_profile_mechanism_mismatch"
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
+#: The stops a job whose rule is withheld (``rule_withheld``) still stops on: privacy, rights and money. Any other
+#: reason its object cannot be built or placed leaves the object out: the room package, the reason a flag.
+WITHHELD_HARD_STOPS = frozenset({
+    "website_scene_execution_authority_required", "website_scene_processing_rights_required",
+    "website_agents_api_signed_authority_required", "website_anthropic_provider_terms_authority_required"})
+
+
+def sealed_rule_withheld(capture_root: Path | None) -> dict[str, Any] | None:
+    """Why the capture's sealed handoff withheld Blueprint's rule (``rule_withheld``), or None."""
+    try:
+        handoff = json.loads((Path(capture_root) / "pipeline/website_scene_preparation/handoff.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    withheld = handoff.get("rule_withheld") if isinstance(handoff, dict) else None
+    if not isinstance(withheld, dict) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
+        return None
+    return dict(withheld)
 
 
 def _sim_frame(*, base_scene: Mapping[str, Any], source_geometry: Mapping[str, Any],
@@ -737,18 +756,30 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         def choose():  # called by compile only once it found no gap: a room package never chooses
             return artisan_provider_choice_for(authority=authority, root=root, capture_root=capture_root,
                                                geometry_only=geometry_only)
-        preparation = compile_website_scene_preparation(
-            task_context=context, task_masks=clean_plate["task_masks"],
-            removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
-            base_scene=base, output_root=root, spend=authority, now=now,
-            artisan_provider_choice=choose,
-            **({"task_semantics": semantics} if semantics is not None else {}),
-            **({"atlas_route": "geometry_only"} if geometry_only else {}),
-            **({"rule_withheld": result["rule_withheld"]} if "rule_withheld" in result else {}),
-        )
-        if "rule_withheld" in result and "task_destination_pose_required" in preparation["blockers"]:
-            # No internal place to run the rigid path toward: the room package, the object left out as before.
-            return room_package(None)
+        from .website_object_local_frame import REGISTRATION_REFUSALS
+        from .website_recapture_required import CODES as RECAPTURE_CODES
+        try:
+            preparation = compile_website_scene_preparation(
+                task_context=context, task_masks=clean_plate["task_masks"],
+                removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
+                base_scene=base, output_root=root, spend=authority, now=now,
+                artisan_provider_choice=choose,
+                **({"task_semantics": semantics} if semantics is not None else {}),
+                **({"atlas_route": "geometry_only"} if geometry_only else {}),
+                **({"rule_withheld": result["rule_withheld"]} if "rule_withheld" in result else {}),
+            )
+        except ValueError as exc:
+            if "rule_withheld" in result and str(exc) in REGISTRATION_REFUSALS | RECAPTURE_CODES:
+                # The object does not fit the scene or the video: left out, never a hold or a new video.
+                return room_package(None, flags=[str(exc)])
+            raise
+        if ("rule_withheld" in result and preparation["status"] != "intake_ready"
+                and not preparation.get("native_task_preparation_gap")
+                and not set(preparation["blockers"]) & (WITHHELD_HARD_STOPS | REGISTRATION_REFUSALS)):
+            # Anything else that stops the object (no internal place, no support, a size the published figures
+            # refute): the room package, the object left out and the reason a flag. A registration refusal is a
+            # blocker only in development-test mode, which places the object on its estimated frame instead.
+            return room_package(None, flags=preparation["blockers"])
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
                 or (preparation.get("subject_excision") or {}).get("status") == "excised"):

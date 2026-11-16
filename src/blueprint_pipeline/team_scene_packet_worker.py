@@ -1122,14 +1122,10 @@ def _rule_withheld(capture: Path) -> dict[str, Any]:
     """A one-object job no task profile models: its capture's sealed handoff says why (``website_scene_handoff``),
     and its half is compiled with no rule (``materialize_team_scene``)."""
 
-    try:
-        handoff = json.loads((capture / "pipeline" / "website_scene_preparation" / "handoff.json").read_text())
-    except (OSError, ValueError):
-        return {}
-    withheld = handoff.get("rule_withheld") if isinstance(handoff, dict) else None
-    if not isinstance(withheld, dict) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
-        return {}
-    return {"rule_withheld": {"code": str(withheld.get("code"))}}
+    from .website_scene_handoff import sealed_rule_withheld
+
+    withheld = sealed_rule_withheld(capture)
+    return {"rule_withheld": {"code": str(withheld.get("code"))}} if withheld is not None else {}
 
 
 def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any], capture: Path,

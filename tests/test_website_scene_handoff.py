@@ -13,6 +13,7 @@ from blueprint_pipeline import website_scene_handoff as handoff
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+from blueprint_pipeline.website_object_local_frame import REGISTRATION_REFUSALS
 
 
 def inputs(tmp_path):
@@ -590,7 +591,7 @@ def test_one_removed_object_of_a_job_no_profile_models_is_built_with_its_rule_wi
     compiled.clear()
     # With no place on its support to run the internal rigid path toward, the object is not built: the room package.
     monkeypatch.setattr(handoff, "compile_website_scene_preparation",
-                        lambda **kw: compiled.append(kw) or {"blockers": ["task_destination_pose_required"]})
+                        lambda **kw: compiled.append(kw) or {"status": "needs_input", "blockers": ["task_destination_pose_required"]})
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["status"] == "room_package_written"
     assert len(packaged) == 1
@@ -598,20 +599,19 @@ def test_one_removed_object_of_a_job_no_profile_models_is_built_with_its_rule_wi
     assert len(compiled) == 1
 
 
-@pytest.mark.parametrize("place", [True, False], ids=["object_built", "no_place_room_package"])
-def test_the_object_of_a_job_no_profile_models_chooses_its_provider_once_and_its_room_package_never(
-        tmp_path, monkeypatch, ready_atlas, place):
-    """Objects step 1, through the handoff and the real compile (on that compile's own test geometry): the one
-    object of a job no task profile models is authored, so the provider choice the handoff hands compile is asked
-    for exactly once, after the one-rigid-object decision and every gap. With no internal place the job ships as
-    the room package: the choice is never asked for, so no choice file, ledger entry or model read exists."""
+def _through_compile(tmp_path, monkeypatch, *, family="unimplemented_task_family", place=True, refusal=None,
+                     stop=True, spend=None):
+    """One removed rigid object through the handoff and the real compile (on that compile's own test geometry,
+    ``tests/test_website_task_preparation``), with the provider choice the handoff hands compile recorded.
+    ``refusal``: the registration refuses with that code. ``stop``: end the handoff once compile returns (what
+    follows is the existing rigid path)."""
     from blueprint_pipeline import website_task_preparation as preparation
+    from blueprint_pipeline.website_registration_admissibility import RegistrationRefusal
     from tests.test_website_task_preparation import _arguments, _masks
     kwargs = inputs(tmp_path)
     write_json(tmp_path / "pipeline/removal.json", {"entries": [{"target_id": "box", "task_effect": "manipulated"}]})
     context = kwargs["descriptor"]["metadata"]["site_task_context"]
-    context.update(task_family="unimplemented_task_family", description="Do the thing with the box",
-                   context_digest="sha256:" + "a" * 64)
+    context.update(task_family=family, description="Do the thing with the box", context_digest="sha256:" + "a" * 64)
     kwargs["clean_plate"]["task_masks"] = {"targets": [{"target_id": "box"}]}
     monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
                         lambda **_: {"status": "ready"})
@@ -622,22 +622,37 @@ def test_the_object_of_a_job_no_profile_models_chooses_its_provider_once_and_its
         monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: kw["task_masks"])
     (tmp_path / "geometry").mkdir()
     fixture = _arguments(tmp_path / "geometry", lambda geometry: {"task_masks": _masks(geometry, destination=place)})
-    fixture["task_context"].update(task_family="unimplemented_task_family")
+    fixture["task_context"].update(task_family=family)
+    fixture["spend"] = fixture["spend"] if spend is None else spend
     fixture["task_context"]["context_digest"] = canonical_digest(fixture["task_context"], digest_field="context_digest")
     if not place:  # no named destination and no spot left on the start surface
         monkeypatch.setattr(preparation, "farthest_supported_destination", lambda *_, **__: None)
+    if refusal is not None:
+        def refuse(**_):
+            raise RegistrationRefusal(refusal, {"best_score": 0.1})
+        monkeypatch.setattr(preparation, "register_source_to_runtime", refuse)
     asked, compiled = [], []
     monkeypatch.setattr(handoff, "artisan_provider_choice_for", lambda **kw: asked.append(kw))
     real = handoff.compile_website_scene_preparation
 
     def compile_on_its_geometry(**kw):
-        compiled.append(real(**fixture, rule_withheld=kw["rule_withheld"],
-                             artisan_provider_choice=kw["artisan_provider_choice"]))
-        if place:
-            raise _Compiled  # what follows is the existing rigid path
+        compiled.append(real(**{**fixture, "output_root": kw["output_root"]},
+                             **{key: kw[key] for key in ("rule_withheld", "artisan_provider_choice") if key in kw}))
+        if stop:
+            raise _Compiled
         return compiled[-1]
     monkeypatch.setattr(handoff, "compile_website_scene_preparation", compile_on_its_geometry)
-    packaged = room_recorder(monkeypatch)
+    return kwargs, asked, compiled, room_recorder(monkeypatch)
+
+
+@pytest.mark.parametrize("place", [True, False], ids=["object_built", "no_place_room_package"])
+def test_the_object_of_a_job_no_profile_models_chooses_its_provider_once_and_its_room_package_never(
+        tmp_path, monkeypatch, ready_atlas, place):
+    """Objects step 1: the one object of a job no task profile models is authored, so the provider choice the
+    handoff hands compile is asked for exactly once, after the one-rigid-object decision and every gap. With no
+    internal place the job ships as the room package: the choice is never asked for, so no choice file, ledger
+    entry or model read exists."""
+    kwargs, asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, place=place, stop=place)
     if place:
         with pytest.raises(_Compiled):
             handoff.prepare_website_scene_handoff(**kwargs)
@@ -647,5 +662,57 @@ def test_the_object_of_a_job_no_profile_models_chooses_its_provider_once_and_its
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert "task_destination_pose_required" in compiled[0]["blockers"]
     assert result["status"] == "room_package_written"
-    assert len(packaged) == 1
+    assert [call["flags"] for call in packaged] == [compiled[0]["blockers"]]
     assert asked == []
+
+
+@pytest.mark.parametrize("code", sorted(REGISTRATION_REFUSALS | {"website_front_normal_undetermined"}))
+def test_an_object_that_does_not_register_leaves_a_withheld_job_its_room_package_and_never_a_hold(
+        tmp_path, monkeypatch, ready_atlas, code):
+    """The room package is the floor of a job whose rule is withheld: an object the scene cannot place is left
+    out, the code flagged on the room record; no hold, no new video asked for, no provider choice. Over two
+    passes: the held-handoff replay finds no recapture hold to look at again, and the next handoff ends the same."""
+    from blueprint_pipeline.website_held_handoff_replay import registration_recapture_code
+    kwargs, asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, refusal=code)
+    for _ in range(2):
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "room_package_written"
+        assert "recapture_required" not in result
+        assert packaged[-1]["flags"] == [code]
+        assert registration_recapture_code(tmp_path, result, kwargs["descriptor"]["metadata"]["site_task_context"]) is None
+    assert compiled == [] and asked == [] and len(packaged) == 2
+    assert list(tmp_path.rglob("registration_refusal.json"))  # its scores stay written, as today
+
+
+def test_a_modelled_job_whose_object_does_not_register_keeps_its_hold(tmp_path, monkeypatch, ready_atlas):
+    kwargs, asked, _, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place",
+                                                  refusal="website_registration_poor_fit")
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "needs_input"
+    assert result["recapture_required"]["code"] == "website_registration_poor_fit"
+    assert packaged == [] and asked == []
+
+
+def test_development_test_mode_still_places_a_withheld_job_s_object_that_does_not_register(
+        tmp_path, monkeypatch, ready_atlas):
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: True)
+    kwargs, _, compiled, packaged = _through_compile(tmp_path, monkeypatch, refusal="website_registration_poor_fit",
+                                                     stop=False)
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
+                        lambda *_, **__: (_ for _ in ()).throw(_Compiled()))  # past the room-package floor
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert "website_registration_poor_fit" in compiled[0]["blockers"] and packaged == []
+
+
+def test_a_withheld_job_still_stops_on_money_rights_and_privacy(tmp_path, monkeypatch, ready_atlas):
+    """The room-package floor is for the object only: a job with no execution authority stops as any job does."""
+    from tests.test_website_task_preparation import SPEND
+    kwargs, asked, compiled, packaged = _through_compile(
+        tmp_path, monkeypatch, stop=False, spend={key: value for key, value in SPEND.items() if key != "owner"})
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
+                        lambda *_, **__: (_ for _ in ()).throw(_Compiled()))  # past the room-package floor
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert "website_scene_execution_authority_required" in compiled[0]["blockers"]
+    assert packaged == []

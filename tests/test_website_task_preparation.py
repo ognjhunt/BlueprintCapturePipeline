@@ -479,18 +479,21 @@ def test_a_missing_destination_is_a_flagged_guess_on_the_start_surface(tmp_path)
     assert value["intake_request"]["task"]["destination"] == value["destination"]
 
 
-@pytest.mark.parametrize("case", ["named", "other_gap", "no_place"])
+@pytest.mark.parametrize("case", ["named", "other_gap", "no_place", "scale_conflict"])
 def test_a_job_no_profile_models_builds_its_object_with_the_rule_withheld_and_asks_nothing(tmp_path, monkeypatch,
                                                                                             case):
     """Objects step 1: with the handoff's named reason the object compiles on the rigid path; its place is internal,
     so no place choice, flag or question is recorded. Without the reason (or another gap) the job is held as before.
     The authoring provider is chosen once, only for the object that is built: never for a held job or for one the
-    handoff sends to the room package (no internal place)."""
+    handoff sends to the room package (no internal place, or any other stop before the choice)."""
     def novel(geometry):
         return {"task_masks": _masks(geometry, destination=case != "no_place")}
     if case == "no_place":
         monkeypatch.setattr(preparation, "farthest_supported_destination", lambda *_, **__: None)
     arguments = _arguments(tmp_path, novel)
+    if case == "scale_conflict":  # the base scene declares a scale the registration disagrees with
+        arguments["base_scene"] = {key: value for key, value in arguments["base_scene"].items() if key != "anchor"}
+        arguments["base_scene"]["meters_per_unit"] = 50.0
     context = arguments["task_context"]
     context.update(task_family="unimplemented_task_family")
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
@@ -503,8 +506,11 @@ def test_a_job_no_profile_models_builds_its_object_with_the_rule_withheld_and_as
         assert value["blockers"] == ["website_native_task_profile_preparation_required"] and value["intake_request"] is None
         assert chosen == []
         return
-    if case == "no_place":
-        assert "task_destination_pose_required" in value["blockers"] and chosen == []
+    if case in ("no_place", "scale_conflict"):
+        blocker = {"no_place": "task_destination_pose_required",
+                   "scale_conflict": "website_registration_scale_conflicts_declared"}[case]
+        assert blocker in value["blockers"]
+        assert chosen == []
         return
     assert chosen == [1]
     assert "native_task_preparation_gap" not in value

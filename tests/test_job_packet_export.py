@@ -543,11 +543,15 @@ def test_a_job_with_its_rule_withheld_claims_no_kind_and_ships_no_rule(tmp_path,
     _seal_first_look(capture)
     handoff = json.loads((capture / PREP / "handoff.json").read_text())  # the handoff's sealed reason
     handoff["rule_withheld"] = {"code": "website_native_task_profile_preparation_required", "task_id": "x"}
-    _write(capture / PREP / "handoff.json", _sealed({k: v for k, v in handoff.items() if k != "digest"}, "digest"))
+    # As the handoff writes it for this job: no fit table (``prepare_rigid_native_inputs``).
+    _write(capture / PREP / "handoff.json", _sealed({k: v for k, v in handoff.items()
+                                                     if k not in ("digest", "robot_fit_table")}, "digest"))
     _withheld_half(inputs)  # the team-scene compile's half: no rule, and its record says why
     manifest = build_job_packet(inputs, output_root=_out(tmp_path))
     sheet = _sheet(manifest)
-    assert f"Kind of job: {packet.UNMODELLED_KIND}." in sheet and "pick-up-and-put-down" not in sheet
+    assert f"Kind of job: {packet.UNMODELLED_KIND}." in sheet
+    assert "pick-up-and-put-down" not in sheet
+    assert "No first look on paper is in this packet yet." in sheet
     assert "No success rule is in this packet yet" in sheet
     assert "files/task/success_rule.json" not in {row["path"] for row in manifest["files"]}
     assert packet.kind_of_job({}, {}, {"rule_withheld": {"code": "x"}}) == packet.UNMODELLED_KIND

@@ -534,16 +534,16 @@ def handoff(tmp_path, monkeypatch):
     monkeypatch.setattr(robot_spec_catalog, "CATALOG_PATH", catalog_path)
     collision, job = _collision(tmp_path), {**_job(), "status": "intake_ready"}
 
-    def run(status):
+    def run(status, result=None, capture_root=None):
         verdict = (_verdict(job, collision, "clear", carry="clear") if status == "clear" else
                    _verdict(job, collision, carry="blocked", carry_blockers=[LIFT_BLOCKED], blockers=[LIFT_BLOCKED]))
         monkeypatch.setattr("blueprint_pipeline.website_rigid_feasibility.rigid_task_verdict", lambda **_: verdict)
-        result, native = {}, tmp_path / status / "native"
+        result, native = ({} if result is None else result), tmp_path / status / "native"
         admissible = prepare_rigid_native_inputs(
             result=result, preparation=job, preparation_path=tmp_path / "preparation.json", native_root=native,
             task_context={}, now=0.0, runtime_inputs={"status": "ready", "digest": "sha256:" + "3" * 64,
                                                       "appearance": {"status": "native_appearance_authored"},
-                                                      "collision": {"path": str(collision)}})
+                                                      "collision": {"path": str(collision)}}, capture_root=capture_root)
         return admissible, result, native
     return run
 
@@ -714,3 +714,30 @@ def test_a_robot_that_drives_is_judged_on_its_hand_heights(tmp_path, monkeypatch
     if bottom is None:
         assert reach["cause"] == "catalog_figure_missing" and reach["values"]["missing_figures"] == [
             "min_hand_height_m"]
+
+
+@pytest.mark.parametrize("marked", ["handoff_result", "sealed_handoff", "unsealed_handoff"])
+def test_a_job_whose_rule_is_withheld_gets_no_verdict_and_no_fit_table(handoff, tmp_path, marked):
+    """Objects step 1: its pick-and-place intake moves the object to a place the site never described, so no
+    capability verdict or robot fit table is made for it, in the handoff (its own result) or a renewal (the
+    capture's sealed handoff); the site's first look and the operator packet then show no fit, as before."""
+    withheld = {"code": "website_native_task_profile_preparation_required"}
+    result, capture = {}, tmp_path / "capture"
+    if marked == "handoff_result":
+        result["rule_withheld"] = withheld
+    else:
+        value = {"schema_version": "website_scene_handoff.v1", "rule_withheld": withheld}
+        value["digest"] = (canonical_digest(value, digest_field="digest") if marked == "sealed_handoff"
+                           else "sha256:" + "0" * 64)
+        (capture / "pipeline/website_scene_preparation").mkdir(parents=True)
+        (capture / "pipeline/website_scene_preparation/handoff.json").write_text(json.dumps(value))
+    admissible, result, native = handoff("clear", result=result, capture_root=capture)
+    assert admissible is True
+    if marked == "unsealed_handoff":  # not a reason: the verdict and the table as for any rigid job
+        assert result["robot_fit_table"]["path"]
+        assert (native / "capability_verdict.json").is_file()
+        return
+    assert "capability_verdict" not in result
+    assert "robot_fit_table" not in result
+    assert not (native / "capability_verdict.json").exists()
+    assert not (native / "robot_fit_table.json").exists()
