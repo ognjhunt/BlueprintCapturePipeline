@@ -392,6 +392,60 @@ PLANTS = {"request_id": REQUEST, "request_id_underscore": REQUEST.replace("-", "
           "domain": "plant-site.com", "token": "AKIAPLANT0123456789A"}
 
 
+def _room_as_the_host_writes_it(job: Job, *, custom: str | None = None) -> str:
+    """The room's appearance as the episode compiler's task clearance writes it on the host: a layer under the
+    host's own storage, edited on the session layer and written with ``Usd.Stage.Export``, which flattens and adds
+    the source-file note naming that layer (``task_evaluation_native_arena_episode_compiler``)."""
+    source = _stage(job.tmp / "var/lib/blueprint/task-evaluation-inputs/team-scene-halves/0123/abcd/scene/"
+                    "configured-scene/appearance.usdc", "Appearance", texture=str(job.assets / "textures/wood.png"))
+    stage = Usd.Stage.Open(str(source))
+    stage.SetEditTarget(stage.GetSessionLayer())
+    UsdGeom.Xformable(stage.GetPrimAtPath("/Appearance/Box")).AddTranslateOp().Set((0.0, 0.0, 0.01))
+    if custom is not None:
+        stage.GetRootLayer().customLayerData = {"source": custom}
+    job.appearance.unlink()
+    job.appearance = job.assets / "scene_appearance.usdc"
+    assert stage.Export(str(job.appearance))
+    documentation = Sdf.Layer.FindOrOpen(str(job.appearance)).documentation
+    assert documentation.startswith(sim.FLATTEN_PROVENANCE) and "/var/lib/blueprint/" in documentation
+    job.seal()
+    return str(source)
+
+
+def test_a_room_written_the_way_the_host_writes_it_ships_without_the_host_path(tmp_path):
+    """capture itest-e3e25932, 2026-11-16: refused for ``scene/room.usdc holds a host path``, the flatten note."""
+    job = Job(tmp_path)
+    host = _room_as_the_host_writes_it(job)
+    result = World(job).publish()
+    assert result["status"] == "published", result
+    _assert_absent_from_zip(job, [host.encode(), b"/var/lib/blueprint", sim.FLATTEN_PROVENANCE.encode()])
+
+
+def test_a_package_refused_by_an_earlier_builder_is_built_at_once_by_this_one(tmp_path, monkeypatch):
+    """A refusal is retried only after its window under the same builder; a new builder builds it at the first pass."""
+    job = Job(tmp_path)
+    _room_as_the_host_writes_it(job)
+    world = World(job)
+    with monkeypatch.context() as patch:  # the builder before the flatten note was dropped, as on 6ad7b73d3
+        patch.setattr(sim, "BUILDER_REVISION", "website_company_simulation_builder.v1")
+        patch.setattr(sim, "FLATTEN_PROVENANCE", "\x00never")
+        refused = world.publish()
+        assert refused["status"] == "refused" and refused["detail"] == "scene/room.usdc holds a host path"
+        patch.setattr(sim, "build_package", lambda *a, **k: pytest.fail("rebuilt inside the window"))
+        assert world.publish()["status"] == "refused"  # same builder, same revision: it waits
+    published = world.publish()
+    assert published["status"] == "published", published
+    assert "refused" not in _manifest(job)
+
+
+def test_a_host_path_the_writer_does_not_clean_still_refuses_the_package(tmp_path):
+    job = Job(tmp_path)
+    _room_as_the_host_writes_it(job, custom="/var/lib/blueprint/pubsub-handoffs/elsewhere/appearance.ply")
+    result = World(job).publish()
+    assert result["status"] == "refused" and result["reason"] == "website_company_simulation_file_names_the_site"
+    assert result["detail"] == "scene/room.usdc holds a host path", result
+
+
 def _plant(job: Job, carrier: str, value: str) -> str:
     if carrier in {"usda", "usdc"}:
         job.appearance.unlink()

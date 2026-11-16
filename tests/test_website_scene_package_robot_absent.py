@@ -305,8 +305,12 @@ def test_the_arms_packet_failures(tmp_path, monkeypatch, case):
     ([], None)])
 def test_a_held_support_ships_and_the_readme_says_so_from_its_own_reasons(tmp_path, reasons, sentence):
     """Owner, 2026-11-16: the support check is a flag. The package is built and says what the record says."""
-    plain = _publish_with_record(Job(tmp_path / "plain"))
-    told = _publish_with_record(Job(tmp_path / "told"), task_support_pad={
+    plain_job, told_job = Job(tmp_path / "plain"), Job(tmp_path / "told")
+    # The test job's usdz carries its write time; the same bytes in both, so only the record differs.
+    told_job.object.write_bytes(plain_job.object.read_bytes())
+    told_job.seal()
+    plain = _publish_with_record(plain_job)
+    told = _publish_with_record(told_job, task_support_pad={
         "status": "held" if reasons else "consistent", "reasons": reasons})
     for name in ("SUPPORT_REGION_NOT_HELD", "SUPPORT_NOT_HELD"):
         assert _said(told["README.txt"], getattr(sim, name)) is (name == sentence)
