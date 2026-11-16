@@ -17,6 +17,8 @@ from blueprint_pipeline import website_atlas_scene_source as scene_source
 from tests.test_website_atlas_scene_source import job_fixture, write, digest
 from tests.test_atlas_scene_planner import fixture as planner_fixture
 
+RULE = {"code": "atlas_planner_removal_not_applied", "planner_remove_count": 2, "removed_count": 0}
+
 
 @pytest.mark.parametrize("refined_splat", [False, True])
 @pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
@@ -61,11 +63,18 @@ def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp
     assert "minimum_frames" not in selections[0] and "maximum_frames" not in selections[0]
 
 
-@pytest.mark.parametrize("tamper", ["remove", "instruction", "transient"])
+@pytest.mark.parametrize("tamper", ["remove", "instruction", "transient", "captured", "other_rule", "ruled_remove"])
 def test_cached_environment_plan_cannot_enter_paid_pose_after_an_edit_is_injected(tmp_path, monkeypatch, tamper):
     review = {"subject_origin": "no_manipulated_subject", "automation": {
         "objects": [{"disposition": "keep"}], "removal_instruction": ""}}
-    if tamper == "remove":
+    if tamper in {"captured", "other_rule", "ruled_remove"}:
+        # Only the job-object rule keeps a captured job's scene as filmed, and only with nothing removed.
+        review["subject_origin"] = "captured"
+        review.update({"other_rule": {"job_object_rule": {**RULE, "code": "another_code"}},
+                       "ruled_remove": {"job_object_rule": RULE}}.get(tamper, {}))
+        if tamper == "ruled_remove":
+            review["automation"]["objects"][0]["disposition"] = "remove"
+    elif tamper == "remove":
         review["automation"]["objects"][0]["disposition"] = "remove"
     elif tamper == "instruction":
         review["automation"]["removal_instruction"] = "Erase the shelves"
@@ -80,7 +89,7 @@ def test_cached_environment_plan_cannot_enter_paid_pose_after_an_edit_is_injecte
 
 @pytest.mark.parametrize("source_status", ["processing", "needs_input", "completed"])
 @pytest.mark.parametrize("cached_splat", [False, True])
-@pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
+@pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject", "captured"])
 @pytest.mark.parametrize("left_out", [False, True])
 def test_preserved_reconstruction_exports_observations_and_never_buys_appearance(
         tmp_path, monkeypatch, source_status, cached_splat, subject_origin, left_out):
@@ -95,7 +104,9 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
     (tmp_path / "atlas_scene_review.json").write_text("{}")
     proposal = {"subject_origin": subject_origin, "automation": {
         "objects": [{"disposition": "keep"}], "removal_instruction": ""},
-        "uncaptured_regions": ["unobserved underside"]}
+        "uncaptured_regions": ["unobserved underside"],
+        # A captured job that brings no object of its own: the planner's removals were not applied.
+        **({"job_object_rule": RULE} if subject_origin == "captured" else {})}
     calls, exports, decodes = [], [], []
     monkeypatch.setattr(pipeline, "_source_pose", lambda **kw: calls.append("source_pose") or {
         "status": source_status, "operation_id": "source", "reason": "scale_unresolved",
@@ -141,6 +152,7 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
         return
     assert result["captured_scene_preserved"] is True
     assert result["subject_origin"] == subject_origin
+    assert result.get("job_object_rule") == proposal.get("job_object_rule")
     assert result["image_inpainting_performed"] is False and result["object_removal_performed"] is False
     assert result["generated_completion_performed"] is False and result["simulation_qualified"] is False
     assert result["uncaptured_regions"] == ["unobserved underside"]
@@ -156,14 +168,15 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
 
 
 @pytest.mark.parametrize("tamper", [None, "removal", "pose"])
-@pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
+@pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject", "captured"])
 def test_production_scene_handoff_accepts_preserved_geometry_without_fabricating_removal(tmp_path, tamper, subject_origin):
     root = job_fixture(tmp_path, same_pose=tamper != "pose")
     result = json.loads((root / "result.json").read_text())
     background = result.pop("automation")["background"]
     result.update(subject_origin=subject_origin, captured_scene_preserved=True,
         object_removal_performed=tamper == "removal", image_inpainting_performed=False,
-        generated_completion_performed=False, mesh_available=True, splat_manifest_digest=background["splat_manifest_digest"])
+        generated_completion_performed=False, mesh_available=True, splat_manifest_digest=background["splat_manifest_digest"],
+        **({"job_object_rule": RULE} if subject_origin == "captured" else {}))
     shutil.move(root / "automation/background_splat", root / "splat")
     shutil.move(root / "automation/background_mesh", root / "mesh")
     write(root / "result.json", digest(result))
@@ -175,6 +188,7 @@ def test_production_scene_handoff_accepts_preserved_geometry_without_fabricating
         value = scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
         assert value["status"] == "ready" and value["scene_content"] == "captured_scene_preserved"
         assert value["subject_origin"] == subject_origin
+        assert value.get("job_object_rule") == result.get("job_object_rule")
         assert value["base_scene"]["anchor"]["basis"] == "same_atlas_pose"
         assert value["base_scene"]["scale_authority"] == "atlas_reference_estimate"
         assert not (root / "automation/background/prepared_background.json").exists()

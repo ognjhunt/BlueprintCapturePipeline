@@ -274,3 +274,42 @@ def test_finished_geometry_cannot_be_joined_to_another_same_source_selection(ret
     _save(retained.root, "selection_binding.json", selection)
     with pytest.raises(ValueError, match="pose_changed"):
         _resolve(retained)
+
+
+def _preparation_holds_its_lease(capture):
+    from datetime import datetime, timedelta, timezone
+    _save(capture, "pipeline_job_ledger.json", {"status": "processing", "lease_expires_at": (
+        datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()})
+
+
+def test_a_clean_plate_waiting_on_the_atlas_selection_never_makes_atlas_wait_on_it(retained, monkeypatch):
+    # Review 2026-11-16 (gap C v2): the clean plate waited on the Atlas selection while the Atlas job waited on
+    # the clean plate's manifest, until the job's seven-day expiry. The clean plate now says it defers, and the
+    # Atlas job reads that as final: the planner's object is the job's own, so its removals stand.
+    from blueprint_pipeline import clean_plate_stage as stage
+    from blueprint_pipeline.website_atlas_pipeline import JOB_OBJECT_RECORD, job_object_review
+    clean = retained.capture / "pipeline/clean_plate"
+    _save(clean, "removal_plan.json", retained.plan)
+    _save(retained.root, "preview_job.json", {**retained.job, "state": "processing"})
+    _preparation_holds_its_lease(retained.capture)
+    monkeypatch.setattr(stage, "analyze_removal_targets", lambda **kw: pytest.fail("repeat model call"))
+    monkeypatch.setattr(stage, "prepare_website_source_frames", lambda **kw: {"status": "completed"})
+    monkeypatch.setattr(stage, "run_website_task_masks", lambda **kw: {"status": "completed"})
+    run = lambda: stage.run_clean_plate_stage(  # noqa: E731
+        capture_root=retained.capture, website_source_video=retained.source, task_context=retained.context,
+        privacy_processing={"status": "pending_website_review"}, policy=stage.CleanPlatePolicy(enabled=True))
+    review = retained.selection["review"]
+    # Before the clean plate has run, the Atlas job waits for it while the preparation holds its lease.
+    assert job_object_review(retained.root, review, retained.context) == (review, True)
+    with pytest.raises(StageError) as raised:
+        run()
+    assert atlas_wait(raised.value)
+    assert not (clean / stage.STAGE_MANIFEST_FILENAME).exists()  # every existing reader sees what it saw before
+    # The Atlas job's next step goes on at once on today's route, and remembers why.
+    assert job_object_review(retained.root, review, retained.context) == (review, False)
+    record = json.loads((retained.root / JOB_OBJECT_RECORD).read_text())
+    assert record["applied"] is False and record["clean_plate_status"] == "defers_to_atlas_selection"
+    # Once the Atlas job is ready, the clean plate resolves from its selection.
+    _save(retained.root, "preview_job.json", retained.job)
+    assert run()["status"] == "objects_removed"
+    assert job_object_review(retained.root, review, retained.context) == (review, False)

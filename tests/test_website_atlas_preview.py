@@ -1449,3 +1449,19 @@ def test_a_try_again_answer_takes_the_bounded_schedule_then_fails_with_its_code(
         world.advance()
     assert (_job(site)["state"], _job(site)["reason"]) == ("failed", code)
     assert len(world.runs) == 1 + len(preview.REFUSAL_RETRY_DELAYS_SECONDS)
+
+
+def test_a_job_repairing_one_round_per_step_lets_another_job_move_between_rounds(monkeypatch, site):
+    # 2026-11-16, itest-7c42: one step ran seven repair rounds for two hours while every other job waited,
+    # until the unit's limit cut an edit. A repair step now returns after each bought round.
+    _enqueue(site)
+    other = _continuation(site)
+    _enqueue(other, descriptor=_descriptor(capture_id=other.capture.name))
+    world = World(monkeypatch, site, [lambda kw: {"status": "processing", "stage": "automation_targeted_repairs"}] * 6)
+    for _tick_number in range(2):
+        world.clock += 60
+        assert _tick(site, world) == {"processing": 2}
+    order = [kwargs["output_root"].parent.parent.name for kwargs in world.runs]
+    assert order.count(site.capture.name) == order.count(other.capture.name) >= 2
+    # No job runs two rounds in a row while the other waits: they alternate.
+    assert all(first != second for first, second in zip(order, order[1:]))

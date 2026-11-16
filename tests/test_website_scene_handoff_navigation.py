@@ -32,7 +32,8 @@ CUPS = [{"target_id": f"cup-{i}", "semantic_label": "cup", "task_effect": "manip
 
 def room_job(tmp_path: Path, patches, *, family: str = "navigation", description: str = NAVIGATE,
              removal=(), goal: bool = True, all_targets: bool = False, route: str | None = None,
-             articulated: bool = False, second_goal: bool = False, not_found: bool = False):
+             articulated: bool = False, second_goal: bool = False, not_found: bool = False,
+             job_object_rule=None):
     """One website job through the real handoff onto the company builder's own test capture (``Job``).
 
     The capture's team scene status is removed: no half is compiled for a room package; the builder reads the
@@ -63,7 +64,8 @@ def room_job(tmp_path: Path, patches, *, family: str = "navigation", description
     atlas = {"status": "ready", "base_scene": args["base_scene"], "alignment": "anchored",
              "source_geometry": {**args["source_geometry"], "geometry_backend": "world_labs_atlas"},
              "source_pose_digest": "sha256:" + "1" * 64, "background_pose_digest": "sha256:" + "2" * 64,
-             **({"atlas_route": route} if route else {})}
+             **({"atlas_route": route} if route else {}),
+             **({"job_object_rule": job_object_rule} if job_object_rule else {})}
     patches.setattr(ATLAS, lambda **_: atlas)
     patches.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **kw: kw["task_masks"])
     descriptor = {"capture_id": CAPTURE, "scene_id": SITE, "metadata": {"site_task_context": context}}
@@ -287,3 +289,33 @@ def test_a_room_package_that_contradicts_its_record_is_refused(tmp_path, monkeyp
     handoff_path.write_text(json.dumps(value))
     published = World(job).publish()
     assert (published["status"], published["reason"]) == ("refused", "website_company_simulation_room_record_mismatch")
+
+
+def test_a_job_that_brings_no_object_says_nothing_was_taken_out_of_the_room_scan(tmp_path, monkeypatch):
+    # Job itest-7c42 (2026-11-16, wiping): the clean plate took nothing, so the Atlas planner's two
+    # removals were not applied and the room is as filmed (``website_atlas_pipeline.job_object_review``).
+    from blueprint_pipeline.atlas_automation_plan import JOB_OBJECT_RULE
+    from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+    monkeypatch.delenv(CATALOG_PATH_ENV, raising=False)
+    rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": 2, "removed_count": 0}
+    job, _context, result = room_job(tmp_path, monkeypatch, family="wiping", description="Wipe the table.",
+                                     all_targets=True, job_object_rule=rule)
+    record = _record(result)
+    assert record["flags"] == [handoff.RUNTIME_GAP, JOB_OBJECT_RULE] and record["job_objects"] is None
+    _status, members = _published(job)
+    assert _said(members["README.txt"]).endswith(" ".join([sim.ROOM_NOT_RUN, sim.NO_RULE, sim.NOTHING_TAKEN_OUT]))
+
+
+def test_a_job_with_both_flags_reads_as_two_plain_sentences_in_order(tmp_path, monkeypatch):
+    # Gap A (the analysis found nothing) and the job-object rule on one job: no contradiction, nothing twice.
+    from blueprint_pipeline.atlas_automation_plan import JOB_OBJECT_RULE
+    from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+    monkeypatch.delenv(CATALOG_PATH_ENV, raising=False)
+    rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": 2, "removed_count": 0}
+    job, _context, result = room_job(tmp_path, monkeypatch, family="wiping", description="Wipe the table.",
+                                     all_targets=True, not_found=True, job_object_rule=rule)
+    assert _record(result)["flags"][-2:] == [handoff.NOT_FOUND, JOB_OBJECT_RULE]  # caller's flags first
+    _status, members = _published(job)
+    said = _said(members["README.txt"])
+    assert said.endswith(" ".join([sim.NOT_FOUND, sim.NOTHING_TAKEN_OUT]))
+    assert said.count("taken out of the room scan") == 1

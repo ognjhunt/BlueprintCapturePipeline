@@ -24,12 +24,12 @@ COMPLETION_REVISION = "v14"
 def _context_binding(context_basis, review, pose, context):
     if context_basis == 'generated_background':
         return {}
-    from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
+    from .atlas_automation_plan import preserves_capture
 
     automation = review.get('automation') or {}
     objects = automation.get('objects')
     if (context_basis != 'preserved_capture'
-            or review.get('subject_origin') not in PRESERVED_SCENE_ORIGINS
+            or not preserves_capture(review)
             or not automation
             or not isinstance(objects, list)
             or any(not isinstance(row, dict) or row.get('disposition') != 'keep' for row in objects)

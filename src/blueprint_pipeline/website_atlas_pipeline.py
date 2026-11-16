@@ -22,7 +22,7 @@ import time
 
 from .website_task_context import load_atlas_configuration as load_configuration
 from .common import write_json
-from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
+from .atlas_automation_plan import JOB_OBJECT_RULE, PRESERVED_SCENE_ORIGINS, preserves_capture
 from .atlas_pricing import admitted_final_outputs, render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
@@ -294,6 +294,91 @@ def run_atlas_pipeline(*, output_root: Path, **options):
         return result
 
 
+def _preparation_running(capture_root: Path) -> bool:
+    """Whether the preparation attempt that queued this Atlas job (``site_package_orchestrator``, before its
+    clean plate) still holds its lease in the capture's job ledger, so its clean plate may yet be written."""
+    from datetime import datetime, timezone
+    from .handoff_job_state import _read_job_ledger
+    ledger = _read_job_ledger(capture_root)
+    try:
+        expires = datetime.fromisoformat(str(ledger.get("lease_expires_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return ledger.get("status") == "processing" and expires > datetime.now(timezone.utc)
+
+
+#: The job-object decision, made once (``job_object_review``) and read back on every later step.
+JOB_OBJECT_RECORD = "job_object_rule.json"
+#: Where the people route records the planner removals it did not apply; the scene source never reads it.
+NOT_APPLIED_FIELD = "planner_removals_not_applied"
+
+
+def job_object_review(output_root: Path, review, task_context):
+    """The review as this job consumes it, and whether the decision waits for the clean plate.
+
+    The room views lose only what the job brings back as its own object: the clean plate's
+    ``manipulated`` entries, which the handoff lifts, registers and authors (owner, 2026-11-16).
+    When the finished clean plate names none, every object the planner asked to remove is kept and
+    the planner's removal instruction is dropped. Nobody in view: the scene as filmed, its review
+    carrying ``job_object_rule``. People in the edited views: the editor erases them as today, and
+    the review carries ``NOT_APPLIED_FIELD``. People only outside those views: today's route, whose
+    inputs may hold those frames. A clean plate that ended blocked or removed an object: today's route.
+
+    The bought review, its files and every paid-call contract are unchanged. Only ``noop`` or
+    ``objects_removed`` can apply the rule; a clean plate that ended any other way, or that defers to
+    this job's own selection (``ATLAS_SELECTION_WAIT_FILENAME``: the planner's object is then the job's),
+    keeps today's route. A clean plate not yet written is waited for only while the preparation
+    attempt that queued this job still holds its lease (``_preparation_running``); after that the
+    absence is final too. The first decision is sealed in ``JOB_OBJECT_RECORD``, so a job never changes
+    route mid-flight. Only a website capture's own Atlas job (``pipeline/atlas``) has a clean plate.
+    """
+    from .atlas_video_inputs import takes_reviewed_background
+    from .clean_plate_stage import (ATLAS_SELECTION_WAIT, ATLAS_SELECTION_WAIT_FILENAME, REMOVAL_MANIFEST_FILENAME,
+                                    STAGE_MANIFEST_FILENAME)
+    from .owned_capture_atlas_context import SCHEMA as OWNED_SCHEMA
+    automation = review.get("automation") or {}
+    asked = sum(1 for row in automation.get("objects") or [] if row.get("disposition") == "remove")
+    if (not asked or output_root.name != "atlas" or output_root.parent.name != "pipeline"
+            or task_context.get("schema_version") == OWNED_SCHEMA):
+        return review, False
+    kept = {**review, "automation": {**automation, "removal_instruction": "", "objects": [
+        {**row, "disposition": "keep"} for row in automation["objects"]]}}
+    path = output_root / JOB_OBJECT_RECORD
+    if path.is_file():
+        decided = json.loads(path.read_text())
+        if decided.get("digest") != canonical_digest(decided, digest_field="digest"):
+            raise ValueError("atlas_job_object_record_invalid")
+    else:
+        clean, entries = output_root.parent / "clean_plate", None
+        try:
+            deferred = json.loads((clean / ATLAS_SELECTION_WAIT_FILENAME).read_text())
+        except (OSError, ValueError):
+            deferred = {}
+        if (isinstance(deferred, dict) and deferred.get("reason") == ATLAS_SELECTION_WAIT
+                and deferred.get("digest") == canonical_digest(deferred, digest_field="digest")):
+            status = "defers_to_atlas_selection"
+        else:
+            try:
+                status = json.loads((clean / STAGE_MANIFEST_FILENAME).read_text()).get("status")
+                entries = json.loads((clean / REMOVAL_MANIFEST_FILENAME).read_text()).get("entries")
+            except (OSError, ValueError, AttributeError):
+                if _preparation_running(output_root.parent.parent):
+                    return review, True
+                status = "absent"
+        applied = (status in ("noop", "objects_removed") and isinstance(entries, list)
+                   and not any(not isinstance(row, dict) or row.get("task_effect") == "manipulated" for row in entries)
+                   and (not review.get("transient_frame_ids") or takes_reviewed_background(kept)))
+        decided = {"schema_version": "atlas_job_object_rule.v1", "applied": applied, "clean_plate_status": status,
+                   "planner_remove_count": asked}
+        decided["digest"] = canonical_digest(decided, digest_field="digest")
+        write_json(path, decided)
+    if decided.get("applied") is not True:
+        return review, False
+    rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": decided["planner_remove_count"], "removed_count": 0}
+    field = NOT_APPLIED_FIELD if review.get("transient_frame_ids") else "job_object_rule"
+    return {**kept, field: rule}, False
+
+
 def _job_edit_scope(output_root: Path, requested: str | None, *, default="required_and_additional") -> str:
     """The job's edit scope, chosen once: a resume can never change which views were cleaned."""
     from .atlas_scene_automation import EDIT_SCOPES
@@ -498,7 +583,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     from .atlas_result_bundle import export_pose_bundle
     from .paid_resource_allocator import run_sponsored_website_atlas_task, run_sponsored_website_atlas_automation
 
-    if not geometry_only and ((not reconstruction_only and review.get("subject_origin") not in PRESERVED_SCENE_ORIGINS)
+    job_object_rule = review.get("job_object_rule")
+    if not geometry_only and ((not reconstruction_only and not preserves_capture(review))
             or not review.get("automation")
             or any(row.get("disposition") != "keep" for row in review["automation"]["objects"])
             or review["automation"].get("removal_instruction", "").strip()
@@ -690,6 +776,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             **({'admission_digest': completion['admission']['digest'],
                 'admission_relative_path': str(Path(completion['admission_path']).relative_to(output_root))}
                if admitted_completion else {})}
+    if job_object_rule:
+        result["job_object_rule"] = job_object_rule
     if geometry_only:
         # A captured subject stays where it was filmed; a robot check reading this must cut it out first.
         result.update(atlas_route="geometry_only",
@@ -1128,7 +1216,12 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             policy=policy, task_context=task_context, source_digest=source_digest,
             configuration=_current_configuration(task_context, source_digest, config), check=check,
             experimental=experimental, max_polls=max_polls, model=receipt["model"], geometry_only=True)
-    if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS:
+    review, waiting = job_object_review(output_root, review, task_context)
+    if waiting:
+        # The clean plate names the job's own object; nothing is bought before it has.
+        return {"status": "processing", "stage": "clean_plate_wait"}
+    if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS or "job_object_rule" in review:
+        # A preserved origin, or a job that brings no object of its own and shows nobody: the scene as filmed.
         from .atlas_source_gap_evidence import combine_source_surveys
         source_survey = combine_source_surveys(survey_paths=[
             (Path(feedback['parent_root']) / 'survey/atlas_video_survey.json'
@@ -1175,7 +1268,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         return finalize_background_result(output_root=output_root, source_digest=source_digest,
             task_context=task_context, automation=automation, source_pose=source_pose,
             model=receipt["model"], edit_scope=edit_scope,
-            selection=view_selection(pose_root))
+            selection=view_selection(pose_root), not_applied=review.get(NOT_APPLIED_FIELD))
     count = len(inputs["frames"])
     # The targets the generation will ask for; the reviewed count where none is posed (never fewer than asked).
     target_count = (len(generation_target_ids(review=review, inputs=inputs))
@@ -1290,7 +1383,7 @@ def covered(pose_root) -> bool:
 
 
 def finalize_background_result(*, output_root, source_digest, task_context, automation, source_pose, model, edit_scope=None,
-                               selection=None):
+                               selection=None, not_applied=None):
     """The same durable handoff for a fresh job or a retained completed background.
 
     ``selection`` (the job's ``atlas_view_selection.json``) names what the views left out: the result
@@ -1321,6 +1414,9 @@ def finalize_background_result(*, output_root, source_digest, task_context, auto
               "billing_status": "provider_usage_unreported"}
     if complete and background.get("refined_splat"):
         result["refined_splat"] = background["refined_splat"]
+    if not_applied:
+        # People were erased, so this is no scene as filmed: recorded where the scene source never looks.
+        result[NOT_APPLIED_FIELD] = not_applied
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result

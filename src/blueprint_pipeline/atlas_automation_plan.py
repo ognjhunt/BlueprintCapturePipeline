@@ -7,6 +7,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SubjectOrigin = Literal["captured", "synthetic_design", "no_manipulated_subject", "uncertain"]
 PRESERVED_SCENE_ORIGINS = ("synthetic_design", "no_manipulated_subject")
+#: A captured job whose planner removals were not applied: the job brings no object of its own
+#: (``website_atlas_pipeline.job_object_review``), so its scene is kept as filmed, like the origins above.
+JOB_OBJECT_RULE = "atlas_planner_removal_not_applied"
+
+
+def preserves_capture(value) -> bool:
+    """Whether a review or an Atlas result keeps the captured scene as filmed (nothing removed or edited)."""
+    return (value.get("subject_origin") in PRESERVED_SCENE_ORIGINS
+            or (value.get("job_object_rule") or {}).get("code") == JOB_OBJECT_RULE)
 
 
 class ImageRegion(BaseModel):

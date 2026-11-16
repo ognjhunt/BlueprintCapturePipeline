@@ -424,6 +424,72 @@ def settle_completed_image_batches(*, output_root: Path, task_context: Mapping[s
     return settled
 
 
+#: Owner rule 2026-11-16: a paid call cut off mid-request counts as spent at its full quoted price, the
+#: call is made again under its own reservation, and the job carries on. It may only ever over-count.
+CUT_OFF_CODE = "website_image_completion_call_cut_off"
+CUT_OFF_RECORD = "cut_off.json"
+
+
+def _cut_off(receipt: Mapping[str, Any]) -> bool:
+    """An intent retained before its call whose process died before any answer (a provider failure
+    keeps its evidence and still needs reconciliation)."""
+    return receipt.get("status") == "submitting" and set(receipt) == {"status", "request_digest", "frame_id"}
+
+
+def _after_cut_offs(*, output_root: Path, binding: Mapping[str, Any], request_digest: str, indices: Sequence[int],
+                    frames: Sequence[Mapping[str, Any]], cap: float, task_context: Mapping[str, Any] | None,
+                    read_only: bool = False):
+    """The attempt this batch continues in, each earlier attempt that a cut-off call ended being settled once.
+
+    An attempt with a cut-off receipt counts its completed edits at their receipted cost and each
+    cut-off call at the full per-request cap; a request never sent counts nothing, because its intent
+    is written before every call. That attempt's reservation is settled at that figure (the WebApp
+    matches a settlement to a whole reservation by its request count), and the edits it did not
+    complete go on under a new request digest, with their own reservation, receipts and settlement.
+    Returns the binding and digest to continue under and, per edit completed earlier, its (root, digest).
+    ``read_only`` (a replay of retained edits) follows only attempts a live run already closed, and
+    writes, settles and buys nothing.
+    """
+    from .website_task_context import preparation_webapp_request
+    homes: dict[int, tuple[Path, str]] = {}
+    while True:
+        root, pending = output_root / request_digest[7:], [i for i in indices if i not in homes]
+        receipts = {i: json.loads((root / f"{i}.json").read_text()) for i in pending if (root / f"{i}.json").is_file()}
+        cut = [i for i in receipts if _cut_off(receipts[i])]
+        if not cut:
+            return binding, request_digest, homes
+        closed = (root / CUT_OFF_RECORD).is_file() and (task_context is None or (root / "settlement.json").is_file())
+        if read_only and not closed:
+            return binding, request_digest, homes
+        done = {i: receipt for i, receipt in receipts.items() if i not in cut}
+        costs = [receipt.get("cost_usd") for receipt in done.values()]
+        if (any(receipt.get("status") != "completed" or receipt.get("request_digest") != request_digest
+                for receipt in done.values())
+                or any(isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost)
+                       or not 0 <= cost <= cap for cost in costs)):
+            raise ValueError("website_image_completion_requires_reconciliation")
+        record = {"schema_version": "website_image_completion_cut_off.v1", "code": CUT_OFF_CODE,
+                  "request_digest": request_digest, "cut_off_frame_ids": [frames[i]["frame_id"] for i in cut],
+                  "per_request_cap_usd": cap, "counted_usd": round(sum(costs) + cap * len(cut), 6)}
+        if not (root / CUT_OFF_RECORD).is_file():
+            write_json(root / CUT_OFF_RECORD, record)
+        if task_context is not None and not (root / "settlement.json").is_file():
+            command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": request_digest,
+                       "provider": "openai", "completed_request_count": len(pending),
+                       "provider_charge_amount_usd": record["counted_usd"],
+                       "usage_receipt_digest": canonical_digest({"receipts": [receipts[i] for i in sorted(receipts)],
+                                                                 "cut_off": record})}
+            settled = preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
+                payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"],
+                         "settlement": command})
+            if any(settled.get(key) != value for key, value in command.items()) or settled.get("status") != "settled":
+                raise ValueError("website_image_completion_settlement_receipt_invalid")
+            write_json(root / "settlement.json", settled)
+        homes.update({i: (root, request_digest) for i in done})
+        binding = {**binding, "after_cut_off_request_digest": request_digest}
+        request_digest = canonical_digest(binding)
+
+
 def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_digest: str,
                                output_root: Path, admission: Mapping[str, Any],
                                token: str, admission_grant: PaidResourceAdmissionGrant | None = None,
@@ -513,16 +579,21 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("website_image_completion_in_progress") from exc
+        # A live run first closes any cut-off attempt; a replay follows only attempts already closed.
+        binding, request_digest, homes = _after_cut_offs(
+            output_root=output_root, binding=binding, request_digest=request_digest, indices=edited_indices,
+            frames=frames, cap=cap, task_context=task_context, read_only=require_cached)
+        todo = [i for i in edited_indices if i not in homes]
         root = output_root / request_digest[7:]
         root.mkdir(exist_ok=True)
         # A restart may read completed bytes without renewing spend authority.
         # Missing or uncertain receipts never authorize another purchase.
-        reuse_only = all((root / f"{i}.json").is_file() for i in edited_indices)
+        reuse_only = all((root / f"{i}.json").is_file() for i in todo)
         if require_cached and not reuse_only:
-            if any((root / f"{i}.json").exists() for i in edited_indices):
+            if any((root / f"{i}.json").exists() for i in todo):
                 raise ValueError("website_image_completion_cached_batch_incomplete")
             raise ValueError("website_image_completion_cached_batch_missing")
-        for index in edited_indices:
+        for index in todo:
             receipt_path = root / f"{index}.json"
             if receipt_path.is_file():
                 receipt = json.loads(receipt_path.read_text())
@@ -536,7 +607,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                         or not math.isfinite(cost) or not 0 <= cost <= cap):
                     raise ValueError("website_image_completion_receipt_invalid")
         if reuse_only:
-            budget = len(edited_indices) * cap
+            budget = len(todo) * cap
         else:
             # Resolve runtime credentials and source bytes before reserving money.
             if not token:
@@ -558,7 +629,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 settle_completed_image_batches(output_root=output_root, task_context=task_context)
                 admission, admission_grant = reserve_website_preparation_spend(
                     task_context=task_context, binding_digest=request_digest,
-                    maximum_cost_usd=len(edited_indices) * cap, request_count=len(edited_indices),
+                    maximum_cost_usd=len(todo) * cap, request_count=len(todo),
                     resource_class="openai_api_candidate", provider="openai", source_video_digest=source_video_digest)
             require_paid_resource_admission_grant(admission_grant, resource_class="openai_api_candidate",
                                                   allocation_binding_digest=request_digest, require_allocation_binding=True)
@@ -585,18 +656,22 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             if not editable.any():
                 results[index] = dict(frame)
                 continue
-            receipt_path, destination = root / f"{index}.json", root / f"{index}.png"
+            home, home_digest = homes.get(index, (root, request_digest))
+            receipt_path, destination = home / f"{index}.json", home / f"{index}.png"
             if receipt_path.exists():
                 receipt = json.loads(receipt_path.read_text())
                 if receipt.get("status") != "completed":
                     raise ValueError("website_image_completion_requires_reconciliation")
                 if _sha256_file(destination) != receipt["image_digest"]:
                     raise ValueError("website_image_completion_output_changed")
-                full_frame = root / f"{index}-full-frame.png"
+                full_frame = home / f"{index}-full-frame.png"
                 if "full_frame_image_digest" in receipt and (
                         not full_frame.is_file() or _sha256_file(full_frame) != receipt["full_frame_image_digest"]):
                     raise ValueError("website_image_completion_output_changed")
-                spent += receipt["cost_usd"]
+                if receipt.get("request_digest") != home_digest:
+                    raise ValueError("website_image_completion_receipt_invalid")
+                # An edit an earlier attempt completed was settled with that attempt, not this one.
+                spent += receipt["cost_usd"] if home == root else 0.0
             else:
                 if spent + cap > budget:
                     raise ValueError("website_image_completion_budget_exhausted")
@@ -687,7 +762,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 raise ValueError("website_image_completion_budget_exceeded")
             if index == order[0] and fixed_reference is None:
                 reference = destination.read_bytes()
-            full_frame_fields = ({"full_frame_image_path": str(root / f"{index}-full-frame.png"),
+            full_frame_fields = ({"full_frame_image_path": str(home / f"{index}-full-frame.png"),
                                   "full_frame_image_digest": receipt["full_frame_image_digest"]}
                                  if receipt.get("generated_region") == "removal_zone" else {})
             results[index] = ({**frame, "image_path": str(destination), "image_digest": receipt["image_digest"],
