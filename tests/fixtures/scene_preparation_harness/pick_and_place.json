@@ -15,7 +15,7 @@
   ],
   "preparation": {
    "preparation_id": "website-e6668e18f500169e8a373d38-0662bb89-20260919t120000z-8e5d5466f641-preparation",
-   "request_digest": "sha256:163dd37045b787fdcb08a79b198ff261f49e05189bd214184e61d9216b05a6ac"
+   "request_digest": "sha256:6e6e6da4c60f83aaf39518434c4c2222ee3dc957319f8ac5527e4cd059123a7a"
   },
   "release_window": [
    "digest",
@@ -32,7 +32,7 @@
  },
  "attempts": [
   {
-   "attempt_id": "scene-configuration-163dd37045b787fdcb08a79b",
+   "attempt_id": "scene-configuration-6e6e6da4c60f83aaf3951843",
    "counts_as_paid_attempt": true,
    "maximum_spend_usd": 11.0,
    "provider": "vast",
@@ -52,7 +52,7 @@
  },
  "launch_submissions": [
   {
-   "profile_digest": "sha256:189458cbd6a4d34fbac389cb68685fc2064f6274fdaf58537ae1eb09a09ccf31",
+   "profile_digest": "sha256:48409eaad981851e8052e2f186b65d5c4b41afe4fbbe90d314eef0a00a742d95",
    "rights": {
     "evidence": {
      "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -68,14 +68,14 @@
  "outcome": null,
  "preparation_request": {
   "hard_cap_usd": 11.0,
-  "normalised_digest": "sha256:163dd37045b787fdcb08a79b198ff261f49e05189bd214184e61d9216b05a6ac",
+  "normalised_digest": "sha256:6e6e6da4c60f83aaf39518434c4c2222ee3dc957319f8ac5527e4cd059123a7a",
   "preparation_id": "website-e6668e18f500169e8a373d38-0662bb89-20260919t120000z-8e5d5466f641-preparation",
   "scene_id": "site-req1",
   "task_id": "website-15e7ce50bcaa3260cfbb"
  },
  "preparation_result": {
   "configuration_render_inputs_result_digest": "sha256:fa7152fb4e7cdd68e58fec355824c3dbcd3c1e76ff71106a28c8b7f57a9fc48d",
-  "construction_recipe_digest": "sha256:c41824a688bfdcd71720b9c7b9729ca5b03fc986c1c0f17ba85e5af50189aab4",
+  "construction_recipe_digest": "sha256:73f4438bd214c57ac7ae1bc4f1ed70c075422a8e2a20ea68fd15b34fc0df3fbb",
   "run_mode": "scene_configuration",
   "status": "queued_for_production_scene_configuration"
  },
