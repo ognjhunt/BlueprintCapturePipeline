@@ -1,0 +1,408 @@
+{
+ "schema_version": "blueprint_test_job_matrix.v1",
+ "synthetic": true,
+ "replay_set": "tests/fixtures/replay_set_v1",
+ "readme_sentences": {
+  "physics_check": {
+   "none": [],
+   "isaac_sim": [],
+   "not_run": [
+    "Blueprint did not run this scene in Isaac Sim or any other simulator."
+   ],
+   "not_run_static_check_passed": [
+    "The object's file passed Blueprint's static USD physics check (one rigid body, collision shapes, mass and friction within set ranges).",
+    "Blueprint did not run this scene in Isaac Sim or any other simulator."
+   ]
+  },
+  "notes": {
+   "furniture_removed": "movable item(s) the site agreed to move are not in the collision file; they still appear in the appearance file.",
+   "appearance_quality_not_passed": "The appearance file did not pass Blueprint's image quality check; it is included as it is."
+  }
+ },
+ "notes": "Each row is one job variation from the repository's own synthetic fixtures. 'reading' is what the paid Atlas review's task_semantics would say. 'expected' is where the variation ends today: change it only with the change that moves it. 'readme_sentences' are the README's expected wording, kept here as literals: change them only on purpose.",
+ "variations": [
+  {
+   "label": "rigid-not-run-static-check-passed",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate",
+    "mesh-registration-closest-frame-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run_static_passed"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run_static_check_passed",
+    "readme_variant": [
+     "not_run_static_check_passed"
+    ]
+   }
+  },
+  {
+   "label": "planar-push-not-run",
+   "kind": "rigid_pick_place (planar_push compile strategy)",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-view-dependent-splat"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "planar_push",
+    "stage_5": "not_run"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run"
+    ]
+   }
+  },
+  {
+   "label": "destination-refused-by-the-not-run-stage",
+   "kind": "rigid_pick_place + supplemental destination",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "destination",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "expected": {
+    "last_stage": "scene_chain",
+    "kind": "refusal",
+    "code": "scene_configuration_stage_configuration_preflight_failed:stage-5:replacement_native_import_qualification:supplemental_destination_requires_native_import"
+   }
+  },
+  {
+   "label": "articulated-keeps-the-isaac-stage",
+   "kind": "articulated_open_close",
+   "reading": {
+    "task_family": "articulated_open_close",
+    "steps": [
+     {
+      "operation": "articulated_open_close",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "articulated",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "expected": {
+    "last_stage": "scene_chain",
+    "kind": "would_rent_gpu",
+    "code": "host_chain_plan:false:stage-5=simready_native_import_qualification"
+   }
+  },
+  {
+   "label": "navigation",
+   "kind": "goal_region_navigation",
+   "reading": {
+    "task_family": "goal_region_navigation",
+    "steps": [
+     {
+      "operation": "navigation",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "none",
+   "downstream": [
+    "navigation-4k-short"
+   ],
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "expected": {
+    "last_stage": "completion_enqueue",
+    "kind": "refusal",
+    "code": "preparation_completion_not_adopted"
+   }
+  },
+  {
+   "label": "no-clear-stance-ships-without-the-arm",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run",
+    "case": "no_stance"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": "team_embodiment_task_motion_no_clear_stance",
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run"
+    ]
+   }
+  },
+  {
+   "label": "owner-thresholds-assumed",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "isaac",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "fixture",
+    "case": "owner"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "assumed_thresholds": true,
+    "robot_free_probe": "not_queued"
+   }
+  },
+  {
+   "label": "unknown-kind",
+   "kind": "unregistered",
+   "reading": {
+    "task_family": "restock_shelves",
+    "steps": [
+     {
+      "operation": "restock_shelves",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "expected": {
+    "last_stage": "routing",
+    "kind": "refusal",
+    "code": "route:none"
+   }
+  },
+  {
+   "label": "isaac-qualified-stage-5",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "isaac",
+   "downstream": [
+    "rigid-pick-place-1080p-short"
+   ],
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "isaac_qualified"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_check": "isaac_sim",
+    "readme_variant": [
+     "isaac_sim"
+    ],
+    "robot_free_probe": "not_queued"
+   }
+  },
+  {
+   "label": "not-run-record-claiming-isaac-is-refused",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "isaac",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run_claiming_isaac"
+   },
+   "expected": {
+    "last_stage": "website_compile",
+    "kind": "refusal",
+    "code": "rigid_relocation_native_adapter_executable_geometry_missing"
+   }
+  },
+  {
+   "label": "look-file-quality-gate",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run",
+    "case": "quality_gate"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": "native_task_arena_particlefield_quality_missing_or_invalid",
+    "readme_variant": [
+     "not_run",
+     "appearance_quality_not_passed"
+    ]
+   }
+  },
+  {
+   "label": "furniture-moved",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "zip": {
+    "furniture_moved": 2
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "readme_variant": [
+     "not_run",
+     "furniture_removed"
+    ]
+   }
+  },
+  {
+   "label": "object-not-filmed",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "front_half": [
+    "atlas-coverage-gap-site-ask"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "expected": {
+    "last_stage": "front_half",
+    "kind": "refusal",
+    "code": "atlas_task_and_scene_coverage_gap"
+   }
+  }
+ ]
+}
