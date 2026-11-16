@@ -277,19 +277,39 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert output is None and source_action['status'] == 'source_recovery_required'
     assert source_action['source_evidence']['additional_source_frame_ids'] == ['unselected-angle']
     assert source_action['new_atlas_generation_calls'] == 0 and len(calls) == 1
+    # What the footage does not show is flagged and left unfilled, never generated and never a
+    # stop. A job stopped on it before (the stored stop below, no mask written) is decided afresh.
+    resume = {**args, 'root': tmp_path / 'resume'}
+    (tmp_path / 'resume').mkdir()
+    (tmp_path / 'resume/source-action.json').write_text(json.dumps({
+        'schema_version': 'atlas_source_gap_action.v1', 'status': 'source_review_required',
+        'reason': 'atlas_source_visibility_uncertain', 'new_atlas_generation_calls': 0}))
+    first, second = proposal['view_gap_reasons']
+    first['source_evidence'][0].update(visibility='uncertain', source_frame_ids=[])
+    output, flagged = completion.complete_scene(**resume)
+    unfilmed = f"{first['gap_ids'][0]}: not filmed; left unfilled, nothing generated"
+    assert flagged['status'] == 'passed' and len(calls) == 2
+    assert [row['camera_id'] for row in calls[1]['selected']] == [second['camera_id']]
+    assert calls[1]['selected'][0]['completion_gap_ids'] == second['gap_ids']
+    assert unfilmed in flagged['remaining_unknowns'] and flagged['whole_scene_complete'] is False
+    second['source_evidence'][0].update(visibility='uncertain', source_frame_ids=[])
+    output, flagged = completion.complete_scene(**resume)
+    assert output == [] and flagged['status'] == 'passed' and len(calls) == 2
+    assert flagged['review']['reason'] == 'source_review_left_unfilmed_gaps_unfilled'
+    assert unfilmed in flagged['remaining_unknowns'] and flagged['new_atlas_generation_calls'] == 0
     for entry in proposal['view_gap_reasons']:
         entry['source_evidence'][0].update(visibility='physical_opening', source_frame_ids=['a'])
     output, openings = completion.complete_scene(**args)
     assert output == [] and openings['review']['reason'] == 'source_review_found_physical_openings'
-    assert len(calls) == 1, 'A real opening is not a missing panel to generate'
+    assert len(calls) == 2, 'A real opening is not a missing panel to generate'
     proposal['view_gap_reasons'].pop()
     with pytest.raises(ValueError, match="task_gap_plan_missing"):
         completion.complete_scene(**args)
-    assert len(calls) == 1
+    assert len(calls) == 2
     proposal["selected_camera_ids"] = ["invented-camera"]
     with pytest.raises(ValueError, match="camera_selection_invalid"):
         completion.complete_scene(**args)
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("drop_generated", [False, True])
