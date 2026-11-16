@@ -31,6 +31,7 @@
    "room_not_run": "The room is as reconstructed from the video; Blueprint ran no robot, policy or simulator in it.",
    "goal_estimated": "The goal region was estimated from the video; its radius and how long the robot must stay in it are assumed, not stated by the site.",
    "no_rule": "This package includes no success rule from Blueprint for this job; the job as the site described it is on the job's page.",
+   "not_found": "Blueprint did not find what the job is about in the video.",
    "objects_taken_out": "object(s) the job involves were taken out of the room scan and are not in this package.",
    "objects_in_scan": "The job's objects are part of the room scan; they are not separate files.",
    "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video."
@@ -173,6 +174,39 @@
      "goal_estimated"
     ],
     "readme_sha256": "sha256:439d786bbaec30c19081695a75bdcc445a0bfa760ca727d155e8d3bc317e8930"
+   }
+  },
+  {
+   "label": "navigation-nothing-found",
+   "kind": "goal_region_navigation",
+   "reading": {
+    "task_family": "goal_region_navigation",
+    "steps": [
+     {
+      "operation": "navigation",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "none",
+   "compile": {
+    "handoff": "room_package",
+    "nothing_found": true
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "no_rule",
+     "not_found"
+    ],
+    "readme_sha256": "sha256:00f10f8d1f42799fa4b74caf0517fd3e1642af05dd0a2499f3d6b2d5568c9974"
    }
   },
   {

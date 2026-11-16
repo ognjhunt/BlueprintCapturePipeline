@@ -135,7 +135,11 @@ def rerun_at_no_cost(capture_root: Path) -> str | None:
 
 def load_rerun_analysis(*, capture_root: Path, task_context: Mapping[str, Any],
                         source_video: Path) -> dict[str, Any] | None:
-    """The retained completed analysis a $0 re-run keeps, whatever revision bought it; else None."""
+    """The retained completed analysis a $0 re-run keeps, whatever revision bought it; else None.
+
+    An analysis that found nothing of the task (``task_relevant_target_not_observed``, held before
+    2026-11-16) is kept too: the clean plate now goes on from it with nothing removed.
+    """
     if rerun_at_no_cost(capture_root) is None:
         return None
     pipeline_root = Path(capture_root) / "pipeline"
@@ -143,7 +147,8 @@ def load_rerun_analysis(*, capture_root: Path, task_context: Mapping[str, Any],
     if pipeline_root.is_symlink() or not plan_path.is_file() or plan_path.is_symlink():
         return None
     value = _read(pipeline_root / "clean_plate", "removal_plan.json")
-    if value.get("status") != "completed" or _source_binding(
+    found_nothing = value.get("status") == "blocked" and value.get("blockers") == ["task_relevant_target_not_observed"]
+    if (value.get("status") != "completed" and not found_nothing) or _source_binding(
             value.get("original_uncertain_analysis") or value, task_context, source_video) is None:
         return None
     return value

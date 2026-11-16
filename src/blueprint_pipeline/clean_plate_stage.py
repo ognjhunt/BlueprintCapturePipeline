@@ -37,6 +37,8 @@ from .website_task_masks import run_website_task_masks
 from .website_task_target_choice import load_target_choices, retain_questions
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
+#: A website analysis that found nothing the task is about goes on flagged with this code, buying no masks.
+NOT_FOUND = "task_relevant_target_not_observed"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
 DAY_GATE_ENV = "BLUEPRINT_CLEAN_PLATE_DAY_GATE"
 
@@ -371,6 +373,11 @@ def _run_clean_plate_stage(
             # recorded guess, which the site may correct; it is never a stop.
             from .clean_plate_removal_analysis_gemini import resolve_uncertain_targets
             plan = resolve_uncertain_targets(plan)
+            if plan.get("status") == "blocked" and list(plan.get("blockers") or []) == [NOT_FOUND]:
+                # Nothing the task is about was found in the video (owner rule 2026-11-16: no stop). The job
+                # goes on with nothing removed and no masks bought; the handoff ships the room as filmed, and
+                # says so (``website_scene_handoff.write_room_package``). Any other blocker still stops.
+                plan = {**plan, "status": "completed", "blockers": [], "flags": [NOT_FOUND]}
         plan_errors = validate_removal_plan(plan)
         if plan_errors:
             blockers.extend(plan_errors)
@@ -421,7 +428,7 @@ def _run_clean_plate_stage(
             reason = "website_source_geometry_unavailable"
             blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
 
-    if source_geometry is not None and not blockers and any(
+    if source_geometry is not None and not blockers and NOT_FOUND not in (plan.get("flags") or []) and any(
         target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}
         for target in task_plan.get("targets", [])
     ):
@@ -531,6 +538,7 @@ def _run_clean_plate_stage(
         "source_frames": source_geometry,
         "input_video_path": str(input_video_path) if input_video_path else None,
         "task_masks": task_masks,
+        **({"flags": list(plan["flags"])} if plan.get("flags") else {}),
         "target_count": stage_manifest["target_count"],
         "movable_removal_count": stage_manifest["movable_removal_count"],
         "person_target_count": stage_manifest["person_target_count"],

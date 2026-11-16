@@ -327,6 +327,8 @@ GOAL_RADIUS_M, GOAL_DWELL_SECONDS = 0.5, 2.0
 ROOM_GAPS = frozenset({"website_native_task_profile_preparation_required", "website_task_operation_coverage_unresolved"})
 #: The other "no model for this job" findings that ship the room package, each flagged on its record by its code.
 MISMATCH = "website_task_profile_mechanism_mismatch"
+#: The video analysis found nothing the task is about (``clean_plate_stage``): the room as filmed, flagged.
+NOT_FOUND = "task_relevant_target_not_observed"
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
 
 
@@ -375,6 +377,13 @@ def _sim_frame(*, base_scene: Mapping[str, Any], source_geometry: Mapping[str, A
     runtime_to_sim[:3, :3] = float(mpu) * (np.array([[1, 0, 0], [0, 0, -up_sign], [0, up_sign, 0]])
                                            if _UP_INDEX[base_scene["up_axis"]] == 1 else np.eye(3))
     return float(mpu), runtime_to_sim, matrix
+
+
+def room_flags(flags: Sequence[str], clean_plate: Mapping[str, Any]) -> list[str]:
+    """A room package's flags: the caller's, then the clean plate's "nothing of the task found" (``NOT_FOUND``)
+    when it was raised; in that order, each once."""
+    found = [NOT_FOUND] if NOT_FOUND in (clean_plate.get("flags") or []) else []
+    return list(dict.fromkeys([*flags, *found]))
 
 
 def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[str, Any],
@@ -492,6 +501,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                      flags: Sequence[str] = ()) -> dict[str, Any]:
         # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
         result.pop("rule_withheld", None)
+        flags = room_flags(flags, clean_plate)
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only, flags=flags)
@@ -598,6 +608,11 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         from .website_task_semantics import effective_task_profile
         resolved = task_profile_for(effective_task_profile(task_context=context, **semantics_options))
         navigation = resolved is not None and not resolved.requires_manipulation
+        if NOT_FOUND in (clean_plate.get("flags") or []):
+            # Nothing of the task in the video: no object, mask or goal to read. The room as filmed, flagged; a
+            # navigation job keeps its kind, with no goal region.
+            return room_package(resolved.profile_id if resolved is not None else None,
+                                {"targets": []} if navigation else None)
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile

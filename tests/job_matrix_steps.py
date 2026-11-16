@@ -288,7 +288,8 @@ def room_handoff(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPatch
 
     reading = row["reading"]
     _job, _context, result = room_job(work, patches, family=reading["task_family"],
-                                     description=reading["steps"][0]["task_quote"])
+                                     description=reading["steps"][0]["task_quote"],
+                                     not_found=bool(row["compile"].get("nothing_found")))
     feed = ("fixture:tests/test_website_scene_handoff_navigation.room_job (the real handoff on "
             "tests/test_website_task_preparation geometry and a real splat)")
     if result.get("status") != "room_package_written":
