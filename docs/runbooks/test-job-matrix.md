@@ -34,7 +34,10 @@ stand-in articulated record (no articulated website fixture exists), so its stag
 website compile uses the drawer cabinet of `tests/test_team_scene_packet._articulated_scene` with the not-run record.
 "no-clear-stance" and "look-file-quality-gate" are forced through the package's own test helpers; for
 "furniture-moved" and "held-support-ships-with-the-flag", the half's sealed record is replaced with one carrying
-an applied removal, or a held support record. They test the package's
+an applied removal, or a held support record. "unknown-kind-one-object-rule-withheld" is compiled with the
+handoff's sealed reason, as the worker reads it (the handoff's route is tested in
+`tests/test_website_scene_handoff.py`), and the two "rigid-half-without-a-rule" rows drop the half's rule, with no
+reason or one no handoff gives. They test the package's
 reaction, not how a job gets there.
 
 ## What it cannot show

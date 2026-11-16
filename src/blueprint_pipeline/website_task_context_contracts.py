@@ -17,6 +17,46 @@ from .decision_evidence_contracts import canonical_digest
 GEOMETRY_ONLY_BLOCKER = "website_geometry_only_fit_check"
 
 
+def authoring_admission_blockers(spend: Mapping[str, Any], task_context: Mapping[str, Any], *,
+                                 authoring_provider: str) -> list[str]:
+    """What the object's authoring may not go ahead without, in compile's order (``website_task_preparation``):
+    the Anthropic terms, the signed Agents API authority, the execution authority and the processing rights.
+    Decided from the grant and the context alone, before anything is spent or sent."""
+    consent = dict(spend.get("consent") or {})
+    found = []
+    terms = spend.get("anthropic_provider_terms_reference")
+    if authoring_provider == "anthropic" and (
+            not isinstance(terms, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", terms) is None
+            or not isinstance(consent.get("provider_terms_reference"), str) or not consent["provider_terms_reference"]):
+        # This must come from the website's fresh owner-authorized execution
+        # authority. A local key or worker environment cannot opt a scene in.
+        found.append("website_anthropic_provider_terms_authority_required")
+    if any(spend.get(key) is not None for key in ("authoring_agent_runtime", "authoring_model", "agents_api_policy")) and (
+            authoring_provider != "openai"
+            or spend.get("authoring_agent_runtime") != "openai_agents_api"
+            or spend.get("authoring_model") != "gpt-6.1-sol"
+            or not isinstance(spend.get("agents_api_policy"), Mapping)
+            or spend.get("authority_digest") != canonical_digest(spend, digest_field="authority_digest")
+            or spend.get("scene_id") != task_context["scene_id"]
+            or spend.get("capture_id") != task_context["capture_id"]
+            or spend.get("task_context_digest") != task_context["context_digest"]):
+        found.append("website_agents_api_signed_authority_required")
+    if not dict(spend.get("owner") or {}) or not consent:
+        found.append("website_scene_execution_authority_required")
+    if (task_context.get("capture_rights") or {}).get("derived_scene_generation_allowed") is not True:
+        found.append("website_scene_processing_rights_required")
+    return found
+
+
+def without_withheld_gap(gap: Mapping[str, Any] | None,
+                         rule_withheld: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """The gap, unless it is the one the handoff withheld Blueprint's rule for (``website_scene_handoff``):
+    that job's one rigid object is built, so its gap holds nothing."""
+    if rule_withheld is not None and gap is not None and gap.get("code") == rule_withheld.get("code"):
+        return None
+    return gap
+
+
 def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
     """A site-confirmed task, or the assessment-proposed task of a preparation run.
 

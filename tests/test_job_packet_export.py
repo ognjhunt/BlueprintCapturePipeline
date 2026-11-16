@@ -528,6 +528,35 @@ def test_kind_of_job_falls_back_to_fixed_words() -> None:
                                "destination": {"interior_bounds_world_m": {}}}, {}) == "put one object into a container"
 
 
+def _withheld_half(inputs: JobInputs) -> None:
+    for name in ("team_scene_inputs.v1.json", "native-task-packet/native_task_arena_scene_plan.v1.json"):
+        _edit(inputs.team_scene_dir / name, lambda value: (
+            value.pop("task_success_contract", None), (value.get("task_spec") or {}).pop("task_success_contract", None),
+            value.update(rule_withheld={"reason": "website_native_task_profile_preparation_required"})
+            if name.startswith("team") else None))
+
+
+def test_a_job_with_its_rule_withheld_claims_no_kind_and_ships_no_rule(tmp_path, job) -> None:
+    """Objects step 1: the object is built on the rigid path; its internal rule and kind are never in the packet."""
+    inputs = job()
+    capture = inputs.capture_dir
+    _seal_first_look(capture)
+    handoff = json.loads((capture / PREP / "handoff.json").read_text())  # the handoff's sealed reason
+    handoff["rule_withheld"] = {"code": "website_native_task_profile_preparation_required", "task_id": "x"}
+    # As the handoff writes it for this job: no fit table (``prepare_rigid_native_inputs``).
+    _write(capture / PREP / "handoff.json", _sealed({k: v for k, v in handoff.items()
+                                                     if k not in ("digest", "robot_fit_table")}, "digest"))
+    _withheld_half(inputs)  # the team-scene compile's half: no rule, and its record says why
+    manifest = build_job_packet(inputs, output_root=_out(tmp_path))
+    sheet = _sheet(manifest)
+    assert f"Kind of job: {packet.UNMODELLED_KIND}." in sheet
+    assert "pick-up-and-put-down" not in sheet
+    assert "No first look on paper is in this packet yet." in sheet
+    assert "No success rule is in this packet yet" in sheet
+    assert "files/task/success_rule.json" not in {row["path"] for row in manifest["files"]}
+    assert packet.kind_of_job({}, {}, {"rule_withheld": {"code": "x"}}) == packet.UNMODELLED_KIND
+
+
 def test_check_names_match_the_fit_table_writer() -> None:
     source = (Path(packet.__file__).parent / "website_robot_fit.py").read_text()
     assert set(re.findall(r'_check\("([a-z_]+)"', source)) == set(packet.CHECK_WORDS)
@@ -1104,6 +1133,14 @@ NOT_THIS_JOB = {
                                             lambda value: value.update(scene_id="site-OTHER")),
     "contract_other_site": lambda inputs: _edit(inputs.team_scene_dir / "team_scene_inputs.v1.json",
                                                 lambda value: value["task_success_contract"]["scope"].update(site_id="site-OTHER")),
+    # A withheld rule binds by the plan alone only when the record carries no contract at all.
+    "withheld_contract_other_site": lambda inputs: _edit(
+        inputs.team_scene_dir / "team_scene_inputs.v1.json", lambda value: (
+            value["task_success_contract"]["scope"].update(site_id="site-OTHER"),
+            value.update(rule_withheld={"reason": "website_native_task_profile_preparation_required"}))),
+    "withheld_other_site": lambda inputs: (_withheld_half(inputs), _edit(
+        inputs.team_scene_dir / "native-task-packet" / "native_task_arena_scene_plan.v1.json",
+        lambda value: value.update(scene_id="site-OTHER")))[-1],
     "configured_other_revision": lambda inputs: _edit(inputs.configured_scene_dir / "configured_scene_revision.v1.json",
                                                       lambda value: value.update(revision_digest="sha256:" + "e" * 64)),
 }

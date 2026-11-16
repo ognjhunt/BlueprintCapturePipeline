@@ -34,7 +34,8 @@ from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
-from .website_task_context_contracts import GEOMETRY_ONLY_BLOCKER
+from .website_task_context_contracts import (GEOMETRY_ONLY_BLOCKER, authoring_admission_blockers,
+                                             without_withheld_gap)
 from .website_preparation_contracts import scene_configuration_max_retries
 from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
 from .website_track_mask_codec import canonical_track_digest, load_track_json
@@ -1096,7 +1097,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       evaluation_inputs: Mapping[str, Any] | None = None,
                                       synthetic_authoring_backend: str = "pinned_cad_primitive_v1",
                                       atlas_route: str = "full",
-                                      artisan_provider_choice: Any = None) -> dict[str, Any]:
+                                      artisan_provider_choice: Any = None,
+                                      rule_withheld: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """``atlas_route="geometry_only"``: the Atlas job kept the scene as filmed
     (``website_atlas_pipeline.ROUTE_ENV``). The preparation is for the robot fit check
     only and never an intake (``GEOMETRY_ONLY_BLOCKER``); a captured rigid subject's box
@@ -1108,7 +1110,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     blockers: list[str] = []
     semantics_options = {"task_semantics": task_semantics,
                          "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest")}
-    gap = native_task_preparation_gap(task_context, **semantics_options)
+    gap = without_withheld_gap(native_task_preparation_gap(task_context, **semantics_options), rule_withheld)
     from .task_family_scoring import canonical_task_family
     from .website_task_semantics import effective_task_profile
     family = canonical_task_family(effective_task_profile(task_context=task_context, **semantics_options))
@@ -1176,7 +1178,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     articulation_kind, inferred_profile_id = native_task_subject_profile(
         subject_entry, subject_target, synthetic_subject=synthetic)
     articulated = inferred_profile_id == "articulated_open_close"
-    gap = native_task_preparation_gap(task_context, inferred_profile_id=inferred_profile_id, **semantics_options)
+    gap = without_withheld_gap(native_task_preparation_gap(
+        task_context, inferred_profile_id=inferred_profile_id, **semantics_options), rule_withheld)
     if gap is None and synthetic is None:
         # A designed primitive is rigid by construction; an observed object may not be.
         gap = native_task_subject_gap(task_context, subjects=removed, targets=targets, **semantics_options)
@@ -1351,6 +1354,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     destination = distinct_support = relocation = region_record = surface_target_admission = region_outline = None
     destination_choice = None
     interior = None
+    from .website_destination_choice import SITE_CHOICE, settle_place  # the places offered; the site's pick
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
         # The whole assembly is removed, rebuilt with one task joint, and
@@ -1508,7 +1512,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 support_max=sim_support[1], region=region_record, relocation=relocation, admit=admitted,
                 holds=(None if region_outline is None else
                        lambda centre, radius: region_outline.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M)))
-            from .website_destination_choice import SITE_CHOICE, settle_place  # the places offered; the site's pick
             destination, destination_choice = settle_place(output_root, destination, destination_choice,
                 subject_min=sim_min, subject_max=sim_max, support=sim_support, holds=(None if region_outline is None else
                     lambda centre, radius: region_outline.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M)),
@@ -1560,7 +1563,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             destination, destination_choice = choose_destination(
                 destination=destination, subject_min=sim_min, subject_max=sim_max, support_min=sim_support[0],
                 support_max=sim_support[1], region=None, relocation=relocation)
-            from .website_destination_choice import SITE_CHOICE, settle_place  # the places offered; the site's pick
             # The places offered here are checked as on the named path: on the surface and admitted by the sealer.
             surface = None if outline is None else outline.in_frame(runtime_to_sim)
             destination, destination_choice = settle_place(output_root, destination, destination_choice,
@@ -1583,8 +1585,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     # The host's sealed choice for a both-providers ARTISAN grant (``artisan_provider_choice``). The
     # handoff passes how to make it, so it is made here, after every gap (a room package) has returned.
     from .artisan_provider_choice import choice_for_grant
-    if callable(artisan_provider_choice):
-        artisan_provider_choice = artisan_provider_choice()
+    admission = authoring_admission_blockers(spend, task_context, authoring_provider=authoring_provider)
+    if callable(artisan_provider_choice):  # a withheld rule's object stopped here is left out: no choice
+        left_out = rule_withheld is not None and bool(blockers or admission)  # the room package
+        artisan_provider_choice = None if left_out else artisan_provider_choice()
     artisan_choice = choice_for_grant(artisan_provider_choice, grant=spend, backend=authoring_backend)
     artisan_on_anthropic = (artisan_choice or {}).get("provider") == "anthropic"
     contract = None
@@ -1822,39 +1826,20 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     if authoring_provider == "anthropic":
         if authoring_backend != "astra_cad_blender_v1":
             raise ValueError("website_artisan_provider_unsupported_explicit_legacy_backend_required")
-        # This must come from the website's fresh owner-authorized execution
-        # authority. A local key or worker environment cannot opt a scene in.
-        terms = spend.get("anthropic_provider_terms_reference")
-        if (not isinstance(terms, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", terms) is None
-                or not isinstance(consent.get("provider_terms_reference"), str)
-                or not consent["provider_terms_reference"]):
-            blockers.append("website_anthropic_provider_terms_authority_required")
+        terms = spend.get("anthropic_provider_terms_reference")  # admitted or not: ``admission``
         authoring_configuration["authoring_model_provider"] = "anthropic"
     if artisan_on_anthropic:  # frozen into the stage configuration with the Claude text models
         from .artisan_provider_choice import ARTISAN_CLAUDE_MODELS
         authoring_configuration.update(artisan_provider_choice=dict(artisan_choice),
                                        authoring_models=dict(ARTISAN_CLAUDE_MODELS))
-    if any(spend.get(key) is not None for key in ("authoring_agent_runtime", "authoring_model", "agents_api_policy")):
-        if (authoring_provider != "openai"
-                or spend.get("authoring_agent_runtime") != "openai_agents_api"
-                or spend.get("authoring_model") != "gpt-6.1-sol"
-                or not isinstance(spend.get("agents_api_policy"), Mapping)
-                or spend.get("authority_digest") != canonical_digest(spend, digest_field="authority_digest")
-                or spend.get("scene_id") != task_context["scene_id"]
-                or spend.get("capture_id") != task_context["capture_id"]
-                or spend.get("task_context_digest") != task_context["context_digest"]):
-            blockers.append("website_agents_api_signed_authority_required")
-        else:
-            if authoring_backend != "astra_cad_blender_v1":
-                raise ValueError("website_artisan_agents_api_unsupported_explicit_legacy_backend_required")
-            authoring_configuration.update(authoring_model_provider="openai",
-                authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6.1-sol",
-                agents_api_policy=dict(spend["agents_api_policy"]))
-    if not owner or not consent:
-        blockers.append("website_scene_execution_authority_required")
-    rights = task_context.get("capture_rights") or {}
-    if rights.get("derived_scene_generation_allowed") is not True:
-        blockers.append("website_scene_processing_rights_required")
+    if (any(spend.get(key) is not None for key in ("authoring_agent_runtime", "authoring_model", "agents_api_policy"))
+            and "website_agents_api_signed_authority_required" not in admission):
+        if authoring_backend != "astra_cad_blender_v1":
+            raise ValueError("website_artisan_agents_api_unsupported_explicit_legacy_backend_required")
+        authoring_configuration.update(authoring_model_provider="openai",
+            authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6.1-sol",
+            agents_api_policy=dict(spend["agents_api_policy"]))
+    blockers.extend(admission)  # the Anthropic terms, the Agents API authority, the execution authority, the rights
     request = {
         "schema_version": intake.REQUEST_SCHEMA, "submission_id": capture_id, "owner": owner,
         "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
@@ -1939,7 +1924,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
-        **({"destination_choice": destination_choice} if destination_choice is not None else {}),
+        **({"destination_choice": destination_choice} if destination_choice is not None and not rule_withheld else {}),
         **({"registration_ambiguity": registration["ambiguity"]} if registration.get("ambiguity") else {}),
         **({"destination_region": region_record} if region_record is not None else {}),
         **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
@@ -1991,7 +1976,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     write_json(output_root / "preparation.json", value)
     (output_root / "thumbnail.b64").write_text(thumbnail["png_base64"])
     from .website_destination_choice import pipeline_of, retain_place_view  # the picture and the optional question
-    if destination_choice is not None and pipeline_of(output_root) is not None:
+    if destination_choice is not None and not rule_withheld and pipeline_of(output_root) is not None:
         retain_place_view(pipeline_root=pipeline_of(output_root), preparation=value, frames=source_geometry["frames"],
                           source_geometry=source_geometry, object_label=str(subject_entry.get("semantic_label") or "object"),
                           covers=None if region_outline is None else region_outline.covers)

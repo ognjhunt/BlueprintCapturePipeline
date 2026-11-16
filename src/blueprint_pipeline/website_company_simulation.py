@@ -112,11 +112,14 @@ NO_SIMULATOR = "Blueprint did not run this scene in Isaac Sim or any other simul
 #: A jointed object whose stage 5 ran no simulator: its joint is exactly as authored.
 JOINT_AS_AUTHORED = ("The joint's range is from the object's authored file and the success interval is the "
                      "job's share of that range; no simulator moved the joint.")
+#: The same, for a half whose rule is withheld (``RULE_WITHHELD_REASONS``): no rule, so no success interval.
+JOINT_AS_AUTHORED_NO_RULE = "The joint's range is from the object's authored file; no simulator moved the joint."
 PHYSICS_CHECK_WORDS = {
     "isaac_sim": (),
     "not_run": (NO_SIMULATOR,),
     "not_run_static_check_passed": (STATIC_CHECK_PASSED, NO_SIMULATOR),
     "not_run_joint_as_authored": (NO_SIMULATOR, JOINT_AS_AUTHORED),
+    "not_run_joint_as_authored_no_rule": (NO_SIMULATOR, JOINT_AS_AUTHORED_NO_RULE),
 }
 #: ``scene_packet.FLATTEN_PROVENANCE``, copied (``test_scene_packet_parity`` pins them equal): the import graph
 #: ``test_live_pipeline_import_isolation`` walks reaches the hot lane through ``scene_packet``.
@@ -150,6 +153,12 @@ NO_RULE = ("This package includes no success rule from Blueprint for this job; t
 OBJECTS_TAKEN_OUT = "{count} object(s) the job involves were taken out of the room scan and are not in this package."
 OBJECTS_IN_SCAN = "The job's objects are part of the room scan; they are not separate files."
 ROOM_RECORD_SCHEMA = "blueprint.room_package_inputs.v1"
+#: A one-object job no task profile models (``website_scene_handoff``; the gaps of its ``ROOM_GAPS``, pinned equal
+#: by a test): its object is built on the rigid path and its half's sealed record says the rule is withheld, and
+#: why (``team_scene_packet``: no rule in the plan or the record). Only such a half, with its object, ships
+#: without a rule, and says so (``NO_RULE``); a rule beside the reason refuses it.
+RULE_WITHHELD_REASONS = frozenset({"website_native_task_profile_preparation_required",
+                                   "website_task_operation_coverage_unresolved"})
 #: The stage-4 record a rigid website object passes (``task_object_artisan_candidate``, ``_usd_findings``).
 RIGID_STATIC_SCHEMA = "task_evaluation_rigid_replacement_static_qualification.v1"
 _USD = frozenset({".usd", ".usda", ".usdc", ".usdz"})
@@ -286,10 +295,11 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
         plan = _read(plan_path)
         if not plan:
             continue
+        notes = _record_notes(scene, status)
         source: dict[str, Any] = {"packet_dir": packet, "plan_path": plan_path, "plan": plan,
                                   "plan_digest": plan.get("plan_digest"), "status": dict(status), "files": {},
-                                  "refusal": None, "physics_check": physics_check(packet, plan),
-                                  **_record_notes(scene, status)}
+                                  "refusal": None, **notes, "physics_check": physics_check(
+                                      packet, plan, rule_withheld="rule_withheld" in notes)}
         try:
             rows = placements(plan)
             axis = up_axis(plan, packet=packet)
@@ -303,7 +313,13 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
                 # Only a real room package ships with no rule and no /World/Object: its own plan (the one its
                 # sealed record names), no object row, and a rule exactly when its record says it has one.
                 raise StageRefused("scene_stage_room_record_mismatch")
-            if rule is None and room is None:
+            if source.get("rule_withheld") and (
+                    rule is not None or _sealed_on(plan, scene, _sealed_record(scene, status)) is None
+                    or not any(isinstance(row, Mapping) and row.get("semantic_role") == "task_object"
+                               for row in plan.get("objects") or [])):
+                # The one more shape: the job's object, and no rule, as its own sealed record says and why.
+                raise StageRefused("scene_stage_rule_withheld_mismatch")
+            if rule is None and room is None and not source.get("rule_withheld"):
                 raise StageRefused("scene_stage_success_rule_missing")
             for placement, raw in zip(rows, plan["objects"], strict=True):
                 role = placement["role"]
@@ -338,13 +354,19 @@ def _with_sealed_rule(plan: Mapping[str, Any], scene: Path, status: Mapping[str,
     contract = record.get("task_success_contract")
     if not isinstance(contract, Mapping):
         return plan
+    if _sealed_on(plan, scene, record) is None:
+        return plan
+    return {**plan, "task_spec": {**task_spec, "task_success_contract": dict(contract)}}
+
+
+def _sealed_on(plan: Mapping[str, Any], scene: Path, record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The plan the record was sealed on, when it holds this plan's task: this one, or its sibling with one more
+    camera."""
     sealed_on = plan if record.get("plan_digest") == plan.get("plan_digest") else next(
         (other for other in (_read(path) for path in (_inside(scene, scene / name / PLAN_FILE)
                                                       for name in PACKET_DIRECTORIES) if path is not None)
          if other and other.get("plan_digest") == record.get("plan_digest")), None)
-    if sealed_on is None or sealed_on.get("task_spec") != task_spec:
-        return plan
-    return {**plan, "task_spec": {**task_spec, "task_success_contract": dict(contract)}}
+    return sealed_on if sealed_on is not None and sealed_on.get("task_spec") == plan.get("task_spec") else None
 
 
 def _sealed_record(scene: Path, status: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -374,7 +396,9 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
             **({"appearance_quality": "not_passed"} if absent.get("appearance_quality") == "not_passed" else {}),
             **({"support_not_held": "region" if set(reasons) == {"rigid_support_goal_region_rest_outside_success_window"}
                 else "start_or_goal"} if support.get("status") == "held" else {}),
-            **({"room": room} if room is not None else {})}
+            **({"room": room} if room is not None else {}),
+            **({"rule_withheld": record["rule_withheld"]["reason"]} if isinstance(record.get("rule_withheld"), Mapping)
+               and record["rule_withheld"].get("reason") in RULE_WITHHELD_REASONS else {})}
 
 
 def _stage_documents(packet: Path, plan: Mapping[str, Any]) -> tuple[Any, Any]:
@@ -400,9 +424,9 @@ def static_check_passed(static: Any) -> bool:
             and static.get("result_digest") == canonical_digest(static, digest_field="result_digest"))
 
 
-def physics_check(packet: Path, plan: Mapping[str, Any]) -> str | None:
+def physics_check(packet: Path, plan: Mapping[str, Any], *, rule_withheld: bool = False) -> str | None:
     """What the README says was checked: ``isaac_sim``, ``not_run``, ``not_run_static_check_passed`` or
-    ``not_run_joint_as_authored`` (a jointed object), or None.
+    ``not_run_joint_as_authored`` (a jointed object; ``..._no_rule`` when its rule is withheld), or None.
 
     Stage 5 is read by its own reader (``website_scene_without_simulator.stage_five_receipt_kind``): a passed Isaac
     import, or the record that no simulator ran, each sealed; anything else is None (today's README).
@@ -414,7 +438,7 @@ def physics_check(packet: Path, plan: Mapping[str, Any]) -> str | None:
     if kind == "qualified":
         return "isaac_sim"
     if kind == "not_run" and (static or {}).get("schema_version") == ARTICULATED_STATIC_SCHEMA:
-        return "not_run_joint_as_authored"
+        return "not_run_joint_as_authored_no_rule" if rule_withheld else "not_run_joint_as_authored"
     if kind == "not_run":
         return "not_run_static_check_passed" if static_check_passed(static) else "not_run"
     return None
@@ -754,8 +778,10 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
             units: Mapping[str, tuple[str | None, float | None]],
             offsets: Mapping[str, Any] | None = None) -> str:
     """Only what is true of the package in front of it."""
-    room = source.get("room")
-    what = (["A simulation of the site a deployment company was asked about, with the job's object in it,",
+    room, withheld = source.get("room"), bool(source.get("rule_withheld"))
+    what = (["A simulation of the site a deployment company was asked about, with the job's object in it at its",
+             "start position as estimated from the video. Test in your own tools."] if withheld else
+            ["A simulation of the site a deployment company was asked about, with the job's object in it,",
              "and the rule for what counts as the job done. Test in your own tools."] if room is None else
             ["A simulation of the site a deployment company was asked about, with the job's goal region and an",
              "assumed rule for reaching it. Test in your own tools."] if room["success_rule_defined"] else
@@ -777,10 +803,10 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     if any(name.lower().endswith((".png", ".jpg", ".jpeg")) for name in names):
         lines.append("- Textures were rewritten without their colour profile and EXIF data, so a photo that relied on "
                      "an EXIF rotation shows unrotated.")
-    if room is None:
+    if room is None and not withheld:
         lines += ["- success_rule.json: what counts as done, as numbers, with the run's timing and the object's",
                   "  start position and size where known."]
-    elif room["success_rule_defined"]:
+    elif room is not None and room["success_rule_defined"]:
         lines += ["- success_rule.json: the goal region (surface_target: radius_m around surface_position_world_m,",
                   "  the middle of the goal's footprint at the lowest point of it the video shows) and how long",
                   "  the robot must stay within it (settling.stable_seconds)."]
@@ -789,7 +815,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
               "orientation in the simulation, which are on /World/<part>. The file keeps its own root transform."]
     for prim, note in sorted((offsets or {}).items()):
         lines += [f"/World/{prim}: this part's file carries its own offset (its root prim is moved or turned",
-                  "inside the file; see part_notes in success_rule.json). Where a tool places a file's root at the",
+                  "inside the file" + ("" if withheld else "; see part_notes in success_rule.json")
+                  + "). Where a tool places a file's root at the",
                   "part's position instead of under it, this part lands somewhere else: check it."]
     for prim in hidden:
         lines += [f"/World/{prim} is in the scene but hidden, as in Blueprint's simulation, where it is used for",
@@ -815,10 +842,11 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([FURNITURE_REMOVED.format(count=source["removed_items"])] if source.get("removed_items") else []),
              *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
-               if source.get("support_not_held") else []),
+               if source.get("support_not_held") and not withheld else []),
              *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"] else OBJECTS_TAKEN_OUT.format(count=room["objects"])]
-                  if room.get("objects") else [])] if room is not None else [])]
+                  if room.get("objects") else [])] if room is not None else []),
+             *([NO_RULE] if withheld else [])]
     lines += textwrap.wrap(" ".join(notes), width=100) if notes else []
     if (source.get("rule") or {}).get("object_estimates_from_video"):
         lines.append("The object's mass and friction in success_rule.json are ranges estimated from the video.")

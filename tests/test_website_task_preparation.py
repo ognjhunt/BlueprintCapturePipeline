@@ -479,6 +479,91 @@ def test_a_missing_destination_is_a_flagged_guess_on_the_start_surface(tmp_path)
     assert value["intake_request"]["task"]["destination"] == value["destination"]
 
 
+@pytest.mark.parametrize("case", ["named", "other_gap", "no_place", "scale_conflict"])
+def test_a_job_no_profile_models_builds_its_object_with_the_rule_withheld_and_asks_nothing(tmp_path, monkeypatch,
+                                                                                            case):
+    """Objects step 1: with the handoff's named reason the object compiles on the rigid path; its place is internal,
+    so no place choice, flag or question is recorded. Without the reason (or another gap) the job is held as before.
+    The authoring provider is chosen once, only for the object that is built: never for a held job or for one the
+    handoff sends to the room package (no internal place, or any other stop before the choice)."""
+    def novel(geometry):
+        return {"task_masks": _masks(geometry, destination=case != "no_place")}
+    if case == "no_place":
+        monkeypatch.setattr(preparation, "farthest_supported_destination", lambda *_, **__: None)
+    arguments = _arguments(tmp_path, novel)
+    if case == "scale_conflict":  # the base scene declares a scale the registration disagrees with
+        arguments["base_scene"] = {key: value for key, value in arguments["base_scene"].items() if key != "anchor"}
+        arguments["base_scene"]["meters_per_unit"] = 50.0
+    context = arguments["task_context"]
+    context.update(task_family="unimplemented_task_family")
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    code = "website_other_gap" if case == "other_gap" else "website_native_task_profile_preparation_required"
+    withheld = {"code": code, "task_id": "website-" + context["context_digest"][7:27]}
+    chosen = []
+    value = preparation.compile_website_scene_preparation(**arguments, rule_withheld=withheld,
+                                                          artisan_provider_choice=lambda: chosen.append(1))
+    if case == "other_gap":
+        assert value["blockers"] == ["website_native_task_profile_preparation_required"] and value["intake_request"] is None
+        assert chosen == []
+        return
+    if case in ("no_place", "scale_conflict"):
+        blocker = {"no_place": "task_destination_pose_required",
+                   "scale_conflict": "website_registration_scale_conflicts_declared"}[case]
+        assert blocker in value["blockers"]
+        assert chosen == []
+        return
+    assert chosen == [1]
+    assert "native_task_preparation_gap" not in value
+    assert "destination_choice" not in value and "task_destination_pose_required" not in value["blockers"]
+    assert value["intake_request"]["task"]["strategy"] == "pick_and_place"  # internal; never shipped or shown
+    from blueprint_pipeline.website_destination_choice import PICTURE_FILE, TARGET_ID
+    assert not list(tmp_path.rglob(PICTURE_FILE)) and not list(tmp_path.rglob(f"{TARGET_ID}.question.json"))
+
+
+@pytest.mark.parametrize("withheld", [False, True])
+def test_a_job_whose_rule_is_withheld_offers_no_place_and_waits_on_none(tmp_path, monkeypatch, withheld):
+    """Objects step 1: several places fit the surface the object starts on. A modelled job offers them (the place
+    question, behind its switch); a job whose rule is withheld still builds its object on an internal place, but
+    asks nothing, records no places offered and waits on nothing."""
+    from blueprint_pipeline import website_destination_choice as places
+    from blueprint_pipeline import website_task_target_choice as target_choice
+    from blueprint_pipeline.website_preparation_outcome import PLACE_QUESTION_ENV
+    monkeypatch.setenv(PLACE_QUESTION_ENV, "true")
+    real, offered = places.settle_place, []
+
+    def several(*args, **kwargs):  # this fixture's surface fits one place: two more beside it, as on a long shelf
+        destination, choice = real(*args, **kwargs)
+        first = choice["candidates"][0]
+        more = [{**first, "candidate_id": f"p{index}", "kind": "start_surface_farthest_spot",
+                 "centre_xy": [first["centre_xy"][0] + 0.2 * index, first["centre_xy"][1]]} for index in (1, 2)]
+        offered.append((destination, {**choice, "candidates": [first, *more]}))
+        return offered[-1]
+    monkeypatch.setattr(places, "settle_place", several)
+    view, asked = places.retain_place_view, []  # writes the picture and the question (its own tests)
+    monkeypatch.setattr(places, "retain_place_view", lambda **kw: asked.append(kw) or view(**kw))
+    root = tmp_path / "bucket/scenes/site-x/captures/walkthrough-x/pipeline/website_scene_preparation"
+    arguments = _arguments(tmp_path, lambda geometry: {"task_masks": _masks(geometry, destination=True)},
+                           output_root=root)
+    extra = {}
+    if withheld:
+        context = arguments["task_context"]
+        context.update(task_family="unimplemented_task_family")
+        context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+        extra["rule_withheld"] = {"code": "website_native_task_profile_preparation_required"}
+    value = preparation.compile_website_scene_preparation(**arguments, **extra)
+    pipeline = root.parent
+    assert len(offered) == 1 and len(offered[0][1]["candidates"]) == 3  # several places fit
+    assert value["intake_request"] is not None and value["blockers"] == []
+    if not withheld:
+        assert len(value["destination_choice"]["candidates"]) == 3 and len(asked) == 1  # offered to the site
+        return
+    assert asked == []
+    assert "destination_choice" not in value
+    assert places.read_place_question(pipeline) is None
+    assert target_choice.asked_place_question(pipeline) is None
+    assert not list(tmp_path.rglob(places.PICTURE_FILE)) and not list(tmp_path.rglob(places.PICTURE_RECORD))
+
+
 def test_stale_execution_authority_holds_intake(tmp_path):
     # Stale means older than the longest window a website grant may carry.
     from blueprint_pipeline.website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS

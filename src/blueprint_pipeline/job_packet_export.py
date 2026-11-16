@@ -78,6 +78,8 @@ AUTHORITY_ENDED_STATUS = "terminal_authority_ended"
 NOT_RECORDED = "not recorded"
 INVALID = "not recorded (invalid value)"
 GENERIC_KIND = "a pick-up-and-put-down job"
+#: A job no task profile models, its object built with Blueprint's rule withheld (``website_scene_handoff``).
+UNMODELLED_KIND = "a kind of job Blueprint has no model for; the site's own words are above"
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v"}
 USD_SUFFIXES = {".usd", ".usda", ".usdc", ".usdz"}
 TASK_CONTEXT = "pipeline/website_task_context.json"
@@ -628,9 +630,12 @@ def _fit_table(capture_dir: Path, handoff: Mapping[str, Any] | None, preparation
     return table, "shown"
 
 
-def kind_of_job(preparation: Mapping[str, Any] | None, context: Mapping[str, Any]) -> str:
+def kind_of_job(preparation: Mapping[str, Any] | None, context: Mapping[str, Any],
+                handoff: Mapping[str, Any] | None = None) -> str:
     """The kind of job in fixed words, chosen from structured fields."""
     prep = _mapping(preparation)
+    if _mapping(handoff).get("rule_withheld"):
+        return UNMODELLED_KIND  # built on the rigid path with Blueprint's rule withheld: no kind is claimed
     strategy = _mapping(_mapping(prep.get("intake_request")).get("task")).get("strategy")
     destination = _mapping(prep.get("destination"))
     if strategy == "articulated_open_close":
@@ -933,8 +938,10 @@ def _bind_inputs(inputs: JobInputs, context: Mapping[str, Any], team_record: Map
     scene = context["scene_id"]
     if inputs.team_scene_dir is not None:
         contract = _mapping(_mapping(team_record).get("task_success_contract"))
+        # A half compiled with its rule withheld has no contract to bind by (``team_scene_packet.RULE_WITHHELD``).
+        withheld = bool(_mapping(team_record).get("rule_withheld")) and not contract
         if team_record is None or plan is None or plan.get("scene_id") != scene \
-                or _mapping(contract.get("scope")).get("site_id") != scene:
+                or (not withheld and _mapping(contract.get("scope")).get("site_id") != scene):
             raise _not_this_job(f"team scene {inputs.team_scene_dir}")
     if inputs.configured_scene_dir is not None:
         revision = _read_json(inputs.configured_scene_dir, inputs.configured_scene_dir / "configured_scene_revision.v1.json")
@@ -1263,7 +1270,7 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
     simulation = stage is not None
     reconstruction = any(path.startswith("files/reconstruction/") for path in written_files)
     prep = _mapping(preparation)
-    kind = kind_of_job(preparation, context)
+    kind = kind_of_job(preparation, context, handoff)
     number = secrets.token_hex(8)
 
     # --- the sheet: the site's own words go in as written, without contact details it typed ---

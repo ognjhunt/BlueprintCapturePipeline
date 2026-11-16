@@ -2022,3 +2022,80 @@ def test_real_and_interlaced_pngs_are_written_with_identical_pixels(label):
     with Image.open(io.BytesIO(data)) as before, Image.open(io.BytesIO(written)) as after:
         assert before.mode == after.mode and before.size == after.size
         assert np.array_equal(np.asarray(before), np.asarray(after))
+
+
+WITHHELD = "website_native_task_profile_preparation_required"
+
+
+def _withhold(job: Job, *, reason: str | None = WITHHELD, sealed: bool = True, plan_rule: bool = False,
+              record_rule: bool = False, task_object: bool = True, plan_digest: str | None = None,
+              schema: str = "blueprint.team_scene_inputs.v1", support_held: bool = False) -> None:
+    """The half the team-scene compile writes for a job no task profile models (``materialize_team_scene``'s
+    ``rule_withheld``): no rule in its plan or its record, and its sealed record says why."""
+    plan = json.loads((job.packet / sim.PLAN_FILE).read_text())
+    if not plan_rule:
+        plan["task_spec"].pop("task_success_contract")
+    if not task_object:
+        plan["objects"] = [row for row in plan["objects"] if row["semantic_role"] != "task_object"]
+    _write(job.packet / sim.PLAN_FILE, plan)
+    record = {"schema_version": schema, "plan_digest": plan_digest or plan["plan_digest"],
+              **({"rule_withheld": {"reason": reason}} if reason is not None else {}),
+              **({"task_success_contract": {"criteria": job.criteria}} if record_rule else {}),
+              **({"task_support_pad": {"status": "held", "reasons": ["x"]}} if support_held else {})}
+    record["inputs_digest"] = (canonical_digest(record, digest_field="inputs_digest") if sealed
+                               else "sha256:" + "0" * 64)
+    _write(job.scene / "team_scene_inputs.v1.json", record)
+
+
+def test_a_job_no_profile_models_ships_its_object_with_no_rule_over_releases_and_withdrawal(job):
+    """Objects step 1: published, then current; a release recompiles the half (new object digest): rebuilt once,
+    then current; a withdrawal after delivery takes it back."""
+    _withhold(job, support_held=True)  # its support note speaks of the rule: not said
+    world = World(job)
+    first = world.publish()
+    assert first["status"] == "published", first
+    names = zipfile.ZipFile(_package(job)).namelist()
+    readme = zipfile.ZipFile(_package(job)).read("README.txt").decode()
+    assert "success_rule.json" not in names
+    assert "object.usdz" in names
+    assert "scene.usda" in names
+    assert " ".join(readme.split()).count(sim.NO_RULE) == 1 and "success_rule" not in readme
+    assert "the rule for what counts" not in readme
+    assert sim.SUPPORT_NOT_HELD.split(",")[0] not in readme
+    assert "start position as estimated from the video" in readme
+    for word in ("Do the", "destination", "place it"):
+        assert word not in readme
+    assert world.publish()["status"] == "current" and len(world.archived) == 1
+    # A release: the team-scene worker recompiles the half, with new object bytes.
+    job.object.unlink()
+    job.object = _usdz(job.assets / "replacement.usdz", "ObjectRecompiled")
+    job.seal()
+    _withhold(job)
+    second = world.publish()
+    assert second["status"] == "published" and second["simulation_revision"] != first["simulation_revision"]
+    assert world.publish()["status"] == "current" and len(world.archived) == 2
+    _withdraw(job.capture)
+    assert world.publish()["status"] == "withdrawn" and world.retracted
+
+
+@pytest.mark.parametrize("half, reason", [
+    ({"reason": None}, "success_rule_missing"),
+    ({"sealed": False}, "success_rule_missing"),
+    ({"reason": "website_some_other_gap"}, "success_rule_missing"),
+    ({"plan_rule": True}, "rule_withheld_mismatch"),
+    ({"record_rule": True}, "rule_withheld_mismatch"),
+    ({"task_object": False}, "rule_withheld_mismatch"),
+    ({"plan_digest": "sha256:" + "8" * 64}, "rule_withheld_mismatch"),
+    ({"schema": sim.ROOM_RECORD_SCHEMA}, "room_record_mismatch"),
+])
+def test_a_half_without_its_rule_and_without_a_sealed_named_reason_is_refused(job, half, reason):
+    """kinds v4's guard holds: a rigid half with no rule ships only with its object, its own plan and the sealed,
+    named reason in its own record, and no rule anywhere; any other half with no rule is refused."""
+    _withhold(job, **half)
+    result = World(job).publish()
+    assert (result["status"], result["reason"]) == ("refused", "website_company_simulation_" + reason), result
+
+
+def test_the_withheld_reasons_are_the_handoffs_room_gaps():
+    from blueprint_pipeline.website_scene_handoff import ROOM_GAPS
+    assert sim.RULE_WITHHELD_REASONS == ROOM_GAPS

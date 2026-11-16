@@ -257,6 +257,11 @@ def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPa
         scene = (packet_tests._articulated_scene(inputs_dir, not_run=stage_5 == "not_run") if articulated
                  else packet_tests._scene(inputs_dir, strategy=spec["strategy"]))
         inputs = {k: v for k, v in scene.items() if k not in ("profile", "store", "revision_reference")}
+    if spec.get("rule_withheld"):
+        # The handoff's sealed reason, as the worker reads it (``team_scene_packet_worker._rule_withheld``; the
+        # handoff's route is tested in tests/test_website_scene_handoff.py).
+        inputs["rule_withheld"] = {"code": spec["rule_withheld"]}
+        feed += ", compiled with the rule withheld (" + spec["rule_withheld"] + ")"
     try:
         compiled = tsp.materialize_team_scene(**inputs, output_root=work / "half" / "scene",
                                               **dict(worker.WEBSITE_COMPILE))
@@ -347,10 +352,22 @@ def company_zip(row: Mapping[str, Any], compiled: Mapping[str, Any], work: Path)
         change["task_support_pad"] = {"status": "held", "reasons": list(zip_spec["support_held"])}
         feed += " + the half's sealed record replaced with one whose support record is held for " + ",".join(
             zip_spec["support_held"])
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    plan_path = record_path.parent / "native-task-packet" / "native_task_arena_scene_plan.v1.json"
+    if zip_spec.get("rule_dropped"):
+        # A rigid half with no rule anywhere: its plan and its sealed record carry no success contract.
+        plan = json.loads(plan_path.read_text())
+        plan["task_spec"].pop("task_success_contract", None)
+        plan_path.unlink()
+        plan_path.write_text(json.dumps(plan))
+        change["task_success_contract"] = None
+        feed += " + the half's plan and sealed record without their success contract"
+    if zip_spec.get("reason"):
+        change["rule_withheld"] = {"reason": zip_spec["reason"]}
+        feed += " + a reason no handoff gives (" + zip_spec["reason"] + ")"
     if change:
-        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-
         value = {**json.loads(record_path.read_text()), **change, "inputs_digest": ""}
+        value = {key: item for key, item in value.items() if item is not None or key not in change}
         value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
         # The compile seals its record read-only (0444): replace it as a new sealed file, never write through it
         # (only root could, which is why this passed as root and failed on CI's non-root runner).

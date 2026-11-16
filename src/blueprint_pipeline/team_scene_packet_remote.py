@@ -103,8 +103,9 @@ _CHUNK = 1024 * 1024
 PATH_ARGUMENTS = ("configured_scene_bundle_path", "droid_profile_path", "runtime_source_receipt_path", "output_root")
 # The request's intent, under which the compile reads the owner's sealed confirmations and approvals.
 SCOPE_ARGUMENTS = ("owner_success_confirmation_scope", "robot_access_scope")
-# Read on the host and carried as data: ``movable_furniture`` by the host worker, ``robot_access_offer`` here.
-DATA_ARGUMENTS = ("movable_furniture", "robot_access_offer")
+# Read on the host and carried as data: ``movable_furniture`` and ``rule_withheld`` by the host worker,
+# ``robot_access_offer`` here.
+DATA_ARGUMENTS = ("movable_furniture", "robot_access_offer", "rule_withheld")
 # The website worker's own switches, carried only when set (``team_scene_packet_worker.WEBSITE_COMPILE``).
 FLAG_ARGUMENTS = ("assume_unconfirmed_standard_thresholds", "keep_assumed_thresholds", "package_only")
 

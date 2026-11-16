@@ -240,7 +240,9 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
         verdict = None
         # One read scope for every search below: a USDA text collider is read once (``usd_binary_read_cache``).
         with read_scope():
-            if preparation["intake_request"]["task"]["strategy"] == "pick_and_place":
+            # A job whose rule is withheld has no destination the site described: no verdict, no fit table.
+            withheld = "rule_withheld" in result or sealed_rule_withheld(capture_root) is not None
+            if preparation["intake_request"]["task"]["strategy"] == "pick_and_place" and not withheld:
                 # Abstain before the owner is asked to pay when no enabled embodiment can carry the
                 # task; one the gate cannot model is unassessed and never refused.
                 verdict, fit = _rigid_verdict_and_fit(preparation=preparation, collision_path=collision,
@@ -326,6 +328,18 @@ ROOM_GAPS = frozenset({"website_native_task_profile_preparation_required", "webs
 #: The other "no model for this job" findings that ship the room package, each flagged on its record by its code.
 MISMATCH = "website_task_profile_mechanism_mismatch"
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
+
+
+def sealed_rule_withheld(capture_root: Path | None) -> dict[str, Any] | None:
+    """Why the capture's sealed handoff withheld Blueprint's rule (``rule_withheld``), or None."""
+    try:
+        handoff = json.loads((Path(capture_root) / "pipeline/website_scene_preparation/handoff.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    withheld = handoff.get("rule_withheld") if isinstance(handoff, dict) else None
+    if not isinstance(withheld, dict) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
+        return None
+    return dict(withheld)
 
 
 def _sim_frame(*, base_scene: Mapping[str, Any], source_geometry: Mapping[str, Any],
@@ -476,7 +490,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
 
     def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
                      flags: Sequence[str] = ()) -> dict[str, Any]:
-        # Not held: the room package goes to the company builder (``write_room_package``).
+        # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
+        result.pop("rule_withheld", None)
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only, flags=flags)
@@ -562,9 +577,17 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             from .website_operation_coverage import clarification_request
             if semantics is None or clarification_request(semantics, task_context=context,
                                                           source_video_digest=source_video_digest) is None:
-                # No task profile, nor one a clarification could still find: never turned into pick/place,
-                # the job ships as the room package.
-                return room_package(None)
+                # No task profile, nor one a clarification could still find: never turned into pick/place.
+                # One removed object is built on the rigid path with Blueprint's rule withheld (named and sealed
+                # here); anything else ships as the room package.
+                manipulated = [row for row in removal.get("entries", []) if row.get("task_effect") == "manipulated"]
+                found = {row["target_id"]: row for row in (clean_plate.get("task_masks") or {}).get("targets", [])}
+                if (len(manipulated) != 1 or geometry_only or removal.get("synthetic_subject") is not None
+                        or manipulated[0].get("target_id") not in found or native_task_subject_profile(
+                            manipulated[0], found[manipulated[0]["target_id"]])[1] != "rigid_pick_place"):
+                    return room_package(None)  # several objects, none, or a part that opens
+                withheld = {"code": gap["code"], "task_id": "website-" + context["context_digest"][7:27]}
+                result["rule_withheld"], gap = withheld, None
         if gap is not None:
             # Retain the completed reconstruction and original task. Missing
             # adapter/scoring support cannot turn a different job into pick/place.
@@ -682,7 +705,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             _, inferred = native_task_subject_profile(subjects[0], targets[subjects[0]["target_id"]])
         if inferred is not None:
             gap = native_task_preparation_gap(context, inferred_profile_id=inferred, **semantics_options)
-            if gap is not None:
+            if gap is not None and gap["code"] != (result.get("rule_withheld") or {}).get("code"):
                 # The reading and the object disagree (the only gap left here): fitted to neither, the room
                 # package, flagged, before coverage or spec callbacks buy anything.
                 return room_for(gap)
@@ -728,14 +751,31 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         def choose():  # called by compile only once it found no gap: a room package never chooses
             return artisan_provider_choice_for(authority=authority, root=root, capture_root=capture_root,
                                                geometry_only=geometry_only)
-        preparation = compile_website_scene_preparation(
-            task_context=context, task_masks=clean_plate["task_masks"],
-            removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
-            base_scene=base, output_root=root, spend=authority, now=now,
-            artisan_provider_choice=choose,
-            **({"task_semantics": semantics} if semantics is not None else {}),
-            **({"atlas_route": "geometry_only"} if geometry_only else {}),
-        )
+        from .website_object_local_frame import REGISTRATION_REFUSALS
+        from .website_recapture_required import CODES as RECAPTURE_CODES
+        try:
+            preparation = compile_website_scene_preparation(
+                task_context=context, task_masks=clean_plate["task_masks"],
+                removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
+                base_scene=base, output_root=root, spend=authority, now=now,
+                artisan_provider_choice=choose,
+                **({"task_semantics": semantics} if semantics is not None else {}),
+                **({"atlas_route": "geometry_only"} if geometry_only else {}),
+                **({"rule_withheld": result["rule_withheld"]} if "rule_withheld" in result else {}),
+            )
+        except ValueError as exc:
+            if "rule_withheld" in result and str(exc) in REGISTRATION_REFUSALS | RECAPTURE_CODES:
+                # The object does not fit the scene or the video: left out, never a hold or a new video.
+                return room_package(None, flags=[str(exc)])
+            raise
+        if ("rule_withheld" in result and preparation["status"] != "intake_ready"
+                and not preparation.get("native_task_preparation_gap")
+                and not set(preparation["blockers"]) & REGISTRATION_REFUSALS):
+            # Anything else that stops the object (no internal place, no support, a size the published figures
+            # refute, an authoring admission unmet: nothing was spent or sent for it): the room package, as main
+            # ships this job, the object left out and the reason a flag. A registration refusal is a blocker only
+            # in development-test mode, which places the object on its estimated frame instead.
+            return room_package(None, flags=preparation["blockers"])
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
                 or (preparation.get("subject_excision") or {}).get("status") == "excised"):
