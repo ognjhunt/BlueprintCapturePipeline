@@ -561,7 +561,17 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
                for key in row["required_frame_ids"]}
     surrounding = {key for row in requirements if row.get("role") == "surrounding_scene"
                    for key in row["required_frame_ids"]}
-    require(review.get("anchor_frame_id") in ids and working <= set(ids) and surrounding & set(ids))
+    # A reviewed frame may be missing only where both retained records name it left out (the plan's decision
+    # and the digest-bound inputs' ``left_out_frame_ids``); no surrounding frame only where the plan records
+    # that none connected.
+    diagnostics = [row for row in plan.get("diagnostics", []) if isinstance(row, Mapping)]
+    recorded = set(inputs.get("left_out_frame_ids") or [])
+    reviewed = working | surrounding | set(review.get("additional_input_frame_ids") or [])
+    require(recorded == {row.get("frame_id") for row in diagnostics if row.get("decision") in SURROUNDING_GAP_DECISIONS}
+            and recorded <= reviewed and not recorded & set(ids))
+    none_connected = any(row.get("decision") == SURROUNDINGS_NOT_CONNECTED for row in diagnostics)
+    require(review.get("anchor_frame_id") in ids and working <= set(ids) | recorded
+            and (bool(surrounding & set(ids)) or (none_connected and surrounding <= recorded)))
     policy = plan.get("frame_policy") or {}
     cover_count = policy.get("connected_cover_frames")
     require(type(cover_count) is int and 2 <= cover_count <= len(prepared))

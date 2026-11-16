@@ -618,17 +618,11 @@ class _EditorReached(Exception):
     pass
 
 
-@pytest.mark.parametrize("gap_role, code", [("support_surface", "scene_estimate:task_views_left_out"),
-                                            ("surrounding_scene", "scene_estimate:surroundings_not_connected")])
-def test_a_left_out_view_reaches_the_background_editor_and_its_flags_reach_the_result(tmp_path, monkeypatch,
-                                                                                      gap_role, code):
-    """The editor-first route (an object to remove): the selection leaves frame 5 out and names it, the
-    reviewed-background step asks only for the frames it kept, and the result says what was left out."""
+def _left_out_job(tmp_path, monkeypatch, gap_role, *, blurred=False):
+    """Six frames, 0-4 overlapping their neighbours; frame 5 overlaps nothing (or, blurred, is overlapped but
+    below the quality policy). Frame 5 is reviewed as ``gap_role``; frame 2 is the anchor."""
     from PIL import Image
-    from blueprint_pipeline import atlas_background_automation as background
     from blueprint_pipeline import atlas_privacy_screen as screen
-    from blueprint_pipeline import atlas_scene_automation as automation
-    from blueprint_pipeline import website_atlas_pipeline as pipeline
     from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
     root = tmp_path / "survey"
     (root / "frames").mkdir(parents=True)
@@ -637,7 +631,8 @@ def test_a_left_out_view_reaches_the_background_editor_and_its_flags_reach_the_r
         path = root / "frames" / f"{index}.png"
         Image.new("RGB", (32, 24), (index * 30, 90, 160)).save(path)
         rows.append({"frame_id": str(index), "timestamp_seconds": index * .5, "source_image_path": str(path),
-                     "source_image_digest": _sha256_file(path), "sharpness": 50, "clipped_fraction": 0})
+                     "source_image_digest": _sha256_file(path), "sharpness": 5 if blurred and index == 5 else 50,
+                     "clipped_fraction": 0})
     survey = {"schema_version": video.SURVEY_SCHEMA, "heldout_pixels_included": False, "frames": rows,
               "display_rotation_degrees": 0, "source_video_digest": "sha256:" + "a" * 64, "sample_count": 6,
               "heldout_frame_count": 0}
@@ -647,20 +642,31 @@ def test_a_left_out_view_reaches_the_background_editor_and_its_flags_reach_the_r
                     {"role": gap_role, "label": "the gap", "required_frame_ids": ["5"]}]
     if gap_role != "surrounding_scene":
         requirements.append({"role": "surrounding_scene", "label": "room", "required_frame_ids": ["0"]})
-    plan = {"objects": [{"disposition": "remove"}]}
     review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
               "same_scene_state": True, "reviewed_by": "test", "scene_state": "unchanged",
               "static_intervals_seconds": [[0, 3]], "anchor_frame_id": "2", "coverage_requirements": requirements,
-              "automation": plan,
+              "automation": {"objects": [{"disposition": "remove"}]},
               "selection_budget": {"maximum_pose_cost_usd": 10, "input_cost_usd": .01, "rate_card_reference": "test",
                                    "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}}
-    assert video.takes_reviewed_background(review)
     monkeypatch.setattr(video, "_features", lambda row, rotation: int(row["frame_id"]))
-    # Frames 0-4 overlap their neighbours; frame 5 overlaps nothing.
-    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 30) if abs(a - b) == 1 and 5 not in (a, b) else (0, 0))
+    connected = (lambda a, b: abs(a - b) == 1) if blurred else (lambda a, b: abs(a - b) == 1 and 5 not in (a, b))
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 30) if connected(a, b) else (0, 0))
     monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
-    inputs = video.prepare_video_inputs(survey_path=root / "atlas_video_survey.json", review=review,
-                                        output_root=tmp_path / "pose")
+    return root / "atlas_video_survey.json", review
+
+
+@pytest.mark.parametrize("gap_role, code", [("support_surface", "scene_estimate:task_views_left_out"),
+                                            ("surrounding_scene", "scene_estimate:surroundings_not_connected")])
+def test_a_left_out_view_reaches_the_background_editor_and_its_flags_reach_the_result(tmp_path, monkeypatch,
+                                                                                      gap_role, code):
+    """The editor-first route (an object to remove): the selection leaves frame 5 out and names it, the
+    reviewed-background step asks only for the frames it kept, and the result says what was left out."""
+    from blueprint_pipeline import atlas_background_automation as background
+    from blueprint_pipeline import atlas_scene_automation as automation
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    survey_path, review = _left_out_job(tmp_path, monkeypatch, gap_role)
+    assert video.takes_reviewed_background(review)
+    inputs = video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
     assert inputs["left_out_frame_ids"] == ["5"] and "5" not in {row["frame_id"] for row in inputs["frames"]}
     monkeypatch.setattr(automation, "measurement_plan", lambda review: review["automation"])
 
@@ -680,3 +686,38 @@ def test_a_left_out_view_reaches_the_background_editor_and_its_flags_reach_the_r
     assert published == result and published["task_and_surrounding_scene_covered"] is False
     assert any(row.startswith("the gap: frame 5 ") for row in published["uncaptured_regions"])
     assert code in {row["code"] for row in published["scene_estimates"]}
+
+
+@pytest.mark.parametrize("gap_role, blurred, decision", [
+    ("support_surface", False, video.TASK_AREA_UNCONNECTED),
+    ("surrounding_scene", False, "surrounding_scene_unconnected"),
+    ("task_region", True, video.TASK_AREA_BELOW_QUALITY)])
+def test_a_left_out_view_survives_the_next_tick_and_an_unrecorded_one_does_not(tmp_path, monkeypatch, gap_role,
+                                                                               blurred, decision):
+    """Tick 2 reads the retained handoff (``_retained_video_inputs``): the same inputs and flags as tick 1."""
+    from blueprint_pipeline import atlas_scene_estimates as estimates
+    survey_path, review = _left_out_job(tmp_path, monkeypatch, gap_role, blurred=blurred)
+    first = video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
+    monkeypatch.setattr(video, "_features", lambda *_: pytest.fail("tick 2 re-ran the selection"))
+    second = video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
+    assert second == first and second["left_out_frame_ids"] == ["5"]
+    plan_path = tmp_path / "pose/atlas_view_selection.json"
+    plan = json.loads(plan_path.read_text())
+    assert {"frame_id": "5", "label": "the gap", "decision": decision} in plan["diagnostics"]
+    assert estimates.scene_estimates(levelling={}, registration={}, selection=plan)
+    # Tampered: the plan no longer records why frame 5 is missing.
+    tampered = {**plan, "diagnostics": [row for row in plan["diagnostics"] if row.get("frame_id") != "5"
+                                        and row.get("decision") != video.SURROUNDINGS_NOT_CONNECTED],
+                "task_and_surrounding_scene_covered": True}  # consistent with the tampered decisions
+    plan_path.write_text(json.dumps(tampered))
+    with pytest.raises(ValueError, match="atlas_retained_video_inputs_invalid"):
+        video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
+    # Tampered in both records alike, digests rebound: frame 5 is missing for no recorded reason.
+    inputs_path = tmp_path / "pose" / video.GEOMETRY_INPUTS_FILE
+    inputs = json.loads(inputs_path.read_text())
+    inputs.pop("left_out_frame_ids")
+    inputs["digest"] = canonical_digest(inputs, digest_field="digest")
+    inputs_path.write_text(json.dumps(inputs))
+    plan_path.write_text(json.dumps({**tampered, "input_digest": inputs["digest"]}))
+    with pytest.raises(ValueError, match="atlas_retained_video_inputs_invalid"):
+        video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
