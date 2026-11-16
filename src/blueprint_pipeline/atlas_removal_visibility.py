@@ -16,10 +16,17 @@ from typing import Any, Mapping
 from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
 from .core.handoff_lease import handoff_lease_checkpoint
 from .local_reconstruction_adapters import _sha256_file
+from .website_gemini_receipts import _request as request_digest
 from .website_gemini_receipts import gemini_quote, retained_gemini_call
 
 # One call per view, bounded per object; the independent review still checks the edits.
 MAXIMUM_VIEWS = 12
+#: A cut-off or unreadable look; never a stop of the job (the view is asked once more, then kept).
+UNUSABLE = "atlas_removal_visibility_incomplete"
+
+
+class UnusableLook(ValueError):
+    """Left on its intent so the existing dispatch chain counts it spent and sends its one resend."""
 MINIMUM_CONFIDENCE = 0.8
 PROMPT = (
     "This exact video frame is one view of a room being prepared for a 3D reconstruction without "
@@ -69,17 +76,40 @@ def locate_target(*, target: Mapping[str, Any], frame: Mapping[str, Any], task_c
             response = client.models.generate_content(model=DEFAULT_MODEL, contents=contents,
                 config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048,
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
-        if not response.candidates or response.candidates[0].finish_reason != "STOP":
-            raise ValueError("atlas_removal_visibility_incomplete")
+        complete = bool(response.candidates) and response.candidates[0].finish_reason == "STOP"
+        try:
+            observation = json.loads(response.text) if complete else None
+        except ValueError:
+            observation = None
+        if observation is None and not resent():
+            # Cut off or unreadable: counted at its full quote and asked once more (the dispatch chain's
+            # one resend, under its own reservation); the job goes on either way.
+            raise UnusableLook(UNUSABLE)
+        if observation is None:
+            # The resend was unusable too: kept as "not seen" for good. The view goes on with the outline
+            # it had, and the independent review still checks it.
+            return {"observation": None, **({"unparsed_response": response.text} if complete else
+                    {"incomplete": str(response.candidates[0].finish_reason) if response.candidates
+                     else "no_candidates"})}
         # Retain an unsure answer too; a restart must not buy another one.
-        return {"observation": json.loads(response.text)}
+        return {"observation": observation}
 
     # Bound to the source video like segmentation and review, so it is charged to
     # the same source-bound Atlas allowance.
-    result = retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
-        maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=len(prompt.encode()) + 3168,
-                                      max_output_tokens=2048), preflight=preflight, invoke=invoke,
-        source_video_digest=source_video_digest)
+    quote = gemini_quote(model=DEFAULT_MODEL, input_tokens=len(prompt.encode()) + 3168, max_output_tokens=2048)
+
+    def resent():
+        _request, digest = request_digest(binding=binding, task_context=task_context, maximum_cost_usd=quote,
+                                          source_video_digest=source_video_digest)
+        return (Path(output_root) / f"{digest[7:]}.unanswered-1.json").is_file()
+
+    def call():
+        return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
+            maximum_cost_usd=quote, preflight=preflight, invoke=invoke, source_video_digest=source_video_digest)
+    try:
+        result = call()
+    except UnusableLook:
+        result = call()  # the chain counts the first look spent and sends the one resend
     observation = result.get("observation") if isinstance(result, Mapping) else None
     if not isinstance(observation, Mapping) or observation.get("visible") is not True:
         return None
