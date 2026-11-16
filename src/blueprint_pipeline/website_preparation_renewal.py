@@ -326,6 +326,10 @@ def reissue_renewed_preparation(*, capture_root: str | Path, queue_root: str | P
     # 7. The renewed request: a new identity of the same capture, checked like any intake.
     new_request = renewal_request(prior_request, fresh)
     providers = ["vast", "openai", "anthropic"] if fresh.get("authoring_provider") == "anthropic" else ["vast", "openai"]
+    from .artisan_provider_choice import both_providers_granted
+    if both_providers_granted(fresh) and prior_request["execution"]["allowed_providers"][-1:] == ["anthropic"]:
+        # The renewed request keeps the provider chosen at preparation, while the fresh grant still allows it.
+        providers = ["vast", "openai", "anthropic"]
     _require(new_request["execution"]["allowed_providers"] == providers, "providers_changed")
     try:
         intake.validate_request(new_request, now=now)
@@ -371,7 +375,8 @@ def reissue_renewed_preparation(*, capture_root: str | Path, queue_root: str | P
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("website_preparation_renewal_busy") from None
-        return _register_and_enqueue(target=target, preparation=preparation, stored=current, context_path=context_path,
+        return _register_and_enqueue(capture_root=capture_root, target=target, preparation=preparation,
+                                     stored=current, context_path=context_path,
             workspace=workspace, bindings=bindings, inputs=(base, geometry, masks), now=now, enqueue=enqueue,
             summary={"capture_id": capture_id(prior_request), "parent_submission_id": prior_request["submission_id"],
                      "parent_intent_id": prior_intent_id, "submission_id": new_request["submission_id"],
@@ -396,7 +401,7 @@ def _outcome(target: Path, value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _register_and_enqueue(*, target, preparation, stored, context_path, workspace, bindings, inputs, now,
-                          enqueue, summary) -> dict[str, Any]:
+                          enqueue, summary, capture_root=None) -> dict[str, Any]:
     from .task_evaluation_public_scene_attempt_factory import record
     from .task_evaluation_scene_configuration_submission_inputs import read
     from .website_scene_source_registry_paths import _index_path
@@ -426,7 +431,7 @@ def _register_and_enqueue(*, target, preparation, stored, context_path, workspac
         try:
             admissible = prepare_rigid_native_inputs(result=native, preparation=preparation, preparation_path=path,
                 native_root=target / "native", task_context=stored, now=now, base_scene=base,
-                source_geometry=geometry, task_masks=masks)
+                source_geometry=geometry, task_masks=masks, capture_root=capture_root)
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
             refusal = _refused("native_inputs_failed", exc)
             _outcome(target, {**summary, **_native(native), "status": "held", "blockers": [str(refusal)]})

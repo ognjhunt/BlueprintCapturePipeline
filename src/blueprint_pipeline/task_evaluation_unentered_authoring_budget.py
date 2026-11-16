@@ -658,17 +658,23 @@ def artisan_proven_authoring_spend(result, request):
                 termination = _quota_refusal_termination(
                     read, read_json, names, snapshots=len(snapshots), main_completion=_GATE_COMPLETION in main,
                     latest=latest, calls=calls, issued=issued, context=context)
-            identities, costs = set(), []
+            identities, costs, anthropic_costs = set(), [], []
             for call in calls:
                 _require(isinstance(call, dict) and call.get("status") == "priced"
                          and isinstance(call.get("id"), str))
                 identities.add(call["id"])
-                costs.append(_usd(call["cost_usd"]))
+                # Anthropic's calls (Messages) are metered at list price; the OpenAI gate's official
+                # figure covers only OpenAI's.
+                (anthropic_costs if call.get("kind") == "messages" else costs).append(
+                    _usd(call["cost_usd"]))
             _require(len(identities) == len(calls))
-            metered = math.fsum(costs)
+            openai_metered = math.fsum(costs)
+            anthropic_metered = math.fsum(anthropic_costs)
+            metered = math.fsum([*costs, *anthropic_costs])
             official = max(observed)
-            _require(official <= metered + _AGREEMENT_TOLERANCE_USD)
-            proven = max(official, metered)
+            _require(official <= openai_metered + _AGREEMENT_TOLERANCE_USD)
+            # One cap for both providers: their sum is what the attempt spent.
+            proven = max(official, openai_metered) + anthropic_metered
             _require(proven <= cap + _AGREEMENT_TOLERANCE_USD)
 
             continuation = None

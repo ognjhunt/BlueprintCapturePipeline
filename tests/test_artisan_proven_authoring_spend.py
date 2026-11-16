@@ -179,7 +179,9 @@ def _artisan_runtime(output, request, *, runs, cap=None, baseline=0.0, continuat
         meter = Meter(runtime / "blueprint_usage.json", maximum_cost_usd=cap, maximum_requests=100,
                       deadline_epoch=DEADLINE)
         for cost in costs:
-            identity = meter.before("create", "synthetic-model")
+            # ``("messages", cost)`` is an Anthropic call (list price); a bare cost is an OpenAI call.
+            kind, cost = cost if isinstance(cost, tuple) else ("create", cost)
+            identity = meter.before(kind, "synthetic-model")
             if cost is None:
                 break  # still in flight when the run ended
             try:
@@ -798,3 +800,31 @@ def test_status_reports_an_unproven_settlement_at_its_maximum(site):
     assert (attempt["attempt_id"], attempt["status"], attempt["retained_spend_usd"], attempt["retained_spend_basis"]) == (
         row.stem, "cancelled_before_execution", 20.0, "terminal_launch_unreconciled")
     assert committed_spend_usd(site["directory"], site["intent"]) == Decimal("20.0")
+
+
+def test_a_shared_cap_run_proves_openai_official_plus_anthropic_metered(tmp_path):
+    # OpenAI board images $1.25 and $0.5 (the gate saw $1.70, it lags); Anthropic text $3 and $2.
+    result, request = _proof(tmp_path, runs=[([1.25, ("messages", 3.0), 0.5, ("messages", 2.0)], 1.7, False)])
+    proof = budget.artisan_proven_authoring_spend(result, request)
+    assert proof["proven_authoring_spend_usd"] == pytest.approx(1.75 + 5.0)
+    assert proof["metered_cost_usd"] == pytest.approx(6.75) and proof["official_observed_cost_usd"] == 1.7
+
+
+def test_the_openai_official_figure_is_held_to_the_openai_calls_alone(tmp_path):
+    # $4 official against $1.25 of OpenAI calls: something spent unmetered on OpenAI, though the
+    # whole meter ($6.25 with Anthropic's) would have hidden it.
+    result, request = _proof(tmp_path, runs=[([1.25, ("messages", 5.0)], 4.0, False)])
+    assert budget.artisan_proven_authoring_spend(result, request) is None
+
+
+def test_an_anthropic_refusal_for_lack_of_funds_ends_the_attempt_at_its_true_metered_cost(tmp_path):
+    # Upstream's CLI catches the meter's typed error and writes its terminal record: the refused
+    # call is a $0 row, and the normal proof holds.
+    result, request = _proof(tmp_path, runs=[([0.25, ("messages", 2.0), ("messages", 0.0)], 0.25, True)])
+    assert budget.artisan_proven_authoring_spend(result, request)["proven_authoring_spend_usd"] == pytest.approx(2.25)
+
+
+def test_the_official_openai_figure_above_its_own_calls_adds_to_anthropic_s_not_to_the_whole_meter(tmp_path):
+    # The gate reads $0.5000005 for $0.50 of OpenAI calls (within the noise): proven is that plus $2.
+    result, request = _proof(tmp_path, runs=[([0.5, ("messages", 2.0)], 0.5000005, False)])
+    assert budget.artisan_proven_authoring_spend(result, request)["proven_authoring_spend_usd"] == 2.5000005

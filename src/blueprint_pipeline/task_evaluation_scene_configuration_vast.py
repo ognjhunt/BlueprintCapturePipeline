@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from . import artisan_anthropic_month
 from .common import (
     ensure_dir,
     redacted_failure_detail,
@@ -274,6 +275,21 @@ def _collect_openai_cost_snapshot(
         ).snapshot(start_time=start_time, end_time=end_time)
 
 
+def _owner_only_anthropic_key_file() -> Path:
+    from .artisan_provider_choice import KEY_FILE_ENV, owner_only_key_file
+    if (path := owner_only_key_file(os.environ)) is None:
+        raise TaskEvaluationSceneConfigurationVastError("scene_configuration_anthropic_secret_configuration_" + (
+            "invalid" if Path(str(os.environ.get(KEY_FILE_ENV) or "").strip()).is_absolute() else "missing"))
+    return path
+
+
+def anthropic_text_key(receipt: Mapping[str, Any] | None) -> dict[str, str]:
+    """The owner-only Anthropic key file for a run that declares ARTISAN text on Anthropic, else nothing."""
+    if (receipt or {}).get("replacement_authoring_text_provider") != "anthropic":
+        return {}
+    return {"ANTHROPIC_API_KEY_FILE": str(_owner_only_anthropic_key_file())}
+
+
 def _provider_runtime_inputs(
     authority: Mapping[str, Any],
     receipt: Mapping[str, Any] | None = None,
@@ -285,26 +301,7 @@ def _provider_runtime_inputs(
                 or float(anthropic["maximum_cost_usd"]) <= 0):
             raise TaskEvaluationSceneConfigurationVastError(
                 "scene_configuration_anthropic_spend_scope_invalid")
-        unresolved = str(os.environ.get("ANTHROPIC_API_KEY_FILE") or "").strip()
-        path = Path(unresolved)
-        if not unresolved or not path.is_absolute():
-            raise TaskEvaluationSceneConfigurationVastError(
-                "scene_configuration_anthropic_secret_configuration_missing")
-        try:
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            try:
-                metadata = os.fstat(descriptor)
-                if (not stat.S_ISREG(metadata.st_mode)
-                        or metadata.st_uid != os.geteuid()
-                        or stat.S_IMODE(metadata.st_mode) & 0o077
-                        or not stat.S_IMODE(metadata.st_mode) & 0o400
-                        or not 0 < metadata.st_size <= 16_384):
-                    raise ValueError("anthropic_secret_invalid")
-            finally:
-                os.close(descriptor)
-        except (OSError, ValueError) as exc:
-            raise TaskEvaluationSceneConfigurationVastError(
-                "scene_configuration_anthropic_secret_configuration_invalid") from exc
+        path = _owner_only_anthropic_key_file()
         return {"ANTHROPIC_API_KEY_FILE": str(path)}, {
             "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": str(authority["authority_digest"]),
             "BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_PROVIDER": "anthropic",
@@ -398,6 +395,7 @@ def _provider_runtime_inputs(
         validate_managed_project_guard(receipt=receipt, secret_paths=secret_paths,
             values=values, stage_caps=stage_caps,
             openai_maximum_cost_usd=float(openai["maximum_cost_usd"]))
+    secret_paths.update(anthropic_text_key(receipt))  # ARTISAN text on Anthropic, under the one reservation
     now = datetime.now(UTC)
     day_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
     runtime_window_end = now + timedelta(hours=1)
@@ -1181,6 +1179,10 @@ def run_scene_configuration_vast(
         resource_class="vast_provider_adapter",
         require_allocation_binding=True,
     )
+    try:  # Anthropic's part of the month, held before any authoring; unwritable, the attempt stops here
+        artisan_anthropic_month.hold_attempt(receipt, authority, ttl_seconds=ttl)
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationSceneConfigurationVastError("scene_configuration_anthropic_month_hold_unwritable") from exc
     # A recipe with no GPU stage runs whole on this host and rents nothing (owner, 2026-11-15):
     # no bundle staging, no Vast watchdog, no provider call (``host_chain_plan``).
     host_chain, cpu_prestage_stage_limit = host_chain_plan(_portable_construction_envelope(
@@ -1688,6 +1690,7 @@ def run_scene_configuration_vast(
     # output/reconciliation path when no native output could be returned.
     if not output_zip.is_file() and (job / "cpu_prestage_output.zip").is_file():
         output_zip = job / "cpu_prestage_output.zip"
+    artisan_anthropic_month.settle_attempt(receipt, output_zip if output_zip.is_file() else None)
     execution, blockers, extraction_disk_capacity = (
         output_admission.extract(
             extract_provider_output_with_capacity_guard, output_zip,

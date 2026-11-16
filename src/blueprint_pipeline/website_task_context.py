@@ -304,8 +304,18 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
     anthropic_terms = value.get("anthropic_provider_terms_reference")
     authoring_runtime = value.get("authoring_agent_runtime")
     agents_policy = value.get("agents_api_policy")
+    from .artisan_provider_choice import both_providers_granted
+    both = value.get("authoring_providers")
+    # The both-providers grant: ARTISAN's text provider is chosen on the host, per job
+    # (``artisan_provider_choice``). Its Privacy version and typed consents travel with it.
+    if both is not None and (not both_providers_granted(value) or authoring_provider != "openai"
+                             or "authoring_provider" in value
+                             or (value.get("privacy_policy_version") is not None
+                                 and not isinstance(value["privacy_policy_version"], str))
+                             or not isinstance(value.get("site_consents", []), list)):
+        raise ValueError("website_scene_sponsorship_authoring_provider_invalid")
     if (authoring_provider not in {"openai", "anthropic"}
-            or (authoring_provider == "openai" and anthropic_terms is not None)
+            or (authoring_provider == "openai" and anthropic_terms is not None and both is None)
             or (authoring_provider == "anthropic" and (
                 not isinstance(anthropic_terms, str)
                 or re.fullmatch(r"sha256:[0-9a-f]{64}", anthropic_terms) is None))):

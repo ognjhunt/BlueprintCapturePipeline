@@ -37,11 +37,13 @@ PREFLIGHT_TIMEOUT_SECONDS = 300
 
 #: Applied in this order to the pinned upstream archive. 0001 confines
 #: generated code; 0002 prices and admits gpt-6.1-sol and its max reasoning
-#: effort (owner direction 2026-11-02); 0005 sends the review agent's
-#: request_render non-strict (its free-form ``pose`` map is refused in strict
-#: mode). The sealed manifest records each digest.
+#: effort (owner direction 2026-11-02); 0003 prices and admits claude-opus-5-5
+#: in upstream's Anthropic adapter, selected only by a job the host chose for
+#: Anthropic; 0005 sends the review agent's request_render non-strict (its
+#: free-form ``pose`` map is refused in strict mode). The sealed manifest records
+#: each digest.
 UPSTREAM_PATCHES = ("0001-confine-generated-code.patch", "0002-gpt-6-1-sol.patch",
-                    "0005-request-render-non-strict.patch")
+                    "0003-claude-opus-5-5.patch", "0005-request-render-non-strict.patch")
 PATCH_DIRECTORY = "upstream_patches"
 
 

@@ -1,0 +1,214 @@
+Price and admit Anthropic claude-opus-5-5 for ARTISAN's text roles; send it requests it accepts.
+
+Rates read 2026-11-13 at https://platform.claude.com/docs/en/about-claude/pricing:
+$4 input, $0.20 cache reads, $5 5-minute and $8 1-hour cache writes, $20 output
+per 1M tokens. Its output_config.effort accepts low, medium, high, xhigh and max.
+
+- pipeline/cost.py: the claude-opus-5-5 price row.
+- pipeline/providers.py: xhigh and max are admitted for anthropic claude-opus-5-5;
+  the OpenAI check after it is unchanged.
+- pipeline/llm/anthropic.py:
+  - every Messages request is streamed and read with get_final_message();
+  - stop_reason "refusal" raises AnthropicRefusalError, and "max_tokens" inside a
+    tool call raises AnthropicIncompleteToolCallError; neither is retried;
+  - claude-opus-5-5 is sent thinking {"type": "adaptive"} with
+    block_binding.prefix_mismatch_behavior "drop_block" under the
+    thinking-binding-controls-2026-08-01 beta, because the harness edits earlier
+    turns at session boundaries (pipeline/context_policy.py) and this model binds
+    its thinking blocks to the conversation that produced them.
+  No sampling parameter, prefill or forced tool choice is sent (none was before),
+  thinking is never disabled, and max_tokens is always set.
+
+Not selected by default: the provider and model come from ARTISAN_PIPELINE_PROVIDER
+and ARTISAN_PIPELINE_MODEL. Nothing in the OpenAI path changes.
+
+Applied after 0002-gpt-6-1-sol.patch, against
+physicalvision/Artisan@ad322b5b31e50bdb84155520f09622c00c6056c3.
+
+--- a/pipeline/cost.py
++++ b/pipeline/cost.py
+@@ -110,6 +110,16 @@
+     "input_cache_write_1h": 10.0,
+     "output": 25.0,
+ }
++# Standard rates read 2026-11-13 at https://platform.claude.com/docs/en/about-claude/pricing:
++# $4 input, $0.20 cache reads, $5 5-minute and $8 1-hour cache writes, $20 output
++# per 1M tokens, the same rate across the whole 1M-token context window.
++ANTHROPIC_OPUS_5_5_PRICING: dict[str, float] = {
++    "input_uncached": 4.0,
++    "input_cached": 0.2,
++    "input_cache_write": 5.0,
++    "input_cache_write_1h": 8.0,
++    "output": 20.0,
++}
+ ANTHROPIC_SONNET_PRICING: dict[str, float] = {
+     "input_uncached": 3.0,
+     "input_cached": 0.3,
+@@ -447,6 +457,7 @@
+     model = str(model_id).strip()
+     if provider_norm.value == "anthropic":
+         return {
++            "claude-opus-5-5": ANTHROPIC_OPUS_5_5_PRICING,
+             "claude-opus-4-8": ANTHROPIC_OPUS_PRICING,
+             "claude-opus-4-7": ANTHROPIC_OPUS_PRICING,
+             "claude-opus-4-6": ANTHROPIC_OPUS_PRICING,
+--- a/pipeline/llm/anthropic.py
++++ b/pipeline/llm/anthropic.py
+@@ -38,6 +38,13 @@
+ 
+ 
+ ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
++# The harness edits earlier turns at a session boundary (pipeline/context_policy.py)
++# and replays earlier assistant turns verbatim. On models whose thinking blocks are
++# bound to the conversation that produced them, a replayed block after an edited turn
++# is rejected (400) on enforced accounts. With this beta the request instead drops the
++# first mismatched block and every thinking block after it, for that request only.
++ANTHROPIC_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
++_CONVERSATION_BOUND_THINKING_MODELS = ("claude-opus-5-5",)
+ DEFAULT_ANTHROPIC_COMPACTION_TRIGGER_TOKENS = 110_000
+ 
+ 
+@@ -52,6 +59,7 @@
+ DEFAULT_ANTHROPIC_PROMPT_CACHE_FIRST_MESSAGE_MIN_CHARS = 2_000
+ _ADAPTIVE_THINKING_MODELS = (
+     "claude-mythos-preview",
++    "claude-opus-5-5",
+     "claude-opus-4-8",
+     "claude-opus-4-7",
+     "claude-opus-4-6",
+@@ -78,6 +86,30 @@
+         return f"{' '.join(parts)}: {self.message}"
+ 
+ 
++@dataclass(slots=True)
++class AnthropicRefusalError(RuntimeError):
++    """The model declined the request (``stop_reason == "refusal"``); not retried."""
++
++    category: str | None
++    explanation: str | None
++    message_id: str | None = None
++    usage: dict[str, int] | None = None
++
++    def __str__(self) -> str:
++        return f"Anthropic refusal: category={self.category or 'none'} message_id={self.message_id or 'none'}"
++
++
++@dataclass(slots=True)
++class AnthropicIncompleteToolCallError(RuntimeError):
++    """The response hit ``max_tokens`` inside a tool call, so its input cannot be trusted."""
++
++    message_id: str | None = None
++    usage: dict[str, int] | None = None
++
++    def __str__(self) -> str:
++        return f"Anthropic response stopped at max_tokens inside a tool call: message_id={self.message_id or 'none'}"
++
++
+ class AnthropicLLM:
+ 
+     supports_native_cost_compaction = False
+@@ -196,6 +228,7 @@
+             context="anthropic[messages]",
+         )
+ 
++        _raise_for_unusable_stop(response)
+         result = self._convert_response(response)
+         require_token_usage(result.get("usage"), "anthropic")
+         return result
+@@ -232,15 +265,27 @@
+             client_kwargs["timeout"] = None
+         return AsyncAnthropic(**client_kwargs)
+ 
++    def _request_betas(self) -> list[str]:
++        betas = []
++        if self.enable_compaction:
++            betas.append(ANTHROPIC_COMPACTION_BETA)
++        if _thinking_is_conversation_bound(self.model_id):
++            betas.append(ANTHROPIC_THINKING_BINDING_BETA)
++        return betas
++
+     async def _create_message(self, payload: dict[str, Any]) -> Any:
+         if self._client is None:
+             raise RuntimeError("Anthropic transport is unavailable in dry_run mode")
+         try:
+-            if self.enable_compaction:
+-                return await self._client.beta.messages.create(
+-                    **payload, betas=[ANTHROPIC_COMPACTION_BETA]
+-                )
+-            return await self._client.messages.create(**payload)
++            # Streamed so a long generation is not cut by an HTTP timeout; the final
++            # message is the same object a non-streaming call returns.
++            betas = self._request_betas()
++            if betas:
++                manager = self._client.beta.messages.stream(**payload, betas=betas)
++            else:
++                manager = self._client.messages.stream(**payload)
++            async with manager as stream:
++                return await stream.get_final_message()
+         except Exception as exc:
+             normalized = _api_error_from_sdk_exception(exc)
+             if normalized is exc:
+@@ -288,6 +333,9 @@
+         if cache_control is not None:
+             payload["cache_control"] = dict(cache_control)
+         thinking = _thinking_config_for_model(self.model_id, self.thinking_level)
++        if _thinking_is_conversation_bound(self.model_id):
++            # Thinking cannot be disabled on these models; adaptive is what omitting it runs.
++            thinking = {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}
+         if thinking is not None:
+             payload["thinking"] = thinking
+         effort = _effort_from_thinking_level(self.thinking_level)
+@@ -761,6 +809,30 @@
+     return None
+ 
+ 
++def _thinking_is_conversation_bound(model_id: str) -> bool:
++    return model_id.strip().lower().startswith(_CONVERSATION_BOUND_THINKING_MODELS)
++
++
++def _raise_for_unusable_stop(response: Any) -> None:
++    stop_reason = _get(response, "stop_reason")
++    if stop_reason == "refusal":
++        details = _get(response, "stop_details")
++        category = _get(details, "category")
++        explanation = _get(details, "explanation")
++        raise AnthropicRefusalError(
++            category=category if isinstance(category, str) else None,
++            explanation=explanation if isinstance(explanation, str) else None,
++            message_id=_get(response, "id"),
++            usage=_extract_usage(response),
++        )
++    if stop_reason == "max_tokens":
++        content = _get(response, "content") or []
++        if any(_get(block, "type") == "tool_use" for block in content):
++            raise AnthropicIncompleteToolCallError(
++                message_id=_get(response, "id"), usage=_extract_usage(response)
++            )
++
++
+ def _effort_from_thinking_level(thinking_level: str) -> str | None:
+     level = reasoning_level_alias(thinking_level)
+     if level in {"low", "medium", "high", "xhigh", "max"}:
+--- a/pipeline/providers.py
++++ b/pipeline/providers.py
+@@ -7,6 +7,8 @@
+ 
+ VALID = PROVIDER_VALUES
+ DEFAULT_PROVIDER = "openai"
++# Anthropic models whose output_config.effort accepts xhigh and max (read 2026-11-13).
++ANTHROPIC_EXTENDED_EFFORT_MODELS = frozenset({"claude-opus-5-5"})
+ 
+ 
+ def pipeline_provider(role: str | None = None, *, strict: bool = True) -> str:
+@@ -52,6 +54,11 @@
+     if raw in ("mid", "medium"):
+         raw = ThinkingLevel.MED.value
+     if raw in {"xhigh", "max"}:
++        if (
++            pipeline_provider(role) == "anthropic"
++            and effective_pipeline_model(role) in ANTHROPIC_EXTENDED_EFFORT_MODELS
++        ):
++            return raw
+         if pipeline_provider(role) != "openai" or effective_pipeline_model(role) not in {
+             "gpt-6-astra",
+             "gpt-6.1-sol",

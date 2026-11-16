@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import website_preparation_authority as authority
+from blueprint_pipeline import website_capture_withdrawal_provider_copies as copies
 from blueprint_pipeline import website_preparation_renewal as renewals
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -93,7 +94,8 @@ def template(tmp_path_factory):
     from tests.test_particlefield_usd import _splat
     from tests.test_website_task_preparation import _arguments
     root = tmp_path_factory.mktemp("renewal")
-    capture, intents = root / "capture", root / "intents"
+    # A site's own capture folder, as the withdrawal planner finds it (``website_capture_withdrawal._site``).
+    capture, intents = root / "site-req1" / "captures" / "walkthrough-req1", root / "intents"
     pipeline = capture / "pipeline"
     pipeline.mkdir(parents=True)
     args = _arguments(pipeline)
@@ -489,3 +491,41 @@ def test_the_renewal_intent_reopens_retained_authority_and_shares_the_revoked_ho
     reserve(second, "r1", 1, 1501)
     with pytest.raises(SceneIntakeError, match="scene_intake_attempt_cap_exhausted"):
         reserve(second, "r2", 0.01, 1502)
+
+
+# -- an Anthropic renewal names Anthropic on the site's withdrawal list first --------------------------------
+
+
+def _anthropic(monkeypatch, site):
+    from blueprint_pipeline import website_native_background as background
+    original = background.construction_rights_admission
+    seen = []
+    def rights(**kwargs):
+        seen.append(sorted(str(p) for p in site.capture.rglob("renewals/*/native/rights_admission.json")))
+        return dict(original(**kwargs), anthropic_provider_terms_reference="sha256:" + "a" * 64)
+    monkeypatch.setattr(background, "construction_rights_admission", rights)
+    return seen
+
+
+def test_renewal_names_anthropic_before_its_rights_file(site, monkeypatch):
+    _anthropic(monkeypatch, site)
+    order = []
+    original = copies.record_provider_admission
+    def record(s, provider):
+        order.append(list(s.rglob("renewals/*/native/rights_admission.json")))
+        return original(s, provider)
+    monkeypatch.setattr(copies, "record_provider_admission", record)
+    result = run(site)
+    assert order == [[]] and result["status"] == "reissued"
+    assert copies.plan_providers(site.capture.parent.parent)["not_deleted_at_provider"][-1]["provider"] == "anthropic"
+
+
+def test_renewal_holds_when_the_ledger_write_fails(site, monkeypatch):
+    _anthropic(monkeypatch, site)
+    def failing(s, provider):
+        raise OSError("disk full")
+    monkeypatch.setattr(copies, "record_provider_admission", failing)
+    with pytest.raises(ValueError, match="native_inputs_failed"):
+        run(site)
+    assert not site.registered and not site.enqueued
+    assert not list(site.capture.rglob("renewals/*/native/rights_admission.json"))

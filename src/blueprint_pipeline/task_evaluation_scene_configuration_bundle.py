@@ -31,6 +31,7 @@ from .task_evaluation_scene_configuration_bundle_evidence import (
     portable_construction_envelope,  # noqa: F401 - compatibility re-export
 )
 
+from .artisan_provider_choice import artisan_text_provider
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_disclosure import (
     MESH_INPUT_STATUS,
@@ -1315,6 +1316,9 @@ def build_scene_configuration_provider_bundle(
                 for value in configuration_values.values() if value.get("authoring_backend") == "artisan_v1"), {}),
         **({"replacement_authoring_model_provider": "anthropic"}
            if any(value.get("authoring_model_provider") == "anthropic"
+                  for value in configuration_values.values()) else {}),
+        **({"replacement_authoring_text_provider": "anthropic"}
+           if any(value.get("authoring_backend") == "artisan_v1" and artisan_text_provider(value) == "anthropic"
                   for value in configuration_values.values()) else {}),
         **next(({"replacement_authoring_agent_runtime": "openai_agents_api",
             "replacement_authoring_model": "gpt-6.1-sol",

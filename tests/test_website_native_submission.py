@@ -40,7 +40,8 @@ def test_capture_mounting_and_shared_instance_pose_reach_the_frozen_template():
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
           max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False,
-          authoring_backend=None, synthetic=False, inside=False, synthetic_cad=False, destination_bounds=None):
+          authoring_backend=None, synthetic=False, inside=False, synthetic_cad=False, destination_bounds=None,
+          artisan_choice=None):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
@@ -91,6 +92,13 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
             capture_id=args["task_context"]["capture_id"],
             task_context_digest=args["task_context"]["context_digest"])
         args["spend"]["authority_digest"] = canonical_digest(args["spend"], digest_field="authority_digest")
+    if artisan_choice is not None:
+        # A both-providers grant and the host's sealed choice for it (``artisan_provider_choice``).
+        args["spend"].update(authoring_providers=["openai", "anthropic"],
+                             anthropic_provider_terms_reference="sha256:" + "a" * 64,
+                             privacy_policy_version="2026-11-13.1", site_consents=[])
+        args["spend"]["authority_digest"] = canonical_digest(args["spend"], digest_field="authority_digest")
+        args["artisan_provider_choice"] = artisan_choice(args["spend"])
     preparation = compile_website_scene_preparation(**args)
     if destination_bounds is not None:
         # Retained beside the preparation, as on the host: native submission rereads them to relocate.
@@ -462,7 +470,13 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
 
 def test_new_signed_website_drawer_can_quote_anthropic_authoring_without_spend(tmp_path, monkeypatch):
     kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, anthropic=True, authoring_backend="astra_cad_blender_v1")
+    # The fixture's preparation sits outside a site folder; the launch names Anthropic in this site's ledger.
+    capture = tmp_path / "site-req1" / "captures" / "walkthrough-req1"
+    capture.mkdir(parents=True)
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.capture_root_for_preparation", lambda _: capture)
     materialize_website_submission(**kwargs)
+    from blueprint_pipeline.website_capture_withdrawal_provider_copies import plan_providers
+    assert plan_providers(capture.parent.parent)["not_deleted_at_provider"][-1]["provider"] == "anthropic"
     root = kwargs["staging_root"]
     request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
     assert request["replacement_authoring_model_provider"] == "anthropic"
@@ -597,6 +611,94 @@ def test_a_request_may_not_allocate_more_than_the_cumulative_cap(tmp_path, monke
     configuration = json.loads((root / "configuration/stage_3.json").read_text())
     request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] = 15.01
     assert _stage_three_refusal(configuration, {"request": request}) == "artisan_framework_or_budget_binding"
+
+
+def _host_choice(tmp_path, status="model_metadata_available_no_inference"):
+    from blueprint_pipeline import artisan_provider_choice as choice
+    key = tmp_path / "anthropic.key"
+    key.write_text("issued")
+    key.chmod(0o600)
+    answer = {"status": status, "model_metadata_digest": "sha256:" + "b" * 64}
+    return lambda grant: choice.choose_authoring_provider(
+        grant=grant, environ={choice.PREFER_ANTHROPIC_ENV: "1", choice.KEY_FILE_ENV: str(key)},
+        read=lambda: dict(answer))
+
+
+def _artisan_submission(tmp_path, monkeypatch, artisan_choice, before_launch=None):
+    import os
+    from blueprint_pipeline import artisan_provider_choice as choice
+    if not os.environ.get(choice.SUCCESSOR_ROOT_ENV):
+        monkeypatch.setenv(choice.SUCCESSOR_ROOT_ENV, str(tmp_path.parent / "grant-choices"))
+    monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
+    monkeypatch.setenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", "12")
+    # The host as ``_host_choice`` reads it; each attempt reads the setting and the key again.
+    monkeypatch.setenv(choice.PREFER_ANTHROPIC_ENV, "1")
+    monkeypatch.setenv(choice.KEY_FILE_ENV, str(tmp_path.parent / "anthropic.key"))
+    tmp_path.mkdir(parents=True)
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20,
+                      authoring_backend="artisan_v1", artisan_choice=artisan_choice)
+    # The fixture's preparation sits outside a site folder; the launch names Anthropic in this site's ledger.
+    capture = tmp_path / "site-req1" / "captures" / "walkthrough-req1"
+    capture.mkdir(parents=True)
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.capture_root_for_preparation", lambda _: capture)
+    if before_launch is not None:
+        before_launch(json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text()))
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    return (json.loads((root / "scene_configuration_preparation_request.v1.json").read_text()),
+            json.loads((root / "configuration/stage_3.json").read_text()))
+
+
+def test_an_artisan_job_chosen_for_anthropic_keeps_the_one_openai_reservation_and_adds_only_its_host_and_key(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline import artisan_provider_choice as choice
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration import _stage_three_refusal
+    openai_request, openai_configuration = _artisan_submission(tmp_path / "openai", monkeypatch, None)
+    request, configuration = _artisan_submission(tmp_path / "claude", monkeypatch, _host_choice(tmp_path))
+    assert configuration["authoring_models"] == choice.ARTISAN_CLAUDE_MODELS
+    assert configuration["artisan_provider_choice"]["provider"] == "anthropic"
+    assert "authoring_model_provider" not in configuration  # not the astra Claude lane
+    assert request["replacement_authoring_text_provider"] == "anthropic"
+    assert "replacement_authoring_model_provider" not in request
+    assert request["runtime"]["network"]["allowlist"] == ["api.openai.com", "api.anthropic.com"]
+    assert request["runtime"]["secret_refs"] == ["secret-file:openai_api_key", "secret-file:anthropic_api_key"]
+    # One run, one reservation, one cap: the money block is the OpenAI job's, value for value.
+    assert request["spend"] == openai_request["spend"]
+    assert "anthropic" not in request["spend"]["external_service_caps"]
+    from blueprint_pipeline.website_capture_withdrawal_provider_copies import ANTHROPIC_NOT_DELETED, plan_providers
+    site = tmp_path / "claude" / "site-req1"
+    assert plan_providers(site)["not_deleted_at_provider"][-1] == ANTHROPIC_NOT_DELETED
+    assert configuration["authoring_budget"] == openai_configuration["authoring_budget"]
+    assert _stage_three_refusal(configuration, {"request": request}) not in {
+        "artisan_framework_or_budget_binding", "artisan_provider_choice", "artisan_text_provider_binding"}
+    undeclared = {k: v for k, v in request.items() if k != "replacement_authoring_text_provider"}
+    assert _stage_three_refusal(configuration, {"request": undeclared}) == "artisan_text_provider_binding"
+    from blueprint_pipeline.task_evaluation_launch_preparation_contract import (
+        TaskEvaluationLaunchPreparationContractError, validate_launch_preparation_request)
+    for bad in ({"allowlist": ["api.anthropic.com"]}, {"allowlist": ["api.openai.com"]}):
+        changed = copy.deepcopy(request)
+        changed["runtime"]["network"].update(bad)
+        with pytest.raises(TaskEvaluationLaunchPreparationContractError, match="artisan_anthropic_scope_invalid"):
+            validate_launch_preparation_request(changed)
+    changed = copy.deepcopy(request)
+    changed["runtime"]["secret_refs"] = ["secret-file:openai_api_key"]
+    with pytest.raises(TaskEvaluationLaunchPreparationContractError, match="artisan_anthropic_scope_invalid"):
+        validate_launch_preparation_request(changed)
+    unchosen = {k: v for k, v in configuration.items() if k != "artisan_provider_choice"}
+    assert _stage_three_refusal(unchosen, {"request": request}) == "artisan_provider_choice"
+
+
+def test_a_both_providers_grant_the_host_chose_openai_for_runs_as_today(tmp_path, monkeypatch):
+    openai_request, openai_configuration = _artisan_submission(tmp_path / "openai", monkeypatch, None)
+    request, configuration = _artisan_submission(tmp_path / "probed", monkeypatch,
+                                                 _host_choice(tmp_path, status="claude_model_metadata_unavailable"))
+    for key in ("authoring_models", "authoring_budget", "authoring_framework"):
+        assert configuration[key] == openai_configuration[key]
+    assert set(configuration) == set(openai_configuration)
+    assert request["spend"] == openai_request["spend"]
+    for key in ("network", "secret_refs"):
+        assert request["runtime"][key] == openai_request["runtime"][key]
+    assert "replacement_authoring_text_provider" not in request
 
 
 def test_owner_grant_admits_the_articulated_quote_above_the_consented_ceiling(tmp_path, monkeypatch):
@@ -937,3 +1039,46 @@ def test_a_destination_moved_by_a_smaller_clearance_than_its_region_is_moved_aga
     assert clearances == [pytest.approx(reach / mpu, rel=1e-9)]
     assert template["destination_relocation"] == {**prepared["destination_relocation"],
                                                   "applied_at": "native_submission", "replacement_size_tolerance": 0.25}
+
+
+@pytest.mark.parametrize("lose, reason", [("setting", "host_setting_off_after_choice"),
+                                          ("key", "anthropic_key_file_unusable_after_choice")])
+def test_a_setting_turned_off_or_a_key_lost_after_the_choice_launches_the_attempt_on_openai(
+        tmp_path, monkeypatch, lose, reason):
+    from blueprint_pipeline import artisan_provider_choice as choice
+    openai_request, openai_configuration = _artisan_submission(tmp_path / "openai", monkeypatch, None)
+
+    def after_choice(_preparation):
+        if lose == "setting":
+            monkeypatch.setenv(choice.PREFER_ANTHROPIC_ENV, "0")
+        else:
+            (tmp_path / "anthropic.key").unlink()
+    request, configuration = _artisan_submission(tmp_path / "claude", monkeypatch, _host_choice(tmp_path),
+                                                 before_launch=after_choice)
+    assert (configuration["artisan_provider_choice"]["provider"],
+            configuration["artisan_provider_choice"]["reason"]) == ("openai", reason)
+    assert configuration["authoring_models"] == openai_configuration["authoring_models"]
+    assert "replacement_authoring_text_provider" not in request
+    assert request["runtime"]["secret_refs"] == openai_request["runtime"]["secret_refs"]
+
+
+def test_after_an_anthropic_attempt_ran_out_of_funds_the_next_attempt_launches_on_openai(tmp_path, monkeypatch):
+    from blueprint_pipeline import artisan_provider_choice as choice
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration import _stage_three_refusal
+    monkeypatch.setenv(choice.SUCCESSOR_ROOT_ENV, str(tmp_path / "choices"))
+    openai_request, openai_configuration = _artisan_submission(tmp_path / "openai", monkeypatch, None)
+    seen = {}
+
+    def ran_out_of_funds(preparation):
+        seen["successor"] = choice.record_no_funds_successor(preparation["artisan_provider_choice"],
+                                                             run_id="website-run-earlier")
+    request, configuration = _artisan_submission(tmp_path / "claude", monkeypatch, _host_choice(tmp_path),
+                                                 before_launch=ran_out_of_funds)
+    assert configuration["artisan_provider_choice"] == seen["successor"]
+    assert configuration["authoring_models"] == openai_configuration["authoring_models"]
+    assert "replacement_authoring_text_provider" not in request
+    assert request["spend"] == openai_request["spend"]
+    for key in ("network", "secret_refs"):
+        assert request["runtime"][key] == openai_request["runtime"][key]
+    assert _stage_three_refusal(configuration, {"request": request}) not in {
+        "artisan_framework_or_budget_binding", "artisan_provider_choice", "artisan_text_provider_binding"}

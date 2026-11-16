@@ -144,12 +144,50 @@ def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mappi
             "robot_fit_table": fit}
 
 
+def name_anthropic_for_site(rights: Mapping[str, Any], capture_root: Path | None) -> bool:
+    """Before a rights admission that lets frames and task evidence go to Anthropic is written,
+    name Anthropic in the site's own withdrawal ledger (the folder the withdrawal planner reads)."""
+    if "anthropic_provider_terms_reference" not in rights:
+        return False
+    from .website_capture_withdrawal import _site
+    from .website_capture_withdrawal_provider_copies import record_provider_admission
+    if capture_root is None:
+        raise ValueError("website_anthropic_admission_site_unknown")
+    record_provider_admission(_site(Path(capture_root)), "anthropic")
+    return True
+
+
+def artisan_provider_choice_for(*, authority: Mapping[str, Any], root: Path, capture_root: Path,
+                                geometry_only: bool = False) -> dict[str, Any] | None:
+    """The host's once-per-grant choice of ARTISAN's text provider, or ``None`` (today's path).
+
+    Only on a host set to prefer Anthropic, for a both-providers grant of an ARTISAN job; every
+    other job runs today's path untouched, writing nothing. When Anthropic is chosen, the site's
+    withdrawal ledger names it before the choice is returned, so no site text or frame reaches
+    Anthropic before that entry exists.
+    """
+    import os
+
+    from .artisan_provider_choice import PREFER_ANTHROPIC_ENV, both_providers_granted, retained_or_new_choice
+    from .task_object_authoring_backend import ARTISAN_BACKEND, default_backend
+    if (os.environ.get(PREFER_ANTHROPIC_ENV) != "1" or geometry_only or not both_providers_granted(authority)
+            or (authority.get("replacement_authoring_backend") or default_backend()) != ARTISAN_BACKEND):
+        return None
+    choice = retained_or_new_choice(root=root, grant=authority)
+    if choice["provider"] == "anthropic":
+        from .website_capture_withdrawal import _site
+        from .website_capture_withdrawal_provider_copies import record_provider_admission
+        record_provider_admission(_site(Path(capture_root)), "anthropic")
+    return choice
+
+
 def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[str, Any], preparation_path: Path,
                                 native_root: Path, task_context: Mapping[str, Any], now: float,
                                 runtime_inputs: Mapping[str, Any] | None = None,
                                 base_scene: Mapping[str, Any] | None = None,
                                 source_geometry: Mapping[str, Any] | None = None,
-                                task_masks: Mapping[str, Any] | None = None) -> bool:
+                                task_masks: Mapping[str, Any] | None = None,
+                                capture_root: Path | None = None) -> bool:
     """The rigid native tail of a compiled preparation, CPU only: it buys nothing.
 
     Runtime inputs (unless the caller already made them), the collision and
@@ -190,6 +228,7 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
         from .website_native_background import construction_rights_admission
         from .website_object_observations import _record
         rights = construction_rights_admission(preparation=preparation, task_context=task_context, now=now)
+        name_anthropic_for_site(rights, capture_root)
         rights_path = native_root / "rights_admission.json"
         write_json(rights_path, rights)
         construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
@@ -686,10 +725,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             # Compile geometry even while execution is held. Zero authority
             # cannot validate as a paid intake request.
             authority = {"max_total_spend_usd": 0, "max_paid_attempts": 0, "expires_at_epoch": now}
+        def choose():  # called by compile only once it found no gap: a room package never chooses
+            return artisan_provider_choice_for(authority=authority, root=root, capture_root=capture_root,
+                                               geometry_only=geometry_only)
         preparation = compile_website_scene_preparation(
             task_context=context, task_masks=clean_plate["task_masks"],
             removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
             base_scene=base, output_root=root, spend=authority, now=now,
+            artisan_provider_choice=choose,
             **({"task_semantics": semantics} if semantics is not None else {}),
             **({"atlas_route": "geometry_only"} if geometry_only else {}),
         )
@@ -731,7 +774,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                                            preparation_path=root / "preparation.json", native_root=native_root,
                                            task_context=context, now=now, runtime_inputs=runtime_inputs,
                                            base_scene=base, source_geometry=clean_plate["source_geometry"],
-                                           task_masks=clean_plate["task_masks"]):
+                                           task_masks=clean_plate["task_masks"], capture_root=capture_root):
                 from .website_scene_dispatch import binding_root, register_website_preparation
                 context_path = root / "task_context.json"
                 write_json(context_path, context)

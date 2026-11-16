@@ -57,6 +57,33 @@ NOT_DELETED_AT_PROVIDER = (
     {"provider": "vast", "reason": "instances end at teardown, proven per run; erasure of the host's disk is not "
      "observable and there is no delete"},
 )
+#: Named for a site once any of its jobs is admitted to send frames or task evidence to Anthropic.
+#: The data goes inline in Messages API requests: Blueprint creates no stored object there (no file,
+#: batch or session), so there is nothing to delete; what Anthropic keeps of a request is kept under
+#: its own retention terms, and its API has no delete for it.
+ANTHROPIC_NOT_DELETED = {"provider": "anthropic", "reason": "frames and task evidence are sent inline in Messages "
+                         "API requests and Blueprint creates no stored object; Anthropic offers no endpoint to "
+                         "delete request data it retains under its own terms"}
+
+
+def record_provider_admission(site: Path, provider: str) -> None:
+    """Name ``provider`` in the site's own withdrawal ledger, before any step can send it data.
+
+    Written on the control plane when a job for this site is admitted for the provider, so it
+    never depends on a file coming back from a remote machine.
+    """
+    if provider != "anthropic":
+        raise ValueError("website_withdrawal_provider_admission_unknown")
+    from .website_capture_withdrawal import _lock
+
+    # Under the withdrawal lock, as the planner writes the ledger: neither can save over the other.
+    # The lock creates the journal at 0o700 and fsyncs it and the site folder.
+    with _lock(site) as journal:
+        ledger_path = journal / LEDGER_FILENAME
+        ledger = _read(ledger_path) or {"schema_version": LEDGER_SCHEMA, "copies": {}}
+        if provider not in ledger.get("providers_used", []):
+            ledger["providers_used"] = sorted({*ledger.get("providers_used", []), provider})
+            write_json(ledger_path, ledger)
 
 
 class ProviderAnswer(Exception):
@@ -128,6 +155,18 @@ def _discover(site: Path) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any
 def plan_providers(site: Path) -> dict[str, Any]:
     """The site's provider copies: discovered now, merged into the journal's ledger (which never forgets an id)."""
 
+    from .website_capture_withdrawal import _lock
+
+    # Read without the lock; the ledger is saved only under it (``record_provider_admission``'s lock), from
+    # a fresh read there, so a plan never saves an older view over an entry written meanwhile.
+    plan = _plan_providers_once(site, save=False)
+    if plan is not None:
+        return plan
+    with _lock(site):
+        return _plan_providers_once(site, save=True)
+
+
+def _plan_providers_once(site: Path, *, save: bool) -> dict[str, Any] | None:
     ledger_path = site / "website_withdrawal" / LEDGER_FILENAME
     ledger = _read(ledger_path) or {"schema_version": LEDGER_SCHEMA, "copies": {}}
     discovered, unknown = _discover(site)
@@ -144,12 +183,15 @@ def plan_providers(site: Path) -> dict[str, Any]:
             ledger["copies"][key], changed = copy, True
         elif copy["status"] == "deleted_by_job" and known["status"] not in DONE:
             known["status"], changed = "deleted_by_job", True
+    if changed and not save:
+        return None
     if changed:
         write_json(ledger_path, ledger)
     rows = [dict(ledger["copies"][key], key=key) for key in sorted(ledger["copies"])]
     return {"ledger": str(ledger_path), "copies": [row for row in rows if row["status"] != ID_NOT_RECORDED],
             "unknown": [row for row in rows if row["status"] == ID_NOT_RECORDED],
-            "not_deleted_at_provider": [dict(row) for row in NOT_DELETED_AT_PROVIDER]}
+            "not_deleted_at_provider": [dict(row) for row in NOT_DELETED_AT_PROVIDER]
+            + ([dict(ANTHROPIC_NOT_DELETED)] if "anthropic" in ledger.get("providers_used", []) else [])}
 
 
 def resolve_unknown_copy(site: Path, key: str, *, answer: str, by: str) -> dict[str, Any]:
@@ -159,17 +201,31 @@ def resolve_unknown_copy(site: Path, key: str, *, answer: str, by: str) -> dict[
     then reads ``owner_resolved`` with that answer and who gave it, never ``deleted``.
     """
 
-    ledger_path = Path(site) / "website_withdrawal" / LEDGER_FILENAME
-    ledger = _read(ledger_path)
-    copy = (ledger or {}).get("copies", {}).get(key)
-    if copy is None or copy["status"] != ID_NOT_RECORDED:
-        raise ValueError("website_withdrawal_provider_copy_not_unresolved")
+    from .website_capture_withdrawal import _lock
+
     if not answer.strip() or not by.strip():
         raise ValueError("website_withdrawal_provider_copy_resolution_incomplete")
-    copy.update(status=OWNER_RESOLVED, owner_answer=answer.strip()[:1000], resolved_by=by.strip()[:200],
-                resolved_at=datetime.now(timezone.utc).isoformat())
-    write_json(ledger_path, ledger)
+    with _lock(Path(site)) as journal:  # read, change and save under the one ledger lock
+        ledger_path = journal / LEDGER_FILENAME
+        ledger = _read(ledger_path)
+        copy = (ledger or {}).get("copies", {}).get(key)
+        if copy is None or copy["status"] != ID_NOT_RECORDED:
+            raise ValueError("website_withdrawal_provider_copy_not_unresolved")
+        copy.update(status=OWNER_RESOLVED, owner_answer=answer.strip()[:1000], resolved_by=by.strip()[:200],
+                    resolved_at=datetime.now(timezone.utc).isoformat())
+        write_json(ledger_path, ledger)
     return dict(copy, key=key)
+
+
+def _save_row(ledger_path: Path, key: str, row: Mapping[str, Any]) -> None:
+    """Save one copy's row: under the lock, into the ledger as it is NOW (other rows and providers kept)."""
+    from .website_capture_withdrawal import _lock
+
+    with _lock(ledger_path.parent.parent) as journal:
+        current = journal / LEDGER_FILENAME
+        ledger = _read(current) or {"schema_version": LEDGER_SCHEMA, "copies": {}}
+        ledger["copies"][key] = dict(row)
+        write_json(current, ledger)
 
 
 def production_deleters() -> dict[str, Callable[[str], Any]]:
@@ -221,6 +277,8 @@ def apply_providers(section: Mapping[str, Any], deleters: Mapping[str, Callable[
     """Delete every pending or failed copy at its provider and record each answer in the ledger."""
 
     ledger_path = Path(section["ledger"])
+    # A snapshot to work from; no lock is held across a provider's delete call. Each answer is saved
+    # by ``_save_row``, which re-reads the ledger under the lock and changes only that copy's row.
     ledger = _read(ledger_path) or {"schema_version": LEDGER_SCHEMA, "copies": {}}
     results = []
     for key, copy in sorted(ledger["copies"].items()):
@@ -243,7 +301,7 @@ def apply_providers(section: Mapping[str, Any], deleters: Mapping[str, Callable[
             else:
                 copy.update(status="deleted_at_provider", last_error=None, answered_at=stamp,
                             answer=json.loads(json.dumps(answer, default=str)) if answer is not None else None)
-        write_json(ledger_path, ledger)
+        _save_row(ledger_path, key, copy)
         results.append(dict(copy, key=key))
     return results
 

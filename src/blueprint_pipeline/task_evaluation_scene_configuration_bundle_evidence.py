@@ -542,6 +542,7 @@ def load_scene_configuration_provider_bundle_receipt(
         "provider_python_runtime_required",
         "replacement_authoring_backend",
         "replacement_authoring_model_provider",
+        "replacement_authoring_text_provider",
         "replacement_authoring_agent_runtime",
         "replacement_authoring_model",
         "replacement_authoring_agents_api_policy",

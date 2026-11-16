@@ -8,6 +8,16 @@ transport raises is settled here instead: a 4xx is a rejected request and is
 priced $0; anything else is priced at that request's upper bound when it has
 one, else it stays unknown. Retryable failures are then retried with the SDK's
 own policy, each attempt metered as its own call.
+
+With ``provider="anthropic"`` the upstream Messages call is metered the same
+way: its output is bounded by the SDK's token count and the remaining
+authority, it is pinned to US-only inference, and it is priced from usage at the served
+model's upstream price (with the frozen US-region uplift) only when the response carries its stop reason and
+whole usage at the standard speed and tier, and otherwise counted at its bound
+for official reconciliation, and
+upstream's own retries each pass through the meter. A refusal for lack of
+funds is settled at $0 and is not retried. The bound carries the same US-region
+uplift as the price, so a call can never be charged above what it was bounded at.
 """
 from __future__ import annotations
 
@@ -65,6 +75,16 @@ class Meter:
             raise RuntimeError("artisan_unknown_charge_requires_reconciliation")
         return self.cap - sum(row["cost_usd"] for row in data["calls"])
 
+    def mark_no_funds(self, identity):
+        """Name a settled $0 rejection as the provider's refusal for lack of funds (the attempt ends here)."""
+        with self.path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            data = self.read()
+            row = next(c for c in data["calls"] if c["id"] == identity)
+            if row["status"] == "priced" and row["cost_usd"] == 0:
+                row["cost_origin"] = NO_FUNDS_ORIGIN
+                self._write(data)
+
     def before(self, kind, model):
         with self.path.with_suffix(".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -81,7 +101,8 @@ class Meter:
             self._write(data)
             return identity
 
-    def after(self, identity, cost, *, usage=None, response_id=None, cost_origin="upstream_priced_usage"):
+    def after(self, identity, cost, *, usage=None, response_id=None, cost_origin="upstream_priced_usage",
+              failure=None):
         with self.path.with_suffix(".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             data = self.read()
@@ -89,6 +110,8 @@ class Meter:
             known = isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0
             row.update(status="priced" if known else "reconciliation_required", cost_usd=cost if known else None,
                        usage=usage, response_id=response_id, cost_origin=cost_origin)
+            if failure is not None:
+                row["failure"] = failure
             self._write(data)
             if not known:
                 raise RuntimeError("artisan_unknown_charge_requires_reconciliation")
@@ -161,7 +184,153 @@ def _next_attempt(meter: Meter, identity, error, bound, attempt: int) -> float:
     return delay
 
 
-def install_metering(meter: Meter):
+ANTHROPIC_OWN_LIMIT_PREFIXES = ("You have reached your specified API usage limits",
+                                "You have reached your specified workspace API usage limits")
+NO_FUNDS_ORIGIN = "upstream_rejected_request_no_funds"
+
+
+def anthropic_no_funds(http_status, error_type, error_code, message) -> bool:
+    return (http_status == 402 or error_type == "billing_error"
+            or (http_status == 429 and error_code == "enforced_spend_limit_reached")
+            or (http_status == 400 and error_type == "invalid_request_error" and isinstance(message, str)
+                and message.startswith(ANTHROPIC_OWN_LIMIT_PREFIXES)))
+
+
+class ProviderOutOfFunds(RuntimeError):
+    """A metered call the provider refused for lack of funds; upstream does not retry it.
+
+    The provider's own error is ``__cause__``.
+    """
+
+    def __str__(self) -> str:
+        return "provider refused the request for lack of funds"
+
+
+def _anthropic_error_fields(error):
+    """Typed status, type, code and message of an Anthropic SDK error, or of upstream's wrapper of one."""
+    for candidate in (error, getattr(error, "__cause__", None)):
+        body = getattr(candidate, "body", None)
+        status = getattr(candidate, "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) and isinstance(body, dict):
+            detail = body.get("error") if isinstance(body.get("error"), dict) else {}
+            fields = [detail.get(key) for key in ("type", "code", "message")]
+            return (status, *(value if isinstance(value, str) else None for value in fields))
+    return None
+
+
+def _anthropic_bound(meter: Meter, rates, tokens: int, requested: int, us_multiplier=None):
+    """The output tokens this request may use, and the most it can cost (with the uplift pricing may apply)."""
+    if rates is None or type(tokens) is not int or tokens < 0:
+        raise RuntimeError("artisan_request_price_or_token_count_unavailable")
+    uplift = max(1.0, us_multiplier if isinstance(us_multiplier, (int, float)) and not isinstance(us_multiplier, bool)
+                 else 1.0)
+    # Every cache write is the 5-minute kind: upstream writes a 1-hour cache only on a setting the controller never passes.
+    input_rate = uplift * max(rates["input_uncached"], rates.get("input_cache_write", 0))
+    output_rate = uplift * rates["output"]
+    remaining = meter.remaining() - tokens * input_rate / 1_000_000
+    output = math.floor(remaining * 1_000_000 / output_rate)
+    if output < 1:
+        raise RuntimeError("artisan_shared_stage_authority_exhausted")
+    output = min(output, requested)
+    return output, (tokens * input_rate + output * output_rate) / 1_000_000
+
+
+ANTHROPIC_COUNT_KEYS = frozenset({"model", "messages", "system", "tools", "thinking", "output_config", "tool_choice",
+                                  "cache_control"})
+
+
+#: Every Messages request is pinned to US-only inference; only this pin brings the US uplift into its bound and price.
+INFERENCE_GEO = "us"
+STANDARD_GEOS = (None, "global")
+STANDARD_SPEEDS = (None, "standard")
+STANDARD_TIERS = (None, "standard")
+UNPRICEABLE_RESPONSE_ORIGIN = "request_upper_bound_unpriceable_response"
+
+
+def _priceable(response, asked, uplift):
+    """The token multiplier when the response can be priced from its own usage, else ``None``.
+
+    Only a response that carries its stop reason (so its final usage arrived), whole
+    token counts, the standard speed and tier, and a region that agrees with what was asked:
+    the region asked decides the price, and the response can only confirm or contradict it.
+    """
+    usage = getattr(response, "usage", None)
+    if getattr(response, "stop_reason", None) is None or not all(
+            type(getattr(usage, name, None)) is int for name in ("input_tokens", "output_tokens")):
+        return None
+    if getattr(usage, "speed", None) not in STANDARD_SPEEDS or getattr(usage, "service_tier", None) not in STANDARD_TIERS:
+        return None
+    geo = getattr(usage, "inference_geo", None)
+    if asked == "us":
+        return uplift if geo in (None, "us") else None
+    return 1.0 if geo in STANDARD_GEOS else None
+
+
+def _install_anthropic_metering(meter: Meter, us_multiplier=None):
+    from pipeline.cost import calculate_cost, pricing_for_provider_model
+    from pipeline.llm import anthropic as upstream
+
+    original = upstream.AnthropicLLM._create_message
+    asked = INFERENCE_GEO
+    uplift = None
+    if asked == "us":  # pinned: without its frozen multiplier no call can be bounded or priced
+        if (isinstance(us_multiplier, bool) or not isinstance(us_multiplier, (int, float))
+                or not math.isfinite(us_multiplier) or us_multiplier < 1):
+            raise RuntimeError("artisan_anthropic_us_multiplier_unavailable")
+        uplift = float(us_multiplier)
+
+    async def create_message(self, payload):
+        if "context_management" in payload:
+            # A server compaction's tokens are billed outside the request's bound.
+            raise RuntimeError("artisan_anthropic_compaction_unmetered")
+        betas = self._request_betas()
+        count_payload = {key: value for key, value in payload.items() if key in ANTHROPIC_COUNT_KEYS}
+        if betas:
+            count = await self._client.beta.messages.count_tokens(**count_payload, betas=betas)
+        else:
+            count = await self._client.messages.count_tokens(**count_payload)
+        rates = pricing_for_provider_model("anthropic", payload.get("model"))
+        geo = {"inference_geo": asked} if asked else {}
+        output, bound = _anthropic_bound(meter, rates, count.input_tokens, payload["max_tokens"], uplift)
+        identity = meter.before("messages", payload.get("model"))
+        try:
+            # Standard capacity only: a Priority Tier answer would be priced above the bound.
+            response = await original(self, {**payload, **geo, "max_tokens": output, "service_tier": "standard_only"})
+        except Exception as error:
+            meter.failed(identity, error, bound_usd=bound)
+            fields = _anthropic_error_fields(error)
+            if fields is not None and anthropic_no_funds(*fields):
+                meter.mark_no_funds(identity)
+                raise ProviderOutOfFunds() from error
+            raise
+        usage = upstream._extract_usage(response)
+        multiplier = _priceable(response, asked, uplift)
+        if multiplier is None:
+            # A cut stream (no stop reason, so no final usage), an unknown region, speed or tier:
+            # counted at the most the request could have cost, and left for the official figure.
+            raw = getattr(response, "usage", None)
+            meter.after(identity, bound, usage=usage, response_id=getattr(response, "id", None),
+                        cost_origin=UNPRICEABLE_RESPONSE_ORIGIN,
+                        failure={"reconciliation": "official_cost_required",
+                                 "stop_reason": getattr(response, "stop_reason", None),
+                                 **{name: getattr(raw, name, None) for name in ("inference_geo", "speed", "service_tier")}})
+            return response
+        served = getattr(response, "model", None)
+        served_rates = pricing_for_provider_model("anthropic", served) if isinstance(served, str) else None
+        iterations = getattr(getattr(response, "usage", None), "iterations", None) or []
+        # Only plain sampling iterations are inside the top-level counts.
+        itemized = all(getattr(item, "type", None) == "message" for item in iterations)
+        cost = (calculate_cost(usage, served_rates).total_cost * multiplier
+                if usage and served_rates and itemized else None)
+        meter.after(identity, cost, usage=usage, response_id=getattr(response, "id", None))
+        return response
+
+    upstream.AnthropicLLM._create_message = create_message
+
+
+def install_metering(meter: Meter, provider: str = "openai", *, us_inference_geo_multiplier=None):
+    if provider not in ("openai", "anthropic"):
+        raise ValueError("artisan_meter_provider_unknown")
     from pipeline.cost import calculate_cost, pricing_for_provider_model
     from pipeline.llm.openai_codec import extract_usage
     import openai
@@ -251,3 +420,5 @@ def install_metering(meter: Meter):
                     cost_origin="upstream_image_budget_estimate")
         return ok, detail
     design._generate_image = image
+    if provider == "anthropic":
+        _install_anthropic_metering(meter, us_inference_geo_multiplier)

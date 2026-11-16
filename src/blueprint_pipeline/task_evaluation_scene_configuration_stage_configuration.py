@@ -422,8 +422,17 @@ def _stage_three_refusal(
             return "authoring_budget"
         # A request may allocate less than the cumulative cap (a continuation
         # reserves only what its source left), never more.
+        # Anthropic only through the host's sealed choice for this job (``artisan_provider_choice``);
+        # the request declares the same text provider.
+        from .artisan_provider_choice import artisan_text_provider
+        try:
+            text_provider = artisan_text_provider(configuration)
+        except (ValueError, TypeError, AttributeError):
+            return "artisan_provider_choice"
+        if text_provider != (envelope.get("request") or {}).get("replacement_authoring_text_provider", "openai"):
+            return "artisan_text_provider_binding"
         if ((requested is not None and requested > cap)
-                or configuration.get("authoring_models") != ARTISAN_MODELS
+                or (configuration.get("authoring_models") != ARTISAN_MODELS and text_provider == "openai")
                 or configuration.get("authoring_framework", {}).get("revision") != ARTISAN_REVISION
                 or configuration.get("authoring_agent_runtime") is not None
                 or configuration.get("authoring_model_provider", "openai") != "openai"):
