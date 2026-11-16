@@ -194,10 +194,14 @@ RETIRED_HOLD_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-beta-policy-screening.timer",
     "blueprint-agent-run-dispatcher.timer",
+    "blueprint-agent-stage-replay.timer",
+    "blueprint-agent-stage-replay.path",
 )
 EXPLICIT_RELEASE_UNITS = RETIRED_HOLD_UNITS
-# No unit request starts a retired trigger, nor the founder-stopped agent-run dispatcher's service.
-_NEVER_STARTED_UNITS = frozenset({*RETIRED_HOLD_UNITS, "blueprint-agent-run-dispatcher.service"})
+# No unit request starts a retired trigger, the founder-stopped agent-run dispatcher's service,
+# or the retired agent worker (a release stops and disables it).
+_NEVER_STARTED_UNITS = frozenset({*RETIRED_HOLD_UNITS, "blueprint-agent-run-dispatcher.service",
+                                  "blueprint-agent-execution.service"})
 _LOG_TAIL_LINES = 200
 
 

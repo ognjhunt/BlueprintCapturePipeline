@@ -12,6 +12,49 @@ from .task_evaluation_public_scene_attempt_factory import record, RELEASE_SCHEMA
 from .task_evaluation_scene_intake import write_exclusive
 
 
+def _check_bound_receipt(value, *, running_commit):
+    """The bound deploy receipt, or a later deploy of the same release at its path.
+
+    Re-deploying an already-deployed commit (a hand rollback, 2026-11-15) rewrites
+    the receipt file the binding names with new timestamps, which refused every
+    progression pass until another commit was released. The binding exists to stop
+    new source being paired with another release's authorisation, so changed bytes
+    pass only as a readable ``deployed`` receipt for this commit and release path
+    whose provenance and environment are the bytes this binding recorded. The
+    binding itself is never rewritten; anything else keeps the refusal.
+    """
+    bound = value["deploy_receipt"]
+    try:
+        checked_file(bound["path"], bound)
+        return
+    except ValueError as exc:
+        if not str(exc).endswith("input_bytes_mismatch"):
+            raise
+        refusal = exc
+    try:
+        deploy = read(bound["path"])
+        provenance_ref = deploy["release_provenance"]
+        env_ref = deploy["scene_configuration_environment"]
+        same_release = (
+            deploy.get("status") == "deployed"
+            and deploy.get("source_commit") == running_commit
+            and isinstance(deploy.get("release_path"), str)
+            and str(safe_path(deploy["release_path"])) == value["repo_root"]
+            and env_ref.get("credential_values_recorded") is False
+        )
+        for ref, recorded in ((provenance_ref, value["release_provenance"]),
+                              (env_ref, value["release_environment"])):
+            same_release = same_release and (
+                ref.get("sha256") == recorded["sha256"]
+                and ref.get("size_bytes") == recorded["size_bytes"]
+                and checked_file(ref["path"], ref) is not None
+            )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        same_release = False
+    if not same_release:
+        raise refusal
+
+
 def resolve_release_binding(config, *, running_commit):
     """No copied commit strings: prove deployed surfaces and runtime publications.
 
@@ -27,8 +70,9 @@ def resolve_release_binding(config, *, running_commit):
     if path.exists():
         value = read(path, digest_field="release_digest")
         require(value.get("source_commit") == running_commit, "running_release_mismatch")
-        for key in ("deploy_receipt", "release_provenance", "release_environment"):
+        for key in ("release_provenance", "release_environment"):
             checked_file(value[key]["path"], value[key])
+        _check_bound_receipt(value, running_commit=running_commit)
         release_inputs(deploy_path=Path(value["deploy_receipt"]["path"]),
             provenance_path=Path(value["release_provenance"]["path"]),
             publication_root=Path(value["runtime_publication_root"]), commit=running_commit,

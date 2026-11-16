@@ -601,9 +601,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     for name in (
         "system-blueprintbatch.slice", "blueprint-unit-failure@.service",
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
-        "blueprint-agent-execution.service",
-        "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
-        "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-provider-billing-reconciler.service", "blueprint-provider-billing-reconciler.timer",
@@ -632,7 +629,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
 
     expected = []
     for source in (
-        *additional_sources[:8],
+        *additional_sources[:4],
         service,
         path_unit,
         preparation_service,
@@ -652,7 +649,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         team_scene_path,
         *team_remote_units,
         *scene_stage_units,
-        *additional_sources[8:],
+        *additional_sources[4:],
         storage_gc_service,
         storage_gc_timer,
         *withdrawal_deletion_units,
@@ -698,10 +695,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-unit-failure@.service",
         "blueprint-pubsub-handoff-listener.service",
         "blueprint-pubsub-handoff-listener.timer",
-        "blueprint-agent-execution.service",
-        "blueprint-agent-stage-replay.service",
-        "blueprint-agent-stage-replay.timer",
-        "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-launch-dispatcher.service",
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-preparation.service",
@@ -777,8 +770,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-scene-stage-maintenance.timer",
-        "blueprint-agent-stage-replay.timer",
-        "blueprint-agent-stage-replay.path",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-team-scene-packet-remote.timer",
@@ -1670,6 +1661,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_provision_scene_configuration_from_release": lambda **_kwargs: {"environment": {}},
         "_install_scene_configuration_environment": lambda *_args, **_kwargs: {},
         "_drain_agent_execution_before_release_switch": lambda **_kwargs: {},
+        "_check_candidate_runtime_guard": lambda **_kwargs: {"status": "ready", "phases": []},
         "_move_source_checkout": lambda *_args: None,
         "_surface_commit": lambda *_args, **_kwargs: commit,
         "_install_release_systemd_units": lambda **_kwargs: [],
@@ -1688,7 +1680,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_service_account_ids": lambda _account: None,
         "_restart_units": lambda _units: [],
         "_verify_intake_runtime": lambda *_args, **_kwargs: {"commit_proven": True},
-        "_activate_agent_execution": lambda **_kwargs: {},
+        "_retire_agent_execution": lambda **_kwargs: {"status": "test_host_step_stub"},
         "_restore_installed_path_units": lambda _installed, **_kwargs: [],
         "_retire_unshipped_triggers": lambda _units: [],
     }
@@ -2810,7 +2802,10 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     lock = _lock(tmp_path)
     observed: list[str] = []
 
+    # The agent worker's retirement reads and changes systemd; covered by its own tests.
+    monkeypatch.setattr(deploy, "_retire_agent_execution", lambda **_kwargs: {"status": "test_host_step_stub"})
     monkeypatch.setattr(deploy, "_move_source_checkout", lambda *args: None)
+    monkeypatch.setattr(deploy, "_check_candidate_runtime_guard", lambda **_kwargs: {"status": "ready"})
     monkeypatch.setattr(
         deploy,
         "stage_task_evaluation_control_plane_release",
@@ -4659,64 +4654,87 @@ def test_unit_sandbox_provisioning_skips_absent_release_units_and_needs_an_accou
         deploy._install_unit_sandbox_paths(release_path=release, root_prefix=tmp_path / "host2")
 
 
-def test_admitted_agent_worker_is_enabled_started_and_proven(tmp_path, monkeypatch):
-    from tests.test_agent_production_service import fixture
-    _, _, _, config_path = fixture(tmp_path)
+def _fake_agent_worker_systemd(load_state="loaded"):
+    state = {"enabled": "enabled", "active": "active"}
     calls = []
-    def systemctl(argv, **kwargs):
-        calls.append(argv)
-        state = 'enabled' if argv[1] == 'is-enabled' else 'active'
-        return SimpleNamespace(returncode=0, stdout=state + '\n', stderr='')
-    monkeypatch.setattr(deploy.subprocess, 'run', systemctl)
-    result = deploy._activate_agent_execution(expected_commit='a' * 40, config_path=config_path)
-    assert result['activated'] and result['enabled'] == 'enabled' and result['state'] == 'active'
-    unit = 'blueprint-agent-execution.service'
-    assert ['systemctl', 'enable', unit] in calls
-    assert ['systemctl', 'restart', unit] in calls
-    assert ['systemctl', 'is-enabled', unit] in calls
-    assert ['systemctl', 'is-active', unit] in calls
+
+    def systemctl(argv, **_kwargs):
+        calls.append(tuple(argv))
+        verb = argv[1]
+        if verb == "show":
+            out = load_state
+        elif verb == "is-enabled":
+            out = state["enabled"]
+        elif verb == "is-active":
+            out = state["active"]
+        elif verb == "stop":
+            state["active"] = "inactive"
+            out = ""
+        elif verb == "disable":
+            state["enabled"] = "disabled"
+            out = ""
+        else:
+            pytest.fail(f"unexpected systemctl call: {argv}")
+        return SimpleNamespace(returncode=0, stdout=out + "\n", stderr="")
+
+    return systemctl, calls, state
 
 
-def test_unconfigured_or_undrained_release_never_activates_agent(tmp_path, monkeypatch):
+def test_drained_agent_worker_is_stopped_disabled_and_recorded_retired(tmp_path, monkeypatch):
     from tests.test_agent_production_service import fixture
     from blueprint_pipeline.agent_execution import release
+
     service, task, _, config_path = fixture(tmp_path)
     service.enqueue(task.task_id, "fixture-client")
-    calls = []
-    monkeypatch.setattr(release, 'drain', lambda *args, **kwargs: {'status': 'reconciliation_pending'})
-    monkeypatch.setattr(deploy, '_systemd_unit_state', lambda unit: {'state': 'active'})
-    monkeypatch.setattr(deploy.subprocess, 'run', lambda *args, **kwargs: calls.append(args))
-    assert deploy._activate_agent_execution(expected_commit='a' * 40, config_path=tmp_path / 'absent')['activated'] is False
-    with pytest.raises(deploy.ControlPlaneDeployError, match='agent_configuration_requires_clean_drain'):
-        deploy._activate_agent_execution(expected_commit='b' * 40, config_path=config_path)
+    service.journal.set_state(task.task_id, "completed", result={"output": {"summary": "retained"}})
+    monkeypatch.setattr(release.time, "sleep", lambda seconds: service.service.tick())
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda unit: {"state": "active"})
+    drained = deploy._drain_agent_execution_before_release_switch(expected_commit="b" * 40, config_path=config_path)
+    assert drained["status"] == "drained" and drained["remaining_task_ids"] == []
+    monkeypatch.undo()
+    systemctl, calls, state = _fake_agent_worker_systemd()
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    result = deploy._retire_agent_execution(pre_activation_drain=drained, config_path=config_path)
+    unit = "blueprint-agent-execution.service"
+    assert result["status"] == "retired"
+    assert result["worker"]["outcome"] == "retired"
+    assert result["worker"]["after"] == {"enabled": "disabled", "state": "inactive"}
+    assert result["pre_activation_drain"]["status"] == "drained"
+    assert ("systemctl", "stop", unit) in calls and ("systemctl", "disable", unit) in calls
+    assert not any(call[1] in {"start", "restart", "enable"} for call in calls)
+    assert state == {"enabled": "disabled", "active": "inactive"}
+    # The worker is retired, not rebound: the config keeps the commit it was drained from.
+    assert json.loads(config_path.read_text())["source_commit"] == "a" * 40
+
+
+@pytest.mark.parametrize("drain_status", ["drained", "reconciliation_pending"])
+def test_pending_agent_cleanup_refuses_the_release_and_leaves_the_worker_running(tmp_path, monkeypatch, drain_status):
+    from tests.test_agent_production_service import fixture
+
+    service, task, _, config_path = fixture(tmp_path)
+    service.enqueue(task.task_id, "fixture-client")  # an open task whose session still needs cleanup
+    systemctl, calls, state = _fake_agent_worker_systemd()
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_agent_cleanup_reconciliation_pending"):
+        deploy._retire_agent_execution(pre_activation_drain={"status": drain_status}, config_path=config_path)
     assert calls == []
+    assert state == {"enabled": "enabled", "active": "active"}
 
 
-@pytest.mark.parametrize('terminal', [False, True])
-def test_deploy_drains_prior_agent_tasks_before_adopting_release(tmp_path, monkeypatch, terminal):
-    from tests.test_agent_production_service import fixture
-    from blueprint_pipeline.agent_execution import release
-    service, task, _, config_path = fixture(tmp_path)
-    service.enqueue(task.task_id, "fixture-client")
-    if terminal:
-        service.journal.set_state(task.task_id, 'completed', result={'output': {'summary': 'Retained observation'}})
-    calls = []
-    def systemctl(argv, **kwargs):
-        calls.append(argv)
-        state = 'enabled' if argv[1] == 'is-enabled' else 'active'
-        return SimpleNamespace(returncode=0, stdout=state + '\n', stderr='')
-    monkeypatch.setattr(deploy.subprocess, 'run', systemctl)
-    # The installed worker runs independently under its own service account.
-    monkeypatch.setattr(release.time, 'sleep', lambda seconds: service.service.tick())
-    result = deploy._activate_agent_execution(expected_commit='b' * 40, config_path=config_path)
-    assert result['release_cleanup']['status'] == 'drained'
-    assert result['configuration_adoption']['status'] == 'adopted'
-    state = service.journal.task(task.task_id)
-    assert state['state'] == ('completed' if terminal else 'cancelled') and state['cleanup_state'] == 'deleted'
-    if terminal:
-        assert state['result']['output']['summary'] == 'Retained observation'
-    assert json.loads(config_path.read_text())['source_commit'] == 'b' * 40
-    assert ['systemctl', 'restart', 'blueprint-agent-execution.service'] in calls
+@pytest.mark.parametrize("load_state", ["loaded", "not-found"])
+def test_absent_agent_config_is_not_configured_and_an_installed_worker_is_still_disabled(tmp_path, monkeypatch, load_state):
+    systemctl, calls, state = _fake_agent_worker_systemd(load_state)
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    result = deploy._retire_agent_execution(pre_activation_drain={"status": "not_configured"},
+                                            config_path=tmp_path / "absent.json")
+    assert result["status"] == "not_configured"
+    unit = "blueprint-agent-execution.service"
+    if load_state == "not-found":
+        assert result["worker"]["outcome"] == "absent"
+        assert calls == [("systemctl", "show", "--property=LoadState", "--value", unit)]
+    else:
+        assert result["worker"]["outcome"] == "retired"
+        assert state == {"enabled": "disabled", "active": "inactive"}
 
 
 def test_deploy_drains_agent_before_switching_away_from_its_worker(tmp_path, monkeypatch):
@@ -5914,7 +5932,8 @@ def test_the_receipt_measures_how_long_jobs_stood_still(tmp_path, monkeypatch) -
         "admission_and_deploy_lock", "capture_transfer_prerequisites", "release_checkout_staged",
         "runtime_trees_provisioned", "scene_source_attestation_listed", "triggers_paused",
         "scene_retirement_runtime_and_shared_dependencies",
-        "unit_sandbox_paths", "scene_configuration_environment_installed", "release_activated",
+        "unit_sandbox_paths", "scene_configuration_environment_installed", "candidate_runtime_guard",
+        "release_activated",
         "controls_autoprovision_installed", "units_and_directories_installed",
         "intake_restarted_and_proven", "agent_activated_and_triggers_rearmed",
     ]
@@ -6041,3 +6060,283 @@ def test_release_installs_the_controls_lane_through_the_non_blocking_step():
     body = source[source.index("def deploy_control_plane_commit("):]
     assert "install_controls_autoprovision(" not in body
     assert "_install_controls_autoprovision_lane(" in body
+
+
+# A failed release is harmless (2026-11-15): a release whose own runtime guard
+# would keep intake from starting is refused before the switch, and a release
+# whose units do not come back returns to the previous release.
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _candidate_release(release: Path, tmp_path: Path, profiles: dict[str, str] | None) -> Path:
+    """A candidate checkout with the repository's own code and an intake unit naming a profile directory."""
+    (release / "deploy" / "systemd").mkdir(parents=True, exist_ok=True)
+    if not (release / "src").exists():
+        (release / "src").symlink_to(REPO_ROOT / "src", target_is_directory=True)
+    profile_dir = tmp_path / "profiles"
+    catalog = tmp_path / "served" / "catalog.json"
+    lines = ["[Service]", "Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production"]
+    if profiles is not None:
+        profile_dir.mkdir(exist_ok=True)
+        for name, text in profiles.items():
+            (profile_dir / name).write_text(text, encoding="utf-8")
+        env_file = tmp_path / "pipeline-control-plane.env"
+        env_file.write_text(f"BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR={profile_dir}\n", encoding="utf-8")
+        lines += [f"Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH={catalog}",
+                  f"EnvironmentFile=-{env_file}", f"EnvironmentFile=-{tmp_path / 'absent.env'}"]
+    (release / "deploy" / "systemd" / "blueprint-pipeline-intake.service").write_text("\n".join(lines) + "\n")
+    return catalog
+
+
+def _only_the_candidate_probe(argv, *args, **kwargs):
+    if argv[:2] != [sys.executable, "-c"]:
+        pytest.fail(f"host command {argv}")
+    return _REAL_SUBPROCESS_RUN(argv, *args, **kwargs)
+
+
+@pytest.mark.parametrize("profiles, status", [(None, "ready"), ({}, "ready"),
+                                              ({"retired.json": "{}"}, "blocked")])
+def test_the_candidate_guard_projects_the_catalog_read_only(tmp_path, profiles, status) -> None:
+    release = tmp_path / "candidate"
+    catalog = _candidate_release(release, tmp_path, profiles)
+    drop_in = tmp_path / "dropin" / "90-identity.conf"
+    if status == "ready":
+        receipt = deploy._check_candidate_runtime_guard(release_path=release, intake_runtime_drop_in=drop_in)
+        assert receipt["status"] == "ready" and receipt["catalog_rewritten"] is False
+        expected = "not_configured" if profiles is None else "projected"
+        assert receipt["phases"][0]["phase"] == "launch_profile_catalog"
+        assert receipt["phases"][0]["status"] == expected
+    else:
+        with pytest.raises(deploy.ControlPlaneDeployError,
+                           match="^deploy_candidate_runtime_guard_blocked:launch_profile_catalog$") as raised:
+            deploy._check_candidate_runtime_guard(release_path=release, intake_runtime_drop_in=drop_in)
+        row = raised.value.candidate_runtime_guard
+        assert row["phase"] == "launch_profile_catalog"
+        assert any("published_profile_invalid:retired.json" in blocker for blocker in row["blockers"])
+    # The served catalog is never written before the switch.
+    assert not catalog.exists()
+
+
+def _deploy_through_main(monkeypatch, tmp_path, arguments) -> dict:
+    """Run the stubbed deploy through the CLI, which writes the receipt the door reads."""
+    real = deploy.deploy_control_plane_commit
+    _stub_main_break_glass_notes(monkeypatch, tmp_path)
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **_kwargs: real(**arguments))
+    code = deploy.main(_cli_args(tmp_path, tmp_path))
+    receipt = json.loads((tmp_path / "receipt.json").read_text())
+    assert code == (0 if receipt["status"] == "deployed" else 2)
+    return receipt
+
+
+def test_a_blocked_candidate_guard_refuses_before_the_switch(tmp_path, monkeypatch) -> None:
+    real_guard = deploy._check_candidate_runtime_guard
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    release = Path(os.readlink(arguments["active_link"]))
+    _candidate_release(release, tmp_path, {"broken.json": "{}"})
+    monkeypatch.setattr(deploy, "_check_candidate_runtime_guard", real_guard)
+    monkeypatch.setattr(deploy.subprocess, "run", _only_the_candidate_probe)
+    steps: list[str] = []
+    monkeypatch.setattr(deploy, "_move_source_checkout", lambda *_args: steps.append("source"))
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", lambda _units: steps.append("retire") or [])
+    monkeypatch.setattr(deploy, "_restart_units", lambda _units: steps.append("restart") or [])
+    monkeypatch.setattr(deploy, "_drain_agent_execution_before_release_switch",
+                        lambda **_kwargs: steps.append("agent_drain") or {})
+    restored: list[str] = []
+    real_restore = deploy._restore_path_unit_states_on_deploy_failure
+
+    @contextlib.contextmanager
+    def restore(*args, **kwargs):
+        try:
+            with real_restore(*args, **kwargs) as value:
+                yield value
+        except BaseException:
+            restored.append("restored")
+            raise
+
+    monkeypatch.setattr(deploy, "_restore_path_unit_states_on_deploy_failure", restore)
+    blocked = _deploy_through_main(monkeypatch, tmp_path, arguments)
+    assert blocked["status"] == "blocked"
+    assert blocked["blockers"] == ["deploy_candidate_runtime_guard_blocked:launch_profile_catalog"]
+    assert blocked["candidate_runtime_guard"]["phase"] == "launch_profile_catalog"
+    assert "release_return" not in blocked
+    # Nothing switched, nothing restarted, the agent was not drained, triggers were restored.
+    assert steps == []
+    assert restored == ["restored"]
+    assert Path(os.readlink(arguments["active_link"])) == release
+
+
+def _switching_deploy(monkeypatch, tmp_path, *, restarts: list[object]) -> tuple[dict, Path, Path, list]:
+    """The stubbed deploy with a real release link that moves, and a scripted unit restart."""
+    commit, previous_commit = "d" * 40, "c" * 40
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    active = arguments["active_link"]
+    release = Path(os.readlink(active))
+    previous = tmp_path / "previous"
+    (previous / "deploy" / "systemd").mkdir(parents=True)
+    (previous / "deploy" / "systemd" / "blueprint-pipeline-intake.service").write_text("[Service]\n")
+    active.unlink()
+    active.symlink_to(previous, target_is_directory=True)
+    steps: list = []
+    staged = {"source_commit": commit, "release_path": str(release), "created_release_checkout": True}
+
+    def stage(**kwargs):
+        if kwargs["activate"]:
+            deploy._activate_release(active_link=active, release_path=release)
+        return dict(staged)
+
+    def restart(units):
+        steps.append(("restart", os.readlink(active), tuple(units)))
+        outcome = restarts.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release", stage)
+    monkeypatch.setattr(deploy, "_restart_units", restart)
+    monkeypatch.setattr(deploy, "_surface_commit",
+                        lambda path, name: previous_commit if name == "previous_release" else commit)
+    monkeypatch.setattr(deploy, "_git", lambda repo, *args: steps.append(("git", *args)) or (0, ""))
+    monkeypatch.setattr(deploy, "_install_release_systemd_units",
+                        lambda **kwargs: steps.append(("units", str(kwargs["release_path"]),
+                                                       tuple(kwargs.get("units") or ()))) or [])
+    monkeypatch.setattr(deploy, "_install_intake_runtime_identity_drop_in",
+                        lambda _path, **kwargs: steps.append(("identity", kwargs["source_commit"])) or {})
+    monkeypatch.setattr(deploy, "_unit_states",
+                        lambda units: [{"unit": unit, "state": "failed"} for unit in units])
+
+    def installed_runtime(*, source_repo, source_commit):
+        steps.append(("runtime", source_commit))
+        return {"status": "refreshed", "source_commit": source_commit, "runtime_root": f"/generations/{source_commit[:4]}",
+                "current": {"sha256": "sha256:" + "0" * 64, "size_bytes": 1},
+                "authority_issued": False, "cleanup_enabled": False}
+
+    def intake_proof(_url, *, expected_commit):
+        steps.append(("proof", expected_commit))
+        return {"commit_proven": True, "source_commit": expected_commit}
+
+    monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", installed_runtime)
+    monkeypatch.setattr(deploy, "_verify_intake_runtime", intake_proof)
+    return arguments, release, previous, steps
+
+
+INTAKE = "blueprint-pipeline-intake.service"
+
+
+def test_a_release_whose_intake_does_not_restart_returns_to_the_previous_release(tmp_path, monkeypatch) -> None:
+    arguments, release, previous, steps = _switching_deploy(monkeypatch, tmp_path, restarts=[
+        deploy.ControlPlaneDeployError(f"deploy_unit_restart_failed:{INTAKE}"),
+        [{"unit": INTAKE, "state": "active"}],
+    ])
+    blocked = _deploy_through_main(monkeypatch, tmp_path, arguments)
+    assert blocked["status"] == "blocked"
+    assert blocked["blockers"] == [f"deploy_unit_restart_failed:{INTAKE}"]
+    assert blocked["returned_to_previous_release"] == "c" * 40
+    assert blocked["release_return"] == {
+        "status": "returned", "source_commit": "c" * 40, "release_path": str(previous),
+        "unit_states": [{"unit": INTAKE, "state": "active"}],
+        "intake_runtime": {"commit_proven": True, "source_commit": "c" * 40},
+        "installed_runtime": {"status": "refreshed", "source_commit": "c" * 40, "runtime_root": "/generations/cccc",
+                              "current": {"sha256": "sha256:" + "0" * 64, "size_bytes": 1}},
+    }
+    # The link is back on the previous release; intake's installed runtime
+    # (CURRENT.json, which the deploy had pointed at the candidate) is the
+    # previous commit's again; the same units restarted there, and the
+    # restarted intake proved the previous commit.
+    assert Path(os.readlink(arguments["active_link"])) == previous
+    assert [step for step in steps if step[0] == "restart"] == [
+        ("restart", str(release), (INTAKE,)), ("restart", str(previous), (INTAKE,)),
+    ]
+    assert [step for step in steps if step[0] == "runtime"] == [("runtime", "d" * 40), ("runtime", "c" * 40)]
+    returned = steps[steps.index(("restart", str(release), (INTAKE,))) + 1:]
+    assert returned == [
+        ("git", "checkout", "--quiet", "c" * 40), ("runtime", "c" * 40),
+        ("units", str(previous), (INTAKE,)), ("identity", "c" * 40),
+        ("restart", str(previous), (INTAKE,)), ("proof", "c" * 40),
+    ]
+
+
+@pytest.mark.parametrize("step", ["installed_runtime", "intake_commit_proof"])
+def test_a_return_whose_runtime_or_intake_proof_fails_is_a_failed_return(tmp_path, monkeypatch, step) -> None:
+    arguments, release, previous, steps = _switching_deploy(monkeypatch, tmp_path, restarts=[
+        deploy.ControlPlaneDeployError(f"deploy_unit_restart_failed:{INTAKE}"),
+        [{"unit": INTAKE, "state": "active"}],
+    ])
+    if step == "installed_runtime":
+        def refused(*, source_repo, source_commit):
+            steps.append(("runtime", source_commit))
+            if source_commit == "c" * 40:
+                raise deploy.ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
+            return {"status": "refreshed", "source_commit": source_commit}
+        monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", refused)
+    else:
+        def mismatch(_url, *, expected_commit):
+            steps.append(("proof", expected_commit))
+            raise deploy.ControlPlaneDeployError("deploy_intake_runtime_commit_mismatch:" + "d" * 40)
+        monkeypatch.setattr(deploy, "_verify_intake_runtime", mismatch)
+    blocked = _deploy_through_main(monkeypatch, tmp_path, arguments)
+    assert "returned_to_previous_release" not in blocked
+    assert blocked["release_return"]["status"] == "failed"
+    assert blocked["release_return"]["failed_step"] == step
+    assert blocked["release_return"]["unit_states"] == [{"unit": INTAKE, "state": "failed"}]
+    assert blocked["blockers"] == [f"deploy_unit_restart_failed:{INTAKE}",
+                                   f"deploy_return_to_previous_release_failed:{step}"]
+    # Never retried: one restart on the previous release at most, and none when its runtime refused.
+    restarts_there = [s for s in steps if s == ("restart", str(previous), (INTAKE,))]
+    assert len(restarts_there) == (0 if step == "installed_runtime" else 1)
+    assert len([s for s in steps if s == ("runtime", "c" * 40)]) == 1
+
+
+def test_a_failed_return_is_reported_once_and_never_retried(tmp_path, monkeypatch) -> None:
+    arguments, release, previous, steps = _switching_deploy(monkeypatch, tmp_path, restarts=[
+        deploy.ControlPlaneDeployError(f"deploy_unit_not_active:{INTAKE}:activating"),
+        deploy.ControlPlaneDeployError(f"deploy_unit_restart_failed:{INTAKE}"),
+    ])
+    blocked = _deploy_through_main(monkeypatch, tmp_path, arguments)
+    assert blocked["blockers"] == [f"deploy_unit_not_active:{INTAKE}:activating",
+                                   "deploy_return_to_previous_release_failed:unit_restart"]
+    assert "returned_to_previous_release" not in blocked
+    assert blocked["release_return"]["status"] == "failed"
+    assert blocked["release_return"]["failed_step"] == "unit_restart"
+    assert blocked["release_return"]["unit_states"] == [{"unit": INTAKE, "state": "failed"}]
+    assert len([step for step in steps if step[0] == "restart"]) == 2
+
+
+def test_a_paid_run_in_flight_stops_the_return_before_any_restart(tmp_path, monkeypatch) -> None:
+    arguments, release, previous, steps = _switching_deploy(monkeypatch, tmp_path, restarts=[
+        deploy.ControlPlaneDeployError(f"deploy_unit_restart_failed:{INTAKE}"),
+    ])
+    checks: list[int] = []
+
+    def in_flight(_runs, _units):
+        checks.append(1)
+        if len(checks) > 2:  # the two checks before the first restart pass; a run appeared after
+            raise deploy.ControlPlaneDeployError(f"deploy_refused_paid_launch_in_restarted_unit:{INTAKE}")
+
+    monkeypatch.setattr(deploy, "_require_in_flight_runs_outside_units", in_flight)
+    blocked = _deploy_through_main(monkeypatch, tmp_path, arguments)
+    assert blocked["release_return"]["failed_step"] == "paid_runs_in_flight"
+    assert len([step for step in steps if step[0] == "restart"]) == 1
+
+
+def test_a_fresh_host_has_no_previous_release_to_return_to(tmp_path, monkeypatch) -> None:
+    arguments, release, previous, steps = _switching_deploy(monkeypatch, tmp_path, restarts=[
+        deploy.ControlPlaneDeployError(f"deploy_unit_restart_failed:{INTAKE}"),
+    ])
+    arguments["active_link"].unlink()
+    blocked = _deploy_through_main(monkeypatch, tmp_path, arguments)
+    assert blocked["release_return"] == {"status": "not_possible", "reason": "no_previous_release"}
+    assert blocked["blockers"] == [f"deploy_unit_restart_failed:{INTAKE}"]
+
+
+def test_a_release_that_starts_records_the_candidate_guard_and_never_returns(tmp_path, monkeypatch) -> None:
+    arguments, release, previous, steps = _switching_deploy(monkeypatch, tmp_path, restarts=[
+        [{"unit": INTAKE, "state": "active"}],
+    ])
+    receipt = deploy.deploy_control_plane_commit(**arguments)
+    assert receipt["status"] == "deployed"
+    assert receipt["candidate_runtime_guard"] == {"status": "ready", "phases": []}
+    assert receipt["restarted_units"] == [{"unit": INTAKE, "state": "active"}]
+    assert "release_return" not in receipt
+    assert Path(os.readlink(arguments["active_link"])) == release
+    assert ("git", "checkout", "--quiet", "c" * 40) not in steps
+    assert [step for step in steps if step[0] in {"runtime", "proof"}] == [("runtime", "d" * 40), ("proof", "d" * 40)]

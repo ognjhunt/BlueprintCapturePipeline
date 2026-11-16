@@ -32,7 +32,7 @@ _RUNTIME = Path('/mnt/blueprint-work/scene-retirement-runtime')
 _BOOT = Path('/usr/lib/blueprint/scene-retirement-runtime')
 _POLICY = Path('/etc/blueprint/scene-retirement-policy.json')
 _SYSTEMD_PATH = Path('/etc/systemd/system')
-_CONTINUOUS_UNIT_NAMES = ('blueprint-pipeline-intake.service', 'blueprint-agent-execution.service')
+_CONTINUOUS_UNIT_NAMES = ('blueprint-pipeline-intake.service',)
 
 
 def _install_continuous_units(runtime, *, installed=None):
@@ -640,7 +640,7 @@ def test_native_configuration_cleanup_refuses_replaced_parent(tmp_path, monkeypa
     assert original.is_dir() and parent.exists()
 
 
-@pytest.mark.parametrize('existing', [None, 'blueprint-agent-execution.service'])
+@pytest.mark.parametrize('existing', [None, 'blueprint-pipeline-intake.service'])
 def test_enabled_native_fixture_installs_entire_fixed_continuous_cohort(tmp_path, monkeypatch, existing):
     # ADP-009D/day28: the native startup query observes both installed consumers.
     # A missing second service is not an authenticated inactive consumer.

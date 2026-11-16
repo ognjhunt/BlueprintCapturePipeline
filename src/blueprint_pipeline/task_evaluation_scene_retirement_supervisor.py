@@ -56,7 +56,6 @@ _QUERY_BYTES = 128 * 1024
 _READER_ERROR = 'scene_retirement_reader_closure_unproven'
 _CONTINUOUS = {
     'blueprint_pipeline.live_pipeline_intake_service': 'blueprint-pipeline-intake.service',
-    'blueprint_pipeline.agent_execution.production': 'blueprint-agent-execution.service',
 }
 _TRUSTED_SOURCE_ROOT = Path('/mnt/blueprint-work/scene-retirement-runtime/src')
 _BOOTSTRAP = Path('/usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py')

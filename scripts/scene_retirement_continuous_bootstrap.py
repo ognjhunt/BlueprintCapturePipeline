@@ -27,8 +27,7 @@ _CORE = ('__init__.py', 'task_evaluation_scene_retirement_supervisor.py',
          'task_evaluation_scene_retirement_lifetime.py', 'decision_evidence_contracts.py',
          'task_evaluation_scene_retirement_preservation.py',
          'task_evaluation_scene_retirement_generations.py')
-_DAEMONS = frozenset(('blueprint_pipeline.live_pipeline_intake_service',
-                     'blueprint_pipeline.agent_execution.production'))
+_DAEMONS = frozenset(('blueprint_pipeline.live_pipeline_intake_service',))
 _ACTIONS = frozenset(('blueprint_pipeline.control_plane_storage_gc',
                      'blueprint_pipeline.task_evaluation_scene_retirement_cli'))
 _ERROR = 'scene_retirement_bootstrap_unproven'

@@ -4,12 +4,11 @@ from dataclasses import asdict
 import json
 import time
 
-from fastapi.testclient import TestClient
 import httpx
 import pytest
 
 from blueprint_pipeline import live_pipeline_intake_service as intake
-from blueprint_pipeline.agent_execution import http_routes, production
+from blueprint_pipeline.agent_execution import production
 from blueprint_pipeline.agent_execution.contracts import AgentAdmission, AgentExecutionError, AgentTask, digest
 from blueprint_pipeline.agent_execution.journal import AgentJournal
 from blueprint_pipeline.agent_execution.production import OperationalDiagnosis, ProductionAgentService
@@ -19,7 +18,6 @@ from blueprint_pipeline.task_evaluation_supervisor.contracts import AutonomyMode
 from blueprint_pipeline.task_evaluation_supervisor.supervisor import default_authority_envelope
 from blueprint_pipeline.task_evaluation_supervisor.tools import ToolRegistry
 from tests.test_agent_execution_sdk import response
-from tests.test_live_pipeline_intake_service import _signed_intake_headers
 
 
 def write(path, value):
@@ -171,27 +169,10 @@ def test_invalid_admission_never_enqueues(tmp_path, changed):
     assert service.journal.tasks(active_only=False) == []
 
 
-def test_routes_use_real_intake_hmac_and_task_owner(tmp_path, monkeypatch):
-    service, task, _, _ = fixture(tmp_path)
-    monkeypatch.setenv(intake.INTAKE_CLIENT_SECRETS_ENV, json.dumps({"fixture-client": "fixture-secret", "other": "other-secret"}))
-    monkeypatch.setenv(intake.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
-    monkeypatch.setenv(intake.INTAKE_WORK_DIR_ENV, str(tmp_path / "http"))
-    original = http_routes.register_agent_execution_routes
-    monkeypatch.setattr(http_routes, "register_agent_execution_routes",
-                        lambda app, **kwargs: original(app, service_factory=lambda: service, **kwargs))
-    client = TestClient(intake.create_app())
-    url = f"/api/live-pipeline/agents/tasks/{task.task_id}"
-    assert client.post(url + "/enqueue", content="{}").status_code == 401
-    headers = _signed_intake_headers("fixture-secret", "{}", client_id="fixture-client")
-    assert client.post(url + "/enqueue", content="{}", headers=headers).json()["state"] == "queued"
-    assert client.post(url + "/enqueue", content="{}", headers=headers).status_code == 401
-    other = _signed_intake_headers("other-secret", "", client_id="other", nonce="other-nonce")
-    assert client.get(url, headers=other).status_code == 403
-    extra = '{"prompt":"Expand authority"}'
-    headers = _signed_intake_headers("fixture-secret", extra, client_id="fixture-client", nonce="extra-nonce")
-    assert client.post(url + "/enqueue", content=extra, headers=headers).status_code == 400
-    headers = _signed_intake_headers("fixture-secret", "{}", client_id="fixture-client", nonce="cancel-nonce")
-    assert client.post(url + "/cancel", content="{}", headers=headers).json()["cancel_requested"]
+def test_intake_no_longer_serves_agent_task_routes():
+    """The agent worker is retired: the intake answers no /agents/* route (404)."""
+    paths = {getattr(route, "path", "") for route in intake.create_app().routes}
+    assert not any(path.startswith("/api/live-pipeline/agents") for path in paths)
 
 
 def test_config_is_release_bound_and_has_no_managed_default(tmp_path):
@@ -324,18 +305,6 @@ def test_world_readable_secret_is_refused(tmp_path, secret_kind):
             service._credential(task)
         else:
             production._read_private(path, secret=True)
-
-
-def test_production_units_bind_sdk_and_offline_replay_boundaries():
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
-    worker = (root / "blueprint-agent-execution.service").read_text()
-    assert "Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=1" in worker
-    assert "Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=" in worker
-    offline = (root / "blueprint-agent-stage-replay.service").read_text()
-    for boundary in ("User=blueprint", "PrivateNetwork=true", "PrivateDevices=true", "ProtectSystem=strict",
-                     "InaccessiblePaths=-/etc/blueprint/provider-secrets"):
-        assert boundary in offline
 
 
 @pytest.mark.parametrize("enabled", [True, False])

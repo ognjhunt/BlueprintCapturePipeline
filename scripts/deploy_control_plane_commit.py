@@ -333,6 +333,7 @@ sys.path.insert(2, str(Path(__file__).resolve().parents[1]))
 
 from stage_task_evaluation_control_plane_release import (  # noqa: E402
     ControlPlaneReleaseError,
+    _activate_release,
     stage_task_evaluation_control_plane_release,
 )
 from bootstrap_task_evaluation_splat_render_prerequisites import (  # noqa: E402
@@ -436,10 +437,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-unit-failure@.service",
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-pubsub-handoff-listener.timer",
-    "blueprint-agent-execution.service",
-    "blueprint-agent-stage-replay.service",
-    "blueprint-agent-stage-replay.timer",
-    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
@@ -577,10 +574,6 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # recovers and requeues team halves, runs the site's success-rule exchange,
     # delivers held notices, restores an open job's run and only queues a probe.
     "blueprint-scene-stage-maintenance.timer",
-    "blueprint-agent-stage-replay.timer",
-    # Wakes the same no-network offline replay oneshot as its timer, so it
-    # carries the timer's authority rather than the no-spend watcher category.
-    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-scene-progression.timer",
     # Follow, collect and tear down a remote compilation (compute-zero and
     # provider-zero) already handed off before its host half was paused: money.
@@ -666,6 +659,10 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     # Agent runs (robot-team runs, deleted): founder stop since 2026-10-02. The
     # door keeps holding the dispatcher timer; no release starts it.
     "blueprint-agent-run-dispatcher.timer",
+    # The agent service's offline replay of a retained stage for its own
+    # recovery tasks (the agent service is retired; a job retries by itself).
+    "blueprint-agent-stage-replay.timer",
+    "blueprint-agent-stage-replay.path",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the
@@ -3110,6 +3107,216 @@ def _restart_units(units: Sequence[str]) -> list[dict[str, Any]]:
     return restarted
 
 
+# The candidate release's own launch-catalog phase of its runtime env guard, run
+# read-only before the release link moves. On 2026-11-15 a release switched and
+# then intake's ExecStartPre (that guard) refused host profiles the new code
+# rejected; intake sat in a restart loop for 17 minutes. The projection is the
+# guard's own phase on the candidate's own code; the served catalog is not
+# rewritten. A candidate too old to carry either function is not judged here.
+_CANDIDATE_RUNTIME_GUARD_PROBE = r"""
+import json, os
+def done(status, phase=None, blockers=(), phases=()):
+    print(json.dumps({"status": status, "phase": phase,
+                      "blockers": [str(item)[:300] for item in blockers], "phases": list(phases)}))
+    raise SystemExit(0)
+def failure(exc):
+    return type(exc).__name__ + ":" + str(exc)
+try:
+    from blueprint_pipeline import production_runtime_env_guard as guard
+except Exception as exc:
+    done("blocked", "guard_import", [failure(exc)])
+profile_env = getattr(guard, "LAUNCH_PROFILE_DIR_ENV", "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR")
+catalog_env = getattr(guard, "LAUNCH_PUBLIC_CATALOG_PATH_ENV", "BLUEPRINT_TASK_EVALUATION_LAUNCH_PUBLIC_CATALOG_PATH")
+profile_dir = (os.environ.get(profile_env) or "").strip()
+if not profile_dir or not (os.environ.get(catalog_env) or "").strip():
+    done("ready", phases=[{"phase": "launch_profile_catalog", "status": "not_configured"}])
+try:
+    from blueprint_pipeline import task_evaluation_launch_catalog as catalog
+except Exception as exc:
+    done("blocked", "launch_profile_catalog", [failure(exc)])
+check = getattr(guard, "_check_launch_profile_catalog", None)
+project = getattr(catalog, "build_catalog_payload", None)
+if check is None or project is None:
+    done("not_supported_by_candidate")
+try:
+    detail, blockers = check(lambda: {"status": "projected", "catalog_bytes": len(project(profile_dir))})
+except Exception as exc:
+    done("blocked", "launch_profile_catalog", [failure(exc)])
+if blockers:
+    done("blocked", "launch_profile_catalog", blockers)
+done("ready", phases=[{"phase": "launch_profile_catalog", **detail}])
+"""
+
+
+def _candidate_unit_environment(
+    release_path: Path, *, unit: str, intake_runtime_drop_in: str | Path
+) -> dict[str, str]:
+    """The environment ``unit`` gets from the candidate's own unit file, as systemd builds it.
+
+    ``Environment=`` lines, then each ``EnvironmentFile=`` (files win), then the
+    deploy's identity env file, which is loaded last; repository and import path
+    name the candidate checkout.
+    """
+
+    from blueprint_pipeline.task_evaluation_production_chain_preflight import effective_environment
+
+    assignments: list[str] = []
+    files: list[str] = []
+    for raw in (release_path / "deploy" / "systemd" / unit).read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("Environment="):
+            assignments.append(line.removeprefix("Environment="))
+        elif line.startswith("EnvironmentFile="):
+            files.append(line.removeprefix("EnvironmentFile=").lstrip("-"))
+    files.append(str(Path(intake_runtime_drop_in).expanduser().with_suffix(".env")))
+    env = effective_environment({
+        "Environment": [" ".join(assignments)],
+        "EnvironmentFiles": [f"{path} (ignore_errors=yes)" for path in files],
+    })
+    env.update({
+        "BLUEPRINT_PIPELINE_REPO": str(release_path),
+        "PYTHONPATH": str(release_path / "src"),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+    })
+    return env
+
+
+def _check_candidate_runtime_guard(
+    *, release_path: str | Path, intake_runtime_drop_in: str | Path,
+    unit: str = DEFAULT_RESTART_UNITS[0],
+) -> dict[str, Any]:
+    """Refuse, before the switch, a release whose guard would stop ``unit`` from starting."""
+
+    release = Path(release_path).expanduser().resolve()
+    started = time.monotonic()
+    phase: str | None = None
+    report: dict[str, Any] = {}
+    try:
+        env = _candidate_unit_environment(release, unit=unit, intake_runtime_drop_in=intake_runtime_drop_in)
+    except (OSError, ValueError) as exc:
+        phase, report = "unit_environment", {"blockers": [type(exc).__name__]}
+    else:
+        try:
+            result = subprocess.run(  # nosec B603 - fixed argv, the candidate's own code
+                [sys.executable, "-c", _CANDIDATE_RUNTIME_GUARD_PROBE],
+                cwd=release, env=env, capture_output=True, text=True, check=False,
+                timeout=INTAKE_START_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            phase = "timeout"
+        else:
+            lines = result.stdout.strip().splitlines()
+            try:
+                parsed = json.loads(lines[-1]) if lines else None
+            except json.JSONDecodeError:
+                parsed = None
+            if result.returncode != 0 or not isinstance(parsed, dict):
+                phase, report = "probe_failed", {"blockers": [result.stderr.strip()[-300:]]}
+            else:
+                report = parsed
+                if report.get("status") == "blocked":
+                    phase = str(report.get("phase") or "unknown")
+    receipt = {
+        "unit": unit,
+        "status": "blocked" if phase else str(report.get("status")),
+        "phases": list(report.get("phases") or []),
+        "seconds": round(time.monotonic() - started, 3),
+        "catalog_rewritten": False,
+    }
+    if phase:
+        receipt.update(phase=phase, blockers=list(report.get("blockers") or []))
+        error = ControlPlaneDeployError(f"deploy_candidate_runtime_guard_blocked:{phase}")
+        error.candidate_runtime_guard = receipt  # type: ignore[attr-defined]
+        raise error
+    return receipt
+
+
+def _unit_states(units: Sequence[str]) -> list[dict[str, str]]:
+    states = []
+    for unit in units:
+        result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["systemctl", "is-active", unit], capture_output=True, text=True, check=False
+        )
+        states.append({"unit": unit, "state": result.stdout.strip() or "unknown"})
+    return states
+
+
+def _return_to_previous_release(
+    *, active: Path, previous_link: str | None, new_release_path: str | Path, source: Path,
+    systemd_dir: str | Path, intake_runtime_drop_in: str | Path, units: Sequence[str],
+    paid_runs_in_flight: Sequence[Mapping[str, Any]], intake_version_url: str,
+) -> dict[str, Any]:
+    """Put the release link, source checkout and units back on the previous release, once.
+
+    Called only when a required unit did not come back after the switch. Never
+    retried: a failed return is reported, and the deploy stops. Intake runs the
+    installed scene-retirement runtime (CURRENT.json names a source generation),
+    not the checkout, and this deploy already pointed it at the candidate; so
+    the previous commit's runtime is installed again by the deploy's own step,
+    and the restarted intake must prove the previous commit, before ``returned``.
+    """
+
+    if previous_link is None:
+        return {"status": "not_possible", "reason": "no_previous_release"}
+    previous = Path(previous_link)
+    if not previous.is_absolute():
+        previous = active.parent / previous
+    if previous.resolve() == Path(new_release_path).resolve():
+        return {"status": "not_possible", "reason": "previous_release_is_this_release"}
+    step = "previous_release_identity"
+    try:
+        commit = _surface_commit(previous, name="previous_release")
+        step = "source_checkout"
+        if _git(source, "checkout", "--quiet", commit)[0] != 0:
+            raise ControlPlaneDeployError("deploy_source_checkout_failed")
+        step = "installed_runtime"
+        installed_runtime = _prepare_scene_retirement_runtime(source_repo=source, source_commit=commit)
+        step = "release_link"
+        _activate_release(active_link=active, release_path=previous)
+        step = "systemd_units"
+        _install_release_systemd_units(
+            release_path=previous, systemd_dir=systemd_dir,
+            units=[unit for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
+                   if (previous / "deploy" / "systemd" / unit).is_file()],
+        )
+        step = "intake_runtime_identity"
+        _install_intake_runtime_identity_drop_in(
+            Path(intake_runtime_drop_in).expanduser(), source_repo=source, source_commit=commit
+        )
+        step = "paid_runs_in_flight"
+        _require_in_flight_runs_outside_units(paid_runs_in_flight, units)
+        step = "unit_restart"
+        states = _restart_units(units)
+        step = "intake_commit_proof"
+        intake_runtime = _verify_intake_runtime(intake_version_url, expected_commit=commit)
+    except (ControlPlaneDeployError, ControlPlaneReleaseError, OSError) as exc:
+        return {"status": "failed", "failed_step": step, "error": str(exc)[:300],
+                "release_path": str(previous), "unit_states": _unit_states(units)}
+    return {"status": "returned", "source_commit": commit, "release_path": str(previous),
+            "unit_states": states, "intake_runtime": intake_runtime,
+            "installed_runtime": {key: installed_runtime.get(key)
+                                  for key in ("status", "source_commit", "runtime_root", "current")}}
+
+
+def _release_return_fields(exc: BaseException | None) -> dict[str, Any]:
+    """What a failure after the switch says about the return, and a refused candidate's guard row."""
+
+    fields: dict[str, Any] = {}
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        guard = getattr(exc, "candidate_runtime_guard", None)
+        if isinstance(guard, dict):
+            fields.setdefault("candidate_runtime_guard", dict(guard))
+        returned = getattr(exc, "release_return", None)
+        if isinstance(returned, dict) and "release_return" not in fields:
+            fields["release_return"] = dict(returned)
+            if returned.get("status") == "returned":
+                fields["returned_to_previous_release"] = returned["source_commit"]
+        exc = exc.__cause__ or exc.__context__
+    return fields
+
+
 def _install_release_systemd_units(
     *,
     release_path: str | Path,
@@ -3784,39 +3991,61 @@ def _drain_agent_execution_before_release_switch(
     return result
 
 
-def _activate_agent_execution(*, expected_commit: str, config_path: str | Path = "/etc/blueprint/agent-execution.json") -> dict[str, Any]:
-    """An admitted config activates the worker; absent config never grants inference."""
+AGENT_EXECUTION_UNIT = "blueprint-agent-execution.service"
+
+
+def _stop_and_disable_agent_worker() -> dict[str, Any]:
+    """Stop and disable the agent worker if the host has it; refuse unless it ends off."""
+
+    try:
+        load = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["systemctl", "show", "--property=LoadState", "--value", AGENT_EXECUTION_UNIT],
+            capture_output=True, text=True, check=False, timeout=15,
+        ).stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        load = "unknown"
+    if load == "not-found":
+        return {"unit": AGENT_EXECUTION_UNIT, "load_state": load, "outcome": "absent"}
+    before = _systemd_unit_state(AGENT_EXECUTION_UNIT)
+    for verb in ("stop", "disable"):
+        _systemctl_verb(verb, AGENT_EXECUTION_UNIT, timeout=45)
+    after = _systemd_unit_state(AGENT_EXECUTION_UNIT)
+    if after["state"] != "inactive" or after["enabled"] == "enabled":
+        raise ControlPlaneDeployError("deploy_agent_worker_not_retired")
+    return {"unit": AGENT_EXECUTION_UNIT, "load_state": load, "before": before, "after": after,
+            "outcome": "already_off" if before["state"] == "inactive" and before["enabled"] != "enabled"
+            else "retired"}
+
+
+def _retire_agent_execution(
+    *, pre_activation_drain: Mapping[str, Any],
+    config_path: str | Path = "/etc/blueprint/agent-execution.json",
+) -> dict[str, Any]:
+    """Turn the agent worker off for good once nothing it owns still needs cleanup.
+
+    The agent service is retired (robot-team runs are removed).  Its worker is
+    stopped only after the pre-switch drain and with no task left whose provider
+    session still needs the worker's cleanup protocol; otherwise the release is
+    refused and the worker keeps running.  The config file is left in place.
+    """
     path = Path(config_path)
     if not path.exists():
-        return {"status": "not_configured", "activated": False}
-    from blueprint_pipeline.agent_execution.production import ProductionAgentService, ProductionConfig, _read_private
-    config = ProductionConfig.model_validate_json(_read_private(path))
-    from blueprint_pipeline.agent_execution.release import adopt_drained_config, drain, pending_cleanup
+        return {"status": "not_configured", "worker": _stop_and_disable_agent_worker(),
+                "pre_activation_drain": dict(pre_activation_drain)}
+    from blueprint_pipeline.agent_execution.production import ProductionConfig, _read_private
+    from blueprint_pipeline.agent_execution.release import pending_cleanup
     from blueprint_pipeline.agent_execution.journal import AgentJournal
-    cleanup = {"status": "not_required"}
+    if pre_activation_drain.get("status") not in {"drained", "already_bound"}:
+        raise ControlPlaneDeployError("deploy_agent_cleanup_reconciliation_pending")
     try:
-        if config.source_commit != expected_commit and pending_cleanup(AgentJournal(config.state_root)):
-            # A completed observer can still own its provider session. Drain
-            # through the journal's normal cancellation/cleanup protocol; never
-            # rewrite terminal records or infer provider deletion from completion.
-            if _systemd_unit_state("blueprint-agent-execution.service").get("state") != "active":
-                raise ControlPlaneDeployError("deploy_agent_cleanup_worker_not_active")
-            service = ProductionAgentService(path, source_commit=config.source_commit)
-            cleanup = drain(service, target_source_commit=expected_commit, timeout_seconds=30, drive_worker=False)
-            if cleanup["status"] != "drained":
-                raise ControlPlaneDeployError("deploy_agent_cleanup_reconciliation_pending")
-        adoption = adopt_drained_config(path, expected_commit=expected_commit)
+        config = ProductionConfig.model_validate_json(_read_private(path))
+        pending = pending_cleanup(AgentJournal(config.state_root))
     except Exception as exc:
         raise ControlPlaneDeployError("deploy_agent_configuration_requires_clean_drain") from exc
-    unit = "blueprint-agent-execution.service"
-    subprocess.run(["systemctl", "enable", unit], check=True, capture_output=True, text=True, timeout=20)
-    _restart_units((unit,))
-    observed = _systemd_unit_state(unit)
-    if observed.get("enabled") != "enabled" or observed.get("state") != "active":
-        raise ControlPlaneDeployError("deploy_agent_worker_not_enabled_and_active")
-    return {"status": "active", "activated": True, "unit": unit, "source_commit": expected_commit,
-            "enabled": observed["enabled"], "state": observed["state"], "configuration_adoption": adoption,
-            "release_cleanup": cleanup}
+    if pending:
+        raise ControlPlaneDeployError("deploy_agent_cleanup_reconciliation_pending")
+    return {"status": "retired", "worker": _stop_and_disable_agent_worker(),
+            "pre_activation_drain": dict(pre_activation_drain)}
 
 
 _DRAINABLE_SERVICE = re.compile(r"blueprint-[A-Za-z0-9_.@-]+\.service")
@@ -5603,6 +5832,13 @@ def deploy_control_plane_commit(
             scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
                                               "provider_mutation_performed": False}
         _mark_stage("scene_configuration_environment_installed")
+        # Before anything switches: a release whose own guard would keep intake
+        # from starting is refused here, and the pause stack restores triggers.
+        candidate_runtime_guard = _check_candidate_runtime_guard(
+            release_path=staged_release["release_path"],
+            intake_runtime_drop_in=intake_runtime_drop_in,
+        )
+        _mark_stage("candidate_runtime_guard")
         agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
             expected_commit=source_commit
         )
@@ -5613,6 +5849,7 @@ def deploy_control_plane_commit(
         # carries their rows.
         unshipped_trigger_receipts = _retire_unshipped_triggers(DEFAULT_RETIRED_TRIGGER_UNITS)
         pause.push(_carry_unshipped_trigger_receipts(unshipped_trigger_receipts))
+        previous_link = os.readlink(active) if active.is_symlink() else None
         _move_source_checkout(source, source_commit)
         # A termination here must not strand the new active link with old
         # services. The CLI defers SIGTERM until the release is proven live.
@@ -5712,16 +5949,25 @@ def deploy_control_plane_commit(
             lock_repair["status"] = "repaired"
             lock_repair["account"] = DEFAULT_SERVICE_ACCOUNT
         _mark_stage("units_and_directories_installed")
-        _require_in_flight_runs_outside_units(
-            paid_runs_in_flight, _required_restart_units(restart_units)
-        )
-        restarted = _restart_units(_required_restart_units(restart_units))
+        required_units = _required_restart_units(restart_units)
+        _require_in_flight_runs_outside_units(paid_runs_in_flight, required_units)
+        try:
+            restarted = _restart_units(required_units)
+        except ControlPlaneDeployError as restart_error:
+            # A release that cannot start its services does not stay switched.
+            restart_error.release_return = _return_to_previous_release(  # type: ignore[attr-defined]
+                active=active, previous_link=previous_link,
+                new_release_path=release["release_path"], source=source,
+                systemd_dir=systemd_dir, intake_runtime_drop_in=intake_runtime_drop_in,
+                units=required_units, paid_runs_in_flight=paid_runs_in_flight,
+                intake_version_url=intake_version_url,
+            )
+            raise
         runtime = _verify_intake_runtime(
             intake_version_url, expected_commit=commit
         )
         _mark_stage("intake_restarted_and_proven")
-        agent_execution = _activate_agent_execution(expected_commit=commit)
-        agent_execution["pre_activation_drain"] = agent_pre_activation_drain
+        agent_execution = _retire_agent_execution(pre_activation_drain=agent_pre_activation_drain)
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
@@ -5800,6 +6046,7 @@ def deploy_control_plane_commit(
         # The activating call always finds the checkout the build already made.
         "created_release_checkout": staged_release["created_release_checkout"],
         "restarted_units": restarted,
+        "candidate_runtime_guard": candidate_runtime_guard,
         "agent_execution": agent_execution,
         "installed_systemd_units": installed_systemd_units,
         "scene_object_discovery_runtime_directories": (
@@ -6296,6 +6543,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if isinstance(exc, UntrustedDeploySourceError):
             blocked["remedy"] = exc.remedy
         blocked.update(_unshipped_trigger_fields(exc))
+        returned = _release_return_fields(exc)
+        blocked.update(returned)
+        if returned.get("release_return", {}).get("status") == "failed":
+            blocked["blockers"].append(
+                "deploy_return_to_previous_release_failed:" + returned["release_return"]["failed_step"]
+            )
         if str(exc) == 'deploy_scene_retirement_store_unsafe':
             store_diagnostic = _scene_retirement_store_diagnostic(getattr(exc, 'store_diagnostic', None))
             if store_diagnostic is not None:
