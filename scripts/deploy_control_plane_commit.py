@@ -523,10 +523,28 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
 #: that overlaps the release switch keeps the release it started in. Each
 #: deploy still installs these units and restarts the triggers (never a running
 #: poll) with the other no-spend watchers; an owner hold still stops them.
+#: The GPU spend guard is the other: it writes the Google Cloud budget report
+#: every paid admission requires to be at most 5 minutes old, and a 6-7 minute
+#: pause let it expire, so the first paid step after a release was refused and
+#: parked for 30 minutes (2026-11-16). It starts nothing: it reads providers and
+#: billing, writes its reports and tears down only orphans past their boot or
+#: hard TTL (minutes to hours, never a pause's worth), from its own run roots.
+#: It is paused only across the switch itself (SWITCH_PAUSED_TRIGGER_UNITS).
 DEPLOY_EXEMPT_TRIGGER_UNITS = (
     "blueprint-website-atlas-provider-poll.timer",
     "blueprint-website-atlas-provider-poll.path",
+    "blueprint-gpu-spend-guard.timer",
 )
+#: Exempt triggers stopped only across the switch: from just before the source
+#: and release link move until the new unit files are installed and reloaded,
+#: then started first, before intake's restart and proof. A guard run started
+#: in that window would run new code under the old unit file. The guard writes
+#: the budget report at the start and end of each run, about every 70 s, so the
+#: report is at most about 70 s old when the switch begins; the switch took 28 s
+#: on 2026-11-16 and the first run after it writes within 25 s of the restart,
+#: far inside the 5 minutes a paid admission allows. A run already going keeps
+#: going on the release it started in. The receipt records the pause.
+SWITCH_PAUSED_TRIGGER_UNITS = ("blueprint-gpu-spend-guard.timer",)
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
 #: deliberately absent: its operator freeze must survive every deploy unless
@@ -3308,6 +3326,9 @@ def _release_return_fields(exc: BaseException | None) -> dict[str, Any]:
         guard = getattr(exc, "candidate_runtime_guard", None)
         if isinstance(guard, dict):
             fields.setdefault("candidate_runtime_guard", dict(guard))
+        paused = getattr(exc, "switch_pause_error", None)
+        if isinstance(paused, str):
+            fields.setdefault("switch_pause_error", paused)
         returned = getattr(exc, "release_return", None)
         if isinstance(returned, dict) and "release_return" not in fields:
             fields["release_return"] = dict(returned)
@@ -3566,6 +3587,50 @@ def _systemctl_verb(verb: str, unit: str, *, timeout: float | None = None) -> su
         ["systemctl", verb, unit], capture_output=True, text=True, check=False,
         **({"timeout": timeout} if timeout is not None else {}),
     )
+
+
+#: A stop that does not answer in this long fails the pause (the trigger is still started again on the way out).
+SWITCH_PAUSE_STOP_TIMEOUT_SECONDS = 30
+
+
+def _pause_triggers_across_switch(units: Sequence[str], *, door_holds_dir: str | Path,
+                                  attempted: list[str] | None = None) -> list[str]:
+    """Stop each active, unheld trigger just before the switch; return those to start again after it.
+
+    Each unit is added to ``attempted`` before its stop is tried, so a caller whose pause raised still starts again
+    every trigger it may have stopped (starting is idempotent); a held or stopped one is never added."""
+
+    attempted = [] if attempted is None else attempted
+    held, _warning = _active_door_holds(door_holds_dir)
+    for unit in units:
+        if unit in held or _systemd_unit_state(unit)["state"] != "active":
+            continue  # a held or stopped trigger stays as it is; the final restore decides it as before
+        attempted.append(unit)
+        _systemctl_verb("stop", unit, timeout=SWITCH_PAUSE_STOP_TIMEOUT_SECONDS)
+        if _systemd_unit_state(unit)["state"] != "inactive":
+            raise ControlPlaneDeployError(f"deploy_switch_pause_failed:{unit}")
+    return attempted
+
+
+def _resume_triggers_after_switch(units: Sequence[str]) -> list[dict[str, Any]]:
+    """Reload the installed unit files and start the paused triggers again; never fails the release (the final
+    restore arms them too and verifies them)."""
+
+    rows: list[dict[str, Any]] = []
+    if not units:
+        return rows
+
+    def systemctl(*argv: str) -> bool:
+        try:
+            return subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+                ["systemctl", *argv], capture_output=True, text=True, check=False,
+                timeout=SWITCH_PAUSE_STOP_TIMEOUT_SECONDS).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False  # never raises: it runs on the way out of a failure too
+    reloaded = systemctl("daemon-reload")
+    for unit in units:
+        rows.append({"unit": unit, "reloaded": reloaded, "started": systemctl("start", unit)})
+    return rows
 
 
 def _disarm_paused_lane_unit(unit: str) -> dict[str, Any]:
@@ -5850,6 +5915,14 @@ def deploy_control_plane_commit(
         unshipped_trigger_receipts = _retire_unshipped_triggers(DEFAULT_RETIRED_TRIGGER_UNITS)
         pause.push(_carry_unshipped_trigger_receipts(unshipped_trigger_receipts))
         previous_link = os.readlink(active) if active.is_symlink() else None
+        # The spend guard stops here, not with the other watchers, and starts again once the new unit files are
+        # loaded; a failure in between starts it again on the way out.
+        switch_paused: list[str] = []
+        switch_paused_at, switch_resumed = time.monotonic(), None
+        # Registered before the stop: a pause that fails part way still starts again what it may have stopped.
+        pause.callback(lambda: switch_resumed is None and _resume_triggers_after_switch(switch_paused))
+        _pause_triggers_across_switch(SWITCH_PAUSED_TRIGGER_UNITS, door_holds_dir=door_holds_dir,
+                                      attempted=switch_paused)
         _move_source_checkout(source, source_commit)
         # A termination here must not strand the new active link with old
         # services. The CLI defers SIGTERM until the release is proven live.
@@ -5886,6 +5959,9 @@ def deploy_control_plane_commit(
             release_path=release["release_path"],
             systemd_dir=systemd_dir,
         )
+        switch_resumed = _resume_triggers_after_switch(switch_paused)
+        switch_pause = {"units": switch_paused, "resumed": switch_resumed,
+                        "seconds": round(time.monotonic() - switch_paused_at, 3)}
         scene_object_discovery_runtime_directories = (
             _install_scene_object_discovery_runtime_directories()
         )
@@ -5954,14 +6030,26 @@ def deploy_control_plane_commit(
         try:
             restarted = _restart_units(required_units)
         except ControlPlaneDeployError as restart_error:
-            # A release that cannot start its services does not stay switched.
-            restart_error.release_return = _return_to_previous_release(  # type: ignore[attr-defined]
-                active=active, previous_link=previous_link,
-                new_release_path=release["release_path"], source=source,
-                systemd_dir=systemd_dir, intake_runtime_drop_in=intake_runtime_drop_in,
-                units=required_units, paid_runs_in_flight=paid_runs_in_flight,
-                intake_version_url=intake_version_url,
-            )
+            # A release that cannot start its services does not stay switched. The link and unit files move back
+            # with the spend guard stopped, as on the way in, and it is always started again on the way out; a
+            # guard that would not stop never keeps the release from going back.
+            returning: list[str] = []
+            try:
+                _pause_triggers_across_switch(SWITCH_PAUSED_TRIGGER_UNITS, door_holds_dir=door_holds_dir,
+                                              attempted=returning)
+            except Exception as pause_error:  # noqa: BLE001 - nothing in the pause may prevent or mask the return
+                restart_error.switch_pause_error = (  # type: ignore[attr-defined]
+                    f"{type(pause_error).__name__}:{str(pause_error)[:200]}")
+            try:
+                restart_error.release_return = _return_to_previous_release(  # type: ignore[attr-defined]
+                    active=active, previous_link=previous_link,
+                    new_release_path=release["release_path"], source=source,
+                    systemd_dir=systemd_dir, intake_runtime_drop_in=intake_runtime_drop_in,
+                    units=required_units, paid_runs_in_flight=paid_runs_in_flight,
+                    intake_version_url=intake_version_url,
+                )
+            finally:
+                _resume_triggers_after_switch(returning)
             raise
         runtime = _verify_intake_runtime(
             intake_version_url, expected_commit=commit
@@ -6027,6 +6115,7 @@ def deploy_control_plane_commit(
         "capture_transfer_prerequisites": capture_transfer_prerequisites,
         "stage_timings_seconds": stage_timings,
         "trigger_pause_seconds": trigger_pause_seconds,
+        "switch_pause": switch_pause,
         "attestation_wait_seconds": attestation_wait["wait_seconds"],
         "attestation_wait": attestation_wait,
         "drained_units": drained_units,

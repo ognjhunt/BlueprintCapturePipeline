@@ -50,7 +50,7 @@ retry once.
 | 12 | `task_evaluation_scene_preparation_completion.reconcile_preparation_completion` | profile, result and receipt commit with each other only | evidence | Commit-agnostic join: a completed A launch closes the job on B (already rule A). |
 | 13 | `task_evaluation_scene_terminal_reconciler` (robot-team join) | attempt, request and profile commit with each other only | evidence | Commit-agnostic (its module docstring still says otherwise). |
 | 14 | `task_evaluation_controls_autoprovision._registered_terminal_adoption` / `terminal_adoption_source` (`expected_production_commit=release`) | adopted controls result vs live release | not established | Robot-team jobs only. Not explained here; left as is. |
-| 15 | `team_scene_packet_worker._new_release_untried`, `_unscorable_half_untried` | status release vs live release | retry | A blocked or unscorable team half is compiled once more per release. **CPU only.** |
+| 15 | `team_scene_packet_worker._new_release_untried`, `_unscorable_half_untried` | status release vs live release; a held half's check revision vs `HALF_SUPPORT_REVISION` | retry | A blocked team half is compiled once more per release; an unscorable one once per check revision ("Held team halves" below). **CPU only.** |
 | 16 | `rigid_robot_free_probe_runner._new_release_untried` | terminal release vs live release | retry | A `staging_refused` probe is retried once per release. **Paid probe ($1 cap) may run again.** Bounded by one per release. |
 | 17 | `beta_policy_screening_launch` (`beta_screening_implementation_commit_changed`) and `beta_policy_screening_coordinator._replan_scope` | frozen implementation commit vs live commit | paid | Running candidates survive. Preparing rows are refused, queued rows are closed `replanned_for_new_implementation`, and a new campaign is planned. **No paid run repeats; queued paid work is replanned.** |
 | 18 | `task_evaluation_scene_release_hold.previous_launch_in_flight` (new) | the attempt's launch: queue, run directory, receipt, own submission record | paid | Holds the attempt (`running` / `previous_release`) while its launch is in transit, queued, claimed, running, or without a terminal receipt. |
@@ -125,10 +125,18 @@ adopted across a commit.
 | 12 | completed scene configuration | adopted today | The join reads the run's own commit. |
 | 13 | completed robot-team result | adopted today | Same. |
 | 14 | adopted controls result | strict | Not explained here. |
-| 15 | $0 team scene half | adopted today; retried once per release | A completed half is kept. Release is used only as the signal that a fix may have shipped. |
+| 15 | $0 team scene half | adopted today; a blocked one retried once per release, a held one once per check revision | A completed half is kept. See "Held team halves" below. |
 | 16 | paid probe retry | strict | Paid. |
 | 17 | paid screening | strict | Paid. |
 | 18 | a paid launch already left | strict | Paid. |
+
+**Held team halves.** A completed half its support or spawn checks hold (`team_scene_packet_worker.unscorable_half`)
+is compiled again once per value of `rigid_support_pad.HALF_SUPPORT_REVISION`, not once per release: every release
+recompiled one that stays held (three times on 2026-11-16, each time taking its company package back). The value
+moves with a digest of the checks' own code, which a test enforces. A fix anywhere else that should reach halves
+already held (the record's producer `scene_packet.py`, the compile path `team_scene_packet.py`,
+`website_support_pad.py`, `atlas_world_levelling.py`, or a helper the checks call) needs the revision moved by hand
+in the same change; otherwise it reaches only halves compiled after it.
 
 $0 work that a deploy already does not repeat:
 

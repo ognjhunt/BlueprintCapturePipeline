@@ -107,7 +107,7 @@ def test_a_temporary_hand_back_is_planned_again_after_the_backoff_then_the_host_
     # recompiles, robot-access approvals, furniture measurements and their retries) stays on its status through
     # every hand-back, so no requeue repeats for the same release, approval or measurement.
     tried = {worker.OWNER_CONFIRMATION_REQUEUE_FIELD: ["sha256:" + "a" * 64],
-             worker.RELEASE_REQUEUE_FIELD: ["b" * 40], worker.UNSCORABLE_HALF_REQUEUE_FIELD: ["c" * 40],
+             worker.RELEASE_REQUEUE_FIELD: ["b" * 40], worker.UNSCORABLE_HALF_REVISION_FIELD: ["rigid_support_checks:c"],
              worker.ROBOT_ACCESS_REQUEUE_FIELD: ["sha256:" + "d" * 64],
              worker.ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD: ["sha256:" + "e" * 64],
              worker.ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD: ["f" * 40]}

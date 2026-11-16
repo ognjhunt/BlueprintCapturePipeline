@@ -759,6 +759,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     assert deploy.DEPLOY_EXEMPT_TRIGGER_UNITS == (
         "blueprint-website-atlas-provider-poll.timer",
         "blueprint-website-atlas-provider-poll.path",
+        "blueprint-gpu-spend-guard.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
@@ -1683,6 +1684,8 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_retire_agent_execution": lambda **_kwargs: {"status": "test_host_step_stub"},
         "_restore_installed_path_units": lambda _installed, **_kwargs: [],
         "_retire_unshipped_triggers": lambda _units: [],
+        "_pause_triggers_across_switch": lambda _units, **_kwargs: [],
+        "_resume_triggers_after_switch": lambda _units: [],
     }
     for name, stub in stubs.items():
         monkeypatch.setattr(deploy, name, stub)
@@ -5276,12 +5279,261 @@ def test_the_atlas_provider_poll_keeps_running_through_a_deploy(tmp_path, monkey
     deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
 
     exempt = set(deploy.DEPLOY_EXEMPT_TRIGGER_UNITS)
-    assert exempt == {"blueprint-website-atlas-provider-poll.timer", "blueprint-website-atlas-provider-poll.path"}
+    assert exempt == {"blueprint-website-atlas-provider-poll.timer", "blueprint-website-atlas-provider-poll.path",
+                      "blueprint-gpu-spend-guard.timer"}
     # Every watcher the drain and the full quiesce may stop is snapshotted first; the poll never is.
     assert PROGRESSION_TIMER in quiesce_candidates and not exempt & set(quiesce_candidates)
     assert "blueprint-website-atlas-preview.timer" in quiesce_candidates
     # The deploy still installs the units and re-arms the triggers as no-spend watchers.
     assert exempt <= set(deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS) and rearmed and exempt <= set(rearmed[-1])
+
+
+def test_two_releases_in_a_row_never_stop_the_spend_guard_that_keeps_the_budget_report_fresh(
+        tmp_path, monkeypatch) -> None:
+    """Paid admissions need a budget report at most 5 min old; only the guard writes it (2026-11-16)."""
+    guard = "blueprint-gpu-spend-guard.timer"
+    snapshotted: list[str] = []
+    stopped: list[str] = []
+    rearmed: list[set[str]] = []
+    for name, commit in (("first", "a" * 40), ("second", "b" * 40)):
+        (tmp_path / name).mkdir()
+        kwargs = _stub_host_deploy(monkeypatch, tmp_path / name, commit)
+
+        def states(installed):
+            snapshotted.extend(entry["unit"] for entry in installed)
+            return {entry["unit"]: {"enabled": "enabled", "state": "active"} for entry in installed}
+
+        def restore(installed, *, before, always_arm_units=(), **_kwargs):
+            rearmed.append(set(always_arm_units))
+            return []
+
+        monkeypatch.setattr(deploy, "_installed_path_unit_states", states)
+        monkeypatch.setattr(deploy, "_quiesce_active_path_units",
+                            lambda before: stopped.extend(before) or [])
+        monkeypatch.setattr(deploy, "_restore_installed_path_units", restore)
+        monkeypatch.setattr(deploy, "_verify_deferred_path_unit_starts", lambda *_a, **_k: None)
+        deploy.deploy_control_plane_commit(**kwargs)
+
+    assert "blueprint-website-atlas-preview.timer" in stopped
+    assert guard not in snapshotted and guard not in stopped
+    assert len(rearmed) == 2 and all(guard in units for units in rearmed)
+
+
+GUARD = "blueprint-gpu-spend-guard.timer"
+
+
+def _switch_order(monkeypatch, tmp_path, *, fail_install: bool = False):
+    kwargs = _stub_host_deploy(monkeypatch, tmp_path, "c" * 40)
+    order: list[object] = []
+
+    def recorded(name, result=None, error=None):
+        def step(*args, **kwargs):
+            order.append(name)
+            if error is not None:
+                raise error
+            return result(*args) if callable(result) else result
+        return step
+    def paused(units, attempted=None):
+        attempted = [] if attempted is None else attempted
+        attempted.extend(units)
+        return attempted
+    monkeypatch.setattr(deploy, "_pause_triggers_across_switch", lambda units, **kw: recorded("pause")() or paused(
+        units, kw.get("attempted")))
+    monkeypatch.setattr(deploy, "_resume_triggers_after_switch",
+                        recorded("resume", lambda units: [{"unit": unit} for unit in units]))
+    monkeypatch.setattr(deploy, "_move_source_checkout", recorded("move"))
+    monkeypatch.setattr(deploy, "_retire_unshipped_triggers", recorded("retire_unshipped", []))
+    monkeypatch.setattr(deploy, "_install_release_systemd_units", recorded(
+        "install_units", [], deploy.ControlPlaneDeployError("deploy_systemd_unit_install_failed:x")
+        if fail_install else None))
+    monkeypatch.setattr(deploy, "_install_scene_object_discovery_runtime_directories", recorded("after_units", []))
+    monkeypatch.setattr(deploy, "_restart_units", recorded("restart_intake", []))
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", recorded("rearm_all", []))
+    return kwargs, order
+
+
+def test_the_spend_guard_is_stopped_only_across_the_switch_and_started_first_after_it(tmp_path, monkeypatch):
+    """The budget report never goes stale: the guard misses one switch (~30 s), not the whole 6-7 min pause."""
+    kwargs, order = _switch_order(monkeypatch, tmp_path)
+    receipt = deploy.deploy_control_plane_commit(**kwargs)
+    assert order == ["retire_unshipped", "pause", "move", "install_units", "resume", "after_units",
+                     "restart_intake", "rearm_all"]
+    assert deploy.SWITCH_PAUSED_TRIGGER_UNITS == (GUARD,) and GUARD in deploy.DEPLOY_EXEMPT_TRIGGER_UNITS
+    assert receipt["switch_pause"]["units"] == [GUARD] and receipt["switch_pause"]["resumed"] == [{"unit": GUARD}]
+    assert 0 <= receipt["switch_pause"]["seconds"] < 60
+    # Its timer fires again 15-25 s after the restart, and a run writes the report within seconds of starting.
+    timer = (Path(deploy.__file__).resolve().parents[1] / "deploy/systemd" / GUARD).read_text().splitlines()
+    assert {"OnActiveSec=15s", "RandomizedDelaySec=10s", "OnUnitInactiveSec=1min"} <= set(timer)
+
+
+@pytest.mark.parametrize("returning", ["returned", "raises", "guard_will_not_stop"])
+def test_the_spend_guard_is_stopped_across_the_return_to_the_previous_release_and_always_started_again(
+        tmp_path, monkeypatch, returning):
+    """Probe PA1: an intake that will not start sends the link and unit files back; the guard is stopped meanwhile."""
+    kwargs, order = _switch_order(monkeypatch, tmp_path)
+
+    def restart(_units):
+        order.append("restart_intake")
+        raise deploy.ControlPlaneDeployError("deploy_unit_restart_failed:blueprint-pipeline-intake.service")
+
+    def back(**_kwargs):
+        order.append("return_link_and_units")
+        if returning == "raises":
+            raise RuntimeError("an unexpected fault on the way back")
+        return {"status": "returned"}
+
+    def pause(units, attempted=None, **_kwargs):
+        order.append("pause")
+        attempted = [] if attempted is None else attempted
+        attempted.extend(units)
+        if returning == "guard_will_not_stop" and order.count("pause") == 2:
+            raise deploy.ControlPlaneDeployError(f"deploy_switch_pause_failed:{GUARD}")
+        return attempted
+    monkeypatch.setattr(deploy, "_restart_units", restart)
+    monkeypatch.setattr(deploy, "_return_to_previous_release", back)
+    monkeypatch.setattr(deploy, "_pause_triggers_across_switch", pause)
+    with pytest.raises((deploy.ControlPlaneDeployError, RuntimeError)):
+        deploy.deploy_control_plane_commit(**kwargs)
+    at = order.index("return_link_and_units")
+    assert order[at - 2:at] == ["restart_intake", "pause"]  # stopped first (or tried: a stuck guard never blocks)
+    assert order[at + 1] == "resume"  # started again whatever the return did
+    assert order.count("resume") == 2
+
+
+def _guard_host(monkeypatch, *, stop=None, probes=("active", "inactive")):
+    """The real pause and resume over a fake systemctl: the timer's state, and what was asked."""
+    timer, calls, answers = {"state": "active"}, [], iter(probes)
+
+    def unit_state(unit, **_kwargs):
+        answer = next(answers, None)
+        if answer is None:
+            raise deploy.ControlPlaneDeployError(f"deploy_systemd_state_probe_failed:{unit}:is-active")
+        return {"enabled": "enabled", "state": answer}
+
+    def verb(name, unit, *, timeout=None):
+        calls.append((name, unit, timeout))
+        if stop is not None:
+            raise stop
+        timer["state"] = "inactive"
+
+    def systemctl(argv, **_kwargs):
+        calls.append(tuple(argv[1:]))
+        if argv[1] == "start":
+            timer["state"] = "active"
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    monkeypatch.setattr(deploy, "_systemd_unit_state", unit_state)
+    monkeypatch.setattr(deploy, "_systemctl_verb", verb)
+    monkeypatch.setattr(deploy, "_active_door_holds", lambda _root: ({}, None))
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    return timer, calls
+
+
+def _restart_then_return(monkeypatch, tmp_path, *, on_return_pause):
+    """The forward switch as stubbed; then intake fails and the return's pause meets ``on_return_pause``."""
+    real_pause, real_resume = deploy._pause_triggers_across_switch, deploy._resume_triggers_after_switch
+    kwargs, order = _switch_order(monkeypatch, tmp_path)
+    state = {}
+
+    def pause(units, **kw):
+        order.append("pause")
+        if order.count("pause") == 1:
+            return kw["attempted"]
+        state["timer"], state["calls"] = _guard_host(monkeypatch, **on_return_pause)
+        return real_pause(units, **kw)
+
+    def resume(units):
+        order.append(("resume", tuple(units)))
+        return real_resume(units) if "timer" in state else []
+
+    def restart(_units):
+        order.append("restart_intake")
+        raise deploy.ControlPlaneDeployError("deploy_unit_restart_failed:blueprint-pipeline-intake.service")
+    monkeypatch.setattr(deploy, "_pause_triggers_across_switch", pause)
+    monkeypatch.setattr(deploy, "_resume_triggers_after_switch", resume)
+    monkeypatch.setattr(deploy, "_restart_units", restart)
+    monkeypatch.setattr(deploy, "_return_to_previous_release",
+                        lambda **_k: order.append("return_link_and_units")
+                        or {"status": "returned", "source_commit": "a" * 40})
+    return kwargs, order, state
+
+
+def test_a_stop_that_worked_before_its_state_check_failed_is_still_started_again_after_the_return(
+        tmp_path, monkeypatch):
+    """Probe PA3: the stop takes effect, the state probe after it fails; the guard must not stay stopped."""
+    kwargs, order, state = _restart_then_return(monkeypatch, tmp_path, on_return_pause={"probes": ("active",)})
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_unit_restart_failed") as caught:
+        deploy.deploy_control_plane_commit(**kwargs)
+    assert "return_link_and_units" in order and state["timer"]["state"] == "active"
+    assert ("resume", (GUARD,)) in order and ("start", GUARD) in state["calls"]
+    assert caught.value.switch_pause_error.startswith("ControlPlaneDeployError:deploy_systemd_state_probe_failed")
+
+
+@pytest.mark.parametrize("stop", [OSError("systemctl not runnable"),
+                                  subprocess.TimeoutExpired(["systemctl", "stop", GUARD], 30)])
+def test_a_stop_that_raises_or_hangs_never_keeps_the_release_from_going_back_or_masks_its_error(
+        tmp_path, monkeypatch, stop):
+    """Probe PA4: the original restart error is the one reported, the release goes back, the guard starts again."""
+    kwargs, order, state = _restart_then_return(monkeypatch, tmp_path, on_return_pause={"stop": stop})
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_unit_restart_failed") as caught:
+        deploy.deploy_control_plane_commit(**kwargs)
+    assert "return_link_and_units" in order and state["timer"]["state"] == "active"
+    assert ("stop", GUARD, deploy.SWITCH_PAUSE_STOP_TIMEOUT_SECONDS) in state["calls"]
+    assert caught.value.switch_pause_error.startswith(type(stop).__name__)
+    assert deploy._release_return_fields(caught.value)["switch_pause_error"] == caught.value.switch_pause_error
+
+
+def test_a_forward_pause_that_fails_after_its_stop_starts_the_guard_again_on_the_way_out(tmp_path, monkeypatch):
+    """The same shape before the switch: the deploy stops there, and the guard is not left stopped."""
+    real_pause, real_resume = deploy._pause_triggers_across_switch, deploy._resume_triggers_after_switch
+    kwargs, order = _switch_order(monkeypatch, tmp_path)
+    timer, calls = _guard_host(monkeypatch, probes=("active",))
+    monkeypatch.setattr(deploy, "_pause_triggers_across_switch", real_pause)
+    monkeypatch.setattr(deploy, "_resume_triggers_after_switch", real_resume)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_systemd_state_probe_failed"):
+        deploy.deploy_control_plane_commit(**kwargs)
+    assert "move" not in order and timer["state"] == "active" and ("start", GUARD) in calls
+
+
+def test_starting_the_guard_again_never_raises_on_the_way_out(monkeypatch):
+    """It runs while a failure unwinds: a systemctl that cannot run or hangs is recorded, never raised over it."""
+    def broken(argv, **kwargs):
+        assert kwargs.get("timeout") == deploy.SWITCH_PAUSE_STOP_TIMEOUT_SECONDS
+        raise OSError("systemctl not runnable") if argv[1] == "daemon-reload" else subprocess.TimeoutExpired(argv, 30)
+    monkeypatch.setattr(deploy.subprocess, "run", broken)
+    assert deploy._resume_triggers_after_switch([GUARD]) == [{"unit": GUARD, "reloaded": False, "started": False}]
+
+
+def test_a_failure_inside_the_switch_starts_the_spend_guard_again(tmp_path, monkeypatch):
+    kwargs, order = _switch_order(monkeypatch, tmp_path, fail_install=True)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_systemd_unit_install_failed"):
+        deploy.deploy_control_plane_commit(**kwargs)
+    assert order[:4] == ["retire_unshipped", "pause", "move", "install_units"] and "resume" in order[4:]
+
+
+def test_the_switch_pause_stops_only_an_active_unheld_guard_and_restarts_it_after_a_reload(tmp_path, monkeypatch):
+    calls, state = [], {"active": "active"}
+
+    def systemctl(argv, **_kwargs):
+        calls.append(tuple(argv[1:]))
+        if argv[1] == "stop":
+            state["active"] = "inactive"
+        stdout = {"is-enabled": "enabled", "is-active": state["active"]}.get(argv[1], "")
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout + "\n", stderr="")
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    holds = tmp_path / "holds"
+    assert deploy._pause_triggers_across_switch((GUARD,), door_holds_dir=holds) == [GUARD]
+    assert ("stop", GUARD) in calls
+    calls.clear()
+    assert deploy._resume_triggers_after_switch([GUARD]) == [{"unit": GUARD, "reloaded": True, "started": True}]
+    assert calls == [("daemon-reload",), ("start", GUARD)]
+    calls.clear()
+    assert deploy._pause_triggers_across_switch((GUARD,), door_holds_dir=holds) == []  # already stopped: left alone
+    assert ("stop", GUARD) not in calls
+    monkeypatch.setattr(deploy, "_active_door_holds", lambda _root: ({GUARD: {"owner": "o"}}, None))
+    state["active"] = "active"
+    calls.clear()
+    assert deploy._pause_triggers_across_switch((GUARD,), door_holds_dir=holds) == []  # an owner's hold stands
+    assert calls == []
 
 
 def test_a_deploy_arms_a_newly_installed_provider_poll_trigger_as_no_spend(monkeypatch) -> None:
