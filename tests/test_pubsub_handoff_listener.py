@@ -2712,3 +2712,25 @@ def test_a_failed_retirement_lookup_waits_rather_than_restaging(tmp_path, monkey
                                                                       "retryable")
     assert results[0]["blockers"] == ["retirement_lookup_failed"]
     assert not (tmp_path / "capture-bucket").exists()
+
+
+def test_a_listener_log_line_prints_its_allowed_fields_and_nothing_else():
+    record = logging.LogRecord("blueprint_pipeline.pubsub_handoff_listener", logging.WARNING, __file__, 1,
+                               "pubsub_handoff.capture_source_membership_unavailable", None, None)
+    record.__dict__.update(
+        capture_id="walkthrough-capture-1", staging_reason="capture_staging_membership_unavailable",
+        staging_error="ValueError: refused at gs://bucket/scenes/site-x/raw?X-Goog-Signature=abc by owner@example.com",
+        blockers=["capture_source_membership_unavailable"], delivery_attempt=3,
+        last_error="website_scene_preparation: Move the red mug to 12 Main Street",
+        attributes={"token": "secret-token"}, failure_evidence_path="/var/lib/blueprint/x.json")
+    line = listener_module._FieldsFormatter("%(message)s").format(record)
+    message, fields = line.split(" ", 1)
+    assert message == "pubsub_handoff.capture_source_membership_unavailable"
+    printed = json.loads(fields)
+    assert printed == {"blockers": ["capture_source_membership_unavailable"], "capture_id": "walkthrough-capture-1",
+                       "delivery_attempt": 3, "staging_error": "ValueError: refused at <redacted> by <redacted>",
+                       "staging_reason": "capture_staging_membership_unavailable"}
+    for private in ("Main Street", "red mug", "secret-token", "example.com", "gs://", "Signature", "/var/lib"):
+        assert private not in line
+    bare = logging.LogRecord("x", logging.WARNING, __file__, 1, "plain", None, None)
+    assert listener_module._FieldsFormatter("%(message)s").format(bare) == "plain"

@@ -216,7 +216,7 @@ def safe_to_arm(attempt_count, previous_history, recovered_expired_lease):
 
 def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args, limit=1):
     """Reuse the existing drain tick, original bytes, leases and source checks."""
-    from .website_preparation_status import _read, _root, read_preparation_status
+    from .website_preparation_status import _read, _root, delivery_retired, read_preparation_status
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     counts = {"resumed": 0, "pending": 0}
     roots = sorted(path.parent for path in Path(storage_root).glob("*/scenes/site-*/captures/*/pipeline_job_ledger.json")
@@ -238,7 +238,8 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
             _require(not (root / listener.JOB_LEDGER_FILENAME).is_symlink())
             before = listener._read_job_ledger(root)
             record = before.get("assessment_resume")
-            if before.get("status") != "failed_retryable" or before.get("last_error") != PENDING_CODE or not record:
+            if (before.get("status") != "failed_retryable" or before.get("last_error") != PENDING_CODE or not record
+                    or delivery_retired(root, before)):  # A retired delivery ends the wait.
                 continue
             counts["pending"] += 1
             _require(type(record) is dict and set(record) == {"schema_version", "payload_base64",
