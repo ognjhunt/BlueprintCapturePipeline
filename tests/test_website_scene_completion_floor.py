@@ -244,6 +244,12 @@ def _stopped(reason, **extra):
     (_stopped(REVIEW_REQUIRED), REVIEW_REQUIRED),
     (_stopped("atlas_generated_view_registration_unresolved"), "atlas_generated_view_registration_unresolved"),
     (ValueError(EXHAUSTED), EXHAUSTED),
+    # Job itest-7c42 (16 Nov, 21:53Z): the completion planner, bought once ($0.258, settled), abstained; its
+    # retained answer is re-read at $0 on every retry. Its siblings: the planner's answer is unusable.
+    *[(ValueError(code), code) for code in ("atlas_completion_planner_abstained",
+                                            "atlas_completion_camera_selection_invalid",
+                                            "atlas_completion_task_gap_plan_missing",
+                                            "atlas_coverage_environment_evidence_invalid")],
 ])
 def test_a_completion_its_review_did_not_admit_goes_on_without_the_generated_part(tmp_path, monkeypatch,
                                                                                 outcome, reason):
@@ -278,6 +284,10 @@ def test_any_other_completion_stop_is_unchanged(tmp_path, monkeypatch, outcome):
 @pytest.mark.parametrize("code", [
     "website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted",
     "atlas_preserved_completion_review_not_bound", "website_image_completion_review_source_changed",
+    # The completion's other raises stay stops: no canonical planner, the release check, a money check.
+    "atlas_completion_canonical_planner_required", "atlas_completion_release_not_admitted:host_checkout_dirty",
+    "atlas_completion_review_release_not_admitted:host_checkout_dirty",
+    "atlas_completion_request_budget_insufficient:required=6,remaining=2",
 ])
 def test_a_raised_money_or_integrity_stop_is_raised_as_before(tmp_path, monkeypatch, code):
     run, calls, _exports, _ = _scene(tmp_path, monkeypatch, [ValueError(code)])
@@ -413,3 +423,23 @@ def test_three_flags_on_one_job_read_in_a_pinned_order(tmp_path, monkeypatch):
     said = _said(_published(job)[1]["README.txt"])
     assert said.endswith(" ".join([sim.NOT_FOUND, sim.NOTHING_TAKEN_OUT, sim.NOT_FILLED_IN]))
     assert said.count(sim.NOT_FILLED_IN) == 1 and said.count("taken out of the room scan") == 1
+
+
+
+def test_the_planner_codes_the_floor_takes_are_the_ones_the_completion_raises():
+    """Pinned to the raise sites, so a renamed code can never fall out of the floor unnoticed."""
+    import inspect
+
+    from blueprint_pipeline import atlas_scene_completion
+    source = inspect.getsource(atlas_scene_completion.complete_scene)
+    planner = pipeline.COMPLETION_FLOOR_ERRORS - {EXHAUSTED}
+    assert len(planner) == 4
+    assert all(f'raise ValueError("{code}")' in source or f"raise ValueError('{code}')" in source for code in planner)
+    for stop in ("atlas_completion_canonical_planner_required", "atlas_completion_release_not_admitted"):
+        assert stop in source and stop not in pipeline.COMPLETION_FLOOR_ERRORS
+
+
+def test_job_two_after_the_planner_abstained_hands_on_the_room_flagged(tmp_path):
+    _floored_result(tmp_path, reason="atlas_completion_planner_abstained")
+    outcome = scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    assert outcome["status"] == "ready" and outcome["flags"] == [FLAG]
