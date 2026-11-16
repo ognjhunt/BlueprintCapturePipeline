@@ -915,12 +915,6 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         state["preparation_link"] = _link(intent=intent, attempt=attempt, observed=observed,
                                           directory=directory, config=config, now=now)
     link = read(_reference(state["preparation_link"]), digest_field="link_digest")
-    try:
-        from .agent_execution.failure_events import register_preparation_failure_subscription
-        register_preparation_failure_subscription(preparation_link=link, controller_config=config)
-    except (OSError, ValueError, RuntimeError) as exc:
-        import logging
-        logging.getLogger(__name__).warning("agent_failure_subscription_unavailable:%s", type(exc).__name__)
     if observed.get("result_reference"):
         state["preparation_result"] = observed["result_reference"]
     if observed["status"] == "blocked" and bound_release is not release:
@@ -1057,15 +1051,6 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
     require(scope is None or (isinstance(scope, str) and scope.startswith("scene-") and intake._identifier(scope)),
             "scoped_intent_invalid")
     require(scope is None or only_intent_id is None or scope == only_intent_id, "scoped_intent_mismatch")
-    if only_intent_id is None:
-        from .agent_execution.controller_recovery import consume_controller_requests
-        try:
-            consume_controller_requests(controller_config_path=config_path, only_intent_id=scope)
-        except (OSError, ValueError, RuntimeError) as exc:
-            # The reasoning sidecar cannot disable the existing deterministic
-            # controller. Its pending requests remain available for reconciliation.
-            import logging
-            logging.getLogger(__name__).warning("agent_controller_requests_unavailable:%s", type(exc).__name__)
     only_intent_id = only_intent_id or scope
     require(config.get("schema_version") == CONFIG_SCHEMA, "config_schema_invalid")
     root = safe_path(config["intent_root"])
@@ -1107,9 +1092,6 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                 require(intent.get("intent_id") == directory.name
                         and intent.get("authenticated_issuer") in config["trusted_clients"], "intent_issuer_invalid")
                 intake.validate_request(intent["request"], now=intent["accepted_at_epoch"])
-                from .agent_execution.supervision_producer import best_effort_register_run_supervision
-                best_effort_register_run_supervision(intent=intent, directory=directory,
-                    source_commit=release["source_commit"])
                 detail = []
                 try:
                     # Operational heartbeat only: the factory and prefix selector report

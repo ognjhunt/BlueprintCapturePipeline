@@ -776,7 +776,7 @@ ROLE_WORKER_UNITS = {
     "policy_canary_dispatch": (),  # its unit, the robot-team canary dispatcher, is retired
     "evidence_offload": ("blueprint-control-plane-storage-gc.service",),
     "experiment_restore": ("blueprint-control-plane-storage-gc.service",),
-    "stage_replay": ("blueprint-agent-stage-replay.service",),
+    "stage_replay": (),  # its unit, the agent service's stage replay, is retired
     "semantic_pretraining": ("blueprint-task-evaluation-launch-dispatcher.service",
                              "blueprint-task-evaluation-launch-activation.service"),
     "cpu_prestage": ("blueprint-task-evaluation-launch-dispatcher.service",),

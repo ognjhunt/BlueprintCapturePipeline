@@ -166,7 +166,6 @@ def test_bootstrap_rejects_preloaded_service_code_before_source_import(tmp_path,
 
 @pytest.mark.parametrize('unit,daemon', [
     ('blueprint-pipeline-intake.service', 'live_pipeline_intake_service'),
-    ('blueprint-agent-execution.service', 'agent_execution.production'),
 ])
 def test_continuous_unit_privileged_start_cannot_execute_mutable_checkout(unit, daemon):
     text = (SCRIPT.parents[1] / 'deploy/systemd' / unit).read_text()

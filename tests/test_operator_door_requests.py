@@ -53,6 +53,8 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-beta-policy-screening.timer",
         "blueprint-agent-run-dispatcher.timer",
+        "blueprint-agent-stage-replay.timer",
+        "blueprint-agent-stage-replay.path",
     )
     for unit in RETIRED_HOLD_UNITS:
         plain = {"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",
@@ -75,7 +77,8 @@ def test_no_unit_request_starts_a_retired_trigger_or_the_agent_run_dispatcher() 
     """The founder's stop of the agent-run dispatcher stays true once it is retired."""
 
     for unit in ("blueprint-agent-run-dispatcher.timer", "blueprint-agent-run-dispatcher.service",
-                 "blueprint-beta-policy-screening.timer"):
+                 "blueprint-beta-policy-screening.timer", "blueprint-agent-execution.service",
+                 "blueprint-agent-stage-replay.timer", "blueprint-agent-stage-replay.path"):
         for action in ("start", "restart"):
             with pytest.raises(RequestRefused) as error:
                 validate_request({"kind": "unit", "unit": unit, "action": action})
