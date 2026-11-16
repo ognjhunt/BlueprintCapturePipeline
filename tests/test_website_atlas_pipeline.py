@@ -915,7 +915,7 @@ def _bought_review(*, transients=(), edited=("f0",)):
                if transients else {})}
 
 
-def _job(tmp_path, monkeypatch, review, *, clean_plate):
+def _job(tmp_path, monkeypatch, review, *, clean_plate, automation=None):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
     from blueprint_pipeline import website_image_completion as image_edit, website_task_context as transport
@@ -947,8 +947,10 @@ def _job(tmp_path, monkeypatch, review, *, clean_plate):
                          (transport, "reserve_website_preparation_spend")):
         monkeypatch.setattr(module, name, lambda **_: pytest.fail("a paid call was made"))
     automated, posed = [], []
-    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw: automated.append(kw) or {
-        "status": "quality_rejected", "background": {"status": "quality_rejected"}})
+    # The editor path's outcome; by default a stop that leaves the room as it was (gap G's floor never takes it).
+    stop = automation or {"status": "needs_input", "background": {"status": "needs_input",
+                                                                  "reason": "atlas_edit_source_changed"}}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw: automated.append(kw) or stop)
     # The scene as filmed asks for its source pose first: stop there, after its precondition passed.
     monkeypatch.setattr(pipeline, "_source_pose", lambda **kw: posed.append(kw) or {"status": "processing",
                                                                                       "stage": "source_pose"})
@@ -1007,11 +1009,14 @@ def test_a_job_whose_clean_plate_took_its_object_keeps_the_planner_removals(tmp_
     # A clean plate that ended blocked keeps today's route too.
     review = _bought_review()
     clean_plate = {"object_removed": ("objects_removed", TRAY), "clean_plate_blocked": ("blocked", [])}[case]
-    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=clean_plate)
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=clean_plate, automation={
+        "status": "quality_rejected", "background": {"status": "quality_rejected"}})
     result = run()
-    assert len(automated) == 1 and not posed and automated[0]["review"] == review
-    assert result["blockers"] == ["atlas_background_review_required"] and "job_object_rule" not in result
+    assert len(automated) == 1 and automated[0]["review"] == review
     assert json.loads((root / "job_object_rule.json").read_text())["applied"] is False
+    # The editor's review never passed (this stand-in rejects it): the object stays, the scene as filmed (gap G).
+    assert result == {"status": "processing", "stage": "source_pose"} and len(posed) == 1
+    assert posed[0]["review"]["job_object_rule"]["background_not_cleaned"] == "atlas_background_review_required"
 
 
 def _preparation(tmp_path, status="processing", minutes=15):

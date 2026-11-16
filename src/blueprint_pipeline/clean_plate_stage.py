@@ -417,6 +417,11 @@ def _run_clean_plate_stage(
             # Floored as not located on an earlier run: retried from the analysis it was floored from, never
             # from the floor's kept targets, which would key a new segmentation request and buy it again.
             retained_analysis = retained_analysis.get(FLOORED_FROM)
+            # The nested analysis is held to the same source and context binding as the plan it was kept in.
+            from .website_atlas_task_selection import _source_binding
+            if (not isinstance(retained_analysis, dict) or website_source_video is None or task_context is None
+                    or _source_binding(retained_analysis, task_context, website_source_video) is None):
+                raise ValueError("website_not_located_analysis_binding_changed")
         plan = retained_analysis if retained_analysis is not None else analyze_removal_targets(
             video_path=website_source_video or input_video_path, task_context=task_context,
             output_root=clean_plate_root / "gemini_analysis",

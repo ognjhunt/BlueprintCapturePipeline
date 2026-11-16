@@ -332,6 +332,55 @@ JOB_OBJECT_RECORD = "job_object_rule.json"
 NOT_APPLIED_FIELD = "planner_removals_not_applied"
 
 
+def _kept(review):
+    """The review with every object kept and no removal instruction: the scene as filmed."""
+    automation = review.get("automation") or {}
+    return {**review, "automation": {**automation, "removal_instruction": "", "objects": [
+        {**row, "disposition": "keep"} for row in automation.get("objects") or []]}}
+
+
+#: The editor could not take the planner's object out cleanly, decided once and read back on every later step.
+BACKGROUND_FLOOR_RECORD = "background_floor.json"
+#: Background stops that mean the object was not seen well enough to erase (default-deny: any other stop,
+#: money, a changed binding or an unsettled call, stays as it was). A review that never passed is one too.
+BACKGROUND_FLOOR_REASONS = frozenset({"atlas_removal_visibility_incomplete",
+                                      "atlas_object_mask_view_coverage_incomplete", "atlas_removal_masks_empty"})
+
+
+def background_floor(output_root: Path, review, task_context, automation=None):
+    """The review as filmed, carrying ``job_object_rule``, once the editor could not take the object out; else None.
+
+    Owner, 2026-11-16: what cannot be erased cleanly is not erased, and the room stays as filmed (the existing
+    as-filmed route, ``_preserved_scene``), its objects part of the scan. Never with people in view: a person
+    who must be erased and cannot be still stops the job. Sealed on the first such stop, so a later step
+    reads the decision without running the editor again. Only a website capture's own Atlas job, as for
+    ``job_object_review``.
+    """
+    from .owned_capture_atlas_context import SCHEMA as OWNED_SCHEMA
+    if (review.get("transient_frame_ids") or output_root.name != "atlas" or output_root.parent.name != "pipeline"
+            or task_context.get("schema_version") == OWNED_SCHEMA):
+        return None
+    path = output_root / BACKGROUND_FLOOR_RECORD
+    if path.is_file():
+        decided = json.loads(path.read_text())
+        if decided.get("digest") != canonical_digest(decided, digest_field="digest"):
+            raise ValueError("atlas_background_floor_record_invalid")
+    else:
+        background = (automation or {}).get("background") or {}
+        status, reason = (automation or {}).get("status"), background.get("reason")
+        if not (status == "quality_rejected" or (status == "needs_input" and reason in BACKGROUND_FLOOR_REASONS)):
+            return None
+        decided = {"schema_version": "atlas_background_floor.v1",
+                   "reason": reason if status == "needs_input" else "atlas_background_review_required",
+                   "planner_remove_count": sum(1 for row in (review.get("automation") or {}).get("objects") or []
+                                               if row.get("disposition") == "remove")}
+        decided["digest"] = canonical_digest(decided, digest_field="digest")
+        write_json(path, decided)
+    rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": decided["planner_remove_count"], "removed_count": 0,
+            "background_not_cleaned": decided["reason"]}
+    return {**_kept(review), "job_object_rule": rule}
+
+
 def job_object_review(output_root: Path, review, task_context):
     """The review as this job consumes it, and whether the decision waits for the clean plate.
 
@@ -360,8 +409,7 @@ def job_object_review(output_root: Path, review, task_context):
     if (not asked or output_root.name != "atlas" or output_root.parent.name != "pipeline"
             or task_context.get("schema_version") == OWNED_SCHEMA):
         return review, False
-    kept = {**review, "automation": {**automation, "removal_instruction": "", "objects": [
-        {**row, "disposition": "keep"} for row in automation["objects"]]}}
+    kept = _kept(review)
     path = output_root / JOB_OBJECT_RECORD
     if path.is_file():
         decided = json.loads(path.read_text())
@@ -1247,8 +1295,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     if waiting:
         # The clean plate names the job's own object; nothing is bought before it has.
         return {"status": "processing", "stage": "clean_plate_wait"}
-    if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS or "job_object_rule" in review:
-        # A preserved origin, or a job that brings no object of its own and shows nobody: the scene as filmed.
+
+    def as_filmed(review):
+        # A preserved origin, or a job whose object stays in the scan and shows nobody: the scene as filmed.
         from .atlas_source_gap_evidence import combine_source_surveys
         source_survey = combine_source_surveys(survey_paths=[
             (Path(feedback['parent_root']) / 'survey/atlas_video_survey.json'
@@ -1259,6 +1308,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             configuration=_current_configuration(task_context, source_digest, config), check=check,
             experimental=experimental, max_polls=max_polls, model=receipt["model"],
             source_survey_path=source_survey)
+    review = background_floor(output_root, review, task_context) or review
+    if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS or "job_object_rule" in review:
+        return as_filmed(review)
     if takes_reviewed_background(review):
         # The editor/reviewer works from source pixels. Atlas receives no RGB
         # until the complete cleaned set passes; do not buy a raw-scene pose or
@@ -1282,6 +1334,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             return automation
         if automation["status"] == "processing":
             return automation
+        floored = background_floor(output_root, review, task_context, automation)
+        if floored is not None:
+            # The object could not be taken out cleanly: it stays, and so does the rest of the room.
+            return as_filmed(floored)
         complete = automation["status"] == "completed"
         source_pose = None
         if complete:

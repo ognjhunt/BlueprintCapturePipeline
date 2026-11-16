@@ -517,6 +517,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         write_json(handoff_path, result)
         return result
 
+    def scan_taken_out() -> int:
+        # Whether the scan that ships lost anything: the Atlas result is the one source of truth. A scene kept
+        # as filmed (``preserves_capture``: a preserved origin, C1's rule, or the editor's floor taken after the
+        # sealed decision said the planner's removals would apply) erased nothing.
+        from .atlas_automation_plan import preserves_capture
+        return 0 if preserves_capture(atlas) else planner_removals_applied(capture_root)
+
     def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
                      flags: Sequence[str] = (), taken_out: int = 0) -> dict[str, Any]:
         # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
@@ -530,7 +537,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         flags = list(dict.fromkeys([*flags, *(atlas.get("flags") or [])]))
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
-                                    task_masks=masks, objects_in_scan=geometry_only, flags=flags,
+                                    task_masks=masks, objects_in_scan=geometry_only or in_scan, flags=flags,
                                     taken_out=taken_out)
         result.update(status=ROOM_PACKAGE, blockers=[], job_disposition="accepted",
                       geometry_backend=atlas["source_geometry"]["geometry_backend"],
@@ -590,6 +597,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # manifest performs no mask, authoring or provider work.
         if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
             raise ValueError("website_subject_origin_conflict")
+        # The editor could not take the job's object out cleanly, so the scene kept it as filmed
+        # (``website_atlas_pipeline.background_floor``): it is part of the room scan, never also built on its own.
+        in_scan = (bool((atlas.get("job_object_rule") or {}).get("background_not_cleaned"))
+                   and any(row.get("task_effect") == "manipulated" for row in removal.get("entries") or []))
+        if in_scan:
+            return room_package(context.get("task_family"))
         from .website_task_semantics import load_task_semantics
         source_video_digest = (atlas["source_geometry"].get("binding") or {}).get("source_video_digest")
         semantics = (load_task_semantics(job_dir=capture_root / "pipeline" / "atlas", task_context=context,
@@ -640,7 +653,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             # read. The room as filmed, flagged; a navigation job keeps its kind, with no goal region. If the
             # Atlas job had already sealed its planner's removals, the job's objects are out of the scan too.
             return room_package(resolved.profile_id if resolved is not None else None,
-                                {"targets": []} if navigation else None, taken_out=planner_removals_applied(capture_root))
+                                {"targets": []} if navigation else None, taken_out=scan_taken_out())
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile
