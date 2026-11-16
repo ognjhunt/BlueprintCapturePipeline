@@ -437,8 +437,6 @@ def _register_and_enqueue(*, target, preparation, stored, context_path, workspac
             code = ("website_preparation_renewal_capability_abstained" if verdict.get("status") == "abstained"
                     else "website_preparation_renewal_robot_fit_none"
                     if (native.get("robot_fit_precheck") or {}).get("status") == "no_fit"
-                    else "website_preparation_renewal_rigid_support_held"
-                    if (native.get("task_support_pad") or {}).get("hold_reason")
                     else "website_preparation_renewal_appearance_not_authored")
             _outcome(target, {**summary, **_native(native), "status": "held", "blockers": [code]})
             raise ValueError(code)

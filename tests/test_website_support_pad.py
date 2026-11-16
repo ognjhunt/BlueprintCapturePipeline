@@ -298,7 +298,7 @@ def test_something_on_the_support_under_the_start_holds_the_preparation_by_name(
     assert np.any(np.isclose(_points(record["derived_collider"]["path"])[:, 2], PLANE + 0.03))
 
 
-def test_the_handoff_holds_it_before_anything_is_registered_enqueued_or_paid(tmp_path, monkeypatch) -> None:
+def test_the_handoff_records_a_held_support_and_goes_on(tmp_path, monkeypatch) -> None:
     from blueprint_pipeline import website_native_background, website_object_observations
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.website_scene_handoff import prepare_rigid_native_inputs
@@ -329,9 +329,9 @@ def test_the_handoff_holds_it_before_anything_is_registered_enqueued_or_paid(tmp
         native_root=tmp_path / "native", task_context={}, now=0.0,
         runtime_inputs={"status": "ready", "digest": "sha256:" + "3" * 64,
                         "appearance": {"status": "native_appearance_authored"}, "collision": collision_record})
-    # Not admissible: nothing is registered or enqueued, so no ARTISAN authoring and no GPU follow. A hold.
-    assert admissible is False and result["status"] == "needs_input"
-    assert result["blockers"] == [record["hold_reason"]]
+    # Owner, 2026-11-16: a flag, never a stop. The job is registered and goes on with its record; the package
+    # says so, and the paid probe still refuses it (``rigid_support_pad.half_support_hold``).
+    assert admissible is True and result["status"] == "intake_ready" and result["blockers"] == []
     assert result["task_support_pad"] == {"status": "held", "scene_revision_collider": "planarized",
                                           "hold_reason": record["hold_reason"]}
     # A consistent support goes on.

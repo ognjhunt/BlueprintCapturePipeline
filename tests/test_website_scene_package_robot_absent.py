@@ -297,6 +297,24 @@ def test_the_arms_packet_failures(tmp_path, monkeypatch, case):
     assert (told["README.txt"] == plain["README.txt"]) is (case != "quality")
 
 
+@pytest.mark.parametrize(("reasons", "sentence"), [
+    (["rigid_support_goal_region_rest_outside_success_window"], "SUPPORT_REGION_NOT_HELD"),
+    (["rigid_support_start_tips_off_footprint_points"], "SUPPORT_NOT_HELD"),
+    (["rigid_support_goal_rest_outside_success_window:0.90000/[0.86668,0.87668]",
+      "rigid_support_goal_region_rest_outside_success_window"], "SUPPORT_NOT_HELD"),
+    ([], None)])
+def test_a_held_support_ships_and_the_readme_says_so_from_its_own_reasons(tmp_path, reasons, sentence):
+    """Owner, 2026-11-16: the support check is a flag. The package is built and says what the record says."""
+    plain = _publish_with_record(Job(tmp_path / "plain"))
+    told = _publish_with_record(Job(tmp_path / "told"), task_support_pad={
+        "status": "held" if reasons else "consistent", "reasons": reasons})
+    for name in ("SUPPORT_REGION_NOT_HELD", "SUPPORT_NOT_HELD"):
+        assert _said(told["README.txt"], getattr(sim, name)) is (name == sentence)
+    assert (told["README.txt"] == plain["README.txt"]) is (sentence is None)
+    assert (told["revision"] == plain["revision"]) is (sentence is None)
+    assert "simulat" not in getattr(sim, sentence or "SUPPORT_NOT_HELD").lower()
+
+
 def test_the_robot_access_raise_site_keeps_the_operating_system_error_as_its_cause(tmp_path, monkeypatch):
     from blueprint_pipeline import robot_access_furniture as furniture
     from blueprint_pipeline.team_scene_packet import _robot_access_applied

@@ -297,25 +297,30 @@ def company_zip(row: Mapping[str, Any], compiled: Mapping[str, Any], work: Path)
     status = next((job.queue / "status").glob("*.json"))
     record_path = Path(compiled["half_record_path"])
     feed = "website_compile:the compiled half's record"
-    moved = (row.get("zip") or {}).get("furniture_moved")
-    if moved:
+    zip_spec = row.get("zip") or {}
+    change: dict[str, Any] = {}
+    if zip_spec.get("furniture_moved"):
         # The compile's own furniture path needs a measurement and the site owner's sealed approval
-        # (tests/test_robot_access_furniture.py); here the half's sealed record is replaced with one carrying an
-        # applied removal.
+        # (tests/test_robot_access_furniture.py).
+        change["robot_access_removal"] = {"status": "applied", "station_after": {"stance_digest": "matrix"},
+                                          "items": [{"label": f"item {i}"} for i in range(zip_spec["furniture_moved"])]}
+        feed += (" + the half's sealed record replaced with one carrying an applied removal (the measurement and "
+                 "approval path is not built here)")
+    if zip_spec.get("support_held"):
+        # This fixture's support is unchecked; the CPU rest check's own reasons (``support_rest_check``) are named.
+        change["task_support_pad"] = {"status": "held", "reasons": list(zip_spec["support_held"])}
+        feed += " + the half's sealed record replaced with one whose support record is held for " + ",".join(
+            zip_spec["support_held"])
+    if change:
         from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
-        value = json.loads(record_path.read_text())
-        value["robot_access_removal"] = {"status": "applied", "station_after": {"stance_digest": "matrix"},
-                                         "items": [{"label": f"item {i}"} for i in range(moved)]}
-        value["inputs_digest"] = ""
+        value = {**json.loads(record_path.read_text()), **change, "inputs_digest": ""}
         value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
         # The compile seals its record read-only (0444): replace it as a new sealed file, never write through it
         # (only root could, which is why this passed as root and failed on CI's non-root runner).
         record_path.unlink()
         record_path.write_text(json.dumps(value))
         record_path.chmod(0o444)
-        feed += (" + the half's sealed record replaced with one carrying an applied removal (the measurement and "
-                 "approval path is not built here)")
     status.write_text(json.dumps({**json.loads(status.read_text()), "team_scene_inputs_path": str(record_path)}))
     world = World(job)
     published = world.publish()

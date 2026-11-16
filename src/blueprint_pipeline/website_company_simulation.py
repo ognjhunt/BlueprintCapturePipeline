@@ -117,6 +117,15 @@ FURNITURE_REMOVED = ("{count} movable item(s) the site agreed to move are not in
 #: The look file failed its quality gate (``team_scene_robot_absent.APPEARANCE_QUALITY``) and ships as it is.
 APPEARANCE_QUALITY_NOT_PASSED = ("The appearance file did not pass Blueprint's image quality check; it is included "
                                  "as it is.")
+#: The half's support record (``task_support_pad``, ``rigid_support_pad.support_rest_check``, read on the CPU) is
+#: ``held``, chosen by its typed reasons: only a corner of the destination region fails
+#: (``rigid_support_goal_region_rest_outside_success_window``), or else the start or the goal centre does. A CPU
+#: reading of the collider, never a simulator's.
+SUPPORT_REGION_NOT_HELD = ("At part of the destination area the surface in the collision file does not hold the "
+                           "object where the success rule counts it as placed: it would tip off an edge or rest "
+                           "higher or lower than the rule allows. Blueprint did not test this.")
+SUPPORT_NOT_HELD = ("Where the object starts or is placed, the surface in the collision file does not hold it as "
+                    "the success rule expects. Blueprint did not test this.")
 #: The stage-4 record a rigid website object passes (``task_object_artisan_candidate``, ``_usd_findings``).
 RIGID_STATIC_SCHEMA = "task_evaluation_rigid_replacement_static_qualification.v1"
 _USD = frozenset({".usd", ".usda", ".usdc", ".usdz"})
@@ -308,13 +317,18 @@ def _sealed_record(scene: Path, status: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
     """What the half's sealed record says the package must tell: furniture moved for the arm, a look file that
-    failed its quality gate. Empty for a half that has neither, so its package is as before."""
+    failed its quality gate, a support that does not hold the object. Empty for a half that has none of them, so
+    its package is as before."""
     record = _sealed_record(scene, status)
     access = record.get("robot_access_removal") if isinstance(record.get("robot_access_removal"), Mapping) else {}
     items = access.get("items") if access.get("status") == "applied" and access.get("station_after") else None
     absent = record.get("robot_station_absent") if isinstance(record.get("robot_station_absent"), Mapping) else {}
+    support = record.get("task_support_pad") if isinstance(record.get("task_support_pad"), Mapping) else {}
+    reasons = [str(reason) for reason in support.get("reasons") or []] if support.get("status") == "held" else []
     return {**({"removed_items": len(items)} if isinstance(items, list) and items else {}),
-            **({"appearance_quality": "not_passed"} if absent.get("appearance_quality") == "not_passed" else {})}
+            **({"appearance_quality": "not_passed"} if absent.get("appearance_quality") == "not_passed" else {}),
+            **({"support_not_held": "region" if set(reasons) == {"rigid_support_goal_region_rest_outside_success_window"}
+                else "start_or_goal"} if support.get("status") == "held" else {})}
 
 
 def _stage_documents(packet: Path, plan: Mapping[str, Any]) -> tuple[Any, Any]:
@@ -364,7 +378,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         "plan_digest": source.get("plan_digest") if source.get("refusal") else None,
         # Only a wording that differs from the packages before it names a new revision.
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
-        **{key: source[key] for key in ("removed_items", "appearance_quality") if source.get(key)}})
+        **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held") if source.get(key)}})
 
 
 # --- what must never leave --------------------------------------------------------------------------------------
@@ -731,7 +745,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
 
     notes = [*(PHYSICS_CHECK_WORDS.get(source.get("physics_check")) or ()),
              *([FURNITURE_REMOVED.format(count=source["removed_items"])] if source.get("removed_items") else []),
-             *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else [])]
+             *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else []),
+             *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
+               if source.get("support_not_held") else [])]
     lines += textwrap.wrap(" ".join(notes), width=100) if notes else []
     if (source.get("rule") or {}).get("object_estimates_from_video"):
         lines.append("The object's mass and friction in success_rule.json are ranges estimated from the video.")

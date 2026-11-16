@@ -31,7 +31,8 @@ No row is end to end: the scene chain and the website compile run on different f
 says so under its table. The articulated row runs the real `prepare_construction_stages` with stage 3 replaced by a
 stand-in articulated record (no articulated website fixture exists), so its stage validation is not run.
 "no-clear-stance" and "look-file-quality-gate" are forced through the package's own test helpers; for
-"furniture-moved", the half's sealed record is replaced with one carrying an applied removal. They test the package's
+"furniture-moved" and "held-support-ships-with-the-flag", the half's sealed record is replaced with one carrying
+an applied removal, or a held support record. They test the package's
 reaction, not how a job gets there.
 
 ## What it cannot show
@@ -64,6 +65,6 @@ Add a row to `tests/fixtures/job_matrix_v1.json`: `label` (what it tests), `kind
 `steps`), optional `front_half` and `downstream` replay record ids, `scene` (`host_chain`, `destination`,
 `articulated`, `isaac` or `none`), `compile` (`strategy`; `stage_5`: `not_run`, `not_run_static_passed`,
 `not_run_claiming_isaac`, `isaac_qualified` (the fixture's own passed Isaac record, saying Isaac ran) or `fixture`; `case`: `default`, `no_stance`, `quality_gate` or `owner`), optional `zip`
-(`furniture_moved`), and `expected`: `last_stage` and any of `kind`, `code`, `zip_built`, `readme_variant`, `readme_sha256`,
+(`furniture_moved`, or `support_held`: the support record's typed reasons), and `expected`: `last_stage` and any of `kind`, `code`, `zip_built`, `readme_variant`, `readme_sha256`,
 `robot_station_absent`, `physics_authority`, `physics_check`, `robot_free_probe`, `assumed_thresholds`. Change a
 row's `expected` only with the change that moves it.

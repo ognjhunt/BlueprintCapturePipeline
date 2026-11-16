@@ -158,9 +158,9 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
     handoff and a renewal re-issue
     (``website_preparation_renewal``) share it, so the inputs bound to a
     preparation's digest cannot drift between them. Records into ``result``
-    and returns whether the preparation may be registered: intake ready,
-    appearance authored and no support hold. The capability verdict is
-    recorded and never holds the job.
+    and returns whether the preparation may be registered: intake ready and
+    appearance authored. The capability verdict and the support record are
+    recorded and never hold the job.
     """
     if runtime_inputs is None:
         runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base_scene,
@@ -195,7 +195,6 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
         construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
     write_json(native_root / "construction_inputs.json", construction)
     result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
-    held = False
     if preparation["status"] == "intake_ready":
         from .usd_binary_read_cache import read_scope
         collision = Path(runtime_inputs["collision"]["path"])
@@ -214,13 +213,10 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
                 # An abstained verdict (no enabled arm, no clear stance found, or the object beyond reach
                 # from every stance it found) is a judgement about the outcome: recorded, never a stop. It
                 # travels as ``scene_estimate:capability_unassessed`` (``atlas_scene_estimates``).
-        if isinstance(support_hold, str):
-            # The object cannot rest where it is scored on the collider the scene would seal: no stage of it
-            # can be scored, so nothing is registered, enqueued or paid for (``website_support_pad``).
-            held = True
-            prior = list(result.get("blockers") or []) if result.get("status") == "needs_input" else []
-            result.update(status="needs_input", blockers=prior + [support_hold])
-    return preparation["status"] == "intake_ready" and not held
+        # A support on which the object cannot rest everywhere it is counted as placed is recorded, never a
+        # stop (owner, 2026-11-16): the package says so (``website_company_simulation``), and the paid
+        # robot-free probe still refuses it (``rigid_support_pad.half_support_hold``).
+    return preparation["status"] == "intake_ready"
 
 
 #: Where a run keeps the records a base scene from an earlier Atlas result named (``retain_superseded_records``).
