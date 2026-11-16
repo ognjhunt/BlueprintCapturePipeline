@@ -261,6 +261,7 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert calls[0]['scene_caption'] == proposal['scene_caption']
     assert feedback['original_capture_gallery']['reviewed_source_frame_ids'] == ['a', 'b', 'unselected-angle']
     assert report['source_evidence']['source_coverage_is_not_depth_coverage'] is True
+    assert report['remaining_unknowns'] == proposal['remaining_unknowns']  # every gap filmed: as on main
     if context_basis == 'preserved_capture':
         assert feedback['input_basis'] == 'preserved_capture_context_with_estimated_depth'
         assert json.loads((tmp_path / 'complete/survey.json').read_text())['content_basis'] == 'preserved_capture_context'
@@ -277,8 +278,9 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert output is None and source_action['status'] == 'source_recovery_required'
     assert source_action['source_evidence']['additional_source_frame_ids'] == ['unselected-angle']
     assert source_action['new_atlas_generation_calls'] == 0 and len(calls) == 1
-    # What the footage does not show is flagged and left unfilled, never generated and never a
-    # stop. A job stopped on it before (the stored stop below, no mask written) is decided afresh.
+    # A gap the footage does not show is generated like any other, from the real photographs sent
+    # with the request, and the record says it was not filmed. A job stopped on it before (the
+    # stored stop below) is decided afresh.
     resume = {**args, 'root': tmp_path / 'resume'}
     (tmp_path / 'resume').mkdir()
     (tmp_path / 'resume/source-action.json').write_text(json.dumps({
@@ -286,17 +288,15 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
         'reason': 'atlas_source_visibility_uncertain', 'new_atlas_generation_calls': 0}))
     first, second = proposal['view_gap_reasons']
     first['source_evidence'][0].update(visibility='uncertain', source_frame_ids=[])
+    second['source_evidence'][0].update(visibility='observed_in_conditioning', source_frame_ids=['a'])
     output, flagged = completion.complete_scene(**resume)
-    unfilmed = f"{first['gap_ids'][0]}: not filmed; left unfilled, nothing generated"
     assert flagged['status'] == 'passed' and len(calls) == 2
-    assert [row['camera_id'] for row in calls[1]['selected']] == [second['camera_id']]
-    assert calls[1]['selected'][0]['completion_gap_ids'] == second['gap_ids']
-    assert unfilmed in flagged['remaining_unknowns'] and flagged['whole_scene_complete'] is False
-    second['source_evidence'][0].update(visibility='uncertain', source_frame_ids=[])
-    output, flagged = completion.complete_scene(**resume)
-    assert output == [] and flagged['status'] == 'passed' and len(calls) == 2
-    assert flagged['review']['reason'] == 'source_review_left_unfilmed_gaps_unfilled'
-    assert unfilmed in flagged['remaining_unknowns'] and flagged['new_atlas_generation_calls'] == 0
+    assert [row['camera_id'] for row in calls[1]['selected']] == proposal['selected_camera_ids']
+    assert [row['completion_gap_ids'] for row in calls[1]['selected']] == [first['gap_ids'], second['gap_ids']]
+    assert [f['frame_id'] for f in calls[1]['frames']] == ['a', 'b']  # the real photographs go with it
+    assert flagged['remaining_unknowns'] == [*proposal['remaining_unknowns'],
+        f"{first['gap_ids'][0]}: not filmed; generated from the surrounding footage"]
+    assert flagged['whole_scene_complete'] is False
     for entry in proposal['view_gap_reasons']:
         entry['source_evidence'][0].update(visibility='physical_opening', source_frame_ids=['a'])
     output, openings = completion.complete_scene(**args)

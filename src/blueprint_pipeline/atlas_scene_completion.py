@@ -407,6 +407,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         raise ValueError('atlas_completion_task_gap_plan_missing')
     audit = source_actions(entries, gallery)
     write_json(root / 'source-evidence.json', audit)
+    # A gap the footage does not show is generated like any other, from the real photographs,
+    # depth and cameras sent with every request; the record says it was not filmed.
     if audit['additional_source_frame_ids']:
         report = {'schema_version': 'atlas_source_gap_action.v1', 'status': 'source_recovery_required',
                   'reason': 'atlas_recorded_source_views_must_be_recovered_before_generation',
@@ -415,14 +417,10 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'source-action.json', report)
         return None, report
-    # Empty space is not missing material, and what the footage does not show is not
-    # made up: keep both kinds of gap's evidence and leave them out of the masks handed
-    # to the generation adapter. An unfilmed gap is flagged, never generated, never a stop.
-    unfilmed = audit['unresolved_gap_ids']
-    unknowns = [*proposal['remaining_unknowns'],
-                *(f'{key}: not filmed; left unfilled, nothing generated' for key in unfilmed)]
-    entries = [{**row, 'gap_ids': [key for key in row['gap_ids'] if key not in unfilmed
-                 and key not in audit['physical_opening_gap_ids'].get(row['camera_id'], [])]}
+    # Empty space is not missing material. Keep its evidence and exclude it
+    # from the actual masks handed to the generation adapter.
+    entries = [{**row, 'gap_ids': [key for key in row['gap_ids']
+                 if key not in audit['physical_opening_gap_ids'].get(row['camera_id'], [])]}
                for row in entries]
     entries = [row for row in entries if row['gap_ids']]
     ids = [row['camera_id'] for row in entries]
@@ -432,9 +430,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         report = {'status': 'passed', 'generation_result_digest': audit['digest'],
                   'generated_roots': [], 'generated_frame_ids': [], 'planner': planned,
                   'preservation_paths': [str(root / 'source-evidence.json')],
-                  'review': {'status': 'not_required', 'reason': ('source_review_left_unfilmed_gaps_unfilled'
-                             if unfilmed else 'source_review_found_physical_openings')},
-                  'source_evidence': audit, 'new_atlas_generation_calls': 0, 'remaining_unknowns': unknowns,
+                  'review': {'status': 'not_required', 'reason': 'source_review_found_physical_openings'},
+                  'source_evidence': audit, 'new_atlas_generation_calls': 0,
                   'generated_geometry_ready': True, 'whole_scene_complete': False,
                   'claim_ceiling': 'development_only', **binding}
         report['digest'] = canonical_digest(report, digest_field='digest')
@@ -495,7 +492,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "preservation_paths": [*generation["preservation_paths"], str(root / 'source-evidence.json')],
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
               "selected_camera_ids": ids, "target_cameras": [row["camera"] for row in selected],
-              "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": unknowns,
+              "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": [
+                  *proposal["remaining_unknowns"], *(f'{key}: not filmed; generated from the surrounding footage'
+                                                     for key in audit['unresolved_gap_ids'])],
               "environment_surfaces": proposal.get("environment_surfaces", []),
               "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "identified_missing_geometry_only",
               'gap_survey_digest': gaps['digest'],
