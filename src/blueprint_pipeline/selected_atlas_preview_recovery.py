@@ -79,6 +79,13 @@ def _equal_cost(left, right):
     return abs(left - right) < 0.000001
 
 
+def _accounted_as_website(accounted, cost):
+    """A row's accounted figure is its cost rounded up to the micro-dollar by the website's own rule
+    (``Math.ceil(cost * 1_000_000) / 1_000_000``, websitePreparationAccounting.ts). The float product can
+    carry it one micro-dollar up: job itest-7c42's 0.031696 is accounted 0.031697, 1.000000000001e-06 apart."""
+    return _equal_cost(accounted, cost) or accounted == math.ceil(cost * 1_000_000) / 1_000_000
+
+
 def _normalized_source(job, row, capture_root, storage_root):
     """The normalized copy's digest, when this upload's normalization record names the job's file."""
     from .website_source_video import read_record
@@ -141,7 +148,7 @@ def _accounting(value, *, native=False):
              and value["source_scope"] == scope
              and value["external_capture_assessment_costs"] == "not_in_preparation_ledger"
              and all(_number(value[key], integer=key == "request_count") for key in totals)
-             and type(value["reservations"]) is list and len(value["reservations"]) <= 128, "accounting_invalid")
+             and type(value["reservations"]) is list and len(value["reservations"]) <= 128, "accounting_invalid_summary")
     row_keys = {"allocation_binding_digest", "provider", "maximum_cost_usd", "settled_cost_usd",
                 "accounted_cost_usd", "request_count", "status", "task_context_digest", "source_video_digest",
                 "atlas_authorization_digest", "settlement_digest"}
@@ -157,20 +164,20 @@ def _accounting(value, *, native=False):
                          for key in ("allocation_binding_digest", "task_context_digest"))
                  and all(row[key] is None or type(row[key]) is str and _SHA.fullmatch(row[key])
                          for key in ("source_video_digest", "atlas_authorization_digest", "settlement_digest")),
-                 "accounting_invalid")
+                 "accounting_invalid_row_shape")
         settled = row["status"] == "settled"
         _require(settled == (row["settled_cost_usd"] is not None)
-                 and settled == (row["settlement_digest"] is not None)
-                 and _equal_cost(row["accounted_cost_usd"],
-                                 row["settled_cost_usd"] if settled else row["maximum_cost_usd"]),
-                 "accounting_invalid")
+                 and settled == (row["settlement_digest"] is not None), "accounting_invalid_row_state")
+        _require(_accounted_as_website(row["accounted_cost_usd"],
+                                       row["settled_cost_usd"] if settled else row["maximum_cost_usd"]),
+                 "accounting_invalid_row_cost")
     rows = value["reservations"]
-    _require(len({row["allocation_binding_digest"] for row in rows}) == len(rows)
-             and value["request_count"] == sum(row["request_count"] for row in rows)
-             and _equal_cost(value["reserved_or_settled_cost_usd"], sum(row["accounted_cost_usd"] for row in rows))
+    _require(len({row["allocation_binding_digest"] for row in rows}) == len(rows), "accounting_invalid_duplicate_row")
+    _require(value["request_count"] == sum(row["request_count"] for row in rows), "accounting_invalid_request_total")
+    _require(_equal_cost(value["reserved_or_settled_cost_usd"], sum(row["accounted_cost_usd"] for row in rows))
              and _equal_cost(value["held_cost_usd"], sum(row["accounted_cost_usd"] for row in rows if row["status"] == "held"))
              and _equal_cost(value["settled_cost_usd"], sum(row["accounted_cost_usd"] for row in rows if row["status"] == "settled")),
-             "accounting_invalid")
+             "accounting_invalid_cost_total")
     # Row order is not accounting truth and must not invalidate a reviewed snapshot.
     return {**value, "reservations": sorted(value["reservations"], key=lambda row: row["allocation_binding_digest"])}
 
@@ -370,11 +377,11 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
             config.get("capture_inference_accounting"), request_id=observation["request_id"],
             capture_id=selection["capture_id"], source_video_digest=source["video_sha256"])
         _require(len(value["allowance_accounting"]["reservations"])
-                 + len(value["native_preparation_accounting"]["reservations"]) <= 128, "accounting_invalid")
+                 + len(value["native_preparation_accounting"]["reservations"]) <= 128, "accounting_invalid_row_limit")
         atlas_rows = value["allowance_accounting"]["reservations"]
         native_rows = value["native_preparation_accounting"]["reservations"]
         _require(not ({row["allocation_binding_digest"] for row in atlas_rows}
-                      & {row["allocation_binding_digest"] for row in native_rows}), "accounting_invalid")
+                      & {row["allocation_binding_digest"] for row in native_rows}), "accounting_invalid_ledger_overlap")
         _require(_equal_cost(config["reserved_or_settled_cost_usd"],
                              value["allowance_accounting"]["reserved_or_settled_cost_usd"])
                  and _equal_cost(config["remaining_cost_usd"], max(
