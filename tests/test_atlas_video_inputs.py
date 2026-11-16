@@ -721,3 +721,47 @@ def test_a_left_out_view_survives_the_next_tick_and_an_unrecorded_one_does_not(t
     plan_path.write_text(json.dumps({**tampered, "input_digest": inputs["digest"]}))
     with pytest.raises(ValueError, match="atlas_retained_video_inputs_invalid"):
         video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
+
+
+def _rewrite_retained(root, *, inputs_change=None, plan_change=None):
+    """Rewrite the retained handoff the way an edit would, with the inputs digest and the plan's binding rebound."""
+    inputs_path, plan_path = root / video.GEOMETRY_INPUTS_FILE, root / "atlas_view_selection.json"
+    inputs, plan = json.loads(inputs_path.read_text()), json.loads(plan_path.read_text())
+    if inputs_change:
+        inputs_change(inputs)
+        inputs["digest"] = canonical_digest(inputs, digest_field="digest")
+        inputs_path.write_text(json.dumps(inputs))
+    if plan_change:
+        plan_change(plan)
+    plan["input_digest"] = inputs["digest"]
+    plan_path.write_text(json.dumps(plan))
+
+
+def _record_left_out(frame_id, label, decision):
+    def inputs_change(inputs):
+        inputs["left_out_frame_ids"] = [*inputs["left_out_frame_ids"], frame_id]
+
+    def plan_change(plan):
+        plan["diagnostics"].append({"frame_id": frame_id, "label": label, "decision": decision})
+    return {"inputs_change": inputs_change, "plan_change": plan_change}
+
+
+def _claim_surroundings_connected(plan):
+    plan["diagnostics"] = [row for row in plan["diagnostics"] if row.get("decision") != video.SURROUNDINGS_NOT_CONNECTED]
+    plan["task_and_surrounding_scene_covered"] = True
+
+
+@pytest.mark.parametrize("gap_role, edit", [
+    # A frame the inputs still send to the provider, named left out in both records.
+    ("support_surface", _record_left_out("0", "room", "surrounding_scene_unconnected")),
+    # A frame no review names, named left out in both records.
+    ("support_surface", _record_left_out("9", "x", "surrounding_scene_unconnected")),
+    # No surrounding frame kept, and the plan edited to stop saying none connected (and to claim covered).
+    ("surrounding_scene", {"plan_change": _claim_surroundings_connected}),
+])
+def test_a_retained_record_edited_after_the_fact_is_refused(tmp_path, monkeypatch, gap_role, edit):
+    survey_path, review = _left_out_job(tmp_path, monkeypatch, gap_role)
+    video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
+    _rewrite_retained(tmp_path / "pose", **edit)
+    with pytest.raises(ValueError, match="atlas_retained_video_inputs_invalid"):
+        video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")

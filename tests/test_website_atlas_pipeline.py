@@ -55,6 +55,11 @@ def test_generated_depth_targets_keep_task_and_room_and_never_extrapolate_source
     request = generation_request(pose=pose, inputs={"frames": [{"frame_id": "task"}, {"frame_id": "room"}]},
                                  review=review)
     assert [r["extrinsics"]["position"] for r in request["targetCameras"]] == [[0, 0, 0], [1, 0, 0]]
+    # The pre-pose price check counts exactly these targets: never the left-out frame, never fewer than generated.
+    from blueprint_pipeline.website_atlas_pipeline import generation_target_ids
+    kept = {"frames": [{"frame_id": "task"}, {"frame_id": "room"}]}
+    assert generation_target_ids(review=review, inputs=kept) == ["task", "room"]
+    assert len(generation_target_ids(review=review, inputs=kept)) == len(request["targetCameras"])
 
 
 def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_review(tmp_path, monkeypatch):
@@ -813,3 +818,83 @@ def test_a_job_with_a_left_out_view_reaches_the_background_editor_over_several_t
     monkeypatch.setattr(video_inputs, "_features", lambda *_: pytest.fail("tick 2 re-ran the selection"))
     assert pipeline.run_atlas_pipeline(**options)["status"] == "processing"
     assert ticks == [["5"], ["5"]] and len(edited) == 1 and "5" not in edited[0] and "2" in edited[0]
+
+
+def test_the_pre_pose_price_counts_only_the_posed_targets_over_two_ticks(tmp_path, monkeypatch):
+    """Reviewed frames 0, 1 and 5; the selection poses ten views and left 5 out. The review's own hold (all three
+    reviewed targets) fits a 0.22 budget; before the pose, ten inputs and the two posed targets cost 0.20, while
+    counting the left-out frame (0.25) would refuse a job that never poses it. Tick 1 buys the pose, tick 2
+    generates exactly the two targets the price counted."""
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
+    from blueprint_pipeline import atlas_video_extension as extension, paid_resource_allocator as allocator
+    from blueprint_pipeline import atlas_result_bundle as bundles, atlas_depth_splat as depth_splat
+    from blueprint_pipeline import website_atlas_pose as pose_api, atlas_mesh_registration as mesh_registration
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    POSED = ["0", "1", "2", "3", "4", "6", "7", "8", "9", "10"]  # noqa: N806 - the ten posed views
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "test-non-secret"))
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"immutable test capture")
+    root = tmp_path / "job"
+    policy = {"model": "gpt-6.1-sol", "maximum_review_cost_usd": .5, "pose_input_cost_usd": .01,
+              "rgbd_view_cost_usd": .05, "rate_card_reference": "https://example.test/rates", "reviewed_by": "test",
+              "reviewed_on": _reviewed_today()}
+    config = {"authority": {"provider_retention": "project_library_retention_approved"}, "policy": policy,
+              "remaining_cost_usd": 1.22}
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: config)
+
+    def survey(**kwargs):
+        path = kwargs["output_root"]
+        (path / "source").mkdir(parents=True)
+        (path / "source/decoded_observation_index.json").write_text("{}")
+        (path / "atlas_video_survey.json").write_text(json.dumps({"source_video_digest": pipeline._sha256_file(video),
+            "frames": [{"frame_id": str(i), "timestamp_seconds": i} for i in range(11)], "digest": "base"}))
+    monkeypatch.setattr(inputs, "survey_video", survey)
+    proposal = {"status": "proposed", "scene_state": "a shelf", "static_intervals_seconds": [[0, 10.5]],
+        "anchor_frame_id": "1", "coverage_requirements": [
+            {"role": "task_object", "label": "object", "required_frame_ids": ["1"]},
+            {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["0", "5"]}],
+        "unsafe_frame_ids": [], "uncaptured_regions": [], "summary": "reviewed",
+        "selection_policy": {"minimum_sharpness": 20, "maximum_clipped_fraction": .5, "minimum_overlap_inliers": 24}}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_plan",
+                        lambda **kw: {"proposal": proposal, "model": policy["model"]})
+    def extend(**kwargs):
+        kwargs["output_root"].mkdir()
+        value = json.loads(kwargs["base_survey"].read_text())
+        (kwargs["output_root"] / "atlas_video_survey.json").write_text(json.dumps({**value, "digest": "extended"}))
+    monkeypatch.setattr(extension, "extend_survey", extend)
+    monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **kw: {
+        "frames": [{"frame_id": key} for key in POSED], "left_out_frame_ids": ["5"]})
+    poses, generated = [], []
+
+    def pose(**kwargs):
+        poses.append(1)
+        if len(poses) == 1:
+            return {"status": "processing", "operation_id": "pose"}
+        value = {"operation": {"id": "pose", "done": True, "response": {"frames": [frame(i) for i in range(len(POSED))]}}}
+        value["digest"] = canonical_digest(value, digest_field="digest")
+        (kwargs["output_root"] / "atlas_posed_rgbd_result.json").write_text(json.dumps(value))
+        return {"status": "completed", "operation_id": "pose"}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", pose)
+
+    def generate(**kwargs):
+        generated.append(len(kwargs["request"]["targetCameras"]))
+        assert kwargs["price_review"]["maximum_cost_usd"] == .1  # the two posed targets, as priced
+        return {"status": "completed", "digest": "generated"}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_task", generate)
+
+    def splat(pose_root, splat_root):
+        splat_root.mkdir(parents=True)
+        manifest = {"splat_kind": "depth_fused_draft"}
+        manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+        (splat_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest))
+        return manifest
+    monkeypatch.setattr(depth_splat, "build_depth_splat", splat)
+    monkeypatch.setattr(depth_splat, "load_posed_rgbd", lambda path: (
+        json.loads((path / "atlas_posed_rgbd_result.json").read_text()), [{"frame_id": "0"}, {"frame_id": "1"}]))
+    monkeypatch.setattr(mesh_registration, "register_atlas_mesh", lambda **kw: None)
+    monkeypatch.setattr(bundles, "export_pose_bundle", lambda **kw: {"zip_path": "retained.zip"})
+    options = {"source_video": video, "output_root": root, "task_context": {"capture_id": "c", "context_digest": "task"},
+               "checkpoint": lambda *_: None}
+    assert pipeline.run_atlas_pipeline(**options)["stage"] == "pose"
+    result = pipeline.run_atlas_pipeline(**options)
+    assert len(poses) == 2 and generated == [2] and result["splat_available"] is True
