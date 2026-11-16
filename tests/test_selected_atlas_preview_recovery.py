@@ -752,3 +752,24 @@ def test_status_shows_a_splat_rebuild_and_retry_requests_it_only_within_the_allo
     assert after["state"] == "processing" and after["retries"][-1]["reason"] == "refined_splat_rebuild_requested"
     request = json.loads((site.atlas / rebuilds.REQUEST_FILE).read_text())
     assert request["parent_result_digest"] == result["digest"]
+
+
+@pytest.mark.parametrize("accounted, refusal", [(0.031697, None), (0.031696, None),
+                                                (0.031698, "selected_handoff_atlas_accounting_invalid_row_cost")])
+def test_a_settled_cost_the_website_rounded_up_one_micro_dollar_is_accepted(site, accounted, refusal):
+    # Job itest-7c42 (2026-11-16): a repair plan settled at 0.031696 USD. The website accounts it as
+    # Math.ceil(0.031696 * 1_000_000) / 1_000_000 = 0.031697 (the product is 31696.000000000004), which the
+    # old check (|accounted - settled| < 0.000001) refused by 1.000000000001e-06, so the job could not be retried.
+    accounting = site.config["allowance_accounting"]
+    settled = accounting["reservations"][0]
+    settled.update(provider="openai", maximum_cost_usd=0.5, settled_cost_usd=0.031696, accounted_cost_usd=accounted)
+    accounting.update(settled_cost_usd=accounted, reserved_or_settled_cost_usd=accounted + 0.5)
+    site.config.update(reserved_or_settled_cost_usd=accounted + 0.5, remaining_cost_usd=25 - (accounted + 0.5))
+    if refusal is None:
+        assert recover(site)["atlas"]["allowance_accounting"]["reserved_or_settled_cost_usd"] == accounted + 0.5
+        return
+    before = site.job_path.read_bytes()
+    with pytest.raises(ValueError) as failure:
+        recover(site)
+    # The refusal names the check that failed, with no amount or digest in it.
+    assert str(failure.value) == refusal and site.job_path.read_bytes() == before
