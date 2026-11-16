@@ -124,9 +124,9 @@ def test_the_default_install_leaves_upstream_s_anthropic_adapter_alone(upstream)
         install_metering(upstream.meter, "google")
 
 
-def test_a_messages_call_is_bounded_counted_and_priced_at_the_served_model(upstream):
-    install_metering(upstream.meter, "anthropic")
-    upstream.llm.replies = [_response()]
+def test_a_messages_call_is_bounded_counted_and_priced_at_the_served_model(upstream, tmp_path):
+    install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=1.1)
+    upstream.llm.replies = [_response()]  # its usage names no region
     response = asyncio.run(upstream.llm()._create_message(dict(PAYLOAD)))
     assert response.id == "msg_fixture"
     (count_kind, counted), (create_kind, sent) = upstream.seen
@@ -134,17 +134,24 @@ def test_a_messages_call_is_bounded_counted_and_priced_at_the_served_model(upstr
     assert counted == {**{k: v for k, v in PAYLOAD.items() if k != "max_tokens"},
                        "betas": ["thinking-binding-controls-2026-08-01"]}
     # $1 less 1000 input tokens at the dearer rate that can apply (the 5-minute cache write, $5/M), at $20/M
-    # output, is 49,750 tokens. Pinned to US-only inference (no uplift was given to this meter); standard
+    # output, both with the 1.1x US uplift, is 45,204 tokens. Pinned to US-only inference; standard
     # capacity only, as a Priority Tier answer would be priced above the bound.
-    assert sent == {**PAYLOAD, "inference_geo": "us", "max_tokens": 49_750, "service_tier": "standard_only"}
+    assert sent == {**PAYLOAD, "inference_geo": "us", "max_tokens": 45_204, "service_tier": "standard_only"}
     [row] = upstream.meter.read()["calls"]
     assert row["status"] == "priced" and row["kind"] == "messages" and row["model"] == "claude-opus-5-5"
-    assert row["cost_usd"] == pytest.approx((1000 * 4 + 100 * 20) / 1_000_000)
+    # What was asked decides the price: a response naming no region is priced as the US request it was.
+    cost = (1000 * 4 + 100 * 20) / 1_000_000 * 1.1
+    assert row["cost_usd"] == pytest.approx(cost) and upstream.meter.remaining() == pytest.approx(1.0 - cost)
     assert row["cost_origin"] == "upstream_priced_usage" and "failure" not in row
+    # ... and the month settles at it.
+    from blueprint_pipeline import artisan_anthropic_month as month
+    from tests.test_artisan_anthropic_month import _archive
+    archive = _archive(tmp_path / "out.zip", upstream.meter.read()["calls"])
+    assert month.metered_anthropic_subtotal(archive) == pytest.approx(cost, abs=1e-6)
 
 
 def test_the_request_s_own_max_tokens_is_kept_when_it_fits(upstream):
-    install_metering(upstream.meter, "anthropic")
+    install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=1.1)
     upstream.llm.replies = [_response()]
     asyncio.run(upstream.llm(betas=())._create_message({**PAYLOAD, "max_tokens": 4096}))
     assert upstream.seen[0][1].keys() == {k for k in PAYLOAD if k != "max_tokens"}
@@ -154,14 +161,15 @@ def test_the_request_s_own_max_tokens_is_kept_when_it_fits(upstream):
 @pytest.mark.parametrize("response", [_response(model="claude-unpriced"),
                                       _response(iterations=[SimpleNamespace(type="compaction")])])
 def test_an_unpriced_model_or_an_itemized_server_step_needs_reconciliation(upstream, response):
-    install_metering(upstream.meter, "anthropic")
+    install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=1.1)
     upstream.llm.replies = [response]
     with pytest.raises(RuntimeError, match="artisan_unknown_charge_requires_reconciliation"):
         asyncio.run(upstream.llm()._create_message(dict(PAYLOAD)))
     assert upstream.meter.read()["calls"][0]["status"] == "reconciliation_required"
 
 
-_BOUND = (1000 * 5 + 49_750 * 20) / 1_000_000
+_BOUND = (1000 * 5 * 1.1 + 45_204 * 20 * 1.1) / 1_000_000
+_UNPINNED_BOUND = (1000 * 5 + 49_750 * 20) / 1_000_000
 
 
 @pytest.mark.parametrize("response", [
@@ -169,10 +177,10 @@ _BOUND = (1000 * 5 + 49_750 * 20) / 1_000_000
     _response(inference_geo="eu"),           # a region the price does not know
     _response(speed="fast"),
     _response(service_tier="priority"),
-    _response(inference_geo="us"),           # the uplift is unknown to this meter (none was given)
+    _response(inference_geo="global"),       # contradicts the US pin
 ])
 def test_e_m2_s3_an_unpriceable_response_is_counted_at_its_bound_for_reconciliation(upstream, response):
-    install_metering(upstream.meter, "anthropic")
+    install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=1.1)
     upstream.llm.replies = [response]
     asyncio.run(upstream.llm()._create_message(dict(PAYLOAD)))
     [row] = upstream.meter.read()["calls"]
@@ -183,23 +191,31 @@ def test_e_m2_s3_an_unpriceable_response_is_counted_at_its_bound_for_reconciliat
 
 def test_e_s3_the_us_region_is_priced_with_the_frozen_uplift(upstream):
     install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=1.1)
-    upstream.llm.replies = [_response(inference_geo="us"), _response(inference_geo="global")]
+    upstream.llm.replies = [_response(inference_geo="us"), _response()]  # named "us", or no region named
     for _ in range(2):
         asyncio.run(upstream.llm()._create_message(dict(PAYLOAD)))
-    us, standard = upstream.meter.read()["calls"]
-    assert us["cost_usd"] == pytest.approx((1000 * 4 + 100 * 20) / 1_000_000 * 1.1)
-    assert standard["cost_usd"] == pytest.approx((1000 * 4 + 100 * 20) / 1_000_000)
+    for row in upstream.meter.read()["calls"]:
+        assert row["cost_usd"] == pytest.approx((1000 * 4 + 100 * 20) / 1_000_000 * 1.1)
+        assert row["cost_origin"] == "upstream_priced_usage"
+
+
+@pytest.mark.parametrize("multiplier", [None, True, "1.1", 0.9, float("nan"), float("inf")])
+def test_a_us_pinned_meter_without_its_multiplier_is_refused_before_any_call(upstream, multiplier):
+    original = upstream.llm._create_message
+    with pytest.raises(RuntimeError, match="artisan_anthropic_us_multiplier_unavailable"):
+        install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=multiplier)
+    assert upstream.llm._create_message is original and upstream.seen == [] and upstream.meter.read()["calls"] == []
 
 
 def test_server_compaction_is_refused_before_any_request(upstream):
-    install_metering(upstream.meter, "anthropic")
+    install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=1.1)
     with pytest.raises(RuntimeError, match="artisan_anthropic_compaction_unmetered"):
         asyncio.run(upstream.llm()._create_message({**PAYLOAD, "context_management": {"edits": []}}))
     assert upstream.seen == [] and upstream.meter.read()["calls"] == []
 
 
 def test_a_refusal_for_lack_of_funds_is_no_charge_and_not_retried(upstream):
-    install_metering(upstream.meter, "anthropic")
+    install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=1.1)
     error = _UpstreamError(402)
     error.__cause__ = _SDKError(402, "billing_error")
     upstream.llm.replies = [error]
@@ -216,7 +232,7 @@ def test_a_refusal_for_lack_of_funds_is_no_charge_and_not_retried(upstream):
 
 
 def test_other_failures_settle_as_before_and_reach_upstream_s_retry_unchanged(upstream):
-    install_metering(upstream.meter, "anthropic")
+    install_metering(upstream.meter, "anthropic", us_inference_geo_multiplier=1.1)
     rate_limited = _UpstreamError(429)
     rate_limited.__cause__ = _SDKError(429, "rate_limit_error")
     server = _UpstreamError(529)
@@ -506,7 +522,7 @@ def test_the_input_side_of_the_bound_carries_the_uplift_too(upstream):
 
 @pytest.mark.parametrize("geo, allowed, cost", [
     ("us", 45_204, (1000 * 4 + 100 * 20) / 1_000_000 * 1.1),  # pinned: bounded and priced with the uplift
-    (None, 49_750, _BOUND),  # not sent: no uplift in the bound, and a US answer is counted at that bound
+    (None, 49_750, _UNPINNED_BOUND),  # not sent: no uplift in the bound, and a US answer is counted at that bound
 ])
 def test_every_messages_request_is_pinned_to_the_us_and_only_the_pin_brings_the_uplift(
         upstream, monkeypatch, geo, allowed, cost):

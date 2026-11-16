@@ -247,11 +247,12 @@ STANDARD_TIERS = (None, "standard")
 UNPRICEABLE_RESPONSE_ORIGIN = "request_upper_bound_unpriceable_response"
 
 
-def _priceable(response, us_multiplier):
+def _priceable(response, asked, uplift):
     """The token multiplier when the response can be priced from its own usage, else ``None``.
 
     Only a response that carries its stop reason (so its final usage arrived), whole
-    token counts, the standard speed and tier, and a region the price knows.
+    token counts, the standard speed and tier, and a region that agrees with what was asked:
+    the region asked decides the price, and the response can only confirm or contradict it.
     """
     usage = getattr(response, "usage", None)
     if getattr(response, "stop_reason", None) is None or not all(
@@ -260,11 +261,9 @@ def _priceable(response, us_multiplier):
     if getattr(usage, "speed", None) not in STANDARD_SPEEDS or getattr(usage, "service_tier", None) not in STANDARD_TIERS:
         return None
     geo = getattr(usage, "inference_geo", None)
-    if geo in STANDARD_GEOS:
-        return 1.0
-    if geo == "us" and isinstance(us_multiplier, (int, float)) and not isinstance(us_multiplier, bool):
-        return float(us_multiplier)
-    return None
+    if asked == "us":
+        return uplift if geo in (None, "us") else None
+    return 1.0 if geo in STANDARD_GEOS else None
 
 
 def _install_anthropic_metering(meter: Meter, us_multiplier=None):
@@ -272,6 +271,13 @@ def _install_anthropic_metering(meter: Meter, us_multiplier=None):
     from pipeline.llm import anthropic as upstream
 
     original = upstream.AnthropicLLM._create_message
+    asked = INFERENCE_GEO
+    uplift = None
+    if asked == "us":  # pinned: without its frozen multiplier no call can be bounded or priced
+        if (isinstance(us_multiplier, bool) or not isinstance(us_multiplier, (int, float))
+                or not math.isfinite(us_multiplier) or us_multiplier < 1):
+            raise RuntimeError("artisan_anthropic_us_multiplier_unavailable")
+        uplift = float(us_multiplier)
 
     async def create_message(self, payload):
         if "context_management" in payload:
@@ -284,8 +290,7 @@ def _install_anthropic_metering(meter: Meter, us_multiplier=None):
         else:
             count = await self._client.messages.count_tokens(**count_payload)
         rates = pricing_for_provider_model("anthropic", payload.get("model"))
-        geo = {"inference_geo": INFERENCE_GEO} if INFERENCE_GEO else {}
-        uplift = us_multiplier if INFERENCE_GEO == "us" else None
+        geo = {"inference_geo": asked} if asked else {}
         output, bound = _anthropic_bound(meter, rates, count.input_tokens, payload["max_tokens"], uplift)
         identity = meter.before("messages", payload.get("model"))
         try:
@@ -299,7 +304,7 @@ def _install_anthropic_metering(meter: Meter, us_multiplier=None):
                 raise ProviderOutOfFunds() from error
             raise
         usage = upstream._extract_usage(response)
-        multiplier = _priceable(response, uplift)
+        multiplier = _priceable(response, asked, uplift)
         if multiplier is None:
             # A cut stream (no stop reason, so no final usage), an unknown region, speed or tier:
             # counted at the most the request could have cost, and left for the official figure.

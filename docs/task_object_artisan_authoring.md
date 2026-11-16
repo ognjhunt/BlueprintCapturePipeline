@@ -184,8 +184,10 @@ What only a paid run can prove:
   `upstream_rejected_request_no_funds`.
 - A key or model the unbilled read refuses shows as `"reason": "model_read:<code>"` in the
   choice record (for example `model_read:claude_model_metadata_unavailable`), and the job runs on OpenAI.
-- Whether a real response reports `inference_geo`, `speed` and `service_tier` in its usage; a response
-  that does not is counted at its bound until the official cost is read.
+- Whether a real response reports `inference_geo`, `speed` and `service_tier` in its usage. The region
+  asked decides the price: a response naming no region, or `us`, is priced with the uplift; one naming
+  another region, or a speed or tier other than the standard, is counted at its bound until the
+  official cost is read. A meter pinned to the US without its multiplier is refused before any call.
 
 ## Inputs and authority
 
