@@ -154,7 +154,7 @@ NO_RULE = ("This package includes no success rule from Blueprint for this job; t
 OBJECTS_TAKEN_OUT = "{count} object(s) the job involves were taken out of the room scan and are not in this package."
 OBJECTS_IN_SCAN = "The job's objects are part of the room scan; they are not separate files."
 NOT_FOUND = "Blueprint did not find what the job is about in the video."
-NOT_LOCATED = ("Blueprint saw the job's object in the video but could not outline it precisely, so it is not a "
+NOT_LOCATED = ("Blueprint saw the job's object in the video but could not locate it precisely, so it is not a "
                "separate file in this package.")
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."

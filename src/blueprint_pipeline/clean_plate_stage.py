@@ -40,14 +40,18 @@ from .website_task_target_choice import load_target_choices, retain_questions
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 #: A website analysis that found nothing the task is about goes on flagged with this code, buying no masks.
 NOT_FOUND = "task_relevant_target_not_observed"
-#: The analysis found the job's object but it could not be outlined in the video (an anchor box that cannot be read,
-#: no tracks, no instance the segmenter could pick): the plan goes on flagged with this code, nothing
-#: removed and no masks, unless a person is to be masked (privacy) or the refusal is about money.
+#: The analysis found the job's object but it could not be located in the video (an anchor box that cannot be read,
+#: no instance the segmenter could pick, no depth inside its outline): the plan goes on flagged with this code,
+#: nothing removed and no masks, unless a person is to be masked (privacy) or the refusal is about money.
 NOT_LOCATED = "task_target_not_located"
+#: The analysis a ``NOT_LOCATED`` plan was floored from. A later run retries the outlining from it: the same
+#: targets key the same segmentation request, so the answers already bought are read again at $0.
+FLOORED_FROM = "analysis_before_not_located"
 #: The task-target localisation refusals of ``website_task_masks`` that say only that the object could not be
-#: outlined: none is about privacy, rights or money.
+#: located: none is about privacy, rights or money. (``website_sam31_tracks_unavailable`` is not one: on the local
+#: provider it also stands for frame and checkpoint integrity refusals, and that result is retained.)
 LOCALISATION_CODES = frozenset({
-    "task_target_spatial_anchor_missing", "task_target_spatial_anchor_invalid", "website_sam31_tracks_unavailable",
+    "task_target_spatial_anchor_missing", "task_target_spatial_anchor_invalid",
     "website_task_targets_resolve_to_same_instance", "task_target_has_no_estimated_geometry",
 })
 
@@ -56,20 +60,33 @@ def _not_located(plan: Mapping[str, Any], exc: BaseException) -> dict[str, Any] 
     """The plan going on flagged ``NOT_LOCATED`` with nothing removed, or None when the failure must still stop.
 
     It stops when a person is to be masked (the masks protect privacy), when the refusal is about money
-    (``PaidResourceAdmissionBlocked``), and when the code is not a localisation refusal.
+    (``PaidResourceAdmissionBlocked``), when the code is not a localisation refusal, and when the refusal may
+    concern another target than the job's object (the one the robot moves): the package would then say of
+    the job's object something untrue. Kept surfaces and obstacles are deferred (``defer_kept_static``), so
+    only their missing anchors, checked for every target first, can concern them.
     """
     from .paid_resource_admission import PaidResourceAdmissionBlocked
     from .website_task_target_choice import TaskTargetAmbiguous
     targets = [dict(row) for row in plan.get("targets") or [] if isinstance(row, Mapping)]
-    if (isinstance(exc, PaidResourceAdmissionBlocked)
-            or any(row.get("target_class") == "person" and row.get("disposition") == "remove" for row in targets)
-            or not (isinstance(exc, TaskTargetAmbiguous) or str(exc).split(":", 1)[0] in LOCALISATION_CODES)):
+    job = {row.get("target_id") for row in targets if row.get("task_effect") == "manipulated"}
+    others = [row for row in targets if row.get("task_effect") in {"static_contact", "static_obstacle"}]
+    code = str(exc).split(":", 1)[0]
+    if isinstance(exc, TaskTargetAmbiguous):
+        concerns_job = exc.target_id in job
+    else:
+        concerns_job = bool(job) and code in LOCALISATION_CODES and not any(
+            row.get("disposition") != "keep" for row in others) and (
+            code != "task_target_spatial_anchor_missing" or all(
+                (row.get("spatial_evidence") or [{}])[0].get("timestamp_seconds") is not None for row in others)) and (
+            code != "website_task_targets_resolve_to_same_instance" or len(job) > 1)
+    if (isinstance(exc, PaidResourceAdmissionBlocked) or not concerns_job
+            or any(row.get("target_class") == "person" and row.get("disposition") == "remove" for row in targets)):
         return None
     for row in targets:
         if row.get("disposition") == "remove":
             row.update(disposition="keep", rebuild_intent="none")
     return {**plan, "targets": targets, "movable_removal_count": 0,
-            "flags": list(dict.fromkeys([*(plan.get("flags") or []), NOT_LOCATED]))}
+            "flags": list(dict.fromkeys([*(plan.get("flags") or []), NOT_LOCATED])), FLOORED_FROM: dict(plan)}
 
 
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -396,6 +413,10 @@ def _run_clean_plate_stage(
                 from .website_atlas_task_selection import load_rerun_analysis
                 retained_analysis = load_rerun_analysis(
                     capture_root=ctx.capture_root, task_context=task_context, source_video=website_source_video)
+        if retained_analysis is not None and NOT_LOCATED in (retained_analysis.get("flags") or []):
+            # Floored as not located on an earlier run: retried from the analysis it was floored from, never
+            # from the floor's kept targets, which would key a new segmentation request and buy it again.
+            retained_analysis = retained_analysis.get(FLOORED_FROM)
         plan = retained_analysis if retained_analysis is not None else analyze_removal_targets(
             video_path=website_source_video or input_video_path, task_context=task_context,
             output_root=clean_plate_root / "gemini_analysis",
