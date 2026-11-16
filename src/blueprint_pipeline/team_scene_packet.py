@@ -69,6 +69,8 @@ from .usd_binary_read_cache import binary_copy, read_scoped
 SCHEMA = "blueprint.team_scene_inputs.v1"
 CLAIM_CEILING = "diagnostic_policy_execution"
 RECORD_FILENAME = "team_scene_inputs.v1.json"
+#: The record's field for a half compiled with no rule (``materialize_team_scene``'s ``rule_withheld``).
+RULE_WITHHELD = "rule_withheld"
 PACKET_DIRECTORY = "native-task-packet"
 OWN_ARM_RULE = "closest_clear_stance_own_arm_reaches_every_phase"
 # The same scene compiled with the right exterior camera, when one is placed.
@@ -898,8 +900,12 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            movable_furniture: Mapping[str, Any] | None = None,
                            robot_access_scope: Mapping[str, Any] | None = None,
                            robot_access_offer: Mapping[str, Any] | None = None,
-                           package_only: bool = False) -> dict[str, Any]:
+                           package_only: bool = False,
+                           rule_withheld: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
+    ``rule_withheld`` (the website worker's, with ``package_only``; ``website_scene_handoff``): a one-object job no
+    task profile models. Its rigid object is placed as compiled; no rule is assumed, sealed or put in the plan,
+    and the record says so and why (``RULE_WITHHELD``), which the company package reads (``website_company_simulation``).
 
     ``package_only`` is the website worker's (owner decision 2026-11-15): Blueprint builds the deployment
     companies' scene package and runs no test on it. A refusal whose every code means only that there is no place
@@ -932,6 +938,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
 
     from . import task_evaluation_configured_controls_deferred_inputs as deferred
     from . import task_evaluation_native_arena_episode_compiler as compiler
+    withheld = {"reason": str(rule_withheld["code"])} if package_only and rule_withheld is not None else None
     from .adp_articulated_task_success_contract import (
         seal_task_success_contract,
         validate_task_success_contract,
@@ -1028,7 +1035,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                 raise TeamScenePacketError("team_scene_destination_qualification_invalid:" + str(exc)) from exc
         task_spec, confirmation = _owner_confirmed(task_spec, revision=revision, scope=confirmation_scope)
         try:
-            if assume_unconfirmed_standard_thresholds and confirmation is None and assumption.assumable(task_spec):
+            if withheld is not None:
+                owner = None  # no rule: none assumed, none confirmed
+            elif assume_unconfirmed_standard_thresholds and confirmation is None and assumption.assumable(task_spec):
                 # The site has not confirmed Blueprint's standard thresholds: scored on them, and said so.
                 owner = assumption.assumed_contract(task_spec, task_kind="rigid_pick_place", site_id=scene_id,
                                                     task_id=task_id)
@@ -1226,13 +1235,17 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         plan = _read(packet / "native_task_arena_scene_plan.v1.json", "team_scene_packet_invalid")
         receipt = packet / "native_task_arena_packet_receipt.v1.json"
     task_kind = "articulated_open_close" if articulated else "rigid_pick_place"
+    if withheld is not None and articulated:
+        # The handoff sends only a rigid object, so this is not expected: the half built is shipped all the same,
+        # its rule withheld as asked and the case flagged here; the site never loses an object already paid for.
+        withheld["articulated"] = True
     if stations and embodiment_models:
         from .team_embodiment import validate_embodiment_manifest
 
         bodies = {row["embodiment_digest"]: row for row in map(validate_embodiment_manifest, embodiment_manifests)}
         _own_arm_stations(stations, ranked, plan={**plan, "task_kind": task_kind}, manifests=bodies,
                           models=embodiment_models)
-    if articulated and (plan["task_spec"].get("configured_success_criteria") or {}).get(
+    if withheld is None and articulated and (plan["task_spec"].get("configured_success_criteria") or {}).get(
             "owner_success_contract_required") is True:
         # The owner's frozen criteria, translated without changing scoring (as the operator canary seals them).
         from .task_evaluation_scene_control_omission import confirmed_articulated_contract
@@ -1249,12 +1262,14 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                                                        task_id=str(plan["task_id"]))
         except ValueError as exc:
             raise TeamScenePacketError("team_scene_owner_contract_invalid:" + str(exc)) from exc
+    contract = None
     try:
-        contract = owner or seal_task_success_contract(
-            task_kind=task_kind, task_spec=plan["task_spec"], site_id=str(plan["scene_id"]),
-            task_id=str(plan["task_id"]), author_source="compatibility_default",
-            author_id="blueprint:manipulation_strategy_defaults.v1", confirmation_status="confirmed")
-        contract = validate_task_success_contract(contract, task_kind=task_kind)
+        if withheld is None:
+            contract = validate_task_success_contract(owner or seal_task_success_contract(
+                task_kind=task_kind, task_spec=plan["task_spec"], site_id=str(plan["scene_id"]),
+                task_id=str(plan["task_id"]), author_source="compatibility_default",
+                author_id="blueprint:manipulation_strategy_defaults.v1", confirmation_status="confirmed"),
+                task_kind=task_kind)
     except TaskNeutralScoringError as exc:
         raise TeamScenePacketError("team_scene_success_contract_invalid:" + ",".join(exc.errors)) from exc
     packet_record = _record(receipt)
@@ -1264,8 +1279,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         "configuration_digest": canonical_digest({"scene_revision_digest": revision["revision_digest"],
                                                   "packet": packet_record["sha256"],
                                                   "station": station["stance_digest"] if station else None}),
-        "plan_digest": plan["plan_digest"], "task_success_contract": contract,
-        "task_success_contract_digest": contract["contract_digest"],
+        "plan_digest": plan["plan_digest"],
+        **({"task_success_contract": contract, "task_success_contract_digest": contract["contract_digest"]}
+           if contract is not None else {RULE_WITHHELD: dict(withheld)}),
         "base_native_packet": packet_record, "runtime_source": runtime_source, "construction_result": packet_record,
         "execution_authority": dict(EXECUTION_AUTHORITY), "control_diagnostic": dict(PENDING_CONTROLS),
         "robot_station": station, "camera_layout": camera_layout, "droid_profile_digest": droid_profile_digest,

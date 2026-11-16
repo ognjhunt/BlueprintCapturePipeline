@@ -516,7 +516,9 @@ def test_the_readme_says_what_stage_5_and_stage_4_show(tmp_path, monkeypatch, st
     assert all("qualif" not in text.lower() for text in members.values())
     assert sim.PHYSICS_CHECK_WORDS == {"isaac_sim": (), "not_run": (NO_SIMULATOR,),
                                        "not_run_static_check_passed": (STATIC_PASSED, NO_SIMULATOR),
-                                       "not_run_joint_as_authored": (NO_SIMULATOR, sim.JOINT_AS_AUTHORED)}
+                                       "not_run_joint_as_authored": (NO_SIMULATOR, sim.JOINT_AS_AUTHORED),
+                                       "not_run_joint_as_authored_no_rule": (NO_SIMULATOR,
+                                                                             sim.JOINT_AS_AUTHORED_NO_RULE)}
 
 
 def test_physics_check_reads_stage_5_by_its_own_reader(tmp_path):
@@ -653,3 +655,55 @@ def test_a_package_that_is_not_out_is_named_by_capture_in_the_journal(job, caplo
     assert counts == {"refused": 1}
     assert any("website_company_simulation_outcome" in row.message and job.capture.name in row.message
                and "status=refused" in row.message for row in caplog.records)
+
+
+def test_a_half_compiled_with_its_rule_withheld_seals_no_rule_and_ships_its_object(tmp_path):
+    """Objects step 1: the real compile of a job no task profile models, then its real package: the object, no
+    rule in the plan, the record or the package, and the README's sentence. Only the website's package-only
+    compile takes the reason."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline.team_scene_packet_worker import WEBSITE_COMPILE
+
+    withheld = {"code": "website_native_task_profile_preparation_required"}
+    compiled, record = _half(tmp_path / "withheld", **WEBSITE_COMPILE, rule_withheld=withheld)
+    assert record["rule_withheld"] == {"reason": withheld["code"]}
+    assert not {"task_success_contract", "task_success_contract_digest", "owner_success_assumption"} & set(record)
+    for name in sim.PACKET_DIRECTORIES:
+        plan = Path(compiled["path"]).parent / name / sim.PLAN_FILE
+        assert not plan.exists() or "task_success_contract" not in json.loads(plan.read_text())["task_spec"]
+    result, files = _download(tmp_path / "withheld", compiled["path"])
+    assert result["status"] == "published", result
+    assert "success_rule.json" not in files and "object.usda" in files
+    assert " ".join(files["README.txt"].split()).count(sim.NO_RULE) == 1 and "success_rule" not in files["README.txt"]
+
+
+def test_only_the_website_package_compile_withholds_the_rule(tmp_path):
+    """A compile that is not the website worker's package-only one, handed a reason, seals the rule as before."""
+    withheld = {"code": "website_native_task_profile_preparation_required"}
+    for name, flags in (("operator", {}), ("assumed", {"assume_unconfirmed_standard_thresholds": True})):
+        _, record = _half(tmp_path / name, **flags, rule_withheld=withheld)
+        assert "rule_withheld" not in record and record["task_success_contract"]["contract_digest"]
+
+
+def test_a_drawer_that_reaches_the_compile_with_its_rule_withheld_still_gets_its_package(tmp_path):
+    """Not expected (the handoff sends only a rigid object), but never a dead end once the object is built: the
+    half ships with no rule, the case flagged in its sealed record."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline.team_scene_packet import materialize_team_scene
+    from blueprint_pipeline.team_scene_packet_worker import WEBSITE_COMPILE
+
+    # Its owner criteria unconfirmed: no owner contract is read for a withheld rule, so none can refuse it.
+    scene = packet_tests._articulated_scene(tmp_path, not_run=True, owner_confirmed=False)
+    inputs = {key: value for key, value in scene.items() if key not in ("profile", "store", "revision_reference")}
+    compiled = materialize_team_scene(**inputs, output_root=tmp_path / "team-scene", **WEBSITE_COMPILE,
+                                      rule_withheld={"code": "website_native_task_profile_preparation_required"})
+    record = json.loads(Path(compiled["path"]).read_text())
+    assert record["rule_withheld"] == {"reason": "website_native_task_profile_preparation_required",
+                                       "articulated": True}
+    assert not {"task_success_contract", "owner_success_assumption"} & set(record)
+    result, files = _download(tmp_path, compiled["path"])
+    assert result["status"] == "published", result
+    readme = " ".join(files["README.txt"].split())
+    assert "success_rule.json" not in files
+    assert readme.count(sim.NO_RULE) == 1
+    assert "success interval" not in readme and readme.count(sim.JOINT_AS_AUTHORED_NO_RULE) == 1

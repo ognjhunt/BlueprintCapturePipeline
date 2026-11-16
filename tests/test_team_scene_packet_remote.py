@@ -314,3 +314,18 @@ def test_parity_set_covers_every_distribution_a_team_compile_loads(tmp_path: Pat
                  "blueprint_pipeline.cloud_run_jobs_client", "blueprint_pipeline.remote_cpu_transport",
                  "blueprint_pipeline.task_evaluation_configured_scene_object_store"}
     assert not authority & set(report["loaded"])
+
+
+def test_a_withheld_rule_travels_to_the_remote_compile_as_data(tmp_path: Path) -> None:
+    """Objects step 1: a half compiled on the remote lane is compiled with its rule withheld, as on the host."""
+    from types import SimpleNamespace
+
+    root = tmp_path.resolve()
+    withheld = {"code": "website_native_task_profile_preparation_required"}
+    arguments = {"revision": {}, "droid_profile_digest": "d", "documents": {}, "package_only": True,
+                 "rule_withheld": withheld, **{name: str(root / "var/lib/blueprint" / name) for name in lane.PATH_ARGUMENTS}}
+    sent = lane._worker_arguments(arguments, root)
+    assert sent is not None
+    assert sent["rule_withheld"] == withheld
+    assert sent["package_only"] is True
+    assert lane._local_arguments(sent, SimpleNamespace(local=str))["rule_withheld"] == withheld

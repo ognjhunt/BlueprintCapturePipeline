@@ -811,3 +811,25 @@ def test_the_timed_count_survives_an_interrupted_run_and_a_remote_deferral(tmp_p
     assert _status(world)[worker.REFUSAL_RETRY_FIELD] == record
     deferred = worker._deferred(queue, queue / "processed" / f"{key}.json", _status(world), {"mode": "fallback_host"})
     assert deferred[worker.REFUSAL_RETRY_FIELD] == record
+
+
+@pytest.mark.parametrize("handoff", ["sealed", "unsealed", "none"])
+def test_a_job_no_profile_models_is_compiled_with_its_rule_withheld_only_on_its_sealed_handoff(
+        tmp_path, monkeypatch, handoff):
+    """Objects step 1: the capture's sealed handoff names the reason; the half's record carries it and no rule."""
+    world = _world(tmp_path, monkeypatch)
+    if handoff != "none":
+        value = {"schema_version": "website_scene_handoff.v1", "status": "intake_ready", "rule_withheld": {
+            "code": "website_native_task_profile_preparation_required", "task_id": "website-" + "a" * 20}}
+        value["digest"] = canonical_digest(value, digest_field="digest") if handoff == "sealed" else "sha256:" + "0" * 64
+        path = Path(world["capture"]) / "pipeline/website_scene_preparation/handoff.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled"), status
+    record = json.loads(Path(status["team_scene_inputs_path"]).read_text())
+    if handoff == "sealed":
+        assert record["rule_withheld"] == {"reason": "website_native_task_profile_preparation_required"}
+        assert "task_success_contract" not in record and "owner_success_assumption" not in record
+    else:
+        assert "rule_withheld" not in record and record["task_success_contract"]["contract_digest"]

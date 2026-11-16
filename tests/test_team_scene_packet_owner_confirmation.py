@@ -176,3 +176,29 @@ def test_an_owner_contract_refusal_returns_to_pending_once_per_new_confirmation(
     monkeypatch.setattr(worker, "current_release_commit", lambda: None)
     (queue / "status" / f"{key}.json").write_text(json.dumps({**blocked, "blockers": ["team_scene_task_invalid"]}))
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+
+
+def test_a_job_whose_rule_is_withheld_assumes_no_thresholds(tmp_path, monkeypatch) -> None:
+    """Objects step 1: the website compile assumes Blueprint's standard thresholds for an unconfirmed job, except
+    for a job no task profile models, whose rule is withheld: nothing is assumed, sealed or put in the plan."""
+    from blueprint_pipeline.team_scene_packet_worker import WEBSITE_COMPILE
+
+    job, inputs = _job(tmp_path, monkeypatch)
+    for name, extra in (("assumed", {}), ("withheld", {"rule_withheld": {
+            "code": "website_native_task_profile_preparation_required"}})):
+        documents = rigid.fetch_revision_documents(revision=job.revision, output_root=tmp_path / name / "work",
+                                                   fetcher=lambda reference: job.store[reference["uri"]])
+        compiled = materialize_team_scene(
+            revision=job.revision, documents=documents, output_root=tmp_path / name / "team-scene", **inputs,
+            owner_success_confirmation_scope={"intent": job.intent, "directory": job.directory},
+            **WEBSITE_COMPILE, **extra)
+        record = json.loads(Path(compiled["path"]).read_text())
+        plan = json.loads((Path(compiled["path"]).parent / "native-task-packet"
+                           / "native_task_arena_scene_plan.v1.json").read_text())
+        held = {"owner_success_assumption", "task_success_contract"} & set(record)
+        if name == "assumed":
+            assert held == {"owner_success_assumption", "task_success_contract"} and "rule_withheld" not in record
+            assert plan["task_spec"]["task_success_contract"]
+        else:
+            assert not held and record["rule_withheld"] == {"reason": extra["rule_withheld"]["code"]}
+            assert "task_success_contract" not in plan["task_spec"]

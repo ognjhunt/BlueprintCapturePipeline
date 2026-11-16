@@ -535,3 +535,117 @@ def test_an_unresolved_reading_waits_only_while_a_clarification_can_still_resolv
         assert (result["status"], result["blockers"], packaged) == ("needs_input", [gap["code"]], [])
     else:
         assert result["status"] == "room_package_written" and len(packaged) == 1
+
+
+class _Compiled(Exception):
+    pass
+
+
+@pytest.mark.parametrize("entries, profile, built", [
+    ([{"target_id": "box", "task_effect": "manipulated"}], "rigid_pick_place", True),
+    ([{"target_id": "box", "task_effect": "manipulated"}], "articulated_open_close", False),
+    ([{"target_id": "box", "task_effect": "manipulated"}, {"target_id": "cup", "task_effect": "manipulated"}],
+     "rigid_pick_place", False),
+    ([], "rigid_pick_place", False),
+])
+def test_one_removed_object_of_a_job_no_profile_models_is_built_with_its_rule_withheld(tmp_path, monkeypatch,
+                                                                                       ready_atlas, entries, profile,
+                                                                                       built):
+    """Objects step 1: the object is built on the rigid path, the rule withheld for a named, sealed reason; several
+    objects, none, or a part that opens, still ship as the room package."""
+    kwargs = inputs(tmp_path)
+    write_json(tmp_path / "pipeline/removal.json", {"entries": entries})
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    context.update(task_family="unimplemented_task_family", description="Do the thing with the box",
+                   context_digest="sha256:" + "a" * 64)
+    kwargs["clean_plate"]["task_masks"] = {"targets": [{"target_id": row["target_id"]} for row in entries]}
+    corrections = []
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: corrections.append(1) or {"status": "ready"})
+    monkeypatch.setattr(handoff, "native_task_subject_profile", lambda *_, **__: (None, profile))
+    monkeypatch.setattr(handoff, "subject_rigidity", lambda *_, **__: None)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **kw: kw["task_masks"])
+    monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs",
+                        lambda **kw: kw["task_masks"])
+    compiled = []
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **kw: compiled.append(kw) or (_ for _ in ()).throw(_Compiled()))
+    packaged = room_recorder(monkeypatch)
+    if not built:
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "room_package_written"
+        assert not compiled
+        assert "rule_withheld" not in result
+        assert not corrections  # decided before anything is queued, as before
+        return
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    with pytest.raises(_Compiled):  # the handoff again (a redelivery or a release): the same mark, nothing new
+        handoff.prepare_website_scene_handoff(**kwargs)
+    first, again = compiled
+    assert first["rule_withheld"] == again["rule_withheld"] == {
+        "code": "website_native_task_profile_preparation_required", "task_id": "website-" + "a" * 20}
+    assert not packaged
+    compiled.clear()
+    # With no place on its support to run the internal rigid path toward, the object is not built: the room package.
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **kw: compiled.append(kw) or {"blockers": ["task_destination_pose_required"]})
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written"
+    assert len(packaged) == 1
+    assert "rule_withheld" not in result
+    assert len(compiled) == 1
+
+
+@pytest.mark.parametrize("place", [True, False], ids=["object_built", "no_place_room_package"])
+def test_the_object_of_a_job_no_profile_models_chooses_its_provider_once_and_its_room_package_never(
+        tmp_path, monkeypatch, ready_atlas, place):
+    """Objects step 1, through the handoff and the real compile (on that compile's own test geometry): the one
+    object of a job no task profile models is authored, so the provider choice the handoff hands compile is asked
+    for exactly once, after the one-rigid-object decision and every gap. With no internal place the job ships as
+    the room package: the choice is never asked for, so no choice file, ledger entry or model read exists."""
+    from blueprint_pipeline import website_task_preparation as preparation
+    from tests.test_website_task_preparation import _arguments, _masks
+    kwargs = inputs(tmp_path)
+    write_json(tmp_path / "pipeline/removal.json", {"entries": [{"target_id": "box", "task_effect": "manipulated"}]})
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    context.update(task_family="unimplemented_task_family", description="Do the thing with the box",
+                   context_digest="sha256:" + "a" * 64)
+    kwargs["clean_plate"]["task_masks"] = {"targets": [{"target_id": "box"}]}
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    monkeypatch.setattr(handoff, "native_task_subject_profile", lambda *_, **__: (None, "rigid_pick_place"))
+    monkeypatch.setattr(handoff, "subject_rigidity", lambda *_, **__: None)
+    for name in ("website_assembly_coverage.attach_assembly_coverage",
+                 "website_object_spec_research.attach_object_specs"):
+        monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: kw["task_masks"])
+    (tmp_path / "geometry").mkdir()
+    fixture = _arguments(tmp_path / "geometry", lambda geometry: {"task_masks": _masks(geometry, destination=place)})
+    fixture["task_context"].update(task_family="unimplemented_task_family")
+    fixture["task_context"]["context_digest"] = canonical_digest(fixture["task_context"], digest_field="context_digest")
+    if not place:  # no named destination and no spot left on the start surface
+        monkeypatch.setattr(preparation, "farthest_supported_destination", lambda *_, **__: None)
+    asked, compiled = [], []
+    monkeypatch.setattr(handoff, "artisan_provider_choice_for", lambda **kw: asked.append(kw))
+    real = handoff.compile_website_scene_preparation
+
+    def compile_on_its_geometry(**kw):
+        compiled.append(real(**fixture, rule_withheld=kw["rule_withheld"],
+                             artisan_provider_choice=kw["artisan_provider_choice"]))
+        if place:
+            raise _Compiled  # what follows is the existing rigid path
+        return compiled[-1]
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", compile_on_its_geometry)
+    packaged = room_recorder(monkeypatch)
+    if place:
+        with pytest.raises(_Compiled):
+            handoff.prepare_website_scene_handoff(**kwargs)
+        assert compiled[0]["intake_request"] is not None
+        assert len(asked) == 1
+        return
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert "task_destination_pose_required" in compiled[0]["blockers"]
+    assert result["status"] == "room_package_written"
+    assert len(packaged) == 1
+    assert asked == []

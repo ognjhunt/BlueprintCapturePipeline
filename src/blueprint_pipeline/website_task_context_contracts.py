@@ -17,6 +17,15 @@ from .decision_evidence_contracts import canonical_digest
 GEOMETRY_ONLY_BLOCKER = "website_geometry_only_fit_check"
 
 
+def without_withheld_gap(gap: Mapping[str, Any] | None,
+                         rule_withheld: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """The gap, unless it is the one the handoff withheld Blueprint's rule for (``website_scene_handoff``):
+    that job's one rigid object is built, so its gap holds nothing."""
+    if rule_withheld is not None and gap is not None and gap.get("code") == rule_withheld.get("code"):
+        return None
+    return gap
+
+
 def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
     """A site-confirmed task, or the assessment-proposed task of a preparation run.
 

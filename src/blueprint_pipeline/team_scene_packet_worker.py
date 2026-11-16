@@ -1118,6 +1118,20 @@ def _compile_routed(request: Mapping[str, Any], *, status: Mapping[str, Any], ru
     return prepared, route
 
 
+def _rule_withheld(capture: Path) -> dict[str, Any]:
+    """A one-object job no task profile models: its capture's sealed handoff says why (``website_scene_handoff``),
+    and its half is compiled with no rule (``materialize_team_scene``)."""
+
+    try:
+        handoff = json.loads((capture / "pipeline" / "website_scene_preparation" / "handoff.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    withheld = handoff.get("rule_withheld") if isinstance(handoff, dict) else None
+    if not isinstance(withheld, dict) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
+        return {}
+    return {"rule_withheld": {"code": str(withheld.get("code"))}}
+
+
 def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any], capture: Path,
              inputs: Mapping[str, Any], fetcher: Fetcher | None,
              embodiments: Sequence[Mapping[str, Any]] = (),
@@ -1129,7 +1143,8 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
 
     # A half of this revision already assumed its thresholds: it keeps that contract, so a confirmation that
     # arrived since changes no digest and buys nothing again (it is recorded in the half's record).
-    website = {**WEBSITE_COMPILE, **({"keep_assumed_thresholds": True} if assumed_before else {})}
+    website = {**WEBSITE_COMPILE, **({"keep_assumed_thresholds": True} if assumed_before else {}),
+               **_rule_withheld(capture)}
 
     run = Path(request["source_launch_root"])
     if run.is_symlink() or not run.is_dir():

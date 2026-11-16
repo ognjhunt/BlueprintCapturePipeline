@@ -17,6 +17,10 @@
    "not_run_joint_as_authored": [
     "Blueprint did not run this scene in Isaac Sim or any other simulator.",
     "The joint's range is from the object's authored file and the success interval is the job's share of that range; no simulator moved the joint."
+   ],
+   "not_run_joint_as_authored_no_rule": [
+    "Blueprint did not run this scene in Isaac Sim or any other simulator.",
+    "The joint's range is from the object's authored file; no simulator moved the joint."
    ]
   },
   "notes": {
@@ -429,6 +433,95 @@
      "support_region_not_held"
     ],
     "readme_sha256": "sha256:fe3eb33c64aaa5c150f206c275e8837a8900969281c6ffacef9412b974c4c069"
+   }
+  },
+  {
+   "label": "unknown-kind-one-object-rule-withheld",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run",
+    "rule_withheld": "website_native_task_profile_preparation_required"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "readme_variant": [
+     "not_run",
+     "no_rule"
+    ],
+    "readme_sha256": "sha256:3d50e12405253503bc505c9afdf0db4b84f90e0e447013bb7f2b9c47086ba173"
+   }
+  },
+  {
+   "label": "rigid-half-without-a-rule-is-refused",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "zip": {
+    "rule_dropped": true
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "refusal",
+    "code": "website_company_simulation_success_rule_missing"
+   }
+  },
+  {
+   "label": "rigid-half-without-a-rule-and-an-unnamed-reason-is-refused",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "zip": {
+    "rule_dropped": true,
+    "reason": "website_some_other_gap"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "refusal",
+    "code": "website_company_simulation_success_rule_missing"
    }
   },
   {
