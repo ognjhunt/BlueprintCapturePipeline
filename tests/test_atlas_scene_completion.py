@@ -46,6 +46,21 @@ def test_preserved_context_refuses_edits_before_any_pixel_or_paid_stage(tmp_path
             planner_runner=None, release_blockers=None, max_polls=1, context_basis=basis)
 
 
+@pytest.mark.parametrize('rule', ['atlas_planner_removal_not_applied', 'another_code', None])
+def test_a_captured_job_that_brings_no_object_completes_as_a_preserved_capture(rule):
+    # Its planner removals were not applied (``website_atlas_pipeline.job_object_review``): the room as filmed.
+    review = {'subject_origin': 'captured', 'automation': {'objects': [{'disposition': 'keep'}], 'removal_instruction': ''},
+              **({'job_object_rule': {'code': rule}} if rule else {})}
+    pose = {'digest': 'pose', 'binding': {'source_video_digest': 'video'}}
+    if rule == 'atlas_planner_removal_not_applied':
+        assert completion._context_binding('preserved_capture', review, pose, {'context_digest': 'task'}) == {
+            'context_basis': 'preserved_capture', 'source_pose_digest': 'pose', 'source_video_digest': 'video',
+            'task_context_digest': 'task'}
+    else:
+        with pytest.raises(ValueError, match='preserved_context_invalid'):
+            completion._context_binding('preserved_capture', review, pose, {'context_digest': 'task'})
+
+
 @pytest.mark.parametrize('invalid', [None, 'capture', 'frames', 'digest', 'wrong-version'])
 def test_refreshed_context_uses_its_own_pixels_and_refuses_mixed_capture_identity(tmp_path, monkeypatch, invalid):
     from blueprint_pipeline import atlas_context_fov

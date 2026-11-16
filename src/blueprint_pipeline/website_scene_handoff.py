@@ -502,6 +502,10 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
         result.pop("rule_withheld", None)
         flags = room_flags(flags, clean_plate)
+        from .atlas_automation_plan import JOB_OBJECT_RULE
+        if atlas.get("job_object_rule") and JOB_OBJECT_RULE not in flags:
+            # The planner's removals were not applied: nothing was taken out of the room scan.
+            flags = [*flags, JOB_OBJECT_RULE]
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only, flags=flags)

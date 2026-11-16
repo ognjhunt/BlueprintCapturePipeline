@@ -745,3 +745,18 @@ def test_posed_view_geometry_requires_a_scale(tmp_path):
     with pytest.raises(ValueError, match="atlas_source_geometry_scale_invalid"):
         atlas_posed_view_geometry(pose_root=tmp_path / "pipeline/atlas/pose", rotation=ROTATION, scale=None,
                                   output_root=tmp_path / "out")
+
+
+def test_a_passed_edit_that_kept_the_planner_removals_is_an_edited_background_not_a_scene_as_filmed(tmp_path):
+    # People in the edited views were erased and the planner's removals were not applied
+    # (``website_atlas_pipeline.job_object_review``): the record stays where the scene source never looks.
+    from blueprint_pipeline.website_atlas_pipeline import NOT_APPLIED_FIELD
+    job_dir = job_fixture(tmp_path)
+    result = json.loads((job_dir / "result.json").read_text())
+    result.pop("digest")
+    result[NOT_APPLIED_FIELD] = {"code": "atlas_planner_removal_not_applied", "planner_remove_count": 2,
+                                 "removed_count": 0}
+    result = write(job_dir / "result.json", digest(result))
+    write(job_dir / "preview_job.json", {"state": "ready", "result_digest": result["digest"]})
+    value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    assert value["status"] == "ready" and "job_object_rule" not in value and "scene_content" not in value

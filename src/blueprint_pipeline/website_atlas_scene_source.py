@@ -31,7 +31,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
-from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
+from .atlas_automation_plan import preserves_capture
 from .local_reconstruction_adapters import _sha256_file
 
 PROVIDER = "world_labs_atlas"
@@ -281,7 +281,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     # A geometry-only job keeps the scene as filmed, its captured subject included
     # (website_atlas_pipeline.ROUTE_ENV): preserved, never completed, never edited.
     geometry_only = result.get("atlas_route") == "geometry_only"
-    preserved = result.get("subject_origin") in PRESERVED_SCENE_ORIGINS or geometry_only
+    # A captured job that brings no object of its own is kept as filmed too (``job_object_rule``).
+    preserved = preserves_capture(result) or geometry_only
     completion_admission = None
     if preserved:
         if (result.get("captured_scene_preserved") is not True
@@ -494,4 +495,5 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                                   else 'captured_scene_preserved')} if preserved else {}),
             **({"atlas_route": "geometry_only", "subject_in_reconstruction": result["subject_in_reconstruction"]}
                if geometry_only else {}),
+            **({"job_object_rule": result["job_object_rule"]} if result.get("job_object_rule") else {}),
             "alignment": "anchored" if anchor else "registration_search"}

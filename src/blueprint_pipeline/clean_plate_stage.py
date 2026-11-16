@@ -23,6 +23,7 @@ from .clean_plate_removal_analysis_gemini import (
     validate_removal_plan,
 )
 from .common import (
+    StageError,
     ensure_dir,
     optional_read_json,
     parse_bool,
@@ -57,6 +58,11 @@ REMOVAL_PLAN_FILENAME = "removal_plan.json"
 REMOVAL_MANIFEST_FILENAME = "removal_manifest.json"
 STAGE_MANIFEST_FILENAME = "clean_plate_stage_manifest.json"
 CURRENT_POINTER_FILENAME = "current.json"
+#: Left before this stage waits for the capture's Atlas selection (``resolve_retained_target_selection``):
+#: the Atlas planner's object is then the job's own, so the Atlas job keeps its planner removals
+#: (``website_atlas_pipeline.job_object_review``) instead of waiting for this stage. Nothing else reads it.
+ATLAS_SELECTION_WAIT_FILENAME = "atlas_selection_wait.json"
+ATLAS_SELECTION_WAIT = "website_atlas_job_processing"
 
 # A privacy status that means people are accounted for. ``failed_closed`` is a
 # hard stop; ``not_run`` is tolerated (local/non-delivery) but recorded as
@@ -365,10 +371,18 @@ def _run_clean_plate_stage(
         handoff_lease_checkpoint("clean_plate_after_analysis")
         if website_source_video is not None and task_context is not None:
             from .website_atlas_task_selection import resolve_retained_target_selection
-            plan = resolve_retained_target_selection(
-                plan=plan, capture_root=ctx.capture_root, task_context=task_context,
-                source_video=website_source_video,
-            )
+            try:
+                plan = resolve_retained_target_selection(
+                    plan=plan, capture_root=ctx.capture_root, task_context=task_context,
+                    source_video=website_source_video,
+                )
+            except StageError as exc:
+                if str(exc).endswith(": " + ATLAS_SELECTION_WAIT):
+                    from .decision_evidence_contracts import canonical_digest
+                    record = {"schema_version": "clean_plate_atlas_selection_wait.v1", "reason": ATLAS_SELECTION_WAIT}
+                    record["digest"] = canonical_digest(record, digest_field="digest")
+                    write_json(clean_plate_root / ATLAS_SELECTION_WAIT_FILENAME, record)
+                raise
             # An uncertain target the Atlas selection did not settle: the job goes on with a
             # recorded guess, which the site may correct; it is never a stop.
             from .clean_plate_removal_analysis_gemini import resolve_uncertain_targets

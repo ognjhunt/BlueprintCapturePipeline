@@ -538,6 +538,17 @@ def full_frames_for_traces(candidates, review):
     return swapped, swapped != list(candidates)
 
 
+#: The repair loop's exit: a round that rejected no fewer views than the best review so far.
+REPAIR_NO_IMPROVEMENT = "atlas_background_repair_no_improvement"
+
+
+def rejected_view_count(review):
+    """How many views a review rejects: every view any of its findings names, counted once."""
+    findings = review.get("review") or {}
+    return len({frame_id for key in ("unrelated_object_loss_frame_ids", "remaining_task_object_frame_ids",
+                                     "camera_changed_frame_ids") for frame_id in findings.get(key) or ()})
+
+
 def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, context,
                                 source_digest, measurements, selected_frame_ids, check,
                                 prepared_binding, atlas_review=None, reused_frames=(), prior_digest=None):
@@ -583,7 +594,7 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
             output_root=root / "selected_editor_review", task_context=context, source_video_digest=source_digest),
             "prior_failed_review": review}
     seen = {tuple(row["image_digest"] for row in candidates)}
-    repair_round = 0
+    repair_round, best, stop = 0, rejected_view_count(review), None
     while review["status"] != "passed" and image_repair_enabled():
         check("automation_targeted_repairs")
         # Each round consumes only current source-bound grants. Completed plans,
@@ -591,6 +602,7 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
         # named by the reviewer becomes the next repair, never an approval.
         repair_root = root / ("fallback_repairs" if repair_round == 0 else
                               f"fallback_repairs-{repair_round + 1:04d}")
+        retained = {path.relative_to(repair_root) for path in repair_root.rglob("*.json")}
         candidates, review = repair_rejected_views(
             selected=candidates, object_removal_frames=[{
                 **row, "original_image_path": row["image_path"], "original_image_digest": row["image_digest"],
@@ -611,10 +623,22 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
         if review["status"] != "passed" and signature in seen:
             break
         seen.add(signature)
+        # A round that rejects no fewer views than the best review so far ends the repairs. Its
+        # count comes from a retained review, so a replay stops at the same round and buys nothing.
+        if review["status"] != "passed" and rejected_view_count(review) >= best:
+            stop = REPAIR_NO_IMPROVEMENT
+            break
+        best = min(best, rejected_view_count(review))
+        if review["status"] != "passed" and {path.relative_to(repair_root)
+                                              for path in repair_root.rglob("*.json")} != retained:
+            # One bought round per step, so other jobs move between rounds and no step outlasts
+            # the unit's limit. The next step replays this round from its receipts and goes on.
+            return {"status": "processing", "stage": "automation_targeted_repairs", "repair_rounds": repair_round}
     background = {"status": "fallback_prepared" if review["status"] == "passed" else "quality_rejected",
                   "provider": "existing_image_editor", "frames": candidates, "review": review,
                   "measurements": measurements, "retained_root": str(root),
-                  "ready_for_reconstruction": review["status"] == "passed", "repair_rounds": repair_round}
+                  "ready_for_reconstruction": review["status"] == "passed", "repair_rounds": repair_round,
+                  **({"repair_stop": stop} if stop else {})}
     if prior_digest:
         background.update(prior_prepared_background_digest=prior_digest,
                           reused_prepared_frame_ids=[row['frame_id'] for row in reused_frames

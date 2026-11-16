@@ -1298,7 +1298,9 @@ def test_editor_repairs_follow_latest_review_and_stop_when_pixels_do_not_change(
     root = tmp_path / "run"
     root.mkdir()
     monkeypatch.setattr(image_edit, "complete_background_images", lambda **kw: kw["frames"])
-    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **_: {"status": "blocked"})
+    # The editor's review rejects both views; each repair round must reject fewer to go on.
+    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **_: {
+        "status": "blocked", "review": {"unrelated_object_loss_frame_ids": ["a", "b"]}})
     monkeypatch.setattr(repair, "image_repair_enabled", lambda: True)
     calls = []
 
@@ -1653,7 +1655,17 @@ def test_a_retained_plan_without_reference_names_keeps_its_measurement_binding()
 
 @pytest.mark.parametrize('error,raised', [('meta_sam_http_413', True), ('meta_sam_http_503', True),
                                           ('meta_sam_inline_clip_exceeds_request_ceiling', True),
-                                          ('atlas_background_visual_review_rejected', False)])
+                                          ('atlas_background_visual_review_rejected', False),
+                                          # A money refusal takes the job's 30-minute money recheck, not a terminal stop.
+                                          ('website_control_preparation-spend_http_409:'
+                                           'website_scene_preparation_budget_exhausted', True),
+                                          ('account_monthly_spend_limit_reached', True),
+                                          # Codes that only read like money keep their class (review 2026-11-16).
+                                          ('website_image_completion_budget_exhausted', False),
+                                          ('website_image_completion_budget_missing', False),
+                                          ('website_image_completion_budget_exceeded', False),
+                                          ('website_preparation_spend_receipt_invalid', False),
+                                          ('website_control_preparation-spend_http_403:source_revoked', False)])
 def test_a_provider_answer_in_the_background_step_is_raised_not_held_for_input(tmp_path, monkeypatch, error, raised):
     from blueprint_pipeline import atlas_scene_automation as worker
 
@@ -1670,9 +1682,131 @@ def test_a_provider_answer_in_the_background_step_is_raised_not_held_for_input(t
                      task_context={}, configuration={'policy': {}}, task_runner=None, pose_runner=None,
                      release_blockers=None)
     if raised:
-        with pytest.raises(ValueError, match=error):
+        with pytest.raises(ValueError) as caught:
             worker.run_automation(**arguments)
-        assert not (tmp_path / 'result.json').exists()
+        assert str(caught.value) == error and not (tmp_path / 'result.json').exists()
+        if 'budget' in error or 'limit' in error:
+            from blueprint_pipeline import website_atlas_preview as preview
+            job = {'state': 'processing', 'enqueued_at_epoch': 0, 'revision': 1, 'reason': None}
+            waited = preview._failed_step(job, caught.value, 100)
+            assert waited['state'] == 'needs_input' and waited['retry_at_epoch'] == 100 + preview.AUTHORITY_RECHECK_SECONDS
     else:
         result = worker.run_automation(**arguments)
         assert result['status'] == 'needs_input' and result['background']['reason'] == error
+
+
+def _rounds_harness(tmp_path, monkeypatch, counts, *, passes_at=None, receipts=False, bought=None):
+    """The editor review rejects ``counts[0]`` views and repair round n rejects ``counts[n]``.
+
+    Every round's plan, edits and review are retained receipts: a fake that names the round it
+    was asked for, so a replay that asks for a round past the rule's stop would show up.
+    """
+    from blueprint_pipeline import website_image_completion as image_edit, website_image_repair_agent as repair
+    ids = [f"v{i:02d}" for i in range(16)]
+    rows = [{"frame_id": key, "image_path": f"{key}.png", "image_digest": f"sha256:{key}"} for key in ids]
+    def review(count, passed=False):
+        return {"status": "passed" if passed else "blocked",
+                "review": {"unrelated_object_loss_frame_ids": ids[:count], "remaining_task_object_frame_ids": [],
+                           "camera_changed_frame_ids": []}}
+    monkeypatch.setattr(image_edit, "complete_background_images", lambda **kw: (
+        _ for _ in ()).throw(ValueError("website_image_completion_cached_batch_missing")) if kw.get("require_cached")
+        else [dict(row) for row in kw["frames"]])
+    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **_: review(counts[0]))
+    monkeypatch.setattr(repair, "image_repair_enabled", lambda: True)
+    asked = []
+
+    def round_(*, selected, output_root, **_):
+        asked.append(output_root.name)
+        n = 1 if output_root.name == "fallback_repairs" else int(output_root.name.rsplit("-", 1)[1])
+        if n >= len(counts):
+            pytest.fail("a repair round past the rule's stop was bought: " + output_root.name)
+        receipt = output_root / "gemini_reviews/review.json"
+        if receipts and not receipt.exists():
+            # A bought round leaves its receipts; a replayed one finds them.
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text("{}")
+            bought.append(n)
+        return ([{**row, "image_digest": f"{row['image_digest']}-r{n}"} for row in selected],
+                review(counts[n], passed=n == passes_at))
+    monkeypatch.setattr(repair, "repair_rejected_views", round_)
+
+    def run():
+        return edits._reviewed_editor_background(
+            prepared=rows, anchor={"image_path": "anchor.png"}, plan={"task_context_sha256": "t", "targets": []},
+            automation={"removal_instruction": "remove"}, root=tmp_path, context={}, source_digest="s",
+            measurements={}, selected_frame_ids=ids, check=lambda _: None, prepared_binding={})
+    return run, asked
+
+
+def test_repairs_end_after_the_first_round_that_rejects_no_fewer_views_than_the_best(tmp_path, monkeypatch):
+    # Job itest-7c42 (2026-11-16): the editor's review rejected 15 of 16 views, then rounds rejected
+    # 11, 16, 16, 3, 5, 16 and a seventh was cut off by the unit's two-hour limit.
+    run, asked = _rounds_harness(tmp_path, monkeypatch, [15, 11, 16])
+    result = run()
+    assert asked == ["fallback_repairs", "fallback_repairs-0002"]
+    assert result["status"] == "quality_rejected" and result["ready_for_reconstruction"] is False
+    assert result["repair_rounds"] == 2 and result["repair_stop"] == edits.REPAIR_NO_IMPROVEMENT
+    # A replay of the same retained rounds stops at the same round and asks for nothing more.
+    run2, asked2 = _rounds_harness(tmp_path, monkeypatch, [15, 11, 16])
+    assert run2() == result and asked2 == ["fallback_repairs", "fallback_repairs-0002"]
+
+
+@pytest.mark.parametrize("counts, passes_at, rounds", [
+    ([15, 11, 7, 7], None, 3),      # an equal count is no improvement
+    ([15, 15], None, 1),            # the first round must already improve on the editor's review
+    ([15, 11, 16, 0], 3, 2),        # a later pass is never reached: round 2 ends it
+    ([15, 11, 4, 0], 3, 3),         # steady improvement runs on until the review passes
+])
+def test_the_repair_exit_counts_against_the_best_review_so_far(tmp_path, monkeypatch, counts, passes_at, rounds):
+    monkeypatch.setattr(edits, "_prepared_background", lambda path, binding, value=None: value)
+    run, asked = _rounds_harness(tmp_path, monkeypatch, counts, passes_at=passes_at)
+    result = run()
+    passed = passes_at == rounds
+    assert result["status"] == ("fallback_prepared" if passed else "quality_rejected")
+    assert result.get("repair_stop") == (None if passed else edits.REPAIR_NO_IMPROVEMENT)
+    assert len(asked) == rounds and result["repair_rounds"] == rounds
+
+
+@pytest.mark.parametrize("counts, passes_at", [([15, 11, 16], None), ([15, 11, 4, 0], 3), ([15, 11, 7, 7], None)])
+def test_each_step_buys_at_most_one_repair_round_and_ends_as_a_single_pass_would(
+        tmp_path, monkeypatch, counts, passes_at):
+    monkeypatch.setattr(edits, "_prepared_background", lambda path, binding, value=None: value)
+    single, _ = _rounds_harness(tmp_path / "single", monkeypatch, counts, passes_at=passes_at)
+    expected = single()
+    bought = []
+    run, asked = _rounds_harness(tmp_path / "steps", monkeypatch, counts, passes_at=passes_at, receipts=True,
+                                 bought=bought)
+    steps = []
+    while True:
+        before = len(bought)
+        steps.append(run())
+        assert len(bought) - before <= 1  # one bought round per step; earlier rounds replay from receipts
+        if steps[-1]["status"] != "processing":
+            break
+        assert steps[-1]["stage"] == "automation_targeted_repairs"
+    final = steps[-1]
+    assert {key: final[key] for key in ("status", "repair_rounds")} == {
+        key: expected[key] for key in ("status", "repair_rounds")}
+    assert final.get("repair_stop") == expected.get("repair_stop") and final["review"] == expected["review"]
+    # Every round was bought exactly once, and the last step bought the round that decided.
+    assert bought == list(range(1, expected["repair_rounds"] + 1))
+    assert len(steps) == expected["repair_rounds"]
+
+
+def test_the_account_monthly_limit_is_never_held_for_input_by_the_background_step(tmp_path, monkeypatch):
+    # It is a RuntimeError from the shared chokepoint, so it passes run_automation untouched and takes the
+    # preview's money recheck as before.
+    from blueprint_pipeline import atlas_scene_automation as worker
+    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
+    pose = {'digest': 'pose', 'binding': {'source_video_digest': 'video'},
+            'operation': {'id': 'already-paid'}, 'depth_unit': 'estimated', 'scale_status': 'estimated'}
+    monkeypatch.setattr(sizes, 'load_views', lambda *args: (pose, [view(tmp_path)]))
+    monkeypatch.setattr(sizes, 'estimate_sizes', lambda **kw: {})
+
+    def limit(**kw):
+        raise PaidResourceAdmissionBlocked(["account_monthly_spend_limit_reached"])
+    monkeypatch.setattr(edits, 'run_background', limit)
+    with pytest.raises(PaidResourceAdmissionBlocked):
+        worker.run_automation(pose_root=tmp_path, inputs={}, review={'automation': plan()}, output_root=tmp_path,
+                              task_context={}, configuration={'policy': {}}, task_runner=None, pose_runner=None,
+                              release_blockers=None)

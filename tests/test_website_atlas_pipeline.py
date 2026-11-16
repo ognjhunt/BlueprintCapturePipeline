@@ -898,3 +898,232 @@ def test_the_pre_pose_price_counts_only_the_posed_targets_over_two_ticks(tmp_pat
     assert pipeline.run_atlas_pipeline(**options)["stage"] == "pose"
     result = pipeline.run_atlas_pipeline(**options)
     assert len(poses) == 2 and generated == [2] and result["splat_available"] is True
+
+
+def _bought_review(*, transients=(), edited=("f0",)):
+    """Job itest-7c42's retained Atlas review in shape: two objects the planner asked to remove."""
+    objects = [{"target_id": key, "label": key, "segmentation_prompt": key, "disposition": disposition,
+                "regions": [{"frame_id": "f0", "box_xywh_normalized": [.1, .1, .2, .2]}]}
+               for key, disposition in (("table", "remove"), ("centerpiece", "remove"), ("chair_left", "keep"),
+                                        ("floor", "keep"))]
+    return {"subject_origin": "captured", "uncaptured_regions": [],
+            "coverage_requirements": [{"role": "task_object", "label": "t", "required_frame_ids": list(edited)}],
+            "automation": {"scale_references": [], "objects": objects, "removal_instruction": "the planner's words",
+                           "mask_margin_fraction": .01},
+            **({"transient_frame_ids": list(transients),
+                "transients": [{"target_id": "transient-0", "label": "person", "segmentation_prompt": "person"}]}
+               if transients else {})}
+
+
+def _job(tmp_path, monkeypatch, review, *, clean_plate):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
+    from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
+    from blueprint_pipeline import website_image_completion as image_edit, website_task_context as transport
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = tmp_path / "pipeline" / "atlas"
+    (root / "survey").mkdir(parents=True)
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"source")
+    survey = {"schema_version": "atlas_video_survey.v1", "source_video_digest": pipeline._sha256_file(video),
+              "display_rotation_degrees": 0, "heldout_pixels_included": False, "frames": []}
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    (root / "survey/atlas_video_survey.json").write_text(json.dumps(survey))
+    (root / "selection_binding.json").write_text(json.dumps({"survey_relative_path": "survey/atlas_video_survey.json",
+        "review": review, "planner_receipt": {"model": "agent"}}))
+    (root / "edit_scope.json").write_text(json.dumps({"schema_version": "atlas_edit_scope.v1",
+                                                      "edit_scope": "all_selected_views"}))
+    if clean_plate is not None:
+        status, entries = clean_plate
+        (tmp_path / "pipeline/clean_plate").mkdir(parents=True)
+        (tmp_path / "pipeline/clean_plate/clean_plate_stage_manifest.json").write_text(json.dumps({"status": status}))
+        (tmp_path / "pipeline/clean_plate/removal_manifest.json").write_text(json.dumps({"entries": entries}))
+    config = {"authority": {"provider_retention": "approved"}, "remaining_cost_usd": 10,
+              "policy": {"maximum_review_cost_usd": 1, "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05}}
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: config)
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "non-secret"))
+    monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **_: {"frames": []})
+    for module, name in ((allocator, "run_sponsored_website_atlas_pose"), (allocator, "run_sponsored_website_atlas_task"),
+                         (image_edit, "complete_background_images"), (image_edit, "verify_completed_background"),
+                         (transport, "reserve_website_preparation_spend")):
+        monkeypatch.setattr(module, name, lambda **_: pytest.fail("a paid call was made"))
+    automated, posed = [], []
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw: automated.append(kw) or {
+        "status": "quality_rejected", "background": {"status": "quality_rejected"}})
+    # The scene as filmed asks for its source pose first: stop there, after its precondition passed.
+    monkeypatch.setattr(pipeline, "_source_pose", lambda **kw: posed.append(kw) or {"status": "processing",
+                                                                                      "stage": "source_pose"})
+    run = lambda: pipeline.run_atlas_pipeline(source_video=video, output_root=root,  # noqa: E731
+        task_context={"capture_id": "c", "context_digest": "task"}, checkpoint=lambda _stage: None)
+    return root, run, automated, posed
+
+
+def test_job_7c42_goes_on_as_filmed_without_touching_its_rejected_edits(tmp_path, monkeypatch):
+    # Job itest-7c42 (2026-11-16, a wiping job): the clean plate took nothing (noop, no manifest entry),
+    # the planner's retained review removes the table and its centerpiece, and the editor background
+    # holds a rejected review, six rejected repair rounds and an edit cut off while submitting.
+    review = _bought_review()
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=("noop", []))
+    background = root / "automation/background"
+    retained = {}
+    for name in ["selected_editor_review", "fallback_repairs", *(f"fallback_repairs-{n:04d}" for n in range(2, 7))]:
+        path = background / name / "gemini_reviews/review.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"status": "completed", "result": {"status": "blocked"}}))
+        retained[path] = path.read_bytes()
+    receipt = background / "fallback_repairs-0007/repairs" / ("e" * 64) / "0.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({"status": "submitting", "request_digest": "sha256:" + "e" * 64, "frame_id": "f0"}))
+    retained[receipt] = receipt.read_bytes()
+    selection = (root / "selection_binding.json").read_bytes()
+
+    assert run() == {"status": "processing", "stage": "source_pose"}
+    assert not automated and len(posed) == 1
+    consumed = posed[0]["review"]
+    assert [row["disposition"] for row in consumed["automation"]["objects"]] == ["keep"] * 4
+    assert consumed["automation"]["removal_instruction"] == ""
+    assert consumed["job_object_rule"] == {"code": "atlas_planner_removal_not_applied",
+                                           "planner_remove_count": 2, "removed_count": 0}
+    # The bought review, its files and every retained receipt are exactly as they were.
+    assert (root / "selection_binding.json").read_bytes() == selection
+    assert json.loads((root / "atlas_scene_review.json").read_text()) == review
+    assert all(path.read_bytes() == data for path, data in retained.items())
+    assert sorted(path.name for path in background.iterdir()) == sorted(
+        ["selected_editor_review", "fallback_repairs", *(f"fallback_repairs-{n:04d}" for n in range(2, 8))])
+
+
+def _clean_plate(tmp_path, status, entries=()):
+    root = tmp_path / "pipeline/clean_plate"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "clean_plate_stage_manifest.json").write_text(json.dumps({"status": status}))
+    (root / "removal_manifest.json").write_text(json.dumps({"entries": list(entries)}))
+
+
+TRAY = [{"target_id": "tray", "task_effect": "manipulated"}]
+
+
+@pytest.mark.parametrize("case", ["object_removed", "clean_plate_blocked"])
+def test_a_job_whose_clean_plate_took_its_object_keeps_the_planner_removals(tmp_path, monkeypatch, case):
+    # The delivered job itest-e3e2 (2026-11-15): the clean plate took its tray, and the editor removed it.
+    # A clean plate that ended blocked keeps today's route too.
+    review = _bought_review()
+    clean_plate = {"object_removed": ("objects_removed", TRAY), "clean_plate_blocked": ("blocked", [])}[case]
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=clean_plate)
+    result = run()
+    assert len(automated) == 1 and not posed and automated[0]["review"] == review
+    assert result["blockers"] == ["atlas_background_review_required"] and "job_object_rule" not in result
+    assert json.loads((root / "job_object_rule.json").read_text())["applied"] is False
+
+
+def _preparation(tmp_path, status="processing", minutes=15):
+    from datetime import datetime, timedelta, timezone
+    (tmp_path / "pipeline_job_ledger.json").write_text(json.dumps({"status": status, "lease_expires_at": (
+        datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()}))
+
+
+def test_the_decision_waits_for_the_clean_plate_and_buys_nothing_meanwhile(tmp_path, monkeypatch):
+    # enqueue_preview runs before the clean plate: a first step may find none (review 2026-11-16).
+    review = _bought_review()
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=None)
+    _preparation(tmp_path)  # the attempt that queued this job is still running, so its clean plate may come
+    assert run() == {"status": "processing", "stage": "clean_plate_wait"}
+    assert not automated and not posed and not (root / "job_object_rule.json").exists()
+    assert run() == {"status": "processing", "stage": "clean_plate_wait"} and not automated and not posed
+    _clean_plate(tmp_path, "noop")
+    assert run() == {"status": "processing", "stage": "source_pose"}
+    assert not automated and len(posed) == 1 and "job_object_rule" in posed[0]["review"]
+
+
+@pytest.mark.parametrize("preparation", [None, ("failed_retryable", 15), ("completed", 15), ("processing", -1)])
+def test_an_absent_clean_plate_is_waited_for_only_while_its_preparation_attempt_runs(
+        tmp_path, monkeypatch, preparation):
+    # A clean plate that wrote nothing (``disabled``), or an attempt that ended or lost its lease without
+    # one: the absence is final, recorded, and the job takes today's route at once.
+    review = _bought_review()
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=None)
+    if preparation:
+        _preparation(tmp_path, *preparation)
+    run()
+    assert len(automated) == 1 and not posed and automated[0]["review"] == review
+    record = json.loads((root / "job_object_rule.json").read_text())
+    assert (record["applied"], record["clean_plate_status"]) == (False, "absent")
+
+
+@pytest.mark.parametrize("status", ["failed_closed", "disabled", "blocked", "some_new_status"])
+def test_only_noop_or_objects_removed_can_apply_the_rule(tmp_path, monkeypatch, status):
+    review = _bought_review()
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=(status, []))
+    _preparation(tmp_path)
+    run()
+    assert len(automated) == 1 and not posed and automated[0]["review"] == review
+    record = json.loads((root / "job_object_rule.json").read_text())
+    assert (record["applied"], record["clean_plate_status"]) == (False, status)
+
+
+@pytest.mark.parametrize("first, later", [(("noop", []), ("objects_removed", TRAY)),
+                                          (("objects_removed", TRAY), ("noop", [])),
+                                          (("noop", []), ("blocked", []))])
+def test_the_first_decision_holds_for_the_rest_of_the_job(tmp_path, monkeypatch, first, later):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    review = _bought_review()
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=first)
+    run()
+    route = (len(automated), len(posed))
+    _clean_plate(tmp_path, *later)  # a later clean-plate run never moves a job off its route
+    run()
+    assert (len(automated), len(posed)) == (2 * route[0], 2 * route[1])
+    record = json.loads((root / "job_object_rule.json").read_text())
+    assert record["applied"] is (first[0] == "noop") and record["clean_plate_status"] == first[0]
+    assert record["digest"] == canonical_digest(record, digest_field="digest")
+    (root / "job_object_rule.json").write_text(json.dumps({**record, "applied": not record["applied"]}))
+    with pytest.raises(ValueError, match="atlas_job_object_record_invalid"):
+        run()
+
+
+def test_only_a_website_captures_own_atlas_job_waits_for_a_clean_plate(tmp_path):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    from blueprint_pipeline.owned_capture_atlas_context import SCHEMA
+    review = _bought_review()
+    root = tmp_path / "pipeline" / "atlas"
+    _preparation(tmp_path)
+    assert pipeline.job_object_review(root, review, {"context_digest": "task"}) == (review, True)
+    assert pipeline.job_object_review(root, review, {"schema_version": SCHEMA}) == (review, False)
+    assert pipeline.job_object_review(tmp_path / "runs/plan/atlas", review, {}) == (review, False)
+    kept = {**review, "automation": {**review["automation"], "objects": [
+        {**row, "disposition": "keep"} for row in review["automation"]["objects"]]}}
+    assert pipeline.job_object_review(root, kept, {}) == (kept, False)  # nothing to remove: nothing to decide
+
+
+def test_people_in_the_edited_views_are_still_erased_when_the_planner_removals_are_not_applied(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, website_image_completion as image_edit
+    review = _bought_review(transients=["f0"])
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=("noop", []))
+    result = run()
+    # The editor path runs as today for the people; the objects stay, and the record says so where the
+    # scene source never looks (people were erased, so this is no scene as filmed).
+    assert len(automated) == 1 and not posed
+    consumed = automated[0]["review"]
+    assert consumed["transient_frame_ids"] == ["f0"] and consumed["transients"] == review["transients"]
+    assert [row["disposition"] for row in consumed["automation"]["objects"]] == ["keep"] * 4
+    assert consumed["automation"]["removal_instruction"] == "" and "job_object_rule" not in consumed
+    assert result[pipeline.NOT_APPLIED_FIELD] == {"code": "atlas_planner_removal_not_applied",
+                                                  "planner_remove_count": 2, "removed_count": 0}
+    assert "job_object_rule" not in result
+    # The edit request such a job makes removes the people only: no kept object, none of the planner's words.
+    targets = [{**row, "semantic_label": row["label"], "task_effect": "static_contact"}
+               for row in consumed["automation"]["objects"]] + [
+        {"target_id": "transient-0", "label": "person", "semantic_label": "person", "segmentation_prompt": "person",
+         "disposition": "remove", "task_effect": "transient"}]
+    frame = {"frame_id": "f0", "image_digest": "sha256:" + "1" * 64, "remaining_mask_digest": "sha256:" + "2" * 64}
+    prompt = image_edit.completion_binding([frame], task_digest="t", backend_digest="b", targets=targets,
+                                           repair_instruction=consumed["automation"]["removal_instruction"])["prompt"]
+    assert "the planner's words" not in prompt and image_edit._removed_task_objects(targets) == []
+    assert image_edit.MULTI_OBJECT_PROMPT not in prompt and image_edit.TRANSIENT_PROMPT in prompt
+
+
+def test_people_only_outside_the_edited_views_keep_todays_route(tmp_path, monkeypatch):
+    # Retained inputs may hold those frames unedited, so neither the scene as filmed nor the
+    # direct path may take them: the job stays on the editor path that leaves them out.
+    review = _bought_review(transients=["f9"])
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=("noop", []))
+    run()
+    assert len(automated) == 1 and not posed and automated[0]["review"] == review

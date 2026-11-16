@@ -1056,3 +1056,129 @@ def test_new_policy_cannot_hide_an_uncertain_old_policy_behind_completed_new_out
     monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("bought another image"))
     with pytest.raises(ValueError, match="removal_zone_requires_reconciliation"):
         completion.complete_background_images(frames=frames, task_digest="task", output_root=root, admission={}, token="")
+
+
+class _Ledger:
+    """The WebApp's preparation ledger as it admits and settles (``websiteSceneSponsorship.ts``)."""
+
+    def __init__(self):
+        self.rows, self.settle_calls = {}, []
+
+    def reserve(self, **kwargs):
+        admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+                     "resource_class": "openai_api_candidate", "external_disclosure_allowed": True,
+                     "allocation_binding_digest": kwargs["binding_digest"],
+                     "maximum_cost_usd": kwargs["maximum_cost_usd"], "request_count": kwargs["request_count"]}
+        assert kwargs["binding_digest"] not in self.rows  # one reservation per binding, ever
+        self.rows[kwargs["binding_digest"]] = {"admission": admission}
+        return admission, _grant(admission)
+
+    def webapp(self, **kwargs):
+        assert kwargs["operation"] == "preparation-settlement"
+        command = kwargs["payload"]["settlement"]
+        self.settle_calls.append(command)
+        row = self.rows[command["allocation_binding_digest"]]
+        assert command["completed_request_count"] == row["admission"]["request_count"]
+        assert command["provider_charge_amount_usd"] <= row["admission"]["maximum_cost_usd"]
+        settlement = {**command, "actual_cost_usd": command["provider_charge_amount_usd"], "status": "settled"}
+        assert row.setdefault("settlement", settlement) == settlement  # a second, different settlement is refused
+        return row["settlement"]
+
+    def counted(self):
+        """What the job's allowance and ceiling count: a settled row at its figure, a held row at its quote."""
+        return round(sum((row.get("settlement") or {}).get("actual_cost_usd", row["admission"]["maximum_cost_usd"])
+                         for row in self.rows.values()), 6)
+
+
+def test_a_cut_off_edit_counts_at_its_full_quote_and_is_made_again_under_its_own_reservation(tmp_path, monkeypatch):
+    # Owner rule 2026-11-16 ("YES"): itest-7c42's edit was cut off by the unit's limit while submitting.
+    from blueprint_pipeline import website_task_context as control
+    frames, _ = _inputs(tmp_path)
+    ledger, calls = _Ledger(), []
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", ledger.reserve)
+    monkeypatch.setattr(control, "website_webapp_request", ledger.webapp)
+
+    class CutOff(BaseException):
+        """The process dies mid-request: nothing after the call runs."""
+
+    def edit(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            raise CutOff
+        stream = BytesIO()
+        Image.new("RGB", kwargs["expected_size"], "blue").save(stream, format="PNG")
+        return {"succeeded": True, "generated": stream.getvalue(),
+                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
+
+    monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    context = {"context_digest": "task", "capture_id": "cap", "request_id": "req", "scene_id": "scene"}
+    task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    args = dict(frames=frames, task_digest=task_digest, task_context=context, output_root=tmp_path / "edits",
+                admission={}, token="test")
+    with pytest.raises(CutOff):
+        completion.complete_background_images(**args)
+    (first, held), = ledger.rows.items()
+    cap = 0.3
+    assert held["admission"]["maximum_cost_usd"] == 2 * cap and ledger.counted() == 2 * cap and not ledger.settle_calls
+    old = tmp_path / "edits" / first[7:]
+    cut = [json.loads(path.read_text()) for path in old.glob("[0-9].json")]
+    assert sorted(receipt["status"] for receipt in cut) == ["completed", "submitting"]
+    done_cost = next(receipt["cost_usd"] for receipt in cut if receipt["status"] == "completed")
+    # A replay (read-only adoption) settles and buys nothing, and still stops on the cut-off intent as before.
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        completion.complete_background_images(**{**args, "require_cached": True})
+    assert not ledger.settle_calls and len(calls) == 2
+
+    outputs = completion.complete_background_images(**args)
+    assert len(calls) == 3 and len(ledger.rows) == 2  # the cut-off edit was made again, under its own reservation
+    settled_first, settled_redo = ledger.settle_calls
+    assert settled_first["allocation_binding_digest"] == first and settled_first["completed_request_count"] == 2
+    # The completed edit at its receipted cost, the cut-off one at the full per-request cap: never less.
+    assert settled_first["provider_charge_amount_usd"] == round(done_cost + cap, 6)
+    redo = settled_redo["allocation_binding_digest"]
+    assert redo != first and ledger.rows[redo]["admission"]["request_count"] == 1
+    assert ledger.rows[redo]["admission"]["maximum_cost_usd"] == cap
+    redo_cost = json.loads(next((tmp_path / "edits" / redo[7:]).glob("[0-9].json")).read_text())["cost_usd"]
+    assert settled_redo["provider_charge_amount_usd"] == redo_cost
+    assert ledger.counted() == round(done_cost + cap + redo_cost, 6)
+    record = json.loads((old / completion.CUT_OFF_RECORD).read_text())
+    assert record["code"] == completion.CUT_OFF_CODE and record["counted_usd"] == round(done_cost + cap, 6)
+    assert len(record["cut_off_frame_ids"]) == 1 and record["per_request_cap_usd"] == cap
+    # The completed edit is carried, never bought or settled again; the cut-off receipt is kept as it was.
+    assert {Path(row["completion_receipt"]).parent.name for row in outputs} == {first[7:], redo[7:]}
+    assert completion.complete_background_images(**args) == outputs
+    assert len(calls) == 3 and len(ledger.rows) == 2 and len(ledger.settle_calls) == 2
+    # A replay of retained edits (export replay, the fallback read) follows the closed chain to the redo:
+    # it adopts the same outputs and writes, settles and buys nothing.
+    before = sorted((path, path.stat().st_mtime_ns) for path in (tmp_path / "edits").rglob("*") if path.is_file())
+    assert completion.complete_background_images(**{**args, "require_cached": True}) == outputs
+    assert len(calls) == 3 and len(ledger.rows) == 2 and len(ledger.settle_calls) == 2
+    assert sorted((path, path.stat().st_mtime_ns) for path in (tmp_path / "edits").rglob("*") if path.is_file()) == before
+
+
+def test_a_cut_off_batch_counts_requests_it_never_sent_at_nothing(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as control
+    frames, _ = _inputs(tmp_path)
+    ledger = _Ledger()
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", ledger.reserve)
+    monkeypatch.setattr(control, "website_webapp_request", ledger.webapp)
+
+    class CutOff(BaseException):
+        pass
+
+    def first_call_dies(**_kwargs):
+        raise CutOff
+
+    monkeypatch.setattr(completion, "_execute_frame_request", first_call_dies)
+    context = {"context_digest": "task", "capture_id": "cap", "request_id": "req", "scene_id": "scene"}
+    task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    args = dict(frames=frames, task_digest=task_digest, task_context=context, output_root=tmp_path / "edits",
+                admission={}, token="test")
+    with pytest.raises(CutOff):
+        completion.complete_background_images(**args)
+    monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit([]))
+    completion.complete_background_images(**args)
+    first = ledger.settle_calls[0]
+    # One request was sent and cut off; the other was never sent (no intent exists for it).
+    assert first["completed_request_count"] == 2 and first["provider_charge_amount_usd"] == 0.3
+    assert ledger.rows[ledger.settle_calls[1]["allocation_binding_digest"]]["admission"]["request_count"] == 2

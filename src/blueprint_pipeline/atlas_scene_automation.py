@@ -196,6 +196,12 @@ def _retained_pose_runner(*, output_root, **kwargs):
 EDIT_SCOPES = ("required_and_additional", "all_selected_views")
 
 
+#: The two refusals that mean the job's money ran out: the WebApp's answer to this job's reservation
+#: (its allowance, ceiling or safety limit; ``websiteSceneSponsorship.ts``) and the account's monthly
+#: limit (``account_monthly_spend.LIMIT_REACHED``). Every other code keeps the class it had.
+MONEY_REFUSALS = frozenset({"website_scene_preparation_budget_exhausted", "account_monthly_spend_limit_reached"})
+
+
 def measurement_plan(review):
     """The reviewed automation plan with the scene facts size estimates are bound to."""
     from .atlas_automation_plan import AutomationPlan
@@ -667,10 +673,14 @@ def run_automation(
                 **({"refined_splat": refined_splat} if refined_splat else {}),
             )
     except (ValueError, StopIteration) as exc:
+        from .atlas_preparation_job_control import _reason
         from .job_retry_policy import provider_answer, request_cannot_succeed
         if provider_answer(str(exc)) is not None or request_cannot_succeed(str(exc)):
             # An outside service refused one request (capture-39ecdc97: meta_sam_http_413). That is
             # its answer, not input anyone can give: the job's own retry schedule handles it.
+            raise
+        if _reason(exc) in MONEY_REFUSALS:
+            # The job's money ran out: it waits on the job's money recheck, never ends here.
             raise
         # Keep source reconstruction and usable size estimates even when consent,
         # budget, pixels, review, depth agreement or export blocks this candidate.
