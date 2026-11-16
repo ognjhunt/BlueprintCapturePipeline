@@ -448,10 +448,13 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     assert "handle_grasp" in camera["target_visibility_required"]
     stages = [json.loads((root / f"configuration/stage_{i}.json").read_text()) for i in range(3, 6)]
     assert stages[0]["schema_version"] == "articulated_replacement_authoring_configuration.v1"
-    assert stages[1]["asset_kind"] == stages[2]["asset_kind"] == "articulated_assembly"
+    assert stages[1]["asset_kind"] == "articulated_assembly"
     assert stages[1]["required_checks"]["non_target_joints_unactuated" if backend == "artisan_v1"
                                          else "non_target_joints_fixed"] is True
-    assert stages[2]["required_checks"]["task_joint_drive_forbidden"] is True
+    # A jointed object takes the not-run stage 5 (#3615): no simulator ran; its joint comes from the
+    # authored file, which stage 4 checked.
+    from blueprint_pipeline.website_scene_without_simulator import stage_five_configuration
+    assert stages[2] == stage_five_configuration(replacement_identity=stages[0]["replacement_identity"])
     assembly = json.loads((root / "configuration/stage_6.json").read_text())
     assert assembly["replacement"]["asset_kind"] == "articulated_assembly"
     assert assembly["replacement"]["task_joint_reset"] == "closed"
