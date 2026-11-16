@@ -960,9 +960,152 @@ def test_the_continuation_budget_is_enforced(monkeypatch, site):
     _enqueue(site)
     stages = iter(["plan", "pose", "generated_rgbd", "mesh", "automation", "refined_splat"])
     world = World(monkeypatch, site, [lambda _kwargs: {"status": "processing", "stage": next(stages)}] * 6)
-    readings = iter(range(0, 1000, 100))  # every pass takes 100 s
+    readings = iter(range(0, 1000, 50))  # every pass takes 100 s: read before its step and after the pass
     assert _tick(site, world, budget=250, clock=lambda: next(readings)) == {"processing": 1}
     assert len(world.runs) == 3 and _job(site)["stage"] == "generated_rgbd"
+
+
+def test_a_tick_starts_no_step_its_unit_limit_would_cut_and_steps_the_least_recently_ticked_first(
+        monkeypatch, tmp_path):
+    """The 2 h limit killed a tick mid edit (2026-11-16); a job a tick left goes first on the next one."""
+    jobs = {}
+    for name, last in (("a", 300), ("b", 100), ("c", None)):
+        path = tmp_path / f"bucket/scenes/site-req{name}/captures/walkthrough-req{name}/pipeline/atlas" / preview.JOB_FILE
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({} if last is None else {"last_tick_epoch": last}))
+        jobs[path] = name
+    elapsed, stepped = [0.0], []
+
+    def advance(path, *, now):
+        stepped.append(jobs[path])
+        elapsed[0] += 1500  # each step runs 25 minutes
+        path.write_text(json.dumps({"last_tick_epoch": 1000 + len(stepped)}))
+        return "processing"
+    monkeypatch.setattr(preview, "advance_job", advance)
+    monkeypatch.setattr(preview, "_read", lambda path: json.loads(path.read_text()))
+
+    assert preview.tick(tmp_path, now=lambda: 0, clock=lambda: elapsed[0]) == {"deferred": 1, "processing": 2}
+    assert stepped == ["c", "b"]  # never ticked first, then the oldest; a third would start at 50 min
+    elapsed[0] = 0.0
+    assert preview.tick(tmp_path, now=lambda: 0, clock=lambda: elapsed[0]) == {"deferred": 1, "processing": 2}
+    assert stepped[2:] == ["a", "c"]  # the job the last tick left goes first
+
+
+def test_a_continuing_tick_stops_at_the_step_budget_and_keeps_the_jobs_it_left(monkeypatch, tmp_path):
+    jobs = {}
+    for name in ("a", "b", "c"):
+        path = tmp_path / f"bucket/scenes/site-req{name}/captures/walkthrough-req{name}/pipeline/atlas" / preview.JOB_FILE
+        path.parent.mkdir(parents=True)
+        path.write_text("{}")
+        jobs[path] = name
+    elapsed, stepped = [0.0], []
+
+    def advance(path, *, now):
+        stepped.append(jobs[path])
+        elapsed[0] += 1500
+        path.write_text(json.dumps({"state": "processing", "stage": f"s{len(stepped)}", "next_attempt_at_epoch": 0,
+                                    "last_tick_epoch": len(stepped)}))
+        return "processing"
+    monkeypatch.setattr(preview, "advance_job", advance)
+    monkeypatch.setattr(preview, "_read", lambda path: json.loads(path.read_text()))
+
+    counts = preview.tick(tmp_path, now=lambda: 0, continue_seconds=preview.MAXIMUM_CONTINUE_SECONDS,
+                          clock=lambda: elapsed[0])
+    assert counts == {"deferred": 1, "processing": 2} and stepped == ["a", "b"]
+
+
+def test_no_paid_stage_starts_past_the_ticks_budget_and_the_next_tick_resumes_the_step(monkeypatch, site):
+    """However many bought rounds one step holds, each asks the tick's checkpoint first."""
+    _enqueue(site)
+    elapsed, asked = [0.0], []
+
+    def rounds(kwargs):
+        for stage in ("automation_targeted_repairs",) * 3:  # three bought rounds in one step
+            kwargs["checkpoint"](stage)
+            asked.append(stage)
+            elapsed[0] += 1500  # each round runs 25 minutes
+        return {"status": "processing", "stage": "automation"}
+    world = World(monkeypatch, site, [rounds, {"status": "processing", "stage": "automation"}])
+    fields = ("state", "stage", "revision", "reason", "transient_failures", "refusal_retries", "retry_at_epoch")
+    before = {key: _job(site).get(key) for key in fields}
+    assert preview.tick(site.storage, now=world.now, clock=lambda: elapsed[0]) == {"processing": 1}
+    # Rounds started at 0 s and 1500 s; the third would start at 3000 s, past 2700 s, and is not bought.
+    assert asked == ["automation_targeted_repairs"] * 2 and elapsed[0] == 3000
+    after = _job(site)
+    assert {key: after.get(key) for key in fields} == before  # neither failed nor counted as a refusal
+    assert preview.STEP_IN_FLIGHT not in after and "last_error" not in after
+    elapsed[0] = 0.0
+    assert preview.tick(site.storage, now=world.now, clock=lambda: elapsed[0]) == {"processing": 1}
+    assert len(world.runs) == 2 and _job(site)["stage"] == "automation"
+
+
+def test_work_already_bought_is_recorded_when_the_budget_runs_out_after_it(monkeypatch, site):
+    """The archive's completion checkpoint buys nothing: a budget spent during the upload never loses the archive."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed])
+    elapsed, publish = [0.0], world.publish
+
+    def slow_publish(**kwargs):
+        elapsed[0] = preview.STEP_START_BUDGET_SECONDS + 1
+        return publish(**kwargs)
+    world.publish = slow_publish
+    from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
+    monkeypatch.setattr(store, "publish_configured_scene_artifact", slow_publish)
+    assert preview.tick(site.storage, now=world.now, clock=lambda: elapsed[0]) == {"ready": 1}
+    assert _job(site)["state"] == "ready" and _job(site)["archive"]
+
+
+@pytest.mark.parametrize("blockers", ["gpu_canary_deployed_release_inactive_or_untrusted",
+                                      "gpu_canary_deployed_release_receipt_unverified"])
+def test_a_refusal_only_because_a_release_is_switching_waits_like_an_outage(monkeypatch, site, blockers):
+    """2026-11-16 19:13: a step that began on the old release reached a paid stage after the link moved."""
+    _enqueue(site)
+    refused = ValueError(f"atlas_completion_release_not_admitted:{blockers}")
+    world = World(monkeypatch, site, [refused, refused, {"status": "processing", "stage": "mesh"}])
+    started = _job(site)["next_attempt_at_epoch"]
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job.get("refusal_retries") in (None, 0) and job["transient_failures"] == 1
+    assert job["last_transient_reason"] == "atlas_completion_release_not_admitted"
+    assert job["next_attempt_at_epoch"] == world.clock + 120 and job["next_attempt_at_epoch"] - started < 3600
+    world.clock = job["next_attempt_at_epoch"]
+    assert world.advance() == "processing" and _job(site)["transient_failures"] == 2
+    assert _job(site)["next_attempt_at_epoch"] == world.clock + 240  # a release that stays untrusted slows down
+    world.clock = _job(site)["next_attempt_at_epoch"]
+    assert world.advance() == "processing"
+    assert _job(site)["transient_failures"] == 0 and _job(site)["stage"] == "mesh"
+
+
+@pytest.mark.parametrize("code", ["atlas_completion_not_admitted", "atlas_completion_release_not_admitted_late",
+                                  "atlas_release_not_admitted_reason"])
+def test_a_look_alike_refusal_with_release_blockers_keeps_the_refusal_schedule(monkeypatch, site, code):
+    """Only a code ending in ``_release_not_admitted`` with only switching blockers waits as an outage."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(f"{code}:gpu_canary_deployed_release_inactive_or_untrusted")])
+    assert world.advance() == "processing"
+    assert _job(site)["refusal_retries"] == 1 and not _job(site).get("transient_failures")
+
+
+def test_a_release_refusal_with_any_other_blocker_keeps_the_refusal_schedule(monkeypatch, site):
+    _enqueue(site)
+    refused = ValueError("atlas_completion_release_not_admitted:gpu_canary_deployed_release_inactive_or_untrusted,"
+                         "gpu_canary_checkout_not_clean")
+    world = World(monkeypatch, site, [refused])
+    assert world.advance() == "processing"
+    assert _job(site)["refusal_retries"] == 1 and not _job(site).get("transient_failures")
+
+
+def test_the_step_budget_keeps_the_last_step_and_the_later_passes_inside_the_units_limit() -> None:
+    from blueprint_pipeline import website_company_clip as clip
+    from blueprint_pipeline import website_company_simulation as simulation
+
+    unit = (Path(preview.__file__).resolve().parents[2] / "deploy/systemd/blueprint-website-atlas-preview.service")
+    assert "TimeoutStartSec=2h" in unit.read_text().splitlines()
+    assert preview.UNIT_TIMEOUT_SECONDS == 2 * 3600
+    assert preview.LATER_PASSES_SECONDS == (clip.TICK_BUDGET_SECONDS + clip.ENCODE_TIMEOUT_SECONDS
+                                           + simulation.TICK_BUDGET_SECONDS + simulation.BUILD_DEADLINE_SECONDS)
+    assert (preview.STEP_START_BUDGET_SECONDS + preview.LONGEST_STEP_SECONDS + preview.LATER_PASSES_SECONDS
+            == preview.UNIT_TIMEOUT_SECONDS) and preview.STEP_START_BUDGET_SECONDS == 2700
 
 
 def test_an_operator_hold_or_a_deploy_quiesce_stops_the_continuation(monkeypatch, site, tmp_path):

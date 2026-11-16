@@ -97,8 +97,13 @@ task object farther from the task's start than the scorer's reset tolerance
 (``rigid_support_seating.start_spawn_mismatch``; capture-447ae4f4: 14.7 mm), or
 whose support record holds it (the CPU rest check refused it, or it was compiled
 before the support was modelled: ``rigid_support_pad.half_support_hold``), can
-never be scored, so each newly deployed release recompiles it once, on the same
-passes and the CPU, and never reuses it (``unscorable_half_release_requeued``). A
+never be scored, so it is recompiled once per revision of those checks
+(``rigid_support_pad.HALF_SUPPORT_REVISION``, recorded on each compiled status as
+``half_support_revision``), on the same passes and the CPU, and never reused
+(``unscorable_half_revision_requeued``); a release that leaves the checks alone
+recompiles nothing. A fix outside the pinned checks (``scene_packet``, the compile
+path, the helpers they call) reaches a held half only when the revision is moved by
+hand (docs/architecture/release-binding.md, row 15). A
 completed rigid half whose recorded carry search found no stance the Franka carries
 from (capture-447ae4f4: eight stances, all ``unreachable:approach``), chosen by an
 older stance search than the running one (``team_embodiment_stance.STANCE_SEARCH_VERSION``,
@@ -194,9 +199,14 @@ RELEASE_REQUEUE_FIELD = "release_requeued"
 # reaches never loops, and a release that leaves the search unchanged recompiles nothing.
 STANCE_SEARCH_REQUEUE_FIELD = "stance_search_version_requeued"
 # A completed rigid half whose own plan spawns the task object farther from the task's start than the scorer's
-# reset tolerance can never be scored (capture-447ae4f4: 14.7 mm). Each newly deployed release recompiles it once,
-# on the CPU, and the status keeps the releases already tried, so a half that stays unscorable never loops.
-UNSCORABLE_HALF_REQUEUE_FIELD = "unscorable_half_release_requeued"
+# reset tolerance can never be scored (capture-447ae4f4: 14.7 mm). It is recompiled once per revision of the checks
+# (``rigid_support_pad.HALF_SUPPORT_REVISION``), not per release: every release recompiled one that stays held
+# (2026-11-16, three times in a day). A compiled status names the revision it was compiled under, and the status
+# keeps the revisions already tried, so a half that stays unscorable never loops. Releases before this kept the
+# releases tried as ``unscorable_half_release_requeued``; a status that still has it is read without it (no reader
+# needs it: a half compiled before revisions were recorded is recompiled once, by the revision rule).
+UNSCORABLE_HALF_REVISION_FIELD = "unscorable_half_revision_requeued"
+HALF_SUPPORT_REVISION_FIELD = "half_support_revision"
 # A completed half that proposes moving named furniture out of the Franka's way is compiled again once per
 # sealed approval of that exact proposal by the site owner (``robot_access_furniture``).
 ROBOT_ACCESS_REQUEUE_FIELD = "robot_access_confirmation_requeued"
@@ -622,12 +632,15 @@ def unscorable_half(path: Any) -> str | None:
     return start_spawn_mismatch(plan) or half_support_hold(path)
 
 
-def _unscorable_half_untried(status: Mapping[str, Any], release: str | None) -> str | None:
-    """A completed half this known release has not yet recompiled, that no episode of can be scored."""
+def _unscorable_half_untried(status: Mapping[str, Any]) -> str | None:
+    """A completed half no episode of can be scored, compiled under other checks than these and not yet recompiled
+    under these (a status written before revisions were recorded names none: it is recompiled once)."""
 
-    tried = status.get(UNSCORABLE_HALF_REQUEUE_FIELD)
-    if (release is None or status.get("status") != "completed" or status.get(RELEASE_COMMIT_FIELD) == release
-            or release in (tried if isinstance(tried, list) else [])):
+    from .rigid_support_pad import HALF_SUPPORT_REVISION
+
+    tried = status.get(UNSCORABLE_HALF_REVISION_FIELD)
+    if (status.get("status") != "completed" or status.get(HALF_SUPPORT_REVISION_FIELD) == HALF_SUPPORT_REVISION
+            or HALF_SUPPORT_REVISION in (tried if isinstance(tried, list) else [])):
         return None
     return unscorable_half(status.get("team_scene_inputs_path"))
 
@@ -761,15 +774,18 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             requeued.append({"request_key": path.stem, "reason": "robot_access_measurement_retry", **again,
                              "release_commit": release})
             continue
-        unscorable = None if target.exists() else _unscorable_half_untried(status, release)
+        unscorable = None if target.exists() else _unscorable_half_untried(status)
         if unscorable is not None:
-            tried = status.get(UNSCORABLE_HALF_REQUEUE_FIELD)
-            # Recorded before the move, so each release recompiles it at most once.
+            from .rigid_support_pad import HALF_SUPPORT_REVISION
+
+            tried = status.get(UNSCORABLE_HALF_REVISION_FIELD)
+            # Recorded before the move, so each revision of the checks recompiles it at most once.
             _write_replace(root / "status" / path.name, {
-                **status, UNSCORABLE_HALF_REQUEUE_FIELD: [*(tried if isinstance(tried, list) else []), release]})
+                **status, UNSCORABLE_HALF_REVISION_FIELD: [*(tried if isinstance(tried, list) else []),
+                                                           HALF_SUPPORT_REVISION]})
             os.replace(path, target)
             requeued.append({"request_key": path.stem, "reason": "unscorable_half", "detail": unscorable,
-                             "release_commit": release})
+                             "half_support_revision": HALF_SUPPORT_REVISION})
             continue
         if not target.exists() and _run_restored_since_refused(path, status):
             # Refused while its scene run was in cold storage; the run has come back (``scene_run_restore``).
@@ -1025,9 +1041,12 @@ def _intent_scopes(owner_scope: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def _compiled_status(attempt: Path, prepared: Mapping[str, Any], written: Mapping[str, Any]) -> dict[str, Any]:
+    from .rigid_support_pad import HALF_SUPPORT_REVISION
     from .website_owner_success_assumption import FIELD as ASSUMPTION_FIELD
 
     return {"outcome": "compiled", "attempt_root": str(attempt), "task_id": prepared["task_id"],
+            # The checks that decide whether this half can be scored; a held half is compiled again once they move.
+            HALF_SUPPORT_REVISION_FIELD: HALF_SUPPORT_REVISION,
             "team_scene_inputs_path": prepared["path"], "team_scene_inputs_digest": prepared["inputs_digest"],
             "derived_profile": {key: written[key] for key in ("path", "profile_digest")},
             **({"owner_success_confirmation": {"status": "applied",
@@ -1324,7 +1343,7 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     retry = prior.get("automatic_retry")
     if isinstance(retry, Mapping):
         status["automatic_retry"] = dict(retry)
-    for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
+    for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REVISION_FIELD,
                   ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
                   ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD):
         if isinstance(prior.get(field), list):
@@ -1457,8 +1476,9 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: s
         discard_attempt_envelopes(jobs_root, prior["attempt_root"])
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
-                                        RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
-                                        ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
+                                        RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REVISION_FIELD,
+                                        ROBOT_ACCESS_REQUEUE_FIELD,
+                                        ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
                                         ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD, REFUSAL_RETRY_FIELD, "remote_compile")
                          if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
@@ -1499,8 +1519,9 @@ def _deferred(root: Path, claimed: Path, prior: Mapping[str, Any], route: Mappin
 
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
-                                        RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
-                                        ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
+                                        RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REVISION_FIELD,
+                                        ROBOT_ACCESS_REQUEUE_FIELD,
+                                        ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
                                         ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD, REFUSAL_RETRY_FIELD) if key in prior}
     return {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept, "scenario_id": SCENARIO_ID,
             "status": "blocked", "blockers": ["team_scene_remote_compile_deferred"],

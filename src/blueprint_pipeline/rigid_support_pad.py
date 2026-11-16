@@ -90,6 +90,15 @@ POINT_BLOCK = 262_144
 NEW_REVISION_REQUIRED = "new_success_document_revision_and_owner_reconfirmation"
 #: A rigid team half compiled before its support was modelled (capture-447ae4f4's, 2026-11-03).
 UNMODELLED_HALF = "rigid_task_support_unchecked_compiled_before_support_pad"
+#: Names the checks that decide whether a compiled half can be scored: this module's support model and record,
+#: ``rigid_support_seating`` and ``team_scene_packet_worker.unscorable_half``. A completed half the checks hold is
+#: compiled again once per value, never per release. Its suffix is a digest of their code that a test recomputes,
+#: so a change to a check fails the tests until this moves, and moving it recompiles every held half once.
+#: MOVE IT BY HAND for a fix anywhere else that should reach halves already held: the producer of the support
+#: record (``scene_packet``), the compile path (``team_scene_packet``, ``website_support_pad``,
+#: ``atlas_world_levelling``) or a helper the checks call (``read_team_scene_inputs``, ``load_background_triangles``).
+#: The digest does not see those files; without a move such a fix reaches new halves only.
+HALF_SUPPORT_REVISION = "rigid_support_checks:df93cfbcbe92"
 
 
 class RigidSupportPadError(ValueError):

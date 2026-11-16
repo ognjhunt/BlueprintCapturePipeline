@@ -534,38 +534,144 @@ def _spawn_off_start(half: str, offset_m: float) -> None:
     plan_path.write_text(json.dumps(plan))
 
 
-def test_a_half_no_episode_can_be_scored_from_is_recompiled_once_per_new_release(tmp_path, monkeypatch):
+def _checks_code(text: str, *, function: str | None = None, skip: tuple[str, ...] = ()) -> str:
+    """Source with docstrings, comments, the named assignments and all whitespace removed (the same on 3.11-3.13)."""
+
+    import ast
+    import io
+    import tokenize
+
+    tree = ast.parse(text)
+    lines = text.splitlines(keepends=True)
+    keep = range(1, len(lines) + 1)
+    if function:
+        (node,) = [row for row in tree.body if isinstance(row, ast.FunctionDef) and row.name == function]
+        keep = range(node.lineno, node.end_lineno + 1)
+    drop: set[int] = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)):
+            drop.update(range(body[0].lineno, body[0].end_lineno + 1))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in skip for t in node.targets):
+            drop.update(range(node.lineno, node.end_lineno + 1))
+    cut = {token.start[0]: token.start[1] for token in tokenize.generate_tokens(io.StringIO(text).readline)
+           if token.type == tokenize.COMMENT}
+    kept = [lines[number - 1][:cut.get(number)] for number in keep if number not in drop]
+    return "".join("".join(kept).split())
+
+
+def test_the_half_support_revision_moves_with_the_checks_that_hold_a_half() -> None:
+    """Changing a check without moving ``HALF_SUPPORT_REVISION`` fails here; moving it recompiles held halves once."""
+
+    import hashlib
+
+    from blueprint_pipeline import rigid_support_pad
+
+    package = Path(worker.__file__).parent
+    parts = [_checks_code((package / name).read_text(encoding="utf-8"), skip=("HALF_SUPPORT_REVISION",))
+             for name in ("rigid_support_pad.py", "rigid_support_seating.py")]
+    parts.append(_checks_code(Path(worker.__file__).read_text(encoding="utf-8"), function="unscorable_half"))
+    digest = hashlib.sha256("\n".join(parts).encode()).hexdigest()[:12]
+    assert rigid_support_pad.HALF_SUPPORT_REVISION == f"rigid_support_checks:{digest}", (
+        f"a check that decides whether a half can be scored changed: set HALF_SUPPORT_REVISION to "
+        f"rigid_support_checks:{digest} (every held half is then compiled once more). A fix elsewhere that should "
+        f"reach halves already held (scene_packet, team_scene_packet, website_support_pad, atlas_world_levelling, "
+        f"or a helper the checks call) is not seen by this digest: move the revision by hand for it.")
+
+
+def test_a_half_no_episode_can_be_scored_from_is_recompiled_once_per_revision_of_the_checks(tmp_path, monkeypatch):
+    from blueprint_pipeline import rigid_support_pad
+
     world = _world(tmp_path, monkeypatch)
     queue, key = world["queue"], world["key"]
+    revision = rigid_support_pad.HALF_SUPPORT_REVISION
     _release(monkeypatch, RELEASE_1)
     _at(monkeypatch, 0)
     [status] = world["process"]()["results"]
     assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    assert status[worker.HALF_SUPPORT_REVISION_FIELD] == revision
     first = status["team_scene_inputs_path"]
     assert worker.unscorable_half(first) is None
     # As capture-447ae4f4's half was compiled: its tray spawned 14.7 mm from the start the scorer reads.
     _spawn_off_start(first, 0.0147)
     assert worker.unscorable_half(first) == "rigid_task_start_pose_not_spawn_pose:14.7mm>2.0mm"
-    # The release that compiled it never recompiles it ...
-    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
-    # ... a newly deployed one does, once, on the CPU, recorded before the move.
-    _release(monkeypatch, RELEASE_2)
+    # Compiled under these checks, it is never compiled again by them: not by this release, nor two releases after.
+    for release in (RELEASE_1, RELEASE_2, "c" * 40):
+        _release(monkeypatch, release)
+        assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+        assert world["process"]()["automatic_requeue"] == []
+    assert _status(world)["team_scene_inputs_path"] == first
+    # The checks move: recompiled once, on the CPU, recorded before the move.
+    monkeypatch.setattr(rigid_support_pad, "HALF_SUPPORT_REVISION", "rigid_support_checks:next")
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
         {"request_key": key, "reason": "unscorable_half",
-         "detail": "rigid_task_start_pose_not_spawn_pose:14.7mm>2.0mm", "release_commit": RELEASE_2}]
-    assert _status(world)[worker.UNSCORABLE_HALF_REQUEUE_FIELD] == [RELEASE_2]
+         "detail": "rigid_task_start_pose_not_spawn_pose:14.7mm>2.0mm",
+         "half_support_revision": "rigid_support_checks:next"}]
+    assert _status(world)[worker.UNSCORABLE_HALF_REVISION_FIELD] == ["rigid_support_checks:next"]
     [status] = world["process"]()["results"]
     assert (status["status"], status["outcome"]) == ("completed", "compiled")
     assert status["team_scene_inputs_path"] != first and worker.unscorable_half(status["team_scene_inputs_path"]) is None
     assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == status["team_scene_inputs_path"]
-    assert status[worker.UNSCORABLE_HALF_REQUEUE_FIELD] == [RELEASE_2]
-    # Even were it still unscorable, this release never tries it again: no loop.
+    assert (status[worker.HALF_SUPPORT_REVISION_FIELD], status[worker.UNSCORABLE_HALF_REVISION_FIELD]) == (
+        "rigid_support_checks:next", ["rigid_support_checks:next"])
+    # Even were it still unscorable, these checks never try it again, under any release: no loop.
     _spawn_off_start(status["team_scene_inputs_path"], 0.0147)
+    _release(monkeypatch, "d" * 40)
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
     assert world["process"]()["automatic_requeue"] == []
-    # A half within the scorer's reset tolerance is reused by every release.
-    _spawn_off_start(status["team_scene_inputs_path"], -0.0147 + 0.0015)
-    _release(monkeypatch, "c" * 40)
+
+
+def test_a_held_half_these_checks_already_tried_is_not_tried_again_whatever_its_status_names(monkeypatch):
+    from blueprint_pipeline.rigid_support_pad import HALF_SUPPORT_REVISION
+
+    monkeypatch.setattr(worker, "unscorable_half", lambda _path: "rigid_support_held")
+    status = {"status": "completed", "team_scene_inputs_path": "/x/team_scene_inputs.v1.json"}
+    assert worker._unscorable_half_untried(status) == "rigid_support_held"
+    assert worker._unscorable_half_untried({**status, worker.UNSCORABLE_HALF_REVISION_FIELD: [HALF_SUPPORT_REVISION]}) is None
+    assert worker._unscorable_half_untried({**status, worker.HALF_SUPPORT_REVISION_FIELD: HALF_SUPPORT_REVISION}) is None
+    assert worker._unscorable_half_untried({**status, "status": "blocked"}) is None
+
+
+def test_the_held_half_a_released_status_names_is_recompiled_once_then_never_on_later_releases(
+        tmp_path, monkeypatch):
+    """The host's held half (2026-11-16): written by releases that keyed it on the release, recompiled 3 times."""
+    from blueprint_pipeline import rigid_support_pad
+
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    revision = rigid_support_pad.HALF_SUPPORT_REVISION
+    _release(monkeypatch, RELEASE_1)
+    _at(monkeypatch, 0)
+    world["process"]()
+    released = {key_: value for key_, value in _status(world).items() if key_ != worker.HALF_SUPPORT_REVISION_FIELD}
+    tried = [RELEASE_1, RELEASE_2, "c" * 40]
+    (queue / "status" / f"{key}.json").write_text(json.dumps(
+        {**released, worker.RELEASE_COMMIT_FIELD: "c" * 40, "unscorable_half_release_requeued": tried}))
+    # Its support record holds it, and every recompile holds it again.
+    monkeypatch.setattr(worker, "unscorable_half", lambda _path: "rigid_support_goal_region_rest_outside_success_window")
+    halves = {_status(world)["team_scene_inputs_path"]}
+    # The first release carrying the revision recompiles it once (a status naming no revision) ...
+    _release(monkeypatch, "d" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
+        {"request_key": key, "reason": "unscorable_half",
+         "detail": "rigid_support_goal_region_rest_outside_success_window", "half_support_revision": revision}]
+    [status] = world["process"]()["results"]
+    halves.add(status["team_scene_inputs_path"])
+    assert (status["status"], status[worker.HALF_SUPPORT_REVISION_FIELD]) == ("completed", revision)
+    assert status[worker.UNSCORABLE_HALF_REVISION_FIELD] == [revision]
+    # ... and two more releases in a row recompile nothing.
+    for release in ("e" * 40, "f" * 40):
+        _release(monkeypatch, release)
+        assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+        assert world["process"]()["automatic_requeue"] == []
+    assert len(halves) == 2 and _status(world)["team_scene_inputs_path"] in halves
+    # A revision that moves still reaches it, once.
+    monkeypatch.setattr(rigid_support_pad, "HALF_SUPPORT_REVISION", "rigid_support_checks:next")
+    assert [row["reason"] for row in worker.requeue_transient_blocked(queue_root=queue)["requeued"]] == [
+        "unscorable_half"]
+    world["process"]()
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
 
 
@@ -580,9 +686,8 @@ def _as_compiled_before_the_support_pad(half: str) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
-def test_a_rigid_half_compiled_before_its_support_was_checked_is_recompiled_once_per_new_release(
-        tmp_path, monkeypatch):
-    from blueprint_pipeline.rigid_support_pad import UNMODELLED_HALF
+def test_a_rigid_half_compiled_before_its_support_was_checked_is_recompiled_once(tmp_path, monkeypatch):
+    from blueprint_pipeline.rigid_support_pad import HALF_SUPPORT_REVISION, UNMODELLED_HALF
 
     world = _world(tmp_path, monkeypatch)
     queue, key = world["queue"], world["key"]
@@ -594,14 +699,17 @@ def test_a_rigid_half_compiled_before_its_support_was_checked_is_recompiled_once
     assert json.loads(Path(first).read_text())["task_support_pad"]["reason"] == (
         "rigid_support_qualified_collision_bounds_missing")
     assert worker.unscorable_half(first) is None
-    # As capture-447ae4f4's half was compiled (release 9f47f0466): its tray rested on the scan, unchecked.
+    # As capture-447ae4f4's half was compiled (release 9f47f0466): its tray rested on the scan, unchecked, and its
+    # status names no revision of the checks.
     _as_compiled_before_the_support_pad(first)
+    (queue / "status" / f"{key}.json").write_text(json.dumps(
+        {k: v for k, v in status.items() if k != worker.HALF_SUPPORT_REVISION_FIELD}))
     assert worker.unscorable_half(first) == UNMODELLED_HALF
-    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
-    # The release that models the support recompiles it, once, on the CPU; the new half is reused after.
+    # The checks that model the support recompile it, once, on the CPU; the new half is reused after.
     _release(monkeypatch, RELEASE_2)
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
-        {"request_key": key, "reason": "unscorable_half", "detail": UNMODELLED_HALF, "release_commit": RELEASE_2}]
+        {"request_key": key, "reason": "unscorable_half", "detail": UNMODELLED_HALF,
+         "half_support_revision": HALF_SUPPORT_REVISION}]
     [status] = world["process"]()["results"]
     assert (status["status"], status["outcome"]) == ("completed", "compiled")
     second = status["team_scene_inputs_path"]

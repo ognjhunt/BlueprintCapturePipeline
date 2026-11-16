@@ -32,6 +32,7 @@ for a retry; ``retry_failed_job`` reopens a job that has already ended.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import json
 import logging
 import os
@@ -73,6 +74,34 @@ AUTHORITY_RECHECK_SECONDS = 1800
 CONTINUE_SECONDS_ENV = "BLUEPRINT_WEBSITE_ATLAS_PREVIEW_CONTINUE_SECONDS"
 DEFAULT_CONTINUE_SECONDS = 480
 MAXIMUM_CONTINUE_SECONDS = 3600
+#: The unit's ``TimeoutStartSec`` (deploy/systemd/blueprint-website-atlas-preview.service; a test pins them equal).
+UNIT_TIMEOUT_SECONDS = 2 * 3600
+#: The longest one paid stage runs once started (one bought editor round is about 16 minutes,
+#: ``atlas_background_automation``), and the longest the work after a step's last paid stage runs, with margin.
+#: A step can hold several paid stages; the tick's ``checkpoint`` runs before each one, so this bounds what can
+#: still be running when the start budget below is spent, however many rounds a step has.
+LONGEST_STEP_SECONDS = 20 * 60
+#: What the unit runs after the Atlas passes, each at its own bound (a test pins them): the company clip pass
+#: (its budget and one encode) and the company simulation pass (its budget and one build).
+LATER_PASSES_SECONDS = 900 + 900 + 600 + 900
+#: A tick starts no job step, and no paid stage inside a step, after this long, so what it starts and the passes
+#: after it end inside the unit's limit: a tick the limit killed mid-step left a paid edit's receipt ``submitting``
+#: (2026-11-16, 16:23).
+STEP_START_BUDGET_SECONDS = UNIT_TIMEOUT_SECONDS - LONGEST_STEP_SECONDS - LATER_PASSES_SECONDS
+#: The running tick's clock and the moment past which no paid stage starts (``tick`` sets it).
+_PAID_STAGE_DEADLINE: contextvars.ContextVar[tuple[Callable[[], float], float] | None] = contextvars.ContextVar(
+    "website_atlas_preview_paid_stage_deadline", default=None)
+
+
+class _TickBudgetSpent(BaseException):
+    """A paid stage would start past the tick's budget: the step ends before buying it, unchanged, and a later tick
+    resumes it from its receipts. A ``BaseException`` so that no stage's own ``except Exception`` turns it into a
+    refusal; only ``_step`` catches it."""
+
+
+#: Checkpoints that buy nothing after them (the archive's completion, a correction's source check before its
+#: publish): never stopped by the budget, so finished work is always recorded.
+_UNPAID_CHECKPOINTS = frozenset({"archive_complete", "target_correction_current_source"})
 TRIGGER_UNIT = "blueprint-website-atlas-preview.timer"
 #: The operator door's hold on the timer (its ConditionPathExists guard).
 HOLD_RECORD = Path("/var/lib/blueprint-operator-door/requests/holds") / f"{TRIGGER_UNIT}.json"
@@ -176,13 +205,30 @@ def enqueue_preview(*, descriptor: Any, capture_root: Path, pipeline_dir: Path,
 _TASK_CONTEXT_CHANGED = frozenset({"website_scene_sponsorship_binding_invalid"})
 
 
+#: The active-release admission's answers while a release is switching: a step that started on the old release
+#: and reached a paid stage after the link moved, or one that ran before the new release's receipt existed
+#: (2026-11-16, 19:13: it cost a job a refusal retry and a three-hour wait). The stage still refuses to buy every
+#: time; the job only waits as for an outage (2 min, doubling to 1 h, never past its deadline), with no refusal
+#: counted, since the next tick runs on the new release.
+_RELEASE_SWITCHING = frozenset({"gpu_canary_deployed_release_inactive_or_untrusted",
+                                "gpu_canary_deployed_release_receipt_unverified"})
+
+
+def _release_switching(error: BaseException) -> bool:
+    """A ``<stage>_release_not_admitted:<blockers>`` refusal whose every blocker is a release switching."""
+    head, _, tail = str(error).partition(":")
+    blockers = {item for item in tail.split(",") if item}
+    return head.endswith("_release_not_admitted") and bool(blockers) and blockers <= _RELEASE_SWITCHING
+
+
 def _outage(error: BaseException) -> bool:
-    """A provider 429 or 5xx, a changed task context, or a transport or OS error (timeouts included)."""
+    """A provider 429 or 5xx, a changed task context, a release switching (``_RELEASE_SWITCHING``), or a transport
+    or OS error (timeouts included)."""
     status = getattr(error, "status", None)
     if isinstance(status, int):
         return status == 429 or status >= 500
     if isinstance(error, ValueError):
-        return (_reason(error) in _TASK_CONTEXT_CHANGED
+        return (_reason(error) in _TASK_CONTEXT_CHANGED or _release_switching(error)
                 or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None)
     return isinstance(error, OSError)
 
@@ -333,6 +379,9 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
     def checkpoint(_stage: str, **_details: Any) -> None:
         if _withdrawn(capture_root):
             raise _Withdrawn()
+        deadline = _PAID_STAGE_DEADLINE.get()
+        if deadline is not None and _stage not in _UNPAID_CHECKPOINTS and deadline[0]() >= deadline[1]:
+            raise _TickBudgetSpent(_stage)
     try:
         context = load_current_website_task_context(request_id=job["request_id"], scene_id=job["scene_id"],
                                                     capture_id=job["capture_id"], purpose="scene_preparation")
@@ -347,6 +396,10 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
             }
         return advance_preparation_step(job, job_dir=job_dir, source_video=capture_root / job["source_video"],
                                         task_context=context, checkpoint=checkpoint, now=now, **correction)
+    except _TickBudgetSpent as spent:
+        # Nothing was bought for this stage; the job is as it was, and a later tick goes on from its receipts.
+        logger.info("website_atlas_preview_paid_stage_deferred capture=%s stage=%s", job.get("capture_id"), spent)
+        return job
     except Exception as error:  # noqa: BLE001 - the source adapter owns its typed refusal
         return _failed_step(job, error, current)
 
@@ -777,15 +830,36 @@ def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_s
 
     Each step takes the job's own lock, as one tick always did. ``stop_reason``
     is asked before every further pass; any reason (an operator hold, a deploy's
-    quiesce) ends the tick. Counts are each job's last outcome.
+    quiesce) ends the tick. Counts are each job's last outcome. Jobs are stepped
+    least recently ticked first, and no step starts after ``STEP_START_BUDGET_SECONDS``:
+    the jobs left are counted ``deferred`` and go first on the next tick.
     """
-    paths = [path for path in sorted(Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}"))
-             if capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name)]
+    paths = sorted((path for path in Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}")
+                    if capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name)),
+                   key=lambda path: (_last_tick(path), str(path)))
+    started = clock()
+    # Paid stages inside a step ask the tick's checkpoint first: none starts past the same budget.
+    token = _PAID_STAGE_DEADLINE.set((clock, started + STEP_START_BUDGET_SECONDS))
+    try:
+        return _tick_passes(paths, started=started, now=now, continue_seconds=continue_seconds,
+                            stop_reason=stop_reason, clock=clock)
+    finally:
+        _PAID_STAGE_DEADLINE.reset(token)
+
+
+def _tick_passes(paths: list[Path], *, started: float, now: Callable[[], float], continue_seconds: float,
+                 stop_reason: Callable[[], str | None], clock: Callable[[], float]) -> dict[str, int]:
     outcomes: dict[Path, str] = {}
-    started, passes = clock(), 1
+    passes, deferred, spent = 1, 0, False
     while True:
         advanced = []
-        for path in paths:
+        for index, path in enumerate(paths):
+            if clock() - started >= STEP_START_BUDGET_SECONDS:
+                # In the first pass these jobs were not stepped at all this tick; later, only not again.
+                spent, deferred = True, len(paths) - index if passes == 1 else 0
+                logger.info("website_atlas_preview_step_budget_spent pass=%d jobs_left=%d", passes,
+                            len(paths) - index)
+                break
             before = _progress(path) if continue_seconds > 0 else None
             try:
                 outcome = advance_job(path, now=now)
@@ -795,7 +869,7 @@ def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_s
             outcomes[path] = outcome
             if before is not None and outcome == "processing" and _advanced(before, _progress(path), now()):
                 advanced.append(path)
-        if not advanced:
+        if not advanced or spent:
             break
         elapsed = clock() - started
         reason = "budget_spent" if elapsed >= continue_seconds else stop_reason()
@@ -806,10 +880,19 @@ def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_s
         logger.info("website_atlas_preview_continuing jobs=%d pass=%d elapsed_seconds=%d",
                     len(advanced), passes, elapsed)
         paths = advanced
-    counts: dict[str, int] = {}
+    counts: dict[str, int] = {"deferred": deferred} if deferred else {}
     for outcome in outcomes.values():
         counts[outcome] = counts.get(outcome, 0) + 1
     return counts
+
+
+def _last_tick(path: Path) -> float:
+    """When a tick last stepped this job (an unreadable or new job: never, so first)."""
+    try:
+        value = _read(path).get("last_tick_epoch")
+    except Exception:  # noqa: BLE001 - an unreadable job goes first, where its step reports it
+        return 0.0
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
 def _read_only_client(transport: Any = None) -> Any:

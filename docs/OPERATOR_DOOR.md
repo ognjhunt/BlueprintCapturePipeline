@@ -541,7 +541,12 @@ the door. The Atlas provider poll (`blueprint-website-atlas-provider-poll.timer`
 and `.path`) is the one exception to the deploy's quiesce: it only reads
 operations already bought, so it keeps running through a deploy and is
 restarted with the release; see "Provider poll and completion webhooks" in
-`docs/runbooks/atlas-beta.md`.
+`docs/runbooks/atlas-beta.md`. The GPU spend guard's timer
+(`blueprint-gpu-spend-guard.timer`) is the other: it writes the Google Cloud
+budget report every paid admission needs at most 5 minutes old, starts
+nothing and tears down only orphans past their TTL. It is stopped only across
+the switch itself (about 30 s, and again across an automatic return to the
+previous release) and started again first, so the report never expires.
 
 Pause a safe trigger through the door with an owner and automatic expiry:
 
