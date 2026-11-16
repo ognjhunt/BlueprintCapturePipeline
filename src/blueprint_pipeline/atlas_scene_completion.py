@@ -407,12 +407,11 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         raise ValueError('atlas_completion_task_gap_plan_missing')
     audit = source_actions(entries, gallery)
     write_json(root / 'source-evidence.json', audit)
-    if audit['additional_source_frame_ids'] or audit['unresolved_gap_ids']:
-        report = {'schema_version': 'atlas_source_gap_action.v1',
-                  'status': ('source_recovery_required' if audit['additional_source_frame_ids']
-                             else 'source_review_required'),
-                  'reason': ('atlas_recorded_source_views_must_be_recovered_before_generation'
-                             if audit['additional_source_frame_ids'] else 'atlas_source_visibility_uncertain'),
+    # A gap the footage does not show is generated like any other, from the real photographs,
+    # depth and cameras sent with every request; the record says it was not filmed.
+    if audit['additional_source_frame_ids']:
+        report = {'schema_version': 'atlas_source_gap_action.v1', 'status': 'source_recovery_required',
+                  'reason': 'atlas_recorded_source_views_must_be_recovered_before_generation',
                   'source_evidence': audit, 'planner': planned, 'new_atlas_generation_calls': 0,
                   'claim_ceiling': 'development_only', **binding}
         report['digest'] = canonical_digest(report, digest_field='digest')
@@ -493,7 +492,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "preservation_paths": [*generation["preservation_paths"], str(root / 'source-evidence.json')],
               "generated_frame_ids": [row["frame_id"] for row in generated], "review": visual,
               "selected_camera_ids": ids, "target_cameras": [row["camera"] for row in selected],
-              "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": proposal["remaining_unknowns"],
+              "gap_assessment": proposal["gap_assessment"], "remaining_unknowns": [
+                  *proposal["remaining_unknowns"], *(f'{key}: not filmed; generated from the surrounding footage'
+                                                     for key in audit['unresolved_gap_ids'])],
               "environment_surfaces": proposal.get("environment_surfaces", []),
               "generated_geometry_ready": visual["status"] == "passed", "completion_extent": "identified_missing_geometry_only",
               'gap_survey_digest': gaps['digest'],
