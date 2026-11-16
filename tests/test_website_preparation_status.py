@@ -377,34 +377,24 @@ def test_a_completed_geometry_only_fit_check_is_held_and_never_handed_off(prepar
     assert _post(prepared_source).json()["state"] == "awaiting_inputs"
 
 
-def _complete_navigation_preparation(source, *, embodiment_id=None, **change):
-    """A navigation job handed to the G1 screening lane, as the handoff records it."""
-    from blueprint_pipeline.task_evaluation_g1_catalog import G1_EMBODIMENT_ID
-    from blueprint_pipeline.website_locomotion_hold import navigation_preparation
-
+def _complete_room_package(source, *, record_change=None, **change):
+    """A navigation job handed to the company package as the room package, as the handoff records it
+    (``website_scene_handoff.write_room_package``: a sealed record beside the handoff)."""
     root, owner, context, selected, ledger, _ = source
     context["task_family"] = "navigation"
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
     selected["task_context_digest"] = context["context_digest"]
     write_json(root / "pipeline/website_task_context.json", context)
-    sha = lambda character: "sha256:" + character * 64  # noqa: E731
-    receipt = {"receipt_digest": sha("a"), "source": {"scene_intent_id": "scene-" + "b" * 64,
-        "scene_intent_digest": sha("b"), "capture_id": owner["capture_id"],
-        "task_id": "website-" + context["context_digest"][7:27], "task_context_digest": context["context_digest"],
-        "scene_revision_digest": sha("c")}}
-    inputs = {"status": "written", "path": str(root / "pipeline/record.json"), "digest": sha("d"),
-              "scene_revision_digest": sha("c")}
-    options = {"requirements": {"locomote": True, "manipulate": False}, "embodiments": [],
-               "policies": [{"candidate_id": "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
-                             "embodiment_id": embodiment_id or G1_EMBODIMENT_ID, "runnable": True, "missing": []}]}
-    record = navigation_preparation(task_context=context, spec_digest=sha("e"), options=options,
-                                    scene_inputs=inputs, receipt=receipt)
-    handoff = {"schema_version": "website_scene_handoff.v1", "status": "intake_ready", "blockers": [],
+    record = {"schema_version": "blueprint.room_package_inputs.v1", "task_context_digest": context["context_digest"],
+              "task_kind": "goal_region_navigation", "task_profile": "goal_region_navigation",
+              "success_rule_defined": True, "success_rule_assumed": True, **(record_change or {}), "inputs_digest": ""}
+    record["inputs_digest"] = canonical_digest(record, digest_field="inputs_digest")
+    path = root / "pipeline/website_scene_preparation/room_package/half/room_package_inputs.v1.json"
+    write_json(path, record)
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "room_package_written", "blockers": [],
                **{key: owner[key] for key in ("scene_id", "capture_id")}, "job_disposition": "accepted",
                "claim_ceiling": "development_only", "simulator_ready": False, "visual_reconstruction_ready": True,
-               "compiled_task_spec_digest": sha("e"), "navigation_scene_inputs": inputs,
-               "navigation_intake": {"status": "forward_pending", "receipt": receipt},
-               "navigation_preparation": record, **change}
+               "room_package": {"path": str(path), "inputs_digest": record["inputs_digest"]}, **change}
     handoff["digest"] = canonical_digest(handoff, digest_field="digest")
     write_json(root / "pipeline/website_scene_preparation/handoff.json", handoff)
     listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
@@ -415,13 +405,13 @@ def _complete_navigation_preparation(source, *, embodiment_id=None, **change):
 
 
 @pytest.mark.parametrize("schema", [status_reader.STATUS_V1, status_reader.STATUS_V3, status_reader.STATUS_V6])
-def test_a_navigation_job_handed_to_the_g1_screening_lane_reads_as_handed_off(prepared_source, schema):
-    _complete_navigation_preparation(prepared_source)
+def test_a_room_package_job_reads_as_handed_off(prepared_source, schema):
+    _complete_room_package(prepared_source)
     result = status_reader.read_preparation_status(capture_root=prepared_source[0], selectors=prepared_source[3],
                                                   schema_version=schema)
     assert result["state"] == "handed_off" and result.get("terminal_reason") is None
     if schema == status_reader.STATUS_V3:
-        assert result["outcome"] is None  # Handed to screening claims no result.
+        assert result["outcome"] is None  # A package handed on claims no result.
     assert _post(prepared_source).json()["state"] == "handed_off"
 
 
@@ -430,7 +420,7 @@ def test_a_brief_confirmed_after_preparation_keeps_the_retained_records_readable
     """Confirming a brief is consent state: the status still reads what was retained under the sealed context."""
     root, owner, context, selected, ledger, _ = prepared_source
     context.update(confirmed=False, confirmed_at=None, purpose="scene_preparation")
-    _complete_navigation_preparation(prepared_source)
+    _complete_room_package(prepared_source)
     parent_digest = context["context_digest"]
     assert selected["task_context_digest"] == parent_digest
     # The site confirms its brief on the website: its current reading changes only in the confirmation,
@@ -448,18 +438,16 @@ def test_a_brief_confirmed_after_preparation_keeps_the_retained_records_readable
                                                   schema_version=status_reader.STATUS_V6)
 
 
-@pytest.mark.parametrize("change", [{"embodiment_id": "another_walking_body"},
-                                    {"navigation_intake": {"status": "refused", "reason": "x"}},
-                                    {"website_intake_outbox": {"state": "forward_pending", "submission_id": "x"}},
-                                    {"claim_ceiling": "simulation_estimate"}])
-def test_a_navigation_record_off_the_g1_lane_or_without_its_receipt_is_not_handed_off(prepared_source, change):
-    embodiment = change.pop("embodiment_id", None)
-    _complete_navigation_preparation(prepared_source, embodiment_id=embodiment, **change)
-    from blueprint_pipeline.website_task_context_contracts import retains_navigation_preparation
+@pytest.mark.parametrize(("change", "record_change"), [
+    ({}, {"task_context_digest": "sha256:" + "f" * 64}), ({"job_disposition": "held_for_preparation"}, None),
+    ({"status": "needs_input"}, None), ({"blockers": ["x"]}, None), ({"simulator_ready": True}, None)],
+    ids=["another_context", "held", "status", "blockers", "simulator"])
+def test_a_room_package_for_another_context_or_not_accepted_is_not_handed_off(prepared_source, change, record_change):
+    _complete_room_package(prepared_source, record_change=record_change, **change)
+    from blueprint_pipeline.website_task_context_contracts import retains_room_package
     handoff = json.loads((prepared_source[0] / "pipeline/website_scene_preparation/handoff.json").read_text())
-    assert not retains_navigation_preparation(handoff, prepared_source[2])
-    if "website_intake_outbox" not in change:
-        assert _post(prepared_source).status_code == 503
+    assert not retains_room_package(handoff, prepared_source[2])
+    assert _post(prepared_source).status_code == 503
 
 
 @pytest.mark.parametrize("change", [{"source_registration": {"path": "registered.json"}},

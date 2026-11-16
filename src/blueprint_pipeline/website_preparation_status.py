@@ -405,6 +405,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         if before.get("status") == "completed":
             from .website_task_context_contracts import (
                 holds_native_task_preparation, retains_geometry_only_fit, retains_navigation_preparation,
+                retains_room_package,
                 retains_robot_fit_hold, retains_task_family_preparation,
             )
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
@@ -422,15 +423,17 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                                        or retains_robot_fit_hold(handoff, held_context)
                                        or retains_recapture_required(handoff, held_context))
                 family_prepared = retains_task_family_preparation(handoff, held_context)
-                # A navigation job handed to the G1 screening lane reads as handed off; it claims no result.
-                navigation_prepared = retains_navigation_preparation(handoff, held_context)
-                if native_profile_held or family_prepared or navigation_prepared:
+                # A job handed to the company package as the room package (or, retained, a navigation job
+                # handed to the G1 screening lane) reads as handed off; it claims no result.
+                room_package = (retains_room_package(handoff, held_context)
+                                or retains_navigation_preparation(handoff, held_context))
+                if native_profile_held or family_prepared or room_package:
                     break
             _require(handoff.get("schema_version") == "website_scene_handoff.v1"
                      and handoff.get("scene_id") == selected["scene_id"]
                      and handoff.get("capture_id") == selected["capture_id"]
                      and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
-                     and (native_profile_held or family_prepared or navigation_prepared or
+                     and (native_profile_held or family_prepared or room_package or
                           handoff.get("website_intake_outbox", {}).get("state") == "forward_pending"))
             _require(bool(_output_commit(root, scene_id=selected["scene_id"], capture_id=selected["capture_id"])))
             state = ("awaiting_inputs" if native_profile_held or (family_prepared and handoff["status"] == "needs_input")

@@ -24,6 +24,11 @@
    "appearance_quality_not_passed": "The appearance file did not pass Blueprint's image quality check; it is included as it is.",
    "support_region_not_held": "At part of the destination area the surface in the collision file does not hold the object where the success rule counts it as placed: it would tip off an edge or rest higher or lower than the rule allows. Blueprint did not test this.",
    "support_not_held": "Where the object starts or is placed, the surface in the collision file does not hold it as the success rule expects. Blueprint did not test this.",
+   "room_not_run": "The room is as reconstructed from the video; Blueprint ran no robot, policy or simulator in it.",
+   "goal_estimated": "The goal region was estimated from the video; its radius and how long the robot must stay in it are assumed, not stated by the site.",
+   "no_rule": "This package includes no success rule from Blueprint for this job; the job as the site described it is on the job's page.",
+   "objects_taken_out": "object(s) the job involves were taken out of the room scan and are not in this package.",
+   "objects_in_scan": "The job's objects are part of the room scan; they are not separate files.",
    "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video."
   }
  },
@@ -149,17 +154,21 @@
     ]
    },
    "scene": "none",
-   "downstream": [
-    "navigation-4k-short"
-   ],
    "compile": {
-    "strategy": "pick_and_place",
-    "stage_5": "not_run"
+    "handoff": "room_package"
    },
    "expected": {
-    "last_stage": "completion_enqueue",
-    "kind": "refusal",
-    "code": "preparation_completion_not_adopted"
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "goal_estimated"
+    ],
+    "readme_sha256": "sha256:439d786bbaec30c19081695a75bdcc445a0bfa760ca727d155e8d3bc317e8930"
    }
   },
   {
@@ -238,15 +247,22 @@
      }
     ]
    },
-   "scene": "host_chain",
+   "scene": "none",
    "compile": {
-    "strategy": "pick_and_place",
-    "stage_5": "not_run"
+    "handoff": "room_package"
    },
    "expected": {
-    "last_stage": "routing",
-    "kind": "refusal",
-    "code": "route:none"
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "no_rule"
+    ],
+    "readme_sha256": "sha256:d3dbd70a268cc81fddb9497b5e0454e268894634013a984a46b688784cb7c577"
    }
   },
   {

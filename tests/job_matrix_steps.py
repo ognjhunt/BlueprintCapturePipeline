@@ -13,7 +13,9 @@ Fixtures reused, not copied (a re-base only has to keep these names):
 - the website half: ``tests/test_team_scene_packet._scene``, ``tests/test_team_scene_packet_owner_confirmation._job``
   and the package's own helpers in ``tests/test_website_scene_package_robot_absent`` (``_not_run``,
   ``_stance_raises``, ``_packet_raises``, ``_sealed_doc``);
-- the zip: ``tests/test_website_company_simulation`` ``Job``, ``World``, ``_package``.
+- the zip: ``tests/test_website_company_simulation`` ``Job``, ``World``, ``_package``;
+- the room package (navigation, an unknown kind): ``tests/test_website_scene_handoff_navigation.room_job``, the real
+  handoff on real fixture geometry onto that ``Job``'s capture.
 """
 from __future__ import annotations
 
@@ -49,7 +51,8 @@ def routing(row: Mapping[str, Any]) -> dict[str, Any]:
     reading, feed = row["reading"], "fixture:matrix row reading (the Atlas review that writes it is a paid model call)"
     profile_id = _operation_profile(reading["task_family"], reading["steps"])
     if profile_id is None:
-        return _row("stopped", stop=_stop("refusal", "route:none"), fed_from=feed)
+        # No task profile: not a stop since 2026-11-16, the handoff ships the room package (``write_room_package``).
+        return _row("passed", fed_from=feed, profile_id=None, route="room_package")
     return _row("passed", fed_from=feed, profile_id=profile_id,
                 native_task_kind=task_profile_for(profile_id).native_task_kind)
 
@@ -98,7 +101,7 @@ def scene_chain(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPatch)
 
     mode = row["scene"]
     if mode == "none":
-        return _row("not_applicable", reason="navigation keeps the scene as filmed: no subject, no scene build")
+        return _row("not_applicable", reason="a room package has no subject of its own: no scene build")
     if mode == "isaac":
         return _row("not_run_here", reason="an Isaac stage 5 runs only on a rented GPU")
     feed = "fixture:tests/test_website_native_inputs.packet (the real prepare_construction_stages)"
@@ -217,6 +220,8 @@ def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPa
     from tests import test_website_scene_package_robot_absent as package_tests
 
     spec = row["compile"]
+    if spec.get("handoff") == "room_package":
+        return room_handoff(row, work, patches)
     stage_5 = spec["stage_5"]
     articulated = spec["strategy"] == "articulated_open_close"
     if articulated:
@@ -271,6 +276,26 @@ def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPa
                 physics_check=(source or {}).get("physics_check"))
 
 
+def room_handoff(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The real scene handoff of a room package job (``website_scene_handoff.write_room_package``) on the real
+    fixture geometry, written onto the company builder's own test capture."""
+    from tests.test_website_scene_handoff_navigation import room_job
+
+    reading = row["reading"]
+    _job, _context, result = room_job(work, patches, family=reading["task_family"],
+                                     description=reading["steps"][0]["task_quote"])
+    feed = ("fixture:tests/test_website_scene_handoff_navigation.room_job (the real handoff on "
+            "tests/test_website_task_preparation geometry and a real splat)")
+    if result.get("status") != "room_package_written":
+        return _row("stopped", stop=_stop("refusal", str((result.get("blockers") or [result.get("status")])[0])),
+                    fed_from=feed)
+    record = json.loads(Path(result["room_package"]["path"]).read_text())
+    return _row("passed", fed_from=feed, half_record_path=result["room_package"]["path"], job_root=str(work),
+                task_kind=record["task_kind"], success_rule_defined=record["success_rule_defined"],
+                success_rule_assumed=record["success_rule_assumed"], robot_free_probe=record["robot_free_probe"],
+                robot_station_absent=None, assumed_thresholds=False, physics_check=None)
+
+
 def readme_variant(readme: str, physics_check: str | None, sentences: Mapping[str, Any]) -> list[str]:
     """What the README's "How it was made" section says, read exactly: the matrix file's fixed text, then the
     sentences of one physics check, then the notes, in the package's order, and nothing else. The compile's
@@ -296,8 +321,14 @@ def readme_variant(readme: str, physics_check: str | None, sentences: Mapping[st
 
 
 def company_zip(row: Mapping[str, Any], compiled: Mapping[str, Any], work: Path) -> dict[str, Any]:
-    from tests.test_website_company_simulation import Job, World, _package
+    from tests.test_website_company_simulation import Job
 
+    if compiled.get("job_root"):
+        # A room package: the handoff wrote it on this capture, which no team scene status names.
+        job = Job(Path(compiled["job_root"]) / "download")
+        for path in (job.queue / "status").glob("*.json"):
+            path.unlink()
+        return _zipped(row, compiled, job, "website_compile:the room package the handoff wrote")
     job = Job(work / "download")
     status = next((job.queue / "status").glob("*.json"))
     record_path = Path(compiled["half_record_path"])
@@ -327,6 +358,12 @@ def company_zip(row: Mapping[str, Any], compiled: Mapping[str, Any], work: Path)
         record_path.write_text(json.dumps(value))
         record_path.chmod(0o444)
     status.write_text(json.dumps({**json.loads(status.read_text()), "team_scene_inputs_path": str(record_path)}))
+    return _zipped(row, compiled, job, feed)
+
+
+def _zipped(row: Mapping[str, Any], compiled: Mapping[str, Any], job: Any, feed: str) -> dict[str, Any]:
+    from tests.test_website_company_simulation import World, _package
+
     world = World(job)
     published = world.publish()
     if published.get("status") != "published":

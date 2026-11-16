@@ -269,6 +269,9 @@ def test_a_geometry_only_scene_ends_at_the_fit_check_and_is_never_registered(tmp
 def test_a_family_task_on_the_geometry_only_route_is_recorded_not_assessed(tmp_path, monkeypatch):
     from tests.test_website_task_preparation import _arguments
 
+    # Its runtime is installed: its own route, as before (none installed ships the room package).
+    monkeypatch.setattr("blueprint_pipeline.website_early_task_hold.task_family_runtime_gap", lambda *_, **__: None)
+
     args = _arguments(tmp_path)
     monkeypatch.setattr("blueprint_pipeline.task_family_scoring.canonical_task_family", lambda _: "surface_wipe")
     monkeypatch.setattr(handoff, "compile_website_scene_preparation",

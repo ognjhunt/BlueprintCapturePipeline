@@ -1,68 +1,19 @@
-"""Hold a website job whose task Blueprint cannot evaluate right after its Atlas review.
+"""Whether a family task's runtime is installed on this host (``task_family_runtime_gap``).
 
-The Atlas scene-planner review is the first purchase of a website job's Atlas lane
-and the call that reads the whole task (``website_task_semantics``). Once it is
-retained, every input of two decisions exists: the job has no native task profile
-(close a door, push, liquid, assembly, navigation), or its family profile (fold,
-pour, wipe, insert, stack, press, multi-step) has no runtime installed on this host.
-Such a job used to buy its full Atlas scene (pose, generated views, splat, mesh,
-background automation) and only then hold at the scene handoff. It now holds here,
-before the first World Labs reservation, under the same typed codes, and
-``holds_native_task_preparation`` re-derives the hold before the capture stage or
-the status reader accepts it.
-
-A hold never discards the job. The review, selection and semantics stay retained;
-``website_atlas_preview.retry_failed_job`` reopens it, and the next pass re-derives
-the decision from the deployed code and catalog: once the capability ships, it buys
-the scene from the retained selection without buying the review again.
-
-Not held here, and why:
-
-- A reading that names a registered profile but leaves part of the job unresolved.
-  Its decision needs the operation-coverage clarification, which is bought with the
-  scale review after the source pose, or after the mesh
-  (``website_operation_coverage_review``). It still holds at the handoff.
-- Several task objects, or a soft one (``native_task_subject_gap``). Those read the
-  capture's clean-plate object analysis, which runs beside this job rather than
-  before it.
-- A job that already started buying its scene (``scene_purchase_started``): the
-  handoff makes the same decision after it, as before.
-
-The hold record also says what the job cost before it held: the seconds since the
-Atlas job's intake and the dollars the WebApp ledgers settled for this capture
-(``spend_before_hold``). A ledger that cannot be read is recorded as unreadable,
-never as zero. While the hold stands, the capture's clean plate and later preparation
-reserve no new upstream spend (``stop_paid_work_when_held``); a call already
-reserved finishes. The stop is no marker: it reads the hold each time, so a job
-``retry_failed_job`` reopened buys its clean plate again.
+This module once held a website job right after its Atlas review, before its scene was bought, when the job
+had no task profile or its family no installed runtime. Owner direction 2026-11-16: any job is accepted, so
+nothing is held here any more. Every such job buys its scene and the scene handoff ships the room package
+(``website_scene_handoff.write_room_package``); the handoff reads ``task_family_runtime_gap`` to choose it.
+A handoff hold an earlier release wrote still reads as held (``holds_native_task_preparation``).
 """
 from __future__ import annotations
 
-import contextlib
-import json
-import time
-from collections.abc import Iterator, Mapping
-from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
-from .website_paid_work_stop import paid_work_stop
-
-WEBSITE_CONTEXT_SCHEMA = "website_site_task_context.v1"
-SCHEMA = "website_atlas_task_preparation_hold.v1"
-HOLD_FILE = "task_preparation_hold.json"
-#: The preview job's stage while held; ``atlas_preparation_job_control`` keeps it terminal.
-STAGE = "task_preparation_hold"
-HOLD_POINT = "after_atlas_review"
 FAMILY_RUNTIME_GAP = "website_task_family_runtime_preparation_required"
 PROFILE_GAP = "website_native_task_profile_preparation_required"
 COVERAGE_GAP = "website_task_operation_coverage_unresolved"
-#: The holds decided at ``HOLD_POINT``; a subject hold needs the scene's object analysis.
-EARLY_CODES = frozenset({PROFILE_GAP, COVERAGE_GAP, FAMILY_RUNTIME_GAP})
-#: Stages only the scene purchase creates under a job's Atlas root.
-_SCENE_STAGE_DIRS = ("automation", "generated", "splat", "mesh", "preserved_completion", "downloads")
-_POSE_PURCHASE_NAMES = frozenset({"atlas_pose", "atlas_pose_attempts", "controller_admission.json",
-                                  "atlas_posed_rgbd_result.json"})
 
 
 def task_family_runtime_gap(task_context: Mapping[str, Any], *, task_semantics: Mapping[str, Any] | None,
@@ -89,7 +40,7 @@ def task_family_runtime_gap(task_context: Mapping[str, Any], *, task_semantics: 
         return None
     general = task_context.get("task_family") == "general_task" and task_semantics is not None
     return {
-        "code": FAMILY_RUNTIME_GAP, "task_family": task_context["task_family"],
+        "code": FAMILY_RUNTIME_GAP, "task_family": task_context.get("task_family"),
         "task_context_digest": task_context.get("context_digest"), "job_disposition": "held_for_preparation",
         "description": task_context.get("description"),
         "reason": (f"The task is a {family.replace('_', ' ')} job. No simulation runtime for it is installed "
@@ -101,222 +52,3 @@ def task_family_runtime_gap(task_context: Mapping[str, Any], *, task_semantics: 
         **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest} if general else {}),
         "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
     }
-
-
-def early_task_preparation_gap(task_context: Mapping[str, Any], *, task_semantics: Mapping[str, Any] | None,
-                               source_video_digest: str | None,
-                               runtimes: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
-    """The hold this website task gets from what its Atlas review already read, or None.
-
-    None when the task can be evaluated, and when the decision still needs an input
-    that does not exist yet (the operation-coverage clarification).
-    """
-    if task_context.get("schema_version") != WEBSITE_CONTEXT_SCHEMA or "task_family" not in task_context:
-        return None
-    from .website_task_preparation import native_task_preparation_gap
-    options = {"task_semantics": task_semantics, "source_video_digest": source_video_digest}
-    gap = native_task_preparation_gap(task_context, **options)
-    if gap is not None:
-        if gap["code"] == COVERAGE_GAP and task_semantics is not None:
-            from .website_operation_coverage import clarification_request
-            if clarification_request(task_semantics, task_context=task_context,
-                                     source_video_digest=source_video_digest) is not None:
-                return None
-        return gap if gap["code"] in EARLY_CODES else None
-    return task_family_runtime_gap(task_context, runtimes=runtimes, **options)
-
-
-def scene_purchase_started(output_root: Path) -> bool:
-    """Whether this Atlas job has started buying its scene; then the handoff holds it, as before."""
-    root = Path(output_root)
-    if any((root / name).exists() for name in _SCENE_STAGE_DIRS):
-        return True
-    pose = root / "pose"
-    return pose.is_dir() and any(path.name in _POSE_PURCHASE_NAMES for path in pose.rglob("*"))
-
-
-def hold_after_review(*, output_root: Path, task_context: Mapping[str, Any],
-                      source_video_digest: str) -> dict[str, Any] | None:
-    """The Atlas pipeline's result for a job held right after its review, or None to go on.
-
-    Called once the review's selection and semantics are retained and before any
-    scene stage. Writes the hold record the capture stage reads. Spends nothing.
-    """
-    if task_context.get("schema_version") != WEBSITE_CONTEXT_SCHEMA:
-        return None
-    from .website_task_semantics import load_task_semantics
-    output_root = Path(output_root)
-    try:
-        semantics = (load_task_semantics(job_dir=output_root, task_context=task_context,
-                                         source_video_digest=source_video_digest)
-                     if task_context.get("task_family") == "general_task" else None)
-        gap = early_task_preparation_gap(task_context, task_semantics=semantics,
-                                         source_video_digest=source_video_digest)
-    except (ValueError, TypeError, KeyError):
-        # The handoff reaches the same decision, or its own refusal, after the scene.
-        return None
-    if gap is None or scene_purchase_started(output_root):
-        return None
-    from .common import write_json
-    selection = json.loads((output_root / "selection_binding.json").read_text())
-    spend = spend_before_hold(output_root=output_root, task_context=task_context,
-                              source_video_digest=source_video_digest)
-    record = {"schema_version": SCHEMA, "hold_point": HOLD_POINT, "capture_id": task_context.get("capture_id"),
-              "scene_id": task_context.get("scene_id"), "task_context_digest": task_context["context_digest"],
-              "source_video_digest": source_video_digest,
-              "planner_receipt_digest": canonical_digest(selection.get("planner_receipt") or {}),
-              "gap": gap, "scene_purchased": False, "provider_mutation_performed": False,
-              "spend_before_hold": spend,
-              "resume": "website_atlas_preview.retry_failed_job re-derives this hold from the retained review"}
-    record["digest"] = canonical_digest(record, digest_field="digest")
-    write_json(output_root / HOLD_FILE, record)
-    result = {"schema_version": "website_atlas_task_preparation_hold_result.v1", "status": "needs_input",
-              "stage": STAGE, "blockers": [gap["code"]], "source_video_digest": source_video_digest,
-              "task_context_digest": task_context["context_digest"],
-              "task_preparation_hold": {"path": str(output_root / HOLD_FILE), "digest": record["digest"]},
-              "splat_available": False, "mesh_available": False, "simulation_qualified": False,
-              "claim_ceiling": "development_only"}
-    result["digest"] = canonical_digest(result, digest_field="digest")
-    return result
-
-
-def retain_task_preparation_hold(*, capture_root: Path, task_context: Mapping[str, Any],
-                                 source_video: Path | None = None) -> dict[str, Any] | None:
-    """The capture stage's handoff for a job its Atlas lane held after the review, or None.
-
-    Only while the capture's Atlas job is itself stopped at that hold, and only when
-    the current code and the retained review re-derive the same gap. Reads retained
-    records and buys nothing; no frame is processed or sent anywhere.
-    """
-    held = _standing_hold(capture_root=capture_root, task_context=task_context, source_video=source_video)
-    if held is None:
-        return None
-    record, derived = held
-    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input", "blockers": [derived["code"]],
-               "claim_ceiling": "development_only", "simulator_ready": False, "visual_reconstruction_ready": False,
-               "provider_mutation_performed": False, "capture_id": task_context["capture_id"],
-               "scene_id": task_context["scene_id"], "native_task_preparation_gap": derived,
-               "task_preparation_hold": {"hold_point": HOLD_POINT, "atlas_hold_digest": record["digest"],
-                                         "atlas_scene_purchased": False}}
-    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
-    from .website_task_context_contracts import holds_native_task_preparation
-    if not holds_native_task_preparation(handoff, task_context):
-        return None
-    from .core.handoff_lease import guarded_handoff_write_json
-    guarded_handoff_write_json(Path(capture_root) / "pipeline" / "website_scene_preparation" / "handoff.json",
-                               handoff)
-    return handoff
-
-
-def _standing_hold(*, capture_root: Path, task_context: Mapping[str, Any],
-                   source_video: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """The retained hold record and its re-derived gap while the capture's Atlas job stands at it, or None.
-
-    Reads retained records only. ``retry_failed_job`` moves the job off the hold stage,
-    so a resumed job reads None here.
-    """
-    from .website_atlas_preview_store import JOB_FILE, read_job
-    job_dir = Path(capture_root) / "pipeline" / "atlas"
-    path = job_dir / HOLD_FILE
-    if (task_context.get("schema_version") != WEBSITE_CONTEXT_SCHEMA or path.is_symlink() or not path.is_file()
-            or not (job_dir / JOB_FILE).is_file()):
-        return None
-    job, record = read_job(job_dir / JOB_FILE), json.loads(path.read_text())
-    gap = record.get("gap") if isinstance(record, dict) else None
-    if (not isinstance(gap, dict) or record.get("schema_version") != SCHEMA
-            or record.get("digest") != canonical_digest(record, digest_field="digest")
-            or record.get("task_context_digest") != task_context.get("context_digest")
-            or job.get("state") != "needs_input" or job.get("stage") != STAGE or job.get("reason") != gap.get("code")):
-        return None
-    source = record["source_video_digest"]
-    if source_video is not None:
-        from .local_reconstruction_adapters import _sha256_file
-        if _sha256_file(Path(source_video)) != source:
-            raise ValueError("website_task_preparation_hold_source_video_changed")
-    from .website_task_semantics import load_task_semantics
-    semantics = (load_task_semantics(job_dir=job_dir, task_context=task_context, source_video_digest=source)
-                 if task_context.get("task_family") == "general_task" else None)
-    # The catalog is the one the Atlas worker read when it declined to buy the scene.
-    derived = early_task_preparation_gap(task_context, task_semantics=semantics, source_video_digest=source,
-                                         runtimes=gap.get("runtime_catalog") if gap.get("code") == FAMILY_RUNTIME_GAP
-                                         else None)
-    if derived is None or derived != gap:
-        return None
-    return record, derived
-
-
-#: The ledgers a website job's purchases before this hold settle on (WebApp ``atlas-configuration`` getter).
-_LEDGERS = (("atlas_review", "allowance_accounting", False), ("upstream", "native_preparation_accounting", True))
-
-
-def spend_before_hold(*, output_root: Path, task_context: Mapping[str, Any],
-                      source_video_digest: str, now: float | None = None) -> dict[str, Any]:
-    """Seconds from the Atlas job's intake to this hold, and the dollars each ledger shows for the capture.
-
-    The amounts are copied from the WebApp's read-only ledger projection (the same getter
-    the Atlas lane reads each pass, ``create=False``): rows bound to this capture's source
-    video or task context. Nothing is reserved, settled or released. A ledger that cannot
-    be read is ``unreadable`` with null amounts, never zero.
-    """
-    held_at = int(time.time() if now is None else now)
-    intake = None
-    try:
-        from .website_atlas_preview_store import JOB_FILE, read_job
-        intake = read_job(Path(output_root) / JOB_FILE).get("enqueued_at_epoch")
-    except (OSError, ValueError):
-        pass
-    known = type(intake) is int and 0 < intake <= held_at
-    value: dict[str, Any] = {"schema_version": "website_task_preparation_hold_spend.v1", "held_at_epoch": held_at,
-                             "intake_at_epoch": intake if known else None,
-                             "seconds_since_intake": held_at - intake if known else None,
-                             "intake_source": "website_atlas_preview_job.enqueued_at_epoch", "ledgers": {}}
-    try:
-        from .website_task_context import load_atlas_configuration
-        configuration: Any = load_atlas_configuration(task_context, source_video_digest, create=False)
-        unread = None
-    except Exception as exc:  # noqa: BLE001 - an unread ledger is recorded as unread, never as zero
-        configuration, unread = None, type(exc).__name__
-    from .selected_atlas_preview_recovery import _accounting
-    for name, key, native in _LEDGERS:
-        try:
-            if configuration is None:
-                raise ValueError(unread)
-            accounting = _accounting(configuration.get(key), native=native)
-        except Exception as exc:  # noqa: BLE001 - see above
-            value["ledgers"][name] = {"status": "unreadable", "reason": unread or str(exc) or type(exc).__name__,
-                                      "settled_cost_usd": None, "held_cost_usd": None, "reservation_count": None}
-            continue
-        rows = [row for row in accounting["reservations"]
-                if row["source_video_digest"] == source_video_digest
-                or row["task_context_digest"] == task_context.get("context_digest")]
-        value["ledgers"][name] = {
-            "status": "read", "source_scope": accounting["source_scope"],
-            "settled_cost_usd": sum(row["settled_cost_usd"] for row in rows if row["status"] == "settled"),
-            "held_cost_usd": sum(row["accounted_cost_usd"] for row in rows if row["status"] == "held"),
-            "reservation_count": len(rows)}
-    return value
-
-
-class _Stop:
-    def __init__(self, capture_root: Path, task_context: Mapping[str, Any]) -> None:
-        self.capture_root, self.task_context, self.stopped = Path(capture_root), task_context, False
-
-    def __call__(self) -> bool:
-        if not self.stopped:
-            try:
-                self.stopped = _standing_hold(capture_root=self.capture_root, task_context=self.task_context) is not None
-            except (OSError, ValueError, TypeError, KeyError):
-                return False  # An unreadable hold holds nothing, as at the capture stage.
-        return self.stopped
-
-
-@contextlib.contextmanager
-def stop_paid_work_when_held(*, capture_root: Path, task_context: Mapping[str, Any] | None) -> Iterator[_Stop]:
-    """Within this scope, refuse each new website upstream reservation once the capture's job is held.
-
-    The check reads the hold record at each reservation (``website_paid_work_stop``); it
-    adds no wait and leaves no marker. Once it has refused, it refuses for the rest of the scope.
-    """
-    stop = _Stop(capture_root, task_context or {})
-    with paid_work_stop(stop if task_context else None):
-        yield stop

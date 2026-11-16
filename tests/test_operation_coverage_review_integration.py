@@ -174,6 +174,9 @@ def test_handoff_only_explicit_controller_flag_can_buy_clarification(tmp_path, m
 
 
 def test_family_handoff_does_not_claim_no_provider_mutation_after_a_clarification(tmp_path, monkeypatch):
+    # The family's runtime is installed: its own route, as before (none installed ships the room package).
+    from tests.test_website_scene_handoff import install_family_runtimes
+    install_family_runtimes(tmp_path, monkeypatch)
     from blueprint_pipeline import website_scene_handoff as handoff
     from tests.test_website_scene_handoff import inputs, atlas_ready, ATLAS
     from tests.test_task_semantics_catalog_composition import catalog_semantics_fixture

@@ -23,7 +23,7 @@ from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_profile_contracts import deformable_subject_noun
 from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
-from tests.test_website_scene_handoff import ATLAS, atlas_ready, inputs
+from tests.test_website_scene_handoff import ATLAS, atlas_ready, inputs, retained_hold, room_recorder
 from tests.test_website_task_preparation import REMOVAL, _arguments
 from tests.test_website_task_semantics import semantics_fixture
 
@@ -153,7 +153,7 @@ def ready(tmp_path, monkeypatch):
     ([{"target_id": "mug-1", "task_effect": "manipulated", "semantic_label": "mug"},
       {"target_id": "mug-2", "task_effect": "manipulated", "semantic_label": "mug"}], MULTI),
 ])
-def test_the_handoff_holds_before_coverage_specs_and_authoring_and_the_stage_keeps_it(
+def test_the_handoff_ships_the_room_before_coverage_specs_and_authoring_and_a_retained_hold_reads(
         tmp_path, monkeypatch, ready, entries, code):
     kwargs = inputs(tmp_path)
     context = kwargs["descriptor"]["metadata"]["site_task_context"]
@@ -170,13 +170,18 @@ def test_the_handoff_holds_before_coverage_specs_and_authoring_and_the_stage_kee
     monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", unexpected)
     monkeypatch.setattr(handoff, "compile_website_scene_preparation", unexpected)
     monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", unexpected)
+    packaged = room_recorder(monkeypatch)
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert result["status"] == "needs_input" and result["blockers"] == [code]
-    assert result["visual_reconstruction_ready"] is True and result["simulator_ready"] is False
+    # Not narrowed to one rigid object and not held (2026-11-16): the room package, the objects counted there.
+    assert (result["status"], result["blockers"]) == ("room_package_written", [])
+    [call] = packaged
+    assert call["task_profile"] == "rigid_pick_place" and call["removal"]["entries"] == entries
     assert "runtime_inputs" not in result and "website_intake_outbox" not in result
     assert result["source_geometry_digest"] == ready["source_geometry"]["digest"]
-    # The capture stage and the status reader accept it as held, not failed.
-    assert holds_native_task_preparation(result, context)
+    # A hold an earlier release retained still reads as held, and only as it was written.
+    targets = {row["target_id"]: row for row in kwargs["clean_plate"]["task_masks"]["targets"]}
+    result = retained_hold(context, preparation.native_task_subject_gap(context, subjects=entries, targets=targets))
+    assert result["blockers"] == [code] and holds_native_task_preparation(result, context)
 
     def tampered(change):
         value = deepcopy(result)

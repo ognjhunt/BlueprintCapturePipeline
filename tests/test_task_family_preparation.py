@@ -208,6 +208,9 @@ def test_prepared_family_closes_runtime_on_native_contract_refusal(tmp_path):
 
 
 def test_actual_capture_handoff_compiles_family_without_rigid_authoring(tmp_path, monkeypatch):
+    # The family's runtime is installed: its own route, as before (none installed ships the room package).
+    from tests.test_website_scene_handoff import install_family_runtimes
+    install_family_runtimes(tmp_path, monkeypatch)
     args = _arguments_for_family(tmp_path, "cloth_folding")
     args["source_geometry"]["geometry_backend"] = "fixture-native-depth"
     args["source_geometry"]["digest"] = canonical_digest(args["source_geometry"], digest_field="digest")
