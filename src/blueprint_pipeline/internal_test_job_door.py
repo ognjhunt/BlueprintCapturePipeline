@@ -76,8 +76,12 @@ def _scene_ended(capture_id: str, intent_root: Path) -> bool:
 
 
 def finished(row: Mapping[str, Any], handoff_root: Path, intent_root: Path) -> bool:
-    """Not in flight: refused by the website, its zip delivered, its preparation ended for good, or its scene
-    chain finished or ended for good. A submission whose outcome is unknown keeps its slot."""
+    """Not in flight: refused by the website, its zip delivered, its preparation ended for good or on a hold
+    that waits outside the pipeline (nobody answers a test job), or its scene chain finished or ended for
+    good. A submission whose outcome is unknown keeps its slot. Read afresh on every check: a held capture a
+    release reopens counts again from the moment its ledger leaves ``completed``."""
+    from .website_preparation_status import held_preparation
+
     if row.get("state") == "refused":
         return True
     if row.get("state") != "submitted":
@@ -85,7 +89,8 @@ def finished(row: Mapping[str, Any], handoff_root: Path, intent_root: Path) -> b
     for capture in handoff_root.glob(f"*/scenes/site-{row['job_id']}/captures/{row['capture_id']}"):
         status = str(_read(capture / "pipeline_job_ledger.json").get("status") or "")
         if (_read(capture / "pipeline" / "company_simulation" / "company_simulation.json").get("delivered")
-                or (status.startswith("terminal_") and status != "terminal_success")):
+                or (status.startswith("terminal_") and status != "terminal_success")
+                or held_preparation(capture) is not None):
             return True
     return _scene_ended(row["capture_id"], intent_root)
 
