@@ -156,6 +156,7 @@ OBJECTS_IN_SCAN = "The job's objects are part of the room scan; they are not sep
 NOT_FOUND = "Blueprint did not find what the job is about in the video."
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."
+NOT_FILLED_IN = "Parts of the room the video did not show were not filled in."
 ROOM_RECORD_SCHEMA = "blueprint.room_package_inputs.v1"
 #: A one-object job no task profile models (``website_scene_handoff``; the gaps of its ``ROOM_GAPS``, pinned equal
 #: by a test): its object is built on the rigid path and its half's sealed record says the rule is withheld, and
@@ -396,7 +397,8 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
              **({"objects": int(objects["count"]), "objects_in_scan": objects.get("in_package") == "part_of_room_scan"}
                 if isinstance(objects.get("count"), int) and objects["count"] > 0 else {}),
              **({"not_found": True} if "task_relevant_target_not_observed" in (record.get("flags") or []) else {}),
-             **({"nothing_taken_out": True} if JOB_OBJECT_RULE in (record.get("flags") or []) else {})}
+             **({"nothing_taken_out": True} if JOB_OBJECT_RULE in (record.get("flags") or []) else {}),
+             **({"not_filled_in": True} if "scene_completion_not_admitted" in (record.get("flags") or []) else {})}
             if record.get("schema_version") == ROOM_RECORD_SCHEMA else None)
     return {**({"removed_items": len(items)} if isinstance(items, list) and items else {}),
             **({"appearance_quality": "not_passed"} if absent.get("appearance_quality") == "not_passed" else {}),
@@ -853,7 +855,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_FOUND] if room.get("not_found") else []),
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"] else OBJECTS_TAKEN_OUT.format(count=room["objects"])]
                   if room.get("objects") else []),
-                *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else [])] if room is not None else []),
+                *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),
+                *([NOT_FILLED_IN] if room.get("not_filled_in") else [])] if room is not None else []),
              *([NO_RULE] if withheld else [])]
     lines += textwrap.wrap(" ".join(notes), width=100) if notes else []
     if (source.get("rule") or {}).get("object_estimates_from_video"):

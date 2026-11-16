@@ -202,6 +202,16 @@ def _captured_frames_refinement(splat: Mapping[str, Any], source: Mapping[str, A
                     and 'whole_view_review' not in row and 'gap_composite' not in row for row in rows))
 
 
+def _completion_not_admitted(result: Mapping[str, Any], completion: Mapping[str, Any]) -> bool:
+    """True when a preserved capture's completion took the floor: nothing generated is in its export."""
+    from .website_atlas_pipeline import COMPLETION_FLOOR_ERRORS, COMPLETION_FLOOR_REASONS, SCENE_COMPLETION_NOT_ADMITTED
+    return (completion.get('status') == 'completed'
+            and completion.get('generated_geometry_rejected') == SCENE_COMPLETION_NOT_ADMITTED
+            and completion.get('not_admitted_reason') in COMPLETION_FLOOR_REASONS | COMPLETION_FLOOR_ERRORS
+            and completion.get('generated_geometry_admitted') is False
+            and result.get('generated_geometry_admitted') is False)
+
+
 def _generated_views_added_nothing(result: Mapping[str, Any], completion: Mapping[str, Any]) -> bool:
     """True when a completion made and reviewed views that added no geometry (nothing generated exported)."""
     from .atlas_preserved_completion import NO_EXPORTABLE_GEOMETRY
@@ -284,6 +294,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     # A captured job that brings no object of its own is kept as filmed too (``job_object_rule``).
     preserved = preserves_capture(result) or geometry_only
     completion_admission = None
+    flags: list[str] = []
     if preserved:
         if (result.get("captured_scene_preserved") is not True
                 or result.get("object_removal_performed") is not False
@@ -293,7 +304,11 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                                        or type(result.get("subject_in_reconstruction")) is not bool))):
             raise ValueError("website_atlas_preserved_scene_contract_invalid")
         completion = result.get('scene_completion') or {}
-        if result['generated_completion_performed'] and _generated_views_added_nothing(result, completion):
+        if _completion_not_admitted(result, completion):
+            # Flagged, not a stop: the generated gap views were not admitted (``website_atlas_pipeline.
+            # completion_floor``), so none is in this export and the gaps stay as filmed.
+            flags = [completion['generated_geometry_rejected']]
+        elif result['generated_completion_performed'] and _generated_views_added_nothing(result, completion):
             # Flagged, not a stop: the views were generated and reviewed but added no
             # geometry, so nothing generated is in this export. The captured scene goes on
             # as filmed, and its gaps stay listed as remaining unknowns.
@@ -496,4 +511,4 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
             **({"atlas_route": "geometry_only", "subject_in_reconstruction": result["subject_in_reconstruction"]}
                if geometry_only else {}),
             **({"job_object_rule": result["job_object_rule"]} if result.get("job_object_rule") else {}),
-            "alignment": "anchored" if anchor else "registration_search"}
+            "alignment": "anchored" if anchor else "registration_search", **({"flags": flags} if flags else {})}
