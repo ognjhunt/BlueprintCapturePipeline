@@ -182,16 +182,32 @@ def _replays(root):
 
 
 def test_a_reopened_atlas_job_replays_the_preparation_once_after_ready_and_never_while_it_needs_input(waiting):
-    root = waiting[0]
-    calls, drain = _replays(root)
+    """Armed while Atlas processed; Atlas stops for input; Blueprint reopens it; it turns ready."""
+    from blueprint_pipeline.website_preparation_status import _v2_state
+    root, owner, context, _, _ = waiting
+    runs = []
+
+    def orchestrated(**kwargs):
+        runs.append("needs_input")
+        return _orchestrated(root, owner, context)(**kwargs)
+    drain = lambda run_e2e: resume.reconcile_waiting_reconstructions(  # noqa: E731
+        listener, storage_root=root.parents[4],
+        process_args={"provider": "openai", "run_evaluation_prep": False, "run_e2e": run_e2e})
     now = time.time()
     _job(root, "needs_input", reason=REOPENABLE, enqueued_at_epoch=now)
-    assert drain() == {"resumed": 0, "pending": 1} and calls == []
+    # One replay records the needs-input failure: the status asks for Blueprint, never "preparing".
+    drain(orchestrated)
+    ledger = listener._read_job_ledger(root)
+    assert runs == ["needs_input"] and ledger["last_error"] == resume.NEEDS_INPUT_ERROR and resume.armed(ledger)
+    assert _v2_state(ledger) == ("failed_retryable", None)
+    # Then it waits: no replay while Atlas still needs input, nor while the reopened job processes.
+    assert drain(orchestrated) == {"resumed": 0, "pending": 1} and len(runs) == 1
     _job(root, "processing", reason=None, enqueued_at_epoch=now)  # reopened (``retry_failed_job``)
-    assert drain() == {"resumed": 0, "pending": 1} and calls == []
+    assert drain(orchestrated) == {"resumed": 0, "pending": 1} and len(runs) == 1
     _job(root, "ready", enqueued_at_epoch=now)
-    assert drain() == {"resumed": 1, "pending": 0} and len(calls) == 1
-    assert drain() == {"resumed": 0, "pending": 0} and len(calls) == 1
+    completed = lambda **_: runs.append("ready") or {"status": "completed"}  # noqa: E731
+    assert drain(completed) == {"resumed": 1, "pending": 0} and runs == ["needs_input", "ready"]
+    assert drain(completed) == {"resumed": 0, "pending": 0} and len(runs) == 2
     assert listener._read_job_ledger(root)["status"] == "completed"
 
 

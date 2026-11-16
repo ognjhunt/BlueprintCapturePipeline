@@ -182,10 +182,16 @@ def reopenable(job, capture_root: Path) -> bool:
             and not capture_withdrawn(capture_root))
 
 
-def _final(job, capture_root: Path) -> bool:
-    """The worker's own notion of done: terminal, not waiting to re-check authority, and not reopenable."""
+def _final(job, capture_root: Path, *, waited_on_processing: bool = False) -> bool:
+    """The worker's own notion of done: terminal, not waiting to re-check authority, and not reopenable.
+
+    A wait armed while the job was processing (``WAIT_ERROR``) replays once when the job stops for input,
+    reopenable or not: that run records the needs-input failure, which the status reports as needing
+    Blueprint. It then waits as a needs-input wait until the job is reopened and ready.
+    """
     from .website_atlas_preview_store import TERMINAL
-    return job.get("state") in TERMINAL and not job.get("retry_at_epoch") and not reopenable(job, capture_root)
+    return (job.get("state") in TERMINAL and not job.get("retry_at_epoch")
+            and (waited_on_processing or not reopenable(job, capture_root)))
 
 
 def reconcile_waiting_reconstructions(listener, *, storage_root: Path, process_args, limit=1):
@@ -210,7 +216,7 @@ def reconcile_waiting_reconstructions(listener, *, storage_root: Path, process_a
             if not armed(before) or capture_withdrawn(root) or delivery_retired(root, before):
                 # A withdrawn capture, or a retired delivery, ends the wait: never replayed.
                 continue
-            if not _final(read_job(job_path), root):
+            if not _final(read_job(job_path), root, waited_on_processing=before.get("last_error") == WAIT_ERROR):
                 counts["pending"] += 1
                 continue
             record = before[FIELD]
