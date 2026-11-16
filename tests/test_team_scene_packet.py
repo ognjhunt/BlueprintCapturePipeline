@@ -249,8 +249,11 @@ def test_a_completed_source_launch_is_compiled_and_recorded_where_the_team_regis
     assert scene_facts(profile)["inputs"] == read_team_scene_inputs(prepared["path"])
 
 
-def _articulated_scene(tmp_path: Path, *, owner_confirmed: bool = True) -> dict[str, Any]:
-    """The configured drawer-cabinet revision, standing on a room's floor, published with its bundle."""
+def _articulated_scene(tmp_path: Path, *, owner_confirmed: bool = True, not_run: bool = False) -> dict[str, Any]:
+    """The configured drawer-cabinet revision, standing on a room's floor, published with its bundle.
+
+    ``not_run``: its stage 5 is the website's record that no simulator ran, bound to its published object.
+    """
 
     from pxr import UsdGeom
 
@@ -258,6 +261,15 @@ def _articulated_scene(tmp_path: Path, *, owner_confirmed: bool = True) -> dict[
 
     case = _case(tmp_path / "case")
     configured, references = case["configured"], case["references"]
+    if not_run:
+        from blueprint_pipeline.website_scene_without_simulator import not_run_receipt
+        from tests.test_task_evaluation_rigid_relocation_native_adapter import NATIVE_IMPORT, _rewrite
+        (tmp_path / "not-run").mkdir()
+        _rewrite(tmp_path=tmp_path / "not-run", configured=configured, references=references,
+                 contract_path=NATIVE_IMPORT, document=not_run_receipt(
+                     replacement_identity=configured["replacement"]["identity"],
+                     asset_digest=configured["replacement"]["asset"]["digest"],
+                     static_qualification_digest=configured["replacement"]["static_qualification"]["digest"]))
     if owner_confirmed:
         reference = references[DEFINITION]
         template = json.loads(Path(reference["materialized_path"]).read_text())
@@ -326,6 +338,22 @@ def test_a_drawer_task_compiles_with_a_station_clear_of_the_drawers_travel(tmp_p
     facts = scene_facts({"team_scene_inputs_path": compiled["path"], "open_loop_horizon": 8})
     assert facts["prompt"] and facts["scene"]["task_spec"]["task_kind"] == (
         "articulated_open_close")
+
+
+def test_a_drawer_whose_stage_five_ran_no_simulator_compiles_for_the_package_only(tmp_path) -> None:
+    """The joint comes from the authored file (the stage-4 record); only the website package reads that stage 5."""
+    from blueprint_pipeline.team_scene_packet_worker import WEBSITE_COMPILE
+    from blueprint_pipeline.website_company_simulation import physics_check
+
+    scene = _articulated_scene(tmp_path, not_run=True)
+    with pytest.raises(TeamScenePacketError, match="source_contract_invalid"):
+        _compile(tmp_path / "default", scene)  # a caller that scores or pays refuses it, as main does
+    inputs = {key: value for key, value in scene.items() if key not in ("profile", "store", "revision_reference")}
+    compiled = materialize_team_scene(**inputs, output_root=tmp_path / "team-scene", **WEBSITE_COMPILE)
+    packet = Path(compiled["path"]).parent / "native-task-packet"
+    plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
+    assert plan["task_spec"]["task_kind"] == "articulated_open_close"
+    assert physics_check(packet, plan) == "not_run_joint_as_authored"
 
 
 def test_a_drawer_task_whose_owner_contract_is_unconfirmed_is_refused(tmp_path) -> None:

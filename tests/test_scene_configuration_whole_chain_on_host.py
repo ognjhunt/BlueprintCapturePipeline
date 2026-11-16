@@ -458,9 +458,8 @@ def _website_stage_five(tmp_path: Path, *, static_change: dict | None = None):
 
 @pytest.mark.parametrize(("change", "code"), [
     ({"static": {"replacement_usd": {"sha256": "sha256:" + "0" * 64}}}, "static_binding_invalid"),
-    ({"static": {"asset_kind": "articulated_assembly"}}, "static_binding_invalid"),
     ({"not_website": True}, "configuration_invalid:website_job_required"),
-], ids=["static_sha", "articulated_static", "not_a_website_job"])
+], ids=["static_sha", "not_a_website_job"])
 def test_stage_five_refuses_what_is_not_a_rigid_website_object(tmp_path, change, code):
     from blueprint_pipeline.task_evaluation_scene_configuration_adapters import (
         TaskEvaluationSceneConfigurationAdapterError,
@@ -554,15 +553,15 @@ def test_the_real_website_recipe_runs_whole_on_the_host_and_passes_the_real_pref
             validate_immutable_stage_configurations(envelope=changed, configurations=configurations)
 
 
-def test_an_articulated_website_job_keeps_the_isaac_stage_byte_for_byte():
+def test_an_articulated_website_job_records_that_no_simulator_ran_and_rents_nothing():
+    """Its joint is the authored file's (the stage-4 record); stage 5 runs on the host, no Isaac, no GPU."""
     stages = records.stage_sequence()
+    identity = {"id": "door", "version": "v1"}
     configurations = [{} for _ in range(4)] + [records.stage_five_configuration(
-        replacement_identity={"id": "door", "version": "v1"}, articulated=True), {}]
-    before = copy.deepcopy((stages, configurations))
-    website_native_background.select_stage_five(stages, configurations, articulated=True)
-    assert (stages, configurations) == before
-    assert stages[4]["adapter"]["id"] == "simready_native_import_qualification"
-    assert stages[4]["execution_class"] == "gpu_canary"
+        replacement_identity=identity, articulated=True), {}]
+    website_native_background.select_stage_five(stages, configurations)
+    assert stages[4]["adapter"]["id"] == not_run.ADAPTER_ID and stages[4]["execution_class"] == "no_spend"
+    assert configurations[4] == not_run.stage_five_configuration(replacement_identity=identity)
 
 
 def _not_run_case(tmp_path: Path, **change):
@@ -636,6 +635,52 @@ def _robot_free_readiness(tmp_path, _monkeypatch):
         path: Path(row["materialized_path"]) for path, row in references.items()})
 
 
+def _articulated_not_run_case(tmp_path: Path, **change):
+    """The articulated adapter fixture's revision with stage 5 replaced by the website's record."""
+    from tests.test_task_evaluation_articulated_open_close_native_adapter import _case
+    from tests.test_task_evaluation_rigid_relocation_native_adapter import NATIVE_IMPORT, _rewrite
+
+    case = _case(tmp_path / "case")
+    configured, references = case["configured"], case["references"]
+    record = not_run.not_run_receipt(replacement_identity=configured["replacement"]["identity"],
+                                     asset_digest=configured["replacement"]["asset"]["digest"],
+                                     static_qualification_digest="sha256:" + "b" * 64)
+    record.update(change)
+    record["result_digest"] = canonical_digest(record, digest_field="result_digest")
+    (tmp_path / "not-run").mkdir()
+    _rewrite(tmp_path=tmp_path / "not-run", configured=configured, references=references,
+             contract_path=NATIVE_IMPORT, document=record)
+    return configured, references
+
+
+def _articulated_adapter(tmp_path, _monkeypatch):
+    """The articulated adapter as the episode compiler, configured controls and readiness call it."""
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
+        adapt_articulated_open_close_task_template,
+    )
+    configured, references = _articulated_not_run_case(tmp_path)
+    adapt_articulated_open_close_task_template(configured_revision=configured, materialized_references=references)
+
+
+@pytest.mark.parametrize(("change", "code"), [
+    ({}, None),
+    ({"asset_digest": "sha256:" + "0" * 64}, "simulator_not_run_asset_unbound"),
+    ({"native_isaac_executed": True}, "executable_geometry_missing"),
+], ids=["opted_in", "asset_digest_names_no_real_file", "claims_isaac"])
+def test_the_articulated_adapter_reads_the_not_run_record_only_for_a_caller_that_opts_in(tmp_path, change, code):
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
+        adapt_articulated_open_close_task_template,
+    )
+    configured, references = _articulated_not_run_case(tmp_path, **change)
+    call = functools.partial(adapt_articulated_open_close_task_template, configured_revision=configured,
+                             materialized_references=references, accept_simulator_not_run=True)
+    if code is None:  # the joint is the authored one, read from the stage-4 record
+        assert call()["native_task_definition"]["task_joint_bindings"]
+    else:
+        with pytest.raises(ValueError, match=code):
+            call()
+
+
 def _construction_probe(tmp_path, _monkeypatch):
     """``rigid_robot_free_construction_probe`` hands its own documents to the shared derivation."""
     from blueprint_pipeline import task_evaluation_rigid_relocation_native_adapter as rigid
@@ -655,7 +700,9 @@ def _construction_probe(tmp_path, _monkeypatch):
     (_deferred_controls, "source_contract_invalid:scene.configured_revision.replacement"),
     (_robot_free_readiness, "source_contract_invalid:scene.configured_revision.replacement"),
     (_construction_probe, "executable_geometry_missing"),
-], ids=["paid_episode_compiler", "configured_controls_inputs", "robot_free_readiness", "construction_probe"])
+    (_articulated_adapter, "source_contract_invalid:scene.configured_revision.replacement"),
+], ids=["paid_episode_compiler", "configured_controls_inputs", "robot_free_readiness", "construction_probe",
+        "articulated_paid_callers"])
 def test_every_paid_or_scoring_caller_refuses_a_not_run_scene(tmp_path, monkeypatch, caller, code):
     with pytest.raises(Exception, match=code):
         caller(tmp_path, monkeypatch)

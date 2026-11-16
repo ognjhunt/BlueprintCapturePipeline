@@ -108,6 +108,8 @@ ESTIMATE_SENTENCES = {
     "scene_estimate:collider_registration": "Where the collision surfaces sit, or which faces were kept, is an estimate.",
     "scene_estimate:review_citations_dropped": "The scene review cited frames that could not be used; those citations were left out.",
     "scene_estimate:surrounding_views_dropped": "Some surrounding views were left out to keep within the frame budget.",
+    "scene_estimate:task_views_left_out": "Some views of the task area were too blurred or did not connect to the others and were left out; the object's start position comes from the views that were kept.",
+    "scene_estimate:surroundings_not_connected": "Only the task area was filmed in views that connect. Any of the room around it in the simulation was not filmed; it is generated from the surrounding footage.",
 }
 KIND_WORDS = {"articulated": "open or close one moving part of a fixture (a door, drawer or lid)",
               "container": "put one object into a container",

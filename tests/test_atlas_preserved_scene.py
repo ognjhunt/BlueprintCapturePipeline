@@ -81,11 +81,14 @@ def test_cached_environment_plan_cannot_enter_paid_pose_after_an_edit_is_injecte
 @pytest.mark.parametrize("source_status", ["processing", "needs_input", "completed"])
 @pytest.mark.parametrize("cached_splat", [False, True])
 @pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
+@pytest.mark.parametrize("left_out", [False, True])
 def test_preserved_reconstruction_exports_observations_and_never_buys_appearance(
-        tmp_path, monkeypatch, source_status, cached_splat, subject_origin):
+        tmp_path, monkeypatch, source_status, cached_splat, subject_origin, left_out):
     pose_root = tmp_path / "pose"
     source_root = pose_root / "full-view-source-v1"
     source_root.mkdir(parents=True)
+    # The view selection recorded views it left out: the result never says the task and room were covered.
+    (pose_root / "atlas_view_selection.json").write_text(json.dumps({"task_and_surrounding_scene_covered": not left_out}))
     pose = {"digest": "posed-source"}
     (source_root / "atlas_posed_rgbd_result.json").write_text(json.dumps(pose))
     (source_root / "scene_measurements.json").write_text("{}")
@@ -141,6 +144,7 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
     assert result["image_inpainting_performed"] is False and result["object_removal_performed"] is False
     assert result["generated_completion_performed"] is False and result["simulation_qualified"] is False
     assert result["uncaptured_regions"] == ["unobserved underside"]
+    assert result["task_and_surrounding_scene_covered"] is not left_out
     assert exports[0]["pose_root"] == source_root and "generated_roots" not in exports[0]
     assert decodes == [source_root]
     expected = ["source_pose"] + ([] if cached_splat else ["fuse"])

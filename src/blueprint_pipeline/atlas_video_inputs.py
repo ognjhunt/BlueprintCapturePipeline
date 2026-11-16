@@ -180,12 +180,24 @@ def select_views(*, frames: Sequence[Mapping[str, Any]], features: Sequence[Any]
     return sorted(selected), diagnostics
 
 
-#: Coverage of these roles is the task's working area: a gap there refuses.
+#: Coverage of these roles is the task's working area: a blurry anchor refuses.
 #: ``surrounding_scene`` frames are context: a blurry or unconnected one is
-#: recorded as an uncaptured region, unless no surrounding frame connects.
+#: recorded as an uncaptured region.
 WORKING_AREA_ROLES = frozenset({"task_object", "task_region", "support_surface", "approach_space"})
+#: A working-area frame no overlap path reaches, or one below the quality policy that is not the
+#: anchor, is left out and named, like a surrounding one: the task anchor is always kept, so the
+#: object's start position still comes from the views that see it. Before 2026-11-16 it, and a room
+#: no surrounding frame connects to, ended the job (``atlas_task_and_scene_coverage_gap``,
+#: ``atlas_coverage_anchor_quality_insufficient``) and the site was asked to film again.
+TASK_AREA_UNCONNECTED = "task_area_unconnected"
+TASK_AREA_BELOW_QUALITY = "task_area_below_quality"
+#: No surrounding frame connected: the scene is the task area's own views, and the room around it is
+#: generated from that footage (``atlas_scene_estimates`` flags both).
+SURROUNDINGS_NOT_CONNECTED = "surrounding_scene_none_connected"
 SURROUNDING_GAP_DECISIONS = {"surrounding_scene_below_quality": "below the reviewed sharpness or clipping policy",
                              "surrounding_scene_unconnected": "not connected by overlapping views",
+                             TASK_AREA_UNCONNECTED: "not connected by overlapping views",
+                             TASK_AREA_BELOW_QUALITY: "below the reviewed sharpness or clipping policy",
                              "surrounding_scene_over_frame_budget": "left out to keep the views within the frame budget"}
 #: A surrounding frame whose overlap path would take the selection past its frame budget is left out and
 #: reported as uncaptured, like an unconnected one (``atlas_scene_estimates`` flags it). Before 2026-11-10
@@ -194,15 +206,22 @@ SURROUNDING_GAP_DECISIONS = {"surrounding_scene_below_quality": "below the revie
 OVER_FRAME_BUDGET = "surrounding_scene_over_frame_budget"
 
 
+def _covered(review, diagnostics) -> bool:
+    """Whether every reviewed task frame and some surrounding frame are in the connected views."""
+    return review.get('review_scope') != 'observed_room_only' and not any(
+        isinstance(row, Mapping)
+        and row.get("decision") in {TASK_AREA_UNCONNECTED, TASK_AREA_BELOW_QUALITY, SURROUNDINGS_NOT_CONNECTED}
+        for row in diagnostics)
+
+
 def select_coverage_views(*, frames, features, maximum_frames, requirements, anchor_id, policy=None,
                           observed_room_only=False):
     """Connect reviewed task and environment anchors before admitting a subset.
 
     Labels come from source-image review. Feature matches establish only a
     candidate overlap path, never complete or metrically correct geometry.
-    Every working-area frame (``WORKING_AREA_ROLES``) must be sharp and connected.
-    A surrounding-scene frame that is not is dropped into the diagnostics, to be
-    reported as uncaptured, so long as another surrounding frame connects.
+    The task anchor must be sharp. Any other frame that is blurry or does not
+    connect is dropped into the diagnostics, to be reported as uncaptured.
     """
     from collections import deque
     if (not isinstance(requirements, list) or not requirements
@@ -214,7 +233,7 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
     if type(maximum_frames) is not int or maximum_frames < 2:
         raise ValueError("atlas_selection_limit_invalid")
     identifiers = {r["frame_id"]: i for i, r in enumerate(frames)}
-    required, working, context_labels = [], set(), {}
+    required, working, labels = [], set(), {}
     for requirement in requirements:
         ids = requirement.get("required_frame_ids")
         if (not requirement.get("label") or not isinstance(ids, list) or not ids
@@ -223,9 +242,8 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
         required.extend(identifiers[identifier] for identifier in ids)
         if requirement.get("role") in WORKING_AREA_ROLES:
             working.update(identifiers[identifier] for identifier in ids)
-        else:
-            for identifier in ids:
-                context_labels.setdefault(identifiers[identifier], requirement["label"])
+        for identifier in ids:
+            labels.setdefault(identifiers[identifier], requirement["label"])
     if anchor_id not in identifiers or (observed_room_only and anchor_id not in {
             key for row in requirements for key in row['required_frame_ids']}):
         raise ValueError("atlas_coverage_task_anchor_missing")
@@ -239,20 +257,20 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
         raise ValueError("atlas_scene_selection_policy_invalid")
     eligible = {i for i, r in enumerate(frames) if r["sharpness"] >= minimum_sharpness and r["clipped_fraction"] <= maximum_clipping}
     anchor = identifiers[anchor_id]
-    context = set(context_labels) - working
-    if not set([anchor, *(i for i in required if i not in context)]).issubset(eligible):
+    context = set(labels) - working
+    if anchor not in eligible:
         raise ValueError("atlas_coverage_anchor_quality_insufficient")
     selected, cache, diagnostics, dropped = {anchor}, {}, [], []
 
     def drop(target: int, decision: str) -> None:
         dropped.append(target)
-        diagnostics.append({"frame_id": frames[target]["frame_id"], "label": context_labels[target],
+        diagnostics.append({"frame_id": frames[target]["frame_id"], "label": labels[target],
                             "decision": decision})
     for target in dict.fromkeys(required):
         if target in selected:
             continue
-        if target in context and target not in eligible:
-            drop(target, "surrounding_scene_below_quality")
+        if target not in eligible:
+            drop(target, "surrounding_scene_below_quality" if target in context else TASK_AREA_BELOW_QUALITY)
             continue
         queue = deque(sorted(selected))
         parent = {i: None for i in selected}
@@ -269,10 +287,8 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
                 if other == target:
                     break
         if target not in parent:
-            if target in context:
-                drop(target, "surrounding_scene_unconnected")
-                continue
-            raise ValueError("atlas_task_and_scene_coverage_gap:" + frames[target]["frame_id"])
+            drop(target, "surrounding_scene_unconnected" if target in context else TASK_AREA_UNCONNECTED)
+            continue
         chain, cursor = [], target
         while cursor not in selected:
             chain.append(cursor)
@@ -298,12 +314,10 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
         # room, but the budget the job's money sets cannot hold it.
         raise ValueError("atlas_coverage_exceeds_frame_budget")
     if context and context <= set(dropped):
-        # No surrounding frame connects at all: the room around the task is unseen.
-        unconnected = [i for i in dropped if i in eligible]
-        if not unconnected:
-            raise ValueError("atlas_coverage_anchor_quality_insufficient")
-        raise ValueError("atlas_task_and_scene_coverage_gap:" + frames[unconnected[0]]["frame_id"])
-    if observed_room_only and len(selected) < 2:
+        # No surrounding frame connects: build from the task area's views; the room is generated from them.
+        diagnostics.append({"decision": SURROUNDINGS_NOT_CONNECTED,
+                            "frame_ids": [frames[i]["frame_id"] for i in sorted(context)]})
+    if len(selected) < 2:
         # A room anchor may be one view. Find its genuinely overlapping,
         # distinct neighbour without inventing a task-object requirement.
         selected, added = add_distinct_views(frames=frames, features=features, selected=selected,
@@ -587,7 +601,7 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
                            **({**selection_profile, "overlapping_support_views_added": support_count,
                                "minimum_source_frames_met": len(prepared) >= minimum_frames} if minimum_frames else {})}
             and plan.get("privacy_screen") == privacy
-            and plan.get("task_and_surrounding_scene_covered") is (review.get('review_scope') != 'observed_room_only')
+            and plan.get("task_and_surrounding_scene_covered") is _covered(review, plan.get("diagnostics") or [])
             and (review.get('review_scope') != 'observed_room_only' or plan.get('observed_room_only') is True)
             and plan.get("unseen_regions_recovered") is False
             and plan.get("geometry_or_static_state_proven") is False
@@ -713,16 +727,16 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
         selected, spread = add_time_spread_views(frames=frames, features=features, selected=selected,
             frame_target=maximum_frames, policy=fill_policy)
         spread_ids = {row["frame_id"] for row in spread}
-        diagnostics = [row for row in diagnostics if row["frame_id"] not in spread_ids] + spread
+        diagnostics = [row for row in diagnostics if row.get("frame_id") not in spread_ids] + spread
     support = []
     if minimum_frames:
         selected, support = add_overlapping_support_views(frames=frames, features=features, selected=selected,
             minimum_frames=minimum_frames, policy=fill_policy)
         support_ids = {row["frame_id"] for row in support}
-        diagnostics = [row for row in diagnostics if row["frame_id"] not in support_ids] + support
+        diagnostics = [row for row in diagnostics if row.get("frame_id") not in support_ids] + support
     soft_cover = []
     if floor is not None:
-        named = {row["frame_id"] for row in diagnostics} | {frames[i]["frame_id"] for i in selected}
+        named = {row.get("frame_id") for row in diagnostics} | {frames[i]["frame_id"] for i in selected}
         diagnostics += [{"frame_id": row["frame_id"], "decision": "below_relative_sharpness_floor"}
                         for row in frames if row["sharpness"] < floor and row["frame_id"] not in named]
         soft_cover = [frames[i]["frame_id"] for i in sorted(cover) if frames[i]["sharpness"] < floor]
@@ -758,6 +772,10 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
                           **({"minimum_source_frames": minimum_frames} if minimum_frames else {})},
               "frames": prepared, "source_sample_count": survey["sample_count"],
               "heldout_frame_count": survey["heldout_frame_count"], "heldout_pixels_included": False}
+    # Reviewed frames the selection left out and named (uncaptured): later steps never ask for them.
+    left_out = [row["frame_id"] for row in diagnostics if row.get("decision") in SURROUNDING_GAP_DECISIONS]
+    if left_out:
+        inputs["left_out_frame_ids"] = left_out
     inputs["digest"] = canonical_digest(inputs, digest_field="digest")
     # Scene preparation reads the posed views as source geometry, so keep the
     # exact document the pose binds to, not only its digest.
@@ -784,7 +802,7 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
                              **({"minimum_source_frames": minimum_frames,
                                  "overlapping_support_views_added": len(support),
                                  "minimum_source_frames_met": len(selected) >= minimum_frames} if minimum_frames else {})},
-            "task_and_surrounding_scene_covered": review.get('review_scope') != 'observed_room_only',
+            "task_and_surrounding_scene_covered": _covered(review, diagnostics),
             **({'observed_room_only': True} if review.get('review_scope') == 'observed_room_only' else {}),
             **({"uncaptured_regions": uncaptured} if uncaptured else {}),
             "coverage_requirements": requirements, "coverage_authority": "source_image_review_and_overlap_heuristic",

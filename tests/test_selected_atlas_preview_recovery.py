@@ -475,7 +475,7 @@ def test_selected_retry_reopens_a_ready_job_only_for_its_untried_gap_preserving_
     assert json.loads((root / native.UPGRADE).read_text())["splat_manifest_digest"] == manifest["digest"]
 
 
-@pytest.mark.parametrize("reason", ["atlas_task_and_scene_coverage_gap", "atlas_preview_expired",
+@pytest.mark.parametrize("reason", ["atlas_insufficient_overlapping_distinct_views", "atlas_preview_expired",
                                   "atlas_preview_source_video_unavailable"])
 def test_selected_retry_preserves_nonrecoverable_stopped_jobs(site, reason):
     write_job(site, state="needs_input", reason=reason)

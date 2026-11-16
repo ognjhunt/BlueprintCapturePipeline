@@ -269,10 +269,12 @@ def run_automation(
     policy = configuration["policy"]
     if edit_scope not in EDIT_SCOPES:
         raise ValueError("atlas_edit_scope_invalid")
-    requested = list(dict.fromkeys([
+    # A reviewed frame the view selection left out and named as uncaptured is not asked for.
+    left_out = set(inputs.get("left_out_frame_ids") or [])
+    requested = [key for key in dict.fromkeys([
         key for group in review.get("coverage_requirements", [])
         for key in group["required_frame_ids"]
-    ] + review.get("additional_input_frame_ids", [])))
+    ] + review.get("additional_input_frame_ids", [])) if key not in left_out]
     if edit_scope == "all_selected_views":
         requested = [row["frame_id"] for row in frames]
     selected_ids = [row["frame_id"] for row in frames if row["frame_id"] in requested] if requested else None

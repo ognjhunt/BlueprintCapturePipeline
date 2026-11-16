@@ -12,8 +12,7 @@ from typing import Any
 from .common import write_json
 from .website_atlas_preview_store import LOCK_FILE, MAXIMUM_JOB_SECONDS
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,99}")
-_NEEDS_NEW_CAPTURE = frozenset({"atlas_task_and_scene_coverage_gap",
-                                "atlas_insufficient_overlapping_distinct_views",
+_NEEDS_NEW_CAPTURE = frozenset({"atlas_insufficient_overlapping_distinct_views",
                                 "atlas_coverage_anchor_quality_insufficient"})
 _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
 #: Written to the job file just before a step runs and removed by the write that follows it.

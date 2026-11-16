@@ -178,7 +178,11 @@ retry: the same video and release give the same answer. Two changes answer it.
   only faces near observed geometry (`scene_estimate:collider_registration`; no splat-aligned
   collider exists at $0 today). A scene review's citation of an unusable frame is dropped
   (`scene_estimate:review_citations_dropped`); a surrounding view past the frame budget is left out
-  and reported uncaptured (`scene_estimate:surrounding_views_dropped`). Each estimate is named on the
+  and reported uncaptured (`scene_estimate:surrounding_views_dropped`). Since 2026-11-16 a task-area view
+  that connects to no other, or a blurry one that is not the anchor, is left out the same way
+  (`scene_estimate:task_views_left_out`), and
+  a room no surrounding view connects to leaves the task area's views as the scene
+  (`scene_estimate:surroundings_not_connected`). Each estimate is named on the
   base scene (`atlas_scene_estimates`), copied into the screening plan, and published in v3
   `scene_feasibility.flags`; the website names each in its own sentence. Counts and intervals are
   shown as measured: no estimate adjusts them.
@@ -187,8 +191,8 @@ retry: the same video and release give the same answer. Two changes answer it.
   constant and the input digests. The Atlas controller and the preparation retry keep the record and
   do not run the step again while the running release computes the same key, so nothing is bought or
   redone; a release that changes the step's revision runs it once. The job's deadline still ends it.
-- **End with a site ask.** A video that never connects or sharply shows the task area
-  (`atlas_task_and_scene_coverage_gap`, `atlas_insufficient_overlapping_distinct_views`,
+- **End with a site ask.** A video with fewer than two overlapping views, or a blurry task anchor
+  (`atlas_insufficient_overlapping_distinct_views`,
   `atlas_coverage_anchor_quality_insufficient`), and a scale no reference supports
   (`atlas_scale_review_unresolved`), already end at once; the website now tells the site what to film.
 

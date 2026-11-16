@@ -473,9 +473,9 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
     stages = records.stage_sequence()
     for old, new in zip(stages[:2], (first["stage"], second["stage"]), strict=True):
         old.update(new)
-    # Owner decision 2026-11-15: a rigid website job's scene is built with no GPU; stage 5 records
-    # that no simulator ran. An articulated job keeps the Isaac import.
-    select_stage_five(stages, configurations, articulated=articulated)
+    # Owner decision 2026-11-15: a website job's scene is built with no GPU; stage 5 records that no
+    # simulator ran. An articulated job's joint comes from its authored file (the stage-4 record).
+    select_stage_five(stages, configurations)
     from .website_synthetic_subject import AUTHORING_ADAPTER, AUTHORING_METHOD
     if third.get("authoring_method") == AUTHORING_METHOD:
         # A designed subject's mesh is supplied: authored as given, no provider called.
@@ -646,11 +646,8 @@ def execute_prepared_collision(*, envelope, stage, configuration, configuration_
         {"role": "website_background_reuse_receipt", **_record(receipt_path)}])
 
 
-def select_stage_five(stages: list[dict[str, Any]], configurations: list[dict[str, Any]],
-                      *, articulated: bool) -> None:
-    """In place: a rigid website job's stage 5 becomes this adapter; an articulated one keeps Isaac."""
-    if articulated:
-        return
+def select_stage_five(stages: list[dict[str, Any]], configurations: list[dict[str, Any]]) -> None:
+    """In place: a website job's stage 5 becomes the record that no simulator ran."""
     from .website_scene_without_simulator import CAPABILITY, ADAPTER_ID, stage_five_configuration
 
     if stages[4].get("capability") != CAPABILITY:
@@ -680,7 +677,6 @@ def execute_simulator_not_run(*, envelope: Mapping[str, Any], stage: Mapping[str
     identity = configuration["replacement_identity"]
     if (static.get("status") != "authored_structure_statically_qualified"
             or static.get("authored_structure_statically_qualified") is not True
-            or static.get("asset_kind") == "articulated_assembly"
             or static.get("replacement_identity") != identity
             or (static.get("replacement_usd") or {}).get("sha256") != _sha256_and_size(asset)[0]):
         raise TaskEvaluationSceneConfigurationAdapterError("website_simulator_not_run_static_binding_invalid")

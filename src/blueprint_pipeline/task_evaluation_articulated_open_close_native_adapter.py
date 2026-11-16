@@ -37,6 +37,7 @@ from .task_evaluation_rigid_relocation_native_adapter import (
     _source_document, _vector, _diagnostic_source_documents,
     TaskEvaluationRigidRelocationNativeAdapterError,
 )
+from .website_scene_without_simulator import stage_five_receipt_kind
 
 SCHEMA_VERSION = "task_evaluation_articulated_open_close_native_adapter.v1"
 STATIC_QUALIFICATION_SCHEMA = "task_evaluation_articulated_replacement_static_qualification.v1"
@@ -147,12 +148,16 @@ def _qualified_mechanism(
         or static.get("replacement_identity") != replacement_identity
         or static.get("structural_findings") not in ([], ())
         or static.get("result_digest") != canonical_digest(static, digest_field="result_digest")
-        or native_import.get("status") != "qualified"
         or native_import.get("replacement_identity") != replacement_identity
-        or native_import.get("native_simulator_import_qualified") is not True
-        or native_import.get("blockers") not in ([], ())
-        or native_import.get("result_digest")
-        != canonical_digest(native_import, digest_field="result_digest")
+        or not ((native_import.get("schema_version") == SOURCE_SCHEMAS[NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH]
+                 and native_import.get("status") == "qualified"
+                 and native_import.get("native_simulator_import_qualified") is True
+                 and native_import.get("blockers") in ([], ())
+                 and native_import.get("result_digest")
+                 == canonical_digest(native_import, digest_field="result_digest"))
+                # The joint comes from the static record either way. Only an opted-in caller (the website
+                # package compile) gets a not-run stage 5 this far: the document read refuses it for the rest.
+                or stage_five_receipt_kind(native_import) == "not_run")
     ):
         raise _error("executable_geometry_missing")
     try:
@@ -266,8 +271,13 @@ def adapt_articulated_open_close_task_template(
     configured_revision: Mapping[str, Any] | None = None,
     materialized_references: Mapping[str, Mapping[str, Any]],
     diagnostic_controls_input: Mapping[str, Any] | None = None,
+    accept_simulator_not_run: bool = False,
 ) -> dict[str, Any]:
-    """Adapt exact articulated inputs while preserving diagnostic authority."""
+    """Adapt exact articulated inputs while preserving diagnostic authority.
+
+    ``accept_simulator_not_run`` is False for every caller that pays for or scores a robot run, as in
+    the rigid adapter; only the website package compile sets it.
+    """
 
     diagnostic = diagnostic_controls_input is not None
     if diagnostic:
@@ -324,14 +334,21 @@ def adapt_articulated_open_close_task_template(
                 revision["replacement"]["native_import_qualification"],
             ),
         ):
+            opt_in = accept_simulator_not_run and contract_path == NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH
             document, binding = _source_document(
                 materialized_references,
                 contract_path=contract_path,
                 expected_reference=expected_reference,
-                expected_schema=SOURCE_SCHEMAS[contract_path],
+                # The shared native-import schema, or with the opt-in the record that no simulator ran.
+                expected_schema=None if opt_in else SOURCE_SCHEMAS[contract_path],
+                accept_simulator_not_run=opt_in,
             )
             documents[contract_path] = document
             bindings.append(binding)
+        native_import = documents[NATIVE_IMPORT_QUALIFICATION_CONTRACT_PATH]
+        if (stage_five_receipt_kind(native_import) == "not_run"
+                and native_import.get("asset_digest") != revision["replacement"]["asset"]["digest"]):
+            raise _error("simulator_not_run_asset_unbound")
         replacement_identity = revision["replacement"]["identity"]
     template = documents[DEFINITION_CONTRACT_PATH]
     from .task_object_required_motions import assembly_mounting

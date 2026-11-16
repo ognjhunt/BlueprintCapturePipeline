@@ -425,7 +425,8 @@ def _exterior_right(packet: Path, *, base: Mapping[str, Any],
 
 def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, Any],
                       replacement: Path, root: Path,
-                      owner_success_confirmation_scope: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                      owner_success_confirmation_scope: Mapping[str, Any] | None = None,
+                      accept_simulator_not_run: bool = False) -> dict[str, Any]:
     """The revision's open/close task as the website episode compiler builds it, plus its part's motion.
 
     An owner's confirmation applies before construction, so every binding derived from the task holds it.
@@ -446,7 +447,8 @@ def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, A
     from .task_evaluation_robot_placement_trajectory import placement_trajectory_from_native_plan
 
     adapter = adapt_articulated_open_close_task_template(configured_revision=revision,
-                                                         materialized_references=references)
+                                                         materialized_references=references,
+                                                         accept_simulator_not_run=accept_simulator_not_run)
     definition = adapter["native_task_definition"]
     task_spec = compiler._runtime_subject_task_spec(definition["task_spec"])
     task_spec["success_criteria"] = adapter["native_success_criteria"].get("criteria")
@@ -991,7 +993,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     if articulated:
         try:
             task = _articulated_task(revision=revision, references=references, replacement=assets["replacement"],
-                                     root=root, owner_success_confirmation_scope=confirmation_scope)
+                                     root=root, owner_success_confirmation_scope=confirmation_scope,
+                                     accept_simulator_not_run=package_only)
         except (KeyError, StopIteration, TypeError, ValueError) as exc:
             raise TeamScenePacketError("team_scene_articulated_task_invalid:" + str(exc)) from exc
         adapter, definition, task_spec = task["adapter"], task["definition"], task["task_spec"]

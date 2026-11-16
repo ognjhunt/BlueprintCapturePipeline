@@ -106,11 +106,20 @@ OFFER_ONLY_BLOCK = ["team_scene_offer_publication_failed"]
 STATIC_CHECK_PASSED = ("The object's file passed Blueprint's static USD physics check (one rigid body, collision "
                        "shapes, mass and friction within set ranges).")
 NO_SIMULATOR = "Blueprint did not run this scene in Isaac Sim or any other simulator."
+#: A jointed object whose stage 5 ran no simulator: its joint is exactly as authored.
+JOINT_AS_AUTHORED = ("The joint's range is from the object's authored file and the success interval is the "
+                     "job's share of that range; no simulator moved the joint.")
 PHYSICS_CHECK_WORDS = {
     "isaac_sim": (),
     "not_run": (NO_SIMULATOR,),
     "not_run_static_check_passed": (STATIC_CHECK_PASSED, NO_SIMULATOR),
+    "not_run_joint_as_authored": (NO_SIMULATOR, JOINT_AS_AUTHORED),
 }
+#: ``scene_packet.FLATTEN_PROVENANCE``, copied (``test_scene_packet_parity`` pins them equal): the import graph
+#: ``test_live_pipeline_import_isolation`` walks reaches the hot lane through ``scene_packet``.
+FLATTEN_PROVENANCE = "Generated from Composed Stage of root layer "
+#: The stage-4 record of a jointed object (``task_evaluation_articulated_open_close_native_adapter``).
+ARTICULATED_STATIC_SCHEMA = "task_evaluation_articulated_replacement_static_qualification.v1"
 #: ``{count}`` movable items the site agreed to move out of the arm's way (``robot_access_removal``): a count only.
 FURNITURE_REMOVED = ("{count} movable item(s) the site agreed to move are not in the collision file; they still "
                      "appear in the appearance file.")
@@ -339,7 +348,10 @@ def _stage_documents(packet: Path, plan: Mapping[str, Any]) -> tuple[Any, Any]:
     request = _read(packet / "native_task_arena_packet_request.v1.json")
     documents = (((request.get("configured_task_template_adapter") or {}).get("source_documents") or {})
                  .get("documents") or {})
-    return documents.get("native_import_qualification"), documents.get("static_qualification")
+    # The rigid adapter names them short; the articulated one by their revision contract paths.
+    prefix = "scene.configured_revision.replacement."
+    return (documents.get("native_import_qualification", documents.get(prefix + "native_import_qualification")),
+            documents.get("static_qualification", documents.get(prefix + "static_qualification")))
 
 
 def static_check_passed(static: Any) -> bool:
@@ -352,7 +364,8 @@ def static_check_passed(static: Any) -> bool:
 
 
 def physics_check(packet: Path, plan: Mapping[str, Any]) -> str | None:
-    """What the README says was checked: ``isaac_sim``, ``not_run`` or ``not_run_static_check_passed``, or None.
+    """What the README says was checked: ``isaac_sim``, ``not_run``, ``not_run_static_check_passed`` or
+    ``not_run_joint_as_authored`` (a jointed object), or None.
 
     Stage 5 is read by its own reader (``website_scene_without_simulator.stage_five_receipt_kind``): a passed Isaac
     import, or the record that no simulator ran, each sealed; anything else is None (today's README).
@@ -363,6 +376,8 @@ def physics_check(packet: Path, plan: Mapping[str, Any]) -> str | None:
     kind = stage_five_receipt_kind(stage)
     if kind == "qualified":
         return "isaac_sim"
+    if kind == "not_run" and (static or {}).get("schema_version") == ARTICULATED_STATIC_SCHEMA:
+        return "not_run_joint_as_authored"
     if kind == "not_run":
         return "not_run_static_check_passed" if static_check_passed(static) else "not_run"
     return None
@@ -653,6 +668,10 @@ class _Localizer:
             _rewrite_strings(layer, rewrite)
         if failure:
             raise PackageRefused(failure[0], label)
+        # Flattening's note names the host file the object was made from (every articulated object has
+        # one); it says nothing about the object, and the identity scan would refuse the file for it.
+        layer.documentation = "\n".join(line for line in layer.documentation.split("\n")
+                                        if not line.startswith(FLATTEN_PROVENANCE)).rstrip("\n")
         # Written by Sdf from the opened layer, changed or not: never copied (``outbound_file_writer``).
         if not layer.Export(str(target)):
             raise PackageRefused("website_company_simulation_scene_unreadable", label)

@@ -259,11 +259,11 @@ def test_case_c_an_articulated_job_carries_its_success_rule_in_the_plan_and_is_p
             for row in _plan_fields(new_plan)["objects"]] == unchanged
     assert {**_plan_fields(new_plan), "objects": None} == {**_plan_fields(old_plan), "objects": None}
     # The plan states no lift direction; the room's files declare Z, so the real download publishes the new half
-    # with the open/close goal in its success rule. The old half's rule is read from its record now, and the old
-    # object file's documentation names the host file it was flattened from, so the scan refuses it.
+    # with the open/close goal in its success rule. The old half's object file still names the host file it was
+    # flattened from; the download drops that line (before 2026-11-16 its scan refused the file for it).
     assert "lift_unit_world" not in new_plan["task_spec"]["interaction_affordance"]
-    refused, _, _ = _download(tmp_path / "dl-old", old["path"])
-    assert refused["status"] == "refused" and refused["reason"] == "website_company_simulation_file_names_the_site"
+    kept, _, _ = _download(tmp_path / "dl-old", old["path"])
+    assert kept["status"] == "published", kept
     result, rule, names = _download(tmp_path / "dl-new", compiled["path"])
     assert result["status"] == "published", result
     assert rule["up_axis"] == "Z" and rule["units"] == "metres, radians, seconds"
@@ -342,3 +342,8 @@ def test_a_runtime_source_that_may_not_be_redistributed_is_refused_before_anythi
     # A rights stop: no timed retry re-drives it.
     blocked = {"status": "blocked", "blockers": ["team_scene_runtime_source_redistribution_rights_not_granted"]}
     assert queue.refusal_retry_cause(blocked) is None and queue.transient_cause(blocked) is None
+
+
+def test_the_package_strips_the_same_flatten_note_scene_packet_does():
+    from blueprint_pipeline import scene_packet, website_company_simulation
+    assert website_company_simulation.FLATTEN_PROVENANCE == scene_packet.FLATTEN_PROVENANCE

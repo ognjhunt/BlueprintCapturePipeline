@@ -48,6 +48,13 @@ def test_generated_depth_targets_keep_task_and_room_and_never_extrapolate_source
     assert [r["extrinsics"]["position"] for r in request["targetCameras"]] == [[0, 0, 0], [1, 0, 0]]
     assert all(r["intrinsics"]["width"] == 1280 for r in request["targetCameras"])
     assert request["returnDepth"] and pose == original
+    # A reviewed frame the selection left out (it connected to no other) has no camera to target.
+    review = {"scene_state": "same object", "coverage_requirements": [
+        {"role": "task_object", "required_frame_ids": ["task"]},
+        {"role": "surrounding_scene", "required_frame_ids": ["room", "left-out"]}]}
+    request = generation_request(pose=pose, inputs={"frames": [{"frame_id": "task"}, {"frame_id": "room"}]},
+                                 review=review)
+    assert [r["extrinsics"]["position"] for r in request["targetCameras"]] == [[0, 0, 0], [1, 0, 0]]
 
 
 def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_review(tmp_path, monkeypatch):
@@ -103,7 +110,9 @@ def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_rev
 @pytest.mark.parametrize("automation_enabled", [False, True])
 @pytest.mark.parametrize("mesh_price", [None, .5])
 @pytest.mark.parametrize("over_budget", [False, True])
-def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget, mesh_price, automation_enabled):
+@pytest.mark.parametrize("left_out", [False, True])
+def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget, mesh_price,
+                                                                       automation_enabled, left_out):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import atlas_video_extension as extension, paid_resource_allocator as allocator
     from blueprint_pipeline import atlas_result_bundle as bundles, atlas_depth_splat as depth_splat
@@ -155,6 +164,9 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     def prepare(**kwargs):
         if kwargs["review"]["survey_digest"] == "base":
             raise ValueError("atlas_selection_coverage_gap")
+        # A selection that left views out records it; the raw route's result never says covered then.
+        (kwargs["output_root"] / "atlas_view_selection.json").write_text(
+            json.dumps({"task_and_surrounding_scene_covered": not left_out}))
         return {"frames": [{"frame_id": str(i)} for i in range(5 if over_budget else 2)]}
     monkeypatch.setattr(inputs, "prepare_video_inputs", prepare)
     def pose(**kwargs):
@@ -213,7 +225,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     # A withdrawal is re-checked before every paid stage, including each resumed one.
     assert stages == ["plan", "plan", "pose", "pose", "generated_rgbd"] + (["mesh"] if mesh_price else [])
     assert result["status"] == "needs_input" and result["simulation_qualified"] is False
-    assert result["task_and_surrounding_scene_covered"] is True
+    assert result["task_and_surrounding_scene_covered"] is not left_out
     assert result["splat_available"] is True and result["mesh_available"] is bool(mesh_price)
     assert (exported["mesh_root"] is not None) is bool(mesh_price) and exported["splat_root"] == root / "splat"
     assert [str(kw["glb"]) for kw in registered] == ([str(root / "mesh/outputs/mesh.glb")] if mesh_price else [])

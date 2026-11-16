@@ -42,7 +42,8 @@ def test_task_closeups_without_surrounding_scene_are_refused():
 
 
 def test_required_context_uses_overlap_bridges_and_never_silently_drops_context(monkeypatch):
-    frames = [{"frame_id": str(i), "sharpness": 50, "clipped_fraction": 0} for i in range(5)]
+    frames = [{"frame_id": str(i), "sharpness": 50, "clipped_fraction": 0, "timestamp_seconds": float(i)}
+              for i in range(5)]
     monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 25) if abs(a-b) == 1 else (0, 0))
     requirements = [{"role": "task_object", "label": "dishwasher", "required_frame_ids": ["4"]},
                     {"role": "surrounding_scene", "label": "counter and floor", "required_frame_ids": ["0"]}]
@@ -53,9 +54,10 @@ def test_required_context_uses_overlap_bridges_and_never_silently_drops_context(
         video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=4,
             requirements=requirements, anchor_id="4")
     frames[2]["sharpness"] = 0
-    with pytest.raises(ValueError, match="coverage_gap"):
-        video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=5,
-            requirements=requirements, anchor_id="4")
+    # The room beyond the blurred frame is left out and named, not silently dropped (before 2026-11-16: coverage_gap).
+    selected, diagnostics = video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=5,
+        requirements=requirements, anchor_id="4")
+    assert selected == [3, 4] and {"decision": video.SURROUNDINGS_NOT_CONNECTED, "frame_ids": ["0"]} in diagnostics
 
 
 def _neighbour_chain(monkeypatch, count=6, blurred=(1,)):
@@ -82,22 +84,50 @@ def test_a_surrounding_scene_gap_is_recorded_while_the_task_area_still_selects(m
         ("1", "window wall", "surrounding_scene_below_quality")]
 
 
-@pytest.mark.parametrize("role, frame_id, error", [
-    ("support_surface", "0", "atlas_task_and_scene_coverage_gap:0"),
-    ("task_region", "1", "atlas_coverage_anchor_quality_insufficient"),
-    ("approach_space", "0", "atlas_task_and_scene_coverage_gap:0"),
-    ("surrounding_scene", "0", "atlas_task_and_scene_coverage_gap:0"),
-    ("surrounding_scene", "1", "atlas_coverage_anchor_quality_insufficient"),
+def test_a_blurry_task_anchor_still_refuses(monkeypatch):
+    frames = _neighbour_chain(monkeypatch, blurred=(4,))
+    requirements = [{"role": "task_object", "label": "dishwasher", "required_frame_ids": ["4"]},
+                    {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["3"]}]
+    with pytest.raises(ValueError, match="atlas_coverage_anchor_quality_insufficient"):
+        video.select_coverage_views(frames=frames, features=list(range(6)), maximum_frames=6,
+                                    requirements=requirements, anchor_id="4")
+
+
+@pytest.mark.parametrize("role, frame_id, decision, code", [
+    ("support_surface", "0", video.TASK_AREA_UNCONNECTED, "task_views_left_out"),
+    ("approach_space", "0", video.TASK_AREA_UNCONNECTED, "task_views_left_out"),
+    ("task_region", "1", video.TASK_AREA_BELOW_QUALITY, "task_views_left_out"),
+    ("surrounding_scene", "0", "surrounding_scene_unconnected", "surroundings_not_connected"),
+    ("surrounding_scene", "1", "surrounding_scene_below_quality", "surroundings_not_connected"),
 ])
-def test_a_task_area_gap_or_no_connected_surrounding_frame_still_refuses(monkeypatch, role, frame_id, error):
-    frames = _neighbour_chain(monkeypatch)
+def test_a_view_that_does_not_connect_is_left_out_named_and_the_job_goes_on(monkeypatch, role, frame_id,
+                                                                             decision, code):
+    # Before 2026-11-16: atlas_task_and_scene_coverage_gap (or anchor quality), and the site was asked to film again.
+    from blueprint_pipeline import atlas_scene_estimates as estimates
+    frames = [{**row, "timestamp_seconds": float(i)} for i, row in enumerate(_neighbour_chain(monkeypatch))]
     requirements = [{"role": "task_object", "label": "dishwasher", "required_frame_ids": ["4"]},
                     {"role": role, "label": "the gap", "required_frame_ids": [frame_id]}]
     if role != "surrounding_scene":
         requirements.append({"role": "surrounding_scene", "label": "room", "required_frame_ids": ["3"]})
-    with pytest.raises(ValueError, match=error):
-        video.select_coverage_views(frames=frames, features=list(range(6)), maximum_frames=6,
-                                    requirements=requirements, anchor_id="4")
+    selected, diagnostics = video.select_coverage_views(frames=frames, features=list(range(6)), maximum_frames=6,
+                                                        requirements=requirements, anchor_id="4")
+    assert 4 in selected and int(frame_id) not in selected and len(selected) >= 2
+    assert {"frame_id": frame_id, "label": "the gap", "decision": decision} in diagnostics
+    rows = estimates.scene_estimates(levelling={}, registration={}, selection={"diagnostics": diagnostics})
+    assert rows == [{"code": "scene_estimate:" + code, "source": "view_selection", "evidence": {"frame_ids": [frame_id]}}]
+    assert video._covered({}, diagnostics) is False and video._covered({}, []) is True
+
+
+def test_a_task_view_that_overlaps_no_other_view_still_refuses(monkeypatch):
+    frames = [{"frame_id": str(i), "sharpness": 50, "clipped_fraction": 0, "timestamp_seconds": float(i)}
+              for i in range(3)]
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (0, 0))
+    requirements = [{"role": "task_object", "label": "dishwasher", "required_frame_ids": ["0"]},
+                    {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["2"]}]
+    # One view and nothing that overlaps it: no scene can be posed from it.
+    with pytest.raises(ValueError, match="atlas_insufficient_overlapping_distinct_views"):
+        video.select_coverage_views(frames=frames, features=list(range(3)), maximum_frames=3,
+                                    requirements=requirements, anchor_id="0")
 
 
 def test_financial_frame_budget_has_no_invented_64_frame_ceiling():
@@ -582,3 +612,71 @@ def test_views_added_after_the_cover_clear_the_clips_relative_sharpness_floor(tm
     for invalid in (1, -.1, True, float("nan")):
         with pytest.raises(ValueError, match="atlas_selection_sharpness_profile_invalid"):
             video.prepare_video_inputs(**{**options, "relative_sharpness_fraction": invalid})
+
+
+class _EditorReached(Exception):
+    pass
+
+
+@pytest.mark.parametrize("gap_role, code", [("support_surface", "scene_estimate:task_views_left_out"),
+                                            ("surrounding_scene", "scene_estimate:surroundings_not_connected")])
+def test_a_left_out_view_reaches_the_background_editor_and_its_flags_reach_the_result(tmp_path, monkeypatch,
+                                                                                      gap_role, code):
+    """The editor-first route (an object to remove): the selection leaves frame 5 out and names it, the
+    reviewed-background step asks only for the frames it kept, and the result says what was left out."""
+    from PIL import Image
+    from blueprint_pipeline import atlas_background_automation as background
+    from blueprint_pipeline import atlas_privacy_screen as screen
+    from blueprint_pipeline import atlas_scene_automation as automation
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    root = tmp_path / "survey"
+    (root / "frames").mkdir(parents=True)
+    rows = []
+    for index in range(6):
+        path = root / "frames" / f"{index}.png"
+        Image.new("RGB", (32, 24), (index * 30, 90, 160)).save(path)
+        rows.append({"frame_id": str(index), "timestamp_seconds": index * .5, "source_image_path": str(path),
+                     "source_image_digest": _sha256_file(path), "sharpness": 50, "clipped_fraction": 0})
+    survey = {"schema_version": video.SURVEY_SCHEMA, "heldout_pixels_included": False, "frames": rows,
+              "display_rotation_degrees": 0, "source_video_digest": "sha256:" + "a" * 64, "sample_count": 6,
+              "heldout_frame_count": 0}
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    (root / "atlas_video_survey.json").write_text(json.dumps(survey))
+    requirements = [{"role": "task_object", "label": "object", "required_frame_ids": ["2"]},
+                    {"role": gap_role, "label": "the gap", "required_frame_ids": ["5"]}]
+    if gap_role != "surrounding_scene":
+        requirements.append({"role": "surrounding_scene", "label": "room", "required_frame_ids": ["0"]})
+    plan = {"objects": [{"disposition": "remove"}]}
+    review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
+              "same_scene_state": True, "reviewed_by": "test", "scene_state": "unchanged",
+              "static_intervals_seconds": [[0, 3]], "anchor_frame_id": "2", "coverage_requirements": requirements,
+              "automation": plan,
+              "selection_budget": {"maximum_pose_cost_usd": 10, "input_cost_usd": .01, "rate_card_reference": "test",
+                                   "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}}
+    assert video.takes_reviewed_background(review)
+    monkeypatch.setattr(video, "_features", lambda row, rotation: int(row["frame_id"]))
+    # Frames 0-4 overlap their neighbours; frame 5 overlaps nothing.
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 30) if abs(a - b) == 1 and 5 not in (a, b) else (0, 0))
+    monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
+    inputs = video.prepare_video_inputs(survey_path=root / "atlas_video_survey.json", review=review,
+                                        output_root=tmp_path / "pose")
+    assert inputs["left_out_frame_ids"] == ["5"] and "5" not in {row["frame_id"] for row in inputs["frames"]}
+    monkeypatch.setattr(automation, "measurement_plan", lambda review: review["automation"])
+
+    def editor(**kwargs):
+        raise _EditorReached(kwargs["selected_frame_ids"])
+    monkeypatch.setattr(background, "run_background", editor)
+    with pytest.raises(_EditorReached) as reached:
+        automation.run_automation(pose_root=None, inputs=inputs, review=review, output_root=tmp_path / "automation",
+                                  task_context={}, configuration={"policy": {}}, task_runner=None, pose_runner=None,
+                                  release_blockers=lambda: ([], ""))
+    assert "5" not in reached.value.args[0] and "2" in reached.value.args[0]
+    selection = json.loads((tmp_path / "pose/atlas_view_selection.json").read_text())
+    result = pipeline.finalize_background_result(output_root=tmp_path, source_digest="sha256:" + "a" * 64,
+        task_context={"context_digest": "sha256:" + "c" * 64}, automation={"status": "completed", "background": {}},
+        source_pose=None, model="m", selection=selection)
+    published = json.loads((tmp_path / "result.json").read_text())
+    assert published == result and published["task_and_surrounding_scene_covered"] is False
+    assert any(row.startswith("the gap: frame 5 ") for row in published["uncaptured_regions"])
+    assert code in {row["code"] for row in published["scene_estimates"]}

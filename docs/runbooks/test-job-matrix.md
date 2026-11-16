@@ -29,7 +29,8 @@ and exits 0 only when every variation ends where its row says. The whole matrix 
 
 No row is end to end: the scene chain and the website compile run on different fixture objects, and the command
 says so under its table. The articulated row runs the real `prepare_construction_stages` with stage 3 replaced by a
-stand-in articulated record (no articulated website fixture exists), so its stage validation is not run.
+stand-in articulated record (no articulated website fixture exists), so its stage validation is not run; its
+website compile uses the drawer cabinet of `tests/test_team_scene_packet._articulated_scene` with the not-run record.
 "no-clear-stance" and "look-file-quality-gate" are forced through the package's own test helpers; for
 "furniture-moved" and "held-support-ships-with-the-flag", the half's sealed record is replaced with one carrying
 an applied removal, or a held support record. They test the package's
