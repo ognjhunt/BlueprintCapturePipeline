@@ -40,6 +40,38 @@ from .website_task_target_choice import load_target_choices, retain_questions
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 #: A website analysis that found nothing the task is about goes on flagged with this code, buying no masks.
 NOT_FOUND = "task_relevant_target_not_observed"
+#: The analysis found the job's object but it could not be outlined in the video (an anchor box that cannot be read,
+#: no tracks, no instance the segmenter could pick): the plan goes on flagged with this code, nothing
+#: removed and no masks, unless a person is to be masked (privacy) or the refusal is about money.
+NOT_LOCATED = "task_target_not_located"
+#: The task-target localisation refusals of ``website_task_masks`` that say only that the object could not be
+#: outlined: none is about privacy, rights or money.
+LOCALISATION_CODES = frozenset({
+    "task_target_spatial_anchor_missing", "task_target_spatial_anchor_invalid", "website_sam31_tracks_unavailable",
+    "website_task_targets_resolve_to_same_instance", "task_target_has_no_estimated_geometry",
+})
+
+
+def _not_located(plan: Mapping[str, Any], exc: BaseException) -> dict[str, Any] | None:
+    """The plan going on flagged ``NOT_LOCATED`` with nothing removed, or None when the failure must still stop.
+
+    It stops when a person is to be masked (the masks protect privacy), when the refusal is about money
+    (``PaidResourceAdmissionBlocked``), and when the code is not a localisation refusal.
+    """
+    from .paid_resource_admission import PaidResourceAdmissionBlocked
+    from .website_task_target_choice import TaskTargetAmbiguous
+    targets = [dict(row) for row in plan.get("targets") or [] if isinstance(row, Mapping)]
+    if (isinstance(exc, PaidResourceAdmissionBlocked)
+            or any(row.get("target_class") == "person" and row.get("disposition") == "remove" for row in targets)
+            or not (isinstance(exc, TaskTargetAmbiguous) or str(exc).split(":", 1)[0] in LOCALISATION_CODES)):
+        return None
+    for row in targets:
+        if row.get("disposition") == "remove":
+            row.update(disposition="keep", rebuild_intent="none")
+    return {**plan, "targets": targets, "movable_removal_count": 0,
+            "flags": list(dict.fromkeys([*(plan.get("flags") or []), NOT_LOCATED]))}
+
+
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
 DAY_GATE_ENV = "BLUEPRINT_CLEAN_PLATE_DAY_GATE"
 
@@ -471,9 +503,14 @@ def _run_clean_plate_stage(
         except HandoffLeaseError:
             raise
         except Exception as exc:
-            status, mode = "blocked", "task_masks_blocked"
-            reason = "website_task_masks_unavailable"
-            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+            located = _not_located(plan, exc)
+            if located is not None:
+                plan = task_plan = located
+                status, mode, reason = "noop", "noop", None
+            else:
+                status, mode = "blocked", "task_masks_blocked"
+                reason = "website_task_masks_unavailable"
+                blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
 
     if task_masks is not None and not blockers:
         # Scene preparation needs the plan, the source frames and the task

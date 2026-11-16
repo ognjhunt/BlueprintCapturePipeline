@@ -329,6 +329,10 @@ ROOM_GAPS = frozenset({"website_native_task_profile_preparation_required", "webs
 MISMATCH = "website_task_profile_mechanism_mismatch"
 #: The video analysis found nothing the task is about (``clean_plate_stage``): the room as filmed, flagged.
 NOT_FOUND = "task_relevant_target_not_observed"
+#: The analysis found the job's object but the clean plate could not outline it (``clean_plate_stage.NOT_LOCATED``).
+NOT_LOCATED = "task_target_not_located"
+#: The clean plate's flags that end the job as the room package, as filmed.
+ROOM_AS_FILMED = (NOT_FOUND, NOT_LOCATED)
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
 
 
@@ -380,9 +384,9 @@ def _sim_frame(*, base_scene: Mapping[str, Any], source_geometry: Mapping[str, A
 
 
 def room_flags(flags: Sequence[str], clean_plate: Mapping[str, Any]) -> list[str]:
-    """A room package's flags: the caller's, then the clean plate's "nothing of the task found" (``NOT_FOUND``)
-    when it was raised; in that order, each once."""
-    found = [NOT_FOUND] if NOT_FOUND in (clean_plate.get("flags") or []) else []
+    """A room package's flags: the caller's, then the clean plate's room-as-filmed flags (``ROOM_AS_FILMED``)
+    it raised; in that order, each once."""
+    found = [code for code in ROOM_AS_FILMED if code in (clean_plate.get("flags") or [])]
     return list(dict.fromkeys([*flags, *found]))
 
 
@@ -614,9 +618,9 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         from .website_task_semantics import effective_task_profile
         resolved = task_profile_for(effective_task_profile(task_context=context, **semantics_options))
         navigation = resolved is not None and not resolved.requires_manipulation
-        if NOT_FOUND in (clean_plate.get("flags") or []):
-            # Nothing of the task in the video: no object, mask or goal to read. The room as filmed, flagged; a
-            # navigation job keeps its kind, with no goal region.
+        if set(ROOM_AS_FILMED) & set(clean_plate.get("flags") or []):
+            # Nothing of the task in the video, or the object seen but not outlined: no object, mask or goal to
+            # read. The room as filmed, flagged; a navigation job keeps its kind, with no goal region.
             return room_package(resolved.profile_id if resolved is not None else None,
                                 {"targets": []} if navigation else None)
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks

@@ -77,8 +77,8 @@ PRIOR_RESPONSE_SCHEMA = {**REGION_RESPONSE_SCHEMA, "properties": {
 def _box(value: Any, *, inside_frame: bool = True) -> list[float] | None:
     """A normalized ``[x, y, w, h]`` box, or None; never clamped.
 
-    ``inside_frame`` also requires it to lie in the frame, within the same
-    rounding allowance the task-mask anchors use.
+    ``inside_frame`` also requires it to lie in the frame, within 1e-5 (the task-mask anchors allow more and clip:
+    ``website_task_masks.ANCHOR_EDGE_ROUNDING``).
     """
     if (not isinstance(value, list) or len(value) != 4
             or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in value)):

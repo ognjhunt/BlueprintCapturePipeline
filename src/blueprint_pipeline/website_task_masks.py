@@ -98,6 +98,11 @@ def track_at_geometry_resolution(track: Mapping[str, Any], frames: list[Mapping[
     return {**track, "observations": observations}
 
 
+#: How far past the frame an analysis box may reach and still be read as the same box, clipped: rounding to three or
+#: four decimals, not a box outside the picture.
+ANCHOR_EDGE_ROUNDING = 0.005
+
+
 def anchor_scores(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
                   frames: list[Mapping[str, Any]]) -> list[tuple[float, Mapping[str, Any]]]:
     """Each instance's mean overlap with the video analysis's anchor boxes, highest first."""
@@ -129,7 +134,15 @@ def anchor_scores(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
             if not len(xs):
                 continue
             x, y, w, h = np.asarray(observation["box_xywh_normalized"], dtype=float)
-            if not np.isfinite([x, y, w, h]).all() or min(x, y) < 0 or min(w, h) <= 0 or max(x + w, y + h) > 1.00001:
+            if (not np.isfinite([x, y, w, h]).all() or min(x, y) < -ANCHOR_EDGE_ROUNDING or min(w, h) <= 0
+                    or max(x + w, y + h) > 1 + ANCHOR_EDGE_ROUNDING):
+                raise ValueError("task_target_spatial_anchor_invalid")
+            # A box the analysis rounded past the frame's edge (job itest-ff80a41b, 16 Nov: y 0.7371 + h 0.263)
+            # is the same box, clipped to the frame.
+            right, bottom = min(x + w, 1.0), min(y + h, 1.0)
+            x, y = max(x, 0.0), max(y, 0.0)
+            w, h = right - x, bottom - y
+            if min(w, h) <= 0:
                 raise ValueError("task_target_spatial_anchor_invalid")
             left, top, right, bottom = x * mask.shape[1], y * mask.shape[0], (x + w) * mask.shape[1], (y + h) * mask.shape[0]
             ml, mt, mr, mb = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
