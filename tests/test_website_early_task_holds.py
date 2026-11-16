@@ -199,7 +199,7 @@ def test_the_preview_and_capture_stages_keep_the_hold_and_a_retry_resumes_it(job
     preview = _preview_job(job, result)
     # Terminal, so the capture's waiting handoff replays; not failed, and no archive.
     assert (preview["state"], preview["reason"], preview["stage"]) == ("needs_input", code, early.STAGE)
-    assert _final(preview) and preview.get("archive") is None
+    assert _final(preview, job.capture) and preview.get("archive") is None
     held = early.retain_task_preparation_hold(capture_root=job.capture, task_context=context, source_video=job.video)
     assert held["status"] == "needs_input" and held["blockers"] == [code]
     assert held["visual_reconstruction_ready"] is False and held["provider_mutation_performed"] is False
