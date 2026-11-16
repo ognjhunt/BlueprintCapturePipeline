@@ -15,8 +15,8 @@ internal-test-footage/<footage_id>/walkthrough.mp4   (or .mov, exactly one of th
 internal-test-footage/<footage_id>/source.json
 ```
 
-`footage_id` is lower-case letters, digits and hyphens (at most 64). A clip is added only on the owner's word for
-it, by the owner or by a session the owner told to add it. Any video may be used for internal tests (owner,
+`footage_id` is lower-case letters, digits and hyphens (at most 64). Only the owner, or a person the owner names,
+adds a clip; a cloud session cannot write to the bucket. Any video may be used for internal tests (owner,
 2026-11-15). Keep `source.json` beside it anyway so the next reader knows where it came from:
 
 ```json
@@ -44,13 +44,10 @@ Write a matrix file:
 ```
 
 ```bash
-. ~/.blueprint-cloud/env.sh   # the Pipeline's Python: the report reads intents with its digest library
-"$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py submit --matrix jobs.json -k 2 --state run.json
-"$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py follow --state run.json --report report.json
-"$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py report --state run.json
+python3 scripts/test_jobs.py submit --matrix jobs.json -k 2 --state run.json
+python3 scripts/test_jobs.py follow --state run.json --report report.json
+python3 scripts/test_jobs.py report --state run.json
 ```
-
-Under another Python it says so in one line and exits 2 before doing anything.
 
 `submit` starts the rows in order, never more than two at a time. Before each one it reads `door status` and
 stops when the month's counted spend (spend plus held reservations) plus one job's expected spend ($20) would
@@ -79,9 +76,7 @@ GPU for its scene. The month's $300 limit counts test jobs like any other job.
 
 ## Reading the report
 
-One line per job: label, the job kind the Atlas review returned, the stage reached (a preparation's stage is
-read from its own `pipeline/website_scene_preparation/handoff.json` when there is one, so the 3D reading's wait
-shows as `preparation:awaiting_reconstruction`, not the ledger's `failed_retryable`), settled spend ("spend not
+One line per job: label, the job kind the Atlas review returned, the stage reached, settled spend ("spend not
 shown" when `door status`, which lists only its top jobs, does not name the job), the first failure code
 (including a package the website refused, and "stalled" for a job with no package and no ending after 7 days)
 and the start of the zip digest. The JSON adds the footage id, job and capture ids, times (asked

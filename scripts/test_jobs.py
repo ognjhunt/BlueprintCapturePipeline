@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """Run real internal test jobs through the operator door, at most two at a time, and report each one.
 
-    . ~/.blueprint-cloud/env.sh
-    "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py submit --matrix jobs.json -k 2 --state run.json
-    "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py follow --state run.json --report report.json
-    "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py report --state run.json
+    python3 scripts/test_jobs.py submit --matrix jobs.json -k 2 --state run.json
+    python3 scripts/test_jobs.py follow --state run.json --report report.json
+    python3 scripts/test_jobs.py report --state run.json
 
 A matrix row is ``{"label", "footage_id", "description"}``. Before each submit the month's counted spend (spend
 plus held reservations, as ``door status`` reports it) plus one job's expected spend must stay under the account's
 existing alert line the door itself enforces (``internal_test_job_door.STOP_LINE``). Nothing is deleted; every job
-is found again by its label. It needs the Pipeline's Python (its intent reader digests requests with ``rfc8785``);
-docs/runbooks/test-jobs.md.
+is found again by its label. Standard library plus that one module's constants; docs/runbooks/test-jobs.md.
 """
 from __future__ import annotations
 
@@ -88,13 +86,10 @@ def job_report(job: dict, status: dict) -> dict:
     if root:
         stage = "handed_off"
         ledger = cat_json(f"{root}/pipeline_job_ledger.json") or {}
-        # The preparation's own record says what it is doing; the ledger records a designed wait (the 3D reading)
-        # as ``failed_retryable`` (``website_reconstruction_resume.WAIT_ERROR``), which is not a failure.
-        handoff = cat_json(f"{root}/pipeline/website_scene_preparation/handoff.json") or {}
         if ledger:
             changed = {entry["name"]: entry.get("mtime") for entry in ls(root)}
-            stage, times["preparation_updated"] = f"preparation:{handoff.get('status') or ledger.get('status')}", \
-                changed.get("pipeline_job_ledger.json")
+            stage, times["preparation_updated"] = f"preparation:{ledger.get('status')}", changed.get(
+                "pipeline_job_ledger.json")
             failure = ledger.get("terminal_code") or (ledger.get("status") if str(ledger.get("status")).startswith(
                 "terminal_") and ledger.get("status") != "terminal_success" else None)
         semantics = ls(f"{root}/pipeline/atlas/task_semantics")
@@ -195,10 +190,6 @@ def report(args: argparse.Namespace, state: dict) -> list[dict]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if importlib.util.find_spec("rfc8785") is None:
-        print("scripts/test_jobs.py needs the Pipeline's Python: . ~/.blueprint-cloud/env.sh, then run it with "
-              "\"$BLUEPRINT_PIPELINE_PYTHON\" (rfc8785 is missing here)", file=sys.stderr)
-        return 2
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("submit", "follow", "report"):

@@ -453,10 +453,9 @@ def test_every_allowed_label_gives_a_key_the_door_accepts(label):
 ROOT_PATH = "/var/lib/blueprint/pubsub-handoffs/b/scenes/site-itest-1/captures/walkthrough-itest-1"
 
 
-def _job_report(monkeypatch, manifest, *, jobs=(), submitted_at=1, ledger=None, scenes=(), handoff=None):
+def _job_report(monkeypatch, manifest, *, jobs=(), submitted_at=1, ledger=None, scenes=()):
     runner = _runner()
     files = {f"{ROOT_PATH}/pipeline_job_ledger.json": ledger or {"status": "processing"},
-             f"{ROOT_PATH}/pipeline/website_scene_preparation/handoff.json": handoff,
              f"{ROOT_PATH}/pipeline/atlas/task_semantics/s.json": {"semantics": {"task_family": "rigid_pick_place"}},
              f"{ROOT_PATH}/pipeline/company_simulation/company_simulation.json": manifest}
     listing = {runner.HANDOFFS: [{"name": "b"}], ROOT_PATH: [{"name": "pipeline_job_ledger.json", "mtime": 4}],
@@ -506,25 +505,6 @@ def test_follow_ends_with_a_clear_state(monkeypatch, manifest, ledger, submitted
     assert report["spend"] is None  # not in the status's top jobs: "spend not shown", never $0.00
 
 
-
-@pytest.mark.parametrize(("handoff", "stage"), [
-    ({"status": "awaiting_reconstruction", "blockers": ["website_atlas_job_processing"]},
-     "preparation:awaiting_reconstruction"),    # the 3D reading's designed wait, which the ledger calls failed_retryable
-    (None, "preparation:failed_retryable"),     # no record of its own yet: the ledger's word, as before
-])
-def test_a_preparation_that_waits_reads_its_own_record_and_names_no_failure(monkeypatch, handoff, stage):
-    import time as clock
-
-    monkeypatch.setattr(clock, "time", lambda: NOW + 60)
-    _, report = _job_report(monkeypatch, {}, ledger={"status": "failed_retryable"}, submitted_at=NOW, handoff=handoff)
-    assert (report["stage"], report["first_failure"]) == (stage, None)
-
-
-def test_the_runner_says_it_needs_the_pipelines_python(monkeypatch, capsys):
-    runner = _runner()
-    monkeypatch.setattr(runner.importlib.util, "find_spec", lambda name: None)
-    assert runner.main(["report", "--state", "missing.json"]) == 2
-    assert "needs the Pipeline's Python" in capsys.readouterr().err
 
 
 def test_the_runner_never_runs_more_than_two_at_once():
