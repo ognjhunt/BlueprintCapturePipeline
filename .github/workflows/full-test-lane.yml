@@ -304,7 +304,11 @@ jobs:
             # the next sync would take it as installed (run 43538993760, shard 7: a torch
             # library was missing and 41 test modules failed to import). Start the next
             # attempt from an empty environment; finished downloads stay in uv's cache.
-            uv venv --clear --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
+            # The directory is emptied, not removed: it sits in root-owned /var/lib, where
+            # `uv venv --clear` failed every retry with "failed to remove directory ...
+            # Permission denied" (run 43788230034, shards 0 and 2).
+            find /var/lib/blueprint-native-test-venv -mindepth 1 -delete
+            uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
           done
           # Noneditable policy CLIs resolve retained documents beside their
           # installed package. Preserve those exact committed bytes outside
