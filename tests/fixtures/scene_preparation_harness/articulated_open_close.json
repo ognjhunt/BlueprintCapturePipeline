@@ -1,12 +1,12 @@
 {
  "activation_request": {
-  "activation_id": "website-5328cfcb9e397b3611d5a278-0662bb89-20260919t120000z-a57667c69b7e-activation-auto",
+  "activation_id": "website-<hex>-0662bb89-20260919t120000z-<hex>-activation-auto",
   "authorization": {
    "authorized_by": "owner-1",
-   "profile_revision": "scene-fea7183199323c4c",
-   "reference": "scene-intent:sha256:5328cfcb9e397b3611d5a278aad18c4aaf12abf2258fe67a52114fb84a7100db"
+   "profile_revision": "scene-<hex>",
+   "reference": "scene-intent:sha256:<hex>"
   },
-  "expected_production_commit": "0662bb89ff29df030dd893a0b170edbdd27a30d5",
+  "expected_production_commit": "<hex>",
   "lane": "task_evaluation_scene_configuration",
   "lineage": [
    "initial_provider_zero",
@@ -14,8 +14,8 @@
    "project_spend_reconciliation"
   ],
   "preparation": {
-   "preparation_id": "website-5328cfcb9e397b3611d5a278-0662bb89-20260919t120000z-a57667c69b7e-preparation",
-   "request_digest": "sha256:050171ecb41ad5e6678321ee5c95ab79f91db812ae045acd25fa157e3c515946"
+   "preparation_id": "website-<hex>-0662bb89-20260919t120000z-<hex>-preparation",
+   "request_digest": "sha256:<hex>"
   },
   "release_window": [
    "digest",
@@ -28,18 +28,18 @@
    "standing_authorization": true
   },
   "schema_version": "task_evaluation_launch_activation_request.v1",
-  "team_namespace": "website-5328cfcb9e397b3611d5a278"
+  "team_namespace": "website-<hex>"
  },
  "attempts": [
   {
-   "attempt_id": "scene-configuration-050171ecb41ad5e6678321ee",
+   "attempt_id": "scene-configuration-<hex>",
    "counts_as_paid_attempt": true,
    "maximum_spend_usd": 31.0,
    "provider": "vast",
    "status": "reserved"
   },
   {
-   "attempt_id": "source-a57667c69b7e688bff0d2d75",
+   "attempt_id": "source-<hex>",
    "counts_as_paid_attempt": null,
    "maximum_spend_usd": 0,
    "provider": "control_plane",
@@ -52,10 +52,10 @@
  },
  "launch_submissions": [
   {
-   "profile_digest": "sha256:7d917df5c4977a31700bc02f7c4971ca6a33dee34244683be5dd19a3ca4cf18d",
+   "profile_digest": "sha256:<hex>",
    "rights": {
     "evidence": {
-     "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+     "digest": "sha256:<hex>",
      "uri": "s3://blueprint/task-evaluation/production-inputs/ns/evaluation_run_spec.json"
     },
     "scope": "recorded-owner-rights"
@@ -68,14 +68,14 @@
  "outcome": null,
  "preparation_request": {
   "hard_cap_usd": 31.0,
-  "normalised_digest": "sha256:050171ecb41ad5e6678321ee5c95ab79f91db812ae045acd25fa157e3c515946",
-  "preparation_id": "website-5328cfcb9e397b3611d5a278-0662bb89-20260919t120000z-a57667c69b7e-preparation",
+  "normalised_digest": "sha256:<hex>",
+  "preparation_id": "website-<hex>-0662bb89-20260919t120000z-<hex>-preparation",
   "scene_id": "site-req1",
-  "task_id": "website-15e7ce50bcaa3260cfbb"
+  "task_id": "website-<hex>"
  },
  "preparation_result": {
-  "configuration_render_inputs_result_digest": "sha256:8fc157a5a8ddbe09d33b475c854e9fee11bc3273ff88bd9014375e55e15cbe9f",
-  "construction_recipe_digest": "sha256:aa33275be6d0ac7aa29320ef55993e55d9ad570f6f4f9bd3191ec8ef211e5d96",
+  "configuration_render_inputs_result_digest": "sha256:<hex>",
+  "construction_recipe_digest": "sha256:<hex>",
   "run_mode": "scene_configuration",
   "status": "queued_for_production_scene_configuration"
  },

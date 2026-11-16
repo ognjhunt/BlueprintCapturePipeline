@@ -1,6 +1,7 @@
 """The old scene-preparation stage, website intent to `completed/scene_prepared`, pinned as one record.
 
 This is the comparison basis for the stage rebuild (S7): every rebuild step must give the same record.
+The committed goldens pin the record's structure with content digests masked (see ``_structure``).
 Regenerate the goldens after an intended change with:
 
     BLUEPRINT_HARNESS_REGENERATE=1 INVOCATION_ID=ci-runner PYTHONPATH=$PWD/src python -m pytest -p no:cacheprovider tests/test_scene_preparation_harness.py -k golden
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -43,12 +45,30 @@ def _launched_then_prepared(record: dict) -> None:
     assert record["team_scene_requests"] == 1 and record["outcome"] is None
 
 
+def _structure(value):
+    """The record with every content digest and digest-derived id masked.
+
+    The digests follow the construction recipe's bytes, which differ between machines and change
+    whenever the recipe does. The pinned record is the stage's structure: states, phases, blockers,
+    refusals, providers and spend figures. Two runs on one machine are compared whole
+    (``test_two_runs_give_an_equal_record``), and a rebuild is compared whole against the old stage
+    on the same machine.
+    """
+    if isinstance(value, dict):
+        return {key: _structure(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_structure(item) for item in value]
+    if isinstance(value, str):
+        return re.sub(r"[0-9a-f]{12,}", "<hex>", value)
+    return value
+
+
 def _golden(name: str, record: dict) -> None:
     path = GOLDEN / f"{name}.json"
-    text = json.dumps(record, indent=1, sort_keys=True) + "\n"
+    structure = _structure(record)
     if os.environ.get("BLUEPRINT_HARNESS_REGENERATE") == "1":
-        path.write_text(text)
-    assert json.loads(path.read_text()) == record, f"record changed; regenerate {path.name} if intended"
+        path.write_text(json.dumps(structure, indent=1, sort_keys=True) + "\n")
+    assert json.loads(path.read_text()) == structure, f"record changed; regenerate {path.name} if intended"
 
 
 @pytest.mark.parametrize("kind", KINDS)
