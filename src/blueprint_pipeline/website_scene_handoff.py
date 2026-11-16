@@ -329,6 +329,10 @@ ROOM_GAPS = frozenset({"website_native_task_profile_preparation_required", "webs
 MISMATCH = "website_task_profile_mechanism_mismatch"
 #: The video analysis found nothing the task is about (``clean_plate_stage``): the room as filmed, flagged.
 NOT_FOUND = "task_relevant_target_not_observed"
+#: The analysis found the job's object but the clean plate could not outline it (``clean_plate_stage.NOT_LOCATED``).
+NOT_LOCATED = "task_target_not_located"
+#: The clean plate's flags that end the job as the room package, as filmed.
+ROOM_AS_FILMED = (NOT_FOUND, NOT_LOCATED)
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
 
 
@@ -380,16 +384,30 @@ def _sim_frame(*, base_scene: Mapping[str, Any], source_geometry: Mapping[str, A
 
 
 def room_flags(flags: Sequence[str], clean_plate: Mapping[str, Any]) -> list[str]:
-    """A room package's flags: the caller's, then the clean plate's "nothing of the task found" (``NOT_FOUND``)
-    when it was raised; in that order, each once."""
-    found = [NOT_FOUND] if NOT_FOUND in (clean_plate.get("flags") or []) else []
+    """A room package's flags: the caller's, then the clean plate's room-as-filmed flags (``ROOM_AS_FILMED``)
+    it raised; in that order, each once."""
+    found = [code for code in ROOM_AS_FILMED if code in (clean_plate.get("flags") or [])]
     return list(dict.fromkeys([*flags, *found]))
+
+
+def planner_removals_applied(capture_root: Path) -> int:
+    """How many objects the capture's Atlas job took out of the room scan as its planner asked: its sealed
+    decision (``website_atlas_pipeline.JOB_OBJECT_RECORD``) did not apply the as-filmed rule. Else 0."""
+    from .website_atlas_pipeline import JOB_OBJECT_RECORD
+    try:
+        decided = json.loads((Path(capture_root) / "pipeline" / "atlas" / JOB_OBJECT_RECORD).read_text())
+    except (OSError, ValueError):
+        return 0
+    if (not isinstance(decided, dict) or decided.get("applied") is not False
+            or decided.get("digest") != canonical_digest(decided, digest_field="digest")):
+        return 0
+    return int(decided.get("planner_remove_count") or 0)
 
 
 def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[str, Any],
                        source_geometry: Mapping[str, Any], removal: Mapping[str, Any], output_root: Path,
                        task_profile: str | None, task_masks: Mapping[str, Any] | None = None,
-                       objects_in_scan: bool = False, flags: Sequence[str] = ()) -> dict[str, Any]:
+                       objects_in_scan: bool = False, flags: Sequence[str] = (), taken_out: int = 0) -> dict[str, Any]:
     """The room package's half (``scene-package/``: the room's collision and look, the plan) and its sealed record.
 
     CPU only, buys nothing. A navigation job (``task_masks`` given) whose reading names exactly one goal mask gets
@@ -397,7 +415,8 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
     centred at its lowest point (the floor it stands on), and the rule "stop within ``GOAL_RADIUS_M`` of it for
     ``GOAL_DWELL_SECONDS``", both numbers assumed. Any other job ships no rule of Blueprint's: the record says so,
     and the site's words stay on the job's page, the one place they are shown redacted. The job's objects are counted, never placed: taken out of the scan by the
-    clean plate, or part of it on a geometry-only route.
+    clean plate, or part of it on a geometry-only route; ``taken_out`` counts those the Atlas job's planner took out
+    when the clean plate removed none (``planner_removals_applied``).
     """
     import shutil
 
@@ -458,12 +477,13 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
     placements(plan)
     write_json(packet / PLAN_FILENAME, plan)
     removed = [row for row in removal.get("entries") or [] if row.get("task_effect") == "manipulated"]
+    count, objects_in_scan = (len(removed), objects_in_scan) if removed else (taken_out, False)
     record = {"schema_version": "blueprint.room_package_inputs.v1",
               "task_context_digest": task_context["context_digest"], "task_kind": task_kind,
               "task_profile": task_profile or "none", "success_rule_defined": ruled, "success_rule_assumed": ruled,
               **({"goal_region": goal} if goal is not None else {}),
-              "job_objects": {"count": len(removed), "in_package": "part_of_room_scan" if objects_in_scan
-                              else "taken_out_of_room_scan"} if removed else None,
+              "job_objects": {"count": count, "in_package": "part_of_room_scan" if objects_in_scan
+                              else "taken_out_of_room_scan"} if count else None,
               **({"flags": list(flags)} if flags else {}), PROBE_FIELD: PROBE_NOT_QUEUED,
               "robot_included": False, "simulator_run": False, "plan_digest": plan["plan_digest"],
               "inputs_digest": ""}
@@ -498,7 +518,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         return result
 
     def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
-                     flags: Sequence[str] = ()) -> dict[str, Any]:
+                     flags: Sequence[str] = (), taken_out: int = 0) -> dict[str, Any]:
         # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
         result.pop("rule_withheld", None)
         flags = room_flags(flags, clean_plate)
@@ -510,7 +530,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         flags = list(dict.fromkeys([*flags, *(atlas.get("flags") or [])]))
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
-                                    task_masks=masks, objects_in_scan=geometry_only, flags=flags)
+                                    task_masks=masks, objects_in_scan=geometry_only, flags=flags,
+                                    taken_out=taken_out)
         result.update(status=ROOM_PACKAGE, blockers=[], job_disposition="accepted",
                       geometry_backend=atlas["source_geometry"]["geometry_backend"],
                       source_geometry_digest=atlas["source_geometry"]["digest"],
@@ -614,11 +635,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         from .website_task_semantics import effective_task_profile
         resolved = task_profile_for(effective_task_profile(task_context=context, **semantics_options))
         navigation = resolved is not None and not resolved.requires_manipulation
-        if NOT_FOUND in (clean_plate.get("flags") or []):
-            # Nothing of the task in the video: no object, mask or goal to read. The room as filmed, flagged; a
-            # navigation job keeps its kind, with no goal region.
+        if set(ROOM_AS_FILMED) & set(clean_plate.get("flags") or []):
+            # Nothing of the task in the video, or the object seen but not outlined: no object, mask or goal to
+            # read. The room as filmed, flagged; a navigation job keeps its kind, with no goal region. If the
+            # Atlas job had already sealed its planner's removals, the job's objects are out of the scan too.
             return room_package(resolved.profile_id if resolved is not None else None,
-                                {"targets": []} if navigation else None)
+                                {"targets": []} if navigation else None, taken_out=planner_removals_applied(capture_root))
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile

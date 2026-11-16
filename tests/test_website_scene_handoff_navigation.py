@@ -33,7 +33,7 @@ CUPS = [{"target_id": f"cup-{i}", "semantic_label": "cup", "task_effect": "manip
 def room_job(tmp_path: Path, patches, *, family: str = "navigation", description: str = NAVIGATE,
              removal=(), goal: bool = True, all_targets: bool = False, route: str | None = None,
              articulated: bool = False, second_goal: bool = False, not_found: bool = False,
-             job_object_rule=None):
+             job_object_rule=None, clean_plate_flag: str = "task_relevant_target_not_observed"):
     """One website job through the real handoff onto the company builder's own test capture (``Job``).
 
     The capture's team scene status is removed: no half is compiled for a room package; the builder reads the
@@ -72,8 +72,9 @@ def room_job(tmp_path: Path, patches, *, family: str = "navigation", description
     clean_plate = {"privacy_verified": True, "status": "noop", "source_geometry": None, "task_masks": masks,
                    "removal_manifest_path": str(removal_path)}
     if not_found:
-        # The clean plate went on with nothing of the task found (``clean_plate_stage.NOT_FOUND``): no masks.
-        clean_plate.update(task_masks=None, flags=["task_relevant_target_not_observed"])
+        # The clean plate went on with nothing of the task found or outlined (``clean_plate_stage.NOT_FOUND``,
+        # ``NOT_LOCATED``): no masks.
+        clean_plate.update(task_masks=None, flags=[clean_plate_flag])
     job.rerun = lambda: handoff.prepare_website_scene_handoff(descriptor=descriptor, clean_plate=clean_plate,
                                                               capture_root=job.capture, now=args["now"])
     return job, context, job.rerun()
