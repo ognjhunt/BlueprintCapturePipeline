@@ -81,7 +81,10 @@ CONTENT_TYPE = "application/zip"
 #: 2.4 times the real scene, the size the first-site team runbook already allows for one flattened USD, and a
 #: quarter of what the website accepts (2 GiB). Measured on the source files and on the zip.
 MAX_PACKAGE_BYTES = 512 * 1024 * 1024
-BUILDER_REVISION = "website_company_simulation_builder.v1"
+#: Moves whenever what the builder writes changes, so a package built or refused by the earlier builder is built once
+#: more at the first pass after the release. v2 (2026-11-16): the layer's flatten note naming a host file is
+#: dropped (``place``); a package v1 refused for that note waited six hours for its retry.
+BUILDER_REVISION = "website_company_simulation_builder.v2"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
