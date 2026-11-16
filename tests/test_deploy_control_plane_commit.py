@@ -6203,6 +6203,19 @@ def _switching_deploy(monkeypatch, tmp_path, *, restarts: list[object]) -> tuple
                         lambda _path, **kwargs: steps.append(("identity", kwargs["source_commit"])) or {})
     monkeypatch.setattr(deploy, "_unit_states",
                         lambda units: [{"unit": unit, "state": "failed"} for unit in units])
+
+    def installed_runtime(*, source_repo, source_commit):
+        steps.append(("runtime", source_commit))
+        return {"status": "refreshed", "source_commit": source_commit, "runtime_root": f"/generations/{source_commit[:4]}",
+                "current": {"sha256": "sha256:" + "0" * 64, "size_bytes": 1},
+                "authority_issued": False, "cleanup_enabled": False}
+
+    def intake_proof(_url, *, expected_commit):
+        steps.append(("proof", expected_commit))
+        return {"commit_proven": True, "source_commit": expected_commit}
+
+    monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", installed_runtime)
+    monkeypatch.setattr(deploy, "_verify_intake_runtime", intake_proof)
     return arguments, release, previous, steps
 
 
@@ -6221,16 +6234,56 @@ def test_a_release_whose_intake_does_not_restart_returns_to_the_previous_release
     assert blocked["release_return"] == {
         "status": "returned", "source_commit": "c" * 40, "release_path": str(previous),
         "unit_states": [{"unit": INTAKE, "state": "active"}],
+        "intake_runtime": {"commit_proven": True, "source_commit": "c" * 40},
+        "installed_runtime": {"status": "refreshed", "source_commit": "c" * 40, "runtime_root": "/generations/cccc",
+                              "current": {"sha256": "sha256:" + "0" * 64, "size_bytes": 1}},
     }
-    # The link is back on the previous release; the same units restarted there,
-    # after the source checkout, unit files and intake identity went back.
+    # The link is back on the previous release; intake's installed runtime
+    # (CURRENT.json, which the deploy had pointed at the candidate) is the
+    # previous commit's again; the same units restarted there, and the
+    # restarted intake proved the previous commit.
     assert Path(os.readlink(arguments["active_link"])) == previous
     assert [step for step in steps if step[0] == "restart"] == [
         ("restart", str(release), (INTAKE,)), ("restart", str(previous), (INTAKE,)),
     ]
-    assert ("git", "checkout", "--quiet", "c" * 40) in steps
-    assert ("units", str(previous), (INTAKE,)) in steps
-    assert steps[-2:] == [("identity", "c" * 40), ("restart", str(previous), (INTAKE,))]
+    assert [step for step in steps if step[0] == "runtime"] == [("runtime", "d" * 40), ("runtime", "c" * 40)]
+    returned = steps[steps.index(("restart", str(release), (INTAKE,))) + 1:]
+    assert returned == [
+        ("git", "checkout", "--quiet", "c" * 40), ("runtime", "c" * 40),
+        ("units", str(previous), (INTAKE,)), ("identity", "c" * 40),
+        ("restart", str(previous), (INTAKE,)), ("proof", "c" * 40),
+    ]
+
+
+@pytest.mark.parametrize("step", ["installed_runtime", "intake_commit_proof"])
+def test_a_return_whose_runtime_or_intake_proof_fails_is_a_failed_return(tmp_path, monkeypatch, step) -> None:
+    arguments, release, previous, steps = _switching_deploy(monkeypatch, tmp_path, restarts=[
+        deploy.ControlPlaneDeployError(f"deploy_unit_restart_failed:{INTAKE}"),
+        [{"unit": INTAKE, "state": "active"}],
+    ])
+    if step == "installed_runtime":
+        def refused(*, source_repo, source_commit):
+            steps.append(("runtime", source_commit))
+            if source_commit == "c" * 40:
+                raise deploy.ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
+            return {"status": "refreshed", "source_commit": source_commit}
+        monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", refused)
+    else:
+        def mismatch(_url, *, expected_commit):
+            steps.append(("proof", expected_commit))
+            raise deploy.ControlPlaneDeployError("deploy_intake_runtime_commit_mismatch:" + "d" * 40)
+        monkeypatch.setattr(deploy, "_verify_intake_runtime", mismatch)
+    blocked = _deploy_through_main(monkeypatch, tmp_path, arguments)
+    assert "returned_to_previous_release" not in blocked
+    assert blocked["release_return"]["status"] == "failed"
+    assert blocked["release_return"]["failed_step"] == step
+    assert blocked["release_return"]["unit_states"] == [{"unit": INTAKE, "state": "failed"}]
+    assert blocked["blockers"] == [f"deploy_unit_restart_failed:{INTAKE}",
+                                   f"deploy_return_to_previous_release_failed:{step}"]
+    # Never retried: one restart on the previous release at most, and none when its runtime refused.
+    restarts_there = [s for s in steps if s == ("restart", str(previous), (INTAKE,))]
+    assert len(restarts_there) == (0 if step == "installed_runtime" else 1)
+    assert len([s for s in steps if s == ("runtime", "c" * 40)]) == 1
 
 
 def test_a_failed_return_is_reported_once_and_never_retried(tmp_path, monkeypatch) -> None:
@@ -6286,3 +6339,4 @@ def test_a_release_that_starts_records_the_candidate_guard_and_never_returns(tmp
     assert "release_return" not in receipt
     assert Path(os.readlink(arguments["active_link"])) == release
     assert ("git", "checkout", "--quiet", "c" * 40) not in steps
+    assert [step for step in steps if step[0] in {"runtime", "proof"}] == [("runtime", "d" * 40), ("proof", "d" * 40)]

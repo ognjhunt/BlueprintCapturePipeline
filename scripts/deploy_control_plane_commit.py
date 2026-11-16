@@ -3244,12 +3244,16 @@ def _unit_states(units: Sequence[str]) -> list[dict[str, str]]:
 def _return_to_previous_release(
     *, active: Path, previous_link: str | None, new_release_path: str | Path, source: Path,
     systemd_dir: str | Path, intake_runtime_drop_in: str | Path, units: Sequence[str],
-    paid_runs_in_flight: Sequence[Mapping[str, Any]],
+    paid_runs_in_flight: Sequence[Mapping[str, Any]], intake_version_url: str,
 ) -> dict[str, Any]:
     """Put the release link, source checkout and units back on the previous release, once.
 
     Called only when a required unit did not come back after the switch. Never
-    retried: a failed return is reported, and the deploy stops.
+    retried: a failed return is reported, and the deploy stops. Intake runs the
+    installed scene-retirement runtime (CURRENT.json names a source generation),
+    not the checkout, and this deploy already pointed it at the candidate; so
+    the previous commit's runtime is installed again by the deploy's own step,
+    and the restarted intake must prove the previous commit, before ``returned``.
     """
 
     if previous_link is None:
@@ -3265,6 +3269,8 @@ def _return_to_previous_release(
         step = "source_checkout"
         if _git(source, "checkout", "--quiet", commit)[0] != 0:
             raise ControlPlaneDeployError("deploy_source_checkout_failed")
+        step = "installed_runtime"
+        installed_runtime = _prepare_scene_retirement_runtime(source_repo=source, source_commit=commit)
         step = "release_link"
         _activate_release(active_link=active, release_path=previous)
         step = "systemd_units"
@@ -3281,11 +3287,15 @@ def _return_to_previous_release(
         _require_in_flight_runs_outside_units(paid_runs_in_flight, units)
         step = "unit_restart"
         states = _restart_units(units)
+        step = "intake_commit_proof"
+        intake_runtime = _verify_intake_runtime(intake_version_url, expected_commit=commit)
     except (ControlPlaneDeployError, ControlPlaneReleaseError, OSError) as exc:
         return {"status": "failed", "failed_step": step, "error": str(exc)[:300],
                 "release_path": str(previous), "unit_states": _unit_states(units)}
     return {"status": "returned", "source_commit": commit, "release_path": str(previous),
-            "unit_states": states}
+            "unit_states": states, "intake_runtime": intake_runtime,
+            "installed_runtime": {key: installed_runtime.get(key)
+                                  for key in ("status", "source_commit", "runtime_root", "current")}}
 
 
 def _release_return_fields(exc: BaseException | None) -> dict[str, Any]:
@@ -5950,6 +5960,7 @@ def deploy_control_plane_commit(
                 new_release_path=release["release_path"], source=source,
                 systemd_dir=systemd_dir, intake_runtime_drop_in=intake_runtime_drop_in,
                 units=required_units, paid_runs_in_flight=paid_runs_in_flight,
+                intake_version_url=intake_version_url,
             )
             raise
         runtime = _verify_intake_runtime(
