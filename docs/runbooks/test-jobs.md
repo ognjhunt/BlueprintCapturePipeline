@@ -68,14 +68,28 @@ The host has 8 GB of memory and no swap. The door refuses a third test job while
 (`test_job_two_in_flight`). A job stops counting when the website refused it (nothing was made), when its zip
 has been delivered, when its preparation ended for good (`pipeline_job_ledger.json` `terminal_*` other than
 `terminal_success`), when its scene finished or ended for good (the scene intent's `progression.json` reads
-`completed`, or its `outcome.json` is terminal), or 7 days after it was asked for. An ask whose answer was lost
-keeps its slot until it is asked again with the same key.
+`completed`, or its `outcome.json` is terminal), when its preparation ended on a hold that waits outside the
+pipeline (the ledger reads `completed` and the handoff is one the preparation status reads as `awaiting_inputs`,
+`website_preparation_status.held_preparation`: a stop only a new video clears, a target correction, a place or
+owner question, no robot fitting; nobody answers a test job), or 7 days after it was asked for. A preparation
+waiting on Blueprint or the provider (the 3D reading, an Atlas job, an armed retry) keeps its slot. An ask whose
+answer was lost keeps its slot until it is asked again with the same key.
+
+The door reads this afresh at each ask. A held capture that is later reopened counts again from the moment its
+ledger leaves `completed`, but the door only refuses new asks: it cannot stop a reopen. So the worst case is two
+running plus every held test job reopened at the same moment. Some holds reopen with no release at all: a
+robot-fit hold when the team registry or the fit rule changes (`website_robot_fit_hold`), a navigation hold when
+its intake receipt is bound (`website_held_handoff_replay`), and a job whose brief is confirmed later. A release
+re-evaluates every hold that names a missing `pipeline:*` piece. The host has 8 GB of memory and no swap, so do not leave many held test jobs lying around:
+retire them (an owner-approved retirement) or let them age out, and check `report` for `held:` lines before
+starting a batch.
 
 ## What it costs
 
-About $15-20 for a rigid job on today's prices: World Labs $6-14 (seen on recent jobs), upstream reading up to
-$5, object authoring $3.5-5; its scene is built on the host with no rented GPU. A door or drawer job also rents a
-GPU for its scene. The month's $300 limit counts test jobs like any other job.
+Up to about $20 a job. The one complete run so far (2026-11-16, a rigid job) settled $6.04 at World Labs and
+about $2 of object authoring. Every website job's scene, a door or drawer job's too, is built on the host with no
+rented GPU (stage 5 records that no simulator ran, `website_native_background.select_stage_five`). The month's
+$300 limit counts test jobs like any other job.
 
 ## Reading the report
 
@@ -83,10 +97,13 @@ One line per job: label, the job kind the Atlas review returned, the stage reach
 read from its own `pipeline/website_scene_preparation/handoff.json` when there is one, so the 3D reading's wait
 shows as `preparation:awaiting_reconstruction`, not the ledger's `failed_retryable`), settled spend ("spend not
 shown" when `door status`, which lists only its top jobs, does not name the job), the first failure code
-(including a package the website refused, and "stalled" for a job with no package and no ending after 7 days)
-and the start of the zip digest. The JSON adds the footage id, job and capture ids, times (asked
+(including a package the website refused, `held:<code>` for a preparation that ended on a hold, naming what the
+site would have been asked, and "stalled" for a job with no package and no ending after 7 days) and the start of
+the zip digest. The JSON adds the footage id, job and capture ids, times (asked
 for, job ledger last changed, package built), spend by provider (settled and held, from `door status`, matched by
-job or capture id) and the package's `permission` (`internal_test`, with the label).
+job or capture id), the handoff's status and blocker codes (`preparation`), the package's file names
+(`package_files`) and its `permission` (`internal_test`, with the label). The package manifest does not record
+the README's note codes, so the report does not show them.
 
 A test job is found again by its label in: the website's request (`internal_test.label`), the capture's task
 context (`pipeline/website_task_context.json`), the clip and package manifests (`permission.label`), the

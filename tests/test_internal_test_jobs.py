@@ -281,6 +281,70 @@ def test_a_third_job_waits_while_two_are_in_flight(tmp_path, finish, third_allow
             _ask(tmp_path, website, idempotency_key="20261201:three")
 
 
+def _held(tmp_path, result, *, ledger, handoff_status="needs_input", **fields):
+    """The job's capture as the preparation leaves it: its ledger, its retained context, and a handoff that
+    ended on a stop only a new video clears (``website_recapture_required``), one still waiting on Atlas, or
+    (``fields``) any other."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.website_recapture_required import FIELD, NOT_OBSERVED_CODE, record
+
+    _finish(tmp_path, result, ledger={"schema_version": "pipeline_job_ledger.v1", "status": ledger})
+    capture = next((tmp_path / "handoffs").glob(f"*/scenes/site-{result['job_id']}/captures/{result['capture_id']}"))
+    context = {"scene_id": "site-" + result["job_id"], "capture_id": result["capture_id"],
+               "context_digest": "sha256:" + "4" * 64}
+    (capture / "pipeline" / "website_task_context.json").write_text(json.dumps(context))
+    stop = handoff_status == "needs_input" and not fields
+    handoff = {"schema_version": "website_scene_handoff.v1", "scene_id": context["scene_id"],
+               "capture_id": context["capture_id"], "status": handoff_status, "simulator_ready": False,
+               "blockers": [NOT_OBSERVED_CODE] if stop else [] if fields else ["website_atlas_job_processing"],
+               **({FIELD: record(NOT_OBSERVED_CODE, task_context_digest=context["context_digest"])} if stop else {}),
+               **fields}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    (capture / "pipeline" / "website_scene_preparation").mkdir(parents=True)
+    (capture / "pipeline" / "website_scene_preparation" / "handoff.json").write_text(json.dumps(handoff))
+
+
+def _two_asked(tmp_path):
+    website = Website()
+    first = _ask(tmp_path, website, idempotency_key="20261201:one", label="one")
+    _ask(tmp_path, website, idempotency_key="20261201:two", label="two")
+    return first
+
+
+@pytest.mark.parametrize(("ledger", "handoff_status", "busy"), [
+    ("completed", "needs_input", ["two"]),                     # held for the site: nobody answers a test job
+    ("failed_retryable", "awaiting_reconstruction", ["one", "two"]),   # waiting on Atlas: still in flight
+    ("processing", "needs_input", ["one", "two"]),             # a release reopened it: it counts again
+])
+def test_a_preparation_held_for_the_site_frees_its_slot_and_a_reopened_one_counts_again(
+        tmp_path, ledger, handoff_status, busy):
+    _held(tmp_path, _two_asked(tmp_path), ledger=ledger, handoff_status=handoff_status)
+    assert _busy(tmp_path) == busy
+    # The 7-day window is unchanged: past it, nothing counts.
+    assert _busy(tmp_path, NOW + door_job.IN_FLIGHT_FOR_SECONDS) == []
+
+
+def test_a_completed_preparation_handed_on_keeps_its_slot(tmp_path):
+    """Completed is not ended: a preparation handed to the scene chain still has its heavy work ahead."""
+    _held(tmp_path, _two_asked(tmp_path), ledger="completed", handoff_status="ready", simulator_ready=True,
+          website_intake_outbox={"state": "forward_pending"})
+    assert _busy(tmp_path) == ["one", "two"]
+
+
+@pytest.mark.parametrize(("reader", "handoff_status", "busy"), [
+    ("retains_task_family_preparation", "needs_input", ["two"]),            # a family prepared, then held
+    ("retains_task_family_preparation", "task_evaluation_ready", ["one", "two"]),  # a family handed on
+    ("retains_room_package", "room_package_written", ["one", "two"]),     # the room package goes on
+])
+def test_only_a_family_waiting_for_input_is_a_hold_and_a_room_package_is_not(tmp_path, monkeypatch, reader,
+                                                                              handoff_status, busy):
+    from blueprint_pipeline import website_task_context_contracts as contracts
+
+    monkeypatch.setattr(contracts, reader, lambda handoff, context: True)
+    _held(tmp_path, _two_asked(tmp_path), ledger="completed", handoff_status=handoff_status, kind=reader)
+    assert _busy(tmp_path) == busy
+
+
 def test_a_retry_of_an_unknown_outcome_reads_the_month(tmp_path):
     with pytest.raises(ValueError):
         _ask(tmp_path, Website(fail=ValueError("test_job_webapp_http_503")))
@@ -520,6 +584,30 @@ def test_a_preparation_that_waits_reads_its_own_record_and_names_no_failure(monk
     assert (report["stage"], report["first_failure"]) == (stage, None)
 
 
+@pytest.mark.parametrize(("ledger", "handoff", "failure", "done"), [
+    ({"status": "completed"}, {"status": "needs_input", "blockers": ["website_task_object_not_observed"]},
+     "held:website_task_object_not_observed", True),
+    ({"status": "failed_retryable"}, {"status": "awaiting_reconstruction", "blockers": ["website_atlas_job_processing"]},
+     None, False),
+    ({"status": "processing"}, {"status": "needs_input", "blockers": ["website_task_object_not_observed"]},
+     None, False),                              # reopened by a release: running again
+])
+def test_a_preparation_held_for_the_site_ends_the_job_by_its_code(monkeypatch, ledger, handoff, failure, done):
+    import time as clock
+
+    monkeypatch.setattr(clock, "time", lambda: NOW + 60)
+    runner, report = _job_report(monkeypatch, {}, ledger=ledger, submitted_at=NOW, handoff=handoff)
+    assert (report["first_failure"], runner.done(report)) == (failure, done)
+    assert report["preparation"] == {"status": handoff["status"], "blockers": handoff["blockers"]}
+
+
+def test_the_report_names_the_packages_files(monkeypatch):
+    manifest = {"delivered": {"at": 6}, "package": {"digest": "sha256:" + "d" * 64,
+                                                    "files": ["README.txt", "scene.usda", "success_rule.json"]}}
+    _, report = _job_report(monkeypatch, manifest)
+    assert report["package_files"] == ["README.txt", "scene.usda", "success_rule.json"]
+
+
 def test_the_runner_says_it_needs_the_pipelines_python(monkeypatch, capsys):
     runner = _runner()
     monkeypatch.setattr(runner.importlib.util, "find_spec", lambda name: None)
@@ -534,6 +622,7 @@ def test_the_runner_never_runs_more_than_two_at_once():
 
 def test_the_runner_stops_at_a_refusal_and_follow_ends_on_it(tmp_path, monkeypatch):
     runner, posts = _runner(), []
+    monkeypatch.setattr(runner, "DEPLOY_WINDOW_HOUR_UTC", -1)  # any hour of the day: never inside the window
     matrix = tmp_path / "jobs.json"
     matrix.write_text(json.dumps({"jobs": [{"label": f"job {n}", "footage_id": "f", "description": "d"}
                                            for n in range(2)]}))

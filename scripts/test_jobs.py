@@ -85,6 +85,7 @@ def job_report(job: dict, status: dict) -> dict:
     root = capture_root(job) if job.get("job_id") else None
     times, stage, failure = {"submitted": job.get("submitted_at")}, "submitted" if job.get("job_id") else "not_submitted", None
     kind = manifest = None
+    handoff: dict = {}
     if root:
         stage = "handed_off"
         ledger = cat_json(f"{root}/pipeline_job_ledger.json") or {}
@@ -97,6 +98,11 @@ def job_report(job: dict, status: dict) -> dict:
                 changed.get("pipeline_job_ledger.json")
             failure = ledger.get("terminal_code") or (ledger.get("status") if str(ledger.get("status")).startswith(
                 "terminal_") and ledger.get("status") != "terminal_success" else None)
+            if ledger.get("status") == "completed" and handoff.get("status") == "needs_input":
+                # The stage ended on a hold that waits outside the pipeline: nobody answers a test job, so it
+                # ends here. This mirrors the door's rule, ``website_preparation_status.held_preparation``, from
+                # the two fields it can read through the door; a change to either changes both.
+                failure = failure or "held:" + str((handoff.get("blockers") or ["unnamed"])[0])
         semantics = ls(f"{root}/pipeline/atlas/task_semantics")
         if semantics:
             reading = cat_json(f"{root}/pipeline/atlas/task_semantics/{semantics[0]['name']}") or {}
@@ -129,8 +135,9 @@ def job_report(job: dict, status: dict) -> dict:
              if any(i in str(entry.get("job_id")) for i in ids)] or None  # status lists only its top jobs
     package = (manifest or {}).get("package") or {}
     return {**row, "kind": kind, "stage": stage, "times": times, "spend": spend, "first_failure": failure,
+            "preparation": {key: handoff.get(key) for key in ("status", "blockers")} if handoff else None,
             "package_revision": (manifest or {}).get("simulation_revision"), "zip_digest": package.get("digest"),
-            "permission": (manifest or {}).get("permission")}
+            "package_files": package.get("files"), "permission": (manifest or {}).get("permission")}
 
 
 def door_key(run_id: str, label: str) -> str:

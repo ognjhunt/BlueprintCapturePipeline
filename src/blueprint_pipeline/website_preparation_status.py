@@ -297,6 +297,62 @@ def _current_context(*, request_id: str, scene_id: str, capture_id: str,
         return load_current_website_task_context(**arguments, purpose="scene_preparation")
 
 
+def _retained_handoff(root: Path, handoff: Mapping[str, Any], context: Any) -> tuple[bool, bool, bool]:
+    """A completed preparation stage's handoff read against the job's context: held (a stop that waits for
+    someone outside Blueprint's pipeline), a task family prepared, or handed to the room package."""
+    from .website_task_context_contracts import (
+        holds_native_task_preparation, retains_geometry_only_fit, retains_navigation_preparation,
+        retains_room_package,
+        retains_robot_fit_hold, retains_task_family_preparation,
+    )
+    from .website_target_background_correction import retains_rejected_selection
+    from .observed_room_contracts import retains_observed_room_limit
+    from .website_recapture_required import retains_recapture_required
+    from .website_task_context_lineage import binding_contexts
+    native_profile_held = family_prepared = room_package = False
+    # A handoff decided before the brief was confirmed stays bound to the retained context's verified
+    # parent until a run rewrites it; the context itself is tried first.
+    for held_context in binding_contexts(root / "pipeline", context):
+        native_profile_held = (holds_native_task_preparation(handoff, held_context)
+                               or retains_rejected_selection(handoff, held_context)
+                               or retains_observed_room_limit(handoff, held_context)
+                               or retains_geometry_only_fit(handoff, held_context)
+                               or retains_robot_fit_hold(handoff, held_context)
+                               or retains_recapture_required(handoff, held_context))
+        family_prepared = retains_task_family_preparation(handoff, held_context)
+        # A job handed to the company package as the room package (or, retained, a navigation job
+        # handed to the G1 screening lane) reads as handed off; it claims no result.
+        room_package = (retains_room_package(handoff, held_context)
+                        or retains_navigation_preparation(handoff, held_context))
+        if native_profile_held or family_prepared or room_package:
+            break
+    return native_profile_held, family_prepared, room_package
+
+
+def held_preparation(capture_root: Path) -> list[str] | None:
+    """The blockers of a preparation that ended on a hold, from the capture's own records, or None.
+
+    The same reading the status gives as ``awaiting_inputs`` for a completed stage (``read_preparation_status``):
+    nothing in the pipeline retries it; a new video, an answer, or a release that reopens it moves it on.
+    A preparation still running, waiting on its reconstruction or with a retry armed is not one. Unreadable
+    records are None. The retained context is used; the website is never asked.
+    """
+    from .handoff_job_state import _read_job_ledger
+    try:
+        root = Path(capture_root)
+        if _read_job_ledger(root).get("status") != "completed":
+            return None
+        handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
+        context = _retained_context_or_none(root)
+        if context is None:
+            return None
+        native_profile_held, family_prepared, _ = _retained_handoff(root, handoff, context)
+    except (OSError, ValueError, KeyError, TypeError, PreparationStatusUnavailable):
+        return None
+    held = native_profile_held or (family_prepared and handoff.get("status") == "needs_input")
+    return [str(code) for code in handoff.get("blockers") or []] if held else None
+
+
 def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
     """Typed v2 meaning of a ledger that is not handed off."""
     from .website_preparation_terminal import capacity_only, current_terminal, current_overdue
@@ -403,32 +459,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                                                allow_missing=waits_on_assessment)
         terminal_reason = None
         if before.get("status") == "completed":
-            from .website_task_context_contracts import (
-                holds_native_task_preparation, retains_geometry_only_fit, retains_navigation_preparation,
-                retains_room_package,
-                retains_robot_fit_hold, retains_task_family_preparation,
-            )
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
-            from .website_target_background_correction import retains_rejected_selection
-            from .observed_room_contracts import retains_observed_room_limit
-            from .website_recapture_required import retains_recapture_required
-            from .website_task_context_lineage import binding_contexts
-            # A handoff decided before the brief was confirmed stays bound to the retained context's verified
-            # parent until a run rewrites it; the context itself is tried first.
-            for held_context in binding_contexts(root / "pipeline", bound):
-                native_profile_held = (holds_native_task_preparation(handoff, held_context)
-                                       or retains_rejected_selection(handoff, held_context)
-                                       or retains_observed_room_limit(handoff, held_context)
-                                       or retains_geometry_only_fit(handoff, held_context)
-                                       or retains_robot_fit_hold(handoff, held_context)
-                                       or retains_recapture_required(handoff, held_context))
-                family_prepared = retains_task_family_preparation(handoff, held_context)
-                # A job handed to the company package as the room package (or, retained, a navigation job
-                # handed to the G1 screening lane) reads as handed off; it claims no result.
-                room_package = (retains_room_package(handoff, held_context)
-                                or retains_navigation_preparation(handoff, held_context))
-                if native_profile_held or family_prepared or room_package:
-                    break
+            native_profile_held, family_prepared, room_package = _retained_handoff(root, handoff, bound)
             _require(handoff.get("schema_version") == "website_scene_handoff.v1"
                      and handoff.get("scene_id") == selected["scene_id"]
                      and handoff.get("capture_id") == selected["capture_id"]
