@@ -118,15 +118,21 @@ def _require_current_price_review(policy) -> None:
         raise ValueError("atlas_runtime_price_review_expired")
 
 
+def generation_target_ids(*, review, inputs):
+    """The reviewed frames a generation targets: those posed. A frame the view selection left out has no posed
+    camera; it is named as uncaptured instead. The pre-pose price check counts the same list."""
+    posed = {row["frame_id"] for row in inputs["frames"]}
+    return list(dict.fromkeys(key for group in review["coverage_requirements"] for key in group["required_frame_ids"]
+                              if key in posed))
+
+
 def generation_request(*, pose, inputs, review):
     """Cover reviewed task AND room anchors at their observed camera locations."""
     from .website_worldlabs import _atlas_posed_context
     from .website_atlas_tasks import validate_task_request
     context = _atlas_posed_context(operation=pose["operation"], expected_frame_count=len(inputs["frames"]))
     by_id = {row["frame_id"]: frame for row, frame in zip(inputs["frames"], context, strict=True)}
-    # A reviewed frame the view selection left out has no posed camera; it is named as uncaptured instead.
-    ids = list(dict.fromkeys(key for group in review["coverage_requirements"] for key in group["required_frame_ids"]
-                             if key in by_id))
+    ids = generation_target_ids(review=review, inputs=inputs)
     targets = []
     for key in ids:
         camera = deepcopy(by_id[key]["camera"])
@@ -1179,7 +1185,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             model=receipt["model"], edit_scope=edit_scope,
             selection=view_selection(pose_root))
     count = len(inputs["frames"])
-    target_count = len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]})
+    # The targets the generation will ask for; the reviewed count where none is posed (never fewer than asked).
+    target_count = (len(generation_target_ids(review=review, inputs=inputs))
+                    or len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]}))
     planned_cost = round(count * policy["pose_input_cost_usd"] + render_cost(policy, target_count), 6)
     pose_bought = ((pose_root / "atlas_pose/submission.json").exists()
                    or (pose_root / "atlas_posed_rgbd_result.json").exists())
