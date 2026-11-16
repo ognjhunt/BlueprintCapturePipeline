@@ -49,7 +49,7 @@ def test_the_set_declares_synthetic_records_of_both_job_kinds_and_the_input_vari
     assert {tool["tool"] for row in records for tool in row["tools"]} == set(replay_set.TOOLS) == set(TOOL_STOPS)
     upstream = {tool["expected_stop"]["code"] for row in records for tool in row["tools"]
                 if tool["tool"] != "task_evaluation_downstream_replay"}
-    assert {"scene_estimate:level", "scene_estimate:collider_registration", "atlas_task_and_scene_coverage_gap",
+    assert {"scene_estimate:level", "scene_estimate:collider_registration", "atlas_insufficient_overlapping_distinct_views",
             "atlas_mesh_not_registered_to_splat"} <= upstream
     for row in records:
         # Never presented as a retained job: every record says it is synthetic and where it came from.

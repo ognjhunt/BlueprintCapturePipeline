@@ -172,7 +172,7 @@
    "synthetic": true,
    "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
    "job_kind": "website_scene_preparation",
-   "description": "An Atlas preview job whose reviewed task region no filmed view connects to the task object. Frame selection refuses before any upload and the job ends at once as needs_input with the coverage code the website turns into its ask for a new video: no timed retry.",
+   "description": "An Atlas preview job whose three filmed views overlap none of each other. The task region and the room are left out and named, and the task object is in one view only, from which no scene can be posed: frame selection refuses before any upload and the job ends at once as needs_input with the code the website turns into its ask for a new video: no timed retry.",
    "input_variety": {
     "video_resolution": "not_applicable",
     "clip_length": "not_applicable",
@@ -190,7 +190,7 @@
      "expected_stop": {
       "kind": "refusal",
       "stage": "queued",
-      "code": "atlas_task_and_scene_coverage_gap",
+      "code": "atlas_insufficient_overlapping_distinct_views",
       "final_state": "needs_input"
      }
     }

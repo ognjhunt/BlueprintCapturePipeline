@@ -154,7 +154,7 @@ def _survey(atlas: Path, *, source: str, frames: int) -> dict[str, Any]:
 
 
 def _coverage_gap(host_parent: Path) -> dict[str, Any]:
-    """A reviewed selection whose task region no filmed view connects to the task object."""
+    """A reviewed selection whose views overlap none of each other: one view of the task object only."""
     from blueprint_pipeline.atlas_video_inputs import REVIEW_SCHEMA
 
     site = _atlas_capture(host_parent, request="req-coverage")
@@ -275,11 +275,12 @@ RECORDS: list[dict[str, Any]] = [
     # Between "upload accepted" and "scene ready to configure" (2026-11-10 reconstruction changes).
     {"record_id": "atlas-coverage-gap-site-ask", "job_kind": "website_scene_preparation",
      "input_variety": {"video_resolution": "not_applicable", "clip_length": "not_applicable"},
-     "description": "An Atlas preview job whose reviewed task region no filmed view connects to the task object. "
-                    "Frame selection refuses before any upload and the job ends at once as needs_input with "
-                    "the coverage code the website turns into its ask for a new video: no timed retry.",
+     "description": "An Atlas preview job whose three filmed views overlap none of each other. The task region "
+                    "and the room are left out and named, and the task object is in one view only, from which no "
+                    "scene can be posed: frame selection refuses before any upload and the job ends at once as "
+                    "needs_input with the code the website turns into its ask for a new video: no timed retry.",
      "tool": ATLAS_PREVIEW, "build": _coverage_gap, "until": "first_stop",
-     "expected_stop": {"kind": "refusal", "stage": "queued", "code": "atlas_task_and_scene_coverage_gap",
+     "expected_stop": {"kind": "refusal", "stage": "queued", "code": "atlas_insufficient_overlapping_distinct_views",
                        "final_state": "needs_input"}},
     {"record_id": "atlas-deterministic-refusal-waits", "job_kind": "website_scene_preparation",
      "input_variety": {"video_resolution": "not_applicable", "clip_length": "not_applicable"},

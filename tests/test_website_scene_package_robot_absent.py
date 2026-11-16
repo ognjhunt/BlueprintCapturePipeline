@@ -511,7 +511,8 @@ def test_the_readme_says_what_stage_5_and_stage_4_show(tmp_path, monkeypatch, st
     assert "estimated from the video and checked" not in readme
     assert all("qualif" not in text.lower() for text in members.values())
     assert sim.PHYSICS_CHECK_WORDS == {"isaac_sim": (), "not_run": (NO_SIMULATOR,),
-                                       "not_run_static_check_passed": (STATIC_PASSED, NO_SIMULATOR)}
+                                       "not_run_static_check_passed": (STATIC_PASSED, NO_SIMULATOR),
+                                       "not_run_joint_as_authored": (NO_SIMULATOR, sim.JOINT_AS_AUTHORED)}
 
 
 def test_physics_check_reads_stage_5_by_its_own_reader(tmp_path):

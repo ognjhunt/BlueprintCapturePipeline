@@ -13,6 +13,10 @@
    "not_run_static_check_passed": [
     "The object's file passed Blueprint's static USD physics check (one rigid body, collision shapes, mass and friction within set ranges).",
     "Blueprint did not run this scene in Isaac Sim or any other simulator."
+   ],
+   "not_run_joint_as_authored": [
+    "Blueprint did not run this scene in Isaac Sim or any other simulator.",
+    "The joint's range is from the object's authored file and the success interval is the job's share of that range; no simulator moved the joint."
    ]
   },
   "notes": {
@@ -99,31 +103,7 @@
    }
   },
   {
-   "label": "destination-refused-by-the-not-run-stage",
-   "kind": "rigid_pick_place + supplemental destination",
-   "reading": {
-    "task_family": "rigid_pick_place",
-    "steps": [
-     {
-      "operation": "rigid_pick_place",
-      "description": "the job",
-      "task_quote": "the job"
-     }
-    ]
-   },
-   "scene": "destination",
-   "compile": {
-    "strategy": "pick_and_place",
-    "stage_5": "not_run"
-   },
-   "expected": {
-    "last_stage": "scene_chain",
-    "kind": "refusal",
-    "code": "scene_configuration_stage_configuration_preflight_failed:stage-5:replacement_native_import_qualification:supplemental_destination_requires_native_import"
-   }
-  },
-  {
-   "label": "articulated-keeps-the-isaac-stage",
+   "label": "articulated-not-run-joint-as-authored",
    "kind": "articulated_open_close",
    "reading": {
     "task_family": "articulated_open_close",
@@ -137,13 +117,22 @@
    },
    "scene": "articulated",
    "compile": {
-    "strategy": "pick_and_place",
+    "strategy": "articulated_open_close",
     "stage_5": "not_run"
    },
    "expected": {
-    "last_stage": "scene_chain",
-    "kind": "would_rent_gpu",
-    "code": "host_chain_plan:false:stage-5=simready_native_import_qualification"
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run_joint_as_authored",
+    "readme_variant": [
+     "not_run_joint_as_authored"
+    ],
+    "readme_sha256": "sha256:960448a38e7e0312b3d9761c16912e3904507450d86a9f9b7f509a760e1eebb9"
    }
   },
   {
@@ -450,7 +439,7 @@
    "expected": {
     "last_stage": "front_half",
     "kind": "refusal",
-    "code": "atlas_task_and_scene_coverage_gap"
+    "code": "atlas_insufficient_overlapping_distinct_views"
    }
   }
  ]

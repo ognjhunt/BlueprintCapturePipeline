@@ -124,7 +124,9 @@ def generation_request(*, pose, inputs, review):
     from .website_atlas_tasks import validate_task_request
     context = _atlas_posed_context(operation=pose["operation"], expected_frame_count=len(inputs["frames"]))
     by_id = {row["frame_id"]: frame for row, frame in zip(inputs["frames"], context, strict=True)}
-    ids = list(dict.fromkeys(key for group in review["coverage_requirements"] for key in group["required_frame_ids"]))
+    # A reviewed frame the view selection left out has no posed camera; it is named as uncaptured instead.
+    ids = list(dict.fromkeys(key for group in review["coverage_requirements"] for key in group["required_frame_ids"]
+                             if key in by_id))
     targets = []
     for key in ids:
         camera = deepcopy(by_id[key]["camera"])
@@ -656,7 +658,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         "geometry_authority": ('captured_rgb_depth_with_bounded_generated_completion_estimates'
                                if admitted_completion else 'captured_rgb_derived_depth_and_reconstructed_mesh_estimates'),
         "source_pose": source_pose, "download": bundle, "model": model,
-        "task_and_surrounding_scene_covered": not reconstruction_only and not completion_stopped, "blockers": blockers,
+        "task_and_surrounding_scene_covered": (not reconstruction_only and not completion_stopped
+                                               and covered(pose_root)), "blockers": blockers,
         "splat_available": True, "splat_kind": splat["splat_kind"], "splat_manifest_digest": splat["digest"],
         "mesh_available": mesh_root is not None, "simulation_qualified": False,
         "claim_ceiling": "development_only", "physical_evidence": False,
@@ -1173,7 +1176,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                 return source_pose
         return finalize_background_result(output_root=output_root, source_digest=source_digest,
             task_context=task_context, automation=automation, source_pose=source_pose,
-            model=receipt["model"], edit_scope=edit_scope)
+            model=receipt["model"], edit_scope=edit_scope,
+            selection=view_selection(pose_root))
     count = len(inputs["frames"])
     target_count = len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]})
     planned_cost = round(count * policy["pose_input_cost_usd"] + render_cost(policy, target_count), 6)
@@ -1240,7 +1244,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
         "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
         "pose": posed, "generated_result_digest": generated["digest"], "download": bundle,
-        "task_and_surrounding_scene_covered": True, "model": receipt["model"],
+        "task_and_surrounding_scene_covered": covered(pose_root), "model": receipt["model"],
         "blockers": blockers, "splat_available": True, "splat_kind": splat["splat_kind"],
         "splat_manifest_digest": splat["digest"], "mesh_available": mesh_root is not None, "simulation_qualified": False,
         "claim_ceiling": "development_only", "physical_evidence": False,
@@ -1274,14 +1278,36 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     return result
 
 
-def finalize_background_result(*, output_root, source_digest, task_context, automation, source_pose, model, edit_scope=None):
-    """The same durable handoff for a fresh job or a retained completed background."""
+def view_selection(pose_root) -> dict:
+    """The job's ``atlas_view_selection.json``: what its views covered and left out; {} when none was written."""
+    path = Path(pose_root) / "atlas_view_selection.json"
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def covered(pose_root) -> bool:
+    """False when the view selection recorded that the task and room were not all covered."""
+    return view_selection(pose_root).get("task_and_surrounding_scene_covered") is not False
+
+
+def finalize_background_result(*, output_root, source_digest, task_context, automation, source_pose, model, edit_scope=None,
+                               selection=None):
+    """The same durable handoff for a fresh job or a retained completed background.
+
+    ``selection`` (the job's ``atlas_view_selection.json``) names what the views left out: the result
+    says so and carries its estimate flags, never that the task and room were covered.
+    """
+    from .atlas_scene_estimates import scene_estimates
+    selection = selection or {}
+    left_out = scene_estimates(levelling={}, registration={}, selection=selection)
     background = automation.get("background") or {}
     complete = automation["status"] == "completed"
     result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
               "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
               "automation": automation, "download": background.get("download"), "edit_scope": edit_scope,
-              "task_and_surrounding_scene_covered": True, "model": model,
+              "task_and_surrounding_scene_covered": selection.get("task_and_surrounding_scene_covered") is not False,
+              **({"uncaptured_regions": list(selection["uncaptured_regions"])}
+                 if selection.get("uncaptured_regions") else {}),
+              **({"scene_estimates": left_out} if left_out else {}), "model": model,
               "blockers": (["metric_scene_registration_unproven"] if complete else
                            [background.get("reason", "atlas_background_review_required")]),
               "splat_available": complete,

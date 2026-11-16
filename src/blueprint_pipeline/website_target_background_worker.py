@@ -169,7 +169,7 @@ def _owner_checkpoint(*, job_dir, capture_root, context, request, checkpoint):
 
 def advance_correction(*, job, job_dir, capture_root, context, checkpoint, max_polls=1):
     """Called only under the existing Atlas job lock, with its unchanged expiry."""
-    from .website_atlas_pipeline import load_configuration, finalize_background_result, resumed_policy
+    from .website_atlas_pipeline import load_configuration, finalize_background_result, resumed_policy, view_selection
     from .paid_resource_allocator import run_sponsored_website_atlas_automation
     from .website_atlas_pose import ATLAS_PROVIDER_RETENTION_ENV
     import os
@@ -204,7 +204,7 @@ def advance_correction(*, job, job_dir, capture_root, context, checkpoint, max_p
     check('target_correction_publish')
     result = finalize_background_result(output_root=root, source_digest=request['source_video_digest'],
         task_context=context, automation=automation, source_pose=parent['source_pose'], model=parent['model'],
-        edit_scope=parent.get('edit_scope'))
+        edit_scope=parent.get('edit_scope'), selection=view_selection(job_dir / 'pose'))
     result['target_correction'] = job['target_correction']
     result['digest'] = canonical_digest(result, digest_field='digest')
     write_json(root / 'result.json', result)

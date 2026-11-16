@@ -92,8 +92,12 @@ def correction_job(tmp_path, monkeypatch):
     return locals()
 
 
-def test_a_to_b_queues_then_continues_with_raw_b_edit_and_original_allowance(correction_job, monkeypatch):
+@pytest.mark.parametrize("left_out", [False, True])
+def test_a_to_b_queues_then_continues_with_raw_b_edit_and_original_allowance(correction_job, monkeypatch, left_out):
     f = correction_job
+    if left_out:  # The parent's view selection left views out: the corrected result keeps saying so.
+        write_json(f['job_dir'] / 'pose' / 'atlas_view_selection.json',
+                   {"task_and_surrounding_scene_covered": False, "uncaptured_regions": ["room: frame 5 not connected"]})
     queued = worker.queue_correction(capture_root=f['capture'], task_context=f['context'], task_masks=f['masks'], now=20)
     assert queued['status'] == 'pending'
     job = json.loads((f['job_dir'] / 'preview_job.json').read_text())
@@ -136,6 +140,7 @@ def test_a_to_b_queues_then_continues_with_raw_b_edit_and_original_allowance(cor
     assert ready['result_digest'] == result['digest'] != f['parent']['digest']
     assert result['source_pose'] == f['parent']['source_pose']
     assert result['simulation_qualified'] is False and result['physical_evidence'] is False
+    assert result['task_and_surrounding_scene_covered'] is not left_out
     assert json.loads((root / 'parent_result.json').read_text()) == f['parent']
     write_json(f['job_dir'] / 'preview_job.json', ready)
     assert worker.queue_correction(capture_root=f['capture'], task_context=f['context'], task_masks=f['masks'], now=23) == {'status': 'ready'}

@@ -308,7 +308,7 @@ def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypa
      "atlas_synthetic_subject_requires_preserved_capture"),
     (ValueError("atlas_scene_requires_preserved_capture"), "needs_input", "atlas_scene_requires_preserved_capture"),
     (ValueError("website_control_task-context_http_409:source_revoked"), "withdrawn", "website_capture_withdrawn"),
-    (ValueError("atlas_task_and_scene_coverage_gap"), "needs_input", "atlas_task_and_scene_coverage_gap"),
+    (ValueError("atlas_insufficient_overlapping_distinct_views"), "needs_input", "atlas_insufficient_overlapping_distinct_views"),
     # Privacy and rights refusals outside the explicit sets also end the job at once.
     (ValueError("atlas_source_rights_unverified"), "failed", "atlas_source_rights_unverified"),
 ])
@@ -669,7 +669,7 @@ def test_a_job_stopped_for_background_review_resumes_but_one_needing_a_new_captu
     job = preview.retry_failed_job(site.job, now=world.now)
     assert job["state"] == "processing" and job["retries"][0]["reason"] == "atlas_background_review_required"
     assert world.advance() == "ready" and len(world.runs) == 2
-    site.job.write_text(json.dumps({**_job(site), "state": "needs_input", "reason": "atlas_task_and_scene_coverage_gap"}))
+    site.job.write_text(json.dumps({**_job(site), "state": "needs_input", "reason": "atlas_insufficient_overlapping_distinct_views"}))
     with pytest.raises(ValueError, match="requires_recoverable_failure"):
         preview.retry_failed_job(site.job, now=world.now)
 

@@ -218,7 +218,11 @@ def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPa
 
     spec = row["compile"]
     stage_5 = spec["stage_5"]
-    if stage_5 in ("not_run", "not_run_static_passed", "not_run_claiming_isaac"):
+    articulated = spec["strategy"] == "articulated_open_close"
+    if articulated:
+        feed = ("fixture:tests/test_team_scene_packet._articulated_scene (the drawer cabinet) with the not-run "
+                "record bound to its own published object")
+    elif stage_5 in ("not_run", "not_run_static_passed", "not_run_claiming_isaac"):
         package_tests._not_run(patches, static_passed=stage_5 == "not_run_static_passed")
         feed = ("fixture:rigid revision with the no-GPU chain's not-run record bound to its own stage-4 record "
                 "(the chain's record above names another object, so it feeds nothing here)")
@@ -245,7 +249,8 @@ def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPa
                   "owner_success_confirmation_scope": {"intent": job.intent, "directory": Path(job.directory)}}
         feed = "fixture:the proposal_only job of tests/test_team_scene_packet_owner_confirmation (thresholds unconfirmed)"
     else:
-        scene = packet_tests._scene(inputs_dir, strategy=spec["strategy"])
+        scene = (packet_tests._articulated_scene(inputs_dir, not_run=stage_5 == "not_run") if articulated
+                 else packet_tests._scene(inputs_dir, strategy=spec["strategy"]))
         inputs = {k: v for k, v in scene.items() if k not in ("profile", "store", "revision_reference")}
     try:
         compiled = tsp.materialize_team_scene(**inputs, output_root=work / "half" / "scene",

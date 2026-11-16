@@ -48,6 +48,13 @@ def test_generated_depth_targets_keep_task_and_room_and_never_extrapolate_source
     assert [r["extrinsics"]["position"] for r in request["targetCameras"]] == [[0, 0, 0], [1, 0, 0]]
     assert all(r["intrinsics"]["width"] == 1280 for r in request["targetCameras"])
     assert request["returnDepth"] and pose == original
+    # A reviewed frame the selection left out (it connected to no other) has no camera to target.
+    review = {"scene_state": "same object", "coverage_requirements": [
+        {"role": "task_object", "required_frame_ids": ["task"]},
+        {"role": "surrounding_scene", "required_frame_ids": ["room", "left-out"]}]}
+    request = generation_request(pose=pose, inputs={"frames": [{"frame_id": "task"}, {"frame_id": "room"}]},
+                                 review=review)
+    assert [r["extrinsics"]["position"] for r in request["targetCameras"]] == [[0, 0, 0], [1, 0, 0]]
 
 
 def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_review(tmp_path, monkeypatch):
@@ -103,7 +110,9 @@ def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_rev
 @pytest.mark.parametrize("automation_enabled", [False, True])
 @pytest.mark.parametrize("mesh_price", [None, .5])
 @pytest.mark.parametrize("over_budget", [False, True])
-def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget, mesh_price, automation_enabled):
+@pytest.mark.parametrize("left_out", [False, True])
+def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path, monkeypatch, over_budget, mesh_price,
+                                                                       automation_enabled, left_out):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import atlas_video_extension as extension, paid_resource_allocator as allocator
     from blueprint_pipeline import atlas_result_bundle as bundles, atlas_depth_splat as depth_splat
@@ -155,6 +164,9 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     def prepare(**kwargs):
         if kwargs["review"]["survey_digest"] == "base":
             raise ValueError("atlas_selection_coverage_gap")
+        # A selection that left views out records it; the raw route's result never says covered then.
+        (kwargs["output_root"] / "atlas_view_selection.json").write_text(
+            json.dumps({"task_and_surrounding_scene_covered": not left_out}))
         return {"frames": [{"frame_id": str(i)} for i in range(5 if over_budget else 2)]}
     monkeypatch.setattr(inputs, "prepare_video_inputs", prepare)
     def pose(**kwargs):
@@ -213,7 +225,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     # A withdrawal is re-checked before every paid stage, including each resumed one.
     assert stages == ["plan", "plan", "pose", "pose", "generated_rgbd"] + (["mesh"] if mesh_price else [])
     assert result["status"] == "needs_input" and result["simulation_qualified"] is False
-    assert result["task_and_surrounding_scene_covered"] is True
+    assert result["task_and_surrounding_scene_covered"] is not left_out
     assert result["splat_available"] is True and result["mesh_available"] is bool(mesh_price)
     assert (exported["mesh_root"] is not None) is bool(mesh_price) and exported["splat_root"] == root / "splat"
     assert [str(kw["glb"]) for kw in registered] == ([str(root / "mesh/outputs/mesh.glb")] if mesh_price else [])
@@ -753,3 +765,51 @@ def test_later_stages_read_the_current_allowance_with_every_review_cap_the_job_r
     # Automation and completion reviews bought under $1 before the raise must be found again.
     assert pipeline._current_configuration({}, "sha256:v", resumed) == {**current, pipeline.REVIEW_CAPS: [1, 4]}
     assert pipeline._current_configuration({}, "sha256:v", current) == current
+
+
+def test_a_job_with_a_left_out_view_reaches_the_background_editor_over_several_ticks(tmp_path, monkeypatch):
+    """Tick 1 prepares the inputs and the editor is still working; tick 2 reuses the retained inputs
+    (``_retained_video_inputs``) and the reviewed-background step asks only for the frames kept."""
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
+    from blueprint_pipeline import atlas_background_automation as background, atlas_scene_automation as automation
+    from tests.test_atlas_video_inputs import _left_out_job
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = tmp_path / "job"
+    survey_path, review = _left_out_job(root, monkeypatch, "support_surface")
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"source")
+    survey = json.loads(survey_path.read_text())
+    survey["source_video_digest"] = pipeline._sha256_file(video)
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    survey_path.write_text(json.dumps(survey))
+    review["survey_digest"] = survey["digest"]
+    (root / "selection_binding.json").write_text(json.dumps({"survey_relative_path": "survey/atlas_video_survey.json",
+        "review": review, "planner_receipt": {"model": "agent"}}))
+    config = {"authority": {"provider_retention": "approved"}, "remaining_cost_usd": 10,
+              "policy": {"maximum_review_cost_usd": 1, "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05}}
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: config)
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "non-secret"))
+    for name in ("run_sponsored_website_atlas_pose", "run_sponsored_website_atlas_task"):
+        monkeypatch.setattr(allocator, name, lambda **_: pytest.fail("unreviewed RGB reached Atlas"))
+    monkeypatch.setattr(automation, "measurement_plan", lambda review: review["automation"])
+    edited = []
+    monkeypatch.setattr(background, "run_background",
+                        lambda **kw: edited.append(kw["selected_frame_ids"]) or {"status": "processing"})
+    ticks = []
+
+    def automate(**kw):
+        ticks.append(kw["inputs"].get("left_out_frame_ids"))
+        if len(ticks) == 1:
+            return {"status": "processing"}
+        return automation.run_automation(pose_root=None, inputs=kw["inputs"], review=kw["review"],
+                                         output_root=kw["output_root"], task_context={}, configuration={"policy": {}},
+                                         task_runner=None, pose_runner=None, release_blockers=lambda: ([], ""))
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", automate)
+    options = {"source_video": video, "output_root": root, "checkpoint": None,
+               "task_context": {"capture_id": "c", "context_digest": "task"}}
+    assert pipeline.run_atlas_pipeline(**options)["status"] == "processing"
+    from blueprint_pipeline import atlas_video_inputs as video_inputs
+    monkeypatch.setattr(video_inputs, "_features", lambda *_: pytest.fail("tick 2 re-ran the selection"))
+    assert pipeline.run_atlas_pipeline(**options)["status"] == "processing"
+    assert ticks == [["5"], ["5"]] and len(edited) == 1 and "5" not in edited[0] and "2" in edited[0]
