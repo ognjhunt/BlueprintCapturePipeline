@@ -2253,3 +2253,30 @@ def test_a_timeout_during_the_build_without_the_look_is_recorded_and_waits_its_w
     assert manifest["refused"] == sim.BUILD_TIMED_OUT and manifest["refused_half"]["reason"] == sim.BUILD_TIMED_OUT
     assert world.publish(max_bytes=bare) == {"status": "build_timed_out"} and builds == [False, True]
     assert world.delivered == [] and not _package(job).exists()
+
+
+@pytest.mark.parametrize("where", [None, "collision_only", "look_and_collision", "unsealed"])
+def test_a_generated_patch_in_the_collision_only_is_said_and_nothing_else_changes(job, tmp_path, where):
+    """Owner, 2026-11-17: the look is the video's own; a generated patch kept only in the collision file is
+    named as exactly that. A package whose base scene has none says what it said before, at the same revision."""
+    before = sim.simulation_source(job.capture, queue_root=job.queue)
+    preparation = job.capture / "pipeline" / "website_scene_preparation"
+    if where is not None:
+        provenance = {"basis": "captured_scene_with_bounded_generated_estimates", "generated_geometry_is_estimate": True,
+                      **({"generated_geometry_in": "collision_only"} if where != "look_and_collision" else {})}
+        _write(preparation / "base_scene.json", {"content_provenance": provenance})
+        handoff = {"status": "intake_ready", "base_scene_path": str(preparation / "base_scene.json")}
+        handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+        if where == "unsealed":
+            handoff["digest"] = "sha256:" + "0" * 64
+        _write(preparation / "handoff.json", handoff)
+    said = where == "collision_only"
+    assert sim.generated_in_collision(job.capture) is said
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert source.get("generated_in_collision") is (True if said else None)
+    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is not said
+    sim.build_package(source, tmp_path / "package.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "package.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    assert (sim.GENERATED_IN_COLLISION_ONLY in readme) is said
+    assert sim.GENERATED_IN_COLLISION_NO_LOOK not in readme

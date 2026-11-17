@@ -498,6 +498,8 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
 
 
 REFINED_APPEARANCE, DRAFT_APPEARANCE = "atlas_refined_splat", "depth_fused_draft_fallback"
+#: Admitted generated geometry beside a refined-splat look: in the collision shape, never in the look.
+GENERATED_IN_COLLISION_ONLY = "collision_only"
 
 
 def _splat_input_selection(*, frames, pose, draft, output_root, review, source_root, bought):
@@ -559,13 +561,15 @@ def _heldout_quality(*, frames, selection, splat_root):
 
 
 def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_context, source_digest,
-                          configuration, check, experimental, max_polls, admitted_completion,
+                          configuration, check, experimental, max_polls,
                           review=None, source_root=None, rebuild=False):
     """Atlas's refined splat of the captured frames, or the draft with the reason it is the fallback.
 
     The draft is the fallback only when the job's Atlas money cannot cover the refined splat and
-    the mesh after it, when Atlas fails every attempt, or when admitted generated geometry would
-    be left out of a captured-frames-only request. A splat already bought is always adopted.
+    the mesh after it, or when Atlas fails every attempt. Admitted generated geometry never swaps
+    the refined splat for the draft (owner, 2026-11-17): it goes into the collision shape only
+    (``_preserved_scene``). ``draft`` is always the captured frames' own draft, so nothing
+    generated reaches the request. A splat already bought is always adopted.
     A new purchase sends the views ``_splat_input_selection`` keeps (consistent, with
     parallax, a few held back to score the result).
 
@@ -580,9 +584,6 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
 
     root = output_root / "refined_splat"
     bought = any(_started(form_root) for _, form_root in _form_roots(root))
-    if admitted_completion and not bought:
-        return {"status": "completed", "basis": DRAFT_APPEARANCE,
-                "fallback_reason": "atlas_refined_splat_would_omit_admitted_completion"}
     selection = (_splat_input_selection(frames=frames, pose=pose, draft=draft, output_root=output_root,
                                         review=review or {}, source_root=source_root, bought=bought)
                  if source_root is not None else None)
@@ -711,6 +712,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     manifest = splat_root / "atlas_depth_splat_manifest.json"
     splat = (json.loads(manifest.read_text()) if manifest.is_file()
              else write_depth_splat(frames=frames, result=pose, output_root=splat_root))
+    draft = splat  # The captured frames' own draft: a refined-splat request never sees generated geometry.
     blockers = ["metric_scene_registration_unproven"]
     mesh_root = None
     completion = None
@@ -762,18 +764,24 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 completion_paths = [Path(p) for p in completion['analysis_paths']]
     # The scene's appearance is Atlas's refined splat whenever its money allows (owner,
     # 2026-11-07); the depth-fused draft stays the gap and coverage evidence and is the
-    # appearance only as a named fallback.
+    # appearance only as a named fallback. Admitted generated geometry keeps the refined
+    # splat as the look and goes into the collision shape only (owner, 2026-11-17).
     appearance = None
+    collision_root, collision_splat = splat_root, splat
     if (not reconstruction_only and not geometry_only and source_pose['status'] == 'completed'
             and not completion_stopped and 'refined_splat_cost_usd' in policy):
-        appearance = _preserved_appearance(frames=frames, pose=pose, draft=splat, output_root=output_root,
+        appearance = _preserved_appearance(frames=frames, pose=pose, draft=draft, output_root=output_root,
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
-            check=check, experimental=experimental, max_polls=max_polls, admitted_completion=admitted_completion,
+            check=check, experimental=experimental, max_polls=max_polls,
             review=review, source_root=source_root, rebuild=rebuild)
         if appearance['status'] in ('processing', 'needs_input'):
             return appearance
         if appearance['basis'] == REFINED_APPEARANCE:
             splat_root, splat = Path(appearance['splat_root']), appearance['splat_manifest']
+    # The generated patch is in the collision shape only: the mesh is made from the admitted export.
+    collision_only = admitted_completion and (appearance or {}).get('basis') == REFINED_APPEARANCE
+    if not collision_only:
+        collision_root, collision_splat = splat_root, splat
     if rebuild and (appearance or {}).get('basis') != REFINED_APPEARANCE:
         # A rebuild only ever replaces the scene with a new refined splat; nothing else is bought.
         return {'status': 'needs_input', 'stage': 'source_pose' if source_pose['status'] != 'completed'
@@ -781,11 +789,11 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 else 'atlas_splat_rebuild_refined_splat_unpriced'}
     if (not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
             and not completion_stopped):
-        mesh_destination = (output_root / 'mesh-refined' / splat['digest'][7:23]
-                            if (appearance or {}).get('basis') == REFINED_APPEARANCE
-                            else output_root / 'preserved_completion/mesh' / splat['digest'][7:23]
-                            if admitted_completion else output_root / 'mesh')
-        spec, mesh_root = splats2mesh_attempt(splat_root, mesh_destination)
+        mesh_destination = (output_root / 'preserved_completion/mesh' / collision_splat['digest'][7:23]
+                            if admitted_completion
+                            else output_root / 'mesh-refined' / splat['digest'][7:23]
+                            if (appearance or {}).get('basis') == REFINED_APPEARANCE else output_root / 'mesh')
+        spec, mesh_root = splats2mesh_attempt(collision_root, mesh_destination)
         quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "splats2Mesh",
             "request_digest": canonical_digest(spec["request"]), "maximum_cost_usd": policy["mesh_export_cost_usd"],
             **{key: policy[key] for key in _REVIEW_RECORD}}
@@ -798,7 +806,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         if not (mesh_root / "registered/atlas_mesh_registration.json").is_file():
             outputs = json.loads((mesh_root / "result.json").read_text())["outputs"]
             register_atlas_mesh(glb=mesh_root / next(row["path"] for row in outputs if row["role"] == "mesh"),
-                splat_root=splat_root, output_root=mesh_root / "registered", reference_frames=frames,
+                splat_root=collision_root, output_root=mesh_root / "registered", reference_frames=frames,
                 reference_pose_digest=pose["digest"])
     analysis = [output_root / "atlas_scene_review.json"]
     if repose is not None:
@@ -857,7 +865,13 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 completion['not_admitted_reason']} if completion.get('not_admitted_reason') else {}),
             **({'admission_digest': completion['admission']['digest'],
                 'admission_relative_path': str(Path(completion['admission_path']).relative_to(output_root))}
-               if admitted_completion else {})}
+               if admitted_completion else {}),
+            # The look is the refined splat of the filmed frames; the admitted patch is only in the export
+            # the collision mesh was made from (``website_atlas_scene_source`` checks both).
+            **({'generated_geometry_in': GENERATED_IN_COLLISION_ONLY,
+                'collision_splat_manifest_digest': collision_splat['digest'],
+                'collision_splat_relative_path': str(collision_root.relative_to(output_root))}
+               if collision_only else {})}
     if job_object_rule:
         result["job_object_rule"] = job_object_rule
     if geometry_only:
