@@ -774,9 +774,10 @@ def test_an_interrupted_review_is_asked_again_only_under_one_new_reservation(tmp
 
 
 def test_a_wall_in_a_failed_form_is_raised_never_taken_as_the_next_forms_turn(tmp_path, reviewer):
-    """A form the provider failed lets the next form follow; a wall raised with that failure must not
-    (``hard_stops``): the next form would be bought past it. Here the failed attempt's own settlement is
-    refused because the site withdrew."""
+    """A form the provider failed lets the next form follow; a wall raised with that failure now stops there
+    (``hard_stops``). Before, the next form was asked for and its own reservation refused it, so nothing was
+    bought then either: the wall is only raised earlier. Here the failed attempt's settlement is refused
+    because the site withdrew."""
     from blueprint_pipeline.hard_stops import PrivacyRightsStop
     frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []
     reviewer.admit = {"candidate-0002"}
@@ -790,7 +791,7 @@ def test_a_wall_in_a_failed_form_is_raised_never_taken_as_the_next_forms_turn(tm
             except ValueError:
                 raise wall from None
         calls.append(kw)
-        raise AssertionError("the next form was bought past a wall")
+        raise AssertionError("the next form was asked for after a wall")
     with pytest.raises(PrivacyRightsStop) as raised:
         native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=tmp_path / "draft-refined",
                                 policy=splat_policy(), task_context=CONTEXT, task_runner=runner)

@@ -38,10 +38,13 @@ never to skip a check.
 Since 2026-11-17 the step that guards a wall also raises it as a type
 (`hard_stops.py`: `PrivacyRightsStop`, `MoneyStop`, with the code unchanged;
 `is_wall` also counts `PaidResourceAdmissionBlocked` and a withdrawal). No
-controller decides by the type yet, so this table is unchanged. Three catches
-in the Atlas room step that used to absorb a refusal and go on buying now
-re-raise a wall: the original views' pose, the windowed re-pose's selection
-and the refined splat's next form.
+controller decides by the type yet, so this table is unchanged. Two catches in
+the Atlas room step raise a wall instead of absorbing it: the windowed
+re-pose's selection, and the original views' pose when the windowed re-pose
+asks for it (it would otherwise go on to buy). The refined splat's form loop
+raises a wall where it would have asked for the next form; that form's own
+reservation refused it before, so this only raises it earlier. Every other
+path holds a wall as before.
 
 ## 2. Where the policy is used
 

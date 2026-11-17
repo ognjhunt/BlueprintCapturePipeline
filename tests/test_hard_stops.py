@@ -317,29 +317,135 @@ def test_the_background_automation_holds_a_wall_exactly_as_before(tmp_path, monk
     assert results[0] == results[1] == ("needs_input", str(error))
 
 
-def test_the_original_views_pose_raises_a_wall_instead_of_holding_it_as_a_result(tmp_path, monkeypatch):
-    """A deliberate change: the windowed re-pose went on buying after a held pose result."""
-    from blueprint_pipeline import atlas_source_pose_inputs
+WALL_AFTER_POSE = MoneyStop("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
+
+
+def _paid_pose_then(monkeypatch, root, error):
+    """The original views' pose is bought and collected; the reference masks after it (SAM, paid) raise ``error``."""
+    from blueprint_pipeline import (
+        atlas_context_fov,
+        atlas_reference_masks,
+        atlas_source_pose_inputs,
+    )
+    from blueprint_pipeline import atlas_scene_automation as automation
+    from blueprint_pipeline import atlas_scene_measurements as measurements
     from blueprint_pipeline import paid_resource_allocator as allocator
-    from blueprint_pipeline import website_atlas_pipeline as pipeline
     from blueprint_pipeline.website_atlas_pose import ATLAS_PRICE_REVIEW_ENV
     inputs = {"frames": [{"frame_id": "a"}, {"frame_id": "b"}], "binding": {"source_video_digest": "sha256:v"}}
-    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda root: (root, inputs))
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda pose_root: (pose_root, inputs))
     monkeypatch.setenv(ATLAS_PRICE_REVIEW_ENV, "{}")  # the step writes its quote here; restored after
-    wall = MoneyStop("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
+    bought = []
 
-    def pose(**_):
-        raise wall
+    def pose(**kw):
+        bought.append("pose")
+        (kw["output_root"] / "atlas_posed_rgbd_result.json").write_text("{}")
+        return {"status": "completed", "operation_id": "source"}
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", pose)
-    policy = {"pose_input_cost_usd": .01, "rate_card_reference": "r", "reviewed_by": "o",
-              "reviewed_on": datetime.now(timezone.utc).date().isoformat()}
-    options = {"pose_root": tmp_path / "pose", "inputs": inputs, "review": {}, "policy": policy,
-                   "task_context": {"capture_id": "c"}, "check": lambda *_a, **_k: None, "experimental": False, "max_polls": 1}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_task", lambda **_: pytest.fail("bought after a wall"))
+    monkeypatch.setattr(measurements, "load_views", lambda *_: ({"digest": "sha256:pose", "operation": {"id": "s"}},
+                                                                ["views"]))
+    monkeypatch.setattr(atlas_context_fov, "verify_pose_context_fov", lambda **_: None)
+    monkeypatch.setattr(automation, "measurement_plan", lambda review: {"scale_references": []})
+
+    def masks(**_):
+        raise error
+    monkeypatch.setattr(atlas_reference_masks, "segment_scale_references", masks)
+    return inputs, bought
+
+
+def _policy():
+    return {"pose_input_cost_usd": .01, "rate_card_reference": "r", "reviewed_by": "o",
+            "reviewed_on": datetime.now(timezone.utc).date().isoformat()}
+
+
+def test_a_wall_after_the_bought_pose_is_held_as_before_and_raised_only_for_the_windowed_repose(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    held = []
+    for name, error in (("typed", WALL_AFTER_POSE), ("plain", ValueError(str(WALL_AFTER_POSE)))):
+        root = tmp_path / name / "pose"
+        root.mkdir(parents=True)
+        inputs, bought = _paid_pose_then(monkeypatch, root, error)
+        held.append(pipeline._source_pose(pose_root=root, inputs=inputs, review={}, policy=_policy(),
+                                          task_context={"capture_id": "c"}, check=lambda *_a, **_k: None,
+                                          experimental=False, max_polls=1))
+        assert bought == ["pose"]
+    assert held[0] == held[1] == {"status": "needs_input", "reason": str(WALL_AFTER_POSE)}
+    # The windowed re-pose asks for the wall: it would go on to buy past a held result.
+    root = tmp_path / "repose" / "pose"
+    root.mkdir(parents=True)
+    inputs, _ = _paid_pose_then(monkeypatch, root, WALL_AFTER_POSE)
     with pytest.raises(MoneyStop) as caught:
-        pipeline._source_pose(**options)
-    assert caught.value is wall
-    # Any other refusal is still held as before.
-    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose",
-                        lambda **_: (_ for _ in ()).throw(ValueError("website_atlas_pose_operation_failed")))
-    assert pipeline._source_pose(**options) == {"status": "needs_input",
-                                                 "reason": "website_atlas_pose_operation_failed"}
+        pipeline._source_pose(pose_root=root, inputs=inputs, review={}, policy=_policy(),
+                              task_context={"capture_id": "c"}, check=lambda *_a, **_k: None, experimental=False,
+                              max_polls=1, raise_walls=True)
+    assert caught.value is WALL_AFTER_POSE
+
+
+def test_a_scene_kept_as_filmed_still_exports_its_room_when_a_wall_follows_the_bought_pose(tmp_path, monkeypatch):
+    """``_preserved_scene`` (geometry-only and as-filmed jobs): the wall is held, nothing more is bought, the room
+    is exported with the wall named, exactly as for the same code raised plain. The controller then archives it."""
+    from blueprint_pipeline import atlas_depth_splat as splats
+    from blueprint_pipeline import atlas_result_bundle as bundles
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    results = []
+    for name, error in (("typed", WALL_AFTER_POSE), ("plain", ValueError(str(WALL_AFTER_POSE)))):
+        out = tmp_path / name
+        (out / "pose").mkdir(parents=True)
+        (out / "atlas_scene_review.json").write_text("{}")
+        _, bought = _paid_pose_then(monkeypatch, out / "pose", error)
+        monkeypatch.setattr(splats, "load_posed_rgbd", lambda root: ({"digest": "posed"}, ["observed_depth"]))
+        monkeypatch.setattr(splats, "write_depth_splat", lambda **_: {"digest": "splat",
+                                                                     "splat_kind": "depth_fused_draft"})
+        monkeypatch.setattr(bundles, "export_pose_bundle", lambda **kw: {"zip_path": "scene.zip"})
+        review = {"subject_origin": "no_manipulated_subject", "uncaptured_regions": [],
+                  "automation": {"objects": [{"disposition": "keep"}], "removal_instruction": ""}}
+        result = pipeline._preserved_scene(pose_root=out / "pose", output_root=out, inputs={}, review=review,
+            policy={**_policy(), "mesh_export_cost_usd": .5}, task_context={"capture_id": "c", "context_digest": "t"},
+            source_digest="source", configuration=None, check=lambda *_a, **_k: None, experimental=False,
+            max_polls=1, model="test")
+        assert bought == ["pose"] and result["download"] == {"zip_path": "scene.zip"}
+        assert str(WALL_AFTER_POSE) in result["blockers"] and not result["mesh_available"]
+        results.append(json.loads(json.dumps(result).replace(str(out), "<job>")))
+    assert results[0] == results[1]
+
+
+def test_the_reviewed_background_path_still_delivers_when_a_wall_follows_the_bought_pose(tmp_path, monkeypatch):
+    """The cleaned-background route keeps main's outcome: the source pose is held, the background is delivered."""
+    from blueprint_pipeline import atlas_video_inputs as inputs_module
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    from blueprint_pipeline import website_atlas_pose as pose_api
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    results = []
+    for name, error in (("typed", WALL_AFTER_POSE), ("plain", ValueError(str(WALL_AFTER_POSE)))):
+        root = tmp_path / name / "job"
+        (root / "survey").mkdir(parents=True)
+        video = tmp_path / name / "source.mov"
+        video.write_bytes(b"source")
+        survey = {"schema_version": "atlas_video_survey.v1", "source_video_digest": pipeline._sha256_file(video),
+                  "display_rotation_degrees": 0, "heldout_pixels_included": False, "frames": []}
+        survey["digest"] = canonical_digest(survey, digest_field="digest")
+        (root / "survey/atlas_video_survey.json").write_text(json.dumps(survey))
+        (root / "selection_binding.json").write_text(json.dumps({
+            "survey_relative_path": "survey/atlas_video_survey.json",
+            "review": {"automation": {"objects": [{"disposition": "remove"}]}}, "planner_receipt": {"model": "m"}}))
+        config = {"authority": {"provider_retention": "approved"}, "remaining_cost_usd": 10,
+                  "policy": {**_policy(), "maximum_review_cost_usd": 1, "rgbd_view_cost_usd": .05}}
+        monkeypatch.setattr(pipeline, "load_configuration", lambda *_, _config=config, **kw: _config)
+        monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "non-secret"))
+        monkeypatch.setattr(inputs_module, "prepare_video_inputs",
+                            lambda **_: {"frames": [{"frame_id": "a"}, {"frame_id": "b"}]})
+        monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw: {
+            "status": "completed", "measurements": {"status": "relative_sizes_only"},
+            "background": {"status": "completed", "splat_manifest_digest": "splat", "mesh_available": True}})
+        _, bought = _paid_pose_then(monkeypatch, root / "pose", error)
+        result = pipeline.run_atlas_pipeline(source_video=video, output_root=root, checkpoint=lambda *_a, **_k: None,
+                                             task_context={"capture_id": "c", "context_digest": "task"})
+        assert bought == ["pose"] and result["source_pose"] == {"status": "needs_input",
+                                                                "reason": str(WALL_AFTER_POSE)}
+        assert result["splat_available"] is True
+        results.append(json.loads(json.dumps(result).replace(str(tmp_path / name), "<run>")))
+    assert results[0] == results[1]
+
+
