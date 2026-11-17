@@ -31,22 +31,56 @@ def test_source_recovery_precedes_generation_and_open_space_stays_empty():
     assert observed['source_coverage_is_not_depth_coverage'] is True
 
 
-@pytest.mark.parametrize('change', ['missing_gap', 'invented_frame', 'unconditioned', 'no_observation', 'empty_gaps'])
-def test_source_evidence_cannot_be_fabricated_or_omitted(change):
+@pytest.mark.parametrize('change,reason', [
+    ('missing_gap', 'atlas_source_gap_evidence_required_for_each_gap'),
+    ('two_rows', 'atlas_source_gap_evidence_required_for_each_gap'),
+    ('invented_frame', 'atlas_source_gap_evidence_unknown_frame'),
+    ('unconditioned', 'atlas_source_gap_unconditioned_observation'),
+    ('no_observation', 'atlas_source_gap_observation_requires_frame'),
+    ('elsewhere_already_conditioned', 'atlas_source_gap_additional_view_missing')])
+def test_fabricated_or_omitted_source_evidence_buys_nothing_for_that_gap_and_does_not_stop(change, reason):
     gallery = {'reviewed_source_frame_ids': ['a', 'b'], 'conditioned_frame_ids': ['a']}
     rows = deepcopy(entry('observed_in_conditioning', ['a']))
+    # A second view with sound evidence still goes on.
+    rows.append({'camera_id': 'floor-view', 'gap_ids': ['gap-2'], 'source_evidence': [
+        {'gap_id': 'gap-2', 'visibility': 'occluded', 'source_frame_ids': [], 'reason': 'Behind the bin.'}]})
+    evidence = rows[0]['source_evidence']
     if change == 'missing_gap':
-        rows[0]['source_evidence'] = []
+        evidence.clear()
+    if change == 'two_rows':  # job itest-ff80a41b, 2026-11-17
+        evidence.append({**evidence[0], 'visibility': 'occluded', 'reason': 'The drawer hid the bay.'})
     if change == 'invented_frame':
-        rows[0]['source_evidence'][0]['source_frame_ids'] = ['imagined']
+        evidence[0]['source_frame_ids'] = ['imagined']
     if change == 'unconditioned':
-        rows[0]['source_evidence'][0]['source_frame_ids'] = ['b']
+        evidence[0]['source_frame_ids'] = ['b']
     if change == 'no_observation':
-        rows[0]['source_evidence'][0]['source_frame_ids'] = []
-    if change == 'empty_gaps':
-        rows[0].update(gap_ids=[], source_evidence=[])
-    with pytest.raises(ValueError, match='atlas_source_gap_'):
-        source_actions(rows, gallery)
+        evidence[0]['source_frame_ids'] = []
+    if change == 'elsewhere_already_conditioned':
+        evidence[0].update(visibility='observed_elsewhere_in_capture', source_frame_ids=['a'])
+    audit = source_actions(rows, gallery)
+    assert audit['ungenerated_gap_ids'] == {'work-surface-view': ['gap-1']}
+    assert [(row['gap_id'], row['reason']) for row in audit['unusable_gap_evidence']] == [('gap-1', reason)]
+    assert [row['gap_id'] for row in audit['gap_evidence']] == ['gap-2']
+    # An unusable row never routes a recovery, an opening or a not-filmed generation.
+    assert audit['additional_source_frame_ids'] == [] and audit['physical_opening_gap_ids'] == {}
+    assert audit['unresolved_gap_ids'] == []
+    assert audit['digest'] == canonical_digest(audit, digest_field='digest')
+
+
+def test_a_view_naming_no_gap_or_citing_an_unrequested_gap_buys_nothing_and_is_recorded():
+    gallery = {'reviewed_source_frame_ids': ['a'], 'conditioned_frame_ids': ['a']}
+    rows = deepcopy(entry('observed_in_conditioning', ['a']))
+    rows[0]['gap_ids'] = []
+    audit = source_actions(rows, gallery)
+    assert audit['ungenerated_gap_ids'] == {} and audit['gap_evidence'] == []
+    assert [row['reason'] for row in audit['unusable_gap_evidence']] == [
+        'atlas_source_gap_no_gap_named', 'atlas_source_gap_evidence_for_unrequested_gap']
+
+
+def test_sound_evidence_keeps_its_exact_record():
+    gallery = {'reviewed_source_frame_ids': ['a'], 'conditioned_frame_ids': ['a']}
+    audit = source_actions(entry('observed_in_conditioning', ['a']), gallery)
+    assert 'ungenerated_gap_ids' not in audit and 'unusable_gap_evidence' not in audit
 
 
 def test_absent_full_capture_survey_refuses_before_any_generation(tmp_path):

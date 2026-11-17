@@ -317,14 +317,35 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     output, openings = completion.complete_scene(**args)
     assert output == [] and openings['review']['reason'] == 'source_review_found_physical_openings'
     assert len(calls) == 2, 'A real opening is not a missing panel to generate'
+    # Job itest-ff80a41b's answer: one gap with two rows (fronts photographed, the bay behind them
+    # occluded). That gap is not generated and is flagged; the other view's gap still is.
+    first, second = proposal['view_gap_reasons']
+    for entry in (first, second):
+        entry['source_evidence'] = [{'gap_id': entry['gap_ids'][0], 'visibility': 'observed_in_conditioning',
+                                     'source_frame_ids': ['a'], 'reason': 'Recorded fronts; depth is missing.'}]
+    first['source_evidence'].append({'gap_id': first['gap_ids'][0], 'visibility': 'occluded',
+                                     'source_frame_ids': ['a'], 'reason': 'The closed drawer hid the bay.'})
+    unevidenced = {**args, 'root': tmp_path / 'unevidenced'}
+    output, partial = completion.complete_scene(**unevidenced)
+    assert partial['status'] == 'passed' and len(calls) == 3
+    assert [row['camera_id'] for row in calls[2]['selected']] == [second['camera_id']]
+    assert partial['source_evidence']['ungenerated_gap_ids'] == {first['camera_id']: first['gap_ids']}
+    assert partial['remaining_unknowns'] == [*proposal['remaining_unknowns'],
+        f"{first['gap_ids'][0]}: not generated; the planner's answer gave no usable capture evidence for it"]
+    # No usable evidence for any gap: nothing is bought and the room goes on as it is, flagged.
+    second['source_evidence'] = []
+    output, nothing = completion.complete_scene(**unevidenced)
+    assert output == [] and nothing['status'] == 'passed' and len(calls) == 3
+    assert nothing['review']['reason'] == 'source_evidence_unusable_for_every_remaining_gap'
+    assert nothing['new_atlas_generation_calls'] == 0 and len(nothing['remaining_unknowns']) == 3
     proposal['view_gap_reasons'].pop()
     with pytest.raises(ValueError, match="task_gap_plan_missing"):
         completion.complete_scene(**args)
-    assert len(calls) == 2
+    assert len(calls) == 3
     proposal["selected_camera_ids"] = ["invented-camera"]
     with pytest.raises(ValueError, match="camera_selection_invalid"):
         completion.complete_scene(**args)
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize("drop_generated", [False, True])
