@@ -1413,7 +1413,8 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                        or not package_path.is_file() or _sha256_file(package_path) != built.get("digest"))
         # A floor that stands for a half is kept until the half is built and has passed its checks: a half that
         # gives way again (shape, size, time) leaves it where it is.
-        deferred = needs_build and source["source_kind"] == "half" and _floor_package(manifest)
+        deferred = (needs_build and source["source_kind"] == "half" and _floor_package(manifest)
+                    and _floor_stands(root, manifest, queue_root=queue_root, max_bytes=max_bytes, now=now()))
         if (needs_build and not deferred and manifest.get("archive")
                 and not permission.take_back(manifest, manifest_path, retract)):
             return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
@@ -1481,7 +1482,8 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                                    identity["capture_id"], outcome["refused"])
                     if (deferred and outcome.get("refused_half")
                             and current.get("simulation_revision") == manifest.get("simulation_revision")
-                            and not permission.hidden(current.get("archive") or {})):
+                            and not permission.hidden(current.get("archive") or {})
+                            and _floor_stands(root, current, queue_root=queue_root, max_bytes=max_bytes, now=now())):
                         # The half gave way again: the floor stays, and records the half it stands for.
                         write_json(manifest_path, {**current, "refused_half": outcome["refused_half"]})
                         return _not_built(outcome)
@@ -1506,6 +1508,15 @@ def _floor_package(manifest: Mapping[str, Any]) -> bool:
     """The manifest holds a built floor (a room standing in for a half the builder could not ship)."""
     return bool(manifest.get("package")) and (manifest.get("source_kind") == "floor"
                                               or bool(manifest.get("floor_reason")))
+
+
+def _floor_stands(root: Path, manifest: Mapping[str, Any], *, queue_root: Path | None, max_bytes: int,
+                  now: float) -> bool:
+    """The floor this manifest holds is still the one the job's records give (``_floor_source``, same revision)."""
+    reason = str(manifest.get("floor_reason") or "object_not_built:refused_half")
+    floor = _floor_source(root, queue_root=Path(queue_root or _queue_root()), now=now,
+                          reason=reason if reason.startswith("object_not_built:") else "object_not_built:refused_half")
+    return floor is not None and simulation_revision(floor, max_bytes=max_bytes) == manifest.get("simulation_revision")
 
 
 def _not_built(outcome: Mapping[str, Any]) -> dict[str, Any]:

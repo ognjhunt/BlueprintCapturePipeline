@@ -574,3 +574,49 @@ def test_a_floor_kept_through_a_half_build_is_taken_back_if_the_site_withdraws_m
     monkeypatch.setattr(sim, "build_package", build_then_withdraw)
     assert world.publish() == {"status": "withdrawn"} and len(world.retracted) == 1
     assert builds == ["half", "floor", "half"] and sim.permission.hidden(_manifest(floor.job)["archive"])
+
+
+GIVE_WAY = {"time": (ValueError(sim.BUILD_TIMED_OUT), {"status": "build_timed_out"}),
+            "size": (ValueError(sim.OVER_CAP), {"status": "over_size_cap"}),
+            "shape": (sim.ShapeRefused("website_company_simulation_success_rule_missing"),
+                      {"status": "refused", "reason": "website_company_simulation_success_rule_missing",
+                       "detail": ""})}
+
+
+@pytest.mark.parametrize("why", sorted(GIVE_WAY))
+def test_a_kept_floor_its_records_no_longer_give_is_taken_back_and_the_half_is_not_rebuilt_each_pass(
+        tmp_path, monkeypatch, why):
+    error, status = GIVE_WAY[why]
+    floor = Floor(tmp_path, monkeypatch, half=True)
+    floor.started(reason="spend_cap_reached")
+    builds: list[str] = []
+    real = sim.build_package
+
+    def build(source, *a, **k):
+        builds.append(source["source_kind"])
+        if source["source_kind"] == "half":
+            raise error
+        return real(source, *a, **k)
+    monkeypatch.setattr(sim, "build_package", build)
+    world = World(floor.job)
+    assert world.publish() == status
+    assert world.publish()["status"] == "published" and _manifest(floor.job)["source_kind"] == "floor"
+    # The handoff's floor record changes: the published floor is no longer the one the job's records give.
+    value = json.loads((floor.workspace / "handoff.json").read_text())
+    value["room_floor"]["inputs_digest"] = "sha256:" + "2" * 64
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    _write(floor.workspace / "handoff.json", value)
+    assert sim.package_source(floor.job.capture, queue_root=floor.job.queue, manifest=_manifest(floor.job),
+                              now=NOW)["source_kind"] == "half"
+    first = _at(world, 60)
+    assert first == status and builds == ["half", "floor", "half"]
+    manifest = _manifest(floor.job)
+    assert manifest["archive"] is None and len(world.retracted) == 1 and not _package(floor.job).exists()
+    assert manifest["source_kind"] == "half" and manifest["refused_half"]["size_rule"] == sim.SIZE_RULE
+    for seconds in (120, 180, 3600):
+        assert _at(world, seconds)["status"] == status["status"]
+    assert builds == ["half", "floor", "half"] and len(world.retracted) == 1 and len(world.delivered) == 1
+    # Past the window a timed-out or shape-refused half is tried once more (the policy before this change); a size
+    # refusal under this rule stands.
+    _at(world, sim.permission.LIVE_STATEMENT_RECHECK_SECONDS + 61)
+    assert builds == ["half", "floor", "half"] + ([] if why == "size" else ["half"])
