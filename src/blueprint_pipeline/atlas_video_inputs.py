@@ -532,7 +532,7 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
     The existing producer still verifies any pose result and grants no spending
     authority. Partial handoffs follow the ordinary preparation path.
     """
-    from .atlas_privacy_screen import screen_identity
+    from .atlas_privacy_screen import face_blur_decision, screen_identity
     from .website_scene_geometry import INPUT_SCHEMA, _bound_frames
     from .website_worldlabs import prepare_atlas_pose_inputs
 
@@ -580,10 +580,14 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
     maximum = max(splat_frame_target or capacity, cover_count)
     privacy = (inputs.get("binding") or {}).get("privacy_screen") or {}
     faces = privacy.get("blurred_faces_by_frame")
-    require(type(faces) is dict and set(faces) == set(ids)
-            and all(type(value) is int and value >= 0 for value in faces.values())
-            and {key: value for key, value in privacy.items() if key != "blurred_faces_by_frame"}
-            == screen_identity())
+    # Blurred inputs serve any job; unblurred ones only a job this capture's grant exempts, under the
+    # same version (``face_blur_decision``).
+    blurred_inputs = (type(faces) is dict and set(faces) == set(ids)
+                      and all(type(value) is int and value >= 0 for value in faces.values())
+                      and {key: value for key, value in privacy.items() if key != "blurred_faces_by_frame"}
+                      == screen_identity())
+    required, decided = (True, None) if blurred_inputs else face_blur_decision(root)
+    require(blurred_inputs or (not required and privacy == decided))
     selection_profile = {"minimum_source_frames": minimum_frames} if minimum_frames else {}
     splat_profile = {"splat_frame_target": splat_frame_target} if splat_frame_target else {}
     sharpness_profile = ({"relative_sharpness_fraction": relative_sharpness_fraction}
@@ -756,8 +760,13 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
         # Dollars only ever refuse the accurate set; they never pose fewer frames.
         from .hard_stops import MoneyStop
         raise MoneyStop("atlas_selection_budget_below_accurate_inputs")
-    from .atlas_privacy_screen import blur_faces, screen_identity
+    from .atlas_privacy_screen import blur_faces, screen_for
     root = output_root.resolve()
+    try:
+        held = json.loads((root / GEOMETRY_INPUTS_FILE).read_text())["binding"]["privacy_screen"]
+    except (OSError, ValueError, KeyError, TypeError):
+        held = None
+    blur, identity = screen_for(root, held)
     prepared, blurred = [], {}
     for i in selected:
         row = frames[i]
@@ -769,16 +778,18 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
         with Image.open(row["source_image_path"]) as image:
             # Native resolution, lossless upright RGB; never the 518px model input.
             # Faces are blurred before the digest that the provider upload is bound to.
-            screened, faces = blur_faces(image.convert("RGB").rotate(rotation, expand=True))
+            upright = image.convert("RGB").rotate(rotation, expand=True)
+            screened, faces = blur_faces(upright) if blur else (upright, None)
         screened.save(target)
-        blurred[row["frame_id"]] = len(faces)
+        if blur:
+            blurred[row["frame_id"]] = len(faces)
         prepared.append({**row, "source_image_path": str(retained_source),
                          "image_path": str(target), "image_digest": _sha256_file(target)})
     inputs = {"schema_version": INPUT_SCHEMA,
               "binding": {"source_video_digest": survey["source_video_digest"], "maximum_frames": maximum_frames,
                           "adapter_version": 3, "survey_digest": survey["digest"],
                           "scene_state_review_digest": canonical_digest(review),
-                          "privacy_screen": {**screen_identity(), "blurred_faces_by_frame": blurred},
+                          "privacy_screen": {**identity, "blurred_faces_by_frame": blurred} if blur else identity,
                           **({"splat_frame_target": splat_frame_target} if splat_frame_target else {}),
                           **({"relative_sharpness_fraction": relative_sharpness_fraction}
                              if relative_sharpness_fraction else {}),

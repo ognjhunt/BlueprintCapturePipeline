@@ -169,7 +169,7 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
     from .atlas_scene_automation import _fallback_pose, _unposed_source_views
     from .atlas_scene_recovery import _frame_binding
     from .atlas_shared_view_alignment import shared_view_alignment
-    from .atlas_privacy_screen import blur_faces, screen_identity
+    from .atlas_privacy_screen import blur_faces, screen_for, unblurred_frames_may_exist
     from .website_scene_geometry import INPUT_SCHEMA
 
     source = pose['binding']['source_video_digest']
@@ -188,6 +188,16 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
                'target_frame_bindings': [_frame_binding(f) for f in frames],
                'automation_digest': canonical_digest(automation), 'task_context_digest': context['context_digest']}
     _bound_json(root / 'binding.json', binding)
+    # Decided before any paid step: the background's own views join the inputs unchanged, so a job
+    # whose earlier views may have gone out unblurred stops rather than record them as blurred.
+    try:
+        held = json.loads((root / 'recovery_inputs.json').read_text())['binding']['privacy_screen']
+    except (OSError, ValueError, KeyError, TypeError):
+        held = None
+    blur, identity = screen_for(root, held)
+    if blur and unblurred_frames_may_exist(root):
+        from .hard_stops import PrivacyRightsStop
+        raise PrivacyRightsStop('atlas_privacy_screen_decision_changed')
     _, blockers = release_blockers()
     if blockers:
         raise ValueError('atlas_recorded_source_release_not_admitted:' + ','.join(blockers))
@@ -220,16 +230,18 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
         if row['frame_id'] not in accepted:
             continue
         with Image.open(row['source_image_path']) as image:
-            pixels, faces = blur_faces(image.convert('RGB').rotate(survey['display_rotation_degrees'], expand=True))
+            upright = image.convert('RGB').rotate(survey['display_rotation_degrees'], expand=True)
+            pixels, faces = blur_faces(upright) if blur else (upright, None)
         target = root / (row['frame_id'] + '.png')
         from .atlas_scene_preservation import _save_image
         _save_image(target, np.asarray(pixels))
-        blurred[row['frame_id']] = len(faces)
+        if blur:
+            blurred[row['frame_id']] = len(faces)
         input_rows.append({**row, 'image_path': str(target), 'image_digest': _sha256_file(target)})
     inputs = {'schema_version': INPUT_SCHEMA, 'frames': input_rows, 'heldout_pixels_included': False,
               'binding': {'source_video_digest': source, 'source_recovery_binding_digest': canonical_digest(binding),
                           'content_basis': 'background_only_source_recovery_not_task_state_selection',
-                          'privacy_screen': {**screen_identity(), 'blurred_faces_by_frame': blurred}}}
+                          'privacy_screen': {**identity, 'blurred_faces_by_frame': blurred} if blur else identity}}
     inputs['digest'] = canonical_digest(inputs, digest_field='digest')
     _bound_json(root / 'recovery_inputs.json', inputs)
     unposed, raw = _unposed_source_views(inputs)
