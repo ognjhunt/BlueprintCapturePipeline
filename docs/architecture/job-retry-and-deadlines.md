@@ -160,7 +160,10 @@ extension. The WebApp half landed as WebApp #1257.
    sent once more under one new reservation, which the WebApp admits only
    inside the job's ceiling and the account limit. A refused reservation, or an
    unanswered call with no reservation on record, is a money wait, never a
-   send. A Gemini error in the clean-plate analysis is raised
+   send. After three dispatches with no answer nothing more is sent
+   (`website_gemini_unanswered_dispatches_exhausted`); in the scene
+   preparation (`website_scene_handoff`) the job then ships the room package
+   with that code as a flag, and buys nothing more (since 2026-11-17). A Gemini error in the clean-plate analysis is raised
    (`GeminiProviderError`) and retried by this policy, never retained as a
    completed "blocked" plan; a "blocked" plan an older release retained is
    still read and reused as it stands.

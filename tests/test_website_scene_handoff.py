@@ -792,3 +792,167 @@ def test_an_intake_ready_object_job_keeps_its_room_floor_and_a_floor_that_fails_
     assert compiled[0]["status"] == "intake_ready"
     assert [(call["output_root"].name, call["flags"], call["task_profile"]) for call in packaged] == [
         (handoff.ROOM_FLOOR, [handoff.ROOM_FLOOR_FLAG, "scene_completion_not_admitted"], None)]
+
+
+# --- 2026-11-17: two test jobs stopped in the preparation half; neither code holds a job any more -----------------
+
+class _PrepaymentDepleted(Exception):
+    """Gemini's answer to test job 3's three dispatches (20:12, 20:16 and 20:22Z): a 402 for depleted prepayment."""
+    code = 402
+
+
+def _job3_chain(tmp_path, monkeypatch):
+    """Test job 3's receipts as the host holds them: one request of the assembly views, sent three times, each
+    answered 402 and so recorded with no answer (``submitting``), the first two counted as spent."""
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    from tests.test_website_gemini_receipts import setup_call
+    args, calls = setup_call(tmp_path / "receipts", monkeypatch)
+
+    def depleted():
+        calls.append(("invoke", None))
+        raise _PrepaymentDepleted("402 RESOURCE_EXHAUSTED. Your prepayment credits are depleted.")
+    args["invoke"] = depleted
+    for _ in range(3):
+        with pytest.raises(_PrepaymentDepleted):
+            receipts.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve", "invoke"] * 3
+    root = tmp_path / "receipts"
+    assert len(list(root.glob("*.unanswered-*.json"))) == 2 and len(list(root.glob("*.resend-*.json"))) == 2
+    return args, calls
+
+
+def test_job3_a_provider_whose_bound_is_reached_ships_the_room_package_and_buys_nothing(
+        tmp_path, monkeypatch, ready_atlas):
+    """Test job 3 ("Open the top drawer"): the 4th run found its assembly-view request sent three times with no
+    answer recorded and stopped at ``website_gemini_unanswered_dispatches_exhausted`` (``awaiting_inputs``). Now
+    the job goes on: the room package, flagged with that code, and nothing is reserved, sent, researched or
+    compiled, on this run or the next."""
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    args, calls = _job3_chain(tmp_path, monkeypatch)
+    kwargs = inputs(tmp_path)
+    write_json(tmp_path / "pipeline/removal.json", {"entries": [
+        {"target_id": "drawer_cabinet_assembly", "task_effect": "manipulated", "articulation_kind": "prismatic"}]})
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    context.update(task_family="articulated_open_close", description="Open the top drawer",
+                   context_digest="sha256:" + "c" * 64)
+    kwargs["clean_plate"]["task_masks"] = {"targets": [{"target_id": "drawer_cabinet_assembly"}]}
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    monkeypatch.setattr(handoff, "native_task_subject_profile", lambda *_, **__: ("prismatic", "articulated_open_close"))
+    monkeypatch.setattr(handoff, "subject_rigidity", lambda *_, **__: None)
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: pytest.fail("reserved again"))
+    args["invoke"] = lambda: pytest.fail("sent again")
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: receipts.retained_gemini_call(**args))  # the real chain, as the step reads it
+    monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs",
+                        lambda **_: pytest.fail("researched"))
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", lambda **_: pytest.fail("compiled"))
+    packaged = room_recorder(monkeypatch)
+    for run in (1, 2):
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "room_package_written" and result["blockers"] == []
+        assert result["job_disposition"] == "accepted"
+        assert len(packaged) == run and packaged[-1]["flags"] == [receipts.EXHAUSTED]
+        assert packaged[-1]["task_profile"] is None
+    assert len(calls) == 6  # the three 402 dispatches of the failed runs, nothing since
+    assert len(list((tmp_path / "receipts").glob("*.unanswered-*.json"))) == 3
+    written = json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text())
+    assert written["digest"] == canonical_digest(written, digest_field="digest") and written == result
+
+
+def test_a_wall_or_another_code_at_the_same_step_is_never_the_room_package(tmp_path, monkeypatch, ready_atlas):
+    """Only the provider's bound sends the job on: a money wall raised there, or any other code, keeps
+    ``awaiting_inputs`` as before, and a room that cannot be packaged keeps the provider's code."""
+    from blueprint_pipeline.hard_stops import MoneyStop
+    from blueprint_pipeline.website_gemini_receipts import EXHAUSTED
+    kwargs = inputs(tmp_path)
+    kwargs["descriptor"]["metadata"]["site_task_context"].update(context_digest="sha256:" + "c" * 64)
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    packaged = room_recorder(monkeypatch)
+    for error in (MoneyStop(EXHAUSTED), MoneyStop("website_scene_preparation_budget_exhausted"),
+                  ValueError("website_gemini_request_in_progress")):
+        monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                            lambda error=error, **_: (_ for _ in ()).throw(error))
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "awaiting_inputs" and result["blockers"] == [str(error)]
+    assert packaged == []
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError(EXHAUSTED)))
+    monkeypatch.setattr(handoff, "write_room_package",
+                        lambda **_: (_ for _ in ()).throw(ValueError("website_base_scene_changed")))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "awaiting_inputs" and result["blockers"] == [EXHAUSTED]
+
+
+def _sunk_into_its_table(monkeypatch, *, sink_m=0.23, residual_m=0.075):
+    """Test job 4's shape on compile's own test geometry: the object's estimated box reaches ``sink_m`` below the
+    table top (the lamp: bottom 0.54 m, table top about 0.77 m), past the search window the registration's
+    residual near the task sets (7.5 cm)."""
+    from blueprint_pipeline import website_task_preparation as preparation
+    real_bounds, real_registration = preparation.estimate_target_bounds, preparation.register_source_to_runtime
+
+    def sunk(*args, **kwargs):
+        value = real_bounds(*args, **kwargs)
+        shift = (1.75 - sink_m / 2.0) - value["minimum"][1]  # the table top is runtime y = 1.75; 2 m per unit
+        value["minimum"][1] += shift
+        value["maximum"][1] += shift
+        return value
+
+    def measured(**kwargs):
+        value = real_registration(**kwargs)
+        return {**value, "task_region": {**(value.get("task_region") or {}), "trimmed_rmse_m": residual_m}}
+    monkeypatch.setattr(preparation, "estimate_target_bounds", sunk)
+    monkeypatch.setattr(preparation, "register_source_to_runtime", measured)
+
+
+def test_job4_an_object_with_no_surface_to_start_on_ships_the_room_package(tmp_path, monkeypatch, ready_atlas):
+    """Test job 4 ("Move the lamp ... to the glass shelf"): compile found no surface under the lamp and the
+    modelled job rested at ``needs_input`` on ``support_surface_not_found_under_subject``. Now the real compile's
+    blockers go to the room package as flags; the preparation is not bound, registered or enqueued. Compile itself
+    is main's (its retained, unbilled provider choice included). The next pass ends the same."""
+    _sunk_into_its_table(monkeypatch)
+    kwargs, asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop=False)
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
+                        lambda *_, **__: pytest.fail("bound"))
+    for run in (1, 2):
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert compiled[-1]["status"] == "needs_input"
+        assert compiled[-1]["blockers"] == ["support_surface_not_found_under_subject"]
+        assert result["status"] == "room_package_written" and result["blockers"] == []
+        assert [call["flags"] for call in packaged] == [["support_surface_not_found_under_subject"]] * run
+    assert len(asked) == 2 and "website_intake_outbox" not in result and "runtime_inputs" not in result
+
+
+def test_job4_s_object_resting_within_the_window_still_builds_as_before(tmp_path, monkeypatch, ready_atlas):
+    """The same job with its estimate 4 cm into the table: the surface is found and the object's route runs."""
+    _sunk_into_its_table(monkeypatch, sink_m=0.04)
+    kwargs, asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop="ready")
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert "support_surface_not_found_under_subject" not in compiled[0]["blockers"]
+    assert not [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR]
+
+
+@pytest.mark.parametrize("blockers, development, expected", [
+    (["support_surface_not_found_under_subject"], False, True),
+    (["website_synthetic_subject_start_unplaceable"], False, True),
+    (["support_surface_not_found_under_subject", "website_assembly_whole_object_coverage_required"], False, True),
+    # Any code that reads as privacy, rights or money keeps the preparation: the authoring admissions.
+    *[(["support_surface_not_found_under_subject", code], False, False) for code in ADMISSIONS],
+    # A development test places the object on its own authored surface.
+    (["support_surface_not_found_under_subject"], True, False),
+    # Other codes are not this cause: they are kept as before.
+    (["task_destination_surface_contact_required"], False, False),
+    (["website_owner_success_criteria_translation_required"], False, False),
+])
+def test_only_an_object_with_no_surface_to_start_on_and_no_wall_ships_the_room(monkeypatch, blockers, development,
+                                                                               expected):
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: development)
+    assert handoff.start_unsupported(blockers, {"context_digest": "sha256:" + "a" * 64}) is expected
+
+
+def test_an_unreadable_development_allowlist_keeps_the_preparation(monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_DEVELOPMENT_TEST_TASK_DIGESTS", "not json")
+    assert handoff.start_unsupported(["support_surface_not_found_under_subject"],
+                                     {"context_digest": "sha256:" + "a" * 64}) is False
