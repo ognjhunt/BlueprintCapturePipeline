@@ -81,8 +81,22 @@ CONTENT_TYPE = "application/zip"
 #: The one real compiled half on the host (capture-447, 2026-11-12) stages 211 MiB of USD (appearance 124 MiB,
 #: collision 83 MiB, object 3.8 MiB); its configured bundle's text collision alone is 278 MiB. 512 MiB is about
 #: 2.4 times the real scene, the size the first-site team runbook already allows for one flattened USD, and a
-#: quarter of what the website accepts (2 GiB). Measured on the source files and on the zip.
+#: quarter of what the website accepts (2 GiB). Measured on the zip, the file a company downloads: the WebApp
+#: checks the same number (``size_bytes``, the zip's) when it accepts the package.
 MAX_PACKAGE_BYTES = 512 * 1024 * 1024
+#: Source files above this are refused unbuilt (copying, scanning and zipping them could not end within one build
+#: and could not come under ``MAX_PACKAGE_BYTES``); below it the zip decides. Why: a room whose look is our own
+#: draft scan (``depth_fused_draft_fallback``, 6.2 million points, no bound) ran to 562 MB of source files, which
+#: the old rule, measured on them, refused without zipping; built, its zip is 342 MB.
+MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
+#: Recorded in every manifest this builder writes: a size refusal without it was made under the old rule (source
+#: files over ``MAX_PACKAGE_BYTES``) and is built once more under this one; a size refusal with it stands.
+SIZE_RULE = "zip_bytes.v1"
+#: When the zip with the room's look is over the limit, the package is built once more without the look, with the
+#: collision file shown in its place, and says so.
+LOOK_LEFT_OUT = ("The room's photographed look is not in this package: with it the download would have been larger "
+                 "than Blueprint's size limit. The collision file, which holds the room's shape, is shown in its "
+                 "place.")
 #: Moves whenever what the builder writes changes, so a package built or refused by the earlier builder is built once
 #: more at the first pass after the release. v2 (2026-11-16): the layer's flatten note naming a host file is
 #: dropped (``place``); a package v1 refused for that note waited six hours for its retry.
@@ -410,6 +424,8 @@ def package_source(root: Path, *, queue_root: Path | None = None, manifest: Mapp
     if source is not None and source.get("room") is not None:
         return {**source, "source_kind": "room"}
     refused = manifest.get("refused_half") if isinstance(manifest.get("refused_half"), Mapping) else {}
+    if refused.get("reason") == OVER_CAP and refused.get("size_rule") != SIZE_RULE and not manifest.get("delivered"):
+        refused = {}  # refused for size under the old rule, and its floor not delivered: the half is built once more
     if source is not None and refused.get("simulation_revision") != simulation_revision(source, max_bytes=max_bytes):
         return {**source, "source_kind": "half"}
     if _delivered_half(manifest):
@@ -989,7 +1005,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
         stated = [f"up axis {up}" if up else None, f"{metres:g} metres per unit" if metres is not None else None]
         stated = [item for item in stated if item]
         lines.append(f"- {relative} states " + (" and ".join(stated) if stated else "no up axis or unit") + ".")
-    if source.get("appearance_representation") == "particlefield_3d_gaussian_splat":
+    if source.get("appearance_representation") == "particlefield_3d_gaussian_splat" and not source.get("look_left_out"):
         lines += ["- The room's look is a 3D Gaussian splat stored as USD particle fields. Some tools cannot show",
                   "  it; the hidden collision part holds the room's geometry."]
     lines += ["", "How it was made", "",
@@ -998,7 +1014,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
               "site, and says nothing about safety. No robot is included: bring your own."]
     import textwrap
 
-    notes = [*(PHYSICS_CHECK_WORDS.get(source.get("physics_check")) or ()),
+    notes = [*([LOOK_LEFT_OUT] if source.get("look_left_out") else []),
+             *(PHYSICS_CHECK_WORDS.get(source.get("physics_check")) or ()),
              *([FURNITURE_REMOVED.format(count=source["removed_items"])] if source.get("removed_items") else []),
              *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
@@ -1020,14 +1037,44 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     return "\n".join(lines)
 
 
+def without_look(source: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The same source with the room's look left out and its collision shown in its place (``LOOK_LEFT_OUT``), or
+    None when it has no look or no collision to show instead."""
+    files = source.get("files") or {}
+    roles = [row["role"] for row in files.values()]
+    if "scene_appearance" not in roles or "scene_collision" not in roles:
+        return None
+    kept = {prim: ({**row, "placement": {**row["placement"], "visible": True}} if row["role"] == "scene_collision"
+                   else row) for prim, row in files.items() if row["role"] != "scene_appearance"}
+    return {**source, "files": kept, "look_left_out": True}
+
+
 def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tuple[str, str]],
                   words: list[tuple[bytes, str]] | None = None, max_bytes: int = MAX_PACKAGE_BYTES,
                   deadline: float | None = None) -> dict[str, Any]:
     """Stage, rewrite, compose, scan and zip the package to ``output``; ``PackageRefused`` or ``OVER_CAP`` otherwise.
 
+    The limit is on the zip. Source files above ``MAX_SOURCE_BYTES`` are refused unbuilt. A zip over the limit is
+    built once more without the room's look (``without_look``); only when that one is over too is it ``OVER_CAP``.
     It holds no lock: every file it writes is its own (a staging folder and a partial zip named for this build).
     ``deadline`` (a ``time.monotonic`` value) is checked between steps and files: past it, ``BUILD_TIMED_OUT``.
     """
+    if source.get("refusal"):
+        raise ShapeRefused(source["refusal"])
+    if sum(row["size_bytes"] for row in source["files"].values()) > MAX_SOURCE_BYTES:
+        raise ValueError(OVER_CAP)
+    try:
+        return _build_once(source, output, literals=literals, words=words, max_bytes=max_bytes, deadline=deadline)
+    except ValueError as error:
+        lighter = without_look(source) if str(error) == OVER_CAP else None
+        if lighter is None:
+            raise
+    built = _build_once(lighter, output, literals=literals, words=words, max_bytes=max_bytes, deadline=deadline)
+    return {**built, "look_left_out": True}
+
+
+def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple[str, str]],
+                words: list[tuple[bytes, str]] | None, max_bytes: int, deadline: float | None) -> dict[str, Any]:
     def on_time() -> None:
         if deadline is not None and time.monotonic() >= deadline:
             raise ValueError(BUILD_TIMED_OUT)
@@ -1035,10 +1082,6 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
 
     from .outbound_file_scan import literal_forms, scan_tree
     from .scene_package_stage import StageRefused, write_stage
-    if source.get("refusal"):
-        raise ShapeRefused(source["refusal"])
-    if sum(row["size_bytes"] for row in source["files"].values()) > max_bytes:
-        raise ValueError(OVER_CAP)
     output.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=STAGING + "-", dir=output.parent))
     staging, scratch = work / "package", work / "scan"
@@ -1323,9 +1366,11 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             return (_kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now, owned)
                     or {"status": "current", "simulation_revision": revision})
         refused, refused_at = manifest.get("refused"), manifest.get("refused_at_epoch")
-        if manifest.get("simulation_revision") == revision and refused == OVER_CAP:
+        # A size refusal stands for its revision; one made under the old rule (no ``size_rule``) is built once more.
+        if manifest.get("simulation_revision") == revision and refused == OVER_CAP \
+                and manifest.get("size_rule") == SIZE_RULE:
             return {"status": "over_size_cap"}
-        if (manifest.get("simulation_revision") == revision and isinstance(refused, str)
+        if (manifest.get("simulation_revision") == revision and isinstance(refused, str) and refused != OVER_CAP
                 and isinstance(refused_at, int) and _RETRIED_AFTER_WINDOW.fullmatch(refused)
                 and 0 <= now() - refused_at < permission.LIVE_STATEMENT_RECHECK_SECONDS):
             return ({"status": "build_timed_out"} if refused == BUILD_TIMED_OUT
@@ -1367,7 +1412,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             "source": {"plan_digest": source.get("plan_digest"),
                        "files": {prim: row["sha256"] for prim, row in sorted(source["files"].items())}},
             "upload_sha256": upload, "permission": basis, "built_at_epoch": int(now()), "archive": None,
-            "delivered": None, "source_kind": source["source_kind"],
+            "delivered": None, "source_kind": source["source_kind"], "size_rule": SIZE_RULE,
             # Outside the revision: why a floor ships, and the refused half it stands for (never rebuilt as it is).
             **({"floor_reason": source["floor_reason"]} if source.get("floor_reason") else {}),
             **({"refused_half": manifest["refused_half"]} if source["source_kind"] == "floor"
@@ -1390,7 +1435,8 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             shape = str(error) == OVER_CAP
         if outcome is not None and shape and source["source_kind"] == "half":
             # Its own scene, or its size: the room floor ships instead until a new half revision arrives.
-            outcome["refused_half"] = {"simulation_revision": revision, "reason": outcome["refused"]}
+            outcome["refused_half"] = {"simulation_revision": revision, "reason": outcome["refused"],
+                                       "size_rule": SIZE_RULE}
 
     try:
         with package_lock(root):

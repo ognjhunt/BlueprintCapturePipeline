@@ -2099,3 +2099,123 @@ def test_a_half_without_its_rule_and_without_a_sealed_named_reason_is_refused(jo
 def test_the_withheld_reasons_are_the_handoffs_room_gaps():
     from blueprint_pipeline.website_scene_handoff import ROOM_GAPS
     assert sim.RULE_WITHHELD_REASONS == ROOM_GAPS
+
+
+# --- the size limit is on the download ----------------------------------------------------------------------------
+
+def _large_look(tmp_path: Path, points: int = 200_000) -> Job:
+    """A job whose look is a large, very compressible text layer: far bigger as files than as a zip."""
+    job = Job(tmp_path, appearance=".usda")
+    stage = Usd.Stage.Open(str(job.appearance))
+    UsdGeom.Points.Define(stage, "/Appearance/Splat").CreatePointsAttr([(0.0, 0.0, 0.0)] * points)
+    stage.GetRootLayer().Save()
+    job.seal()
+    return job
+
+
+def _sizes(job: Job, tmp_path: Path) -> tuple[int, int, int]:
+    """The source files' bytes, the zip's with the look and the zip's without it."""
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    literals = sim.secret_literals(job.capture, source)
+    whole = sim.build_package(source, tmp_path / "whole.zip", literals=literals, max_bytes=1 << 30)
+    bare = sim.build_package(sim.without_look(source), tmp_path / "bare.zip", literals=literals, max_bytes=1 << 30)
+    assert "look_left_out" not in whole
+    return sum(row["size_bytes"] for row in source["files"].values()), whole["size_bytes"], bare["size_bytes"]
+
+
+def test_the_limit_is_the_zips_and_the_files_are_refused_unbuilt_only_above_two_gib(tmp_path, monkeypatch):
+    job = _large_look(tmp_path)
+    raw, whole, _bare = _sizes(job, tmp_path / "sizes")
+    assert whole < raw  # the files are over a limit the zip is under
+    world = World(job)
+    assert world.publish(max_bytes=whole)["status"] == "published"
+    assert world.delivered[0]["size_bytes"] == whole and "scene/room.usda" in world.delivered[0]["files"]
+    assert "look_left_out" not in _manifest(job)["package"]
+    assert sim.MAX_SOURCE_BYTES == 2 * 1024 ** 3
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    monkeypatch.setattr(sim, "MAX_SOURCE_BYTES", raw - 1)
+    monkeypatch.setattr(sim, "_build_once", lambda *a, **k: pytest.fail("built files above the source ceiling"))
+    with pytest.raises(ValueError, match=sim.OVER_CAP):
+        sim.build_package(source, tmp_path / "x.zip", literals=[], max_bytes=1 << 30)
+
+
+def test_a_zip_over_the_limit_is_built_once_more_without_the_look_and_says_so(tmp_path):
+    job = _large_look(tmp_path)
+    _raw, whole, bare = _sizes(job, tmp_path / "sizes")
+    assert bare < whole
+    world = World(job)
+    assert world.publish(max_bytes=bare)["status"] == "published"
+    record, manifest = world.delivered[0], _manifest(job)
+    assert record["size_bytes"] == bare and manifest["package"]["look_left_out"] is True
+    assert "scene/room.usda" not in record["files"] and "scene/room_collision.usdc" in record["files"]
+    unpacked = tmp_path / "unpacked"
+    with zipfile.ZipFile(_package(job)) as archive:
+        archive.extractall(unpacked)
+    stage = Usd.Stage.Open(str(unpacked / "scene.usda"))
+    assert not stage.GetPrimAtPath("/World/Room").IsValid() and stage.GetPrimAtPath("/World/Object").IsValid()
+    assert UsdGeom.Imageable(stage.GetPrimAtPath("/World/RoomCollision")).ComputeVisibility() == "inherited"
+    readme = " ".join((unpacked / "README.txt").read_text().split())
+    assert sim.LOOK_LEFT_OUT in readme and "Hidden in scene.usda" not in readme
+    assert world.publish(max_bytes=bare)["status"] == "current"
+
+
+def test_a_package_over_the_limit_without_its_look_too_is_over_the_cap(tmp_path, monkeypatch):
+    job = _large_look(tmp_path)
+    _raw, _whole, bare = _sizes(job, tmp_path / "sizes")
+    builds = []
+    real = sim._build_once
+    monkeypatch.setattr(sim, "_build_once", lambda source, *a, **k: builds.append(bool(source.get("look_left_out")))
+                        or real(source, *a, **k))
+    world = World(job)
+    assert world.publish(max_bytes=bare - 1) == {"status": "over_size_cap"}
+    assert builds == [False, True] and _manifest(job)["size_rule"] == sim.SIZE_RULE
+    assert world.publish(max_bytes=bare - 1) == {"status": "over_size_cap"} and builds == [False, True]
+    assert world.delivered == []
+
+
+def test_a_room_with_no_collision_to_show_is_not_built_without_its_look(job):
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    files = {prim: row for prim, row in source["files"].items() if row["role"] != "scene_collision"}
+    assert sim.without_look({**source, "files": files}) is None
+    assert sim.without_look(source)["files"].keys() == {"RoomCollision", "Object"}
+
+
+def test_a_size_refusal_made_under_the_old_rule_is_built_once_more_at_no_cost(tmp_path):
+    job = _large_look(tmp_path)
+    _raw, whole, _bare = _sizes(job, tmp_path / "sizes")
+    source = sim.package_source(job.capture, queue_root=job.queue)
+    revision = sim.simulation_revision(source, max_bytes=whole)
+    # Job 1's record as the earlier builder wrote it: the same revision, refused for its files' size an hour ago,
+    # with no ``size_rule`` and no ``source_kind``.
+    old = {"schema_version": sim.MANIFEST_SCHEMA, "request_id": REQUEST, "scene_id": SITE, "capture_id": CAPTURE,
+           "simulation_revision": revision, "archive": None, "delivered": None, "package": None,
+           "refused": sim.OVER_CAP, "refused_at_epoch": NOW - 3600}
+    _write(job.capture.joinpath(*sim.DIRECTORY) / sim.MANIFEST_FILE, old)
+    world = World(job)
+    assert world.publish(max_bytes=whole)["status"] == "published"  # at once, not after the window
+    assert _manifest(job)["size_rule"] == sim.SIZE_RULE and len(world.delivered) == 1
+    assert world.publish(max_bytes=whole)["status"] == "current"
+
+
+def test_a_half_refused_for_size_under_the_old_rule_is_tried_again_unless_its_floor_was_delivered(job, monkeypatch):
+    monkeypatch.setattr(sim, "_floor_source", lambda *a, **k: {"source_kind": "floor"})
+    half = sim.simulation_source(job.capture, queue_root=job.queue)
+    revision = sim.simulation_revision(half)
+    old = {"refused_half": {"simulation_revision": revision, "reason": sim.OVER_CAP}}
+    assert sim.package_source(job.capture, queue_root=job.queue, manifest=old)["source_kind"] == "half"
+    delivered = {**old, "delivered": {"simulation_digest": "sha256:" + "1" * 64}, "package": {"digest": "x"},
+                 "source_kind": "floor"}
+    assert sim.package_source(job.capture, queue_root=job.queue, manifest=delivered)["source_kind"] == "floor"
+    new = {"refused_half": {**old["refused_half"], "size_rule": sim.SIZE_RULE}}
+    assert sim.package_source(job.capture, queue_root=job.queue, manifest=new)["source_kind"] == "floor"
+
+
+def test_the_limit_is_unchanged_and_a_delivered_package_is_not_rebuilt(job, monkeypatch):
+    assert sim.MAX_PACKAGE_BYTES == 512 * 1024 * 1024
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    manifest = _manifest(job)
+    manifest.pop("size_rule")  # delivered by the earlier builder, which recorded no size rule
+    _write(job.capture.joinpath(*sim.DIRECTORY) / sim.MANIFEST_FILE, manifest)
+    monkeypatch.setattr(sim, "build_package", lambda *a, **k: pytest.fail("rebuilt a delivered package"))
+    assert world.publish()["status"] == "current" and len(world.delivered) == 1 and world.retracted == []
