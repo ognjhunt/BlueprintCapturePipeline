@@ -18,6 +18,7 @@ disagree); every other case blurs.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -30,6 +31,7 @@ from PIL import Image
 
 from .local_reconstruction_adapters import _sha256_file
 
+_LOGGER = logging.getLogger(__name__)
 MODEL = Path(__file__).with_name("_atlas_privacy_model") / "face_detection_yunet_2023mar.onnx"
 MODEL_SHA256 = "sha256:8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
 # Recall over precision: a blurred patch of wall costs little, a missed face does not.
@@ -243,8 +245,8 @@ def face_blur_decision(output_root: Path) -> tuple[bool, dict]:
         sealed = _read_or_seal(pipeline, fields)
         if _valid_seal(sealed) and {k: v for k, v in sealed.items() if k != "digest"} == fields:
             return required, identity
-    except Exception:  # noqa: BLE001 - any doubt blurs
-        pass
+    except Exception as error:  # noqa: BLE001 - any doubt blurs
+        _LOGGER.warning("atlas_face_blur_decision_doubt root=%s error=%s", output_root, type(error).__name__)
     return True, screen_identity()
 
 
