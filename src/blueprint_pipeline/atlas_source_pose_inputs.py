@@ -25,9 +25,13 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
     Reuse the capture's training-only source-frame manifest, at native resolution;
     these views are for observed object depth only and never enter scene generation.
     """
-    from .atlas_privacy_screen import blur_faces, screen_identity
+    from .atlas_privacy_screen import blur_faces, is_no_blur_identity, screen_for
     from .website_scene_geometry import _bound_frames
 
+    # The background's own views go out again here: unblurred ones only while the grant still exempts them.
+    held = (original.get("binding") or {}).get("privacy_screen")
+    if is_no_blur_identity(held) and screen_for(pose_root) != (False, held):
+        raise ValueError("atlas_task_source_inputs_changed")
     clean_root = pose_root.parent.parent / "clean_plate"
     if not clean_root.is_dir():
         # A rebuild's pose root sits deeper in the job (``atlas_splat_rebuild``): the
@@ -72,8 +76,13 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
         retained = json.loads(path.read_text())
         if retained.get("binding") != binding:
             raise ValueError("atlas_task_source_inputs_changed")
+        # Unblurred task views are reused only by a job its grant still exempts, under the same version.
+        screen = retained.get("task_view_privacy_screen")
+        if is_no_blur_identity(screen) and screen_for(root) != (False, screen):
+            raise ValueError("atlas_task_source_inputs_changed")
         _bound_frames(retained, root, geometry=False)
         return root, retained
+    blur, identity = screen_for(root)
     rows, faces = [], {}
     # Existing Atlas images are already upright and screened. Normalize only
     # their retained observation copy; the provider image bytes stay identical.
@@ -87,7 +96,7 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
     for row in additional:
         with Image.open(row["source_image_path"]) as image:
             upright = image.convert("RGB").rotate(row["display_rotation_degrees"], expand=True)
-            screened, boxes = blur_faces(upright)
+            screened, boxes = blur_faces(upright) if blur else (upright, None)
         target = root / "views" / (row["frame_id"] + ".png")
         screened.save(target)
         digest = _sha256_file(target)
@@ -96,9 +105,10 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
                      "image_path": str(target.resolve()), "image_digest": digest,
                      "width": screened.width, "height": screened.height,
                      "original_source_image_digest": row["source_image_digest"]})
-        faces[row["frame_id"]] = len(boxes)
+        if blur:
+            faces[row["frame_id"]] = len(boxes)
     result = {**original, "binding": binding, "frames": rows,
-              "task_view_privacy_screen": {**screen_identity(), "blurred_faces_by_frame": faces}}
+              "task_view_privacy_screen": {**identity, "blurred_faces_by_frame": faces} if blur else identity}
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(path, result)
     return root, result
