@@ -423,23 +423,37 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     ungenerated = audit.get('ungenerated_gap_ids', {})
     unevidenced = [f"{key}: not generated; the planner's answer gave no usable capture evidence for it"
                    for keys in ungenerated.values() for key in keys]
-    entries = [{**row, 'gap_ids': [key for key in dict.fromkeys(row['gap_ids'])
-                 if key not in audit['physical_opening_gap_ids'].get(row['camera_id'], [])
-                 and key not in ungenerated.get(row['camera_id'], [])]}
-               for row in entries]
-    entries = [row for row in entries if row['gap_ids']]
+    regions = {row['camera_id']: {gap['gap_id'] for gap in row['gaps']} for row in gaps['views']}
+    trimmed = []
+    for row in entries:
+        named = list(dict.fromkeys(row['gap_ids']))
+        kept = [key for key in named
+                if key not in audit['physical_opening_gap_ids'].get(row['camera_id'], [])
+                and key not in ungenerated.get(row['camera_id'], [])]
+        if kept != named and not set(kept) & regions.get(row['camera_id'], set()):
+            # Only a source-lineage reference is left, which names no region of this view
+            # (``target_gap_ids``): nothing is left to fill here, as when every gap is dropped.
+            if kept:
+                unevidenced.append(f"{row['camera_id']}: not generated; only source-lineage references "
+                                   "were left once its own gaps were dropped")
+            kept = []
+        trimmed.append({**row, 'gap_ids': kept})
+    entries = [row for row in trimmed if row['gap_ids']]
     ids = [row['camera_id'] for row in entries]
     selected = [by_id[key] for key in ids]
     reasons = {row['camera_id']: row['reason'] for row in entries}
     if not selected:
+        # The reason follows every unusable answer part, including a view naming no gap and rows for gaps
+        # nobody asked for, so coverage refinement never reads a dropped answer as sufficient coverage.
+        unusable = bool(audit.get('unusable_gap_evidence')) or bool(unevidenced)
         report = {'status': 'passed', 'generation_result_digest': audit['digest'],
                   'generated_roots': [], 'generated_frame_ids': [], 'planner': planned,
                   'preservation_paths': [str(root / 'source-evidence.json')],
                   'review': {'status': 'not_required', 'reason': (
-                      'source_evidence_unusable_for_every_remaining_gap' if unevidenced
+                      'source_evidence_unusable_for_every_remaining_gap' if unusable
                       else 'source_review_found_physical_openings')},
                   **({'remaining_unknowns': [*proposal['remaining_unknowns'], *unevidenced]}
-                     if unevidenced else {}),
+                     if unusable else {}),
                   'source_evidence': audit, 'new_atlas_generation_calls': 0,
                   'generated_geometry_ready': True, 'whole_scene_complete': False,
                   'claim_ceiling': 'development_only', **binding}

@@ -226,8 +226,12 @@ def source_actions(entries, gallery):
             if problem:
                 ungenerated.setdefault(camera, []).append(gap)
                 unusable.append({"camera_id": camera, "gap_id": gap, "reason": problem, "rows": matching})
+        # In the planner's own row order, as before: an answer that passed keeps its exact record and digest
+        # (a source recovery's folder and a no-generation result are named by that digest).
+        for row in rows:
+            if row["gap_id"] not in requested or row["gap_id"] in ungenerated.get(camera, []):
                 continue
-            row = matching[0]
+            gap = row["gap_id"]
             ids = set(row["source_frame_ids"])
             visibility = row["visibility"]
             if visibility == "observed_elsewhere_in_capture":
