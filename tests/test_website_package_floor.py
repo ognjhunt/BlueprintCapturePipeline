@@ -497,3 +497,80 @@ def test_a_floor_the_pass_cannot_decide_is_named_in_its_journal_and_counted(tmp_
     floor.age(60)  # within the day: still waiting, a bare count, nothing named
     assert sim.tick(floor.job.capture.parents[4], **options) == {"no_source": 1}
     assert caplog.records == []
+
+
+# --- a half that times out never costs the job its floor -----------------------------------------------------------
+
+def _half_times_out(monkeypatch) -> list[str]:
+    builds: list[str] = []
+    real = sim.build_package
+
+    def build(source, *a, **k):
+        builds.append(source["source_kind"])
+        if source["source_kind"] == "half":
+            raise ValueError(sim.BUILD_TIMED_OUT)
+        return real(source, *a, **k)
+    monkeypatch.setattr(sim, "build_package", build)
+    return builds
+
+
+def test_an_old_rule_half_refusal_whose_rebuild_times_out_keeps_the_floor(tmp_path, monkeypatch):
+    floor = Floor(tmp_path, monkeypatch, half=True)
+    floor.started(reason="spend_cap_reached")
+    real = sim.build_package
+    monkeypatch.setattr(sim, "build_package", lambda source, *a, **k: (_ for _ in ()).throw(ValueError(sim.OVER_CAP))
+                        if source["source_kind"] == "half" else real(source, *a, **k))
+    world = World(floor.job)
+    assert world.publish() == {"status": "over_size_cap"}
+    assert world.publish()["status"] == "published" and _manifest(floor.job)["source_kind"] == "floor"
+    # As the earlier builder left it: the half refused for its files' size, the floor archived but not delivered.
+    manifest = _manifest(floor.job)
+    manifest["refused_half"].pop("size_rule")
+    manifest["delivered"] = None
+    _write(floor.job.capture.joinpath(*sim.DIRECTORY) / sim.MANIFEST_FILE, manifest)
+    floor_digest = manifest["package"]["digest"]
+    builds = _half_times_out(monkeypatch)
+    assert world.publish() == {"status": "build_timed_out"} and builds == ["half"]
+    kept = _manifest(floor.job)
+    assert kept["source_kind"] == "floor" and kept["package"]["digest"] == floor_digest
+    assert kept["refused_half"]["reason"] == sim.BUILD_TIMED_OUT and kept["refused_half"]["size_rule"] == sim.SIZE_RULE
+    assert _package(floor.job).is_file() and world.retracted == [] and not kept["archive"].get("retraction")
+    assert world.publish()["status"] == "published" and builds == ["half"]  # the floor goes out; no half build
+    assert _at(world, 7 * 3600)["status"] == "current" and builds == ["half"]
+
+
+def test_a_large_half_that_times_out_ends_on_the_floor(tmp_path, monkeypatch):
+    from tests.test_website_company_simulation import _large_look
+    floor = Floor(tmp_path, monkeypatch, job=_large_look(tmp_path / "download"), half=True)
+    floor.started(reason="spend_cap_reached")
+    half = sim.simulation_source(floor.job.capture, queue_root=floor.job.queue)
+    large = sum(row["size_bytes"] for row in half["files"].values()) - 1  # its files are over the limit given
+    builds = _half_times_out(monkeypatch)
+    world = World(floor.job)
+    assert world.publish(max_bytes=large) == {"status": "build_timed_out"}
+    assert _manifest(floor.job)["refused_half"]["reason"] == sim.BUILD_TIMED_OUT
+    assert world.publish(max_bytes=large)["status"] == "published" and _manifest(floor.job)["source_kind"] == "floor"
+    later = sim.publish_company_simulation(floor.job.capture, now=lambda: NOW + 7 * 3600, max_bytes=large,
+                                           check_rights=world.check_rights, archive=world.archive,
+                                           retract=world.retract, deliver=world.deliver, queue_root=floor.job.queue)
+    assert later["status"] == "current" and builds == ["half", "floor"]
+
+
+def test_a_floor_kept_through_a_half_build_is_taken_back_if_the_site_withdraws_meanwhile(tmp_path, monkeypatch):
+    floor = Floor(tmp_path, monkeypatch, half=True)
+    floor.started(reason="spend_cap_reached")
+    builds = _half_times_out(monkeypatch)
+    world = World(floor.job)
+    world.publish()
+    assert world.publish()["status"] == "published"
+    manifest = _manifest(floor.job)
+    manifest["refused_half"]["simulation_revision"] = "sha256:" + "0" * 64  # a new half revision arrived
+    _write(floor.job.capture.joinpath(*sim.DIRECTORY) / sim.MANIFEST_FILE, manifest)
+    real = sim.build_package
+
+    def build_then_withdraw(source, *a, **k):
+        _withdraw(floor.job.capture)
+        return real(source, *a, **k)
+    monkeypatch.setattr(sim, "build_package", build_then_withdraw)
+    assert world.publish() == {"status": "withdrawn"} and len(world.retracted) == 1
+    assert builds == ["half", "floor", "half"] and sim.permission.hidden(_manifest(floor.job)["archive"])

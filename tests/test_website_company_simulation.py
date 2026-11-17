@@ -2219,3 +2219,37 @@ def test_the_limit_is_unchanged_and_a_delivered_package_is_not_rebuilt(job, monk
     _write(job.capture.joinpath(*sim.DIRECTORY) / sim.MANIFEST_FILE, manifest)
     monkeypatch.setattr(sim, "build_package", lambda *a, **k: pytest.fail("rebuilt a delivered package"))
     assert world.publish()["status"] == "current" and len(world.delivered) == 1 and world.retracted == []
+
+
+def test_a_package_without_its_look_says_nothing_of_the_look(tmp_path):
+    job = _large_look(tmp_path)
+    _raw, _whole, bare = _sizes(job, tmp_path / "sizes")
+    source = {**sim.simulation_source(job.capture, queue_root=job.queue), "removed_items": 2,
+              "appearance_quality": "not_passed", "appearance_representation": "particlefield_3d_gaussian_splat"}
+    built = sim.build_package(source, tmp_path / "bare.zip", literals=[], max_bytes=bare + 4096)
+    assert built["look_left_out"] is True
+    with zipfile.ZipFile(tmp_path / "bare.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    assert sim.LOOK_LEFT_OUT in readme and sim.FURNITURE_REMOVED_NO_LOOK.format(count=2) in readme
+    assert sim.APPEARANCE_QUALITY_NOT_PASSED not in readme and "appearance file" not in readme
+    assert "Gaussian" not in readme and "how the site looks" not in readme and "Hidden in scene.usda" not in readme
+
+
+def test_a_timeout_during_the_build_without_the_look_is_recorded_and_waits_its_window(tmp_path, monkeypatch):
+    job = _large_look(tmp_path)
+    _raw, _whole, bare = _sizes(job, tmp_path / "sizes")
+    builds = []
+    real = sim._build_once
+
+    def build(source, *a, **k):
+        builds.append(bool(source.get("look_left_out")))
+        if source.get("look_left_out"):
+            raise ValueError(sim.BUILD_TIMED_OUT)
+        return real(source, *a, **k)
+    monkeypatch.setattr(sim, "_build_once", build)
+    world = World(job)
+    assert world.publish(max_bytes=bare) == {"status": "build_timed_out"} and builds == [False, True]
+    manifest = _manifest(job)
+    assert manifest["refused"] == sim.BUILD_TIMED_OUT and manifest["refused_half"]["reason"] == sim.BUILD_TIMED_OUT
+    assert world.publish(max_bytes=bare) == {"status": "build_timed_out"} and builds == [False, True]
+    assert world.delivered == [] and not _package(job).exists()

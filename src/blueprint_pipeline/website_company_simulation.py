@@ -145,6 +145,8 @@ ARTICULATED_STATIC_SCHEMA = "task_evaluation_articulated_replacement_static_qual
 #: ``{count}`` movable items the site agreed to move out of the arm's way (``robot_access_removal``): a count only.
 FURNITURE_REMOVED = ("{count} movable item(s) the site agreed to move are not in the collision file; they still "
                      "appear in the appearance file.")
+#: The same, for a package built without the appearance file (``LOOK_LEFT_OUT``).
+FURNITURE_REMOVED_NO_LOOK = "{count} movable item(s) the site agreed to move are not in the collision file."
 #: The look file failed its quality gate (``team_scene_robot_absent.APPEARANCE_QUALITY``) and ships as it is.
 APPEARANCE_QUALITY_NOT_PASSED = ("The appearance file did not pass Blueprint's image quality check; it is included "
                                  "as it is.")
@@ -1016,7 +1018,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
 
     notes = [*([LOOK_LEFT_OUT] if source.get("look_left_out") else []),
              *(PHYSICS_CHECK_WORDS.get(source.get("physics_check")) or ()),
-             *([FURNITURE_REMOVED.format(count=source["removed_items"])] if source.get("removed_items") else []),
+             *([(FURNITURE_REMOVED_NO_LOOK if source.get("look_left_out") else FURNITURE_REMOVED).format(
+                 count=source["removed_items"])] if source.get("removed_items") else []),
              *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
                if source.get("support_not_held") and not withheld else []),
@@ -1046,7 +1049,9 @@ def without_look(source: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     kept = {prim: ({**row, "placement": {**row["placement"], "visible": True}} if row["role"] == "scene_collision"
                    else row) for prim, row in files.items() if row["role"] != "scene_appearance"}
-    return {**source, "files": kept, "look_left_out": True}
+    # What the README would say of the appearance file goes with it: its quality note and its representation.
+    return {**{key: value for key, value in source.items()
+               if key not in ("appearance_quality", "appearance_representation")}, "files": kept, "look_left_out": True}
 
 
 def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tuple[str, str]],
@@ -1406,7 +1411,11 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         built = manifest.get("package") or {}
         needs_build = (manifest.get("simulation_revision") != revision or package_path.is_symlink()
                        or not package_path.is_file() or _sha256_file(package_path) != built.get("digest"))
-        if needs_build and manifest.get("archive") and not permission.take_back(manifest, manifest_path, retract):
+        # A floor that stands for a half is kept until the half is built and has passed its checks: a half that
+        # gives way again (shape, size, time) leaves it where it is.
+        deferred = needs_build and source["source_kind"] == "half" and _floor_package(manifest)
+        if (needs_build and not deferred and manifest.get("archive")
+                and not permission.take_back(manifest, manifest_path, retract)):
             return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
     base = {"schema_version": MANIFEST_SCHEMA, **identity, "simulation_revision": revision,
             "source": {"plan_digest": source.get("plan_digest"),
@@ -1432,41 +1441,57 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                 candidate.unlink(missing_ok=True)
                 raise
             outcome = {**base, "package": None, "refused": str(error), "refused_at_epoch": int(now())}
-            shape = str(error) == OVER_CAP
+            shape = True
         if outcome is not None and shape and source["source_kind"] == "half":
-            # Its own scene, or its size: the room floor ships instead until a new half revision arrives.
+            # Its own scene, its size or its build time: the room floor ships instead until a new half revision
+            # arrives (a timed-out half is not built again every window: two full builds each time).
             outcome["refused_half"] = {"simulation_revision": revision, "reason": outcome["refused"],
                                        "size_rule": SIZE_RULE}
+
+    def stop(result: dict[str, Any]) -> dict[str, Any]:
+        # A floor kept through the build is taken back whenever the build itself would have been stopped.
+        if deferred:
+            current = _read(manifest_path)
+            if current and not permission.take_back(current, manifest_path, retract):
+                return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
+        return result
 
     try:
         with package_lock(root):
             if capture_withdrawn(root):
-                return {"status": "withdrawn"}
+                return stop({"status": "withdrawn"})
             # The whole decision again before any upload: a takedown, a recorded "no" or removal from Blueprint's
             # list that landed while the package was being built stops it here.
             if not permission.delivery_gate_allows(root, surface="website_company_simulation"):
-                return {"status": "refused", "reason": "website_company_simulation_takedown_gate_closed"}
+                return stop({"status": "refused", "reason": "website_company_simulation_takedown_gate_closed"})
             if not permission.basis_holds(root, identity["capture_id"], basis["permission_basis"],
                                           upload_sha256(root), now(), _owned_list()):
                 recorded = permission.read_check(root)
                 if recorded.get("outcome") == "rights_refused":
-                    return {"status": "refused",
-                            "reason": _own_reason(recorded.get("reason") or permission.RIGHTS_REFUSED)}
-                return {"status": "not_permitted"}
+                    return stop({"status": "refused",
+                                 "reason": _own_reason(recorded.get("reason") or permission.RIGHTS_REFUSED)})
+                return stop({"status": "not_permitted"})
             if needs_build:
                 fresh = package_source(root, queue_root=queue_root, manifest=manifest, max_bytes=max_bytes, now=now())
                 if fresh is None or simulation_revision(fresh, max_bytes=max_bytes) != revision:
                     return {"status": "failed", "reason": "website_company_simulation_changed_during_build"}
+                current = _read(manifest_path) if deferred else {}
                 if outcome is not None:
-                    package_path.unlink(missing_ok=True)
-                    write_json(manifest_path, outcome)
                     logger.warning("website_company_simulation_not_built capture=%s reason=%s",
                                    identity["capture_id"], outcome["refused"])
-                    if outcome["refused"] == OVER_CAP:
-                        return {"status": "over_size_cap"}
-                    if outcome["refused"] == BUILD_TIMED_OUT:
-                        return {"status": "build_timed_out"}
-                    return {"status": "refused", "reason": outcome["refused"], "detail": outcome["detail"]}
+                    if (deferred and outcome.get("refused_half")
+                            and current.get("simulation_revision") == manifest.get("simulation_revision")
+                            and not permission.hidden(current.get("archive") or {})):
+                        # The half gave way again: the floor stays, and records the half it stands for.
+                        write_json(manifest_path, {**current, "refused_half": outcome["refused_half"]})
+                        return _not_built(outcome)
+                    if deferred and not permission.take_back(current, manifest_path, retract):
+                        return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
+                    package_path.unlink(missing_ok=True)
+                    write_json(manifest_path, outcome)
+                    return _not_built(outcome)
+                if deferred and not permission.take_back(current, manifest_path, retract):
+                    return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
                 os.replace(candidate, package_path)
                 manifest = {**base, "package": {**built, "path": PACKAGE_FILE},
                             **({"refused_by_webapp": manifest["refused_by_webapp"]}
@@ -1475,6 +1500,20 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                                   revision, check, now, archive, retract, deliver)
     finally:
         candidate.unlink(missing_ok=True)
+
+
+def _floor_package(manifest: Mapping[str, Any]) -> bool:
+    """The manifest holds a built floor (a room standing in for a half the builder could not ship)."""
+    return bool(manifest.get("package")) and (manifest.get("source_kind") == "floor"
+                                              or bool(manifest.get("floor_reason")))
+
+
+def _not_built(outcome: Mapping[str, Any]) -> dict[str, Any]:
+    if outcome["refused"] == OVER_CAP:
+        return {"status": "over_size_cap"}
+    if outcome["refused"] == BUILD_TIMED_OUT:
+        return {"status": "build_timed_out"}
+    return {"status": "refused", "reason": outcome["refused"], "detail": outcome["detail"]}
 
 
 def _publish_built(root, identity, manifest, manifest_path, package_path, basis, upload, built, revision, check,
