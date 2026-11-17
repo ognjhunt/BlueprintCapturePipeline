@@ -15,7 +15,7 @@
   "blocks": {
     "SHARED_PLATFORM_CONTEXT": {
       "file": "PLATFORM_CONTEXT.md",
-      "canonical_sha256": "79b1136076f6376ec9cc049360b3bc8efebd4f1298b1d04700337f942c5770c6"
+      "canonical_sha256": "6da7ab29d63f815c3a7dce5e6ed4aba15adf662ceb64167e040325086aef732a"
     },
     "SHARED_VISION": {
       "file": "VISION.md",

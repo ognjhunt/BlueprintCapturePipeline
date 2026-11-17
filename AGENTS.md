@@ -49,8 +49,9 @@ Shared doctrine is generated from `doctrine/` (see `doctrine/README.md`).
 Fail closed only for:
 
 - **Privacy:** the site's consent is respected, including its withdrawal.
-  Faces are blurred in the frames sent to World Labs; people in captures are
-  not otherwise screened or blurred.
+  Faces are blurred in the frames sent to World Labs only for a job started
+  under a Privacy Policy before 2026-11-17.1; footage of a later job is not
+  blurred, and people in captures are not otherwise screened or blurred.
 - **Rights:** capture permissions, revocation, and dataset or model licenses.
 - **Money:** the account-wide monthly limit (USD 300, owner decisions
   2026-11-07 and 2026-11-12), the per-site budget for screening candidates, the Google Cloud
