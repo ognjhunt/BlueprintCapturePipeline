@@ -428,6 +428,13 @@ def package_source(root: Path, *, queue_root: Path | None = None, manifest: Mapp
     refused = manifest.get("refused_half") if isinstance(manifest.get("refused_half"), Mapping) else {}
     if refused.get("reason") == OVER_CAP and refused.get("size_rule") != SIZE_RULE and not manifest.get("delivered"):
         refused = {}  # refused for size under the old rule, and its floor not delivered: the half is built once more
+    at = refused.get("refused_at_epoch")
+    if refused.get("reason") == BUILD_TIMED_OUT and not (
+            isinstance(at, int) and 0 <= (time.time() if now is None else now) - at
+            < permission.LIVE_STATEMENT_RECHECK_SECONDS):
+        # A timeout is about the host that day, not the files: the floor stands in for the half within the window,
+        # and the half is tried again once a window (the window ``_publish`` gives every timed-out build).
+        refused = {}
     if source is not None and refused.get("simulation_revision") != simulation_revision(source, max_bytes=max_bytes):
         return {**source, "source_kind": "half"}
     if _delivered_half(manifest):
@@ -1444,10 +1451,10 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             outcome = {**base, "package": None, "refused": str(error), "refused_at_epoch": int(now())}
             shape = True
         if outcome is not None and shape and source["source_kind"] == "half":
-            # Its own scene, its size or its build time: the room floor ships instead until a new half revision
-            # arrives (a timed-out half is not built again every window: two full builds each time).
+            # Its own scene or its size: the room floor ships instead until a new half revision arrives. Its build
+            # time: the floor ships meanwhile, and the half is tried again once a window (``package_source``).
             outcome["refused_half"] = {"simulation_revision": revision, "reason": outcome["refused"],
-                                       "size_rule": SIZE_RULE}
+                                       "size_rule": SIZE_RULE, "refused_at_epoch": outcome["refused_at_epoch"]}
 
     def stop(result: dict[str, Any]) -> dict[str, Any]:
         # A floor kept through the build is taken back whenever the build itself would have been stopped.
