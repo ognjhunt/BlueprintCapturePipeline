@@ -456,3 +456,177 @@ def test_recovery_resume_keeps_retained_blurred_views_and_refuses_unblurred_ones
 def _recover_inputs_unchanged(args):
     inputs = json.loads((args["root"] / "recovery_inputs.json").read_text())
     return inputs["binding"]["privacy_screen"] == privacy.no_blur_identity(LISTED[0])
+
+
+# The Atlas authority: on disk before the first frame leaves ------------------------------------
+
+def _authority(pipeline, version="absent", *, seal=True, **changes):
+    """A website Atlas authority shaped as the test job's, sealed as the website seals it (RFC 8785)."""
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    sha = "sha256:" + "d" * 64
+    authority = {
+        "schema_version": "website_atlas_authorization.v2", "request_id": "job",
+        "capture_id": pipeline.parent.name, "source_video_digest": "sha256:" + "a" * 64,
+        "source_video_identity": {"kind": "website_browser_video", "object_name": "o", "generation": "1",
+                                  "crc32c": "x"},
+        "capture_rights_digest": sha, "policy_digest": sha, "provider_terms_reference": sha,
+        "planner": {"provider": "openai", "provider_terms_reference": sha, "private_processing_authorized": True,
+                    "provider_training_authorized": False, "approval_reference": "policy"},
+        "accepted_by": "owner", "approval_reference": "policy", "grant_basis": "automatic_consented_preview",
+        "private_processing_authorized": True, "provider_training_authorized": False,
+        "provider_retention": "account_does_not_retain", "maximum_cost_usd": 40.5, "maximum_requests": 32,
+        "created_at_epoch": 1794936171, "expires_at_epoch": 1795540971, "claim_scope": "development_only"}
+    if version != "absent":
+        authority["privacy_policy_version"] = version
+    authority.update(changes)
+    if seal:
+        authority["authorization_digest"] = cross_runtime_canonical_digest(
+            authority, digest_field="authorization_digest")
+    configuration = {"schema_version": "website_atlas_configuration.v1", "source_video_digest": "sha256:" + "a" * 64,
+                     "task_context_digest": "sha256:" + "c" * 64, "dispatch_authorized": False,
+                     "policy": {"maximum_review_cost_usd": 1}, "authority": authority}
+    path = pipeline / privacy.CONFIGURATION_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(configuration))
+    return configuration
+
+
+@pytest.mark.parametrize("version", LISTED)
+def test_the_authority_alone_decides_before_the_grant_exists(tmp_path, version):
+    pipeline = _pipeline(tmp_path)
+    _authority(pipeline, version)
+    assert privacy.face_blur_required(pipeline / "atlas/pose") == (False, privacy.no_blur_identity(version))
+
+
+@pytest.mark.parametrize("authority,grant,skips", [
+    (LISTED[0], LISTED[0], True),          # both name the same listed version
+    ("absent", LISTED[0], True),           # an authority issued before the field: the grant decides, as before
+    (LISTED[0], "absent", True),           # a grant without the field does not contradict
+    (LISTED[0], LISTED[1], False),         # disagreement blurs
+    (LISTED[0], "2026-11-13.1", False),
+    ("2026-11-13.1", LISTED[0], False),
+    ("2026-11-13.1", "absent", False),
+    ("2026-11-25.1", "absent", False),
+    ("absent", "absent", False),
+])
+def test_authority_and_grant_together(tmp_path, authority, grant, skips):
+    pipeline = _pipeline(tmp_path)
+    _authority(pipeline, authority)
+    _grant(pipeline, grant)
+    assert privacy.face_blur_required(pipeline / "atlas")[0] is (not skips)
+
+
+@pytest.mark.parametrize("case", ["bad_digest", "unsealed", "canonical_python_digest_only", "schema", "configuration_schema",
+                                  "owned_configuration", "other_capture", "other_video", "no_request",
+                                  "malformed_short", "malformed_number", "malformed_empty", "malformed_spaced",
+                                  "authority_not_object", "not_json", "symlink", "directory"])
+def test_an_unverified_authority_blurs_even_when_the_grant_lists_a_version(tmp_path, case):
+    pipeline = _pipeline(tmp_path)
+    _grant(pipeline, LISTED[0])
+    path = pipeline / privacy.CONFIGURATION_FILE
+    if case == "bad_digest":
+        configuration = _authority(pipeline, LISTED[0])
+        configuration["authority"]["maximum_cost_usd"] = 99
+        path.write_text(json.dumps(configuration))
+    elif case == "unsealed":
+        _authority(pipeline, LISTED[0], seal=False)
+    elif case == "canonical_python_digest_only":
+        configuration = _authority(pipeline, LISTED[0], seal=False, maximum_cost_usd=40.0)
+        configuration["authority"]["authorization_digest"] = canonical_digest(
+            configuration["authority"], digest_field="authorization_digest")
+        path.write_text(json.dumps(configuration))
+    elif case == "schema":
+        _authority(pipeline, LISTED[0], schema_version="website_atlas_authorization.v3")
+    elif case == "configuration_schema":
+        configuration = _authority(pipeline, LISTED[0])
+        configuration["schema_version"] = "owned_capture_atlas_configuration.v1"
+        path.write_text(json.dumps(configuration))
+    elif case == "owned_configuration":
+        _authority(pipeline, LISTED[0], schema_version="owned_capture_atlas_authorization.v1")
+    elif case == "other_capture":
+        _authority(pipeline, LISTED[0], capture_id="walkthrough-other")
+    elif case == "other_video":
+        _authority(pipeline, LISTED[0], source_video_digest="sha256:" + "b" * 64)
+    elif case == "no_request":
+        _authority(pipeline, LISTED[0], request_id="")
+    elif case.startswith("malformed"):
+        value = {"malformed_short": "2026-11-17", "malformed_number": 20261117, "malformed_empty": "",
+                 "malformed_spaced": "2026-11-17.1 "}[case]
+        _authority(pipeline, value)
+    elif case == "authority_not_object":
+        configuration = _authority(pipeline, LISTED[0])
+        configuration["authority"] = [configuration["authority"]]
+        path.write_text(json.dumps(configuration))
+    elif case == "not_json":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{")
+    elif case == "symlink":
+        elsewhere = _pipeline(tmp_path / "elsewhere")
+        _authority(elsewhere, LISTED[0], capture_id="walkthrough-job")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(elsewhere / privacy.CONFIGURATION_FILE)
+    elif case == "directory":
+        path.mkdir(parents=True)
+    assert privacy.face_blur_required(pipeline / "atlas") == (True, privacy.screen_identity())
+
+
+def test_an_authority_without_the_field_verifies_and_one_with_it_verifies(tmp_path):
+    pipeline = _pipeline(tmp_path)
+    without = _authority(pipeline)
+    assert "privacy_policy_version" not in without["authority"]
+    assert privacy.atlas_authority_privacy_version(without, capture_id="walkthrough-job") is None
+    with_field = _authority(pipeline, "2026-11-13.1")
+    assert privacy.atlas_authority_privacy_version(with_field, capture_id="walkthrough-job") == "2026-11-13.1"
+    # The field is inside the sealed bytes: the two authorities differ only by it and by their digests.
+    assert {k: v for k, v in with_field["authority"].items() if k not in {"privacy_policy_version",
+            "authorization_digest"}} == {k: v for k, v in without["authority"].items() if k != "authorization_digest"}
+    assert with_field["authority"]["authorization_digest"] != without["authority"]["authorization_digest"]
+
+
+def _configuration_pair(tmp_path, stored_version, current_version):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline_module
+    pipeline = _pipeline(tmp_path)
+    stored = _authority(pipeline, stored_version)
+    current = _authority(pipeline, current_version)
+    return pipeline_module, stored, current
+
+
+@pytest.mark.parametrize("version", ["absent", LISTED[0]])
+def test_a_resumed_job_keeps_its_authority_with_or_without_the_field(tmp_path, version):
+    module, stored, current = _configuration_pair(tmp_path, version, version)
+    assert module.resumed_policy(stored, current) == {"policy": current["policy"]}
+    # A raised limit is still accepted with the field present, as on main.
+    raised = deepcopy(current)
+    raised["authority"]["maximum_cost_usd"] = 60
+    assert module.resumed_policy(stored, raised) == {"policy": raised["policy"]}
+
+
+@pytest.mark.parametrize("stored,current", [("absent", LISTED[0]), (LISTED[0], "absent"), (LISTED[0], LISTED[1])])
+def test_a_version_added_to_or_changed_in_an_existing_authority_is_refused_on_resume(tmp_path, stored, current):
+    module, stored_configuration, current_configuration = _configuration_pair(tmp_path, stored, current)
+    with pytest.raises(ValueError, match="atlas_runtime_authority_or_policy_changed"):
+        module.resumed_policy(stored_configuration, current_configuration)
+
+
+@pytest.mark.parametrize("version,blurred", [*[(v, False) for v in LISTED], ("2026-11-13.1", True),
+                                              ("absent", True), ("2026-11-25.1", True)])
+def test_the_real_order_configuration_present_grant_absent(video_job, monkeypatch, version, blurred):
+    """As on the host (2026-11-17 test job): configuration.json before the first frame, the grant ~50 min later."""
+    pipeline, path, review, frames, output, calls = video_job
+    _authority(pipeline, version)
+    assert not (pipeline / privacy.GRANT_FILE).exists()
+    first = video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+    views = _views(output)
+    record = json.loads((output / video.GEOMETRY_INPUTS_FILE).read_text())["binding"]["privacy_screen"]
+    if blurred:
+        assert len(calls) == 3 and all((view == 0).all() for view in views.values())
+        assert record == {**privacy.screen_identity(), "blurred_faces_by_frame": {"0": 1, "1": 1, "2": 1}}
+    else:
+        assert calls == []
+        for row in frames:
+            assert np.array_equal(views[row["frame_id"]], np.asarray(Image.open(row["source_image_path"])))
+        assert record == privacy.no_blur_identity(version)
+    # The grant arrives later carrying the same version: the retained inputs are reused unchanged.
+    _grant(pipeline, version)
+    _no_rebuild(monkeypatch)
+    assert video.prepare_video_inputs(survey_path=path, review=review, output_root=output) == first

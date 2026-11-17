@@ -11,13 +11,15 @@ Owner decision 2026-11-17: the Privacy Policy and Terms versions published that
 day no longer promise face blurring. Footage a site sent under such a version is
 not blurred; footage sent under any earlier version is still blurred whenever it
 is processed. ``face_blur_required`` is the one place that decides, and it
-answers "not required" only for a sealed website grant naming a version in
-``NO_FACE_BLUR_PRIVACY_VERSIONS``; every other case blurs.
+answers "not required" only when the capture's sealed Atlas authority or website
+grant names a version in ``NO_FACE_BLUR_PRIVACY_VERSIONS`` (and the other does not
+disagree); every other case blurs.
 """
 from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -41,7 +43,14 @@ NO_FACE_BLUR_PRIVACY_VERSIONS = frozenset({"2026-11-17.1", "2026-11-18.1"})
 NO_FACE_BLUR_METHOD = "no_face_blur"
 #: The grant the capture's delivery retained beside its pipeline (``website_task_evidence``).
 GRANT_FILE = "website_scene_sponsorship.json"
+#: The room step's configuration, fetched from the website's signed ``atlas-configuration``
+#: read at the start of the job and written before any frame is prepared.
+CONFIGURATION_FILE = "atlas/configuration.json"
+ATLAS_AUTHORITY_SCHEMAS = frozenset({"website_atlas_authorization.v1", "website_atlas_authorization.v2"})
+#: The website's Privacy version format (``server/agents/provider-privacy.ts``), e.g. ``2026-11-17.1``.
+PRIVACY_VERSION_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\.[0-9]{1,4}")
 _MAX_GRANT_BYTES = 64 * 1024
+_MAX_CONFIGURATION_BYTES = 1024 * 1024
 
 
 def screen_identity() -> dict:
@@ -54,8 +63,75 @@ def no_blur_identity(version: str) -> dict:
     return {"method": NO_FACE_BLUR_METHOD, "privacy_policy_version": version}
 
 
+class _Doubt(Exception):
+    """A record is present but cannot be trusted: blur."""
+
+
+def _record(path: Path, limit: int) -> dict | None:
+    """The JSON object at ``path``; None when absent; ``_Doubt`` when present but not a plain small object."""
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
+        raise _Doubt()
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise _Doubt()
+    return value
+
+
+def _version_field(record: Mapping[str, Any]) -> str | None:
+    if "privacy_policy_version" not in record:
+        return None
+    version = record["privacy_policy_version"]
+    if not isinstance(version, str) or PRIVACY_VERSION_PATTERN.fullmatch(version) is None:
+        raise _Doubt()
+    return version
+
+
+def atlas_authority_privacy_version(configuration: Mapping[str, Any], *, capture_id: str) -> str | None:
+    """The ``privacy_policy_version`` the website sealed into this capture's Atlas authority, or None.
+
+    The authority is verified as the website seals it: ``authorization_digest`` is the RFC 8785
+    (``crossRuntimeDigest``) SHA-256 of the whole ``authority`` object without that one field, so
+    an optional ``privacy_policy_version`` beside the other fields is covered by it. An authority
+    without the field verifies exactly as before and names no version. Raises ``_Doubt`` on any
+    failed check, including a field that is not a version string.
+    """
+    from .decision_evidence_contracts import cross_runtime_canonical_digest
+    authority = configuration.get("authority")
+    if (configuration.get("schema_version") != "website_atlas_configuration.v1"
+            or not isinstance(authority, dict)
+            or authority.get("schema_version") not in ATLAS_AUTHORITY_SCHEMAS
+            or not isinstance(authority.get("authorization_digest"), str)
+            or authority["authorization_digest"]
+            != cross_runtime_canonical_digest(authority, digest_field="authorization_digest")
+            or not isinstance(authority.get("request_id"), str) or not authority["request_id"].strip()
+            or authority.get("capture_id") != capture_id
+            or authority.get("source_video_digest") != configuration.get("source_video_digest")):
+        raise _Doubt()
+    return _version_field(authority)
+
+
+def _grant_privacy_version(grant: Mapping[str, Any], *, capture_id: str, scene_id: str) -> str | None:
+    from .decision_evidence_contracts import canonical_digest
+    if (grant.get("schema_version") != "website_scene_sponsorship.v1"
+            or grant.get("sponsor") != "blueprint"
+            or grant.get("purpose") != "scene_preparation"
+            or not isinstance(grant.get("authority_digest"), str)
+            or grant["authority_digest"] != canonical_digest(grant, digest_field="authority_digest")
+            or not isinstance(grant.get("request_id"), str) or not grant["request_id"].strip()
+            or grant.get("capture_id") != capture_id
+            or grant.get("scene_id") != scene_id):
+        raise _Doubt()
+    return _version_field(grant)
+
+
 def _listed_version(output_root: Path) -> str | None:
-    """The grant's Privacy version when it is sealed, this capture's own, and listed; else None."""
+    """The capture's Privacy version when its sealed records name a listed one and do not disagree; else None.
+
+    The Atlas authority is read first: it is on disk before the first frame is prepared. The
+    grant is often written later (a browser delivery, the preview lane), and is read as well.
+    """
     root = Path(output_root).resolve()
     pipeline = next((path for path in (root, *root.parents) if path.name == "pipeline"), None)
     if pipeline is None:
@@ -63,34 +139,32 @@ def _listed_version(output_root: Path) -> str | None:
     capture = pipeline.parent
     if capture.parent.name != "captures":
         return None
-    path = pipeline / GRANT_FILE
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_GRANT_BYTES:
+    try:
+        configuration = _record(pipeline / CONFIGURATION_FILE, _MAX_CONFIGURATION_BYTES)
+        grant = _record(pipeline / GRANT_FILE, _MAX_GRANT_BYTES)
+        from_authority = (None if configuration is None
+                          else atlas_authority_privacy_version(configuration, capture_id=capture.name))
+        from_grant = (None if grant is None else _grant_privacy_version(
+            grant, capture_id=capture.name, scene_id=capture.parent.parent.name))
+    except _Doubt:
         return None
-    grant = json.loads(path.read_text(encoding="utf-8"))
-    from .decision_evidence_contracts import canonical_digest
-    if (not isinstance(grant, dict)
-            or grant.get("schema_version") != "website_scene_sponsorship.v1"
-            or grant.get("sponsor") != "blueprint"
-            or grant.get("purpose") != "scene_preparation"
-            or not isinstance(grant.get("authority_digest"), str)
-            or grant["authority_digest"] != canonical_digest(grant, digest_field="authority_digest")
-            or not isinstance(grant.get("request_id"), str) or not grant["request_id"].strip()
-            or grant.get("capture_id") != capture.name
-            or grant.get("scene_id") != capture.parent.parent.name):
+    if from_authority is not None and from_grant is not None and from_authority != from_grant:
         return None
-    version = grant.get("privacy_policy_version")
-    return version if isinstance(version, str) and version in NO_FACE_BLUR_PRIVACY_VERSIONS else None
+    version = from_authority if from_authority is not None else from_grant
+    return version if version in NO_FACE_BLUR_PRIVACY_VERSIONS else None
 
 
 def face_blur_required(output_root: Path) -> tuple[bool, dict]:
     """Whether frames prepared under ``output_root`` must be face-blurred, and the identity to record.
 
-    Not required only when the capture's retained website grant (``<capture>/pipeline/
-    website_scene_sponsorship.json``, the nearest ``pipeline`` above the root) is sealed by its
-    ``authority_digest``, has the grant's shape, names this capture and scene, and carries a
-    ``privacy_policy_version`` in ``NO_FACE_BLUR_PRIVACY_VERSIONS``. No grant, an unreadable or
-    malformed one, a failed digest, a missing, unknown, earlier or unlisted later version, a
-    capture that is not a website capture, or any error while deciding: required.
+    The capture is the one whose ``pipeline`` directory is nearest above the root. Its version is
+    read from the website's sealed Atlas authority (``pipeline/atlas/configuration.json``) and then
+    from its retained grant (``pipeline/website_scene_sponsorship.json``). Not required only when a
+    version comes from one of them, the other does not name a different one, and it is in
+    ``NO_FACE_BLUR_PRIVACY_VERSIONS``. Required for: neither record; a present record that is not
+    a small JSON object, fails its digest or shape, or names another capture or scene; a version
+    that is malformed, missing, unknown, earlier, or an unlisted later one; the two disagreeing; a
+    path that is not a website capture; and any error while deciding.
     """
     try:
         version = _listed_version(output_root)
