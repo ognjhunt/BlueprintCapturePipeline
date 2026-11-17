@@ -82,7 +82,8 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
             raise ValueError("atlas_task_source_inputs_changed")
         _bound_frames(retained, root, geometry=False)
         return root, retained
-    blur, identity = screen_for(root)
+    # Added views are screened as the background's were, so one job's views are screened alike.
+    blur, identity = screen_for(root, held)
     rows, faces = [], {}
     # Existing Atlas images are already upright and screened. Normalize only
     # their retained observation copy; the provider image bytes stay identical.

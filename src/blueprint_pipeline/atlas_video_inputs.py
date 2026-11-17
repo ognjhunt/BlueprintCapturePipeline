@@ -532,7 +532,7 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
     The existing producer still verifies any pose result and grants no spending
     authority. Partial handoffs follow the ordinary preparation path.
     """
-    from .atlas_privacy_screen import face_blur_required, screen_identity
+    from .atlas_privacy_screen import face_blur_decision, screen_identity
     from .website_scene_geometry import INPUT_SCHEMA, _bound_frames
     from .website_worldlabs import prepare_atlas_pose_inputs
 
@@ -581,12 +581,12 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
     privacy = (inputs.get("binding") or {}).get("privacy_screen") or {}
     faces = privacy.get("blurred_faces_by_frame")
     # Blurred inputs serve any job; unblurred ones only a job this capture's grant exempts, under the
-    # same version (``face_blur_required``).
+    # same version (``face_blur_decision``).
     blurred_inputs = (type(faces) is dict and set(faces) == set(ids)
                       and all(type(value) is int and value >= 0 for value in faces.values())
                       and {key: value for key, value in privacy.items() if key != "blurred_faces_by_frame"}
                       == screen_identity())
-    required, decided = (True, None) if blurred_inputs else face_blur_required(root)
+    required, decided = (True, None) if blurred_inputs else face_blur_decision(root)
     require(blurred_inputs or (not required and privacy == decided))
     selection_profile = {"minimum_source_frames": minimum_frames} if minimum_frames else {}
     splat_profile = {"splat_frame_target": splat_frame_target} if splat_frame_target else {}

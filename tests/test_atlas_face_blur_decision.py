@@ -111,7 +111,7 @@ def test_an_unverified_or_absent_grant_blurs(tmp_path, case):
     assert privacy.face_blur_required(pipeline / "atlas") == (True, privacy.screen_identity())
 
 
-@pytest.mark.parametrize("layout", ["no_pipeline", "not_under_captures", "nearest_pipeline_has_none"])
+@pytest.mark.parametrize("layout", ["no_pipeline", "not_under_captures", "not_under_scenes", "nearest_pipeline_has_none"])
 def test_a_path_that_is_not_a_website_capture_blurs(tmp_path, layout):
     if layout == "no_pipeline":
         root = tmp_path / "internal/atlas/pose"
@@ -122,6 +122,14 @@ def test_a_path_that_is_not_a_website_capture_blurs(tmp_path, layout):
         pipeline.mkdir(parents=True)
         _grant(pipeline, LISTED[0], scene_id="owned", capture_id="job")
         root = pipeline / "atlas"
+    elif layout == "not_under_scenes":
+        pipeline = tmp_path / "bucket/other/site-job/captures/walkthrough-job/pipeline"
+        pipeline.mkdir(parents=True)
+        _grant(pipeline, LISTED[0])
+        _authority(pipeline, LISTED[0])
+        root = pipeline / "atlas"
+        assert privacy.face_blur_decision(root) == (True, privacy.screen_identity())
+        assert not (pipeline / privacy.DECISION_FILE).exists()  # never sealed
     else:
         pipeline = _pipeline(tmp_path)
         _grant(pipeline, LISTED[0])
@@ -198,7 +206,7 @@ def _views(output):
 
 
 def test_video_inputs_are_blurred_when_required(video_job):
-    pipeline, path, review, frames, output, calls = video_job
+    pipeline, path, review, _, output, calls = video_job
     _grant(pipeline, "2026-11-13.1")
     video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
     assert len(calls) == 3
@@ -223,19 +231,21 @@ def test_video_inputs_go_out_untouched_under_a_listed_version(video_job, version
     assert json.loads((output / "atlas_view_selection.json").read_text())["privacy_screen"] == identity
 
 
-def test_a_missing_detector_stops_only_a_job_that_requires_blurring(video_job, monkeypatch):
+@pytest.mark.parametrize("version,stops", [("2026-11-12.2", True), ("absent", True), (LISTED[0], False)])
+def test_a_missing_detector_stops_only_a_job_that_requires_blurring(tmp_path, monkeypatch, version, stops):
     import cv2
-    pipeline, path, review, _, output, _ = video_job
-    monkeypatch.undo()
+    pipeline = _pipeline(tmp_path)
+    path, review, _ = _survey(tmp_path, pipeline)
     monkeypatch.setattr(video, "_features", lambda *_: None)
     monkeypatch.setattr(video, "select_coverage_views", lambda **_: ([0, 1, 2], []))
     monkeypatch.delattr(cv2, "FaceDetectorYN")
-    _grant(pipeline, "2026-11-12.2")
-    with pytest.raises(ValueError, match="atlas_privacy_screen_unavailable"):
-        video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
-    _grant(pipeline, LISTED[0])
-    result = video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
-    assert result is not None
+    _authority(pipeline, version)
+    output = pipeline / "atlas/pose"
+    if stops:
+        with pytest.raises(ValueError, match="atlas_privacy_screen_unavailable"):
+            video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+    else:
+        assert video.prepare_video_inputs(survey_path=path, review=review, output_root=output) is not None
 
 
 def _no_rebuild(monkeypatch):
@@ -363,15 +373,27 @@ def test_retained_unblurred_task_views_or_background_are_never_reused_by_a_job_t
     _grant(pipeline, "2026-11-13.1")
     with pytest.raises(ValueError, match="atlas_task_source_inputs_changed"):
         source_inputs.task_source_inputs(pose_root, original)
-    # Retained unblurred task views over a blurred parent: refused on their own record.
-    blurred_parent = deepcopy(original)
-    blurred_parent["binding"]["privacy_screen"] = {**privacy.screen_identity(), "blurred_faces_by_frame": {"a": 0}}
+    # Retained unblurred task views over a parent that recorded no screen: refused on their own record.
+    bare_parent = deepcopy(original)
+    bare_parent["binding"].pop("privacy_screen")
     _grant(pipeline, LISTED[0])
-    root, views = source_inputs.task_source_inputs(pose_root, blurred_parent)
+    _, views = source_inputs.task_source_inputs(pose_root, bare_parent)
     assert views["task_view_privacy_screen"] == identity
-    (pipeline / privacy.GRANT_FILE).unlink()
+    _grant(pipeline, "2026-11-13.1")
     with pytest.raises(ValueError, match="atlas_task_source_inputs_changed"):
-        source_inputs.task_source_inputs(pose_root, blurred_parent)
+        source_inputs.task_source_inputs(pose_root, bare_parent)
+
+
+def test_a_blurred_parent_keeps_its_added_task_views_blurred_under_a_listed_version(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_source_pose_inputs as source_inputs
+    blurred = {**privacy.screen_identity(), "blurred_faces_by_frame": {"a": 0}}
+    pipeline, pose_root, original, _ = _task_source_job(tmp_path, monkeypatch, original_privacy=blurred)
+    _grant(pipeline, LISTED[0])
+    calls = []
+    monkeypatch.setattr(privacy, "blur_faces", _blur(calls))
+    root, result = source_inputs.task_source_inputs(pose_root, original)
+    assert calls == [(4, 4)] and (np.asarray(Image.open(root / "views/task.png")) == 0).all()
+    assert result["task_view_privacy_screen"] == {**privacy.screen_identity(), "blurred_faces_by_frame": {"task": 1}}
 
 
 def test_retained_blurred_task_views_are_reused_by_any_job(tmp_path, monkeypatch):
@@ -447,8 +469,9 @@ def test_recovery_resume_keeps_retained_blurred_views_and_refuses_unblurred_ones
     _recover(args2)
     _grant(other, "2026-11-13.1")
     from blueprint_pipeline import atlas_recorded_source_recovery as recovery
-    # The retained unblurred view itself refuses the blurred rebuild, before any record or upload.
-    with pytest.raises(ValueError, match="atlas_completion_preservation_inputs_changed"):
+    # The sealed decision said unblurred: the job stops before any paid step, record or upload.
+    args2["planner_runner"] = lambda **_: pytest.fail("a paid step ran")
+    with pytest.raises(ValueError, match="atlas_privacy_screen_decision_changed"):
         recovery.recover_recorded_sources(**args2)
     assert _recover_inputs_unchanged(args2)
 
@@ -630,3 +653,136 @@ def test_the_real_order_configuration_present_grant_absent(video_job, monkeypatc
     _grant(pipeline, version)
     _no_rebuild(monkeypatch)
     assert video.prepare_video_inputs(survey_path=path, review=review, output_root=output) == first
+
+
+# The sealed decision ------------------------------------------------------------------------------
+
+def _seal(pipeline):
+    return json.loads((pipeline / privacy.DECISION_FILE).read_text())
+
+
+@pytest.mark.parametrize("version,required", [(LISTED[0], False), ("2026-11-13.1", True), ("absent", True)])
+def test_the_first_decision_is_sealed_and_kept(tmp_path, version, required):
+    pipeline = _pipeline(tmp_path)
+    _authority(pipeline, version)
+    first = privacy.face_blur_decision(pipeline / "atlas/pose")
+    assert first[0] is required
+    seal = _seal(pipeline)
+    assert seal["face_blur_required"] is required
+    assert seal["privacy_policy_version"] == (None if required else version)
+    before = (pipeline / privacy.DECISION_FILE).read_bytes()
+    assert privacy.face_blur_decision(pipeline / "atlas/recorded_source_recovery/x") == first
+    assert (pipeline / privacy.DECISION_FILE).read_bytes() == before
+
+
+def test_a_job_sealed_blurred_stays_blurred_when_a_listed_version_appears_later(tmp_path):
+    pipeline = _pipeline(tmp_path)
+    assert privacy.face_blur_decision(pipeline / "atlas")[0] is True  # nothing on disk yet
+    _authority(pipeline, LISTED[0])
+    _grant(pipeline, LISTED[0])
+    assert privacy.face_blur_required(pipeline / "atlas")[0] is False
+    assert privacy.face_blur_decision(pipeline / "atlas") == (True, privacy.screen_identity())
+    assert privacy.unblurred_frames_may_exist(pipeline / "atlas") is False
+
+
+@pytest.mark.parametrize("case", ["flip", "other_version", "tampered", "not_json", "extra_field", "symlink"])
+def test_a_flipped_or_doubtful_seal_blurs_and_counts_as_possibly_unblurred(tmp_path, case):
+    pipeline = _pipeline(tmp_path)
+    _authority(pipeline, LISTED[0])
+    assert privacy.face_blur_decision(pipeline / "atlas")[0] is False
+    path = pipeline / privacy.DECISION_FILE
+    seal = _seal(pipeline)
+    if case == "flip":
+        _authority(pipeline, "2026-11-13.1")
+    elif case == "other_version":
+        _authority(pipeline, LISTED[1])
+    elif case == "tampered":
+        path.write_text(json.dumps({**seal, "privacy_policy_version": LISTED[1]}))
+        _authority(pipeline, LISTED[1])
+    elif case == "not_json":
+        path.write_text("{")
+    elif case == "extra_field":
+        value = {**seal, "note": "x"}
+        value["digest"] = canonical_digest(value, digest_field="digest")
+        path.write_text(json.dumps(value))
+    else:
+        moved = path.with_name("elsewhere.json")
+        path.rename(moved)
+        path.symlink_to(moved)
+    assert privacy.face_blur_decision(pipeline / "atlas") == (True, privacy.screen_identity())
+    assert privacy.unblurred_frames_may_exist(pipeline / "atlas") is True
+
+
+def test_a_forced_flip_stops_recovery_before_it_records_unblurred_background_views_as_blurred(
+        tmp_path, monkeypatch):
+    """The background was prepared unblurred under the sealed decision; then the decision flips."""
+    pipeline, args, _ = _recovery(tmp_path, monkeypatch)
+    _authority(pipeline, LISTED[0])
+    assert privacy.face_blur_decision(pipeline / "atlas/pose") == (False, privacy.no_blur_identity(LISTED[0]))
+    _authority(pipeline, "2026-11-13.1")  # forced: the reviewer could build no real flip
+    monkeypatch.setattr(privacy, "blur_faces", lambda image: pytest.fail("a frame was screened"))
+    args["planner_runner"] = lambda **_: pytest.fail("a paid step ran")
+    from blueprint_pipeline import atlas_recorded_source_recovery as recovery
+    with pytest.raises(ValueError, match="atlas_privacy_screen_decision_changed"):
+        recovery.recover_recorded_sources(**args)
+    assert not (args["root"] / "recovery_inputs.json").exists()
+
+
+def test_a_forced_flip_never_reuses_or_relabels_unblurred_video_inputs(video_job, monkeypatch):
+    pipeline, path, review, _, output, _ = video_job
+    _authority(pipeline, LISTED[0])
+    video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+    _authority(pipeline, "2026-11-13.1")
+    with pytest.raises(ValueError, match="atlas_retained_video_inputs_invalid"):
+        video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+
+
+# The legacy bucket copy never writes the deciding records ---------------------------------------
+
+def test_the_legacy_staging_copy_skips_the_records_that_decide_the_blur(tmp_path, monkeypatch):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline.pubsub_handoff_scene_operations import _stage_handoff_capture_body
+
+    prefix = "scenes/site-job/captures/walkthrough-job"
+    names = [f"{prefix}/raw/capture_upload_complete.json", f"{prefix}/raw/manifest.json",
+             *(f"{prefix}/{relative}" for relative in sorted(privacy.DECISION_PATHS)),
+             f"{prefix}/pipeline/other.json"]
+    assert privacy.DECISION_PATHS == {"pipeline/website_scene_sponsorship.json", "pipeline/atlas/configuration.json",
+                                      "pipeline/atlas/face_blur_decision.json"}
+
+    class Blob:
+        def __init__(self, name):
+            self.name = name
+
+    class Client:
+        def list_blobs(self, bucket, prefix):
+            return [Blob(name) for name in names]
+
+    downloaded = []
+
+    def download(*, downloads, manifest_rows, storage_root, capture_root):
+        for blob, destination in downloads:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text("{}")
+            downloaded.append(blob.name)
+    monkeypatch.setattr(listener, "download_with_reservation", download)
+    monkeypatch.setattr(listener, "_staging_manifest_row", lambda blob, name, relative_path: {
+        "name": name, "relative_path": relative_path})
+    monkeypatch.setattr(listener, "_previous_staging_rows", lambda root, handoff: {})
+    monkeypatch.setattr(listener, "_preserve_local_website_derivatives", lambda *a: None)
+
+    class Handoff:
+        source_finalize = None
+        bucket = "bucket"
+        scene_id = "site-job"
+        capture_id = "walkthrough-job"
+        capture_prefix = prefix
+    (tmp_path / "bucket" / prefix).mkdir(parents=True)
+    (tmp_path / "bucket" / prefix / "pipeline_handoff.json").write_text("{}")
+    root = _stage_handoff_capture_body(listener, Handoff(), storage_root=tmp_path, storage_client=Client())
+    assert sorted(downloaded) == sorted(name for name in names
+                                        if name[len(prefix) + 1:] not in privacy.DECISION_PATHS)
+    for relative in privacy.DECISION_PATHS:
+        assert not (root / relative).exists()
+    manifest = json.loads((root / listener.STAGING_MANIFEST_FILENAME).read_text())
+    assert not {row["relative_path"] for row in manifest["objects"]} & privacy.DECISION_PATHS

@@ -169,7 +169,7 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
     from .atlas_scene_automation import _fallback_pose, _unposed_source_views
     from .atlas_scene_recovery import _frame_binding
     from .atlas_shared_view_alignment import shared_view_alignment
-    from .atlas_privacy_screen import blur_faces, screen_for
+    from .atlas_privacy_screen import blur_faces, screen_for, unblurred_frames_may_exist
     from .website_scene_geometry import INPUT_SCHEMA
 
     source = pose['binding']['source_video_digest']
@@ -188,6 +188,15 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
                'target_frame_bindings': [_frame_binding(f) for f in frames],
                'automation_digest': canonical_digest(automation), 'task_context_digest': context['context_digest']}
     _bound_json(root / 'binding.json', binding)
+    # Decided before any paid step: the background's own views join the inputs unchanged, so a job
+    # whose earlier views may have gone out unblurred stops rather than record them as blurred.
+    try:
+        held = json.loads((root / 'recovery_inputs.json').read_text())['binding']['privacy_screen']
+    except (OSError, ValueError, KeyError, TypeError):
+        held = None
+    blur, identity = screen_for(root, held)
+    if blur and unblurred_frames_may_exist(root):
+        raise ValueError('atlas_privacy_screen_decision_changed')
     _, blockers = release_blockers()
     if blockers:
         raise ValueError('atlas_recorded_source_release_not_admitted:' + ','.join(blockers))
@@ -215,11 +224,6 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
                    'image_digest': r['original_image_digest']} for r in background['frames']]
     if set(accepted) & {r['frame_id'] for r in input_rows}:
         raise ValueError('atlas_recorded_source_repeated_view')
-    try:
-        held = json.loads((root / 'recovery_inputs.json').read_text())['binding']['privacy_screen']
-    except (OSError, ValueError, KeyError, TypeError):
-        held = None
-    blur, identity = screen_for(root, held)
     blurred = {}
     for row in rows:
         if row['frame_id'] not in accepted:
