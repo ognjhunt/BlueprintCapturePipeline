@@ -93,7 +93,9 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
         if not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,99}", code):
             code = "unclassified"
         prefix = "owned_capture_atlas_control" if source_kind == "owned_capture" else "website_control"
-        raise ValueError(f"{prefix}_{operation}_http_{exc.code}:{code}") from None
+        # A wall keeps the same text and comes back as its type (``hard_stops``).
+        from .hard_stops import webapp_refusal
+        raise webapp_refusal(f"{prefix}_{operation}_http_{exc.code}:{code}", code) from None
     value = json.loads(response.body)
     if not isinstance(value, Mapping):
         raise ValueError("website_task_context_response_invalid")
@@ -176,9 +178,12 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
         value = preparation_webapp_request(task_context=task_context, operation="preparation-spend",
             payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
     if (any(value.get(key) != expected for key, expected in command.items())
-            or value.get("external_disclosure_allowed") is not True
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
         raise ValueError("website_preparation_spend_receipt_invalid")
+    if value.get("external_disclosure_allowed") is not True:
+        # The site's frames may not leave for this provider: a privacy wall, under the code it always had.
+        from .hard_stops import PrivacyRightsStop
+        raise PrivacyRightsStop("website_preparation_spend_receipt_invalid")
     if value.get("status") == "already_reserved" and retained_admission is not None:
         # Reuse requires the original authenticated admission. Atlas retains
         # its upload/submission intent.

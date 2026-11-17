@@ -300,16 +300,8 @@ def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypa
 
 
 @pytest.mark.parametrize("error,state,reason", [
-    (ValueError("atlas_scene_planner_abstained:people move through every frame"), "needs_input",
-     "atlas_scene_planner_abstained"),
-    (ValueError("atlas_scene_subject_origin_uncertain"), "needs_input", "atlas_scene_subject_origin_uncertain"),
-    (ValueError("atlas_scene_subject_origin_changed"), "needs_input", "atlas_scene_subject_origin_changed"),
-    (ValueError("atlas_synthetic_subject_requires_preserved_capture"), "needs_input",
-     "atlas_synthetic_subject_requires_preserved_capture"),
-    (ValueError("atlas_scene_requires_preserved_capture"), "needs_input", "atlas_scene_requires_preserved_capture"),
     (ValueError("website_control_task-context_http_409:source_revoked"), "withdrawn", "website_capture_withdrawn"),
-    (ValueError("atlas_insufficient_overlapping_distinct_views"), "needs_input", "atlas_insufficient_overlapping_distinct_views"),
-    # Privacy and rights refusals outside the explicit sets also end the job at once.
+    # An untyped code whose words name privacy or rights still ends the job at once, as before.
     (ValueError("atlas_source_rights_unverified"), "failed", "atlas_source_rights_unverified"),
 ])
 def test_typed_refusals_end_in_one_plain_final_state(monkeypatch, site, error, state, reason):

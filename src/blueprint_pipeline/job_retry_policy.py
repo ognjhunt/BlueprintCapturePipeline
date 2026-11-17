@@ -128,6 +128,9 @@ def owner_closed_refusal(text: object) -> str | None:
 def hard_stop_kind(code: object) -> str | None:
     """Guess from a refusal code's words whether it protects privacy/rights or money.
 
+    A backstop only: a wall is raised as its type (``hard_stops``) and a controller checks the type first.
+    This reads the words of a code nobody typed, and must never send it anywhere more permissive than before.
+
     Returns PRIVACY_RIGHTS, MONEY or None; privacy/rights wins when both match.
     Whole lower-case words only, split on every non-alphanumeric character.
     The guess errs toward naming a hard stop: a controller uses it only to stop

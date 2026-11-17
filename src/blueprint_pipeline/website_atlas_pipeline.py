@@ -141,7 +141,8 @@ def _require_current_price_review(policy) -> None:
     from datetime import datetime, timezone
     from .website_atlas_pose import _reviewed_recently
     if not _reviewed_recently(policy.get("reviewed_on"), datetime.now(timezone.utc).date()):
-        raise ValueError("atlas_runtime_price_review_expired")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_runtime_price_review_expired")
 
 
 def generation_target_ids(*, review, inputs):
@@ -296,6 +297,8 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
                     return {"status": "needs_input", "reason": "atlas_scale_review_unresolved",
                             "scene_measurements_digest": measurements["digest"]}
     except ValueError as exc:
+        from .hard_stops import reraise
+        reraise(exc)  # a wall is the controller's to recheck, never a held result
         return {"status": "needs_input", "reason": str(exc)}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
             "pose_relative_path": str(pose_root.relative_to(parent_root.parent)),
@@ -1219,7 +1222,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # Size a new selection only; a retained one already spent its reviews, and
     # holding them back again would stop a resumed job on money it already paid.
     if not selection_path.exists() and budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
-        raise ValueError("atlas_runtime_budget_insufficient")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_runtime_budget_insufficient")
     if selection_path.exists():
         selection = json.loads(selection_path.read_text())
         survey_path = output_root / selection["survey_relative_path"]
@@ -1242,6 +1246,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                 retain_selection(output_root=output_root, survey_path=survey_path, survey=survey, receipt=receipt,
                     task_context=task_context, configuration={**room_configuration, 'policy': config['policy']})
             except ValueError as exc:
+                from .hard_stops import reraise
+                reraise(exc)
                 if str(exc).startswith(('atlas_runtime_', 'atlas_observed_room_planner_receipt_changed')):
                     raise
                 # The room also lacks a usable source selection. Retain that
@@ -1367,7 +1373,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     pose_bought = ((pose_root / "atlas_pose/submission.json").exists()
                    or (pose_root / "atlas_posed_rgbd_result.json").exists())
     if not pose_bought and planned_cost > budget + 1e-9:
-        raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_runtime_budget_insufficient_for_pose_and_generation")
     pose_quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
         "maximum_cost_usd": round(count * policy["pose_input_cost_usd"], 6), "max_input_images": count,
         "target_resolutions": [[720, 1280], [1280, 720]], "request_options": request_options(),

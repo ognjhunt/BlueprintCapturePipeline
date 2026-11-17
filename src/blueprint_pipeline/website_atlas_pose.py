@@ -401,7 +401,9 @@ def atlas_provider_retention() -> str:
     """Uploading site frames needs the owner's recorded decision on provider retention."""
     value = os.environ.get(ATLAS_PROVIDER_RETENTION_ENV, "").strip()
     if value not in PROVIDER_RETENTION_DECISIONS:
-        raise ValueError("website_atlas_provider_retention_decision_required")
+        # Where the site's frames are kept once sent is the owner's privacy decision; none recorded, none leave.
+        from .hard_stops import PrivacyRightsStop
+        raise PrivacyRightsStop("website_atlas_provider_retention_decision_required")
     return value
 
 
@@ -892,12 +894,13 @@ def _require_admission(admission: Mapping[str, Any], *, request_digest: str, bin
     if (not isinstance(admission, Mapping) or admission.get("allocation_binding_digest") != request_digest
             or admission.get("provider") != PROVIDER or admission.get("resource_class") != RESOURCE_CLASS):
         raise ValueError("website_atlas_pose_spend_binding_missing")
+    from .hard_stops import MoneyStop, PrivacyRightsStop
     if admission.get("external_disclosure_allowed") is not True:
         # Uploading source frames discloses site pixels to World Labs.
-        raise ValueError("website_atlas_pose_disclosure_not_authorized")
+        raise PrivacyRightsStop("website_atlas_pose_disclosure_not_authorized")
     budget = admission.get("maximum_cost_usd")
     if not _positive_finite(budget) or budget < binding["maximum_cost_usd"]:
-        raise ValueError("website_atlas_pose_budget_insufficient")
+        raise MoneyStop("website_atlas_pose_budget_insufficient")
     expires = admission.get("expires_at_epoch")
     if not _positive_finite(expires) or expires <= now + ADMISSION_MARGIN_SECONDS:
         raise ValueError("website_atlas_pose_admission_expired")

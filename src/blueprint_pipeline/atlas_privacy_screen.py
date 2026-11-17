@@ -35,7 +35,8 @@ def blur_faces(image: Image.Image) -> tuple[Image.Image, list[list[int]]]:
     import numpy as np
 
     if not hasattr(cv2, "FaceDetectorYN") or not MODEL.is_file() or _sha256_file(MODEL) != MODEL_SHA256:
-        raise ValueError("atlas_privacy_screen_unavailable")
+        from .hard_stops import PrivacyRightsStop
+        raise PrivacyRightsStop("atlas_privacy_screen_unavailable")
     pixels = np.array(image.convert("RGB"))
     height, width = pixels.shape[:2]
     scale = min(1.0, MAXIMUM_DETECTION_SIDE / max(height, width))
