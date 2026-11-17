@@ -320,6 +320,26 @@ def retain_superseded_records(*, capture_root: Path, root: Path, atlas_result_di
 #: it and, for navigation, the goal region with an assumed rule. The company builder reads it from the handoff.
 ROOM_PACKAGE = "room_package_written"
 ROOM_RECORD = "room_package_inputs.v1.json"
+#: A routed job's room record, the package floor while its object is not built (``website_company_simulation``).
+ROOM_FLOOR, ROOM_FLOOR_FLAG = "room_floor", "object_not_built"
+#: Beside the floor's half: when this floor (by its record's digest) was first written. A handoff that runs again
+#: writes the same record and keeps it, so the wait before an unstarted object path is listed never restarts.
+ROOM_FLOOR_FIRST_WRITTEN = "first_written.json"
+
+
+def write_room_floor(*, now: float, output_root: Path, **room: Any) -> dict[str, Any]:
+    """The room floor's record (``write_room_package``), and the time a record with its digest was first written."""
+    record = write_room_package(output_root=output_root, **room)
+    first = output_root / ROOM_FLOOR_FIRST_WRITTEN
+    try:
+        kept = json.loads(first.read_text())
+    except (OSError, ValueError):
+        kept = None
+    if not isinstance(kept, dict) or kept.get("inputs_digest") != record["inputs_digest"]:
+        write_json(first, {"inputs_digest": record["inputs_digest"], "first_written_epoch": int(now)})
+    return record
+
+
 #: The navigation rule's two assumed numbers: how near the goal centre the robot's base must stop, and for how long.
 GOAL_RADIUS_M, GOAL_DWELL_SECONDS = 0.5, 2.0
 #: The handoff gaps that mean "no task profile": ``website_task_preparation.profile_preparation_gap`` and an operation
@@ -524,17 +544,22 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         from .atlas_automation_plan import preserves_capture
         return 0 if preserves_capture(atlas) else planner_removals_applied(capture_root)
 
-    def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
-                     flags: Sequence[str] = (), taken_out: int = 0) -> dict[str, Any]:
-        # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
-        result.pop("rule_withheld", None)
+    def package_flags(flags: Sequence[str]) -> list[str]:
+        # Every room record's flags, the room package's and its floor's alike: the caller's, then the clean
+        # plate's (``room_flags``), the planner's removals not applied, the scene source's own last; each once.
         flags = room_flags(flags, clean_plate)
         from .atlas_automation_plan import JOB_OBJECT_RULE
         if atlas.get("job_object_rule") and JOB_OBJECT_RULE not in flags:
             # The planner's removals were not applied: nothing was taken out of the room scan.
             flags = [*flags, JOB_OBJECT_RULE]
         # The scene source's own flags last (the gap views not filled in), each once.
-        flags = list(dict.fromkeys([*flags, *(atlas.get("flags") or [])]))
+        return list(dict.fromkeys([*flags, *(atlas.get("flags") or [])]))
+
+    def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
+                     flags: Sequence[str] = (), taken_out: int = 0) -> dict[str, Any]:
+        # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
+        result.pop("rule_withheld", None)
+        flags = package_flags(flags)
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only or in_scan, flags=flags,
@@ -548,6 +573,20 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         result["digest"] = canonical_digest(result, digest_field="digest")
         write_json(handoff_path, result)
         return result
+
+    def room_floor() -> None:
+        # Kept beside the object's own route, CPU only: the company builder ships it only once that route stops
+        # (``website_company_simulation.object_path_stopped``). Never a stop of its own.
+        try:
+            record = write_room_floor(now=now, task_context=context, base_scene=base,
+                                      source_geometry=atlas["source_geometry"], removal=removal,
+                                      output_root=root / ROOM_FLOOR, task_profile=None,
+                                      objects_in_scan=geometry_only, flags=package_flags([ROOM_FLOOR_FLAG]))
+        except (ValueError, KeyError, OSError) as exc:
+            result[ROOM_FLOOR] = {"status": "not_written", "reason": str(exc)[:200]}
+            return
+        result[ROOM_FLOOR] = {"path": str(root / ROOM_FLOOR / "half" / ROOM_RECORD),
+                              "inputs_digest": record["inputs_digest"]}
 
     def room_for(gap: Mapping[str, Any]) -> dict[str, Any]:
         # A gap that says Blueprint has no model for the job, by code: the job's declared profile, flagged.
@@ -732,6 +771,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             if not operation_review_requested:
                 result["provider_mutation_performed"] = False
             if preparation["status"] == "intake_ready":
+                room_floor()
                 from .website_scene_dispatch import binding_root, register_website_preparation
                 native_path = root / "native_runtime_contract.json"
                 write_json(native_path, preparation["task_evaluation_inputs"]["native_runtime_contract"])
@@ -850,6 +890,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result["digest"] = canonical_digest(result, digest_field="digest")
             write_json(handoff_path, result)
             return result
+        if preparation["status"] == "intake_ready":
+            room_floor()
         # A missing execution authority must not stop this CPU-only geometry
         # conversion. The object stays in its separate authoring lane.
         try:

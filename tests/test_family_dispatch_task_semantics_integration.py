@@ -93,6 +93,10 @@ def test_source_bound_general_task_dispatches_unconfirmed_family_under_retained_
             'request_digest': cross_runtime_canonical_digest(request)}
 
     monkeypatch.setattr('blueprint_pipeline.website_task_context.website_webapp_request', website_transport)
+    # The room floor's writer (its real writes: tests/test_website_package_floor.py); this fixture has no renderer.
+    floors = []
+    monkeypatch.setattr('blueprint_pipeline.website_scene_handoff.write_room_package',
+                        lambda **kw: floors.append(kw) or {'inputs_digest': 'sha256:' + '9' * 64})
     result = prepare_website_scene_handoff(descriptor={'scene_id': context['scene_id'],
         'capture_id': context['capture_id'], 'metadata': {'site_task_context': context,
             'website_scene_execution_authority': grant, 'native_task_evaluation': evaluation}},
@@ -106,6 +110,14 @@ def test_source_bound_general_task_dispatches_unconfirmed_family_under_retained_
     assert result['task_evaluation_inputs']['source_video_digest'] == source_video_digest
     assert reads == ['task-context', 'scene-sponsorship']
     assert retains_task_family_preparation(result, context)
+    # The family route keeps its room floor too, bound to the intent the website made for it
+    # (``website_company_simulation.object_path_stopped``): still moving, so nothing ships yet.
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline.website_scene_handoff import ROOM_FLOOR, ROOM_FLOOR_FLAG
+    assert [(call['output_root'].name, call['flags']) for call in floors] == [(ROOM_FLOOR, [ROOM_FLOOR_FLAG])]
+    assert result['room_floor']['inputs_digest'] == 'sha256:' + '9' * 64
+    monkeypatch.setattr(sim, 'INTENT_ROOT', queue)
+    assert sim.object_path_stopped(tmp_path, result, queue_root=tmp_path / 'team', now=args['now']) is None
     intent = json.loads((queue / accepted['intent_id'] / 'intent.json').read_text())
     assert intent['request']['task']['strategy'] == 'button_press'
     assert intent['request']['consent']['task_confirmed'] is False
