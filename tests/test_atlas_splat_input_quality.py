@@ -228,7 +228,7 @@ def test_a_rebuild_buys_its_splat_only_on_an_accepted_consistent_pose_and_never_
     result = pipeline._preserved_appearance(frames=frames, pose={"digest": "p"}, draft={"digest": "d"},
         output_root=tmp_path, policy={"refined_splat_cost_usd": 5, "mesh_export_cost_usd": .5},
         task_context={"context_digest": "t"}, source_digest="s", configuration={}, check=lambda *_: None,
-        experimental=False, max_polls=1, admitted_completion=False, review={}, source_root=tmp_path, rebuild=True)
+        experimental=False, max_polls=1, review={}, source_root=tmp_path, rebuild=True)
     if case == "bought":
         assert result["basis"] == "atlas_refined_splat" and [f["frame_id"] for f in bought[0]["frames"]] == ["a", "c"]
         return

@@ -31,7 +31,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
-from .atlas_automation_plan import preserves_capture
+from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, preserves_capture
 from .local_reconstruction_adapters import _sha256_file
 
 PROVIDER = "world_labs_atlas"
@@ -396,10 +396,20 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     from .atlas_native_splat import splat_manifest_path
     splat_manifest = _read(_inside(splat_manifest_path(splat_root), job_dir))
     registration = _read(_inside(registered_root / "atlas_mesh_registration.json", job_dir))
+    # A refined-splat look with an admitted generated patch in the collision shape only
+    # (``website_atlas_pipeline.GENERATED_IN_COLLISION_ONLY``): the mesh is registered to the admitted
+    # export, which the completion admission binds below; the look is checked to be filmed frames only.
+    collision_manifest = splat_manifest
+    if completion_admission is not None and completion.get('generated_geometry_in') == GENERATED_IN_COLLISION_ONLY:
+        collision_manifest = _read(_inside(job_dir / str(completion.get('collision_splat_relative_path') or '')
+                                           / 'atlas_depth_splat_manifest.json', job_dir))
+        if (collision_manifest.get('digest') != completion.get('collision_splat_manifest_digest')
+                or collision_manifest.get('digest') != canonical_digest(collision_manifest, digest_field='digest')):
+            raise ValueError('atlas_preserved_completion_not_bound')
     if (splat_manifest.get("digest") != canonical_digest(splat_manifest, digest_field="digest")
             or splat_manifest["digest"] != background.get("splat_manifest_digest")
             or registration.get("digest") != canonical_digest(registration, digest_field="digest")
-            or registration.get("splat_manifest_digest") != splat_manifest["digest"]
+            or registration.get("splat_manifest_digest") != collision_manifest["digest"]
             or (bundle is not None and registration.get("digest") != bundle.get("mesh_registration_digest"))):
         raise ValueError("website_atlas_scene_background_changed")
     splat_path, splat_digest = _artifact(splat_root, next(
@@ -416,7 +426,9 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         from .atlas_preserved_completion import validate_preserved_completion
         validate_preserved_completion(report=completion_admission, job_root=job_dir,
             source_pose_digest=source['digest'], source_video_digest=result['source_video_digest'],
-            task_context_digest=result['task_context_digest'], splat=splat_manifest)
+            task_context_digest=result['task_context_digest'], splat=collision_manifest)
+        if collision_manifest is not splat_manifest and not _captured_frames_refinement(splat_manifest, source):
+            raise ValueError('atlas_preserved_completion_not_bound')
     elif preserved and splat_manifest.get('generated_content') and not _captured_frames_refinement(
             splat_manifest, source):
         raise ValueError('atlas_preserved_completion_not_bound')
@@ -496,8 +508,10 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     if estimates:
         base[ESTIMATES_FIELD] = estimates
     if completion_admission is not None:
-        base['content_provenance'] = {'basis': 'captured_scene_with_bounded_generated_estimates',
-            'completion_admission_digest': completion_admission['digest'], 'generated_geometry_is_estimate': True}
+        base['content_provenance'] = {'basis': GENERATED_ESTIMATES_BASIS,
+            'completion_admission_digest': completion_admission['digest'], 'generated_geometry_is_estimate': True,
+            # Read by the company package's README (``website_company_simulation``).
+            **({'generated_geometry_in': GENERATED_IN_COLLISION_ONLY} if collision_manifest is not splat_manifest else {})}
     # Where the camera walked, in the levelled scene in metres (Y up), in video order: the
     # filmed route a locomotion task's start and goal can be read from (``website_locomotion_task``).
     walked = sorted((key, row) for key, row in _cameras(background_pose).items() if str(key).startswith("decoded-"))
