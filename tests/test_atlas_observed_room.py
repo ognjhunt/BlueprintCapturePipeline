@@ -335,10 +335,8 @@ def test_a_final_abstention_buys_no_room_and_asks_for_a_new_video(tmp_path, monk
     assert len(planner) == 1 and effects == [] and (root / room.SELECTION).is_file()
     assert not (root / 'observed_room/pose').exists()
     from blueprint_pipeline import website_atlas_preview as preview
-    job = {'state': 'processing', 'reason': None, 'revision': 1, 'stage': 'plan', 'enqueued_at_epoch': 0}
-    # Shown as before, and run again on the refusal schedule: the second run above bought nothing.
-    held = preview._failed_step(job, stop.value, 10)
-    assert held['state'] == 'needs_input' and held['retry_at_epoch'] == 10 + 900
+    job = {'state': 'processing', 'reason': None, 'revision': 1, 'stage': 'plan'}
+    assert preview._failed_step(job, stop.value, 10)['state'] == 'needs_input'
 
 
 def test_a_room_already_bought_for_a_final_abstention_is_still_collected(tmp_path, monkeypatch):

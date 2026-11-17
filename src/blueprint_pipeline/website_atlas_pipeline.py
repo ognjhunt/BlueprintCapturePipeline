@@ -200,7 +200,8 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
     """The selected original views' own Atlas pose and the scale its reviewed references give.
 
     Retained receipts make a resume free. A refused purchase leaves the
-    background intact and is reported, not raised.
+    background intact and is reported, not raised, unless it is a wall
+    (``hard_stops``), which is raised.
     """
     from .atlas_scene_automation import measurement_plan
     from .atlas_scene_measurements import estimate_sizes, load_views
@@ -297,8 +298,10 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
                     return {"status": "needs_input", "reason": "atlas_scale_review_unresolved",
                             "scene_measurements_digest": measurements["digest"]}
     except ValueError as exc:
-        from .hard_stops import reraise
-        reraise(exc)  # a wall is the controller's to recheck, never a held result
+        from .hard_stops import is_wall
+        if is_wall(exc):
+            # Never a held result: a caller that goes on (the windowed re-pose) would buy past the wall.
+            raise
         return {"status": "needs_input", "reason": str(exc)}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
             "pose_relative_path": str(pose_root.relative_to(parent_root.parent)),
@@ -942,6 +945,10 @@ def _windowed_repose(*, output_root, first_pose_root, source_root, review, sourc
                                             **profile)
         retry_root, prepared = prepare_source_pose(root)
     except ValueError as exc:
+        from .hard_stops import is_wall
+        if is_wall(exc):
+            # The face blur (``prepare_source_pose``) or a selection's money: the job must not go on buying.
+            raise
         return finish(reposes.record_outcome(output_root, binding, "selection_refused",
                                              reason=str(exc).partition(":")[0]))
     count = len(prepared["frames"])
@@ -1246,8 +1253,6 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                 retain_selection(output_root=output_root, survey_path=survey_path, survey=survey, receipt=receipt,
                     task_context=task_context, configuration={**room_configuration, 'policy': config['policy']})
             except ValueError as exc:
-                from .hard_stops import reraise
-                reraise(exc)
                 if str(exc).startswith(('atlas_runtime_', 'atlas_observed_room_planner_receipt_changed')):
                     raise
                 # The room also lacks a usable source selection. Retain that

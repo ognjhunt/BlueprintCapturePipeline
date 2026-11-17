@@ -323,3 +323,29 @@ def test_the_scene_buys_its_splat_from_the_adopted_repose_and_names_it(tmp_path,
     assert result["uncaptured_regions"] == (derived if adopted else first_review)["uncaptured_regions"]
     assert result["windowed_repose"] == disclosure and bundled[0]["pose_root"] == chosen
     assert tmp_path / "pose-windowed/atlas_pose_window.json" in bundled[0]["analysis_paths"]
+
+
+@pytest.mark.parametrize("wall", [True, False])
+def test_a_wall_in_the_repose_selection_is_raised_and_any_other_refusal_is_recorded(tmp_path, monkeypatch, wall):
+    """The face blur runs on the re-pose's frames (``prepare_source_pose``). If it cannot, nothing leaves and the
+    job does not go on buying with its first pose (``hard_stops``); any other selection refusal is recorded."""
+    from blueprint_pipeline import atlas_source_pose_inputs
+    from blueprint_pipeline.hard_stops import PrivacyRightsStop
+    job, first_root, source, review, _ = _job(tmp_path)
+    stage = _Stage(monkeypatch, job)
+    error = (PrivacyRightsStop("atlas_privacy_screen_unavailable") if wall
+             else ValueError("atlas_insufficient_overlapping_distinct_views"))
+
+    def unscreened(root):
+        raise error
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", unscreened)
+    if wall:
+        with pytest.raises(PrivacyRightsStop) as raised:
+            _repose(job, first_root, source, review)
+        assert raised.value is error and not (job / reposes.ROOT / reposes.OUTCOME_FILE).exists()
+    else:
+        value = _repose(job, first_root, source, review)
+        assert value["adopted"] is False
+        outcome = json.loads((job / reposes.ROOT / reposes.OUTCOME_FILE).read_text())
+        assert outcome["status"] == "selection_refused"
+    assert stage.posed == []

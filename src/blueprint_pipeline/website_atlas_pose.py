@@ -448,6 +448,12 @@ def _reviewed_recently(value: Any, today: date) -> bool:
     return today - timedelta(days=PRICE_REVIEW_MAX_AGE_DAYS) <= reviewed <= today
 
 
+def _money(code: str) -> ValueError:
+    """A reviewed price that is missing, stale or does not cover the request: a money wall (``hard_stops``)."""
+    from .hard_stops import MoneyStop
+    return MoneyStop(code)
+
+
 def atlas_pose_spend_line(*, planned_input_count: int, target_resolution: Sequence[int],
                           today: date | None = None) -> dict[str, Any]:
     """The reviewed ceiling for one operation, or a refusal.
@@ -459,13 +465,13 @@ def atlas_pose_spend_line(*, planned_input_count: int, target_resolution: Sequen
     """
     raw = os.environ.get(ATLAS_PRICE_REVIEW_ENV, "").strip()
     if not raw:
-        raise ValueError("website_atlas_reviewed_price_required")
+        raise _money("website_atlas_reviewed_price_required")
     try:
         review = json.loads(raw)
     except ValueError as exc:
-        raise ValueError("website_atlas_reviewed_price_invalid:json") from exc
+        raise _money("website_atlas_reviewed_price_invalid:json") from exc
     if not isinstance(review, dict):
-        raise ValueError("website_atlas_reviewed_price_invalid:json")
+        raise _money("website_atlas_reviewed_price_invalid:json")
     grids, options = review.get("target_resolutions"), review.get("request_options")
     today = today or datetime.now(timezone.utc).date()
     checks = (
@@ -485,11 +491,11 @@ def atlas_pose_spend_line(*, planned_input_count: int, target_resolution: Sequen
     )
     for field, valid in checks:
         if not valid:
-            raise ValueError(f"website_atlas_reviewed_price_invalid:{field}")
+            raise _money(f"website_atlas_reviewed_price_invalid:{field}")
     if options != request_options() or list(target_resolution) not in grids:
-        raise ValueError("website_atlas_reviewed_price_options_mismatch")
+        raise _money("website_atlas_reviewed_price_options_mismatch")
     if planned_input_count > review["max_input_images"]:
-        raise ValueError("website_atlas_reviewed_price_input_count_exceeded")
+        raise _money("website_atlas_reviewed_price_input_count_exceeded")
     price = float(review["maximum_cost_usd"])
     # 1 and 1.0 are one price; the binding must not depend on how it was typed.
     return {"maximum_cost_usd": price, "review_digest": canonical_digest({**review, "maximum_cost_usd": price})}
@@ -891,10 +897,10 @@ def _await_ready(client: AtlasClient, state: dict[str, Any], path: Path, sleep: 
 
 def _require_admission(admission: Mapping[str, Any], *, request_digest: str, binding: Mapping[str, Any],
                        now: float) -> None:
+    from .hard_stops import MoneyStop, PrivacyRightsStop
     if (not isinstance(admission, Mapping) or admission.get("allocation_binding_digest") != request_digest
             or admission.get("provider") != PROVIDER or admission.get("resource_class") != RESOURCE_CLASS):
-        raise ValueError("website_atlas_pose_spend_binding_missing")
-    from .hard_stops import MoneyStop, PrivacyRightsStop
+        raise MoneyStop("website_atlas_pose_spend_binding_missing")
     if admission.get("external_disclosure_allowed") is not True:
         # Uploading source frames discloses site pixels to World Labs.
         raise PrivacyRightsStop("website_atlas_pose_disclosure_not_authorized")
@@ -903,7 +909,7 @@ def _require_admission(admission: Mapping[str, Any], *, request_digest: str, bin
         raise MoneyStop("website_atlas_pose_budget_insufficient")
     expires = admission.get("expires_at_epoch")
     if not _positive_finite(expires) or expires <= now + ADMISSION_MARGIN_SECONDS:
-        raise ValueError("website_atlas_pose_admission_expired")
+        raise MoneyStop("website_atlas_pose_admission_expired")
 
 
 def submit_atlas_pose_operation(*, pose_inputs: Mapping[str, Any], output_root: Path, client: AtlasClient,
@@ -1170,7 +1176,8 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
                         source_video_digest=pose_inputs["binding"]["source_video_digest"],
                         retain_admission=lambda value: _write_state(retained_path, {**value, "source_commit": commit}))
                     if admission.get("provider_retention", retention) != retention:
-                        raise ValueError("website_atlas_provider_retention_admission_mismatch")
+                        from .hard_stops import PrivacyRightsStop
+                        raise PrivacyRightsStop("website_atlas_provider_retention_admission_mismatch")
                     admission = {**admission, "source_commit": commit}
                     _write_state(retained_path, admission)
                     submit_atlas_pose_operation(pose_inputs=pose_inputs, output_root=output_root, client=client,

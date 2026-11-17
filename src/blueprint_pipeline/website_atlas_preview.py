@@ -19,14 +19,10 @@ and deletes its Atlas assets.
 
 A failed step is retried on a timer until the job ends (``job_retry_policy``):
 an outage until the job's seven-day deadline; any other refusal, a defect or a
-step killed before it returned on the bounded refusal schedule. A wall
-(``hard_stops``: privacy, rights or money, by type) waits as ``needs_input``
-with its own code, re-asked every ``AUTHORITY_RECHECK_SECONDS`` until the job
-expires, as a missing grant does; only a withdrawal or an owner closure ends
-the job at once. An untyped code whose words name privacy or rights still
-fails at once, and one whose words name money waits, as before. A stop that
-only a new video or the site can clear shows as ``needs_input`` at once and is
-run again on the refusal schedule; once spent it rests. A deterministic refusal
+step killed before it returned on the bounded refusal schedule. A money refusal
+waits as ``needs_input`` with its own code, re-asked every
+``AUTHORITY_RECHECK_SECONDS`` until the job expires, as a missing grant does.
+Only a privacy or rights refusal fails at once. A deterministic refusal
 (``deterministic_refusal``: the same inputs and code repeat it) gets no timed
 schedule: it waits as ``needs_input`` and its step runs again only once a
 release decides that step differently. A
@@ -259,38 +255,6 @@ def _refusal_retry(job: Mapping[str, Any], current: int, code: str, detail: Mapp
             **detail, "next_attempt_at_epoch": _by_deadline(job, current + delay)}
 
 
-#: Set on a job waiting on a privacy or rights wall: its provider assets are deleted while it waits.
-WALL_CLEANUP = "privacy_wall_cleanup"
-
-
-def _resumed_after_wall(job: dict[str, Any]) -> dict[str, Any]:
-    """A job whose privacy or rights recheck is due: it runs again, and whatever it uploads from now on is
-    cleaned up when it ends (what the wait already deleted stays recorded as deleted)."""
-    if not job.get(WALL_CLEANUP):
-        return job
-    job = {key: value for key, value in job.items() if key != WALL_CLEANUP}
-    cleanup = job.get("provider_cleanup")
-    if isinstance(cleanup, Mapping) and cleanup.get("state") != "pending":
-        job["provider_cleanup"] = {**cleanup, "state": "pending", "attempts": 0, "next_attempt_at_epoch": 0}
-    return job
-
-
-def _held_retry(job: Mapping[str, Any], current: int, code: str) -> dict[str, Any]:
-    """A stop that rested as ``needs_input`` with no retry time: the same state and code, now with a timed retry.
-
-    The refusal schedule and its lifetime allowance (``_refusal_retry``) time it. While a retry is due the job
-    is not ended, so its provider cleanup waits; once the schedule is spent the job rests as it did before
-    this rule: ``needs_input`` with its own code and no retry time.
-    """
-    done, total = job.get("refusal_retries", 0), job.get("refusal_retries_total", 0)
-    delay = (refusal_retry_delay(done) if isinstance(total, int) and 0 <= total < MAXIMUM_REFUSAL_RETRIES
-             else None)
-    if delay is None:
-        return _transition(job, current, "needs_input", code)
-    return _transition(job, current, "needs_input", code, refusal_retries=done + 1, refusal_retries_total=total + 1,
-                       last_refusal_reason=code, retry_at_epoch=_by_deadline(job, current + delay))
-
-
 def _interrupted(job: dict[str, Any], current: int) -> dict[str, Any]:
     """A step whose process died before it returned (a memory kill, a restart): an unclassified refusal."""
     mark = job.pop(STEP_IN_FLIGHT)
@@ -328,21 +292,6 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         return _transition(job, current, "failed", OWNER_CLOSED_CODE, last_error=error_description(error))
     if code in _WITHDRAWN:
         return _transition(job, current, "withdrawn", "website_capture_withdrawn" if job.get("schema_version") == SCHEMA else code)
-    from .bounded_error import error_description
-    from .hard_stops import wall
-    stop = wall(error)
-    if stop is not None:
-        # A typed wall (``hard_stops``), before any list or any word of its code. A withdrawal or an owner
-        # closure ended above; any other ends here only if marked final. Privacy, rights and money wait as
-        # needs_input and are asked again every ``AUTHORITY_RECHECK_SECONDS`` until the job's deadline: the
-        # step re-asks its own consent and admission each time, so nothing is bought past the wall.
-        if stop[1]:
-            return _transition(job, current, "failed", code, last_error=error_description(error))
-        # A privacy or rights wall also deletes the job's provider assets at once, as an ended job's are:
-        # the site's frames never wait at the provider on a recheck (``advance_preparation_job``).
-        privacy = {WALL_CLEANUP: True} if stop[0] == PRIVACY_RIGHTS else {}
-        return _transition(job, current, "needs_input", code, last_error=error_description(error), **privacy,
-                           retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
     if code in _AWAITING_AUTHORITY:
         if code == "website_task_not_named":
             # Until the released website lists it, the wait travels as the brief it already words as missing.
@@ -353,15 +302,13 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     from .website_recapture_required import ABSTENTION_CODES
     if (code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT or code == "atlas_scene_planner_abstained"
             or code in ABSTENTION_CODES.values()):
-        # Each is raised behind receipts the step reuses (the scene reviews under ``scene_planner/``, or the
-        # retained room selection), so a retry buys nothing again. The website sees it as before; the step
-        # is run again on the refusal schedule and, once that is spent, rests as before.
-        return _held_retry(job, current, code)
+        return _transition(job, current, "needs_input", code)
     if not isinstance(error, ValueError):
         # Typed refusals are ValueErrors with their own code. Anything else (transport, storage
         # or a defect) keeps only its type name in the code, so record where it was raised.
         logger.warning("website_atlas_preview_step_error capture=%s code=%s", job.get("capture_id"), code,
                        exc_info=error)
+    from .bounded_error import error_description
     # The retained job, never the WebApp's preview, keeps the failure behind the
     # code: its type and a redacted, trimmed message. It is the last one seen.
     detail = {"last_error": error_description(error)}
@@ -807,13 +754,11 @@ def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, An
                 job = _interrupted({**job}, current)
             if job["state"] not in TERMINAL or job.get("retry_at_epoch"):
                 if current >= max(job["next_attempt_at_epoch"], job.get("retry_at_epoch") or 0):
-                    job = _resumed_after_wall(job)
                     marked = {**job, STEP_IN_FLIGHT: {"since_epoch": current, "stage": job.get("stage")}}
                     write_json(path, marked)
                     before = json.dumps(marked, sort_keys=True)
                 job = step(job)
-            if job["state"] in TERMINAL and (not job.get("retry_at_epoch") or job.get(WALL_CLEANUP)):
-                # An ended job, or one waiting on a privacy or rights wall: nothing of the site's stays out.
+            if job["state"] in TERMINAL and not job.get("retry_at_epoch"):
                 job = _retract_archive(job)
                 job = _clean_provider(job, job_dir=job_dir, now=now, transport=transport)
             job = deliver(job)

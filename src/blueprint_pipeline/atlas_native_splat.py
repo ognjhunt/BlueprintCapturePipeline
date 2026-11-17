@@ -305,9 +305,11 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
                               task_context=task_context, task_runner=task_runner, max_polls=max_polls,
                               checkpoint=checkpoint, review=review, views=views if form == WHOLE else None,
                               input_selection_digest=input_selection_digest)
-        except ValueError:
-            # The provider failed this form's last attempt; the next form follows.
-            if not _provider_failed_and_exhausted(root / "native"):
+        except ValueError as exc:
+            # The provider failed this form's last attempt; the next form follows. A wall is never a failed
+            # form: the next form would be bought past it.
+            from .hard_stops import is_wall
+            if is_wall(exc) or not _provider_failed_and_exhausted(root / "native"):
                 raise
             continue
         if value["status"] == "completed":

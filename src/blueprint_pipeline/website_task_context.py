@@ -179,7 +179,9 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
             payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
     if (any(value.get(key) != expected for key, expected in command.items())
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
-        raise ValueError("website_preparation_spend_receipt_invalid")
+        # An admission for another purchase, or one already lapsed, covers nothing: a money wall.
+        from .hard_stops import MoneyStop
+        raise MoneyStop("website_preparation_spend_receipt_invalid")
     if value.get("external_disclosure_allowed") is not True:
         # The site's frames may not leave for this provider: a privacy wall, under the code it always had.
         from .hard_stops import PrivacyRightsStop

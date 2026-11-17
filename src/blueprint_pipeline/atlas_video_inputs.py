@@ -515,10 +515,12 @@ def selection_frame_budget(review: Mapping[str, Any]) -> int:
             or not _positive_finite(budget.get("input_cost_usd")) or not budget.get("rate_card_reference")
             or not budget.get("reviewed_by")
             or not _reviewed_recently(budget.get("reviewed_on"), datetime.now(timezone.utc).date())):
-        raise ValueError("atlas_reviewed_selection_budget_required")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_reviewed_selection_budget_required")
     count = int(Decimal(str(budget["maximum_pose_cost_usd"])) / Decimal(str(budget["input_cost_usd"])))
     if count < 2:
-        raise ValueError("atlas_selection_budget_insufficient")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_selection_budget_insufficient")
     return count
 
 
@@ -752,7 +754,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
         soft_cover = [frames[i]["frame_id"] for i in sorted(cover) if frames[i]["sharpness"] < floor]
     if len(selected) > budget_frames:
         # Dollars only ever refuse the accurate set; they never pose fewer frames.
-        raise ValueError("atlas_selection_budget_below_accurate_inputs")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_selection_budget_below_accurate_inputs")
     from .atlas_privacy_screen import blur_faces, screen_identity
     root = output_root.resolve()
     prepared, blurred = [], {}

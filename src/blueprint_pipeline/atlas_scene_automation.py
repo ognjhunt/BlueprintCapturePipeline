@@ -679,10 +679,6 @@ def run_automation(
             # An outside service refused one request (capture-39ecdc97: meta_sam_http_413). That is
             # its answer, not input anyone can give: the job's own retry schedule handles it.
             raise
-        from .hard_stops import reraise
-        # A wall (privacy, rights or money) is never held here as background input: the job's controller
-        # rechecks it, and nothing more is bought after it.
-        reraise(exc)
         if _reason(exc) in MONEY_REFUSALS:
             # The job's money ran out: it waits on the job's money recheck, never ends here.
             raise

@@ -23,13 +23,12 @@ Owner direction, 2026-11-17: "why cant we just accept every job then determine
 what is needed from there?" and "we need to think from first principles in
 regards to our pipeline - only keep stuff that is needed/no extra 'rules' that
 we have for no reason - and utilize ai/agents where possible when logic or
-decisions are needed". Privacy, rights and money stay walls, written as plain
-code that no model decision can move: the site's consent and its withdrawal,
-the owner closing a run, faces blurred before any frame leaves, what may be
-disclosed to a provider, and every spend limit and admission below. In build,
-Pipeline first: for a website job, the room step ships the room as filmed,
-flagged, for anything that is not one of those walls, and a stuck job retries
-by itself. The walls are raised as types (`hard_stops.py`).
+decisions are needed". Privacy, rights and money stay plain code that no model
+decision can move: the site's consent and its withdrawal, the owner closing a
+run, the provider terms and retention, faces blurred in the frames sent to
+World Labs, and the spend limits and admissions below. In build, Pipeline
+first: a website job's room step ships the room as filmed, flagged, for
+anything else, and a stuck job retries by itself.
 
 Blueprint's own test of openly available robot software (a robot together
 with its learned, camera-driven policy) stays as supporting evidence inside the
