@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .hard_stops import MoneyStop
 from .paid_resource_admission import require_paid_resource_admission_grant
 from .website_task_context import (
     RetainedAdmissionUnusable, require_current_website_source, reserve_website_preparation_spend,
@@ -84,6 +85,91 @@ EXHAUSTED = "website_gemini_unanswered_dispatches_exhausted"
 #: An answered refusal the provider gives before any work, as for SAM (``meta_sam31.REFUSAL_STATUSES``):
 #: proof that nothing was billed, so the same reservation pays the next dispatch.
 NO_WORK_STATUSES = frozenset({429, 503})
+#: Gemini's own answer when the account's prepaid balance is spent: 402 RESOURCE_EXHAUSTED, "Your prepayment
+#: credits are depleted" (test job 3, 2026-11-17). It refuses before any work, so, like a 429 or 503, its
+#: reservation pays the next dispatch and it is never counted as spent. It is a money wait (``CreditDepleted``):
+#: the code reads as money (``job_retry_policy.hard_stop_kind``), so the job is asked again on the money schedule
+#: and goes on by itself once the account has funds. No other 402 is read as this.
+CREDIT_DEPLETED = "website_gemini_provider_credit_depleted"
+_DEPLETED_STATUS, _DEPLETED_REASON = "RESOURCE_EXHAUSTED", "prepayment credits are depleted"
+
+
+class CreditDepleted(MoneyStop):
+    """Gemini's credits-depleted answer, a money wall, with the end of the job's window it was met in (its
+    reservation's ``expires_at_epoch``, which the website sets to the grant's window), or None."""
+
+    def __init__(self, window_ends_at_epoch: Any = None):
+        super().__init__(CREDIT_DEPLETED)
+        window = window_ends_at_epoch
+        self.window_ends_at_epoch = (float(window) if isinstance(window, (int, float)) and not isinstance(window, bool)
+                                     and math.isfinite(window) else None)
+
+
+#: The longest wait between two money rechecks of a preparation (``job_retry_policy.outage_retry_delay``'s cap).
+MONEY_RECHECK_SECONDS = 3600
+
+
+def last_money_recheck(error: BaseException, now: float) -> bool:
+    """Whether ``error`` is Gemini's credits-depleted answer met so near the end of the job's window that the money
+    wait may not ask again before it ends (the longest wait, and as long again for the listener's tick and the
+    run): then, and only then, the job goes on without that piece."""
+    window = getattr(error, "window_ends_at_epoch", None) if isinstance(error, CreditDepleted) else None
+    return window is not None and window - now <= 2 * MONEY_RECHECK_SECONDS
+
+
+def credit_depleted(exc: BaseException) -> bool:
+    """Whether Gemini answered 402 with its own reason that the prepaid credits are depleted (the client's
+    ``code``, ``status`` and ``message``, or the same in its ``details``), on the error or one of its causes."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(seen) < 16:
+        seen.add(id(current))
+        details = getattr(current, "details", None)
+        body = details.get("error") if isinstance(details, Mapping) else None
+        body = body if isinstance(body, Mapping) else {}
+        code = getattr(current, "code", body.get("code"))
+        status, message = getattr(current, "status", None) or body.get("status"), \
+            getattr(current, "message", None) or body.get("message")
+        if (code == 402 and not isinstance(code, bool) and status == _DEPLETED_STATUS
+                and isinstance(message, str) and _DEPLETED_REASON in message.lower()):
+            return True
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return False
+
+
+def _depleted_text(text: Any) -> bool:
+    """A failure the job ledger recorded as that answer, in the client's own wording
+    (``402 RESOURCE_EXHAUSTED. {'error': {'code': 402, 'message': '...prepayment credits are depleted...'``)."""
+    return (isinstance(text, str) and text.startswith(f"402 {_DEPLETED_STATUS}. ") and "'code': 402" in text
+            and _DEPLETED_REASON in text.lower())
+
+
+def _refused_in_ledger(output_root: Path, path: Path) -> dict[str, Any] | None:
+    """Gemini's credits-depleted answer to the dispatch at ``path``, as its job's ledger recorded it before the
+    answer was kept on the receipt (until 2026-11-17 a 402 left the dispatch ``submitting``): the failed attempt
+    whose run wrote this intent, its write time within the attempt, ended on that answer. None otherwise, and
+    the dispatch is counted as spent, as before."""
+    from datetime import datetime
+
+    from .handoff_job_state import JOB_LEDGER_FILENAME
+    capture = next((parent.parent for parent in (output_root, *output_root.parents) if parent.name == "pipeline"), None)
+    try:
+        ledger = json.loads((capture / JOB_LEDGER_FILENAME).read_text()) if capture is not None else {}
+        written = path.stat().st_mtime
+    except (OSError, ValueError):
+        return None
+    for row in (ledger.get("attempt_history") or []) if isinstance(ledger, dict) else []:
+        if not isinstance(row, Mapping) or row.get("status") != "failed_retryable" or not _depleted_text(row.get("error")):
+            continue
+        try:
+            started, failed = (datetime.fromisoformat(str(row[key]).replace("Z", "+00:00")).timestamp()
+                               for key in ("started_at", "failed_at"))
+        except (KeyError, ValueError):
+            continue
+        if started <= written <= failed:
+            return {"basis": "job_ledger_attempt", "attempt_number": row.get("attempt_number"),
+                    "error_sha256": "sha256:" + hashlib.sha256(row["error"].encode()).hexdigest()}
+    return None
 
 
 def _http_status(exc: BaseException) -> int | None:
@@ -104,9 +190,10 @@ def _dispatch_chain(output_root: Path, digest: str):
     """Walk one request's dispatches: its first intent, then each resend.
 
     Returns ``(completed result or None, next dispatch digest, next intent path, resend marks,
-    reservation to reuse or None)``. An intent the provider refused before any work, or one never
-    dispatched, is proof of $0: its own reservation pays the next dispatch under the same digest,
-    and it is neither counted nor a resend. Each unanswered intent on the way is counted as spent
+    reservation to reuse or None)``. An intent the provider refused before any work (a 429, a 503, or
+    Gemini's credits-depleted 402, kept on the receipt or, for a dispatch made before it was kept, in the
+    job's ledger: ``_refused_in_ledger``), or one never dispatched, is proof of $0: its own reservation
+    pays the next dispatch under the same digest, and it is neither counted nor a resend. Each unanswered intent on the way is counted as spent
     once (``unanswered-<k>.json``), so the next dispatch is the single resend one new reservation
     pays for; after ``UNKNOWN_DISPATCH_LIMIT`` unanswered dispatches nothing more is sent.
     """
@@ -132,9 +219,22 @@ def _dispatch_chain(output_root: Path, digest: str):
         if receipt.get("status") != "submitting":
             return None, dispatch, path, marks, dict(admission)
         intent_sha256 = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        answer = _refused_in_ledger(output_root, path)
+        if answer is not None:
+            # Answered 402 credits-depleted before the answer was kept here: refused, as a dispatch now records it.
+            _fsynced(path, {**receipt, "status": "refused", "http_status": 402, "reason": CREDIT_DEPLETED,
+                            "answer": answer})
+            counted = output_root / f"{stem}.unanswered-{index + 1}.json"
+            record = json.loads(counted.read_text()) if counted.is_file() else None
+            if isinstance(record, dict) and record.get("intent_sha256") == intent_sha256:
+                _fsynced(counted, {**record, "status": "answered_refused_before_work", "outcome": CREDIT_DEPLETED,
+                                   "answer": answer})
+            return None, dispatch, path, marks, dict(admission)
         index += 1
         counted = output_root / f"{stem}.unanswered-{index}.json"
-        if not counted.exists():
+        record = json.loads(counted.read_text()) if counted.is_file() else None
+        if (not isinstance(record, dict) or record.get("status") != "counted_as_spent"
+                or record.get("intent_sha256") != intent_sha256):
             _fsynced(counted, {"schema_version": UNANSWERED_SCHEMA, "status": "counted_as_spent", "outcome": "unknown",
                                "request_digest": digest, "dispatch_digest": dispatch, "intent_sha256": intent_sha256,
                                "reservation": "held_at_maximum_never_released_or_settled_as_zero",
@@ -159,8 +259,9 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
     Every Gemini call of website preparation goes through here. ``earlier_requests`` are
     superseded ``(binding, maximum_cost_usd)`` forms of this same decision: one already bought
     is reused as it stands. A dispatch with no recorded answer is counted as spent and sent
-    again under one new reservation, at most twice (``_dispatch_chain``); a 429 or 503 answer,
-    or a run stopped before its dispatch, reuses its own reservation. An earlier form's
+    again under one new reservation, at most twice (``_dispatch_chain``); a 429 or 503 answer, Gemini's
+    credits-depleted 402 (raised as ``CreditDepleted``, a money wait), or a run stopped before its
+    dispatch, reuses its own reservation. An earlier form's
     unanswered dispatch is counted the same way and this form is bought under its own
     reservation. ``accept_earlier(earlier_binding, result)``, when given, says which earlier answer still stands; one it
     refuses is kept as it is and this form is bought once. The existing WebApp transaction is the
@@ -224,10 +325,13 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
         try:
             result = invoke()
         except Exception as exc:
-            status = _http_status(exc)
-            if status in NO_WORK_STATUSES:
-                _fsynced(path, {"status": "refused", "http_status": status, "request_digest": dispatch,
+            status, depleted = _http_status(exc), credit_depleted(exc)
+            if status in NO_WORK_STATUSES or depleted:
+                _fsynced(path, {"status": "refused", "http_status": status,
+                                **({"reason": CREDIT_DEPLETED} if depleted else {}), "request_digest": dispatch,
                                 "request": request, "admission": admission, **marks})
+            if depleted:
+                raise CreditDepleted(admission.get("expires_at_epoch")) from exc
             raise
         _fsynced(path, {"status": "completed", "request_digest": dispatch, "request": request,
                         "admission": admission, "result": result, "result_digest": canonical_digest(result), **marks})

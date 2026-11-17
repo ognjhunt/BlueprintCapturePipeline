@@ -193,6 +193,12 @@ OBJECTS_IN_SCAN = "The job's objects are part of the room scan; they are not sep
 NOT_FOUND = "Blueprint did not find what the job is about in the video."
 NOT_LOCATED = ("Blueprint saw the job's object in the video but could not locate it precisely, so it is not a "
                "separate file in this package.")
+#: The job's object could not be prepared (``website_scene_handoff``): a Gemini step that reads it from the video was
+#: never answered within its bound, or Blueprint's credits with Gemini were depleted when the job's window ended.
+OBJECT_NOT_PREPARED = ("Blueprint could not prepare the job's object as a separate file: a step that reads it from "
+                       "the video could not be completed.")
+OBJECT_NOT_PREPARED_FLAGS = frozenset({"website_gemini_unanswered_dispatches_exhausted",
+                                       "website_gemini_provider_credit_depleted"})
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."
 NOT_FILLED_IN = "Parts of the room the video did not show were not filled in."
@@ -619,6 +625,7 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
                 if isinstance(objects.get("count"), int) and objects["count"] > 0 else {}),
              **({"not_found": True} if "task_relevant_target_not_observed" in (record.get("flags") or []) else {}),
              **({"not_located": True} if "task_target_not_located" in (record.get("flags") or []) else {}),
+             **({"object_not_prepared": True} if OBJECT_NOT_PREPARED_FLAGS & set(record.get("flags") or []) else {}),
              **({"nothing_taken_out": True} if JOB_OBJECT_RULE in (record.get("flags") or []) else {}),
              **({"not_filled_in": True} if "scene_completion_not_admitted" in (record.get("flags") or []) else {})}
             if record.get("schema_version") == ROOM_RECORD_SCHEMA else None)
@@ -1081,6 +1088,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,
                 *([NOT_FOUND] if room.get("not_found") else []),
                 *([NOT_LOCATED] if room.get("not_located") else []),
+                *([OBJECT_NOT_PREPARED] if room.get("object_not_prepared") else []),
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"] else OBJECTS_TAKEN_OUT.format(count=room["objects"])]
                   if room.get("objects") else []),
                 *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),

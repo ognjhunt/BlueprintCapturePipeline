@@ -796,39 +796,26 @@ def test_an_intake_ready_object_job_keeps_its_room_floor_and_a_floor_that_fails_
 
 # --- 2026-11-17: two test jobs stopped in the preparation half; neither code holds a job any more -----------------
 
-class _PrepaymentDepleted(Exception):
-    """Gemini's answer to test job 3's three dispatches (20:12, 20:16 and 20:22Z): a 402 for depleted prepayment."""
-    code = 402
+RECEIPTS = "pipeline/website_scene_preparation/assembly_coverage/drawer_cabinet_assembly/receipts"
 
 
-def _job3_chain(tmp_path, monkeypatch):
-    """Test job 3's receipts as the host holds them: one request of the assembly views, sent three times, each
-    answered 402 and so recorded with no answer (``submitting``), the first two counted as spent."""
-    from blueprint_pipeline import website_gemini_receipts as receipts
-    from tests.test_website_gemini_receipts import setup_call
-    args, calls = setup_call(tmp_path / "receipts", monkeypatch)
+class GeminiClientError(Exception):
+    """``google.genai.errors.ClientError``'s shape: ``code``, ``status``, ``message``, ``details``, and its text."""
 
-    def depleted():
-        calls.append(("invoke", None))
-        raise _PrepaymentDepleted("402 RESOURCE_EXHAUSTED. Your prepayment credits are depleted.")
-    args["invoke"] = depleted
-    for _ in range(3):
-        with pytest.raises(_PrepaymentDepleted):
-            receipts.retained_gemini_call(**args)
-    assert [row[0] for row in calls] == ["reserve", "invoke"] * 3
-    root = tmp_path / "receipts"
-    assert len(list(root.glob("*.unanswered-*.json"))) == 2 and len(list(root.glob("*.resend-*.json"))) == 2
-    return args, calls
+    def __init__(self, code, status, message):
+        self.code, self.status, self.message = code, status, message
+        self.details = {"error": {"code": code, "message": message, "status": status}}
+        super().__init__(f"{code} {status}. {self.details}")
 
 
-def test_job3_a_provider_whose_bound_is_reached_ships_the_room_package_and_buys_nothing(
-        tmp_path, monkeypatch, ready_atlas):
-    """Test job 3 ("Open the top drawer"): the 4th run found its assembly-view request sent three times with no
-    answer recorded and stopped at ``website_gemini_unanswered_dispatches_exhausted`` (``awaiting_inputs``). Now
-    the job goes on: the room package, flagged with that code, and nothing is reserved, sent, researched or
-    compiled, on this run or the next."""
-    from blueprint_pipeline import website_gemini_receipts as receipts
-    args, calls = _job3_chain(tmp_path, monkeypatch)
+def depleted():
+    """Gemini's answer to test job 3's three dispatches (20:12, 20:16 and 20:22Z, 17 Nov)."""
+    return GeminiClientError(402, "RESOURCE_EXHAUSTED", "Your prepayment credits are depleted. Please go to AI "
+                             "Studio at https://ai.studio/projects to manage your project and billing.")
+
+
+def _drawer_job(tmp_path, monkeypatch):
+    """Test job 3's handoff up to its assembly views: one articulated drawer unit, an object path to build."""
     kwargs = inputs(tmp_path)
     write_json(tmp_path / "pipeline/removal.json", {"entries": [
         {"target_id": "drawer_cabinet_assembly", "task_effect": "manipulated", "articulation_kind": "prismatic"}]})
@@ -840,6 +827,68 @@ def test_job3_a_provider_whose_bound_is_reached_ships_the_room_package_and_buys_
                         lambda **_: {"status": "ready"})
     monkeypatch.setattr(handoff, "native_task_subject_profile", lambda *_, **__: ("prismatic", "articulated_open_close"))
     monkeypatch.setattr(handoff, "subject_rigidity", lambda *_, **__: None)
+    return kwargs
+
+
+def _sent_three_times(tmp_path, monkeypatch, answer, *, ledger=False):
+    """One request of the assembly views sent three times and answered by ``answer()`` each time. ``ledger``: as
+    the release before 2026-11-17 recorded it (a 402 kept no answer on the receipt, and the 4th run counted the
+    third and sent nothing), the job ledger keeping each run's failure text. Returns the call arguments and the
+    calls made since."""
+    from datetime import datetime, timezone
+
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission
+    from tests.test_website_gemini_receipts import setup_call
+    rows = []
+
+    def now():
+        return datetime.now(timezone.utc).isoformat()
+    with pytest.MonkeyPatch.context() as release:
+        args, calls = setup_call(tmp_path / RECEIPTS, release)
+        reserve = receipts.reserve_website_preparation_spend
+
+        def in_window(**kw):  # the job's window: a week after the handoff's ``now`` (``inputs``)
+            admission, _grant = reserve(**kw)
+            admission = {**admission, "expires_at_epoch": 1800000000 + 7 * 86400}
+            return admission, require_paid_resource_admission(admission, resource_class=kw["resource_class"],
+                                                              expected_schema_version=admission["schema_version"])
+        release.setattr(receipts, "reserve_website_preparation_spend", in_window)
+        if ledger:
+            release.setattr(receipts, "credit_depleted", lambda _exc: False)  # the release that ran them
+
+        def answering():
+            calls.append(("invoke", None))
+            raise answer()
+        args["invoke"] = answering
+        for attempt in range(10, 13):
+            started = now()
+            with pytest.raises(Exception) as raised:
+                receipts.retained_gemini_call(**args)
+            rows.append({"attempt_number": attempt, "status": "failed_retryable", "stage": "run_e2e",
+                         "started_at": started, "failed_at": now(), "error_type": "PipelineError",
+                         "error": str(raised.value)})
+        if not ledger:
+            return args, calls
+        started = now()
+        with pytest.raises(ValueError, match=receipts.EXHAUSTED):  # attempt 13 at 20:32:02Z, nothing sent
+            receipts.retained_gemini_call(**args)
+        rows.append({"attempt_number": 13, "status": "failed_retryable", "stage": "run_e2e", "started_at": started,
+                     "failed_at": now(), "error_type": "PipelineError",
+                     "error": "website_scene_preparation: " + receipts.EXHAUSTED})
+    write_json(tmp_path / "pipeline_job_ledger.json", {"status": "failed_retryable", "attempt_history": rows})
+    return setup_call(tmp_path / RECEIPTS, monkeypatch)  # the same call on the release with this change
+
+
+def test_job3_a_genuine_non_answer_past_the_bound_ships_the_room_package_and_buys_nothing(
+        tmp_path, monkeypatch, ready_atlas):
+    """A request sent three times with no answer (the call timed out): the 4th run stops at
+    ``website_gemini_unanswered_dispatches_exhausted``. The job goes on as the room package, flagged with that code,
+    and nothing is reserved, sent, researched or compiled, on this run or the next."""
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    args, calls = _sent_three_times(tmp_path, monkeypatch, lambda: TimeoutError("no answer"))
+    assert [row[0] for row in calls] == ["reserve", "invoke"] * 3
+    kwargs = _drawer_job(tmp_path, monkeypatch)
     monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: pytest.fail("reserved again"))
     args["invoke"] = lambda: pytest.fail("sent again")
     monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
@@ -854,15 +903,83 @@ def test_job3_a_provider_whose_bound_is_reached_ships_the_room_package_and_buys_
         assert result["job_disposition"] == "accepted"
         assert len(packaged) == run and packaged[-1]["flags"] == [receipts.EXHAUSTED]
         assert packaged[-1]["task_profile"] is None
-    assert len(calls) == 6  # the three 402 dispatches of the failed runs, nothing since
-    assert len(list((tmp_path / "receipts").glob("*.unanswered-*.json"))) == 3
+    assert len(calls) == 6
+    assert len(list((tmp_path / RECEIPTS).glob("*.unanswered-*.json"))) == 3
     written = json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text())
     assert written["digest"] == canonical_digest(written, digest_field="digest") and written == result
 
 
+def test_job3_replay_credits_out_is_a_money_wait_and_after_a_top_up_the_drawer_goes_on_unpaid_again(
+        tmp_path, monkeypatch, ready_atlas):
+    """Test job 3 as the host holds it: three dispatches Gemini answered 402 "prepayment credits are depleted",
+    recorded with no answer and counted as spent, the ledger keeping each run's failure. After this change the
+    first is read as the refusal it was: its hold pays the next dispatch (no reservation is made). While the
+    credits are out the job is a money wait, rechecked on the money schedule, and nothing ships; once Gemini
+    answers, the drawer's views are bought under that same hold and the job goes on to compile."""
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    from blueprint_pipeline.hard_stops import is_wall
+    from blueprint_pipeline.website_preparation_retry import classify
+    args, calls = _sent_three_times(tmp_path, monkeypatch, depleted, ledger=True)
+    root = tmp_path / RECEIPTS
+    assert len(list(root.glob("*.unanswered-*.json"))) == 3  # as on the host: the bound spent
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: pytest.fail("reserved again"))
+    raised = []
+
+    def coverage(**kw):
+        try:
+            result = receipts.retained_gemini_call(**args)
+        except Exception as exc:
+            raised.append(exc)
+            raise
+        return {**kw["task_masks"], "targets": [{"target_id": "drawer_cabinet_assembly",
+                                                 "authoring_coverage": {"classified": result}}]}
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", coverage)
+    monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", lambda **kw: kw["task_masks"])
+    compiled = []
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **kw: compiled.append(kw) or (_ for _ in ()).throw(_Compiled()))
+    packaged = room_recorder(monkeypatch)
+    args["invoke"] = lambda: calls.append(("invoke", None)) or (_ for _ in ()).throw(depleted())
+    for _ in range(2):  # credits still out: a money wait, the same hold each time, nothing counted or shipped
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "awaiting_inputs" and result["blockers"] == [receipts.CREDIT_DEPLETED]
+        assert is_wall(raised[-1]) and classify(f"website_scene_preparation: {result['blockers'][0]}") == "money"
+    assert packaged == [] and compiled == []
+    first = json.loads(next(path for path in root.glob("*.json") if "." not in path.stem).read_text())
+    assert (first["status"], first["http_status"], first["reason"]) == ("refused", 402, receipts.CREDIT_DEPLETED)
+    counted = sorted(json.loads(path.read_text())["status"] for path in root.glob("*.unanswered-*.json"))
+    assert counted == ["answered_refused_before_work", "counted_as_spent", "counted_as_spent"]
+    args["invoke"] = lambda: calls.append(("invoke", None)) or {"classification": "drawer"}  # the owner topped up
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert compiled[0]["task_masks"]["targets"][0]["authoring_coverage"] == {"classified": {"classification": "drawer"}}
+    assert [row[0] for row in calls] == ["source_read", "invoke"] * 3  # under the first hold only
+    with pytest.raises(_Compiled):  # and never bought again
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert len(calls) == 6 and packaged == []
+
+
+def test_credits_out_at_the_end_of_the_job_s_window_ships_the_room_package(tmp_path, monkeypatch, ready_atlas):
+    """Only when the job's window ends before the money wait can ask again does it go on without the drawer:
+    the room package, flagged with the credits-depleted code."""
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    packaged = room_recorder(monkeypatch)
+    for left, shipped in ((3 * 3600, False), (2 * 3600, True), (60, True)):
+        monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                            lambda left=left, **_: (_ for _ in ()).throw(receipts.CreditDepleted(kwargs["now"] + left)))
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == ("room_package_written" if shipped else "awaiting_inputs")
+        assert (packaged[-1]["flags"] == [receipts.CREDIT_DEPLETED]) if shipped else (packaged == [])
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(receipts.CreditDepleted(None)))  # no window known: waits
+    assert handoff.prepare_website_scene_handoff(**kwargs)["status"] == "awaiting_inputs"
+
+
 def test_a_wall_or_another_code_at_the_same_step_is_never_the_room_package(tmp_path, monkeypatch, ready_atlas):
-    """Only the provider's bound sends the job on: a money wall raised there, or any other code, keeps
-    ``awaiting_inputs`` as before, and a room that cannot be packaged keeps the provider's code."""
+    """Only a provider's bound, or credits out at the window's end, sends the job on: a money wall raised there, or
+    any other code, keeps ``awaiting_inputs`` as before, and a room that cannot be packaged keeps the code."""
     from blueprint_pipeline.hard_stops import MoneyStop
     from blueprint_pipeline.website_gemini_receipts import EXHAUSTED
     kwargs = inputs(tmp_path)
@@ -956,3 +1073,30 @@ def test_an_unreadable_development_allowlist_keeps_the_preparation(monkeypatch):
     monkeypatch.setenv("BLUEPRINT_WEBSITE_DEVELOPMENT_TEST_TASK_DIGESTS", "not json")
     assert handoff.start_unsupported(["support_surface_not_found_under_subject"],
                                      {"context_digest": "sha256:" + "a" * 64}) is False
+
+
+@pytest.mark.parametrize("code", ["website_gemini_unanswered_dispatches_exhausted",
+                                  "website_gemini_provider_credit_depleted"])
+def test_the_room_package_of_a_drawer_that_could_not_be_prepared_says_so(tmp_path, monkeypatch, code):
+    """The real room package and its README, after the drawer's views could not be had (never answered, or credits
+    out at the window's end): the room as reconstructed, no rule, the drawer taken out, and that it could not be
+    prepared."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    from tests.test_website_scene_handoff_navigation import _published, _record, _said, room_job
+    assert sim.OBJECT_NOT_PREPARED_FLAGS == {receipts.EXHAUSTED, receipts.CREDIT_DEPLETED}
+    error = ValueError(code) if code == receipts.EXHAUSTED else receipts.CreditDepleted(0)
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(error))
+    drawer = {"target_id": "cup-1", "task_effect": "manipulated", "articulation_kind": "prismatic",
+              "articulated_part": "middle drawer", "semantic_label": "three-drawer cabinet"}
+    job, _context, result = room_job(tmp_path, monkeypatch, family="articulated_open_close", removal=[drawer],
+                                     all_targets=True, articulated=True, description="Open the middle drawer")
+    assert (result["status"], result["blockers"]) == ("room_package_written", [])
+    assert _record(result)["flags"][0] == code and _record(result)["success_rule_defined"] is False
+    _status, members = _published(job)
+    said = _said(members["README.txt"])
+    assert said.endswith(f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.OBJECT_NOT_PREPARED} "
+                         f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")

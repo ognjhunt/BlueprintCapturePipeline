@@ -950,13 +950,15 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])
     except (ValueError, KeyError, TypeError, OSError) as exc:
         from .hard_stops import is_wall
-        from .website_gemini_receipts import EXHAUSTED
-        if room_ready and str(exc) == EXHAUSTED and not is_wall(exc):
-            # Test job 3, 2026-11-17: a Gemini call of this preparation (its object's assembly views) was sent the
-            # most times its bound allows with no answer recorded; nothing more is sent. The object cannot be
-            # built without that answer, so the job goes on as the room package, flagged, and buys nothing.
+        from .website_gemini_receipts import EXHAUSTED, last_money_recheck
+        if room_ready and (str(exc) == EXHAUSTED and not is_wall(exc) or last_money_recheck(exc, now)):
+            # A Gemini call of this preparation (an object's assembly views, a mask's grounding) was sent the most
+            # times its bound allows and never answered; or Gemini answered that Blueprint's credits are depleted
+            # and the job's window ends before the money wait can ask again (until then that answer is a money
+            # wait: ``CreditDepleted``). The object cannot be built without that answer, so the job goes on as the
+            # room package, flagged, and buys nothing.
             try:
-                return room_package(None, flags=[EXHAUSTED])
+                return room_package(None, flags=[str(exc)])
             except (ValueError, KeyError, TypeError, OSError):
                 pass  # the room cannot be packaged either: the provider's code is kept, and the job retries
         from .website_recapture_required import CODES as RECAPTURE_CODES, FIELD as RECAPTURE_FIELD, record
