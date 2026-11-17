@@ -6,7 +6,7 @@ Anthropic only when all of these hold (otherwise OpenAI, with the reason):
    ``anthropic``, with a well-formed ``anthropic_provider_terms_reference``);
 2. the host prefers Anthropic (``BLUEPRINT_ARTISAN_PREFER_ANTHROPIC=1``);
 3. ``ANTHROPIC_API_KEY_FILE`` is present and only its owner can read it;
-4. the Pipeline's own privacy rule: the job's Privacy version is ``PRIVACY_POLICY_VERSION``, or
+4. the Pipeline's own privacy rule: the job's Privacy version is in ``PRIVACY_POLICY_VERSIONS``, or
    the version is older or absent and the job carries ``TYPED_CONSENT``;
 5. the existing unbilled model read (``claude_opus_model_preflight``) answers for the key and model.
 
@@ -32,8 +32,11 @@ from .decision_evidence_contracts import canonical_digest
 SCHEMA_VERSION = "artisan_provider_choice.v1"
 PREFER_ANTHROPIC_ENV = "BLUEPRINT_ARTISAN_PREFER_ANTHROPIC"
 KEY_FILE_ENV = "ANTHROPIC_API_KEY_FILE"
-#: The Privacy version under which a site's job may go to Anthropic without a separate consent.
-PRIVACY_POLICY_VERSION = "2026-11-13.1"
+#: The Privacy versions under which a site's job may go to Anthropic without a separate consent.
+#: 2026-11-17.1 and 2026-11-18.1 are the version published without the face-blur promise (the
+#: website publishes one of them); its Anthropic listing is unchanged from 2026-11-13.1. A later
+#: Privacy Policy version must be added here deliberately, once its provider list is checked.
+PRIVACY_POLICY_VERSIONS = frozenset({"2026-11-13.1", "2026-11-17.1", "2026-11-18.1"})
 #: The typed consent an older or unversioned job must carry instead.
 TYPED_CONSENT = {"statement_version": "2026-09-24.v1", "provider": "anthropic", "model": "claude-opus-5-5"}
 BOTH_PROVIDERS = frozenset({"openai", "anthropic"})
@@ -63,7 +66,7 @@ def privacy_refusal(grant: Mapping[str, Any]) -> str | None:
     version = grant.get("privacy_policy_version")
     if version is not None and (not isinstance(version, str) or not version.strip()):
         return "privacy_policy_version_invalid"
-    if version == PRIVACY_POLICY_VERSION:
+    if version in PRIVACY_POLICY_VERSIONS:
         return None
     consents = grant.get("site_consents", [])
     if not isinstance(consents, list) or not all(isinstance(item, Mapping) for item in consents):

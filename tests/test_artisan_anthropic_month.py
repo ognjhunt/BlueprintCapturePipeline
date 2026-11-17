@@ -46,7 +46,7 @@ def _others(report):
 def _grant(**changes):
     value = {"schema_version": "website_scene_sponsorship.v1", "request_id": "req-9",
              "authoring_providers": ["openai", "anthropic"], "anthropic_provider_terms_reference": TERMS,
-             "privacy_policy_version": choice.PRIVACY_POLICY_VERSION, "site_consents": [], **changes}
+             "privacy_policy_version": "2026-11-13.1", "site_consents": [], **changes}
     value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
     return value
 
