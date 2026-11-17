@@ -31,7 +31,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
-from .atlas_automation_plan import preserves_capture
+from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, preserves_capture
 from .local_reconstruction_adapters import _sha256_file
 
 PROVIDER = "world_labs_atlas"
@@ -400,7 +400,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     # (``website_atlas_pipeline.GENERATED_IN_COLLISION_ONLY``): the mesh is registered to the admitted
     # export, which the completion admission binds below; the look is checked to be filmed frames only.
     collision_manifest = splat_manifest
-    if completion_admission is not None and completion.get('generated_geometry_in') == 'collision_only':
+    if completion_admission is not None and completion.get('generated_geometry_in') == GENERATED_IN_COLLISION_ONLY:
         collision_manifest = _read(_inside(job_dir / str(completion.get('collision_splat_relative_path') or '')
                                            / 'atlas_depth_splat_manifest.json', job_dir))
         if (collision_manifest.get('digest') != completion.get('collision_splat_manifest_digest')
@@ -508,10 +508,10 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     if estimates:
         base[ESTIMATES_FIELD] = estimates
     if completion_admission is not None:
-        base['content_provenance'] = {'basis': 'captured_scene_with_bounded_generated_estimates',
+        base['content_provenance'] = {'basis': GENERATED_ESTIMATES_BASIS,
             'completion_admission_digest': completion_admission['digest'], 'generated_geometry_is_estimate': True,
             # Read by the company package's README (``website_company_simulation``).
-            **({'generated_geometry_in': 'collision_only'} if collision_manifest is not splat_manifest else {})}
+            **({'generated_geometry_in': GENERATED_IN_COLLISION_ONLY} if collision_manifest is not splat_manifest else {})}
     # Where the camera walked, in the levelled scene in metres (Y up), in video order: the
     # filmed route a locomotion task's start and goal can be read from (``website_locomotion_task``).
     walked = sorted((key, row) for key, row in _cameras(background_pose).items() if str(key).startswith("decoded-"))

@@ -504,7 +504,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
         from .atlas_pricing import render_cost
         pose_budget = round(pose_budget - render_cost(policy, len(required)), 6)
     if pose_budget < 2 * policy["pose_input_cost_usd"]:
-        raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_runtime_budget_insufficient_for_pose_and_generation")
     refinement = ({k: value[k] for k in ("action", "gap_assessment", "additional_input_frame_ids")}
                   | {"feedback_digest": feedback["digest"]}) if feedback is not None else {}
     quality = ({"quality_excluded_frame_ids": sorted(unsafe & selected & quality_rejected)}
@@ -1189,7 +1190,8 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
             # a submitting receipt can strand it.
             budget = getattr(getattr(selected, "config", None), "max_inference_cost_usd", None)
             if budget is not None and carried_reserved_usd + ceiling + search_calls * search_fee > budget:
-                raise ValueError("atlas_scene_planner_invoker_budget_exhausted")
+                from .hard_stops import MoneyStop
+                raise MoneyStop("atlas_scene_planner_invoker_budget_exhausted")
             audit = InferenceReservationAudit(run_root=output_root / digest[7:], run_id=digest[7:23])
             recorded = []
 

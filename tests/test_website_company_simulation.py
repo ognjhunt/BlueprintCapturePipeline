@@ -2225,13 +2225,16 @@ def test_a_package_without_its_look_says_nothing_of_the_look(tmp_path):
     job = _large_look(tmp_path)
     _raw, _whole, bare = _sizes(job, tmp_path / "sizes")
     source = {**sim.simulation_source(job.capture, queue_root=job.queue), "removed_items": 2,
-              "appearance_quality": "not_passed", "appearance_representation": "particlefield_3d_gaussian_splat"}
+              "appearance_quality": "not_passed", "appearance_representation": "particlefield_3d_gaussian_splat",
+              "generated_patch": "look_and_collision"}
     built = sim.build_package(source, tmp_path / "bare.zip", literals=[], max_bytes=bare + 4096)
     assert built["look_left_out"] is True
     with zipfile.ZipFile(tmp_path / "bare.zip") as archive:
         readme = " ".join(archive.read("README.txt").decode().split())
     assert sim.LOOK_LEFT_OUT in readme and sim.FURNITURE_REMOVED_NO_LOOK.format(count=2) in readme
     assert sim.APPEARANCE_QUALITY_NOT_PASSED not in readme and "appearance file" not in readme
+    # Admitted generated geometry is still named, by the collision file alone.
+    assert sim.GENERATED_NO_LOOK_NOTE in readme and sim.GENERATED_LOOK_AND_COLLISION_NOTE not in readme
     assert "Gaussian" not in readme and "how the site looks" not in readme and "Hidden in scene.usda" not in readme
 
 
@@ -2255,28 +2258,32 @@ def test_a_timeout_during_the_build_without_the_look_is_recorded_and_waits_its_w
     assert world.delivered == [] and not _package(job).exists()
 
 
-@pytest.mark.parametrize("where", [None, "collision_only", "look_and_collision", "unsealed"])
-def test_a_generated_patch_in_the_collision_only_is_said_and_nothing_else_changes(job, tmp_path, where):
-    """Owner, 2026-11-17: the look is the video's own; a generated patch kept only in the collision file is
-    named as exactly that. A package whose base scene has none says what it said before, at the same revision."""
+@pytest.mark.parametrize("where", [None, "collision_only", "look_and_collision", "unsealed", "other_basis"])
+def test_admitted_generated_geometry_is_named_where_it_is_and_nothing_else_changes(job, tmp_path, where):
+    """Owner, 2026-11-17: the README says where admitted generated geometry is: only in the scan the collision
+    file was made from, or in the look as well (a job whose refined splat could not be had, or one recorded
+    before the marker). A base scene with none says what it said before, at the same revision."""
     before = sim.simulation_source(job.capture, queue_root=job.queue)
     preparation = job.capture / "pipeline" / "website_scene_preparation"
     if where is not None:
-        provenance = {"basis": "captured_scene_with_bounded_generated_estimates", "generated_geometry_is_estimate": True,
-                      **({"generated_geometry_in": "collision_only"} if where != "look_and_collision" else {})}
+        provenance = {"basis": "captured_scene_with_bounded_generated_estimates" if where != "other_basis"
+                      else "something_else", "completion_admission_digest": "sha256:" + "3" * 64,
+                      "generated_geometry_is_estimate": True,
+                      **({"generated_geometry_in": "collision_only"} if where == "collision_only" else {})}
         _write(preparation / "base_scene.json", {"content_provenance": provenance})
         handoff = {"status": "intake_ready", "base_scene_path": str(preparation / "base_scene.json")}
         handoff["digest"] = canonical_digest(handoff, digest_field="digest")
         if where == "unsealed":
             handoff["digest"] = "sha256:" + "0" * 64
         _write(preparation / "handoff.json", handoff)
-    said = where == "collision_only"
-    assert sim.generated_in_collision(job.capture) is said
+    expected = where if where in ("collision_only", "look_and_collision") else None
+    assert sim.generated_patch(job.capture) == expected
     source = sim.simulation_source(job.capture, queue_root=job.queue)
-    assert source.get("generated_in_collision") is (True if said else None)
-    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is not said
+    assert source.get("generated_patch") == expected
+    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (expected is None)
     sim.build_package(source, tmp_path / "package.zip", literals=[])
     with zipfile.ZipFile(tmp_path / "package.zip") as archive:
         readme = " ".join(archive.read("README.txt").decode().split())
-    assert (sim.GENERATED_IN_COLLISION_ONLY in readme) is said
-    assert sim.GENERATED_IN_COLLISION_NO_LOOK not in readme
+    assert (sim.GENERATED_COLLISION_ONLY_NOTE in readme) is (expected == "collision_only")
+    assert (sim.GENERATED_LOOK_AND_COLLISION_NOTE in readme) is (expected == "look_and_collision")
+    assert sim.GENERATED_NO_LOOK_NOTE not in readme

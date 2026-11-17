@@ -57,7 +57,11 @@ from typing import Any
 
 from . import company_share_permission as permission
 from . import website_company_clip as clip
-from .atlas_automation_plan import JOB_OBJECT_RULE
+from .atlas_automation_plan import (
+    GENERATED_ESTIMATES_BASIS,
+    GENERATED_IN_COLLISION_ONLY,
+    JOB_OBJECT_RULE,
+)
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .outbound_file_scan import capture_site_identity
@@ -147,15 +151,22 @@ FURNITURE_REMOVED = ("{count} movable item(s) the site agreed to move are not in
                      "appear in the appearance file.")
 #: The same, for a package built without the appearance file (``LOOK_LEFT_OUT``).
 FURNITURE_REMOVED_NO_LOOK = "{count} movable item(s) the site agreed to move are not in the collision file."
-#: The room's look is Atlas's refined splat of the filmed frames, and a generated estimate of a surface the video did
-#: not show is only in the scan the collision file was made from (``website_atlas_pipeline.GENERATED_IN_COLLISION_ONLY``,
-#: owner 2026-11-17). Read from the base scene the job's scene handoff recorded (``generated_in_collision``).
-GENERATED_IN_COLLISION_ONLY = ("The room's look is made from the video alone. The collision file also holds a "
-                               "generated estimate of a surface the video did not show; it was not filmed, and it is "
-                               "not in the look.")
-#: The same, for a package built without the appearance file (``LOOK_LEFT_OUT``).
-GENERATED_IN_COLLISION_NO_LOOK = ("The collision file holds a generated estimate of a surface the video did not show; "
-                                  "it was not filmed.")
+#: Where a generated estimate of a surface the video did not show sits (``generated_patch``, read from the base scene
+#: the job's scene handoff recorded). The collision mesh is trimmed after registration and nothing checks that the
+#: generated samples survive it, so each sentence names the scan the collision file was made from.
+#: ``collision_only`` (owner 2026-11-17): the look is Atlas's refined splat of the filmed frames.
+GENERATED_COLLISION_ONLY_NOTE = ("The collision file was made from a scan that also holds a generated estimate of "
+                                 "a surface the video did not show; that estimate was not filmed, and it is not in "
+                                 "the look.")
+#: ``look_and_collision``: no refined splat could be had, so the look is that scan itself.
+GENERATED_LOOK_AND_COLLISION_NOTE = ("The room's look, and the scan the collision file was made from, hold a "
+                                     "generated estimate of a surface the video did not show; that estimate was not "
+                                     "filmed.")
+#: Either, for a package built without the appearance file (``LOOK_LEFT_OUT``).
+GENERATED_NO_LOOK_NOTE = ("The collision file was made from a scan that holds a generated estimate of a surface the "
+                          "video did not show; that estimate was not filmed.")
+#: The two places ``generated_patch`` names.
+COLLISION_ONLY, LOOK_AND_COLLISION = GENERATED_IN_COLLISION_ONLY, "look_and_collision"
 #: The look file failed its quality gate (``team_scene_robot_absent.APPEARANCE_QUALITY``) and ships as it is.
 APPEARANCE_QUALITY_NOT_PASSED = ("The appearance file did not pass Blueprint's image quality check; it is included "
                                  "as it is.")
@@ -290,7 +301,7 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
             statuses.append((path.stat().st_mtime_ns, path.name, status))
     for _mtime, _name, status in sorted(statuses, reverse=True):
         source = _half(Path(status["team_scene_inputs_path"]).parent, status, estimates=object_estimates(root),
-                       generated_in_collision=generated_in_collision(root))
+                       generated=generated_patch(root))
         if source is not None:
             return source
     # Else the room package the scene handoff wrote (``website_scene_handoff.write_room_package``), when sealed.
@@ -299,7 +310,7 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
     record = (_inside(root, Path(path)) if isinstance(path, str) and handoff.get("status") == "room_package_written"
               and handoff.get("digest") == canonical_digest(handoff, digest_field="digest") else None)
     source = (_half(record.parent, {"team_scene_inputs_path": str(record)},
-                    generated_in_collision=generated_in_collision(root)) if record is not None else None)
+                    generated=generated_patch(root)) if record is not None else None)
     return source if source is not None and source.get("room") is not None else None
 
 
@@ -411,7 +422,7 @@ def _floor_source(root: Path, *, queue_root: Path, now: float, reason: str | Non
             notes["reason"] = reason  # cannot be read or bound to this job: nothing ships, the pass says why
         return None
     source = _half(record.parent, {"team_scene_inputs_path": str(record)},
-                   generated_in_collision=generated_in_collision(root))
+                   generated=generated_patch(root))
     if source is None or source.get("room") is None or FLOOR_FLAG not in (_read(record).get("flags") or []):
         return None
     return {**source, "source_kind": "floor", "floor_reason": reason}
@@ -474,24 +485,28 @@ def object_estimates(capture_root: Path) -> Mapping[str, Any] | None:
     return bounds if isinstance(bounds, Mapping) else None
 
 
-def generated_in_collision(capture_root: Path) -> bool:
-    """True when the base scene the job's scene handoff recorded keeps a generated patch in its collision only.
+def generated_patch(capture_root: Path) -> str | None:
+    """Where the base scene the job's scene handoff recorded keeps admitted generated geometry, or None.
 
-    The handoff (sealed by its digest) names the base scene its halves are built from; a base scene with a
-    generated patch in its look as well, or none at all, is False, so its package says what it said before.
+    ``collision_only``: only in the scan its collision was made from, beside a refined look. ``look_and_collision``:
+    any other admitted geometry (the look is the scan holding it; jobs before 2026-11-17 record no marker). The
+    handoff (sealed by its digest) names the base scene its halves are built from; a base scene with no admitted
+    generated geometry is None, so its package says what it said before.
     """
     root = Path(capture_root)
     handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
     path = handoff.get("base_scene_path")
     if not isinstance(path, str) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
-        return False
+        return None
     base = _inside(root, Path(path))
     provenance = (_read(base) if base is not None else {}).get("content_provenance")
-    return isinstance(provenance, Mapping) and provenance.get("generated_geometry_in") == "collision_only"
+    if not isinstance(provenance, Mapping) or provenance.get("basis") != GENERATED_ESTIMATES_BASIS:
+        return None
+    return COLLISION_ONLY if provenance.get("generated_geometry_in") == COLLISION_ONLY else LOOK_AND_COLLISION
 
 
 def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None,
-          generated_in_collision: bool = False) -> dict[str, Any] | None:
+          generated: str | None = None) -> dict[str, Any] | None:
     """The half's plan and shipped files; a row that cannot be placed is kept as ``refusal`` naming its role."""
     from .scene_package_stage import StageRefused, neutral_rule, placements, up_axis
     if not scene.is_absolute() or scene.is_symlink() or not scene.is_dir():
@@ -508,7 +523,7 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
         source: dict[str, Any] = {"packet_dir": packet, "plan_path": plan_path, "plan": plan,
                                   "plan_digest": plan.get("plan_digest"), "status": dict(status), "files": {},
                                   "refusal": None, **notes,
-                                  **({"generated_in_collision": True} if generated_in_collision else {}),
+                                  **({"generated_patch": generated} if generated else {}),
                                   "physics_check": physics_check(
                                       packet, plan, rule_withheld="rule_withheld" in notes)}
         try:
@@ -670,7 +685,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         # Only a wording that differs from the packages before it names a new revision.
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room",
-                                        "generated_in_collision") if source.get(key)}})
+                                        "generated_patch") if source.get(key)}})
 
 
 # --- what must never leave --------------------------------------------------------------------------------------
@@ -1058,8 +1073,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([(FURNITURE_REMOVED_NO_LOOK if source.get("look_left_out") else FURNITURE_REMOVED).format(
                  count=source["removed_items"])] if source.get("removed_items") else []),
              *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else []),
-             *([GENERATED_IN_COLLISION_NO_LOOK if source.get("look_left_out") else GENERATED_IN_COLLISION_ONLY]
-               if source.get("generated_in_collision") else []),
+             *([GENERATED_NO_LOOK_NOTE if source.get("look_left_out")
+                else GENERATED_COLLISION_ONLY_NOTE if source["generated_patch"] == COLLISION_ONLY
+                else GENERATED_LOOK_AND_COLLISION_NOTE] if source.get("generated_patch") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
                if source.get("support_not_held") and not withheld else []),
              *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,

@@ -10,6 +10,11 @@ PRESERVED_SCENE_ORIGINS = ("synthetic_design", "no_manipulated_subject")
 #: A captured job whose planner removals were not applied: the job brings no object of its own
 #: (``website_atlas_pipeline.job_object_review``), so its scene is kept as filmed, like the origins above.
 JOB_OBJECT_RULE = "atlas_planner_removal_not_applied"
+#: A preserved scene whose completion admitted generated geometry (``website_atlas_scene_source``'s
+#: ``content_provenance.basis``), and where that geometry sits beside a refined-splat look: only in the scan the
+#: collision mesh is made from (owner, 2026-11-17). Written by the room step, read by the company package README.
+GENERATED_ESTIMATES_BASIS = "captured_scene_with_bounded_generated_estimates"
+GENERATED_IN_COLLISION_ONLY = "collision_only"
 
 
 def preserves_capture(value) -> bool:

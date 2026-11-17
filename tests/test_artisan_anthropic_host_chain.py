@@ -35,7 +35,7 @@ def _no_host_folders(tmp_path, monkeypatch):
 
 def _anthropic_choice(key: Path) -> dict:
     grant = {"authoring_providers": ["openai", "anthropic"], "anthropic_provider_terms_reference": "sha256:" + "a" * 64,
-             "privacy_policy_version": choice.PRIVACY_POLICY_VERSION}
+             "privacy_policy_version": "2026-11-13.1"}
     grant["authority_digest"] = canonical_digest(grant, digest_field="authority_digest")
     return choice.choose_authoring_provider(
         grant=grant, environ={choice.PREFER_ANTHROPIC_ENV: "1", choice.KEY_FILE_ENV: str(key)},

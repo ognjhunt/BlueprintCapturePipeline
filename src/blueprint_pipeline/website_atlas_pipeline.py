@@ -22,7 +22,8 @@ import time
 
 from .website_task_context import load_atlas_configuration as load_configuration
 from .common import write_json
-from .atlas_automation_plan import JOB_OBJECT_RULE, PRESERVED_SCENE_ORIGINS, preserves_capture
+from .atlas_automation_plan import (GENERATED_IN_COLLISION_ONLY, JOB_OBJECT_RULE, PRESERVED_SCENE_ORIGINS,
+                                    preserves_capture)
 from .atlas_pricing import admitted_final_outputs, render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
@@ -141,7 +142,8 @@ def _require_current_price_review(policy) -> None:
     from datetime import datetime, timezone
     from .website_atlas_pose import _reviewed_recently
     if not _reviewed_recently(policy.get("reviewed_on"), datetime.now(timezone.utc).date()):
-        raise ValueError("atlas_runtime_price_review_expired")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_runtime_price_review_expired")
 
 
 def generation_target_ids(*, review, inputs):
@@ -195,11 +197,13 @@ def accuracy_survey(*, source_video: Path, base_root: Path, base_survey: Path, r
 
 
 def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check, experimental, max_polls,
-                 reference_inputs=None, configuration=None, allow_scale_review=True):
+                 reference_inputs=None, configuration=None, allow_scale_review=True, raise_walls=False):
     """The selected original views' own Atlas pose and the scale its reviewed references give.
 
     Retained receipts make a resume free. A refused purchase leaves the
-    background intact and is reported, not raised.
+    background intact and is reported, not raised. ``raise_walls`` raises a
+    wall (``hard_stops``) instead: for the windowed re-pose, which would
+    otherwise go on to buy.
     """
     from .atlas_scene_automation import measurement_plan
     from .atlas_scene_measurements import estimate_sizes, load_views
@@ -296,6 +300,10 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
                     return {"status": "needs_input", "reason": "atlas_scale_review_unresolved",
                             "scene_measurements_digest": measurements["digest"]}
     except ValueError as exc:
+        from .hard_stops import is_wall
+        if raise_walls and is_wall(exc):
+            # The windowed re-pose records a held result and goes on to buy: it gets the wall instead.
+            raise
         return {"status": "needs_input", "reason": str(exc)}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
             "pose_relative_path": str(pose_root.relative_to(parent_root.parent)),
@@ -498,8 +506,6 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
 
 
 REFINED_APPEARANCE, DRAFT_APPEARANCE = "atlas_refined_splat", "depth_fused_draft_fallback"
-#: Admitted generated geometry beside a refined-splat look: in the collision shape, never in the look.
-GENERATED_IN_COLLISION_ONLY = "collision_only"
 
 
 def _splat_input_selection(*, frames, pose, draft, output_root, review, source_root, bought):
@@ -929,7 +935,7 @@ def _windowed_repose(*, output_root, first_pose_root, source_root, review, sourc
                                            **profile)
             ready = (inputs_, _source_pose(pose_root=root, inputs=inputs_, review=window["review"], policy=policy,
                 task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
-                configuration=configuration, allow_scale_review=False))
+                configuration=configuration, allow_scale_review=False, raise_walls=True))
         retry_inputs, retry_pose = ready
         if retry_pose.get("status") != "completed" or retry_pose.get("result_digest") != outcome[
                 "retry_pose_result_digest"]:
@@ -953,6 +959,10 @@ def _windowed_repose(*, output_root, first_pose_root, source_root, review, sourc
                                             **profile)
         retry_root, prepared = prepare_source_pose(root)
     except ValueError as exc:
+        from .hard_stops import is_wall
+        if is_wall(exc):
+            # The face blur (``prepare_source_pose``) or a selection's money: the job must not go on buying.
+            raise
         return finish(reposes.record_outcome(output_root, binding, "selection_refused",
                                              reason=str(exc).partition(":")[0]))
     count = len(prepared["frames"])
@@ -979,7 +989,7 @@ def _windowed_repose(*, output_root, first_pose_root, source_root, review, sourc
                                                  **({"forecast": forecast} if forecast else {})))
     retry_pose = _source_pose(pose_root=root, inputs=retry_inputs, review=window["review"], policy=policy,
         task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
-        configuration=configuration, allow_scale_review=False)
+        configuration=configuration, allow_scale_review=False, raise_walls=True)
     if retry_pose["status"] == "processing":
         return {**retry_pose, "stage": "windowed_source_pose"}
     posed = retry_root / "atlas_posed_rgbd_result.json"
@@ -1233,7 +1243,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # Size a new selection only; a retained one already spent its reviews, and
     # holding them back again would stop a resumed job on money it already paid.
     if not selection_path.exists() and budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
-        raise ValueError("atlas_runtime_budget_insufficient")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_runtime_budget_insufficient")
     if selection_path.exists():
         selection = json.loads(selection_path.read_text())
         survey_path = output_root / selection["survey_relative_path"]
@@ -1381,7 +1392,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     pose_bought = ((pose_root / "atlas_pose/submission.json").exists()
                    or (pose_root / "atlas_posed_rgbd_result.json").exists())
     if not pose_bought and planned_cost > budget + 1e-9:
-        raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_runtime_budget_insufficient_for_pose_and_generation")
     pose_quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
         "maximum_cost_usd": round(count * policy["pose_input_cost_usd"], 6), "max_input_images": count,
         "target_resolutions": [[720, 1280], [1280, 720]], "request_options": request_options(),

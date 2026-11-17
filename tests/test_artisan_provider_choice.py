@@ -24,7 +24,7 @@ def _no_host_folders(tmp_path, monkeypatch):
 
 def _grant(**changes):
     value = {"schema_version": "website_scene_sponsorship.v1", "authoring_providers": ["openai", "anthropic"],
-             "anthropic_provider_terms_reference": TERMS, "privacy_policy_version": choice.PRIVACY_POLICY_VERSION,
+             "anthropic_provider_terms_reference": TERMS, "privacy_policy_version": "2026-11-13.1",
              "site_consents": [], **changes}
     value = {k: v for k, v in value.items() if v is not None}
     value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
@@ -451,3 +451,25 @@ def test_a_gap_compile_finds_late_at_the_handoff_ships_a_room_package_without_as
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["status"] == "room_package_written" and [call["flags"] for call in packaged] == [["late_gap"]]
     assert handed == [True] and asked == []
+
+
+def test_the_listed_privacy_versions_are_exactly_those_checked_for_anthropic():
+    assert choice.PRIVACY_POLICY_VERSIONS == frozenset({"2026-11-13.1", "2026-11-17.1", "2026-11-18.1"})
+
+
+@pytest.mark.parametrize("version", ["2026-11-13.1", "2026-11-17.1", "2026-11-18.1"])
+def test_each_listed_privacy_version_allows_anthropic_without_the_typed_consent(host, version):
+    grant = _grant(privacy_policy_version=version)
+    assert choice.privacy_refusal(grant) is None
+    record = choice.choose_authoring_provider(grant=grant, environ=host, read=_Read())
+    assert record["provider"] == "anthropic"
+
+
+@pytest.mark.parametrize("version", ["2026-11-12.2", "2026-11-17.2", "2026-11-25.1"])
+def test_an_unlisted_privacy_version_without_the_typed_consent_refuses_as_before(host, version):
+    grant = _grant(privacy_policy_version=version)
+    assert choice.privacy_refusal(grant) == "privacy_version_not_listed_and_typed_consent_absent"
+    read = _Read()
+    record = choice.choose_authoring_provider(grant=grant, environ=host, read=read)
+    assert record["provider"] == "openai" and read.calls == 0
+    assert record["reason"] == "privacy_version_not_listed_and_typed_consent_absent"

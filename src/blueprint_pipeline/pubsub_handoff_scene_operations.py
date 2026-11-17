@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterator
 
+from .atlas_privacy_screen import DECISION_PATHS as FACE_BLUR_DECISION_PATHS
 from .website_capture_entry import is_website_capture_identity
 
 #: A handoff outside the WebApp's website namespace came from the capture app, whose processing
@@ -56,6 +57,10 @@ def _stage_handoff_capture_body(_listener, /, handoff, *, storage_root, storage_
         if blob_path.is_absolute() or any((part in {'', '.', '..'} for part in blob_path.parts)) or '\\' in blob_name or ('\x00' in blob_name):
             raise _listener.PipelineError('Pub/Sub blob name contains an unsafe path')
         if blob_name.endswith('/'):
+            continue
+        if _listener.PurePosixPath(*blob_path.parts[prefix_depth:]).as_posix() in FACE_BLUR_DECISION_PATHS:
+            # Only the Pipeline writes the records that decide whether faces are blurred; a bucket
+            # object never replaces them (atlas_privacy_screen.DECISION_PATHS).
             continue
         try:
             destination = _listener.contained_path(bucket_root, *blob_path.parts, field='Pub/Sub blob destination')

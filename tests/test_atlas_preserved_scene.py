@@ -571,3 +571,119 @@ def test_the_handoff_takes_a_refined_look_with_the_admitted_patch_in_the_collisi
 def _sha256(path):
     import hashlib
     return 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize('case', ['refined_look_patch_in_collision', 'draft_look_with_patch', 'no_patch'])
+def test_the_room_step_result_reaches_the_package_readme_saying_where_the_patch_is(tmp_path, monkeypatch, case):
+    """End to end on the real result shape: the room step writes its result and bundle, the scene source reads
+    them into the base scene, and the company package's README says where admitted generated geometry is."""
+    import zipfile
+
+    from blueprint_pipeline import atlas_native_splat
+    from blueprint_pipeline import atlas_preserved_completion as admissions
+    from blueprint_pipeline import website_company_simulation as sim
+    from tests.test_website_company_simulation import Job
+
+    job_dir = job_fixture(tmp_path / 'scene', same_pose=True)
+    fixture_result = json.loads((job_dir / 'result.json').read_text())
+    source = json.loads((job_dir / 'pose/atlas_posed_rgbd_result.json').read_text())
+    captured = [{'frame_id': row['frame_id']} for row in source['operation_receipt']['input_usage']['frames']]
+    ply = job_dir / 'automation/background_splat/atlas_depth_splat.ply'
+    glb = job_dir / 'automation/background_mesh/registered/atlas_mesh_supported.glb'
+
+    def splat(root, name, **fields):
+        root.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ply, root / 'splat.ply')
+        return write(root / name, digest({'pose_result_digest': source['digest'], **fields, 'outputs': [
+            {'role': 'splat_ply', 'path': 'splat.ply', 'sha256': _sha256(root / 'splat.ply')}]}))
+
+    draft = splat(job_dir / 'splat', 'atlas_depth_splat_manifest.json', splat_kind='depth_fused_draft')
+    completed_root = job_dir / 'preserved_completion/splat-bound'
+    completed = splat(completed_root, 'atlas_depth_splat_manifest.json', splat_kind='depth_fused_draft',
+                      generated_content=True, rebuild_source_manifest_digest=draft['digest'])
+    refined_root = job_dir / 'refined_splat-minimal'
+    refined = splat(refined_root, 'atlas_refined_splat_manifest.json', splat_kind='atlas_refined',
+                    task='posedImages2Splats', request_form='documented_minimal', generated_content=True,
+                    frames=captured)
+    admission = write(job_dir / 'preserved_completion/admission-1.json', digest({'schema_version': 'test'}))
+    patch = case != 'no_patch'
+    monkeypatch.setattr(pipeline, '_source_pose', lambda **_: {**fixture_result['source_pose'], 'status': 'completed'})
+    monkeypatch.setattr(pipeline, '_windowed_repose', lambda **_: None)
+    monkeypatch.setattr(pipeline, '_splat_input_selection', lambda **_: None)
+    monkeypatch.setattr(source_inputs, 'prepare_source_pose', lambda _: (job_dir / 'pose', {}))
+    monkeypatch.setattr(splats, 'load_posed_rgbd', lambda _: (source, captured))
+    monkeypatch.setattr(pipeline, 'load_configuration', lambda *a: {
+        'remaining_cost_usd': 3 if case == 'draft_look_with_patch' else 23})
+    monkeypatch.setattr(allocator, 'run_sponsored_website_atlas_automation', lambda **_: {
+        'status': 'completed', 'generated_geometry_admitted': True, 'splat_root': str(completed_root),
+        'splat_manifest': completed, 'completion': {'generated_roots': ['generated']}, 'generated_roots': [],
+        'analysis_paths': [], 'admission': admission, 'admission_path': str(job_dir / 'preserved_completion/admission-1.json')}
+        if patch else {'status': 'completed', 'generated_geometry_admitted': False, 'generated_roots': [],
+                       'splat_root': str(job_dir / 'splat'), 'completion': {'generated_roots': []}})
+    monkeypatch.setattr(atlas_native_splat, 'run_native_splat', lambda **kw: (
+        kw['draft'] == draft or pytest.fail('a generated export reached the refined-splat request')) and {
+        'status': 'completed', 'splat_root': str(refined_root), 'splat_manifest': refined})
+    monkeypatch.setattr(splats, 'splats2mesh_attempt', lambda root, output: ({'request': {}, 'uploads': {}}, output))
+
+    def mesh(**kw):
+        kw['output_root'].mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(glb, kw['output_root'] / 'scene.glb')
+        write(kw['output_root'] / 'result.json', {'outputs': [{'role': 'mesh', 'path': 'scene.glb'}]})
+        return {'status': 'completed'}
+    monkeypatch.setattr(allocator, 'run_sponsored_website_atlas_task', mesh)
+
+    def register(*, glb, splat_root, output_root, **_):
+        output_root.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(glb, output_root / 'atlas_mesh_supported.glb')
+        write(output_root / 'atlas_mesh_registration.json', digest({
+            'splat_manifest_digest': atlas_native_splat.load_splat_manifest(splat_root)['digest'],
+            'outputs': [{'role': 'supported_mesh_glb', 'path': 'atlas_mesh_supported.glb',
+                         'sha256': _sha256(output_root / 'atlas_mesh_supported.glb')}]}))
+    monkeypatch.setattr(mesh_registration, 'register_atlas_mesh', register)
+
+    def bundle(*, splat_root, mesh_root, output_root, **_):
+        target = output_root / 'bundle'
+        shutil.copytree(splat_root, target / 'splat')
+        shutil.copytree(mesh_root / 'registered', target / 'mesh/registered')
+        registration = json.loads((mesh_root / 'registered/atlas_mesh_registration.json').read_text())
+        manifest = write(target / 'manifest.json', digest({
+            'schema_version': 'atlas_download_bundle.v1', 'splat_available': True, 'mesh_available': True,
+            'splat_manifest_digest': atlas_native_splat.load_splat_manifest(splat_root)['digest'],
+            'mesh_registration_digest': registration['digest']}))
+        return {'directory': str(target), 'manifest_digest': manifest['digest'], 'zip_path': 'scene.zip'}
+    monkeypatch.setattr(bundles, 'export_pose_bundle', bundle)
+    checked = []
+    monkeypatch.setattr(admissions, 'validate_preserved_completion', lambda **kw: checked.append(kw['splat']['digest']))
+
+    result = pipeline._preserved_scene(pose_root=job_dir / 'pose', output_root=job_dir, inputs={},
+        review={'subject_origin': 'no_manipulated_subject', 'automation': {'objects': [], 'removal_instruction': ''},
+                'uncaptured_regions': []},
+        policy={'mesh_export_cost_usd': .5, 'rgbd_view_cost_usd': .1, 'refined_splat_cost_usd': 5,
+                'rate_card_reference': 'test', 'reviewed_by': 'test', 'reviewed_on': 'test'},
+        task_context={'context_digest': 'sha256:' + '2' * 64}, source_digest='sha256:' + '1' * 64,
+        configuration={}, check=lambda *a, **k: None, experimental=False, max_polls=1, model='test',
+        source_survey_path=tmp_path / 'survey.json')
+    look = completed if case == 'draft_look_with_patch' else refined
+    assert result['splat_manifest_digest'] == look['digest'] and result['generated_geometry_admitted'] is patch
+    write(job_dir / 'preview_job.json', {'state': 'ready', 'result_digest': result['digest']})
+    value = scene_source.atlas_scene_source(capture_root=tmp_path / 'scene', output_root=tmp_path / 'prep')
+    assert value['status'] == 'ready'
+    assert checked == ([completed['digest']] if patch else [])
+    provenance = value['base_scene'].get('content_provenance')
+    assert (provenance or {}).get('generated_geometry_in') == (
+        'collision_only' if case == 'refined_look_patch_in_collision' else None)
+
+    package = Job(tmp_path / 'package')
+    preparation = package.capture / 'pipeline/website_scene_preparation'
+    write(preparation / 'base_scene.json', value['base_scene'])
+    write(preparation / 'handoff.json', digest({'status': 'intake_ready',
+                                                'base_scene_path': str(preparation / 'base_scene.json')}))
+    built = sim.simulation_source(package.capture, queue_root=package.queue)
+    sim.build_package(built, tmp_path / 'package.zip', literals=[])
+    with zipfile.ZipFile(tmp_path / 'package.zip') as archive:
+        readme = ' '.join(archive.read('README.txt').decode().split())
+    notes = {'refined_look_patch_in_collision': sim.GENERATED_COLLISION_ONLY_NOTE,
+             'draft_look_with_patch': sim.GENERATED_LOOK_AND_COLLISION_NOTE}
+    for name, note in notes.items():
+        assert (note in readme) is (name == case)
+    assert 'generated estimate' not in readme or patch
