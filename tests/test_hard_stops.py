@@ -233,7 +233,9 @@ def _run(tmp_path, monkeypatch, name, error):
     """One job through two ticks whose step raises ``error``: its record, what the website read, what was deleted."""
     from tests.test_website_atlas_preview import World, _enqueue
     site = _site(tmp_path, monkeypatch, name)
-    _enqueue(site)
+    with monkeypatch.context() as clock:
+        clock.setattr(preview.time, "time", lambda: 1_800_000_000)  # intake stamps the clock
+        _enqueue(site)
 
     def walled(kwargs):
         root = kwargs["output_root"] / "pose/atlas_pose"
@@ -248,7 +250,8 @@ def _run(tmp_path, monkeypatch, name, error):
     job = json.loads(site.job.read_text())
     if isinstance(job.get("last_error"), dict):
         job["last_error"] = {**job["last_error"], "type": "-"}  # the retained diagnostic names the class
-    return states, job, [{k: v for k, v in row.items() if k != "updated_at_epoch"} for row in world.pushed], \
+    pushed = [{k: v for k, v in row.items() if k not in {"updated_at_epoch", "preview_digest"}} for row in world.pushed]
+    return states, job, pushed, \
         world.deleted, len(world.runs)
 
 
