@@ -16,7 +16,7 @@ lives, and what is still not covered. It describes code, not a plan.
 
 | A step fails with | What the job does | What ends it |
 |---|---|---|
-| A refusal that protects privacy or rights | Ends or holds at once, as before. | The refusal. |
+| A refusal that protects privacy or rights | Ends or holds at once, as before. In the Atlas controller a typed wall waits and is asked again (section 8). | The refusal; a withdrawal or an owner closure. |
 | A refusal that protects money | Waits and asks the same gate again. | The job's deadline, or the owner raising the limit. |
 | An outage (429, 5xx, transport, storage) | Retries with capped backoff. No attempt count. | The job's deadline. |
 | Anything nobody has classified | Six timed retries: 15 min, 1 h, 3 h, 6 h, 12 h, 24 h. | The schedule: after about 46 hours the job ends by itself with the refusal's own code. |
@@ -33,7 +33,8 @@ trigger a retry; a deploy only changes what the next retry finds.
 
 `hard_stop_kind` reads the first two rows from a refusal code's words. It errs
 toward naming a hard stop. A controller uses it only to stop or wait sooner,
-never to skip a check.
+never to skip a check. Since 2026-11-17 it is a backstop: a wall is raised as
+its type (`hard_stops.py`, section 8) and a controller checks the type first.
 
 ## 2. Where the policy is used
 
@@ -208,3 +209,37 @@ names the code as the outcome; the website asks the site to film again. A new vi
 capture (the owner's "update video" issues a replacement capture, which becomes the active one) and
 runs from the start. `website_registration_anchor_frame_missing`, `..._anchor_frame_invalid` and
 `..._scale_conflicts_declared` are not video faults and keep their earlier handling.
+
+## 8. Walls by type, and room-step stops that retry (2026-11-17)
+
+Owner direction 2026-11-17 (`AGENTS.md`): a website job's room step goes on, flagged, for anything
+that is not privacy, rights or money, and a stuck job retries by itself. That needs the walls
+recognised reliably first; words and short lists named some wrongly in both directions.
+
+- **Typed walls.** The step that guards a wall raises `PrivacyRightsStop` or `MoneyStop`
+  (`hard_stops.py`), both `ValueError` with the code they always had, so stored codes and digests
+  are unchanged. The website's own typed refusals are typed by code in `website_webapp_request`; the
+  paid-resource chokepoint's account and Google Cloud ceilings stay a `RuntimeError` and are
+  recognised by their blockers. Raised as walls: the site's consent, its withdrawal, the owner
+  closing the run, the provider terms and retention, the face screen before frames leave, the
+  disclosure an admission allows, the job's allowance, the price review and the scene review's cap.
+- **What the Atlas controller does.** A withdrawal or an owner closure ends the job, as before. Any
+  other wall waits as `needs_input` and is asked again every 30 minutes until the job's deadline;
+  the step re-asks its own consent and admission, so nothing is bought past it. A privacy or rights
+  wall deletes the job's World Labs assets at once, as an ended job's are, and the recheck still
+  runs; if it passes, the job uploads again what it needs through its admitted path and its cleanup
+  is armed again. A money wall keeps the job's assets while it waits, as the money recheck did
+  before. The background automation, the source pose and the room selection re-raise a wall
+  instead of holding it as input. An untyped code is read by `hard_stop_kind` exactly as before.
+- **Room-step stops that retry.** A stop only a new video or the site can clear (too few
+  overlapping views, a blurry anchor, an uncertain or changed subject, a preserved capture
+  required, a scene-review abstention) showed `needs_input` with no retry time, so the job ended and
+  its assets were deleted at once. It still shows the same state and code to the website, and is now
+  run again on the refusal schedule (six retries a streak, twelve in a job's life). Each is raised
+  behind the settled scene reviews under `scene_planner/` or the retained room selection, so a
+  retry buys nothing again. While a retry is due the job keeps its World Labs assets, as any job in
+  flight does: about 46 hours a streak at most, never past the job's 7-day deadline. Once spent, it
+  rests as before and is cleaned up.
+- **Not retried yet.** A completion that was not admitted, and a result with no download, still
+  rest with no retry time: they sit behind completion, pose and automation receipts whose reuse no
+  test shows yet. A deterministic refusal already waits on its key (section 6).

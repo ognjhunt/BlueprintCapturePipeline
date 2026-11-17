@@ -336,3 +336,107 @@ def test_a_foreground_wall_waits_is_asked_again_and_buys_nothing_until_it_lifts(
     assert world.advance() == "needs_input"
     world.clock = stored(site)["enqueued_at_epoch"] + preview.MAXIMUM_JOB_SECONDS + 1
     assert world.advance() == "failed" and stored(site)["reason"] == "atlas_preview_expired"
+
+
+# --- The site's frames never wait at the provider on a privacy or rights recheck -------------------
+
+
+def _site(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    capture = tmp_path / "storage/bucket/scenes/site-req1/captures/walkthrough-req1"
+    (capture / "raw").mkdir(parents=True)
+    (capture / "raw/walkthrough.mov").write_bytes(b"video")
+    (capture / "pipeline").mkdir()
+    monkeypatch.setenv(preview.ROUTING_ENV, "consented")
+    return SimpleNamespace(storage=tmp_path / "storage", capture=capture, pipeline=capture / "pipeline",
+                           job=capture / "pipeline/atlas" / preview.JOB_FILE)
+
+
+def _uploads(kwargs, name):
+    root = kwargs["output_root"] / name / "atlas_pose"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "submission.json").write_text(json.dumps({"created_assets": [name + "-upload"]}))
+
+
+PRIVACY_WALLS = [
+    PrivacyRightsStop("website_control_preparation-spend_http_409:consent_expired"),
+    PrivacyRightsStop("website_preparation_spend_receipt_invalid"),
+    PrivacyRightsStop("website_atlas_pose_disclosure_not_authorized"),
+    PrivacyRightsStop("atlas_privacy_screen_unavailable"),
+    PrivacyRightsStop("website_atlas_provider_retention_decision_required"),
+    PrivacyRightsStop("website_control_atlas-configuration_http_409:website_atlas_source_consent_required"),
+    PrivacyRightsStop("website_control_preparation-spend_http_409:provider_terms_not_configured_or_changed"),
+]
+
+
+@pytest.mark.parametrize("error", PRIVACY_WALLS, ids=lambda error: preview._reason(error))
+def test_a_privacy_or_rights_wall_deletes_provider_assets_at_once_and_a_passing_recheck_goes_on(
+        tmp_path, monkeypatch, error):
+    from tests.test_website_atlas_preview import World, _enqueue
+    from tests.test_website_atlas_preview import _job as stored
+    site = _site(tmp_path, monkeypatch)
+    _enqueue(site)
+
+    def walled(kwargs):
+        _uploads(kwargs, "pose")
+        raise error
+
+    def admitted(kwargs):
+        _uploads(kwargs, "again")  # the normal admitted path uploads what it needs again
+        return {"status": "processing", "stage": "pose"}
+    world = World(monkeypatch, site, [walled, admitted, ValueError("atlas_scene_subject_origin_uncertain")])
+    assert world.advance() == "needs_input"
+    job = stored(site)
+    # Cleanup is armed and done in the same tick the wall is hit, as for an ended job.
+    assert job["retry_at_epoch"] == world.clock + RECHECK and job[preview.WALL_CLEANUP] is True
+    assert job["provider_cleanup"]["state"] == "complete" and world.deleted == ["pose-upload"]
+    world.clock += RECHECK
+    assert world.advance() == "processing" and len(world.runs) == 2
+    job = stored(site)
+    # Going on: cleanup is armed again for what the job uploads from now on; nothing is deleted twice.
+    assert preview.WALL_CLEANUP not in job and job["provider_cleanup"]["state"] == "pending"
+    assert job["provider_cleanup"]["deleted"] == ["pose-upload"] and world.deleted == ["pose-upload"]
+    assert world.advance() == "needs_input"  # an ordinary stop: its retry keeps the job's assets
+    assert stored(site)["provider_cleanup"]["state"] == "pending" and world.deleted == ["pose-upload"]
+
+
+@pytest.mark.parametrize("error", [
+    MoneyStop("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"),
+    MoneyStop("atlas_runtime_price_review_expired"),
+], ids=lambda error: preview._reason(error))
+def test_a_money_wall_keeps_the_jobs_assets_while_it_waits_as_before(tmp_path, monkeypatch, error):
+    from tests.test_website_atlas_preview import World, _enqueue
+    from tests.test_website_atlas_preview import _job as stored
+    site = _site(tmp_path, monkeypatch)
+    _enqueue(site)
+
+    def walled(kwargs):
+        _uploads(kwargs, "pose")
+        raise error
+    world = World(monkeypatch, site, [walled])
+    assert world.advance() == "needs_input"
+    job = stored(site)
+    assert preview.WALL_CLEANUP not in job and job["provider_cleanup"] is None and world.deleted == []
+    world.clock = job["enqueued_at_epoch"] + preview.MAXIMUM_JOB_SECONDS + 1
+    assert world.advance() == "failed" and world.deleted == ["pose-upload"]
+
+
+@pytest.mark.parametrize("error,state", [
+    (PrivacyRightsStop("website_control_task-context_http_409:source_revoked", final=True), "withdrawn"),
+    (PrivacyRightsStop("website_control_preparation-spend_http_409:website_run_closed_by_owner", final=True),
+     "failed"),
+])
+def test_a_withdrawn_or_closed_job_is_cleaned_at_once_and_stays_final(tmp_path, monkeypatch, error, state):
+    from tests.test_website_atlas_preview import World, _enqueue
+    from tests.test_website_atlas_preview import _job as stored
+    site = _site(tmp_path, monkeypatch)
+    _enqueue(site)
+
+    def walled(kwargs):
+        _uploads(kwargs, "pose")
+        raise error
+    world = World(monkeypatch, site, [walled])
+    assert world.advance() == state and world.deleted == ["pose-upload"]
+    assert stored(site)["retry_at_epoch"] is None
+    world.clock += preview.MAXIMUM_JOB_SECONDS
+    assert world.advance() == state and len(world.runs) == 1

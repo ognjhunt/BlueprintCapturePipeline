@@ -259,6 +259,22 @@ def _refusal_retry(job: Mapping[str, Any], current: int, code: str, detail: Mapp
             **detail, "next_attempt_at_epoch": _by_deadline(job, current + delay)}
 
 
+#: Set on a job waiting on a privacy or rights wall: its provider assets are deleted while it waits.
+WALL_CLEANUP = "privacy_wall_cleanup"
+
+
+def _resumed_after_wall(job: dict[str, Any]) -> dict[str, Any]:
+    """A job whose privacy or rights recheck is due: it runs again, and whatever it uploads from now on is
+    cleaned up when it ends (what the wait already deleted stays recorded as deleted)."""
+    if not job.get(WALL_CLEANUP):
+        return job
+    job = {key: value for key, value in job.items() if key != WALL_CLEANUP}
+    cleanup = job.get("provider_cleanup")
+    if isinstance(cleanup, Mapping) and cleanup.get("state") != "pending":
+        job["provider_cleanup"] = {**cleanup, "state": "pending", "attempts": 0, "next_attempt_at_epoch": 0}
+    return job
+
+
 def _held_retry(job: Mapping[str, Any], current: int, code: str) -> dict[str, Any]:
     """A stop that rested as ``needs_input`` with no retry time: the same state and code, now with a timed retry.
 
@@ -322,7 +338,10 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         # step re-asks its own consent and admission each time, so nothing is bought past the wall.
         if stop[1]:
             return _transition(job, current, "failed", code, last_error=error_description(error))
-        return _transition(job, current, "needs_input", code, last_error=error_description(error),
+        # A privacy or rights wall also deletes the job's provider assets at once, as an ended job's are:
+        # the site's frames never wait at the provider on a recheck (``advance_preparation_job``).
+        privacy = {WALL_CLEANUP: True} if stop[0] == PRIVACY_RIGHTS else {}
+        return _transition(job, current, "needs_input", code, last_error=error_description(error), **privacy,
                            retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
     if code in _AWAITING_AUTHORITY:
         if code == "website_task_not_named":
@@ -788,11 +807,13 @@ def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, An
                 job = _interrupted({**job}, current)
             if job["state"] not in TERMINAL or job.get("retry_at_epoch"):
                 if current >= max(job["next_attempt_at_epoch"], job.get("retry_at_epoch") or 0):
+                    job = _resumed_after_wall(job)
                     marked = {**job, STEP_IN_FLIGHT: {"since_epoch": current, "stage": job.get("stage")}}
                     write_json(path, marked)
                     before = json.dumps(marked, sort_keys=True)
                 job = step(job)
-            if job["state"] in TERMINAL and not job.get("retry_at_epoch"):
+            if job["state"] in TERMINAL and (not job.get("retry_at_epoch") or job.get(WALL_CLEANUP)):
+                # An ended job, or one waiting on a privacy or rights wall: nothing of the site's stays out.
                 job = _retract_archive(job)
                 job = _clean_provider(job, job_dir=job_dir, now=now, transport=transport)
             job = deliver(job)
