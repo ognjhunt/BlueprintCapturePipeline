@@ -197,7 +197,8 @@ def _price(review: Mapping[str, Any], task: str, request: Mapping[str, Any]) -> 
             or review["maximum_cost_usd"] > pose.MAX_REVIEWED_COST_USD
             or not review.get("rate_card_reference") or not review.get("reviewed_by")
             or not pose._reviewed_recently(review.get("reviewed_on"), datetime.now(timezone.utc).date())):
-        raise ValueError("atlas_task_reviewed_price_required")
+        from .hard_stops import MoneyStop
+        raise MoneyStop("atlas_task_reviewed_price_required")
     return float(review["maximum_cost_usd"])
 
 
@@ -437,7 +438,8 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
             require_paid_resource_admission_grant(grant, resource_class=pose.RESOURCE_CLASS,
                 allocation_binding_digest=request_digest, require_allocation_binding=True)
             if admission.get("provider_retention", retention) != retention:
-                raise ValueError("atlas_task_retention_admission_mismatch")
+                from .hard_stops import PrivacyRightsStop
+                raise PrivacyRightsStop("atlas_task_retention_admission_mismatch")
             pose._write_state(admission_path, {**admission, "source_commit": commit})
             if not state:
                 state = {"status": "uploading", "request_digest": request_digest, "binding": binding,

@@ -49,7 +49,8 @@ def observation_review(*, proposal, survey, policy, pose_budget):
     original_anchor = proposal.get('anchor_frame_id')
     anchor = original_anchor if original_anchor in required else room[0]['required_frame_ids'][0]
     if pose_budget < 2 * policy['pose_input_cost_usd']:
-        raise ValueError('atlas_runtime_budget_insufficient')
+        from .hard_stops import MoneyStop
+        raise MoneyStop('atlas_runtime_budget_insufficient')
     return {'schema_version': 'atlas_scene_state_review.v1', 'review_scope': 'observed_room_only',
         'survey_digest': survey['digest'], 'original_task_proposal_digest': canonical_digest(proposal),
         'scene_state': state, 'static_intervals_seconds': deepcopy(intervals), 'anchor_frame_id': anchor,

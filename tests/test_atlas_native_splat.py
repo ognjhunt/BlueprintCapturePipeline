@@ -771,3 +771,28 @@ def test_an_interrupted_review_is_asked_again_only_under_one_new_reservation(tmp
         assert not (whole / native.CANDIDATE_RECORD).exists()
         assert [call["output_root"] for call in calls] == [tmp_path / "draft-refined-minimal/native"]
         assert done["refined_splat"]["request_form"] == "documented_minimal"
+
+
+def test_a_wall_in_a_failed_form_is_raised_never_taken_as_the_next_forms_turn(tmp_path, reviewer):
+    """A form the provider failed lets the next form follow; a wall raised with that failure now stops there
+    (``hard_stops``). Before, the next form was asked for and its own reservation refused it, so nothing was
+    bought then either: the wall is only raised earlier. Here the failed attempt's settlement is refused
+    because the site withdrew."""
+    from blueprint_pipeline.hard_stops import PrivacyRightsStop
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []
+    reviewer.admit = {"candidate-0002"}
+    wall = PrivacyRightsStop("website_control_preparation-settlement_http_409:source_revoked")
+    failed = scripted_runner(["failed"], calls)
+
+    def runner(**kw):
+        if kw["output_root"].parent.name.endswith("-whole"):
+            try:
+                failed(**kw)
+            except ValueError:
+                raise wall from None
+        calls.append(kw)
+        raise AssertionError("the next form was asked for after a wall")
+    with pytest.raises(PrivacyRightsStop) as raised:
+        native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=tmp_path / "draft-refined",
+                                policy=splat_policy(), task_context=CONTEXT, task_runner=runner)
+    assert raised.value is wall and len(calls) == 1
