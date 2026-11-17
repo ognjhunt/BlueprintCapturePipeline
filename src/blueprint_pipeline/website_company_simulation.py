@@ -61,6 +61,7 @@ from .atlas_automation_plan import JOB_OBJECT_RULE
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .outbound_file_scan import capture_site_identity
+from .sharing_statement import covers_sharing
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,10 @@ class PackageRefused(ValueError):
         self.reason, self.detail = reason, detail
 
 
+class ShapeRefused(PackageRefused):
+    """The half's own scene cannot be staged (a ``StageRefused``): the job's room floor ships instead."""
+
+
 def package_filename(capture_id: str, request_id: str) -> str:
     """The archive name: the walkthrough's own, or a continuation scoped to its job."""
     if not capture_name_matches_request(request_id, capture_id):
@@ -269,6 +274,150 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
               and handoff.get("digest") == canonical_digest(handoff, digest_field="digest") else None)
     source = _half(record.parent, {"team_scene_inputs_path": str(record)}) if record is not None else None
     return source if source is not None and source.get("room") is not None else None
+
+
+#: The room record a routed job's handoff seals for its package floor (``website_scene_handoff``), flagged so.
+FLOOR_FLAG = "object_not_built"
+#: The scene intents (``task_evaluation_scene_intake``); tests point it elsewhere.
+INTENT_ROOT: Path | None = None
+DEFAULT_INTENT_ROOT = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"
+#: The scene stage's hold store (``scene_stage_holds``: its queue root, ``holds/``, one file per scene intent), read
+#: here as a file: that module and the team-scene worker reach the GPU lane, which this builder never imports.
+SCREENING_ROOT: Path | None = None
+#: Beside the floor's half: when it was first written (``website_scene_handoff.ROOM_FLOOR_FIRST_WRITTEN``).
+FLOOR_FIRST_WRITTEN = "first_written.json"
+SCREENING_ROOT_ENV, DEFAULT_SCREENING_ROOT = ("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT",
+                                              "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening")
+
+
+def _scene_hold(intent_id: str) -> dict[str, Any]:
+    """The hold the scene stage told the website for this intent (``scene_stage_holds.settle_hold``), or {}."""
+    import hashlib
+    root = Path(SCREENING_ROOT or os.environ.get(SCREENING_ROOT_ENV) or DEFAULT_SCREENING_ROOT)
+    name = "hold-" + hashlib.sha256(intent_id.encode("utf-8")).hexdigest()[:32] + ".json"
+    publication = _read(root / "holds" / name).get("publication")  # one file per intent; released has no reason
+    return (dict(publication) if isinstance(publication, Mapping) and publication.get("hold_digest")
+            == cross_runtime_canonical_digest(publication, digest_field="hold_digest") else {})
+
+
+def object_path_stopped(root: Path, handoff: Mapping[str, Any], *, queue_root: Path, now: float) -> str | None:
+    """Why the job's object is not being built any more (``object_not_built:<code>``: its room floor ships), or
+    None while its object path still moves by itself, or ``floor_unclassified:<code>`` when its state cannot be
+    read or bound to this job (nothing ships; the pass says so).
+
+    Read through the job's own scene intent, the one its handoff's intake receipt names and whose request it
+    sealed, never the capture's other intents (a release retires and replaces them). The floor ships only when
+    the path stopped for this job for a reason that can be named: an intent never made, a half neither queued
+    nor started, or a block the scene stage never recorded, ``PARK_AFTER_SECONDS`` on, are listed, not shipped.
+    """
+    from .task_evaluation_scene_outcome import SceneOutcomeError, read_outcome
+    from .website_preparation_status import PARK_AFTER_SECONDS
+
+    floor = Path(str((handoff.get("room_floor") or {}).get("path") or ""))
+
+    def unclear(since: Path, code: str) -> str | None:
+        # We cannot tell whether it is coming: waited on for a day, then listed (never shipped).
+        first = _read(floor.parents[1] / FLOOR_FIRST_WRITTEN) if since == floor else {}
+        try:  # the floor's wait runs from its first writing (``website_scene_handoff.write_room_floor``)
+            at = (first["first_written_epoch"] if first.get("inputs_digest") == _read(floor).get("inputs_digest")
+                  and isinstance(first.get("first_written_epoch"), int) else since.stat().st_mtime)
+        except OSError:
+            return "floor_unclassified:object_path_unreadable"
+        return "floor_unclassified:" + code if now - at >= PARK_AFTER_SECONDS else None
+    receipt = handoff.get("website_intake_outbox")
+    intent_id = receipt.get("id") if isinstance(receipt, Mapping) else None
+    directory = Path(INTENT_ROOT or DEFAULT_INTENT_ROOT) / str(intent_id)
+    if not isinstance(intent_id, str) or not intent_id.startswith("scene-") or not (directory / "intent.json").is_file():
+        return unclear(floor, "intent_missing")
+    intent = _read(directory / "intent.json")
+    if (intent.get("intent_id") != intent_id or not isinstance(intent.get("request"), Mapping)
+            or cross_runtime_canonical_digest(intent["request"]) != receipt.get("request_digest")):
+        return "floor_unclassified:intent_unbound"
+    try:
+        outcome = read_outcome(directory, intent)
+    except SceneOutcomeError as exc:
+        return "floor_unclassified:" + str(exc)
+    if outcome is not None:
+        # Privacy, rights and consent never ship it; any other ending, or a wait on a person, does.
+        if outcome["kind"] == "withdrawn" or outcome["reason_code"] == "site_consent_required":
+            return None
+        return "object_not_built:" + outcome["reason_code"]
+    progression = _read(directory / "progression.json")
+    if progression.get("status") != "completed":
+        return None  # queued, running, a capacity wait or a receipt still pending
+    asked = ((progression.get("state") or {}).get("scene_preparation_completion") or {}).get("team_scene_request")
+    asked = asked if isinstance(asked, Mapping) else {}
+    if asked.get("status") in ("not_configured", "not_a_website_scene", "not_enqueued"):
+        return "object_not_built:" + str(asked.get("reason") or asked["status"])
+    key = asked.get("request_key")
+    status = _read(Path(queue_root) / "status" / f"{key}.json") if isinstance(key, str) else {}
+    if not status:
+        if any((Path(queue_root) / state / f"{key}.json").is_file() for state in ("pending", "processing")):
+            return None  # queued for the worker, which writes its status when it claims the request
+        return unclear(directory / "progression.json", "half_not_enqueued")
+    if status.get("status") in ("pending", "processing"):
+        return None
+    if status.get("status") == "skipped":
+        return "object_not_built:" + str(status.get("reason") or "team_scene_skipped")
+    if status.get("status") == "blocked":
+        # Held for good under the running release: the scene stage has told the website so (``final_block``); a
+        # new release that tries the half again releases that hold, and the half is moving again.
+        hold = _scene_hold(intent_id)
+        if hold.get("reason_code"):
+            return "object_not_built:" + str(hold["reason_code"])
+        return unclear(Path(queue_root) / "status" / f"{key}.json", "team_scene_blocked_unheld")
+    return "floor_unclassified:team_scene_" + str(status.get("status"))
+
+
+def _floor_source(root: Path, *, queue_root: Path, now: float, reason: str | None = None,
+                  notes: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The job's room floor as a source, when its object path stopped (``reason`` given: its half was refused)."""
+    handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
+    floor = handoff.get("room_floor") if isinstance(handoff.get("room_floor"), Mapping) else {}
+    record = (_inside(root, Path(str(floor.get("path") or ""))) if handoff.get("status") == "intake_ready"
+              and handoff.get("digest") == canonical_digest(handoff, digest_field="digest") else None)
+    if record is None or _read(record).get("inputs_digest") != floor.get("inputs_digest"):
+        return None
+    reason = reason or object_path_stopped(root, handoff, queue_root=queue_root, now=now)
+    if reason is None or not reason.startswith("object_not_built:"):
+        if reason is not None and notes is not None:
+            notes["reason"] = reason  # cannot be read or bound to this job: nothing ships, the pass says why
+        return None
+    source = _half(record.parent, {"team_scene_inputs_path": str(record)})
+    if source is None or source.get("room") is None or FLOOR_FLAG not in (_read(record).get("flags") or []):
+        return None
+    return {**source, "source_kind": "floor", "floor_reason": reason}
+
+
+def _delivered_half(manifest: Mapping[str, Any]) -> bool:
+    """The package now with the companies is a compiled half's (older manifests: it ships the job's object)."""
+    kind = manifest.get("source_kind") or ("half" if "Object" in ((manifest.get("source") or {}).get("files") or {})
+                                           else "room")
+    return kind == "half" and bool(manifest.get("package")) and bool(manifest.get("delivered"))
+
+
+def package_source(root: Path, *, queue_root: Path | None = None, manifest: Mapping[str, Any] | None = None,
+                   max_bytes: int = MAX_PACKAGE_BYTES, now: float | None = None,
+                   notes: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """What this pass builds: the compiled half, else the handoff's room package, else the room floor.
+
+    A half the last build refused for its own shape (``refused_half``, that revision) gives way to the floor
+    until a new half revision arrives; a delivered half is never replaced by a floor.
+    """
+    queue = Path(queue_root or _queue_root())
+    manifest = manifest or {}
+    source = simulation_source(root, queue_root=queue)
+    if source is not None and source.get("room") is not None:
+        return {**source, "source_kind": "room"}
+    refused = manifest.get("refused_half") if isinstance(manifest.get("refused_half"), Mapping) else {}
+    if source is not None and refused.get("simulation_revision") != simulation_revision(source, max_bytes=max_bytes):
+        return {**source, "source_kind": "half"}
+    if _delivered_half(manifest):
+        return None
+    floor = _floor_source(root, queue_root=queue, now=time.time() if now is None else now, notes=notes,
+                          reason=("object_not_built:" + str(refused.get("reason"))) if source is not None else None)
+    # No floor to stand in for a refused half (a job routed before floors, or none written): its refusal stands.
+    return floor if floor is not None or source is None else {**source, "source_kind": "half"}
 
 
 def object_estimates(capture_root: Path) -> Mapping[str, Any] | None:
@@ -887,7 +1036,7 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
     from .outbound_file_scan import literal_forms, scan_tree
     from .scene_package_stage import StageRefused, write_stage
     if source.get("refusal"):
-        raise PackageRefused(source["refusal"])
+        raise ShapeRefused(source["refusal"])
     if sum(row["size_bytes"] for row in source["files"].values()) > max_bytes:
         raise ValueError(OVER_CAP)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -917,7 +1066,7 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
         try:
             write_stage(staging / "scene.usda", rows, axis=source["axis"])
         except StageRefused as error:
-            raise PackageRefused("website_company_simulation_" + str(error).removeprefix("scene_stage_")) from None
+            raise ShapeRefused("website_company_simulation_" + str(error).removeprefix("scene_stage_")) from None
         if source["rule"] is not None:
             rule = dict(source["rule"])
             if offsets:
@@ -1107,6 +1256,25 @@ def _refused_live(check, manifest, manifest_path, retract):
 _RETRIED_AFTER_WINDOW = re.compile(r"website_company_simulation_[a-z_]+")
 
 
+def _kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now, owned):
+    """None while the published package keeps its basis, else its take-back's answer: Blueprint's list every pass,
+    the live rights at least once a window (and at once after a recheck mark). A definite "no" takes it back."""
+    check = permission.read_check(root)
+    if permission.live_due(check, now(), root):
+        check = permission.record_live(root, identity, check_rights, now())
+        if check["outcome"] == "rights_refused":
+            return _refused_live(check, manifest, manifest_path, retract)
+    if check.get("outcome") == "rights_refused":  # recorded by this pass or the clip's: any basis stops
+        return _refused_live(check, manifest, manifest_path, retract)
+    basis = (manifest.get("permission") or {}).get("permission_basis")
+    if ((basis == "blueprint_owned_capture" and owned)
+            or (basis == "site_sharing_statement" and permission.live_grant_holds(check, now()))
+            or (basis == "internal_test" and permission.internal_test_holds(check, now()))):
+        return None
+    permission.take_back(manifest, manifest_path, retract)
+    return {"status": "not_permitted"}
+
+
 def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max_bytes, build_seconds):
     identity = permission.capture_identity(root)
     directory = root.joinpath(*DIRECTORY)
@@ -1125,35 +1293,35 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
     if not permission.may_be_permitted(root, identity, now(), owned_list):
         _take_back_if_archived(root, manifest_path, retract)
         return {"status": "not_permitted"}
-    if simulation_source(root, queue_root=queue_root) is None:
-        return {"status": "no_source"}
+    notes: dict[str, Any] = {}
+    if package_source(root, queue_root=queue_root, manifest=_read(manifest_path), max_bytes=max_bytes, now=now(),
+                      notes=notes) is None:
+        # Nothing to build (a floor whose object path moves again, a half whose status went): what is out still
+        # follows its rights on this pass.
+        with package_lock(root):
+            manifest = _read(manifest_path)
+            archived = manifest.get("archive")
+            if isinstance(archived, Mapping) and not permission.hidden(archived):
+                stop = _kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now,
+                                           permission.owned_basis_holds(identity["capture_id"], upload_sha256(root),
+                                                                        owned_list))
+                if stop is not None:
+                    return stop
+        return {"status": "no_source", **notes}
     # 1. Under the lock: decide. 2. Without it: build (minutes for a real scene; withdrawal deletion is never held).
     # 3. Under the lock again: check nothing changed, then publish.
     with package_lock(root):
-        source = simulation_source(root, queue_root=queue_root)
+        manifest = _read(manifest_path)
+        source = package_source(root, queue_root=queue_root, manifest=manifest, max_bytes=max_bytes, now=now())
         if source is None:
             return {"status": "no_source"}
         revision = simulation_revision(source, max_bytes=max_bytes)
-        manifest = _read(manifest_path)
         upload = upload_sha256(root)
         owned = permission.owned_basis_holds(identity["capture_id"], upload, owned_list)
         check = permission.read_check(root)
         if _current(manifest, revision, package_path):
-            # A published package keeps its basis or goes: Blueprint's list every pass, the live rights at least
-            # once a window (and at once after a recheck mark). A definite "no" takes it back on this pass.
-            if permission.live_due(check, now(), root):
-                check = permission.record_live(root, identity, check_rights, now())
-                if check["outcome"] == "rights_refused":
-                    return _refused_live(check, manifest, manifest_path, retract)
-            if check.get("outcome") == "rights_refused":  # recorded by this pass or the clip's: any basis stops
-                return _refused_live(check, manifest, manifest_path, retract)
-            basis = (manifest.get("permission") or {}).get("permission_basis")
-            if ((basis == "blueprint_owned_capture" and owned)
-                    or (basis == "site_sharing_statement" and permission.live_grant_holds(check, now()))
-                    or (basis == "internal_test" and permission.internal_test_holds(check, now()))):
-                return {"status": "current", "simulation_revision": revision}
-            permission.take_back(manifest, manifest_path, retract)
-            return {"status": "not_permitted"}
+            return (_kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now, owned)
+                    or {"status": "current", "simulation_revision": revision})
         refused, refused_at = manifest.get("refused"), manifest.get("refused_at_epoch")
         if manifest.get("simulation_revision") == revision and refused == OVER_CAP:
             return {"status": "over_size_cap"}
@@ -1175,8 +1343,11 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         if stopped is not None:
             return stopped
         basis = permission.decided_basis(check, owned)
-        if basis is None:
-            if manifest:
+        if basis is None or (source["source_kind"] == "floor" and basis["permission_basis"] == "blueprint_owned_capture"
+                             and not covers_sharing(basis.get("statement_version"))):
+            # A floor is not built for a capture the website would refuse (Blueprint's own video under a
+            # statement that does not share): nobody new may see it.
+            if manifest and basis is None:
                 permission.take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}
         # The website refused this package: nothing is uploaded again until the live rights differ from those at
@@ -1196,8 +1367,12 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             "source": {"plan_digest": source.get("plan_digest"),
                        "files": {prim: row["sha256"] for prim, row in sorted(source["files"].items())}},
             "upload_sha256": upload, "permission": basis, "built_at_epoch": int(now()), "archive": None,
-            "delivered": None}
-    candidate, outcome = directory / f".candidate-{revision[7:23]}.zip", None
+            "delivered": None, "source_kind": source["source_kind"],
+            # Outside the revision: why a floor ships, and the refused half it stands for (never rebuilt as it is).
+            **({"floor_reason": source["floor_reason"]} if source.get("floor_reason") else {}),
+            **({"refused_half": manifest["refused_half"]} if source["source_kind"] == "floor"
+               and isinstance(manifest.get("refused_half"), Mapping) else {})}
+    candidate, outcome, shape = directory / f".candidate-{revision[7:23]}.zip", None, False
     if needs_build:
         try:
             built = build_package(source, candidate, literals=secret_literals(root, source),
@@ -1206,11 +1381,17 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         except PackageRefused as error:
             outcome = {**base, "package": None, "refused": error.reason, "detail": error.detail,
                        "refused_at_epoch": int(now())}
+            shape = isinstance(error, ShapeRefused)
         except ValueError as error:
             if str(error) not in (OVER_CAP, BUILD_TIMED_OUT):
                 candidate.unlink(missing_ok=True)
                 raise
             outcome = {**base, "package": None, "refused": str(error), "refused_at_epoch": int(now())}
+            shape = str(error) == OVER_CAP
+        if outcome is not None and shape and source["source_kind"] == "half":
+            # Its own scene, or its size: the room floor ships instead until a new half revision arrives.
+            outcome["refused_half"] = {"simulation_revision": revision, "reason": outcome["refused"]}
+
     try:
         with package_lock(root):
             if capture_withdrawn(root):
@@ -1227,7 +1408,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                             "reason": _own_reason(recorded.get("reason") or permission.RIGHTS_REFUSED)}
                 return {"status": "not_permitted"}
             if needs_build:
-                fresh = simulation_source(root, queue_root=queue_root)
+                fresh = package_source(root, queue_root=queue_root, manifest=manifest, max_bytes=max_bytes, now=now())
                 if fresh is None or simulation_revision(fresh, max_bytes=max_bytes) != revision:
                     return {"status": "failed", "reason": "website_company_simulation_changed_during_build"}
                 if outcome is not None:
@@ -1305,8 +1486,11 @@ def tick(storage_root: Path, *, stop_reason: Callable[[], str | None] | None = N
             break
         result = publish_company_simulation(capture, **options)
         status = result["status"]
-        counts[status] = counts.get(status, 0) + 1
-        if status in NOT_PUBLISHED_ALOUD:
+        # A floor the pass could not decide for (``object_path_stopped``: ``floor_unclassified:<code>``) is named
+        # like a package that should exist and does not, under its own count.
+        key = "floor_unclassified" if status == "no_source" and result.get("reason") else status
+        counts[key] = counts.get(key, 0) + 1
+        if status in NOT_PUBLISHED_ALOUD or key == "floor_unclassified":
             # Each capture whose package is not out, and why, in the unit's journal: the counts alone hide whose.
             logger.warning("website_company_simulation_outcome capture=%s status=%s reason=%s", Path(capture).name,
                            status, result.get("reason") or "")
@@ -1314,7 +1498,8 @@ def tick(storage_root: Path, *, stop_reason: Callable[[], str | None] | None = N
 
 
 #: Outcomes a pass names by capture (``tick``): a package that should exist and does not. ``no_source`` and
-#: ``not_permitted`` are the job's state, not a fault, and stay counts only.
+#: ``not_permitted`` are the job's state, not a fault, and stay counts only, except a ``no_source`` whose floor
+#: could not be decided, which is named too.
 NOT_PUBLISHED_ALOUD = frozenset({"failed", "refused", "over_size_cap", "build_timed_out"})
 
 

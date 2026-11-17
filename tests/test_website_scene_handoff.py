@@ -772,3 +772,23 @@ def test_a_modelled_job_with_an_unmet_authoring_admission_waits_as_today(tmp_pat
         handoff.prepare_website_scene_handoff(**kwargs)
     assert code in compiled[0]["blockers"]
     assert packaged == []
+
+
+@pytest.mark.parametrize("written", [True, False])
+def test_an_intake_ready_object_job_keeps_its_room_floor_and_a_floor_that_fails_stops_nothing(
+        tmp_path, monkeypatch, ready_atlas, written):
+    """The package floor (``website_company_simulation.object_path_stopped``): written beside the object's route
+    once the preparation is intake ready, flagged; a floor that cannot be written is recorded and never a stop."""
+    kwargs, _, compiled, packaged = _through_compile(tmp_path, monkeypatch, stop=False)
+    # The scene source's own flag (gap D): a floor says the same true things a room package would.
+    monkeypatch.setattr(ATLAS, lambda **_: {**ready_atlas, "flags": ["scene_completion_not_admitted"]})
+    if not written:
+        monkeypatch.setattr(handoff, "write_room_package",
+                            lambda **kw: packaged.append(kw) or (_ for _ in ()).throw(ValueError("website_base_scene_changed")))
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled",
+                        lambda *_: (_ for _ in ()).throw(_Compiled()))  # past the floor: the object's own route
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert compiled[0]["status"] == "intake_ready"
+    assert [(call["output_root"].name, call["flags"], call["task_profile"]) for call in packaged] == [
+        (handoff.ROOM_FLOOR, [handoff.ROOM_FLOOR_FLAG, "scene_completion_not_admitted"], None)]
