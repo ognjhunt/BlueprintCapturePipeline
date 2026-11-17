@@ -317,14 +317,78 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     output, openings = completion.complete_scene(**args)
     assert output == [] and openings['review']['reason'] == 'source_review_found_physical_openings'
     assert len(calls) == 2, 'A real opening is not a missing panel to generate'
+    # Job itest-ff80a41b's answer: one gap with two rows (fronts photographed, the bay behind them
+    # occluded). That gap is not generated and is flagged; the other view's gap still is.
+    first, second = proposal['view_gap_reasons']
+    for entry in (first, second):
+        entry['source_evidence'] = [{'gap_id': entry['gap_ids'][0], 'visibility': 'observed_in_conditioning',
+                                     'source_frame_ids': ['a'], 'reason': 'Recorded fronts; depth is missing.'}]
+    first['source_evidence'].append({'gap_id': first['gap_ids'][0], 'visibility': 'occluded',
+                                     'source_frame_ids': ['a'], 'reason': 'The closed drawer hid the bay.'})
+    unevidenced = {**args, 'root': tmp_path / 'unevidenced'}
+    output, partial = completion.complete_scene(**unevidenced)
+    assert partial['status'] == 'passed' and len(calls) == 3
+    assert [row['camera_id'] for row in calls[2]['selected']] == [second['camera_id']]
+    assert partial['source_evidence']['ungenerated_gap_ids'] == {first['camera_id']: first['gap_ids']}
+    assert partial['remaining_unknowns'] == [*proposal['remaining_unknowns'],
+        f"{first['gap_ids'][0]}: not generated; the planner's answer gave no usable capture evidence for it"]
+    # No usable evidence for any gap: nothing is bought and the room goes on as it is, flagged.
+    second['source_evidence'] = []
+    output, nothing = completion.complete_scene(**unevidenced)
+    assert output == [] and nothing['status'] == 'passed' and len(calls) == 3
+    assert nothing['review']['reason'] == 'source_evidence_unusable_for_every_remaining_gap'
+    assert nothing['new_atlas_generation_calls'] == 0 and len(nothing['remaining_unknowns']) == 3
+    own = {key: entry['gap_ids'][0] for key, entry in (('first', first), ('second', second))}
+    as_answered = {**args, 'planner_runner': lambda **kw: {'proposal': proposal}}
+    # Only a reference to another view's gap is left once this view's own gap is dropped: nothing in
+    # this view can be named (``target_gap_ids``), so nothing is generated and the job goes on.
+    for entry, other in ((first, own['second']), (second, own['first'])):
+        mine = entry['gap_ids'][0]
+        entry['gap_ids'] = [other, mine]
+        entry['source_evidence'] = [
+            {'gap_id': other, 'visibility': 'observed_in_conditioning', 'source_frame_ids': ['a'], 'reason': 'Seen.'},
+            {'gap_id': mine, 'visibility': 'occluded', 'source_frame_ids': [], 'reason': 'Hidden.'},
+            {'gap_id': mine, 'visibility': 'observed_in_conditioning', 'source_frame_ids': ['a'], 'reason': 'Seen.'}]
+    output, lineage = completion.complete_scene(**{**as_answered, 'root': tmp_path / 'lineage'})
+    assert output == [] and lineage['status'] == 'passed' and len(calls) == 3
+    assert lineage['review']['reason'] == 'source_evidence_unusable_for_every_remaining_gap'
+    assert sum('only source-lineage references' in line for line in lineage['remaining_unknowns']) == 2
+    # A view that names no gap, or rows for gaps nobody asked to fill, while every named gap is an opening:
+    # the record says the answer was unusable, never that openings were all there was.
+    from tests.test_atlas_scene_coverage import fixture
+    from blueprint_pipeline import atlas_scene_coverage as coverage
+    shapes = {}
+    for shape in ('no_gap_named', 'unrequested_rows'):
+        for entry, key in ((first, own['first']), (second, own['second'])):
+            entry['gap_ids'] = [key]
+            entry['source_evidence'] = [{'gap_id': key, 'visibility': 'physical_opening',
+                                         'source_frame_ids': ['a'], 'reason': 'An open bay.'}]
+        if shape == 'no_gap_named':
+            second['gap_ids'], second['source_evidence'] = [], []
+        else:
+            second['source_evidence'].append({'gap_id': 'never-requested', 'visibility': 'occluded',
+                                              'source_frame_ids': [], 'reason': 'Not asked.'})
+        output, shapes[shape] = completion.complete_scene(**{**as_answered, 'root': tmp_path / shape})
+        assert output == [] and len(calls) == 3
+        assert shapes[shape]['review']['reason'] == 'source_evidence_unusable_for_every_remaining_gap'
+    for shape, report in shapes.items():
+        refine = fixture(tmp_path / ('coverage-' + shape))
+        monkeypatch.setattr(completion, 'complete_scene', lambda report=report, **_: ([], report))
+        _, refined = coverage.refine_scene_coverage(**refine)
+        assert refined['stop_reason'] == 'source_evidence_unusable_for_every_remaining_gap'
+        assert refined['task_coverage_sufficient'] is False
+    monkeypatch.undo()
+    monkeypatch.setattr(atlas_scene_generate, 'generate_rgbd_completion', generate)
+    monkeypatch.setattr(website_image_completion, "verify_completed_background",
+                        lambda **kw: reviews.append(kw) or {"status": "passed"})
     proposal['view_gap_reasons'].pop()
     with pytest.raises(ValueError, match="task_gap_plan_missing"):
         completion.complete_scene(**args)
-    assert len(calls) == 2
+    assert len(calls) == 3
     proposal["selected_camera_ids"] = ["invented-camera"]
     with pytest.raises(ValueError, match="camera_selection_invalid"):
         completion.complete_scene(**args)
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize("drop_generated", [False, True])

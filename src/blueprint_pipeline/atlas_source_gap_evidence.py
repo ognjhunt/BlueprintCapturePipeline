@@ -178,40 +178,76 @@ def source_gallery(*, survey_path, source_video_digest, conditioned_frame_ids, r
             "candidate_gallery_does_not_prove_every_video_frame_was_reviewed": True}, previews
 
 
+def _row_problem(row, available, conditioned):
+    """Why one evidence row cannot support its gap, or None."""
+    ids = set(row["source_frame_ids"])
+    if len(ids) != len(row["source_frame_ids"]) or not ids <= available:
+        return "atlas_source_gap_evidence_unknown_frame"
+    visibility = row["visibility"]
+    if visibility in {"observed_in_conditioning", "observed_elsewhere_in_capture", "physical_opening"} and not ids:
+        return "atlas_source_gap_observation_requires_frame"
+    if visibility == "observed_in_conditioning" and not ids <= conditioned:
+        return "atlas_source_gap_unconditioned_observation"
+    if visibility == "observed_elsewhere_in_capture" and not ids - conditioned:
+        return "atlas_source_gap_additional_view_missing"
+    return None
+
+
 def source_actions(entries, gallery):
-    """Refuse unsupported generation and route already recorded views first."""
+    """Route already recorded views first; a gap without one usable evidence row is not generated.
+
+    The planner must give each gap it asks to fill exactly one evidence row that cites frames it was
+    shown. A gap whose answer does not (no row, more than one row, or a row whose frames do not
+    support its claim) gets nothing bought for it: it is listed in ``ungenerated_gap_ids`` and
+    ``unusable_gap_evidence``, the caller leaves it out of the masks, and the other gaps go on.
+    Job itest-ff80a41b (2026-11-17) gave one gap two rows, ``observed_in_conditioning`` for the
+    neighbouring fronts and ``occluded`` for the drawer bay, and the whole job stopped as
+    ``needs_input`` with nobody to answer it.
+    """
     available = set(gallery["reviewed_source_frame_ids"])
     conditioned = set(gallery["conditioned_frame_ids"])
-    additional, openings, unresolved, audits = set(), {}, [], []
+    additional, openings, unresolved, audits, ungenerated, unusable = set(), {}, [], [], {}, []
     for entry in entries:
+        camera = entry["camera_id"]
         rows = [GapSourceEvidence.model_validate(row).model_dump(mode="json")
                 for row in entry.get("source_evidence", [])]
-        requested = entry.get("gap_ids", [])
-        if (not requested or len(rows) != len(requested) or {r["gap_id"] for r in rows} != set(requested)
-                or len({r["gap_id"] for r in rows}) != len(rows)):
-            raise ValueError("atlas_source_gap_evidence_required_for_each_gap")
+        requested = list(dict.fromkeys(entry.get("gap_ids", [])))
+        if not requested:
+            unusable.append({"camera_id": camera, "gap_id": None, "reason": "atlas_source_gap_no_gap_named"})
         for row in rows:
+            if row["gap_id"] not in requested:
+                # Evidence for a gap the view does not ask to fill buys nothing; it is kept for the record.
+                unusable.append({"camera_id": camera, "gap_id": row["gap_id"],
+                                 "reason": "atlas_source_gap_evidence_for_unrequested_gap", "rows": [row]})
+        for gap in requested:
+            matching = [row for row in rows if row["gap_id"] == gap]
+            problem = ("atlas_source_gap_evidence_required_for_each_gap" if len(matching) != 1
+                       else _row_problem(matching[0], available, conditioned))
+            if problem:
+                ungenerated.setdefault(camera, []).append(gap)
+                unusable.append({"camera_id": camera, "gap_id": gap, "reason": problem, "rows": matching})
+        # In the planner's own row order, as before: an answer that passed keeps its exact record and digest
+        # (a source recovery's folder and a no-generation result are named by that digest).
+        for row in rows:
+            if row["gap_id"] not in requested or row["gap_id"] in ungenerated.get(camera, []):
+                continue
+            gap = row["gap_id"]
             ids = set(row["source_frame_ids"])
-            if len(ids) != len(row["source_frame_ids"]) or not ids <= available:
-                raise ValueError("atlas_source_gap_evidence_unknown_frame")
             visibility = row["visibility"]
-            if visibility in {"observed_in_conditioning", "observed_elsewhere_in_capture", "physical_opening"} and not ids:
-                raise ValueError("atlas_source_gap_observation_requires_frame")
-            if visibility == "observed_in_conditioning" and not ids <= conditioned:
-                raise ValueError("atlas_source_gap_unconditioned_observation")
             if visibility == "observed_elsewhere_in_capture":
-                if not ids - conditioned:
-                    raise ValueError("atlas_source_gap_additional_view_missing")
                 additional.update(ids - conditioned)
             if visibility == "physical_opening":
-                openings.setdefault(entry["camera_id"], []).append(row["gap_id"])
+                openings.setdefault(camera, []).append(gap)
             if visibility == "uncertain":
-                unresolved.append(row["gap_id"])
-            audits.append({"camera_id": entry["camera_id"], **row})
+                unresolved.append(gap)
+            audits.append({"camera_id": camera, **row})
     value = {"gallery": gallery, "gap_evidence": audits,
              "additional_source_frame_ids": sorted(additional),
              "physical_opening_gap_ids": openings, "unresolved_gap_ids": unresolved,
              "source_coverage_is_not_depth_coverage": True}
+    if unusable:
+        # Only then: an answer that passed before keeps its exact record and digest.
+        value.update(ungenerated_gap_ids=ungenerated, unusable_gap_evidence=unusable)
     value["digest"] = canonical_digest(value, digest_field="digest")
     return value
 
