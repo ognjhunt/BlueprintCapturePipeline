@@ -196,7 +196,8 @@ def recover_recorded_sources(*, action, source_survey_path, background_path, aut
         held = None
     blur, identity = screen_for(root, held)
     if blur and unblurred_frames_may_exist(root):
-        raise ValueError('atlas_privacy_screen_decision_changed')
+        from .hard_stops import PrivacyRightsStop
+        raise PrivacyRightsStop('atlas_privacy_screen_decision_changed')
     _, blockers = release_blockers()
     if blockers:
         raise ValueError('atlas_recorded_source_release_not_admitted:' + ','.join(blockers))

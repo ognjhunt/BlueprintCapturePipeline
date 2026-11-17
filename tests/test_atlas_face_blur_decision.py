@@ -786,3 +786,19 @@ def test_the_legacy_staging_copy_skips_the_records_that_decide_the_blur(tmp_path
         assert not (root / relative).exists()
     manifest = json.loads((root / listener.STAGING_MANIFEST_FILENAME).read_text())
     assert not {row["relative_path"] for row in manifest["objects"]} & privacy.DECISION_PATHS
+
+
+def test_the_screen_stops_are_privacy_walls(tmp_path, monkeypatch):
+    import cv2
+    from blueprint_pipeline.hard_stops import PrivacyRightsStop
+    monkeypatch.delattr(cv2, "FaceDetectorYN")
+    with pytest.raises(PrivacyRightsStop, match="atlas_privacy_screen_unavailable"):
+        privacy.blur_faces(Image.new("RGB", (8, 8)))
+    monkeypatch.undo()
+    pipeline, args, _ = _recovery(tmp_path, monkeypatch)
+    _authority(pipeline, LISTED[0])
+    privacy.face_blur_decision(pipeline / "atlas/pose")
+    _authority(pipeline, "2026-11-13.1")
+    from blueprint_pipeline import atlas_recorded_source_recovery as recovery
+    with pytest.raises(PrivacyRightsStop, match="atlas_privacy_screen_decision_changed"):
+        recovery.recover_recorded_sources(**args)
