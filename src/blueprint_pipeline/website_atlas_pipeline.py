@@ -481,7 +481,7 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
 
     A removal job that cleans every selected view keeps 16 to 30 of them: each is
     also an edit. A preserved scene's refined splat trains on its posed selection,
-    so that selection fills toward ``SPLAT_FRAME_TARGET`` sharp views spread in
+    so that selection keeps every distinct sharp view toward ``SPLAT_FRAME_TARGET`` (the provider's capacity), spread in
     time. Every new selection's added views also clear the clip's relative
     sharpness floor (``RELATIVE_SHARPNESS_FRACTION``). A retained selection (or
     its inputs, before the plan is written) keeps the profile it recorded.
@@ -534,14 +534,22 @@ def _splat_input_selection(*, frames, pose, draft, output_root, review, source_r
     inputs_path = source_root / GEOMETRY_INPUTS_FILE
     rows = json.loads(inputs_path.read_text()).get("frames", []) if inputs_path.is_file() else []
     agreement = draft.get("cross_view_agreement") if draft.get("pose_result_digest") == pose["digest"] else None
-    record = select_splat_frames(frames=frames, agreement=agreement,
+    route = {key for group in review.get("coverage_requirements") or []
+             if group.get("role") in WORKING_AREA_ROLES for key in group.get("required_frame_ids", [])}
+    # The coverage map first ($0, once per pose, never raises): a view that saw one of its weak regions is
+    # never cut as a no-parallax near-duplicate (owner, 2026-11-18).
+    from .atlas_coverage_map import coverage_before_splat
+    mapped = coverage_before_splat(frames=frames, pose=pose, output_root=output_root, source_root=source_root,
+                                   selection={"route_frame_ids": sorted(route)}) or {}
+    weak = sorted({key for row in (mapped.get("regions") or []) if mapped.get("status") == "mapped"
+                   for key in row.get("seen_by") or []})
+    record = select_splat_frames(frames=frames, agreement=agreement, weak_region_frame_ids=weak,
         timestamps={row["frame_id"]: row.get("timestamp_seconds") for row in rows},
         sharpness={row["frame_id"]: row.get("sharpness") for row in rows
                    if isinstance(row.get("sharpness"), (int, float))},
         scene_depth=scene_depth(frames),
         pose_refinement_accepted=pose["operation"]["response"].get("poseRefinementAccepted"),
-        route_frame_ids={key for group in review.get("coverage_requirements") or []
-                         if group.get("role") in WORKING_AREA_ROLES for key in group.get("required_frame_ids", [])})
+        route_frame_ids=route)
     record.pop("digest")
     record.update(pose_result_digest=pose["digest"], draft_splat_manifest_digest=draft["digest"])
     record["digest"] = canonical_digest(record, digest_field="digest")
@@ -669,7 +677,9 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     from .atlas_look_views import disclosure as look_disclosure, look_views_for_splat
     look = look_views_for_splat(frames=frames, pose=pose, output_root=output_root, policy=policy,
         task_context=task_context, source_digest=source_digest, bought=bought, check=check, max_polls=max_polls,
-        sent=sent, configuration=lambda: _current_configuration(task_context, source_digest, configuration),
+        sent=sent, heldout_frame_ids=(selection or {}).get("heldout_frame_ids") or (),
+        task_frame_ids=(selection or {}).get("route_frame_ids") or (),
+        configuration=lambda: _current_configuration(task_context, source_digest, configuration),
         task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw))
     if look.get("status") == "processing":
         return look

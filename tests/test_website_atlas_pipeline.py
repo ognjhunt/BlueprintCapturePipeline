@@ -674,7 +674,7 @@ def test_a_preserved_scene_buying_the_refined_splat_fills_its_selection_and_othe
     options = dict(review=preserved, policy={"refined_splat_cost_usd": 5}, edit_scope="all_selected_views")
     sharp = {"relative_sharpness_fraction": .6}
     assert pipeline._splat_input_options(tmp_path, **options) == {"splat_frame_target": SPLAT_FRAME_TARGET, **sharp} \
-        == {"splat_frame_target": 96, **sharp}
+        == {"splat_frame_target": 512, **sharp}
     # No splat bought (a geometry-only job's policy drops the price): only the sharpness floor is new.
     assert pipeline._splat_input_options(tmp_path, **{**options, "policy": {"pose_input_cost_usd": .01}}) == sharp
     # A captured subject's plain route posts its selection as generation context, not to the splat.

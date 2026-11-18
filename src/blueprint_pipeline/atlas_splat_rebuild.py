@@ -123,7 +123,13 @@ def _prices(job_dir: Path, result: Mapping[str, Any]) -> tuple[list[str], list, 
     pose = _read(pose_root / "atlas_posed_rgbd_result.json")
     policy = _read(job_dir / "configuration.json").get("policy") or {}
     posed = [row["frame_id"] for row in pose["operation_receipt"]["input_usage"]["frames"]]
-    selected = _read(job_dir / "pose/atlas_view_selection.json").get("frames") or []
+    plan = _read(job_dir / "pose/atlas_view_selection.json")
+    selected = plan.get("frames") or []
+    # Every candidate the parent's selection judged (kept or named): a fresh selection keeps the distinct,
+    # sharp ones up to the provider's capacity, so this is the nearest retained estimate of what it poses.
+    judged = {row.get("frame_id") for row in [*selected, *(plan.get("diagnostics") or [])]} - {None}
+    selected = [*selected, *({"frame_id": key, "judged_only": True}
+                             for key in sorted(judged - {row.get("frame_id") for row in selected}))]
     prices = (float(policy["pose_input_cost_usd"]), float(policy.get("maximum_review_cost_usd", 0)),
               float(policy["refined_splat_cost_usd"]) + float(policy.get("mesh_export_cost_usd", 0)))
     return posed, selected, prices
@@ -131,9 +137,10 @@ def _prices(job_dir: Path, result: Mapping[str, Any]) -> tuple[list[str], list, 
 
 def _costs(posed: list[str], selected: list, prices: tuple[float, float, float]) -> dict[str, float]:
     from .atlas_refined_splat_forms import SPLAT_FRAME_TARGET, SPLAT_POSE_INPUT_CAPACITY
-    task_views = max(0, len(posed) - len(selected))
+    task_views = max(0, len(posed) - sum(not row.get("judged_only") for row in selected))
     pose_cost, review_cost, after_pose = prices
-    return {"expected_cost_usd": round((SPLAT_FRAME_TARGET + task_views) * pose_cost + after_pose, 6),
+    expected_views = min(SPLAT_FRAME_TARGET, len(selected))
+    return {"expected_cost_usd": round((expected_views + task_views) * pose_cost + after_pose, 6),
             # A scale review (one planner call) runs only if the new pose's references need it.
             "maximum_cost_usd": round((SPLAT_POSE_INPUT_CAPACITY + task_views) * pose_cost + after_pose
                                       + review_cost, 6)}

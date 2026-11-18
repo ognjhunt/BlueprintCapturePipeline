@@ -47,9 +47,13 @@ ROOT, PLAN, RECORD = "look_views", "look_views_plan.json", "look_views.json"
 MAX_REGIONS, MAX_VIEWS = 6, 24
 #: Views a region gets at most: two orbit magnitudes, each side of its filmed camera.
 VIEWS_PER_REGION = 4
-#: The real photographs a region's request carries and its views are checked against, nearest the
-#: filmed camera first. One depth-context view accompanies each target (``target_batches``): 8 + 2 x 4 < 64.
-CONTEXT_FRAMES_PER_REGION = 8
+#: A region's generation context is not bounded here: it fills the served model's rollout
+#: (``atlas_scene_chisel.ROLLOUT_VIEWS`` less two views per target) with the region's own views, then
+#: the job's task views, then the wider room (``generation_context``). This bound is the consistency
+#: check's only: each view is composited against at most this many of the real frames that saw its
+#: region, nearest its filmed camera first. That is a review, not reconstruction context, kept small
+#: for the room step's runtime (``_judged``).
+CHECK_FRAMES_PER_VIEW = 8
 #: The consistency rule. A view passes when the filmed frames observe at least this share of it well
 #: (``atlas_gap_composite.well_observed``) and it contradicts them on at most this share of that part.
 #: Starting values chosen on 2026-11-18, not yet calibrated on a job's retained views: the tolerances
@@ -126,11 +130,52 @@ def _facing(frame, centroid) -> float:
     return float(-np.asarray(frame["rotation"])[:, 2] @ direction / length) if length > 1e-9 else -1.0
 
 
-def orbit_cameras(regions, frames, *, max_regions=MAX_REGIONS, max_views=MAX_VIEWS):
+def generation_context(seen, pool, *, base, task_frame_ids=(), targets: int) -> list[str]:
+    """The real frames a region's ``atlasGenerate`` request carries, filling the provider's rollout.
+
+    The served model takes the context photographs plus two views per target within
+    ``atlas_scene_chisel.ROLLOUT_VIEWS`` (``target_batches``). The region's own ``seen_by`` views come
+    first, nearest its filmed camera; then the job's task views; then the wider room, each next the
+    pool's view farthest from those already chosen. All are distinct posed views of ``pool``; a frame
+    that would not fit whole is passed over for a smaller one.
+    """
+    from .atlas_scene_chisel import ROLLOUT_VIEWS, photograph_count
+
+    capacity = ROLLOUT_VIEWS - 2 * targets
+    by_id = {frame["frame_id"]: frame for frame in pool}
+    origin = np.asarray(base["position"], float)
+    own = sorted(seen, key=lambda frame: (float(np.linalg.norm(np.asarray(frame["position"]) - origin)),
+                                          frame["frame_id"]))
+    ordered = [*own, *(by_id[key] for key in task_frame_ids if key in by_id)]
+    chosen, used = [], 0
+
+    def take(frame):
+        nonlocal used
+        if frame["frame_id"] in {row["frame_id"] for row in chosen}:
+            return
+        count = photograph_count(frame)
+        if used + count <= capacity:
+            chosen.append(frame)
+            used += count
+    for frame in ordered:
+        take(frame)
+    rest = [frame for frame in pool if frame["frame_id"] not in {row["frame_id"] for row in chosen}]
+    while rest and used < capacity:
+        placed = np.array([np.asarray(row["position"], float) for row in chosen] or [origin])
+        far = max(rest, key=lambda frame: (float(np.min(np.linalg.norm(
+            placed - np.asarray(frame["position"], float), axis=1))), frame["frame_id"]))
+        rest.remove(far)
+        take(far)
+    return [frame["frame_id"] for frame in chosen]
+
+
+def orbit_cameras(regions, frames, *, max_regions=MAX_REGIONS, max_views=MAX_VIEWS, task_frame_ids=()):
     """Cameras orbiting each weak region's centroid, and the regions given none with the reason.
 
-    Regions are taken in the map's order (``atlas_coverage_map``: those the job's route views saw
-    first, then the nearest), up to ``max_regions`` with cameras this pose holds. The base is the filmed camera in ``seen_by`` that looks most directly at the centroid. Each new
+    ``frames`` are the real views available to generation and the check: posed, sent to the splat and
+    never held out from it. Regions are taken in the map's order (``atlas_coverage_map``: those the
+    job's route views saw first, then the nearest), up to ``max_regions`` with a view among them. The
+    base is the filmed camera in ``seen_by`` that looks most directly at the centroid. Each new
     camera turns the base position about the vertical through the centroid (Atlas worlds are Y up),
     so it keeps the base's distance and height, and looks at the centroid with the base's intrinsics.
     """
@@ -139,8 +184,8 @@ def orbit_cameras(regions, frames, *, max_regions=MAX_REGIONS, max_views=MAX_VIE
 
     by_id = {frame["frame_id"]: frame for frame in frames}
     ordered = list(regions)
-    # A region none of whose cameras this pose holds takes no slot.
-    skipped = [{"region_id": row["id"], "reason": "seen_by_cameras_not_posed"} for row in ordered
+    # A region none of whose cameras is available takes no slot.
+    skipped = [{"region_id": row["id"], "reason": "seen_by_cameras_not_available"} for row in ordered
                if not any(key in by_id for key in row["seen_by"])]
     ordered = [row for row in ordered if any(key in by_id for key in row["seen_by"])]
     chosen = ordered[:max_regions]
@@ -155,10 +200,10 @@ def orbit_cameras(regions, frames, *, max_regions=MAX_REGIONS, max_views=MAX_VIE
         if np.linalg.norm(offset) < 1e-9:
             skipped.append({"region_id": region["id"], "reason": "filmed_camera_at_centroid"})
             continue
-        context = sorted(seen, key=lambda frame: (float(np.linalg.norm(np.asarray(frame["position"])
+        nearest = sorted(seen, key=lambda frame: (float(np.linalg.norm(np.asarray(frame["position"])
                                                                        - base["position"])), frame["frame_id"]))
-        context_ids = [frame["frame_id"] for frame in context[:CONTEXT_FRAMES_PER_REGION]]
-        made = 0
+        check_ids = [frame["frame_id"] for frame in nearest[:CHECK_FRAMES_PER_VIEW]]
+        start, made = len(targets), 0
         for angle in orbit_angles(region["orbit_deg"]):
             if made >= per_region or len(targets) >= max_views:
                 break
@@ -175,12 +220,16 @@ def orbit_cameras(regions, frames, *, max_regions=MAX_REGIONS, max_views=MAX_VIE
                             "base_frame_id": base["frame_id"], "orbit_degrees": angle,
                             "distance": float(np.linalg.norm(offset)), "target_world_estimate": centroid.tolist(),
                             "region_extent": [float(v) for v in region["extent"]],
-                            "context_frame_ids": context_ids,
+                            "check_frame_ids": check_ids,
                             "seen_by_frame_ids": [frame["frame_id"] for frame in seen], "camera": camera,
                             "camera_location_observed_free": None, "collision_qualified": False})
             made += 1
         if not made:
             skipped.append({"region_id": region["id"], "reason": "no_orbit_camera"})
+            continue
+        context_ids = generation_context(seen, frames, base=base, task_frame_ids=task_frame_ids, targets=made)
+        for target in targets[start:]:
+            target["context_frame_ids"] = context_ids
     return targets, skipped
 
 
@@ -263,8 +312,9 @@ def _judged(group, returned, native, stage: Path, root: Path, batch, by_id):
     from .atlas_depth_splat import frame_arrays, write_exr_depth
     from .atlas_gap_composite import observation_references
 
-    # At most CONTEXT_FRAMES_PER_REGION references a view, smoothed once before the threads share them.
-    references = observation_references([by_id[key] for key in group[0]["context_frame_ids"]])
+    # A review, not reconstruction context: at most CHECK_FRAMES_PER_VIEW of the real frames that saw the
+    # region, smoothed once before the threads share them.
+    references = observation_references([by_id[key] for key in group[0]["check_frame_ids"]])
     for reference in references:
         frame_arrays(reference, "depth")
 
@@ -275,6 +325,7 @@ def _judged(group, returned, native, stage: Path, root: Path, batch, by_id):
                  "base_frame_id": target["base_frame_id"], "orbit_degrees": target["orbit_degrees"],
                  "distance": target["distance"], "target_world_estimate": target["target_world_estimate"],
                  "region_extent": target["region_extent"], "context_frame_ids": target["context_frame_ids"],
+                 "check_frame_ids": target["check_frame_ids"],
                  "seen_by_frame_ids": target["seen_by_frame_ids"],
                  "camera": {"intrinsics": view["intrinsics"], "extrinsics": view["extrinsics"]},
                  "stage_relative_path": batch["stage_relative_path"], "native_frame_index": native_index,
@@ -335,24 +386,24 @@ def _native_pixels(stage: Path, index: int, key: str) -> np.ndarray:
 
 
 def reference_frame_ids(view, sent=None) -> list[str]:
-    """The real frames sent beside a view that overlap it, at most ``CONTEXT_FRAMES_PER_REGION``.
+    """The real frames sent beside a view that overlap it, at most ``CHECK_FRAMES_PER_VIEW``.
 
-    The frames its region's generation used, where they are sent too; else, with fewer than
+    The frames its region's check used (the nearest that saw the region), where they are sent too; else, with fewer than
     ``atlas_gap_composite.MIN_VIEWS`` of them, the sent ``seen_by`` frames nearest the view's camera.
     The whole-view review pairs the view among these alone, not every real frame.
     """
     from .atlas_gap_composite import MIN_VIEWS
 
     if sent is None:
-        return list(view["context_frame_ids"])
+        return list(view["check_frame_ids"])
     real = {frame["frame_id"]: frame for frame in sent if frame.get("keep_mask") is None}
-    chosen = [key for key in view["context_frame_ids"] if key in real]
+    chosen = [key for key in view["check_frame_ids"] if key in real]
     if len(chosen) < MIN_VIEWS:
         position = np.asarray(view["camera"]["extrinsics"]["position"], float)
         nearest = sorted((key for key in view["seen_by_frame_ids"] if key in real), key=lambda key: (
             float(np.linalg.norm(np.asarray(real[key]["position"], float) - position)), key))
         chosen = list(dict.fromkeys([*chosen, *nearest]))
-    return chosen[:CONTEXT_FRAMES_PER_REGION]
+    return chosen[:CHECK_FRAMES_PER_VIEW]
 
 
 def _composite_pixels(root: Path, view, key: str) -> np.ndarray:
@@ -421,7 +472,8 @@ def _record(root: Path, plan, *, status, regions_digest, pose, skipped, batches=
         "schema_version": SCHEMA, "status": status, "weak_regions_digest": regions_digest,
         "pose_result_digest": pose["digest"], "plan_digest": (plan or {}).get("digest"),
         "limits": {"max_regions": MAX_REGIONS, "max_views": MAX_VIEWS, "views_per_region": VIEWS_PER_REGION,
-                   "context_frames_per_region": CONTEXT_FRAMES_PER_REGION},
+                   "check_frames_per_view": CHECK_FRAMES_PER_VIEW,
+                   "generation_context": "atlas_scene_chisel.ROLLOUT_VIEWS less two views per target"},
         "check_rule": {"min_checked_fraction": MIN_CHECKED_FRACTION,
                        "max_contradicted_fraction": MAX_CONTRADICTED_FRACTION,
                        "basis": "starting values 2026-11-18; atlas_gap_composite tolerances from capture-447ae4f4"},
@@ -448,12 +500,16 @@ def _in_flight(root: Path) -> bool:
 
 
 def look_views_for_splat(*, frames, pose, output_root, policy, task_context, source_digest, configuration,
-                         task_runner, bought, check=None, max_polls=2, sent=None) -> dict:
+                         task_runner, bought, check=None, max_polls=2, sent=None, heldout_frame_ids=(),
+                         task_frame_ids=()) -> dict:
     """``{"views": frames to send beside the real ones, "record": the sealed record or None}``, or processing.
 
     ``configuration`` is a callable returning the job's current allowance, read only when a map exists.
     ``sent`` are the real frames the splat is sent; each view names those overlapping it
-    (``reference_frame_ids``). A wall (money, privacy, rights) and a checkpoint's own stop are raised; any
+    (``reference_frame_ids``). Generation context and the check draw only on the real frames sent, never
+    on ``heldout_frame_ids``: the held-out score measures the look against views nothing generated saw.
+    ``task_frame_ids`` (the job's route views) follow each region's own views in its context.
+    A wall (money, privacy, rights) and a checkpoint's own stop are raised; any
     other error is recorded and the splat goes on with its real frames, unless a request it sent is still
     live, which is then raised so the next tick polls and settles it.
     """
@@ -473,9 +529,13 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
             except BaseException as exc:  # noqa: BLE001 - re-raised as it was, past the fallback below
                 raise _Passthrough(exc) from exc
     try:
-        return _stage(frames=frames, pose=pose, output_root=output_root, root=root, policy=policy,
+        heldout = set(heldout_frame_ids)
+        pool = [frame for frame in (frames if sent is None else sent)
+                if frame.get("keep_mask") is None and frame["frame_id"] not in heldout]
+        return _stage(frames=pool, pose=pose, output_root=output_root, root=root, policy=policy,
                       task_context=task_context, source_digest=source_digest, configuration=configuration,
-                      task_runner=task_runner, checkpoint=checkpoint, max_polls=max_polls, sent=sent)
+                      task_runner=task_runner, checkpoint=checkpoint, max_polls=max_polls, sent=sent,
+                      task_frame_ids=[key for key in task_frame_ids if key not in heldout])
     except _Passthrough as wrapped:
         raise wrapped.error from None
     except Exception as exc:  # noqa: BLE001 - only walls and live requests may hold the splat
@@ -488,11 +548,11 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
 
 
 def _stage(*, frames, pose, output_root, root, policy, task_context, source_digest, configuration, task_runner,
-           checkpoint, max_polls, sent):
+           checkpoint, max_polls, sent, task_frame_ids=()):
     from .atlas_native_splat import _provider_failed_and_exhausted
     from .atlas_pricing import headroom, render_cost, submitted
     from .atlas_scene_completion import load_generated_views
-    from .atlas_scene_generate import prepare_rgbd_context
+    from .atlas_scene_chisel import ROLLOUT_VIEWS
     from .hard_stops import is_wall
     from .website_atlas_tasks import validate_task_request
 
@@ -514,7 +574,7 @@ def _stage(*, frames, pose, output_root, root, policy, task_context, source_dige
             record = _record(root, None, status="weak_regions_pose_mismatch", regions_digest=regions_digest,
                              pose=pose, skipped=[], weak_regions_pose_result_digest=mapped_pose)
             return {"views": [], "record": record}
-        targets, skipped = orbit_cameras(regions, frames)
+        targets, skipped = orbit_cameras(regions, frames, task_frame_ids=task_frame_ids)
     # A plan sealed on another pose buys nothing more; what it sent is still polled and settled.
     stale = sealed is not None and sealed.get("pose_result_digest") != pose["digest"]
     priced = "rgbd_view_cost_usd" in policy
@@ -523,7 +583,7 @@ def _stage(*, frames, pose, output_root, root, policy, task_context, source_dige
     for target in targets:
         groups.setdefault(target["region_id"], []).append(target)
     review_record = {key: policy[key] for key in ("rate_card_reference", "reviewed_by", "reviewed_on") if key in policy}
-    specs, not_bought = [], []
+    specs, not_bought, photographs = [], [], {}
     for index, group in enumerate(groups.values()):
         stage = root / "generated" / f"{index:02d}"
         retained = _sent_binding(stage) if submitted(stage) else None
@@ -539,8 +599,9 @@ def _stage(*, frames, pose, output_root, root, policy, task_context, source_dige
                                "reason": "plan_pose_changed" if stale else "rgbd_view_price_unreviewed"})
             continue
         else:
-            context = [by_id[key] for key in group[0]["context_frame_ids"]]
-            contexts, uploads, _ = prepare_rgbd_context(frames=context, root=root / "context" / f"{index:02d}")
+            contexts, uploads = _context([by_id[key] for key in group[0]["context_frame_ids"]], root, photographs)
+            if len(contexts) + 2 * len(group) > ROLLOUT_VIEWS:
+                raise ValueError("atlas_look_views_rollout_capacity_exceeded")
             request = {"contextFrames": contexts, "targetCameras": [row["camera"] for row in group],
                        "prompt": PROMPT, "enhancePrompt": False, "returnDepth": True}
             validate_task_request("atlasGenerate", request)
@@ -618,6 +679,31 @@ def _stage(*, frames, pose, output_root, root, policy, task_context, source_dige
     record = _record(root, plan, status="checked", regions_digest=regions_digest, pose=pose, skipped=skipped,
                      batches=[*batches, *not_bought], views=views, bought_cost_usd=bought_cost)
     return _retained(root, pose, sent) if record["passed_view_ids"] else {"views": [], "record": record}
+
+
+def _context(frames, root: Path, photographs: dict):
+    """Context photographs and their own depth for ``frames``, in order; each frame's prepared once a job.
+
+    ``atlas_scene_generate.prepare_rgbd_context`` per frame, kept under the frame's own directory so the
+    regions that share a view share its files; the asset ids are numbered in this request's order.
+    """
+    from .atlas_scene_generate import prepare_rgbd_context
+
+    contexts, uploads = [], {}
+    for frame in frames:
+        key = frame["frame_id"]
+        if key not in photographs:
+            name = canonical_digest({"frame_id": key})[7:23]
+            photographs[key] = prepare_rgbd_context(frames=[frame], root=root / "context" / name)[:2]
+        own, files = photographs[key]
+        for index, row in enumerate(own):
+            number = len(contexts)
+            for role in ("rgb", "depth"):
+                uploads[f"context-{number}-{role}"] = files[f"context-{index}-{role}"]
+            contexts.append({"imageAsset": {"assetId": f"upload:context-{number}-rgb"},
+                             "depth": {"depthAsset": {"assetId": f"upload:context-{number}-depth"}},
+                             "camera": row["camera"]})
+    return contexts, uploads
 
 
 def _sent_binding(stage: Path) -> dict | None:

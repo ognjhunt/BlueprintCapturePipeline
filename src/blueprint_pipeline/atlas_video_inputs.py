@@ -644,7 +644,7 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     leaves out every frame showing a transient, as the direct path does.
     ``splat_frame_target`` is for a job whose refined splat trains on these views:
     after the cover and the distinct views, sharp views spread in time fill the
-    set toward it (``add_time_spread_views``) under ``SPLAT_POSE_INPUT_CAPACITY``.
+    set toward it (``add_time_spread_views``) under ``SPLAT_POSE_INPUT_CAPACITY`` and the reviewed dollars.
     ``relative_sharpness_fraction`` raises the sharpness floor of every view added
     after the reviewed cover to that fraction of the candidates' median sharpness
     (``RELATIVE_SHARPNESS_FRACTION`` for new jobs). The cover keeps the reviewed
@@ -740,8 +740,10 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     distinct_count = len(selected) - len(cover)
     spread = []
     if splat_frame_target:
+        # Density views are optional: the reviewed dollars bound how many are added, so they never make
+        # money refuse the accurate set below.
         selected, spread = add_time_spread_views(frames=frames, features=features, selected=selected,
-            frame_target=maximum_frames, policy=fill_policy)
+            frame_target=max(2, min(maximum_frames, max(budget_frames, len(selected)))), policy=fill_policy)
         spread_ids = {row["frame_id"] for row in spread}
         diagnostics = [row for row in diagnostics if row.get("frame_id") not in spread_ids] + spread
     support = []

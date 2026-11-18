@@ -519,23 +519,24 @@ def test_a_forward_motion_splat_selection_reaches_its_target_instead_of_stalling
     first = video.prepare_video_inputs(**options)
     plan = json.loads((tmp_path / "splat/atlas_view_selection.json").read_text())
     policy = plan["frame_policy"]
-    assert len(first["frames"]) == plan["selected_frame_count"] == SPLAT_FRAME_TARGET == 96
+    # Owner, 2026-11-18: every distinct, sharp, connected candidate, up to the provider's capacity (512).
+    assert SPLAT_FRAME_TARGET == SPLAT_POSE_INPUT_CAPACITY == 512
+    assert len(first["frames"]) == plan["selected_frame_count"] == 152
     assert policy == {"basis": "accuracy_first", "provider_input_capacity": SPLAT_POSE_INPUT_CAPACITY,
-                      "frame_target": 96, "connected_cover_frames": policy["connected_cover_frames"],
+                      "frame_target": 512, "connected_cover_frames": policy["connected_cover_frames"],
                       "distinct_views_added": len(plain["frames"]) - policy["connected_cover_frames"],
-                      "splat_frame_target": 96, "time_spread_views_added": 96 - len(plain["frames"]),
-                      "splat_frame_target_met": True}
-    # The cover and distinct views stay; the fill spreads the rest evenly over the interval.
+                      "splat_frame_target": 512, "time_spread_views_added": 152 - len(plain["frames"]),
+                      "splat_frame_target_met": False}
+    # The cover and distinct views stay; the fill takes every other candidate of the interval.
     assert {row["frame_id"] for row in plain["frames"]} <= {row["frame_id"] for row in first["frames"]}
     times = sorted(row["timestamp_seconds"] for row in plan["frames"])
-    assert times[0] == 0 and times[-1] == 15.1
-    assert max(b - a for a, b in zip(times, times[1:])) <= 2 * 15.1 / 96  # never more than two windows apart
+    assert times[0] == 0 and times[-1] == 15.1 and max(b - a for a, b in zip(times, times[1:])) <= .1 + 1e-9
     decisions = [row["decision"] for row in plan["diagnostics"]]
     assert decisions.count("time_spread_view") == policy["time_spread_views_added"]
     spread = {row["frame_id"] for row in plan["diagnostics"] if row["decision"] == "time_spread_view"}
     assert len([row for row in plan["diagnostics"] if row["frame_id"] in spread]) == len(spread)
     inputs = json.loads((tmp_path / "splat" / video.GEOMETRY_INPUTS_FILE).read_text())
-    assert inputs["binding"]["splat_frame_target"] == 96 and inputs["binding"]["maximum_frames"] == 96
+    assert inputs["binding"]["splat_frame_target"] == 512 and inputs["binding"]["maximum_frames"] == 512
     # A paid-stage wait reuses the retained handoff; a different profile never rewrites it.
     monkeypatch.setattr(video, "_features", lambda *_: pytest.fail("retained inputs recomputed"))
     assert video.prepare_video_inputs(**options) == first
@@ -548,13 +549,22 @@ def test_a_forward_motion_splat_selection_reaches_its_target_instead_of_stalling
                                           "splat_frame_target": invalid})
 
 
-def test_dollars_refuse_a_splat_selection_they_cannot_pose_and_never_shrink_it(tmp_path, monkeypatch):
-    path, review = _forward_motion_job(tmp_path, budget=.5)  # pays for 50 frames, not 96
+def test_dollars_bound_the_density_views_and_refuse_only_a_cover_they_cannot_pose(tmp_path, monkeypatch):
+    """The density views beyond the cover and distinct views are optional: the reviewed dollars bound how
+    many are added (the allowance check stays true), and only a cover they cannot pose refuses."""
+    path, review = _forward_motion_job(tmp_path, budget=.5)  # pays for 50 frames, not all 152
     _forward_motion(monkeypatch)
-    with pytest.raises(ValueError, match="budget_below_accurate_inputs"):
-        video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "pose",
-                                   splat_frame_target=96)
-    assert not (tmp_path / "pose" / video.GEOMETRY_INPUTS_FILE).exists()
+    inputs = video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "pose",
+                                        splat_frame_target=512)
+    assert len(inputs["frames"]) == 50
+    plan = json.loads((tmp_path / "pose/atlas_view_selection.json").read_text())
+    assert plan["frame_policy"]["splat_frame_target_met"] is False
+    (tmp_path / "poor").mkdir()
+    path, review = _forward_motion_job(tmp_path / "poor", budget=.1)  # 10 frames: less than the cover needs
+    with pytest.raises(ValueError, match="atlas_selection_budget_below_accurate_inputs"):
+        video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "poor/pose",
+                                   splat_frame_target=512)
+    assert not (tmp_path / "poor/pose" / video.GEOMETRY_INPUTS_FILE).exists()
 
 
 def test_a_selection_retained_at_64_resumes_with_its_own_capacity(tmp_path, monkeypatch):

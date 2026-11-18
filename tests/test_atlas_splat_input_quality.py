@@ -72,25 +72,46 @@ def test_the_kitchen_pattern_is_unchanged():
     assert [(row["kind"], row["decision"]) for row in record["motion"]["segments"]] == [("moving", "primary")]
 
 
-def test_a_pan_without_a_jump_keeps_only_its_widest_views_beside_the_dolly():
-    value = _fixture("library_aisle_capture_5b067498.json")
+def _registered_pan(value):
     jump = np.subtract(*[next(row["extrinsics"]["position"] for row in value["frames"] if row["frame_id"] == key)
                          for key in ("decoded-000000203", "decoded-000000199")])
     # The same capture, registered: the pan stood just behind where the dolly starts.
     for row in value["frames"]:
         if row["timestamp_seconds"] < 8.1:
             row["extrinsics"]["position"] = list(np.add(row["extrinsics"]["position"], .95 * jump))
+    return value
+
+
+def test_a_pan_without_a_jump_leaves_out_only_its_near_duplicates_and_never_a_weak_regions_view():
+    """Owner, 2026-11-18: the no-parallax cut is for true near-duplicates only (it cut 33 of 103 posed views
+    on itest-c0cbbf20), and never takes a view that saw a weak region of the coverage map."""
+    value = _registered_pan(_fixture("library_aisle_capture_5b067498.json"))
     record = _select(value)
     assert record["motion"]["jumps"] == []
     segments = record["motion"]["segments"]
     assert [(row["kind"], row["decision"]) for row in segments] == [("no_parallax", "capped"), ("moving", "primary")]
-    assert len(segments[0]["kept_frame_ids"]) == quality.STATIONARY_FRAME_CAP
-    assert "decoded-000000199" in segments[0]["kept_frame_ids"]  # the view next to the dolly seeds the spread
-    assert len(record["sent_frame_ids"]) == 19 + quality.STATIONARY_FRAME_CAP
+    pan, kept = segments[0]["frame_ids"], segments[0]["kept_frame_ids"]
+    cut = [row["frame_id"] for row in record["left_out"] if row["reason"] == "no_parallax_near_duplicate"]
+    assert len(kept) == 9 and set(kept) | set(cut) == set(pan) and len(cut) == 3
+    assert "decoded-000000199" in kept  # the view next to the dolly seeds the spread
+    rows = {row["frame_id"]: row for row in quality.camera_rows(
+        [frame for frame in value["frames"] if frame["frame_id"] in set(pan)],
+        {row["frame_id"]: row["timestamp_seconds"] for row in value["frames"]})}
+    # Every view left out is within the near-duplicate angle of one kept; the kept are farther apart than it.
+    assert all(min(quality._direction_angle(rows[key]["forward"], rows[other]["forward"]) for other in kept)
+               < quality.NEAR_DUPLICATE_DEGREES for key in cut)
+    assert all(quality._direction_angle(rows[a]["forward"], rows[b]["forward"]) >= quality.NEAR_DUPLICATE_DEGREES
+               for a in kept for b in kept if a < b)
+    assert len(record["sent_frame_ids"]) + len(record["heldout_frame_ids"]) == 19 + len(kept)
     assert "splat_no_parallax_frames_capped" in record["flags"]
     assert {row["reason"] for row in record["left_out"]} == {"depth_disagrees_with_measured_neighbours",
                                                               "agrees_only_with_views_that_disagree_elsewhere",
-                                                              "no_parallax_view_beyond_cap"}
+                                                              "no_parallax_near_duplicate"}
+    # A near-duplicate that saw a weak region of the map is kept.
+    protected = _select(value, weak_region_frame_ids=[cut[0]])
+    assert cut[0] in protected["motion"]["segments"][0]["kept_frame_ids"]
+    assert protected["weak_region_frame_ids"] == [cut[0]]
+    assert cut[0] not in {row["frame_id"] for row in protected["left_out"]}
 
 
 def test_measured_pairs_that_tie_a_segment_across_a_jump_keep_it():
@@ -98,9 +119,10 @@ def test_measured_pairs_that_tie_a_segment_across_a_jump_keep_it():
     value["pairs"] += [{"source": "decoded-000000199", "target": "decoded-000000203", "median_relative_residual": .01},
                        {"source": "decoded-000000187", "target": "decoded-000000215", "median_relative_residual": .02}]
     record = _select(value)
-    assert [(row["kind"], row["decision"]) for row in record["motion"]["segments"]] == [
-        ("no_parallax", "capped"), ("moving", "primary")]
-    assert len(record["sent_frame_ids"]) == 19 + quality.STATIONARY_FRAME_CAP
+    segments = record["motion"]["segments"]
+    assert [(row["kind"], row["decision"]) for row in segments] == [("no_parallax", "capped"), ("moving", "primary")]
+    assert (len(record["sent_frame_ids"]) + len(record["heldout_frame_ids"])
+            == 19 + len(segments[0]["kept_frame_ids"]))
     assert "splat_pose_jump_segment_left_out" not in record["flags"]
 
 
@@ -294,6 +316,32 @@ def test_the_pipeline_records_the_selection_once_before_the_purchase_and_reads_i
                                         bought=False)
 
 
+def test_the_pipeline_reads_the_coverage_map_before_selecting_and_keeps_a_weak_regions_views(tmp_path, monkeypatch):
+    """The map is written before the selection ($0, once per pose); a view that saw a weak region is never cut."""
+    from blueprint_pipeline import atlas_coverage_map
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    value = _registered_pan(_fixture("library_aisle_capture_5b067498.json"))
+    cut = [row["frame_id"] for row in _select(value)["left_out"] if row["reason"] == "no_parallax_near_duplicate"]
+    source_root = tmp_path / "pose/full-view-source-v1"
+    source_root.mkdir(parents=True)
+    (source_root / "atlas_geometry_inputs.json").write_text(json.dumps({"frames": [
+        {"frame_id": row["frame_id"], "timestamp_seconds": row["timestamp_seconds"], "sharpness": row["sharpness"]}
+        for row in value["frames"]]}))
+    pose = {"digest": "sha256:" + "1" * 64, "operation": {"response": {"poseRefinementAccepted": False}}}
+    draft = {"digest": "sha256:" + "2" * 64, "pose_result_digest": pose["digest"],
+             "cross_view_agreement": {"pairs": value["pairs"]}}
+    review = {"coverage_requirements": [{"role": "task_region", "required_frame_ids": value["route_frame_ids"]}]}
+    mapped = []
+    monkeypatch.setattr(atlas_coverage_map, "coverage_before_splat", lambda **kw: mapped.append(kw) or {
+        "status": "mapped", "regions": [{"id": "wr-000", "seen_by": [cut[0]]}]})
+    record = pipeline._splat_input_selection(frames=_posed(value), pose=pose, draft=draft, output_root=tmp_path,
+                                             review=review, source_root=source_root, bought=False)
+    assert mapped[0]["selection"] == {"route_frame_ids": sorted(value["route_frame_ids"])}
+    assert record["weak_region_frame_ids"] == [cut[0]]
+    assert cut[0] in record["sent_frame_ids"] + record["heldout_frame_ids"]
+    assert set(cut[1:]) <= {row["frame_id"] for row in record["left_out"]}
+
+
 @pytest.mark.parametrize("case", ["refused_pose", "few_views", "unaffordable", "bought"])
 def test_a_rebuild_buys_its_splat_only_on_an_accepted_consistent_pose_and_never_falls_back(tmp_path, monkeypatch,
                                                                                           case):
@@ -366,9 +414,10 @@ def test_a_ready_library_like_job_qualifies_for_one_rebuild_with_its_reasons_and
     assert eligible == {"parent_result_digest": result["digest"],
                         "reasons": ["pose_refinement_not_accepted", "views_disagree_with_measured_neighbours"],
                         "parent_posed_frame_count": 41, "views_dropped_by_consistency": 10,
-                        # 96 views plus its 10 task-source views, the $5 splat and the $0.50 mesh.
-                        "expected_cost_usd": 6.56,
-                        "maximum_cost_usd": pytest.approx((128 + 10) * .01 + 5.5 + 4)}
+                        # The 31 candidates its selection judged plus its 10 task-source views, the $5 splat and
+                        # the $0.50 mesh; at most the provider's 512 views.
+                        "expected_cost_usd": pytest.approx((31 + 10) * .01 + 5.5),
+                        "maximum_cost_usd": pytest.approx((512 + 10) * .01 + 5.5 + 4)}
     # A job whose pose was accepted and agrees, or one already bought under a selection, does not qualify.
     clean, clean_job, _ = _ready_job(tmp_path / "clean", accepted=True, pairs=[])
     assert rebuilds.rebuild_eligibility(clean, clean_job) is None
@@ -423,7 +472,7 @@ def test_the_rebuild_runs_in_its_own_root_and_publishes_or_hands_the_parent_back
         experimental=False, max_polls=1)
     value = pipeline._run_splat_rebuild(**options)
     # A new selection under the current profile: the splat target and the relative sharpness floor.
-    assert selected[0]["splat_frame_target"] == 96 and selected[0]["relative_sharpness_fraction"] == .6
+    assert selected[0]["splat_frame_target"] == 512 and selected[0]["relative_sharpness_fraction"] == .6
     assert json.loads((root / "atlas_scene_review.json").read_text()) == {"subject_origin": "no_manipulated_subject"}
     if outcome == "processing":
         assert value["status"] == "processing" and not (root / rebuilds.OUTCOME_FILE).exists()

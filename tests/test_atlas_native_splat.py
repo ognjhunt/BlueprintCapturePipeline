@@ -58,7 +58,11 @@ def test_posed_frames_follow_the_documented_2_to_512_and_pose_capacity_stays_ins
             tasks.validate_task_request("posedImages2Splats", {"posedFrames": frames})
     # Jobs without a refined splat keep 64; a splat job's target leaves room for task-source views.
     assert pose_api.MAX_POSE_INPUT_IMAGES == 64
-    assert pose_api.SPLAT_FRAME_TARGET == 96 < pose_api.SPLAT_POSE_INPUT_CAPACITY == 128 < 512
+    # The splat's capacity is the provider's (the pinned schema's posedFrames maxItems), and the fill keeps
+    # every distinct, sharp, connected candidate up to it (owner, 2026-11-18).
+    schema = json.loads((Path(native.__file__).parent / "_atlas_schemas/posedImages2Splats.json").read_text())
+    provider = schema["components"]["schemas"]["PosedImages2SplatsRequest"]["properties"]["posedFrames"]["maxItems"]
+    assert pose_api.SPLAT_FRAME_TARGET == pose_api.SPLAT_POSE_INPUT_CAPACITY == provider == 512
 
 
 def test_native_request_refuses_misaligned_depth_before_runner(tmp_path):

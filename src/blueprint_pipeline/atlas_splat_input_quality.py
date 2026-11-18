@@ -22,8 +22,9 @@ cameras, then:
    stayed within ``STATIONARY_DEPTH_FRACTION`` of the scene depth for at least
    ``STATIONARY_MINIMUM_SECONDS``). It keeps the moving segment holding most of
    the reviewed task route (then the most baseline), every other moving segment
-   on the same side of any jump, and at most ``STATIONARY_FRAME_CAP`` views of
-   each no-parallax run, spread widest in viewing direction. Measured pairs never
+   on the same side of any jump, and every view of each no-parallax run but its
+   near-duplicates (``NEAR_DUPLICATE_DEGREES``), never one that saw a weak region of
+   the coverage map. Measured pairs never
    compare views across a jump (they look at the nearest cameras only), so a
    segment beyond one is left out unless measured pairs tie it to the kept side.
 3. Holds back a few sharp, consistent views of the kept segment
@@ -47,7 +48,7 @@ from .atlas_splat_render import REVISION as RENDERER_REVISION
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "atlas_splat_input_selection.v1"
-REVISION = "per-view-consistency-motion-segments-heldout-v1"
+REVISION = "per-view-consistency-motion-segments-heldout-near-duplicates-v2"
 #: Beside the refined-splat roots in the job's output root; written once, before any purchase.
 SELECTION_FILE = "refined_splat_input_selection.json"
 #: Beside the adopted refined splat's manifest; never part of its digest.
@@ -62,7 +63,11 @@ JUMP_SPEED_FACTOR = 10.0
 JUMP_ROTATION_DEGREES = 45.0
 STATIONARY_DEPTH_FRACTION = 0.02
 STATIONARY_MINIMUM_SECONDS = 1.0
-STATIONARY_FRAME_CAP = 4
+#: In a no-parallax run (the camera stood still), a view whose viewing direction is within this many degrees
+#: of a view already kept is a near-duplicate, left out: its image shifts by under about 2% of its width at a
+#: 60-degree field of view. A planning choice (owner, 2026-11-18: only true near-duplicates are cut), not a
+#: measurement. Every other view of the run is kept, as is any view that saw a weak region of the coverage map.
+NEAR_DUPLICATE_DEGREES = 1.0
 HELDOUT_FRAME_COUNT = 2
 #: Views are held back only while at least this many are still sent.
 HELDOUT_MINIMUM_SENT_FRAMES = 24
@@ -91,7 +96,7 @@ def limits() -> dict[str, Any]:
             "consistent_frame_floor": CONSISTENT_FRAME_FLOOR, "jump_depth_fraction": JUMP_DEPTH_FRACTION,
             "jump_speed_factor": JUMP_SPEED_FACTOR, "jump_rotation_degrees": JUMP_ROTATION_DEGREES,
             "stationary_depth_fraction": STATIONARY_DEPTH_FRACTION,
-            "stationary_minimum_seconds": STATIONARY_MINIMUM_SECONDS, "stationary_frame_cap": STATIONARY_FRAME_CAP,
+            "stationary_minimum_seconds": STATIONARY_MINIMUM_SECONDS, "near_duplicate_degrees": NEAR_DUPLICATE_DEGREES,
             "heldout_frame_count": HELDOUT_FRAME_COUNT, "heldout_minimum_sent_frames": HELDOUT_MINIMUM_SENT_FRAMES}
 
 
@@ -246,14 +251,27 @@ def motion_segments(rows: Sequence[Mapping[str, Any]], scene_depth: float) -> tu
     return segments, jumps
 
 
-def _widest_views(rows: Sequence[Mapping[str, Any]], count: int, seed_time: float) -> list[str]:
-    """Farthest-point views by viewing direction, from the view nearest ``seed_time``."""
-    chosen = [min(rows, key=lambda row: (abs(row["time"] - seed_time), row["frame_id"]))]
-    while len(chosen) < min(count, len(rows)):
-        rest = [row for row in rows if row not in chosen]
-        chosen.append(max(rest, key=lambda row: (min(_direction_angle(row["forward"], other["forward"])
-                                                      for other in chosen), -row["time"])))
-    return [row["frame_id"] for row in chosen]
+def _distinct_views(rows: Sequence[Mapping[str, Any]], seed_time: float, *, protected=frozenset()) -> list[str]:
+    """A no-parallax run's views less its near-duplicates (``NEAR_DUPLICATE_DEGREES``), widest first from the seed.
+
+    A ``protected`` view (one that saw a weak region of the coverage map) is never left out.
+    """
+    forward = np.array([row["forward"] for row in rows], float)
+    seed = min(range(len(rows)), key=lambda i: (abs(rows[i]["time"] - seed_time), rows[i]["frame_id"]))
+    kept = [seed]
+    # Each step keeps the view farthest in direction from every view kept so far, while it is not a
+    # near-duplicate of one; the running nearest angle keeps this quadratic in the run's length.
+    nearest = np.degrees(np.arccos(np.clip(forward @ forward[seed], -1, 1)))
+    nearest[seed] = -1
+    while True:
+        candidate = max(range(len(rows)), key=lambda i: (nearest[i], -rows[i]["time"]))
+        if nearest[candidate] < NEAR_DUPLICATE_DEGREES:
+            break
+        kept.append(candidate)
+        nearest = np.minimum(nearest, np.degrees(np.arccos(np.clip(forward @ forward[candidate], -1, 1))))
+        nearest[kept] = -1
+    kept += [i for i, row in enumerate(rows) if row["frame_id"] in protected and i not in kept]
+    return [rows[i]["frame_id"] for i in kept]
 
 
 def _heldout(rows, kept_ids, *, route, residuals, sharpness, sent_total) -> tuple[list[str], str | None]:
@@ -278,7 +296,7 @@ def _heldout(rows, kept_ids, *, route, residuals, sharpness, sent_total) -> tupl
 def select_splat_frames(*, frames: Sequence[Mapping[str, Any]], agreement: Mapping[str, Any] | None,
                         timestamps: Mapping[str, float], scene_depth: float | None,
                         pose_refinement_accepted: bool | None, route_frame_ids=(),
-                        sharpness: Mapping[str, float] | None = None) -> dict[str, Any]:
+                        sharpness: Mapping[str, float] | None = None, weak_region_frame_ids=()) -> dict[str, Any]:
     """The views to send, the views held back, and why every other posed view was left out.
 
     ``frames`` are posed views (``frame_id`` and ``extrinsics``), ``agreement``
@@ -288,6 +306,7 @@ def select_splat_frames(*, frames: Sequence[Mapping[str, Any]], agreement: Mappi
     """
     sharpness = dict(sharpness or {})
     route = set(route_frame_ids)
+    weak = frozenset(weak_region_frame_ids)
     ids = [frame["frame_id"] for frame in frames]
     flags, left_out = [], []
     if pose_refinement_accepted is False:
@@ -357,16 +376,17 @@ def select_splat_frames(*, frames: Sequence[Mapping[str, Any]], agreement: Mappi
                     flags.append("splat_pose_jump_segment_left_out")
                 elif segment["kind"] == "moving":
                     segment["decision"] = "kept"
-                elif len(members) > STATIONARY_FRAME_CAP:
-                    seed = primary_span[0] if segment["rows"][-1]["time"] <= primary_span[0] else primary_span[1]
-                    keep = set(_widest_views(segment["rows"], STATIONARY_FRAME_CAP, seed))
-                    segment["decision"] = "capped"
-                    segment["kept_frame_ids"] = [key for key in members if key in keep]
-                    left_out += [{"frame_id": key, "reason": "no_parallax_view_beyond_cap"}
-                                 for key in members if key not in keep]
-                    flags.append("splat_no_parallax_frames_capped")
                 else:
-                    segment["decision"] = "kept"
+                    seed = primary_span[0] if segment["rows"][-1]["time"] <= primary_span[0] else primary_span[1]
+                    keep = set(_distinct_views(segment["rows"], seed, protected=weak))
+                    if len(keep) < len(members):
+                        segment["decision"] = "capped"
+                        segment["kept_frame_ids"] = [key for key in members if key in keep]
+                        left_out += [{"frame_id": key, "reason": "no_parallax_near_duplicate"}
+                                     for key in members if key not in keep]
+                        flags.append("splat_no_parallax_frames_capped")
+                    else:
+                        segment["decision"] = "kept"
         motion["segments"] = [{"kind": s["kind"], "jump_group": s["jump_group"], "decision": s["decision"],
                                "frame_ids": [row["frame_id"] for row in s["rows"]],
                                "baseline_units": s["baseline_units"], "route_frame_count": s["route_frame_count"],
@@ -390,6 +410,7 @@ def select_splat_frames(*, frames: Sequence[Mapping[str, Any]], agreement: Mappi
               "consistency": {"dropped": dropped, "restored_frame_ids": restored, "unmeasured_frame_ids": unmeasured,
                               "pair_count": len(pairs)},
               "motion": motion, "route_frame_ids": sorted(route), "route_frames_left_out": route_left,
+              **({"weak_region_frame_ids": sorted(weak)} if weak else {}),
               "flags": sorted(set(flags)), "claim_scope": "development_only"}
     record["digest"] = canonical_digest(record, digest_field="digest")
     return record

@@ -139,7 +139,7 @@ def test_regions_and_views_are_capped_in_the_maps_order_and_unposed_regions_are_
     targets, skipped = look.orbit_cameras(regions, real_frames())
     kept = {row["region_id"] for row in targets}
     assert kept == {"r0", "r1", "r2", "r3", "r4", "r5"} and len(targets) == look.MAX_VIEWS == 24
-    assert {"region_id": "ghost", "reason": "seen_by_cameras_not_posed"} in skipped
+    assert {"region_id": "ghost", "reason": "seen_by_cameras_not_available"} in skipped
     assert {row["region_id"] for row in skipped if row["reason"] == "over_region_limit"} == {"r6", "r7"}
     assert len(look.orbit_cameras(regions, real_frames(), max_views=6)[0]) == 6
     assert look.orbit_angles([-30, 30]) == [-30, 30] and look.orbit_angles([0, 20]) == [-20, 20]
@@ -314,7 +314,7 @@ def test_an_error_that_is_no_wall_falls_back_to_the_real_frames_unless_a_request
     write_map(live.parent.parent, [region()])
     atlas = Atlas(polls_before_done=5)
     assert run(live, atlas)["status"] == "processing"
-    monkeypatch.setattr(look, "orbit_cameras", lambda *_: (_ for _ in ()).throw(IndexError("late")))
+    monkeypatch.setattr(look, "orbit_cameras", lambda *_, **__: (_ for _ in ()).throw(IndexError("late")))
     plan = live / look.ROOT / look.PLAN
     plan.unlink()  # Forces a re-plan that fails, with the first request still live.
     with pytest.raises(IndexError):
@@ -434,7 +434,7 @@ def test_the_scene_takes_a_look_only_bound_to_its_checked_views(job):
 
 
 def test_each_view_is_composited_once_and_paired_only_against_the_real_frames_that_overlap_it(tmp_path, monkeypatch):
-    """The serial room step renders each view once, against at most CONTEXT_FRAMES_PER_REGION real frames."""
+    """The serial room step renders each view once, against at most CHECK_FRAMES_PER_VIEW real frames."""
     from blueprint_pipeline import atlas_gap_composite, atlas_native_splat, atlas_whole_view_review
     frames = [scene(camera((x, y, 0)), f"real-{i}") for i, (x, y) in enumerate(
         (x, y) for x in (0, .05, .1, .15, .2, .25) for y in (0, .1))]
@@ -451,16 +451,16 @@ def test_each_view_is_composited_once_and_paired_only_against_the_real_frames_th
         task_context={"context_digest": "t"}, source_digest="s", configuration=lambda: {"policy": POLICY},
         task_runner=Atlas(), bought=False, sent=sent)
     record = value["record"]
-    assert len(value["views"]) == 4 and len(frames) > look.CONTEXT_FRAMES_PER_REGION
+    assert len(value["views"]) == 4 and len(frames) > look.CHECK_FRAMES_PER_VIEW
     # One render a view, against its region's frames only.
-    assert len(rendered) == 4 and all(len(ids) == look.CONTEXT_FRAMES_PER_REGION for ids in rendered)
-    assert all(ids == record["views"][0]["context_frame_ids"] for ids in rendered)
+    assert len(rendered) == 4 and all(len(ids) == look.CHECK_FRAMES_PER_VIEW for ids in rendered)
+    assert all(ids == record["views"][0]["check_frame_ids"] for ids in rendered)
     sent_ids = {f["frame_id"] for f in sent}
     for view in value["views"]:
         row = next(r for r in record["views"] if r["frame_id"] == view["frame_id"])
         assert view["gap_composite"] == row["gap_composite"]
         assert composite_digest(view["rgb"]) == row["gap_composite"]["rgb_sha256"]
-        assert view["overlapping_frame_ids"] == [key for key in row["context_frame_ids"] if key in sent_ids]
+        assert view["overlapping_frame_ids"] == [key for key in row["check_frame_ids"] if key in sent_ids]
     # The splat path posts the composited views as they are: nothing is rendered again.
     merged = atlas_native_splat.composited_views([*sent, *value["views"]])
     assert len(rendered) == 4 and sum(1 for _, view, _ in merged if view.get("gap_composite")) == 4
@@ -476,9 +476,10 @@ def test_each_view_is_composited_once_and_paired_only_against_the_real_frames_th
         assert {real for key, real in paired if key == view["frame_id"]} == set(view["overlapping_frame_ids"])
     # Fewer than three of its region's frames sent: the sent seen_by frames nearest its camera.
     row = record["views"][0]
-    few = [f for f in frames if f["frame_id"] not in row["context_frame_ids"][1:]]
+    few = [f for f in frames if f["frame_id"] not in row["check_frame_ids"][1:]]
     named = look.reference_frame_ids(row, few)
-    assert named[0] == row["context_frame_ids"][0] and set(named) == {f["frame_id"] for f in few}
+    assert named[0] == row["check_frame_ids"][0]
+    assert set(named) == {f["frame_id"] for f in few} & set(row["seen_by_frame_ids"])
 
 
 def test_a_refined_splat_retry_resends_the_same_request_and_its_records_match_the_look(job, monkeypatch):
@@ -545,3 +546,102 @@ def test_a_refined_splat_retry_resends_the_same_request_and_its_records_match_th
     bound = look.bound_look_views(splat=appearance["splat_manifest"], source=source,
                                   appearance={"look_views": appearance["look_views"]}, job_dir=job)
     assert bound["view_count"] == len(record["passed_view_ids"]) and bound["look_views_digest"] == record["digest"]
+
+
+def _room(count=30):
+    """Filmed views along a line and turning, so the room's views spread in position and direction."""
+    return [scene(camera((.05 * (i % 6), .02 * (i // 6), .03 * i), yaw_degrees=(i % 7) - 3), f"real-{i}")
+            for i in range(count)]
+
+
+def test_generation_context_fills_the_providers_rollout_region_views_then_task_views_then_the_room(tmp_path):
+    """AGENTS (src/blueprint_pipeline): generation context uses the provider's configured capacity, never a
+    global count, and keeps task views and wider room context. The check alone stays at eight frames."""
+    from blueprint_pipeline.atlas_scene_chisel import ROLLOUT_VIEWS, photograph_count
+    frames = _room()
+    seen = ["real-0", "real-1", "real-2", "real-3"]
+    capture = tmp_path / "capture"
+    write_map(capture, [region(seen_by=seen)])
+    atlas = Atlas()
+    requests = []
+    original = atlas.__call__
+
+    def runner(**kw):
+        requests.append(kw["request"])
+        return original(**kw)
+    value = look.look_views_for_splat(frames=frames, pose=POSE, output_root=capture / "pipeline/atlas", policy=POLICY,
+        task_context={"context_digest": "t"}, source_digest="s", configuration=lambda: {"policy": POLICY},
+        task_runner=runner, bought=False, task_frame_ids=["real-29", "real-15"])
+    plan = json.loads((capture / "pipeline/atlas" / look.ROOT / look.PLAN).read_text())
+    target = plan["targets"][0]
+    context = target["context_frame_ids"]
+    by_id = {frame["frame_id"]: frame for frame in frames}
+    # The region's own views first (nearest its filmed camera), then the job's task views, then the room.
+    assert set(context[:4]) == set(seen) and context[0] == target["base_frame_id"]
+    assert context[4:6] == ["real-29", "real-15"] and len(context) == len(set(context)) > 8
+    # Filled to the rollout: context photographs plus two views per target, and no other view would fit.
+    photographs = sum(photograph_count(by_id[key]) for key in context)
+    targets = len(requests[0]["targetCameras"])
+    assert photographs == len(requests[0]["contextFrames"]) and photographs + 2 * targets <= ROLLOUT_VIEWS
+    assert all(photographs + photograph_count(frame) + 2 * targets > ROLLOUT_VIEWS
+               for frame in frames if frame["frame_id"] not in context)
+    # The check is a review, not reconstruction context: at most eight of the region's own views.
+    assert target["check_frame_ids"] == context[:4] and len(target["check_frame_ids"]) <= look.CHECK_FRAMES_PER_VIEW
+    # The price is per generated view: more context photographs do not change it.
+    assert value["record"]["batches"][0]["maximum_cost_usd"] == pytest.approx(.05 + (targets - 1) * .01)
+
+
+def test_held_out_frames_never_reach_generation_context_or_the_check(tmp_path, monkeypatch):
+    """Review (P2): the held-out score measures the look against views nothing generated saw."""
+    from blueprint_pipeline import atlas_gap_composite, atlas_scene_generate
+    frames = _room(12)
+    held = ["real-1", "real-7"]
+    capture = tmp_path / "capture"
+    write_map(capture, [region(seen_by=["real-0", "real-1", "real-2", "real-3"])])
+    monkeypatch.setattr(look, "check_view", lambda view, references, footprint, **_: {"passed": True})
+    prepared, rendered = [], []
+    real_prepare, real_render = atlas_scene_generate.prepare_rgbd_context, atlas_gap_composite.render_observed
+    monkeypatch.setattr(atlas_scene_generate, "prepare_rgbd_context", lambda *, frames, root: prepared.extend(
+        frame["frame_id"] for frame in frames) or real_prepare(frames=frames, root=root))
+    monkeypatch.setattr(atlas_gap_composite, "render_observed", lambda references, camera: rendered.extend(
+        ref["frame_id"] for ref in references) or real_render(references, camera))
+    sent = [frame for frame in frames if frame["frame_id"] not in held]
+    value = look.look_views_for_splat(frames=frames, pose=POSE, output_root=capture / "pipeline/atlas", policy=POLICY,
+        task_context={"context_digest": "t"}, source_digest="s", configuration=lambda: {"policy": POLICY},
+        task_runner=Atlas(), bought=False, sent=sent, heldout_frame_ids=held, task_frame_ids=["real-7", "real-9"])
+    record = value["record"]
+    assert value["views"] and prepared and rendered
+    named = {key for row in record["views"] for field in ("context_frame_ids", "check_frame_ids", "seen_by_frame_ids")
+             for key in row[field]} | set(prepared) | set(rendered)
+    assert not named & set(held) and "real-9" in record["views"][0]["context_frame_ids"]
+    assert not {key for view in value["views"] for key in view["overlapping_frame_ids"]} & set(held)
+
+
+def test_the_pipeline_keeps_held_out_frames_out_of_the_look_views(job, monkeypatch):
+    """``_preserved_appearance`` hands the selection's held-out and task views to the look views."""
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    monkeypatch.setattr(look, "check_view", lambda view, references, footprint, **_: {"passed": True})
+    monkeypatch.setattr(pipeline, "_heldout_quality", lambda **_: {"status": "not_scored"})
+    held = ["real-1"]
+
+    def selection(**_):
+        return {"digest": "sha256:" + "4" * 64, "pose_refinement_accepted": True, "flags": [],
+                "sent_frame_ids": ["real-0", "real-2", "real-3"], "left_out": [], "heldout_frame_ids": held,
+                "route_frame_ids": ["real-3"]}
+    from blueprint_pipeline import atlas_coverage_map, atlas_native_splat, paid_resource_allocator
+    monkeypatch.setattr(atlas_coverage_map, "coverage_before_splat", lambda **_: None)
+    monkeypatch.setattr(pipeline, "_splat_input_selection", selection)
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **__: {"policy": POLICY, "remaining_cost_usd": 17})
+    atlas = Atlas()
+    monkeypatch.setattr(paid_resource_allocator, "run_sponsored_website_atlas_task", lambda experimental, **kw: atlas(**kw))
+    sent = []
+    monkeypatch.setattr(atlas_native_splat, "run_native_splat", lambda **kw: sent.append(kw["frames"]) or {
+        "status": "completed", "splat_root": str(job / "refined_splat-minimal"), "splat_manifest": {"frames": []},
+        "refined_splat": {"request_form": "documented_minimal"}})
+    pipeline._preserved_appearance(frames=real_frames(), pose=POSE, draft={"digest": "d"}, output_root=job,
+        policy=POLICY, task_context={"context_digest": "t"}, source_digest="s", configuration={},
+        check=lambda *_: None, experimental=False, max_polls=1, review={}, source_root=job)
+    record = json.loads((job / look.ROOT / look.RECORD).read_text())
+    assert record["views"] and all("real-1" not in row["context_frame_ids"] + row["check_frame_ids"]
+                                   for row in record["views"])
+    assert "real-1" not in [frame["frame_id"] for frame in sent[0]]
