@@ -354,6 +354,25 @@ NOT_LOCATED = "task_target_not_located"
 #: The clean plate's flags that end the job as the room package, as filmed.
 ROOM_AS_FILMED = (NOT_FOUND, NOT_LOCATED)
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
+#: Compile's support search found no surface the object starts on (test job 4, 2026-11-17: the lamp's estimated
+#: box reached 23 cm into its round table and its corners past the table's edge, outside the search). The
+#: object cannot be placed in the room, so the room package ships, the codes flagged on its record.
+START_UNSUPPORTED = frozenset({"support_surface_not_found_under_subject",
+                               "website_synthetic_subject_start_unplaceable"})
+
+
+def start_unsupported(blockers: Sequence[str], task_context: Mapping[str, Any]) -> bool:
+    """Whether compile's blockers leave the object with no surface to start on (``START_UNSUPPORTED``) and nothing
+    that reads as privacy, rights or money (``job_retry_policy.hard_stop_kind``, as the authoring admissions do).
+    A development test places such an object on its own authored surface instead (``website_development_test``)."""
+    from .job_retry_policy import hard_stop_kind
+    from .website_development_test import enabled
+    if not set(blockers) & START_UNSUPPORTED or any(hard_stop_kind(code) for code in blockers):
+        return False
+    try:
+        return not enabled(task_context["context_digest"])
+    except (ValueError, KeyError):
+        return False  # an unreadable test allowlist: the preparation is kept as before
 
 
 def sealed_rule_withheld(capture_root: Path | None) -> dict[str, Any] | None:
@@ -593,6 +612,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         declared = gap.get("task_family") if gap["code"] == MISMATCH else gap.get("inferred_profile_id")
         return room_package(declared, flags=[gap["code"]])
 
+    room_ready = False
     try:
         if clean_plate.get("privacy_verified") is not True or clean_plate.get("status") not in {"noop", "objects_removed"}:
             raise ValueError("website_scene_preparation_pending")
@@ -640,6 +660,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # (``website_atlas_pipeline.background_floor``): it is part of the room scan, never also built on its own.
         in_scan = (bool((atlas.get("job_object_rule") or {}).get("background_not_cleaned"))
                    and any(row.get("task_effect") == "manipulated" for row in removal.get("entries") or []))
+        room_ready = True  # from here a room package can be written (``room_package``)
         if in_scan:
             return room_package(context.get("task_family"))
         from .website_task_semantics import load_task_semantics
@@ -864,13 +885,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 # The object does not fit the scene or the video: left out, never a hold or a new video.
                 return room_package(None, flags=[str(exc)])
             raise
-        if ("rule_withheld" in result and preparation["status"] != "intake_ready"
-                and not preparation.get("native_task_preparation_gap")
-                and not set(preparation["blockers"]) & REGISTRATION_REFUSALS):
+        if (preparation["status"] != "intake_ready" and not preparation.get("native_task_preparation_gap")
+                and ("rule_withheld" in result and not set(preparation["blockers"]) & REGISTRATION_REFUSALS
+                     or start_unsupported(preparation["blockers"], context))):
             # Anything else that stops the object (no internal place, no support, a size the published figures
             # refute, an authoring admission unmet: nothing was spent or sent for it): the room package, as main
             # ships this job, the object left out and the reason a flag. A registration refusal is a blocker only
-            # in development-test mode, which places the object on its estimated frame instead.
+            # in development-test mode, which places the object on its estimated frame instead. Any job whose
+            # object has no surface to start on ships the same room package (``start_unsupported``).
             return room_package(None, flags=preparation["blockers"])
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
@@ -927,6 +949,21 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             # Preserve finished CPU outputs when a later handoff is held.
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])
     except (ValueError, KeyError, TypeError, OSError) as exc:
+        from .hard_stops import is_wall
+        from .website_gemini_receipts import EXHAUSTED, CreditDepleted, last_money_recheck
+        from .website_preparation_terminal import retained_window_end
+        window = (retained_window_end(capture_root, scene_id=descriptor["scene_id"],
+                                      capture_id=descriptor["capture_id"]) if isinstance(exc, CreditDepleted) else None)
+        if room_ready and (str(exc) == EXHAUSTED and not is_wall(exc) or last_money_recheck(exc, now, window)):
+            # A Gemini call of this preparation (an object's assembly views, a mask's grounding) was sent the most
+            # times its bound allows and never answered; or Gemini answered that Blueprint's credits are depleted
+            # and the job's window, read now, ends before the money wait can ask again (until then that answer is
+            # a money wait: ``CreditDepleted``; a window that cannot be read keeps it waiting). The object cannot be
+            # built without that answer, so the job goes on as the room package, flagged, and buys nothing.
+            try:
+                return room_package(None, flags=[str(exc)])
+            except (ValueError, KeyError, TypeError, OSError):
+                pass  # the room cannot be packaged either: the provider's code is kept, and the job retries
         from .website_recapture_required import CODES as RECAPTURE_CODES, FIELD as RECAPTURE_FIELD, record
         stopped_context = metadata.get("site_task_context") or {}
         if (isinstance(exc, ValueError) and str(exc) in RECAPTURE_CODES

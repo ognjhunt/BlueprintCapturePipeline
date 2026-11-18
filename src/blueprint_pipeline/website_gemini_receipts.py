@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .hard_stops import MoneyStop
 from .paid_resource_admission import require_paid_resource_admission_grant
 from .website_task_context import (
     RetainedAdmissionUnusable, require_current_website_source, reserve_website_preparation_spend,
@@ -84,6 +85,78 @@ EXHAUSTED = "website_gemini_unanswered_dispatches_exhausted"
 #: An answered refusal the provider gives before any work, as for SAM (``meta_sam31.REFUSAL_STATUSES``):
 #: proof that nothing was billed, so the same reservation pays the next dispatch.
 NO_WORK_STATUSES = frozenset({429, 503})
+#: Gemini's own answer when the account's prepaid balance is spent: 402 RESOURCE_EXHAUSTED, "Your prepayment
+#: credits are depleted" (test job 3, 2026-11-17). It refuses before any work, so, like a 429 or 503, its
+#: reservation pays the next dispatch and it is never counted as spent. It is a money wait (``CreditDepleted``):
+#: the code reads as money (``job_retry_policy.hard_stop_kind``), so the job is asked again on the money schedule
+#: and goes on by itself once the account has funds. No other 402 is read as this.
+CREDIT_DEPLETED = "website_gemini_provider_credit_depleted"
+_DEPLETED_STATUS, _DEPLETED_REASON = "RESOURCE_EXHAUSTED", "prepayment credits are depleted"
+
+
+class CreditDepleted(MoneyStop):
+    """Gemini's credits-depleted answer, a money wall under ``CREDIT_DEPLETED``."""
+
+    def __init__(self) -> None:
+        super().__init__(CREDIT_DEPLETED)
+
+
+#: For a job with a grant, the longest wait between two money rechecks (``job_retry_policy.outage_retry_delay``'s
+#: cap; ``website_preparation_retry.retry_delay``).
+MONEY_RECHECK_SECONDS = 3600
+
+
+def last_money_recheck(error: BaseException, now: float, window_ends_at_epoch: float | None) -> bool:
+    """Whether ``error`` is Gemini's credits-depleted answer met so near the end of the job's window, as read when
+    asked (``website_preparation_terminal.retained_window_end``), that the money wait may not ask again before it
+    ends (the longest wait, and as long again for the listener's tick and the run): then, and only then, the job
+    goes on without that piece. A window that cannot be read is never near its end."""
+    return (isinstance(error, CreditDepleted) and window_ends_at_epoch is not None
+            and window_ends_at_epoch - now <= 2 * MONEY_RECHECK_SECONDS)
+
+
+class LaterTurnFailed(Exception):
+    """Raised by a multi-turn ``invoke`` (a repair turn after the first answer) when a turn fails after an earlier
+    turn of the same dispatch was answered: the provider did work for this dispatch, so it is never read as
+    refused, whatever the later turn's status; it is counted as spent and the next send takes a new reservation.
+    It chains the turn's own error and keeps its text, so a credits-depleted answer still waits on money and the
+    retry lane reads the failure as before."""
+
+    def __init__(self, error: BaseException):
+        super().__init__(str(error))
+        self.__cause__ = error
+
+
+def answered_before(exc: BaseException) -> bool:
+    """Whether ``LaterTurnFailed`` marks ``exc`` or one of its causes: it wins over the status found below it."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(seen) < 16:
+        seen.add(id(current))
+        if isinstance(current, LaterTurnFailed):
+            return True
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return False
+
+
+def credit_depleted(exc: BaseException) -> bool:
+    """Whether Gemini answered 402 with its own reason that the prepaid credits are depleted (the client's
+    ``code``, ``status`` and ``message``, or the same in its ``details``), on the error or one of its causes."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(seen) < 16:
+        seen.add(id(current))
+        details = getattr(current, "details", None)
+        body = details.get("error") if isinstance(details, Mapping) else None
+        body = body if isinstance(body, Mapping) else {}
+        code = getattr(current, "code", body.get("code"))
+        status, message = getattr(current, "status", None) or body.get("status"), \
+            getattr(current, "message", None) or body.get("message")
+        if (code == 402 and not isinstance(code, bool) and status == _DEPLETED_STATUS
+                and isinstance(message, str) and _DEPLETED_REASON in message.lower()):
+            return True
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return False
 
 
 def _http_status(exc: BaseException) -> int | None:
@@ -104,11 +177,13 @@ def _dispatch_chain(output_root: Path, digest: str):
     """Walk one request's dispatches: its first intent, then each resend.
 
     Returns ``(completed result or None, next dispatch digest, next intent path, resend marks,
-    reservation to reuse or None)``. An intent the provider refused before any work, or one never
-    dispatched, is proof of $0: its own reservation pays the next dispatch under the same digest,
-    and it is neither counted nor a resend. Each unanswered intent on the way is counted as spent
-    once (``unanswered-<k>.json``), so the next dispatch is the single resend one new reservation
-    pays for; after ``UNKNOWN_DISPATCH_LIMIT`` unanswered dispatches nothing more is sent.
+    reservation to reuse or None)``. An intent the provider refused before any work (a 429, a 503, or
+    Gemini's credits-depleted 402, each kept on its own receipt), or one never dispatched, is proof of $0:
+    its own reservation pays the next dispatch under the same digest, and it is neither counted nor a
+    resend. Such an intent is always its chain's latest record, so no resend follows it. Each intent whose
+    receipt holds no answer is counted as spent once (``unanswered-<k>.json``), whatever else is recorded
+    about its run, so the next dispatch is the single resend one new reservation pays for; after
+    ``UNKNOWN_DISPATCH_LIMIT`` unanswered dispatches nothing more is sent.
     """
     stem = digest[7:]
     dispatch, path, marks, index = digest, output_root / f"{stem}.json", {}, 0
@@ -159,8 +234,10 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
     Every Gemini call of website preparation goes through here. ``earlier_requests`` are
     superseded ``(binding, maximum_cost_usd)`` forms of this same decision: one already bought
     is reused as it stands. A dispatch with no recorded answer is counted as spent and sent
-    again under one new reservation, at most twice (``_dispatch_chain``); a 429 or 503 answer,
-    or a run stopped before its dispatch, reuses its own reservation. An earlier form's
+    again under one new reservation, at most twice (``_dispatch_chain``); a 429 or 503 answer, Gemini's
+    credits-depleted 402 (raised as ``CreditDepleted``, a money wait), or a run stopped before its
+    dispatch, reuses its own reservation, unless an earlier turn of the same dispatch was answered
+    (``LaterTurnFailed``, raised by a multi-turn ``invoke``): then it is counted as spent. An earlier form's
     unanswered dispatch is counted the same way and this form is bought under its own
     reservation. ``accept_earlier(earlier_binding, result)``, when given, says which earlier answer still stands; one it
     refuses is kept as it is and this form is bought once. The existing WebApp transaction is the
@@ -224,10 +301,15 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
         try:
             result = invoke()
         except Exception as exc:
-            status = _http_status(exc)
-            if status in NO_WORK_STATUSES:
-                _fsynced(path, {"status": "refused", "http_status": status, "request_digest": dispatch,
+            status, depleted = _http_status(exc), credit_depleted(exc)
+            # Refused before any work only when no turn of this dispatch was answered (``LaterTurnFailed``):
+            # otherwise it keeps no answer, is counted as spent, and the next send takes a new reservation.
+            if (status in NO_WORK_STATUSES or depleted) and not answered_before(exc):
+                _fsynced(path, {"status": "refused", "http_status": status,
+                                **({"reason": CREDIT_DEPLETED} if depleted else {}), "request_digest": dispatch,
                                 "request": request, "admission": admission, **marks})
+            if depleted:
+                raise CreditDepleted() from exc
             raise
         _fsynced(path, {"status": "completed", "request_digest": dispatch, "request": request,
                         "admission": admission, "result": result, "result_digest": canonical_digest(result), **marks})

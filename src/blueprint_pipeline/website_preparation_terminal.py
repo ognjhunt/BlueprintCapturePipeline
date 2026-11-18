@@ -254,22 +254,63 @@ def _grant_may_have_ended(capture_root: Path, ledger: Mapping[str, Any], now_epo
     the grant is valid. The extension lives on the scene intent, which a capture
     root does not name, so whether the grant has ended is asked of the WebApp.
     """
+    grant = _retained_grant(capture_root, scene_id=ledger.get("scene_id"), capture_id=ledger.get("capture_id"))
+    return grant is not None and not grant["expires_at_epoch"] > now_epoch
+
+
+def _retained_grant(capture_root: Path, *, scene_id: Any, capture_id: Any) -> dict[str, Any] | None:
+    """The grant the job's latest delivery retained (``GRANT_FILE``), sealed and bound to this capture, with a
+    finite ``expires_at_epoch``; else None."""
     path = Path(capture_root) / GRANT_FILE
     if path.is_symlink() or not path.is_file():
-        return False
+        return None
     try:
         grant = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
+        return None
     if not isinstance(grant, dict):
-        return False
+        return None
     expiry = grant.get("expires_at_epoch")
-    return not (grant.get("schema_version") != "website_scene_sponsorship.v1"
-                or grant.get("authority_digest") != canonical_digest(grant, digest_field="authority_digest")
-                or grant.get("scene_id") != ledger.get("scene_id")
-                or grant.get("capture_id") != ledger.get("capture_id")
-                or isinstance(expiry, bool) or not isinstance(expiry, (int, float))
-                or not math.isfinite(expiry) or expiry > now_epoch)
+    if (grant.get("schema_version") != "website_scene_sponsorship.v1"
+            or grant.get("authority_digest") != canonical_digest(grant, digest_field="authority_digest")
+            or grant.get("scene_id") != scene_id or grant.get("capture_id") != capture_id
+            or isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or not math.isfinite(expiry)):
+        return None
+    return grant
+
+
+#: The website never honours an extension past the grant's expiry plus this (``sponsorshipValidUntil``).
+WINDOW_EXTENSION_MAX_SECONDS = 7 * 86400
+#: The scene intents on the host, where ``BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT`` names none
+#: (``website_company_simulation.DEFAULT_INTENT_ROOT``).
+INTENT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents")
+
+
+def retained_window_end(capture_root: Path, *, scene_id: str, capture_id: str) -> float | None:
+    """When the job's window ends, read when asked: the retained grant's own expiry (``_retained_grant``, as
+    ``_grant_may_have_ended`` reads it), moved later by an owner-approved extension on the job's scene intent,
+    where one exists (``effective_execution_expiry``; the website's ``sponsorshipValidUntil`` honours the same,
+    never past expiry plus ``WINDOW_EXTENSION_MAX_SECONDS``). None when the grant, or an intent that exists,
+    cannot be read: then nothing is decided on the window."""
+    grant = _retained_grant(capture_root, scene_id=scene_id, capture_id=capture_id)
+    if grant is None:
+        return None
+    from .task_evaluation_scene_execution_window_evidence import effective_execution_expiry
+    from .task_evaluation_scene_intent_contracts import ROOT_ENV, _read, canonical_digest as intent_digest
+    expiry = float(grant["expires_at_epoch"])
+    try:
+        identity = intent_digest({"owner": grant["owner"], "submission_id": capture_id})
+        directory = Path(os.environ.get(ROOT_ENV) or INTENT_ROOT) / ("scene-" + identity.removeprefix("sha256:"))
+        if directory.is_symlink():
+            return None
+        if not (directory / "intent.json").exists():
+            return expiry  # no scene intent yet: nothing can extend the grant's own window
+        intent = _read(directory / "intent.json", "intent_digest")
+        if intent["request"]["submission_id"] != capture_id:
+            return None
+        return min(max(expiry, effective_execution_expiry(directory, intent)), expiry + WINDOW_EXTENSION_MAX_SECONDS)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def _webapp_ended(capture_root: Path, ledger: Mapping[str, Any]) -> ValueError | None:

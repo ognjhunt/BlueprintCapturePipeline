@@ -3,7 +3,8 @@
 ``support_surface_not_found_under_subject`` stopped the job although a surface lay under the object's
 footprint, lower than its estimated bottom (a registration residual, or an object filmed held up). Now the
 object rests on the nearest surface under its footprint, at most 0.5 m below, with the drop recorded and
-the flag ``scene_estimate:support_guessed`` on the result. Nothing under the footprint stays the stop.
+the flag ``scene_estimate:support_guessed`` on the result. Nothing under the footprint leaves the object
+unplaced; the job then ships its room package (``tests/test_website_scene_handoff``).
 """
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/website_support_geometry.py

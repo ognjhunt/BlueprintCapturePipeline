@@ -160,7 +160,21 @@ extension. The WebApp half landed as WebApp #1257.
    sent once more under one new reservation, which the WebApp admits only
    inside the job's ceiling and the account limit. A refused reservation, or an
    unanswered call with no reservation on record, is a money wait, never a
-   send. A Gemini error in the clean-plate analysis is raised
+   send. After three dispatches with no answer nothing more is sent
+   (`website_gemini_unanswered_dispatches_exhausted`); in the scene
+   preparation (`website_scene_handoff`) the job then ships the room package
+   with that code as a flag, and buys nothing more (since 2026-11-17).
+   Gemini's 402 "prepayment credits are depleted" is a refusal before any
+   work: like a 429 or 503 it is kept on the receipt, its hold pays the next
+   dispatch and it is not counted toward that bound. It is a money wait
+   (`website_gemini_provider_credit_depleted`), asked again on the money
+   schedule until the account has funds; in the scene preparation, only when
+   the job's window (read when the answer comes: the retained grant and any
+   extension on its scene intent) ends before it can be asked again does the
+   job ship the room package with that flag. A dispatch whose receipt holds
+   no answer is counted as spent, whatever the job's ledger says. The WebApp ledger has no settlement for a
+   Google hold, so a refused dispatch's hold stays counted against the job's
+   ceiling until one exists. A Gemini error in the clean-plate analysis is raised
    (`GeminiProviderError`) and retried by this policy, never retained as a
    completed "blocked" plan; a "blocked" plan an older release retained is
    still read and reused as it stands.

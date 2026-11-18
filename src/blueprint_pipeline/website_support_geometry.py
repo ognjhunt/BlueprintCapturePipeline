@@ -339,7 +339,8 @@ def nearest_support_under(mesh: Any, lower: Sequence[float], upper: Sequence[flo
     Part 5 (2026-11-12): the job rests its object on the highest gentle collider surface under its
     footprint, from just above its estimated bottom (the search window) down to 0.5 m below it, judged
     by ``support_under``'s own rules at that height. The drop is recorded and flagged
-    (``scene_estimate:support_guessed``); no surface under the footprint at all stays the stop.
+    (``scene_estimate:support_guessed``). With no surface under the footprint at all the object is not placed,
+    and the job ships its room package (``website_scene_handoff.start_unsupported``).
     """
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
     horizontal = [axis for axis in range(3) if axis != up]

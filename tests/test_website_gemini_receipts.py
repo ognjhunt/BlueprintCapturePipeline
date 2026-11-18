@@ -569,3 +569,261 @@ def test_a_blocked_region_answer_is_bought_once_more_and_never_on_each_retry(tmp
             analysis.analyze_removal_targets(**kwargs)
     # Bought once more under the current revision, then reused: two purchases in all, never one per retry.
     assert len(invokes) == 2 and [row[0] for row in calls].count("reserve") == 2
+
+
+# --- 2026-11-17, test job 3: Gemini answered 402 "Your prepayment credits are depleted" -----------------------------
+
+def _depleted(message="Your prepayment credits are depleted. Please go to AI Studio to manage your billing.",
+              status="RESOURCE_EXHAUSTED", code=402):
+    from tests.test_website_scene_handoff import GeminiClientError
+    return GeminiClientError(code, status, message)
+
+
+def test_a_credits_depleted_402_is_a_money_wait_on_the_same_hold_and_never_counted(tmp_path, monkeypatch):
+    """The provider did no work: the receipt keeps its answer, the same reservation pays the next dispatch, and no
+    number of such answers spends the unanswered bound. Each is a money wall the retry lane reads as money; once
+    the account has funds the call completes under that first hold."""
+    from blueprint_pipeline.hard_stops import is_wall
+    from blueprint_pipeline.job_retry_policy import outage_retry_delay
+    from blueprint_pipeline.website_preparation_retry import classify
+    args, calls = setup_call(tmp_path, monkeypatch)
+    answer = args["invoke"]
+
+    def depleted():
+        calls.append(("invoke", None))
+        raise _depleted()
+    args["invoke"] = depleted
+    for _ in range(5):  # more than the unanswered bound
+        with pytest.raises(module.CreditDepleted) as refused:
+            module.retained_gemini_call(**args)
+        assert is_wall(refused.value) and str(refused.value) == module.CREDIT_DEPLETED
+    assert classify("website_scene_preparation: " + module.CREDIT_DEPLETED) == "money"
+    receipt = json.loads(next(tmp_path.glob("*.json")).read_text())
+    assert (receipt["status"], receipt["http_status"], receipt["reason"]) == ("refused", 402, module.CREDIT_DEPLETED)
+    args["invoke"] = answer
+    assert module.retained_gemini_call(**args) == {"status": "completed", "targets": ["box"]}
+    assert [row[0] for row in calls] == ["reserve", "invoke"] + ["source_read", "invoke"] * 5
+    assert not list(tmp_path.glob("*.unanswered-*.json")) and not list(tmp_path.glob("*.resend-*.json"))
+    assert module.MONEY_RECHECK_SECONDS == outage_retry_delay(64)  # the money wait's longest interval
+
+
+@pytest.mark.parametrize("error", [
+    _depleted(message="Billing account disabled."), _depleted(status="PERMISSION_DENIED"), _depleted(code=403),
+    type("Bare402", (Exception,), {"code": 402})("prepayment credits are depleted")])
+def test_no_other_402_or_body_is_read_as_credits_depleted(tmp_path, monkeypatch, error):
+    """Status 402 and the provider's own reason, both: any other answer is counted as spent, as before."""
+    args, calls = setup_call(tmp_path, monkeypatch)
+    args["invoke"] = lambda: (_ for _ in ()).throw(error)
+    for _ in range(2):
+        with pytest.raises(type(error)):
+            module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve", "reserve"] and list(tmp_path.glob("*.unanswered-1.json"))
+    assert not module.credit_depleted(error)
+
+
+def _old_release_chain(tmp_path, monkeypatch, answers, *, ledger_error):
+    """Dispatches of one request answered in turn by ``answers`` (an exception is raised, a dict returned) on the
+    release before this change, which kept no 402 on the receipt; then a job ledger whose one failed attempt,
+    spanning them all, ended on ``ledger_error``. Returns the call arguments and calls on this release."""
+    from datetime import datetime, timezone
+    root = tmp_path / "capture/pipeline/website_scene_preparation/assembly_coverage/drawer/receipts"
+    started = datetime.now(timezone.utc)
+    with pytest.MonkeyPatch.context() as release:
+        args, _calls = setup_call(root, release)
+        release.setattr(module, "credit_depleted", lambda _exc: False)  # that release
+        for answer in answers:
+            args["invoke"] = lambda answer=answer: answer if isinstance(answer, dict) else (_ for _ in ()).throw(answer)
+            try:
+                module.retained_gemini_call(**args)
+            except Exception:  # noqa: BLE001 - each run ends on its answer, as on the host
+                pass
+    (tmp_path / "capture/pipeline_job_ledger.json").write_text(json.dumps({"attempt_history": [
+        {"attempt_number": 7, "status": "failed_retryable", "error": ledger_error,
+         "started_at": started.isoformat(), "failed_at": datetime.now(timezone.utc).isoformat()}]}))
+    args, calls = setup_call(root, monkeypatch)
+    return args, calls, root
+
+
+def test_job3_s_old_402_chain_stays_counted_and_never_reaches_an_unreserved_resend(tmp_path, monkeypatch):
+    """Test job 3's records: three 402s the release before kept as no answer (original, resend-1, resend-2). The
+    ledger names no dispatch, so nothing is read as refused from it: the chain stays counted, the 4th run sends
+    and reserves nothing and ends on the unanswered bound, never ``..._spend_unreserved`` (review probe a)."""
+    args, calls, root = _old_release_chain(tmp_path, monkeypatch, [_depleted()] * 3 + [None],
+                                           ledger_error=str(_depleted()))
+    args["invoke"] = lambda: pytest.fail("sent again")
+    for _ in range(2):
+        with pytest.raises(ValueError, match=module.EXHAUSTED):
+            module.retained_gemini_call(**args)
+    assert calls == []
+    assert sorted(json.loads(path.read_text())["status"] for path in root.glob("*.json")
+                  if ".unanswered-" not in path.name) == ["submitting"] * 3
+
+
+def test_a_request_whose_resend_was_answered_is_never_bought_again(tmp_path, monkeypatch):
+    """A first look left unanswered, its resend answered, then another call's 402 ended the attempt: the request's
+    latest record is the answer, returned as it stands; nothing is reserved or sent (review probe b)."""
+    answered = {"status": "completed", "targets": ["box"]}
+    args, calls, _root = _old_release_chain(tmp_path, monkeypatch, [TimeoutError("unusable look"), answered],
+                                            ledger_error=str(_depleted()))
+    args["invoke"] = lambda: pytest.fail("bought again")
+    assert module.retained_gemini_call(**args) == answered and calls == []
+
+
+def test_a_resend_after_a_top_up_that_times_out_is_an_ordinary_non_answer(tmp_path, monkeypatch):
+    """A 402 kept on the receipt; after a top-up its hold pays the resend, which times out: the next run counts it
+    as unanswered (not money) and sends once more under one new reservation; at the bound the chain ends on the
+    unanswered code, never a money one. With a 402 between two timeouts, none of it is unreserved (probe 2)."""
+    from blueprint_pipeline.website_preparation_retry import classify
+    args, calls = setup_call(tmp_path, monkeypatch)
+    answers = iter([_depleted(), TimeoutError("t1"), TimeoutError("t2"), TimeoutError("t3")])
+
+    def invoke():
+        calls.append(("invoke", None))
+        raise next(answers)
+    args["invoke"] = invoke
+    with pytest.raises(module.CreditDepleted):
+        module.retained_gemini_call(**args)
+    for _ in range(3):
+        with pytest.raises(TimeoutError):
+            module.retained_gemini_call(**args)
+    with pytest.raises(ValueError, match=module.EXHAUSTED) as ended:
+        module.retained_gemini_call(**args)
+    assert classify("website_scene_preparation: " + str(ended.value)) == "refusal"
+    assert [row[0] for row in calls] == ["reserve", "invoke", "source_read", "invoke"] + ["reserve", "invoke"] * 2
+    args2, calls2 = setup_call(tmp_path / "probe2", monkeypatch)
+    answers2 = iter([TimeoutError("t1"), _depleted(), TimeoutError("t2"), None])
+
+    def invoke2():
+        calls2.append(("invoke", None))
+        answer = next(answers2)
+        if answer is None:
+            return {"status": "completed", "targets": ["box"]}
+        raise answer
+    args2["invoke"] = invoke2
+    for expected in (TimeoutError, module.CreditDepleted, TimeoutError):
+        with pytest.raises(expected):
+            module.retained_gemini_call(**args2)
+    assert module.retained_gemini_call(**args2) == {"status": "completed", "targets": ["box"]}
+    assert [row[0] for row in calls2].count("reserve") == 3  # the original, its resend, the resend's resend
+
+
+# --- Review (Codex P1): a later turn of one dispatch failing after an answered turn is never "refused" -------------
+
+def _repair_turn_fails(calls, error):
+    """The assembly views' invoke as it runs (``website_assembly_coverage._json_answer``): the first turn answered
+    with text that does not parse, then the JSON repair turn fails with ``error``."""
+    from blueprint_pipeline.website_assembly_coverage import _json_answer
+
+    def invoke():
+        calls.append(("invoke", None))
+        return {"classification": _json_answer("{not json", lambda _error: (_ for _ in ()).throw(error))[0]}
+    return invoke
+
+
+def test_a_credits_depleted_402_on_the_repair_turn_is_spent_waits_on_money_and_then_takes_a_new_reservation(
+        tmp_path, monkeypatch):
+    """The first turn was answered (billed): the dispatch keeps no answer, so it is counted as spent, while the job
+    still waits on money. After a top-up the resend is bought under one new reservation; the hold that paid the
+    answered turn never pays again."""
+    from blueprint_pipeline.hard_stops import is_wall
+    args, calls = setup_call(tmp_path, monkeypatch)
+    args["invoke"] = _repair_turn_fails(calls, _depleted())
+    with pytest.raises(module.CreditDepleted) as waiting:
+        module.retained_gemini_call(**args)
+    assert is_wall(waiting.value) and module.answered_before(waiting.value)
+    first = json.loads(next(tmp_path.glob("*.json")).read_text())
+    assert first["status"] == "submitting"  # no answer kept: never refused
+    args["invoke"] = lambda: calls.append(("invoke", None)) or (_ for _ in ()).throw(_depleted())  # still out
+    with pytest.raises(module.CreditDepleted):
+        module.retained_gemini_call(**args)
+    assert json.loads(next(tmp_path.glob("*.unanswered-1.json")).read_text())["status"] == "counted_as_spent"
+    args["invoke"] = lambda: calls.append(("invoke", None)) or {"status": "completed", "targets": ["box"]}
+    assert module.retained_gemini_call(**args) == {"status": "completed", "targets": ["box"]}
+    assert [row[0] for row in calls] == ["reserve", "invoke", "reserve", "invoke", "source_read", "invoke"]
+    reserved = [row[1]["binding_digest"] for row in calls if row[0] == "reserve"]
+    assert reserved[0] == first["request_digest"] and len(set(reserved)) == 2
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_a_429_or_503_on_the_repair_turn_is_spent_and_the_next_send_takes_a_new_reservation(
+        tmp_path, monkeypatch, status):
+    from blueprint_pipeline.website_preparation_retry import classify
+    from tests.test_website_scene_handoff import GeminiClientError
+    args, calls = setup_call(tmp_path, monkeypatch)
+    error = GeminiClientError(status, "RESOURCE_EXHAUSTED" if status == 429 else "UNAVAILABLE", "try later")
+    args["invoke"] = _repair_turn_fails(calls, error)
+    with pytest.raises(module.LaterTurnFailed) as failed:
+        module.retained_gemini_call(**args)
+    assert failed.value.__cause__ is error and str(failed.value) == str(error)  # the retry lane reads the same text
+    assert classify(f"website_scene_preparation: {failed.value}") == classify(f"website_scene_preparation: {error}")
+    assert json.loads(next(tmp_path.glob("*.json")).read_text())["status"] == "submitting"
+    args["invoke"] = lambda: calls.append(("invoke", None)) or {"status": "completed", "targets": ["box"]}
+    assert module.retained_gemini_call(**args) == {"status": "completed", "targets": ["box"]}
+    assert [row[0] for row in calls] == ["reserve", "invoke", "reserve", "invoke"]
+    assert list(tmp_path.glob("*.unanswered-1.json"))
+
+
+def test_a_first_turn_402_still_reuses_its_hold(tmp_path, monkeypatch):
+    args, calls = setup_call(tmp_path, monkeypatch)
+    args["invoke"] = lambda: calls.append(("invoke", None)) or (_ for _ in ()).throw(_depleted())
+    with pytest.raises(module.CreditDepleted) as waiting:
+        module.retained_gemini_call(**args)
+    assert not module.answered_before(waiting.value)
+    assert json.loads(next(tmp_path.glob("*.json")).read_text())["status"] == "refused"
+    args["invoke"] = lambda: calls.append(("invoke", None)) or {"status": "completed", "targets": ["box"]}
+    module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve", "invoke", "source_read", "invoke"]
+
+
+def test_the_clean_plate_s_repair_turn_and_its_clean_up_after_the_answer_are_marked(tmp_path, monkeypatch):
+    """The two other requests after an answered turn: the clean plate's text repair turn, and deleting the uploaded
+    video after the analysis answered. Each failure carries the marker; the provider error keeps its own name."""
+    from tests.capture_audio_fakes import FakeMediaTools
+    from tests.test_clean_plate_agentic_provider import NS, output
+    from tests.test_website_scene_handoff import GeminiClientError
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    FakeMediaTools().install(monkeypatch)  # a hermetic video-only copy, as the provider tests make it
+    path = tmp_path / "source.mov"
+    path.write_bytes(b"source video")
+    media = NS(name="files/test", uri="https://provider.test/file", state=NS(name="ACTIVE"))
+    refused = GeminiClientError(429, "RESOURCE_EXHAUSTED", "try later")
+    for answered in (True, False):
+        def create(**_):
+            if not answered:
+                raise _depleted()
+            return NS(status="completed", steps=[output('{"targets":[]}')])
+
+        def delete(**_):
+            raise refused
+        genai = NS(Client=lambda **_: NS(interactions=NS(create=create),
+                                         files=NS(upload=lambda **_: media, delete=delete)))
+        with pytest.raises(Exception) as failed:
+            analysis._invoke_agentic_video(api_key="fake", model=analysis.DEFAULT_MODEL, processing="static",
+                                           video_path=path, genai=genai, types=NS(HttpOptions=NS, HttpRetryOptions=NS))
+        assert module.answered_before(failed.value) is answered  # a clean-up before any answer stays as it was
+    _gemini_sdk(monkeypatch)
+    monkeypatch.setenv(analysis.GATE_ENV, "1")
+    monkeypatch.setattr(analysis, "_api_key", lambda: ("fixture", "fixture"))
+    monkeypatch.setattr(analysis, "_video_processing", lambda path, mode: ("static", 10.0))
+    from tests.test_clean_plate_agentic_provider import _TASK, _door, _rack
+    # An answer that breaks one rule (``test_a_mechanism_hint_on_a_static_target_is_repaired_in_one_turn``).
+    monkeypatch.setattr(analysis, "_invoke_agentic_video", lambda **_: {
+        "text": json.dumps({"targets": [_door(), _rack()]}), "video_processing": {"mode": "static"}})
+    monkeypatch.setattr(analysis, "_invoke_text_repair", lambda **_: (_ for _ in ()).throw(_depleted()))
+    with pytest.raises(analysis.GeminiProviderError) as failed:
+        analysis._analyze_removal_targets(video_path=path, task_context=_TASK, raise_provider_errors=True)
+    assert module.answered_before(failed.value) and module.credit_depleted(failed.value)
+    assert str(failed.value).endswith(":GeminiClientError:http_402")
+
+
+def _gemini_sdk(monkeypatch):
+    """The SDK's modules, faked: the provider calls are, and the SDK need not be installed."""
+    import sys
+    import types as module_types
+    google = sys.modules.get("google") or module_types.ModuleType("google")
+    genai = module_types.ModuleType("google.genai")
+    genai.types = module_types.ModuleType("google.genai.types")
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setattr(google, "genai", genai, raising=False)
+    monkeypatch.setitem(sys.modules, "google.genai", genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", genai.types)

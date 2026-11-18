@@ -237,8 +237,8 @@ def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_dig
     """The in-process grant of a retained Gemini reservation whose last dispatch provably bought nothing.
 
     Only ``website_gemini_receipts`` calls this, for an intent the provider refused before any work
-    (429/503) or one never dispatched: the same WebApp hold, never released, pays the next dispatch
-    under the same binding. No new reservation is made. The admission's own validity (its binding,
+    (429/503, or Gemini's credits-depleted 402) or one never dispatched: the same WebApp hold, never
+    released, pays the next dispatch under the same binding. No new reservation is made. The admission's own validity (its binding,
     shape and ``expires_at_epoch``, which the WebApp sets to the grant's window) raises
     ``RetainedAdmissionUnusable``; the account and budget checks that run again raise as they
     always do (a money wait).
