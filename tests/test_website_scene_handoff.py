@@ -1138,7 +1138,9 @@ def test_one_rule_ships_every_blocker_that_is_no_wall(monkeypatch, blockers, dev
     "website_assembly_builder_refused:the hinge axis is degenerate", "authoring_frames_token_budget_exceeded",
     "authoring_frame_bytes_exceed_budget:decoded-000000003.png", "website_assembly_front_plane_degenerate",
     "website_registration_scale_conflicts_declared", "website_assembly_coverage_key_missing",
-    "website_task_grounding_key_missing", "website_sam31_profile_missing"])
+    "website_task_grounding_key_missing", "website_sam31_profile_missing",
+    # A published size that refutes our own size estimate is our estimate's fault, so it waits too.
+    "website_object_spec_dimension_conflict"])
 def test_every_other_blocker_waits_for_the_window_end_then_ships(monkeypatch, code):
     """A request-size "budget" is not money, so it waits rather than holds; a configuration fault waits too."""
     monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)

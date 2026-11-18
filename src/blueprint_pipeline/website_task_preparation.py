@@ -86,8 +86,9 @@ PHYSICS_PRIORS = {"density_kg_m3": [50.0, 2500.0], "envelope_fill": [0.2, 1.0],
 DIMENSION_RELATIVE_ERROR = 0.25
 #: The blockers compile appends that are facts about the job's own scene or wording, found from its retained
 #: inputs: no surface for the object, a destination that is not one, an articulated job named like a move, an
-#: assembly the video does not show whole, a published size that refutes the estimate, owner targets Blueprint
-#: cannot score. Only these ship the room package at once (``website_scene_handoff.goes_on``); every other
+#: assembly the video does not show whole, owner targets Blueprint cannot score. A published size that refutes our
+#: own estimate (``website_object_spec_dimension_conflict``) is our estimate's fault, like a declared registration
+#: scale conflict, so it waits. Only these ship the room package at once (``website_scene_handoff.goes_on``); every other
 #: blocker waits for the job's window to end, so a fix or the next run can still prepare the job.
 SCENE_FACT_BLOCKERS = frozenset({
     "support_surface_not_found_under_subject", "website_synthetic_subject_start_unplaceable",
@@ -98,7 +99,7 @@ SCENE_FACT_BLOCKERS = frozenset({
     "website_assembly_reference_parts_uncovered", "website_assembly_task_part_unobserved",
     "website_assembly_hinge_edge_inconsistent", "website_assembly_hinge_edge_unobserved",
     "website_assembly_body_depth_unobserved", "website_assembly_closed_front_unobserved",
-    "website_object_spec_dimension_conflict", "website_owner_success_criteria_translation_required"})
+    "website_owner_success_criteria_translation_required"})
 
 
 def native_task_subject_profile(subject_entry: Mapping[str, Any],
