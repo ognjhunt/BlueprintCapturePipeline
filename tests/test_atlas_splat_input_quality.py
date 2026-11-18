@@ -143,37 +143,105 @@ def test_a_capture_that_never_moved_keeps_every_view():
     assert len(record["sent_frame_ids"]) == 12 and record["flags"] == ["splat_no_parallax_capture"]
 
 
-def _plane_splat(colours, k):
+def _plane_splat(colours, k, margin=12):
+    """One Gaussian per photo pixel on a plane 2 units ahead, reaching ``margin`` px past every edge."""
     from blueprint_pipeline.gaussian_splat_decode import SplatData
     height, width, _ = colours.shape
-    v, u = np.mgrid[0:height, 0:width]
+    v, u = np.mgrid[-margin:height + margin, -margin:width + margin]
     depth = 2.0
     xyz = np.stack([(u + .5 - k["cx"]) / k["fx"] * depth, -(v + .5 - k["cy"]) / k["fy"] * depth,
                     np.full(u.shape, -depth)], axis=-1).reshape(-1, 3)
+    padded = colours[np.clip(v, 0, height - 1), np.clip(u, 0, width - 1)]
     count = len(xyz)
+    # About 1.5 render pixels wide at the 640 px score: a continuous surface.
     return SplatData(count=count, xyz=xyz.astype(np.float32), opacity=np.full(count, 4.0, np.float32),
-                     f_dc=((colours.reshape(-1, 3) - .5) / .28209479177387814).astype(np.float32),
-                     scales=np.full((count, 3), -5.0, np.float32), quats=np.tile([1, 0, 0, 0], (count, 1)).astype(
-                         np.float32), properties=())
+                     f_dc=((padded.reshape(-1, 3) - .5) / .28209479177387814).astype(np.float32),
+                     scales=np.full((count, 3), np.log(.005), np.float32),
+                     quats=np.tile([1, 0, 0, 0], (count, 1)).astype(np.float32), properties=())
 
 
-def test_the_heldout_score_compares_a_centre_render_with_each_photo_and_flags_held_out_views_below_training():
-    rng = np.random.default_rng(0)
-    k = {"fx": 300.0, "fy": 300.0, "cx": 160.0, "cy": 90.0, "width": 320, "height": 180}
-    colours = rng.random((180, 320, 3))
-    splat = _plane_splat(colours, k)
-    camera = {"intrinsics": k, "position": np.zeros(3), "rotation": np.eye(3)}
-    match = {**camera, "frame_id": "train", "rgb": np.round(colours * 255).astype(np.uint8)}
-    other = {**camera, "frame_id": "held", "rgb": np.round((1 - colours) * 255).astype(np.uint8)}
+K_SCORE = {"fx": 300.0, "fy": 300.0, "cx": 160.0, "cy": 90.0, "width": 320, "height": 180}
+
+
+def _smooth_colours():
+    v, u = np.mgrid[0:180, 0:320]
+    return np.stack([u / 320, v / 180, .5 + .3 * np.sin(u / 23.0) * np.cos(v / 17.0)], axis=-1)
+
+
+def _view(frame_id, colours):
+    return {"frame_id": frame_id, "intrinsics": K_SCORE, "position": np.zeros(3), "rotation": np.eye(3),
+            "rgb": np.round(colours * 255).astype(np.uint8), "depth": np.full((180, 320), 2.0, np.float32),
+            "confidence": np.ones((180, 320), np.float32)}
+
+
+def test_the_heldout_score_renders_the_splat_against_each_photo_and_flags_held_out_views_below_training():
+    colours = _smooth_colours()
+    splat = _plane_splat(colours, K_SCORE)
+    match, other = _view("train", colours), _view("held", 1 - colours)
     good = quality.render_photo_score(splat, match)
-    assert good["coverage"] > .99 and good["psnr_db"] > 35 and good["edge_energy_ratio"] == pytest.approx(1, abs=.05)
-    assert quality.render_photo_score(splat, other)["psnr_db"] < 10
+    assert good["coverage"] > .99 and good["psnr_db"] > 30 and good["ssim"] > .9
+    assert good["edge_energy_ratio"] == pytest.approx(1, abs=.1)
+    bad = quality.render_photo_score(splat, other)
+    assert bad["psnr_db"] < 12 and bad["ssim"] < good["ssim"] - .3
     record = quality.heldout_quality(splat=splat, frames=[match, other], selection={
         "digest": "sha256:" + "d" * 64, "posed_frame_ids": ["train", "held"], "sent_frame_ids": ["train"],
         "heldout_frame_ids": ["held"]})
-    assert record["status"] == "scored" and record["flags"] == ["heldout_render_below_training"]
+    assert record["status"] == "scored" and "heldout_render_below_training" in record["flags"]
     assert [row["frame_id"] for row in record["training"]] == ["train"]
-    assert record["image_quality_measurement"] is False and record["claim_scope"] == "development_only"
+    assert record["basis"] == "alpha_blended_gaussian_render" and record["claim_scope"] == "development_only"
+    # Without a coverage map there are no orbit views; the held-out views alone make the look weak here.
+    assert record["look_quality"]["verdict"] == "weak" and record["look_quality"]["weak_region_ids"] == []
+    assert "weak_regions_unavailable" in record["flags"] and record["look_quality"]["heldout_below_floor"]
+    assert record["digest"] == canonical_digest(record, digest_field="digest")
+
+
+def test_the_ssim_map_is_the_evaluators_windowed_ssim():
+    from blueprint_pipeline.heldout_appearance_evaluation_v2 import windowed_ssim
+    rng = np.random.default_rng(1)
+    left = rng.random((40, 50, 3))
+    right = np.clip(left + rng.normal(0, .1, left.shape), 0, 1)
+    assert quality.ssim_map(left, right).mean() == pytest.approx(windowed_ssim(left, right), abs=1e-9)
+
+
+def _weak_record(splat_centre=(0.0, 0.0, -2.0)):
+    from blueprint_pipeline import atlas_coverage_map as coverage
+    centre = np.asarray(splat_centre)
+    region = {"id": "wr-000", "centroid": centre.tolist(), "extent": [.4, .3, .06], "orbit_deg": [15, 30],
+              "suggested_orbit": coverage._orbit("wr-000", centre, np.zeros((1, 3)), K_SCORE,
+                                                 np.array([0.0, 1.0, 0.0]))}
+    return {"digest": "sha256:" + "e" * 64, "grid": {"voxel_size_units": .02}, "regions": [region]}
+
+
+def test_a_clean_splat_looks_good_on_its_held_out_view_and_from_the_weak_regions_orbit():
+    colours = _smooth_colours()
+    splat = _plane_splat(colours, K_SCORE)
+    record = quality.heldout_quality(splat=splat, frames=[_view("a", colours), _view("b", colours)],
+                                     selection={"posed_frame_ids": ["a", "b"], "sent_frame_ids": ["a"],
+                                                "heldout_frame_ids": ["b"]}, weak_regions=_weak_record())
+    look = record["look_quality"]
+    assert look["verdict"] == "good" and look["weak_region_ids"] == [] and "look_quality_weak" not in record["flags"]
+    region = look["regions"][0]
+    # Two orbit views at +-15 degrees, both covered where the region is; the held-out blocks there match.
+    assert [view["orbit_degrees"] for view in region["off_path"]] == [-15, 15]
+    assert all(view["hole_share"] == 0 for view in region["off_path"])
+    assert region["heldout_block_count"] > 0 and region["heldout_block_ssim"] > .9
+    assert region["needle_share"] == 0 and region["gaussian_count"] > 100
+
+
+def test_needle_like_gaussians_in_a_weak_region_make_the_look_weak_and_name_the_region():
+    colours = _smooth_colours()
+    splat = _plane_splat(colours, K_SCORE)
+    inside = np.all(np.abs(splat.xyz - [0, 0, -2]) <= [.21, .16, .04], axis=1)
+    splat.scales[inside] = np.log([.002, .002, .08])  # long along the filmed direction (z)
+    record = quality.heldout_quality(splat=splat, frames=[_view("a", colours), _view("b", colours)],
+                                     selection={"posed_frame_ids": ["a", "b"], "sent_frame_ids": ["a"],
+                                                "heldout_frame_ids": ["b"]}, weak_regions=_weak_record())
+    look = record["look_quality"]
+    assert look["verdict"] == "weak" and look["weak_region_ids"] == ["wr-000"]
+    region = look["regions"][0]
+    assert region["needle_share"] > .9 and region["stretched_along_filmed_direction_share"] > .9
+    assert "needle_like_gaussians" in region["flags"] and "look_quality_weak" in record["flags"]
+    assert record["status"] == "scored"
 
 
 def _posed(value):

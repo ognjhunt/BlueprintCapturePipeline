@@ -549,8 +549,9 @@ def _splat_input_selection(*, frames, pose, draft, output_root, review, source_r
     return record
 
 
-def _heldout_quality(*, frames, selection, splat_root):
+def _heldout_quality(*, frames, selection, splat_root, weak_root=None):
     """Score the returned splat against the views held back from it, once; record and flag only."""
+    from .atlas_coverage_map import read_weak_regions
     from .atlas_splat_input_quality import SCORE_FILE, heldout_quality
     path = Path(splat_root) / SCORE_FILE
     if path.is_file() and not path.is_symlink():
@@ -558,7 +559,8 @@ def _heldout_quality(*, frames, selection, splat_root):
     try:
         from .atlas_depth_splat import decode_spz
         splat = decode_spz((Path(splat_root) / "atlas_refined_splat.spz").read_bytes())
-        record = heldout_quality(splat=splat, frames=frames, selection=selection)
+        record = heldout_quality(splat=splat, frames=frames, selection=selection,
+                                 weak_regions=read_weak_regions(weak_root) if weak_root is not None else None)
     except Exception as exc:  # noqa: BLE001 - a score never blocks the splat it describes
         record = {"schema_version": "atlas_splat_heldout_score.v1", "status": "not_scored",
                   "reason": type(exc).__name__, "selection_digest": selection.get("digest")}
@@ -593,6 +595,10 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     selection = (_splat_input_selection(frames=frames, pose=pose, draft=draft, output_root=output_root,
                                         review=review or {}, source_root=source_root, bought=bought)
                  if source_root is not None else None)
+    if selection is not None:
+        from .atlas_coverage_map import coverage_before_splat  # $0, once per pose, before the purchase
+        coverage_before_splat(frames=frames, pose=pose, output_root=output_root, source_root=source_root,
+                              selection=selection)
     if rebuild and not bought:
         flags = set((selection or {}).get("flags") or [])
         stop = ("atlas_splat_rebuild_input_selection_missing" if selection is None
@@ -633,9 +639,14 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
         appearance["splat_input"].update(sent_frame_count=len(selection["sent_frame_ids"]),
             left_out_frame_count=len(selection["left_out"]), heldout_frame_ids=selection["heldout_frame_ids"])
         if selection["heldout_frame_ids"]:
-            score = _heldout_quality(frames=frames, selection=selection, splat_root=native["splat_root"])
+            score = _heldout_quality(frames=frames, selection=selection, splat_root=native["splat_root"],
+                                     weak_root=output_root)
             appearance["heldout_quality"] = {key: score.get(key) for key in (
-                "status", "median_heldout_psnr_db", "median_training_psnr_db", "flags", "reason") if key in score}
+                "status", "median_heldout_psnr_db", "median_training_psnr_db", "median_heldout_ssim", "flags",
+                "reason") if key in score}
+            if "look_quality" in score:
+                appearance["heldout_quality"]["look_quality"] = {
+                    key: score["look_quality"][key] for key in ("verdict", "weak_region_ids")}
     return appearance
 
 
