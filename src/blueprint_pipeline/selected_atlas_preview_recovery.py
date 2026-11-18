@@ -314,6 +314,14 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
                 if levelling is not None:
                     value["native_preparation"]["levelling_superseded"] = {
                         key: levelling[key] for key in ("levelling_revision", "superseded_levelling_revision")}
+            # Or held on a stop the current rules no longer make: --resume-preparation reopens it once
+            # (website_rules_reopen).
+            from .website_rules_reopen import REVISION, reopen_verdict
+            reopen = reopen_verdict(capture_root / "pipeline")
+            if reopen["reopen"]:
+                value["native_preparation"]["rules_reopen"] = {"rules_revision": REVISION, "reason": reopen["reason"],
+                                                               "stopped_on": reopen["stopped_on"],
+                                                               "what_happens": reopen["what_happens"]}
     if type(job.get("reason")) is str and _CODE.fullmatch(job["reason"]):
         value["job"]["reason"] = job["reason"]
     if type(job.get("stage")) is str and _CODE.fullmatch(job["stage"]):

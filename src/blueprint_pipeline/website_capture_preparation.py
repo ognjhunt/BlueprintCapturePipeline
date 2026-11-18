@@ -154,7 +154,7 @@ def run_website_capture_preparation(
     preparation = prepare_website_scene_handoff(
         descriptor=descriptor_payload, clean_plate=clean_plate,
         capture_root=capture_root, now=time.time(),
-        allow_operation_coverage_review=True, allow_static_target_recovery=True,
+        allow_operation_coverage_review=True, allow_static_target_recovery=True, allow_build_choice=True,
     )
     handoff_lease_checkpoint("website_preparation_after_native_handoff")
     from .website_recapture_required import retains_recapture_required
