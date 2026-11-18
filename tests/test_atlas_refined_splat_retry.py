@@ -322,3 +322,99 @@ def test_a_draft_look_for_good_pages_once(tmp_path):
     assert alerts[0]["label"] == "walkthrough-a" and alerts[0]["blockers"] == ["atlas_refined_splat_provider_failed"]
     assert capacity._severity(fault.LOOK_CODE) == "page" and "draft" in stall.describe(alerts[0])
     assert fault.check_preparation_faults(tmp_path, now=NOW + fault.ANNOUNCE_SECONDS, remembered=memory)[1] == []
+
+
+def test_a_reservation_refused_after_the_binding_is_written_takes_the_draft(tmp_path, monkeypatch):
+    """The real way: ``_run_form`` writes ``input_binding.json``, then the task runner's reservation is refused."""
+    from datetime import datetime, timezone
+    from blueprint_pipeline import atlas_depth_splat as depth
+    from blueprint_pipeline import atlas_native_splat as native
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline import website_atlas_pose as pose
+    from blueprint_pipeline import website_task_context as control
+    from blueprint_pipeline.atlas_refined_splat_forms import MINIMAL
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.hard_stops import MoneyStop
+    from tests.test_atlas_native_splat import source_frames
+
+    monkeypatch.setenv(pose.ATLAS_API_BASE_URL_ENV, "https://api.atlas-beta.worldlabs.ai/api/v2")
+    monkeypatch.setenv(pose.ATLAS_API_KEY_ENV, "test-key-not-secret")
+    monkeypatch.setenv(pose.ATLAS_PROVIDER_RETENTION_ENV, "project_library_retention_approved")
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("a" * 40, True, True))
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", lambda *_a, **_kw: ([], "a" * 40))
+    asked, sent = [], []
+
+    def webapp(*, capture_id, operation, payload):
+        asked.append(operation)
+        if operation == "preparation-spend":
+            raise MoneyStop("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
+        return {"status": "settled"}
+    monkeypatch.setattr(control, "website_webapp_request", webapp)
+
+    def transport(method, url, headers, data):
+        sent.append(url)
+        raise AssertionError("nothing may reach World Labs after a refused reservation")
+    context = {"schema_version": "website_site_task_context.v1", "request_id": "r", "scene_id": "s", "capture_id": "c",
+               "description": "Inspect the dishwasher", "purpose": "scene_preparation", "confirmed": False,
+               "confirmed_at": None}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    frames = source_frames()
+    splat, _ = depth.fuse_posed_frames(frames)
+    result = {"digest": "sha256:" + "a" * 64, "operation": {"id": "op_pose"},
+              "binding": {"source_video_digest": "sha256:" + "b" * 64}}
+    policy = {"refined_splat_cost_usd": 5, "mesh_export_cost_usd": .5, "rate_card_reference": "https://example.test/card",
+              "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}
+    draft = {"digest": "sha256:" + "c" * 64, "voxel_size": .01}
+
+    def attempt(base):
+        return native.run_native_splat(frames=frames, result=result, draft=draft, output_root=base, policy=policy,
+            task_context=context, forms=(MINIMAL,), max_polls=1,
+            task_runner=lambda **kw: allocator.run_sponsored_website_atlas_task(
+                transport=transport, sleep=lambda _: None, **kw))
+    _submission(tmp_path / "refined_splat", "failed")
+    end = NOW + 5 * 86400
+    value = retry.next_refined_splat(output_root=tmp_path, original_root=tmp_path / "refined_splat",
+        run_attempt=attempt, remaining_cost_usd=lambda: 23.0, needed_usd=NEEDED, deadline=lambda: end, now=NOW)
+    value = retry.next_refined_splat(output_root=tmp_path, original_root=tmp_path / "refined_splat",
+        run_attempt=attempt, remaining_cost_usd=lambda: 23.0, needed_usd=NEEDED, deadline=lambda: end,
+        now=value["next_attempt_at_epoch"])
+    minimal = tmp_path / "refined_splat-retry-1-minimal"
+    assert (minimal / "input_binding.json").is_file() and "preparation-spend" in asked and not sent
+    assert not list((minimal / "native").rglob("controller_admission.json"))
+    assert not list((minimal / "native").rglob("atlas_pose/submission.json"))
+    assert value["status"] == retry.DRAFT_FINAL and value["retry"]["final_reason"] == retry.MONEY_REFUSED
+    assert value["retry"]["refusal"].startswith("website_control_preparation-spend_http_409")
+
+
+@pytest.mark.parametrize("error", ["money_in_flight", "outage", "failed_unreconciled"])
+def test_inside_the_deadlines_last_stretch_nothing_is_raised_into_an_expiry(tmp_path, error):
+    """Whatever an attempt raises in the last two hours, short of a privacy or rights wall, the draft is final."""
+    from blueprint_pipeline.hard_stops import MoneyStop
+    _submission(tmp_path / "refined_splat", "failed")
+    end = NOW + retry.LAST_CALL_SECONDS + 3 * 3600
+    value, _ = _step(tmp_path, now=NOW, end=end)
+    _submission(retry.attempt_root(tmp_path, 1), "submitted")
+    raised = {"money_in_flight": MoneyStop("website_atlas_spend_reservation_refused"),
+              "outage": OSError("connection reset"), "failed_unreconciled": ValueError("atlas_task_operation_failed")}
+
+    def refused(base):
+        raise raised[error]
+    # Before the last stretch each is raised, as before.
+    with pytest.raises(type(raised[error])):
+        _step(tmp_path, now=NOW + 60, end=end, run_attempt=refused)
+    value, _ = _step(tmp_path, now=end - retry.LAST_CALL_SECONDS + 60, end=end, run_attempt=refused)
+    assert value["status"] == retry.DRAFT_FINAL and value["retry"]["final_reason"] == retry.DEADLINE_CLOSING
+
+
+def test_a_privacy_wall_in_the_last_stretch_is_still_raised(tmp_path):
+    from blueprint_pipeline.hard_stops import PrivacyRightsStop
+    _submission(tmp_path / "refined_splat", "failed")
+    end = NOW + retry.LAST_CALL_SECONDS + 3 * 3600
+    _step(tmp_path, now=NOW, end=end)
+    _submission(retry.attempt_root(tmp_path, 1), "submitted")
+
+    def withdrawn(base):
+        raise PrivacyRightsStop("website_capture_withdrawn")
+    with pytest.raises(PrivacyRightsStop):
+        _step(tmp_path, now=end - 60, end=end, run_attempt=withdrawn)
+    assert json.loads((tmp_path / retry.RECORD).read_text())["final"] is None

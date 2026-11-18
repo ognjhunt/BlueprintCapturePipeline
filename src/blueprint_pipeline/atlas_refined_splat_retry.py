@@ -25,7 +25,8 @@ Nothing is bought twice: an attempt root that has started is always resumed from
 (polled, adopted or reconciled by the task runner), and a new attempt is recorded only once every
 earlier root is proven closed with no live operation (``_closed``). A wall (money, privacy, rights)
 raised by an attempt's own admission is never bypassed: privacy and rights are raised; money takes the draft
-when nothing is in flight, else it is raised.
+when no reservation or live submission exists (``_in_flight``), else it is raised. Before anything else is
+raised, the deadline is read: within its last two hours the draft is final, so a job never expires lookless.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from .common import write_json
-from .job_retry_policy import MONEY, REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, refusal_retry_delay
+from .job_retry_policy import MONEY, PRIVACY_RIGHTS, REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, refusal_retry_delay
 
 RECORD = "refined_splat_retry.json"
 SCHEMA = "atlas_refined_splat_retry.v1"
@@ -63,6 +64,33 @@ def _closed(base: Path) -> bool:
     """Every form root under ``base`` is unstarted, or every operation it sent failed: nothing can still finish."""
     from .atlas_native_splat import _form_roots, _provider_failed_and_exhausted, _started
     return all(not _started(root) or _provider_failed_and_exhausted(root / "native") for _, root in _form_roots(base))
+
+
+def _closed_submission(path: Path) -> bool:
+    """A submission the provider rejected, or whose operation failed with its terminal record kept."""
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(state, dict) and (state.get("status") == "rejected" or (
+        state.get("status") == "failed" and isinstance(state.get("terminal_operation"), dict)))
+
+
+def _in_flight(base: Path) -> bool:
+    """Whether an attempt under ``base`` holds a reservation or a submission that is not a closed failure.
+
+    ``_run_form`` writes the input binding before the reservation, so a binding alone holds nothing: a
+    reservation refused there leaves no ``controller_admission.json`` and no ``atlas_pose/submission.json``.
+    """
+    from .atlas_native_splat import _form_roots
+    for _, root in _form_roots(base):
+        native = root / "native"
+        records = [*native.rglob("controller_admission.json"), *native.rglob("atlas_pose/submission.json")]
+        for record in records:
+            state = record if record.name == "submission.json" else record.parent / "atlas_pose/submission.json"
+            if not _closed_submission(state):
+                return True
+    return False
 
 
 def _started(base: Path) -> bool:
@@ -130,15 +158,36 @@ def next_refined_splat(*, output_root: Path, original_root: Path, run_attempt: C
     def covered(remaining: Any) -> bool:
         return _number(remaining) is not None and remaining >= needed_usd
 
+    def stopped(exc: Exception, base: Path | None):
+        """The draft for an error a job with a usable draft need not wait on; None to raise it.
+
+        A privacy or rights wall is always raised. Before anything else is raised the deadline is read:
+        within ``LAST_CALL_SECONDS`` of it the draft is final, so the job never expires with no look. A
+        money wall with nothing in flight under ``base`` (no reservation, no live submission) takes the
+        draft too: nothing more is bought for the look.
+        """
+        from .hard_stops import wall_kind
+        kind = wall_kind(exc) or (hard_stop_kind(str(exc).partition(":")[0]) if isinstance(exc, ValueError)
+                                  else None)
+        if kind == PRIVACY_RIGHTS:
+            return None
+        end = deadline()
+        if end is not None and now >= end - LAST_CALL_SECONDS:
+            return final(DEADLINE_CLOSING, end=end, refusal=str(exc).partition(":")[0][:120] or type(exc).__name__)
+        refusal = _money_refusal(exc)
+        if refusal is not None and (base is None or not _in_flight(base)):
+            return final(MONEY_REFUSED, end=end, refusal=refusal)
+        return None
+
     def allowance(base: Path | None):
-        """The remaining allowance; a money refusal reading it takes the draft when nothing is in flight."""
+        """The remaining allowance, or the draft when reading it is refused (``stopped``)."""
         try:
             return remaining_cost_usd(), None
-        except Exception as exc:  # noqa: BLE001 - only a money wall is taken here; anything else is raised
-            refusal = _money_refusal(exc)
-            if refusal is None or (base is not None and not _closed(base)):
+        except Exception as exc:  # noqa: BLE001 - decided by ``stopped``; anything else is raised
+            taken = stopped(exc, base)
+            if taken is None:
                 raise
-            return None, refusal
+            return None, taken
 
     attempts = record["attempts"]
     current = attempts[-1] if attempts else None
@@ -153,33 +202,36 @@ def next_refined_splat(*, output_root: Path, original_root: Path, run_attempt: C
             end = deadline()
             if end is not None and now >= end - START_BY_SECONDS:
                 return final(DEADLINE_CLOSING, end=end)
-            remaining, refusal = allowance(base)
-            if refusal is not None:
-                return final(MONEY_REFUSED, end=end, refusal=refusal)
+            remaining, taken = allowance(base)
+            if taken is not None:
+                return taken
             if not covered(remaining):
                 return final(UNAFFORDABLE, end=end, remaining=remaining)
         try:
             value = dict(run_attempt(base))
         except Exception as exc:  # noqa: BLE001 - each outcome below is decided, anything else raised
-            # A money wall with nothing in flight takes the draft: nothing more is bought for the look. A
-            # provider failure of the whole attempt, proven closed, is recorded. Anything else (a privacy or
-            # rights wall, a live operation) is raised to the job's own retry policy.
-            refusal = _money_refusal(exc)
-            if refusal is not None and _closed(base):
-                return final(MONEY_REFUSED, end=deadline(), refusal=refusal)
-            if not isinstance(exc, ValueError) or str(exc) != FAILED or not _closed(base):
-                raise
+            # A provider failure of the whole attempt, proven closed, is recorded and the next one scheduled.
+            # Anything else is the draft when ``stopped`` says so, or raised to the job's own retry policy.
+            if not (isinstance(exc, ValueError) and str(exc) == FAILED and _closed(base)):
+                taken = stopped(exc, base)
+                if taken is None:
+                    raise
+                return taken
             current["failed_at_epoch"] = now
             write_json(path, record)
         else:
             return value
     elif current is None and not _closed(Path(original_root)):
         # An operation of the first attempt may still finish: it is resumed there, never bought again.
-        raise ValueError(FAILED)
+        error = ValueError(FAILED)
+        taken = stopped(error, Path(original_root))
+        if taken is None:
+            raise error
+        return taken
     end = deadline()
-    remaining, refusal = allowance(None)
-    if refusal is not None:
-        return final(MONEY_REFUSED, end=end, refusal=refusal)
+    remaining, taken = allowance(None)
+    if taken is not None:
+        return taken
     if not covered(remaining):
         return final(UNAFFORDABLE, end=end, remaining=remaining)
     if end is not None and now >= end - LAST_CALL_SECONDS:
