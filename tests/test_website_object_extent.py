@@ -18,27 +18,30 @@ from blueprint_pipeline import website_task_preparation as preparation
 from blueprint_pipeline.atlas_scene_estimates import (OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_SIZE_FROM_ITS_POINTS,
                                                       preparation_flags)
 from blueprint_pipeline.website_task_masks import estimate_target_bounds
-from tests.test_website_unscanned_surface import (CUP, RUNTIME_SCALE, RUNTIME_TRANSLATION, SOURCE, _arguments, _track,
-                                                  _views, exact_registration, no_model)
+from tests.test_website_unscanned_surface import (CUP, FLIP, RUNTIME_SCALE, RUNTIME_TRANSLATION, SOURCE, _arguments,
+                                                  _track, _views, exact_registration, no_model)
 
 __all__ = ["exact_registration", "no_model"]  # the room's own registration, and no model call, for every test here
 CUP_SIZE = np.subtract(CUP[1], CUP[0])  # 0.12 m on each side
-#: Six views of the cup on its table from in front and both sides, about a metre away: it is 60 to 100 pixels
-#: across, as test job 4's lamp was 90 to 140 in its frames.
+#: Six views of the cup on its table from in front and both sides, about a metre away: it is 70 to 110 pixels
+#: across, as test job 4's lamp was 90 to 140 in its frames, enough for the box-fit check to measure its size.
 CENTRE = tuple(np.mean(CUP, axis=0))
 CAMERAS = (((-1.4, 1.35, 2.0), CENTRE), ((-1.1, 1.45, 1.7), CENTRE), ((-0.7, 1.5, 1.55), CENTRE),
            ((-0.3, 1.45, 1.6), CENTRE), ((0.05, 1.4, 1.85), CENTRE), ((0.2, 1.3, 2.3), CENTRE))
-FOCAL = 400.0
+FOCAL = 600.0
 
 
-def _matrix() -> np.ndarray:
+def _matrix(flipped: bool = False) -> np.ndarray:
     matrix = np.eye(4)
-    matrix[:3, :3], matrix[:3, 3] = RUNTIME_SCALE * SOURCE, RUNTIME_TRANSLATION
+    matrix[:3, :3], matrix[:3, 3] = RUNTIME_SCALE * (FLIP if flipped else np.eye(3)) @ SOURCE, RUNTIME_TRANSLATION
     return matrix
 
 
 RUNTIME_TO_SIM = np.diag([1 / RUNTIME_SCALE] * 3 + [1.0]) @ np.array(
     [[1.0, 0, 0, 0], [0, 0, -1.0, 0], [0, 1.0, 0, 0], [0, 0, 0, 1.0]])
+#: Compile's simulator frame for a collider whose up is -Y.
+RUNTIME_TO_SIM_FLIPPED = np.diag([1 / RUNTIME_SCALE] * 3 + [1.0]) @ np.array(
+    [[1.0, 0, 0, 0], [0, 0, 1.0, 0], [0, -1.0, 0, 0], [0, 0, 0, 1.0]])
 
 
 def _masks(spilled: tuple[int, ...] = ()) -> list:
@@ -47,16 +50,16 @@ def _masks(spilled: tuple[int, ...] = ()) -> list:
             for index, view in enumerate(_views(False, CAMERAS, FOCAL))]
 
 
-def _room(root, spilled: tuple[int, ...] = ()) -> dict:
-    return _arguments(root, cup_masks=_masks(spilled), cameras=CAMERAS, focal=FOCAL, onto_table=True)
+def _room(root, spilled: tuple[int, ...] = (), flipped: bool = False) -> dict:
+    return _arguments(root, cup_masks=_masks(spilled), cameras=CAMERAS, focal=FOCAL, onto_table=True, flipped=flipped)
 
 
 def _cup(spilled: tuple[int, ...] = ()) -> dict:
     return {"target_id": "cup-1", "track": _track("cup", _masks(spilled))}
 
 
-def _raw(target, frames):
-    bounds = estimate_target_bounds(target["track"], frames, source_to_target=_matrix())
+def _raw(target, frames, flipped: bool = False):
+    bounds = estimate_target_bounds(target["track"], frames, source_to_target=_matrix(flipped))
     return bounds["minimum"], bounds["maximum"]
 
 
@@ -146,3 +149,41 @@ def test_compile_keeps_identical_boxes_without_spill_and_says_where_a_spilled_si
     spill = np.subtract(without["subject"]["aabb_max_xyz"], without["subject"]["aabb_min_xyz"])
     assert np.all(np.abs(size - CUP_SIZE[[0, 2, 1]]) <= 0.03) and (spill - size).max() > 0.1
     assert "from its own points that the frames agree on" in line and line.startswith("Object size: ")
+
+
+def test_the_spill_is_cleaned_the_same_in_a_collider_whose_up_is_minus_y(tmp_path):
+    frames = _room(tmp_path, flipped=True)["source_geometry"]["frames"]
+    target = _cup(spilled=(0, 3))
+    low, high = _raw(target, frames, flipped=True)
+    cleaned_low, cleaned_high, record = extent.own_points_extent(low, high, target, frames, _matrix(True),
+                                                                 RUNTIME_TO_SIM_FLIPPED, 0.01)
+    assert record["subject_extent"]["status"] == "from_its_own_points"
+    assert np.all(np.abs(_dimensions(cleaned_low, cleaned_high) - CUP_SIZE) <= 0.03)
+
+
+def test_a_size_the_frames_cannot_measure_or_too_few_views_keep_the_old_box(tmp_path, monkeypatch):
+    frames = _room(tmp_path)["source_geometry"]["frames"]
+    target = _cup(spilled=(0, 3))
+    low, high = _raw(target, frames)
+    real_fit, fits = extent._fit, []
+
+    def unmeasured(*args, **kwargs):  # the new box too small in every frame for the check to measure its size
+        fits.append(1)
+        found = real_fit(*args, **kwargs)
+        return found if len(fits) == 1 else {**found, "median_size_ratio": {}, "size_error": None}
+    monkeypatch.setattr(extent, "_fit", unmeasured)
+    kept_low, kept_high, record = extent.own_points_extent(low, high, target, frames, _matrix(), RUNTIME_TO_SIM, 0.01)
+    assert (kept_low, kept_high) == (list(low), list(high))
+    assert record["subject_extent"]["status"] == "kept"
+    assert record["subject_extent"]["reason"] == "own_points_size_not_measured_in_the_frames"
+    assert "flag" not in record["subject_extent"]
+    monkeypatch.setattr(extent, "_fit", real_fit)
+    real_points = extent.own_points
+
+    def two_views(*args):  # fewer views than the box-fit check measures a size from
+        kept, rows = real_points(*args)
+        return [points if index < 2 else points[:0] for index, points in enumerate(kept)], rows
+    monkeypatch.setattr(extent, "own_points", two_views)
+    kept_low, kept_high, record = extent.own_points_extent(low, high, target, frames, _matrix(), RUNTIME_TO_SIM, 0.01)
+    assert (kept_low, kept_high) == (list(low), list(high))
+    assert record["subject_extent"]["reason"] == "too_few_views_or_points_of_the_object"

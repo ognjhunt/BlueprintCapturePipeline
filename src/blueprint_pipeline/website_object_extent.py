@@ -23,9 +23,11 @@ masks (``task_object_box_fit_size``) is the size read again, from the points tha
   point's place, and votes against it, mask or not (``DEPTH_TOLERANCE`` either way).
 
 The kept points are read exactly as before (each view where the object rests, the same percentiles), so nothing
-is shrunk below what the object's own points show. The new extent is used when at least ``MIN_FRAMES`` frames
-contribute and its box fits the masks no worse than the old one; both extents and both box fits are recorded, and
-the size is flagged as estimated from the object's own points. An object whose box already fits its masks keeps
+is shrunk below what the object's own points show. The new extent is used only when the views it is read from (at
+least the box-fit check's ``MINIMUM_USABLE_FRAMES``) give at least ``MIN_POINTS`` points, and the box-fit check
+measures its size and finds it fits the masks better than the old one: a size it cannot measure is not adopted.
+Both extents and both box fits are recorded, and an adopted size is flagged as estimated from the object's own
+points. An object whose box already fits its masks keeps
 its box as it is, with no record.
 
 A published size for the exact model (``website_object_spec_research``) is a cross-check only: one that disagrees
@@ -42,7 +44,7 @@ import numpy as np
 from .atlas_scene_estimates import OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_SIZE_FROM_ITS_POINTS
 from .local_reconstruction_adapters import _sha256_file
 from .website_task_masks import resting_views
-from .website_task_placement_check import FLAG_SIZE, check_video_placement
+from .website_task_placement_check import FLAG_SIZE, MINIMUM_USABLE_FRAMES, check_video_placement
 from .website_track_mask_codec import decode_track_mask
 
 REVISION = "website_object_extent.v1"
@@ -61,10 +63,10 @@ AGREE_SHARE, AGREE_MIN_FRAMES, AGREE_TOLERANCE_PX = 0.5, 2, 1
 DEPTH_TOLERANCE = 0.05
 #: Points per frame tested, an even stride over its mask.
 MAX_POINTS_PER_FRAME = 4000
-#: Frames that must keep points of the object for its new extent to be read.
-MIN_FRAMES = 3
 #: As the raw estimate reads its points (``estimate_target_bounds``).
 QUANTILES = (0.01, 0.99)
+#: Fewer points than this have no 1st percentile apart from their least: the read above would be their extremes.
+MIN_POINTS = round(1 / QUANTILES[0])
 #: The preparation's stated relative error of an estimated dimension (``website_task_preparation``).
 DIMENSION_RELATIVE_ERROR = 0.25
 BASIS = "object_points_agreeing_across_frames"
@@ -99,7 +101,7 @@ def _frame_points(observation: Mapping[str, Any], frame: Mapping[str, Any]
     ys, xs = np.nonzero(usable)
     chosen = _nearest_cluster(depth[ys, xs]) if len(xs) else None
     counts["nearest_surface"] = 0 if chosen is None else int(chosen.sum())
-    known = np.where(valid, depth, np.nan)
+    known = np.where(valid, depth, np.nan).astype(np.float32)  # every view's depth is held at once
     if chosen is None:
         return np.zeros((0, 3)), counts, known
     xs, ys, values = xs[chosen], ys[chosen], depth[ys, xs][chosen]
@@ -240,17 +242,20 @@ def own_points_extent(subject_min: Sequence[float], subject_max: Sequence[float]
         kept, rows = own_points(track, frames)
         record["frames"] = rows
         views = [points for points in kept if len(points)]
-        if len(views) < MIN_FRAMES:
-            record.update(status="kept", reason="too_few_frames_with_points_of_the_object")
+        views = resting_views(views) if len(views) >= MINIMUM_USABLE_FRAMES else views
+        if len(views) < MINIMUM_USABLE_FRAMES or sum(len(points) for points in views) < MIN_POINTS:
+            record.update(status="kept", reason="too_few_views_or_points_of_the_object",
+                          frames_with_points=len(views), points=int(sum(len(points) for points in views)))
         else:
-            agreed = np.concatenate(resting_views(views)) @ matrix[:3, :3].T + matrix[:3, 3]
+            agreed = np.concatenate(views) @ matrix[:3, :3].T + matrix[:3, 3]
             new_low, new_high = (value.tolist() for value in np.quantile(agreed, QUANTILES, axis=0))
             after = _fit(new_low, new_high, **options)
             record["after"] = {**_box(new_low, new_high, runtime_to_sim), "box_fit": after,
                                "points": int(len(agreed)), "frames_with_points": len(views)}
-            # Only a measured worse fit keeps the old box: a box too small in the frames to measure is no evidence.
-            if after["size_error"] is not None and after["size_error"] > before["size_error"]:
-                record.update(status="kept", reason="own_points_fit_the_masks_worse")
+            if after["size_error"] is None:
+                record.update(status="kept", reason="own_points_size_not_measured_in_the_frames")
+            elif after["size_error"] >= before["size_error"]:
+                record.update(status="kept", reason="own_points_fit_the_masks_no_better")
             else:
                 record.update(status="from_its_own_points", flag=OBJECT_SIZE_FROM_ITS_POINTS)
                 low, high = new_low, new_high

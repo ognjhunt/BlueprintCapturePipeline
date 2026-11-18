@@ -21,7 +21,7 @@ model is asked: the masks already locate it in every frame they were made for.
   back edge so ends at the wall, where a mask that also took a strip of the wall above the shelf cast
   it behind (test job 4: the frames' own depth and the collider put the wall 4 cm inside that outline).
 - Checks: the frames' outline, cast back into each frame, meets that frame's mask within
-  ``REPROJECTION_MAX_PX`` (mean boundary distance) and ``FRAME_MIN_IOU``, in at least ``MIN_FRAMES``
+  ``REPROJECTION_MAX_SHARE`` of its diagonal (mean boundary distance) and ``FRAME_MIN_IOU``, in at least ``MIN_FRAMES``
   frames and ``MIN_AGREEING_SHARE`` of the frames that show it; the heights the frames agree on span
   no more than ``MAX_HEIGHT_SPAN_M``; no plane tilted along the surface's length more than
   ``MAX_TILT_DEGREES`` agrees better than the level one by more than ``AGREEMENT_SHARE``, and depth
@@ -74,10 +74,11 @@ MAX_SPAN_M = 6.0
 #: Frames that must agree, and the share of the frames showing the surface that must.
 MIN_FRAMES, MIN_AGREEING_SHARE = 3, 2 / 3
 #: A frame agrees when the outline cast back into it overlaps its mask by this much (intersection over
-#: union) and their boundaries lie within ``REPROJECTION_MAX_PX`` of each other on average.
+#: union) and their boundaries lie within ``REPROJECTION_MAX_SHARE`` of the frame's diagonal of each other on average.
 FRAME_MIN_IOU = 0.5
-#: About 1% of the 1280 x 720 geometry frame's diagonal: 15 pixels is 3 cm at 1.3 m with a 620-pixel focal length.
-REPROJECTION_MAX_PX = 15.0
+#: The share of each frame's diagonal: 14.7 pixels of a 1280 x 720 geometry frame, 3 cm at 1.3 m with a 620-pixel
+#: focal length.
+REPROJECTION_MAX_SHARE = 0.01
 #: The surface's cast area against each mask's, median over the frames: at least half of what the frames
 #: show is left after the wall, and the hull does not swell past half as much again.
 AREA_RATIO_RANGE = (0.5, 1.5)
@@ -432,7 +433,7 @@ def _reprojection(view: Mapping[str, Any], polygon: np.ndarray, height: float, *
         to_mask, to_cast = ndimage.distance_transform_edt(~mask_edge), ndimage.distance_transform_edt(~cast_edge)
         row["boundary_px"] = float((to_mask[cast_edge].mean() + to_cast[mask_edge].mean()) / 2)
     row["agrees"] = (row["iou"] >= FRAME_MIN_IOU and row["boundary_px"] is not None
-                     and row["boundary_px"] <= REPROJECTION_MAX_PX)
+                     and row["boundary_px"] <= REPROJECTION_MAX_SHARE * float(np.hypot(*mask.shape)))
     return row
 
 

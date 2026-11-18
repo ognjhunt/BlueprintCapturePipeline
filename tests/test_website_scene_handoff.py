@@ -303,11 +303,14 @@ def test_runtime_inputs_read_the_collider_compile_sealed(tmp_path, monkeypatch, 
 
 @pytest.mark.parametrize("blockers", [["website_scene_execution_authority_required"],
                                       ["task_destination_surface_contact_required"]])
+@pytest.mark.parametrize("sealed_by", [("destination_surface_estimate", "estimated"),
+                                       ("collider_conditioning", "conditioned"), ("subject_excision", "excised")])
 def test_every_package_reads_the_collider_holding_an_estimated_destination_surface(
-        tmp_path, monkeypatch, ready_atlas, blockers):
-    # Compile added a destination surface the scan missed (glass) to the collider and sealed it in the base scene
-    # (website_unscanned_surface): native inputs bind that one, and so does the room package a job ships when its
-    # object still does not fit there, so its README's sentence about the estimate is true of its collision file.
+        tmp_path, monkeypatch, ready_atlas, blockers, sealed_by):
+    # Compile added a destination surface the scan missed (glass) to the collider, or flattened the surfaces objects
+    # rest on, and sealed it in the base scene: native inputs bind that one, and so does the room package a job
+    # ships when its object still does not fit, so its README is true of its collision file. A collider with the
+    # job's own object cut out (geometry only) is never a room package's: that one keeps the objects in its scan.
     kwargs = inputs(tmp_path)
     kwargs["descriptor"]["metadata"]["site_task_context"]["context_digest"] = "sha256:" + "c" * 64
     sealed = {**ready_atlas["base_scene"], "collision_mesh_digest": "sha256:" + "e" * 64}
@@ -316,7 +319,7 @@ def test_every_package_reads_the_collider_holding_an_estimated_destination_surfa
         assert value["base_scene"] == ready_atlas["base_scene"]
         write_json(value["output_root"] / "base_scene.json", sealed)
         return {"status": "needs_input", "blockers": blockers, "digest": "sha256:" + "a" * 64, "thumbnail": {},
-                "destination_surface_estimate": {"status": "estimated"}}
+                sealed_by[0]: {"status": sealed_by[1]}}
 
     bound = []
 
@@ -329,7 +332,8 @@ def test_every_package_reads_the_collider_holding_an_estimated_destination_surfa
     packaged = room_recorder(monkeypatch)
     result = handoff.prepare_website_scene_handoff(**kwargs)
     if result["status"] == handoff.ROOM_PACKAGE:
-        assert [call["base_scene"] for call in packaged] == [sealed] and bound == []
+        expected = ready_atlas["base_scene"] if sealed_by[1] == "excised" else sealed
+        assert [call["base_scene"] for call in packaged] == [expected] and bound == []
     else:
         assert bound == [sealed] and packaged == []
     assert result["status"] == (handoff.ROOM_PACKAGE if "task_destination_surface_contact_required" in blockers

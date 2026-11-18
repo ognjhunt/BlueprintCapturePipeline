@@ -187,22 +187,25 @@ GENERATED_NO_LOOK_NOTE = ("The collision file was made from a scan that holds a 
                           "video did not show; that estimate was not filmed.")
 #: The destination's surface did not show in the scan and was estimated from its visible edges, then added to the
 #: collision file only (``website_unscanned_surface``; read from the base scene the job's scene handoff recorded).
-SURFACE_ESTIMATED_NOTE = ("The destination shelf or surface the job's object is placed on was estimated from its "
-                          "visible edges in the video, because glass and other see-through or shiny surfaces do "
-                          "not show in the scan. That estimate is in the collision file, not in the look.")
+SURFACE_ESTIMATED_NOTE = ("The destination shelf or surface the job's object is placed on did not show in the scan "
+                          "(glass and other see-through or shiny surfaces often do not); it was estimated from its "
+                          "visible edges in the video. That estimate is in the collision file, not in the look.")
 #: The same, for a package built without the appearance file (``LOOK_LEFT_OUT``).
-SURFACE_ESTIMATED_NO_LOOK_NOTE = ("The destination shelf or surface the job's object is placed on was estimated "
-                                  "from its visible edges in the video, because glass and other see-through or "
-                                  "shiny surfaces do not show in the scan. That estimate is in the collision file.")
+SURFACE_ESTIMATED_NO_LOOK_NOTE = ("The destination shelf or surface the job's object is placed on did not show in "
+                                  "the scan (glass and other see-through or shiny surfaces often do not); it was "
+                                  "estimated from its visible edges in the video. That estimate is in the collision "
+                                  "file.")
 #: The job's object was sized from its own points across the frames, its masks' spill left out (``website_object_extent``,
 #: read from the preparation the job's scene handoff names). A room package holds no object and says nothing of it.
 SIZE_FROM_ITS_POINTS_NOTE = ("The job's object's size was estimated from the video's points of the object that the "
                              "frames agree on: points its masks also took in from what lies under or behind it were "
                              "left out.")
 #: No surface at the destination holds the object's whole footprint: its centre is over the surface, part of it over
-#: the edge (``website_destination_overhang``, read with the size notes). Never in a room package.
-DESTINATION_OVERHANG_NOTE = ("The job's object is a little larger than the surface it is placed on: its centre is over "
-                             "the surface and part of it hangs over the edge.")
+#: the edge (``website_destination_overhang``, read with the size notes; only when something does hang over). Never
+#: in a room package.
+DESTINATION_OVERHANG_NOTE = ("The job's object's footprint is larger than the supported part of the surface where it "
+                             "is placed: its centre is over the surface and part of its footprint hangs over the "
+                             "edge.")
 #: The object's exact model has a published size that disagrees with the video's estimate; the file keeps the estimate.
 SIZE_DISAGREES_WITH_PUBLISHED_NOTE = ("The published size of the job's object's exact model disagrees with the size "
                                       "estimated from the video; the object's file keeps the video's estimate.")

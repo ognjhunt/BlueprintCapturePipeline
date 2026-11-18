@@ -35,15 +35,15 @@ Codes, each ``scene_estimate:<kind>``:
   not see (a support or destination only partly filmed, the object's origin, the scene's state);
   those parts are estimates.
 - ``destination_surface_estimated``: the destination's surface did not show in the scan (glass and
-  other see-through or shiny surfaces); it was estimated from its visible edges in the frames and
-  added to the collider only (``website_unscanned_surface``).
+  other see-through or shiny surfaces often do not); it was estimated from its visible edges in the
+  frames and added to the collider only (``website_unscanned_surface``).
 - ``object_size_from_its_points``: the object's box did not fit its masks; its size was read again
   from its own points that the frames agree on, its masks' spill onto what is under or behind it
   left out (``website_object_extent``).
 - ``object_size_disagrees_with_published``: the exact model's published size disagrees with the
   box beyond the estimate's stated error; the box is the video's, never the published figure.
 - ``destination_overhang``: no surface holds the object's whole footprint at its destination; it is
-  set down with its centre and most of its footprint over the surface, a little of it over the
+  set down with its centre and at least half its footprint over the surface, the rest over the
   edge (``website_destination_overhang``).
 
 Pure apart from reading the retained JSON records named. Records written before these estimates
@@ -94,8 +94,8 @@ DESTINATION_SURFACE_ESTIMATED = "scene_estimate:destination_surface_estimated"
 OBJECT_SIZE_FROM_ITS_POINTS = "scene_estimate:object_size_from_its_points"
 #: The exact model's published size disagrees with the box beyond its stated error: a cross-check, never the size.
 OBJECT_SIZE_DISAGREES_WITH_PUBLISHED = "scene_estimate:object_size_disagrees_with_published"
-#: The object is a little larger than its destination surface: set down with its centre over it, part of it over
-#: the edge (``website_destination_overhang``).
+#: The object's footprint is larger than the supported part of its destination surface: set down with its centre
+#: over it, part of its footprint over the edge (``website_destination_overhang``).
 DESTINATION_OVERHANG = "scene_estimate:destination_overhang"
 #: No catalog robot fits the job on paper (``website_robot_fit_precheck``): a note on the job, never a stop.
 #: Carried as ``scene_estimate:robot_fit_none:<cause>``, the cause that refused the most candidates.

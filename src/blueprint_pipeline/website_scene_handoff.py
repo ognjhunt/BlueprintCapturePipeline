@@ -1160,8 +1160,12 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 # The object does not fit the scene or the video: left out, never a hold or a new video.
                 return room_package(None, flags=[str(exc)])
             raise
-        if (preparation.get("destination_surface_estimate") or {}).get("status") == "estimated":
-            # Compile added a destination surface the scan missed to the collider: every package reads that one.
+        if (((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
+                or (preparation.get("destination_surface_estimate") or {}).get("status") == "estimated")
+                and (preparation.get("subject_excision") or {}).get("status") != "excised"):
+            # Compile flattened the surfaces objects rest on, or added one the scan missed: it is still the room as
+            # filmed, so every package reads it. A cut collider has the job's own object taken out of it, which a
+            # room package keeping the objects in its scan must not read: that one is read only after the fallback.
             base = json.loads((root / "base_scene.json").read_text())
         if (preparation["status"] != "intake_ready" and not preparation.get("native_task_preparation_gap")
                 and may_fall_back()

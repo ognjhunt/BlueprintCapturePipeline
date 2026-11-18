@@ -36,19 +36,21 @@ RUNTIME_SCALE, RUNTIME_TRANSLATION = 0.5, np.array([1.0, 2.0, 3.0])
 SHELF_TOP, SHELF_THICKNESS = 1.2, 0.01
 SHELF = ((0.55, SHELF_TOP - SHELF_THICKNESS, 2.8), (1.15, SHELF_TOP, 3.0))  # 0.6 m long, 0.2 m deep, on the wall
 SHELF_TOP_Z = SHELF_TOP + RUNTIME_TRANSLATION[1] / RUNTIME_SCALE
+#: The room turned over about x: a collider whose up is -Y (a proper rotation), and each collider's turn by path.
+FLIP, TURNS = np.diag([1.0, -1.0, -1.0]), {}
 TABLE, CUP = ((-0.9, 0.0, 2.2), (-0.3, 0.75, 2.8)), ((-0.66, 0.75, 2.44), (-0.54, 0.87, 2.56))
 #: Six frames filmed walking past, looking down at the wall between the table and the shelf.
 CAMERAS = [((-0.3, 1.9, 1.5), (0.2, 1.0, 2.8)), ((0.1, 2.0, 1.4), (0.3, 1.0, 2.8)), ((0.5, 1.85, 1.6), (0.2, 1.0, 2.8)),
            ((0.9, 1.95, 1.5), (0.2, 1.0, 2.8)), ((1.3, 1.9, 1.7), (0.3, 1.0, 2.8)), ((0.3, 1.8, 1.9), (0.1, 1.0, 2.8))]
 
 
-def _room(*, opaque_shelf: bool, cup: bool = True) -> list:
+def _room(*, opaque_shelf: bool, cup: bool = True, shelf: tuple = SHELF, cup_box: tuple = CUP) -> list:
     """The boxes depth sees: the room's six sides, the table, the cup unless taken out (the clean plate the scan
     is made from), and the shelf only when it is not glass."""
     return [((-1.5, -0.02, 0.3), (2.5, 0.0, 3.0)), ((-1.5, 0.0, 3.0), (2.5, 2.5, 3.05)),
             ((-1.5, 2.5, 0.3), (2.5, 2.52, 3.0)), ((-1.52, 0.0, 0.3), (-1.5, 2.5, 3.0)),
             ((2.5, 0.0, 0.3), (2.52, 2.5, 3.0)), ((-1.5, 0.0, 0.28), (2.5, 2.5, 0.3)), TABLE,
-            *([CUP] if cup else []), *([SHELF] if opaque_shelf else [])]
+            *([cup_box] if cup else []), *([shelf] if opaque_shelf else [])]
 
 
 def _camera(position, target) -> np.ndarray:
@@ -79,15 +81,16 @@ def _cast(boxes: list, pose: np.ndarray, focal: float = FOCAL) -> np.ndarray:
 
 
 @functools.lru_cache(maxsize=None)
-def _views(opaque_shelf: bool, cameras: tuple | None = None, focal: float = FOCAL) -> tuple:
+def _views(opaque_shelf: bool, cameras: tuple | None = None, focal: float = FOCAL, shelf: tuple = SHELF,
+           cup_box: tuple = CUP) -> tuple:
     """Per camera: the frame's depth, the depth of its clean plate (the cup taken out) the scan is made from, and
     the shelf's, the cup's and the table's masks. Glass: the shelf is in its mask but in neither depth."""
     views = []
     for position, target in cameras or CAMERAS:
         pose = _camera(position, target)
-        depth = _cast(_room(opaque_shelf=opaque_shelf), pose, focal)
-        shelf_depth, cup_depth, table_depth = (_cast([box], pose, focal) for box in (SHELF, CUP, TABLE))
-        views.append((pose, depth, _cast(_room(opaque_shelf=opaque_shelf, cup=False), pose, focal),
+        depth = _cast(_room(opaque_shelf=opaque_shelf, shelf=shelf, cup_box=cup_box), pose, focal)
+        shelf_depth, cup_depth, table_depth = (_cast([box], pose, focal) for box in (shelf, cup_box, TABLE))
+        views.append((pose, depth, _cast(_room(opaque_shelf=opaque_shelf, cup=False, shelf=shelf), pose, focal),
                       *(np.isfinite(seen) & (seen <= depth + 1e-6) for seen in (shelf_depth, cup_depth, table_depth))))
     return tuple(views)
 
@@ -105,13 +108,16 @@ def _track(name: str, masks: list[np.ndarray]) -> dict:
 
 
 def _arguments(root: Path, *, opaque_shelf: bool = False, shelf_masks=None, cup_masks=None,
-               cameras: tuple | None = None, focal: float = FOCAL, onto_table: bool = False) -> dict:
+               cameras: tuple | None = None, focal: float = FOCAL, onto_table: bool = False, shelf: tuple = SHELF,
+               flipped: bool = False, cup_box: tuple = CUP) -> dict:
     """Compile's inputs for the room: its source geometry, a collider made from that depth alone, and masks
     (``cameras`` and ``focal``: another set of views of the same room; ``onto_table``: the destination is the
-    table the cup stands on, a surface the scan shows)."""
+    table the cup stands on, a surface the scan shows; ``shelf``, ``cup_box``: another shelf or cup; ``flipped``:
+    the collider's up is -Y, the room turned over about x)."""
     root.mkdir(parents=True, exist_ok=True)
     frames, points, faces = [], [], []
-    for index, (pose, depth, clean, *_masks) in enumerate(_views(opaque_shelf, cameras, focal)):
+    turn = FLIP if flipped else np.eye(3)
+    for index, (pose, depth, clean, *_masks) in enumerate(_views(opaque_shelf, cameras, focal, shelf, cup_box)):
         valid = np.isfinite(depth)
         geometry = root / f"frame-{index}.npz"
         np.savez(geometry, depth_m=np.where(valid, depth, 0.0), valid_mask=valid)
@@ -130,19 +136,20 @@ def _arguments(root: Path, *, opaque_shelf: bool = False, shelf_masks=None, cup_
                           axis=-1) * clean[..., None]
         upright = camera.reshape(-1, 3) @ pose[:3, :3].T + pose[:3, 3]
         offset = sum(len(block) for block in points)
-        points.append(upright * RUNTIME_SCALE + RUNTIME_TRANSLATION)
+        points.append(upright @ turn.T * RUNTIME_SCALE + RUNTIME_TRANSLATION)
         a = offset + rows[:-1, :-1] * WIDTH + columns[:-1, :-1]
         keep = (valid[:-1, :-1] & valid[:-1, 1:] & valid[1:, :-1] & valid[1:, 1:]).ravel()
         a = a.ravel()[keep]
         faces += [np.c_[a, a + 1, a + WIDTH], np.c_[a + 1, a + WIDTH + 1, a + WIDTH]]
     collider = root / "collider.glb"
+    TURNS[str(collider)] = turn
     trimesh.Trimesh(vertices=np.concatenate(points), faces=np.concatenate(faces), process=False).export(collider)
     splat = root / "world.ply"
     splat.write_bytes(b"ply\nformat binary_little_endian 1.0\nend_header\n")
     source_geometry = {"schema_version": "website_source_geometry.v1", "frames": frames, "unit": "estimated_meters",
                        "scale_status": "model_estimated", "metric_measurement_proven": False}
     source_geometry["digest"] = canonical_digest(source_geometry, digest_field="digest")
-    views = _views(opaque_shelf, cameras, focal)
+    views = _views(opaque_shelf, cameras, focal, shelf, cup_box)
     cup = _track("cup", cup_masks or [view[4] for view in views])
     shelf = _track("glass_shelf", shelf_masks or [view[5 if onto_table else 3] for view in views])
     targets = [{"target_id": "cup-1", "task_effect": "manipulated", "disposition": "remove", "semantic_label": "cup",
@@ -170,7 +177,7 @@ def _arguments(root: Path, *, opaque_shelf: bool = False, shelf_masks=None, cup_
                          "provider_training_authorized": False, "task_confirmed": True, "spend_authorized": True}}
     base = {"splat_path": str(splat), "splat_digest": _sha256_file(splat), "splat_binding_id": "splat-1",
             "collision_mesh_path": str(collider), "collision_mesh_digest": _sha256_file(collider),
-            "collision_binding_id": "collider-1", "up_axis": "Y", "meters_per_unit": 1 / RUNTIME_SCALE,
+            "collision_binding_id": "collider-1", "up_axis": "-Y" if flipped else "Y", "meters_per_unit": 1 / RUNTIME_SCALE,
             "provider": "world_labs", "operation_id": "op-1"}
     return {"task_context": context, "task_masks": masks, "removal_manifest": removal,
             "source_geometry": source_geometry, "base_scene": base, "output_root": root / "out", "spend": spend,
@@ -191,7 +198,8 @@ def exact_registration(monkeypatch):
     (tested in ``test_website_task_preparation``) is not what these tests are about."""
     def register(*, source_geometry, collision_mesh_path, **_options):
         matrix = np.eye(4)
-        matrix[:3, :3], matrix[:3, 3] = RUNTIME_SCALE * SOURCE, RUNTIME_TRANSLATION
+        matrix[:3, :3], matrix[:3, 3] = RUNTIME_SCALE * TURNS.get(str(collision_mesh_path), np.eye(3)) @ SOURCE, \
+            RUNTIME_TRANSLATION
         return {"schema_version": "website_source_registration.v1", "source_to_runtime": matrix.tolist(),
                 "scale": RUNTIME_SCALE, "rotation": SOURCE.tolist(), "translation": RUNTIME_TRANSLATION.tolist(),
                 "trimmed_rmse_runtime_units": 0.005, "trimmed_rmse_m": 0.01, "runner_up_ratio": 3.0, "anchor": None,
@@ -214,7 +222,7 @@ def test_a_see_through_shelf_with_visible_edges_is_estimated_and_the_destination
     assert record["top_z_world_m"] == pytest.approx(SHELF_TOP_Z, abs=0.02)
     assert record["sides_m"][0] == pytest.approx(0.2, abs=0.05) and record["sides_m"][1] == pytest.approx(0.6, abs=0.06)
     assert record["frames_outline"]["agreeing_frames"] == len(CAMERAS)
-    assert record["frames_outline"]["median_boundary_px"] <= unscanned.REPROJECTION_MAX_PX
+    assert record["frames_outline"]["median_boundary_px"] <= unscanned.REPROJECTION_MAX_SHARE * np.hypot(WIDTH, HEIGHT)
     # Glass: its masks' depth reads the wall behind, never a level band.
     assert record["depth_anchor"]["status"] in {"no_level_band", "no_depth"}
     assert record["flag"] == DESTINATION_SURFACE_ESTIMATED and record["look"] == "unchanged"
@@ -279,3 +287,15 @@ def test_a_reconstructed_shelf_takes_the_old_path_unchanged_and_asks_no_model(tm
     without = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "without"})
     for key in ("status", "blockers", "binding", "subject", "destination", "destination_support"):
         assert value.get(key) == without.get(key), key
+
+
+def test_the_shelf_is_estimated_and_used_the_same_in_a_collider_whose_up_is_minus_y(tmp_path):
+    value = preparation.compile_website_scene_preparation(**_arguments(tmp_path, flipped=True))
+    record = value["destination_surface_estimate"]
+    assert record["status"] == "estimated", record.get("reasons")
+    # Turned over, the collider's frame is 4 m above the room's floor: the simulator's z is 4 m less.
+    expected = SHELF_TOP - RUNTIME_TRANSLATION[1] / RUNTIME_SCALE
+    assert record["top_z_world_m"] == pytest.approx(expected, abs=0.02)
+    assert record["sides_m"][0] == pytest.approx(0.2, abs=0.05) and record["sides_m"][1] == pytest.approx(0.6, abs=0.06)
+    assert "task_destination_surface_contact_required" not in value["blockers"], value["blockers"]
+    assert value["destination"]["position_world_m"][2] == pytest.approx(expected, abs=0.02)

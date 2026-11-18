@@ -1436,8 +1436,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                  meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
             if destination_support is None:  # no surface under the whole footprint: its centre over one, flagged
                 from .website_destination_overhang import centre_supported
-                destination_support, overhang = centre_supported(collider, destination_min, destination_max, up=up,
-                    meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual, radius=radius, look=lookup)
+                destination_support, overhang, position = centre_supported(collider, destination_min, destination_max,
+                    position, up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual, radius=radius,
+                    look=lookup)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
@@ -1488,7 +1489,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       "grounded_centre_world_m": stated, "harness_choice": True, **recorded_tolerance}
                 if outline is not None:
                     region_outline = outline.in_frame(runtime_to_sim)
-        overhang = None if relocation is not None else overhang  # a relocation found a spot holding all of it
         label = destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"]
         destination = {"relation": relation, "visible_label": label,
                        **({"mode": "existing_support_surface"} if relation == "on" or interior is not None else {}),
@@ -1522,6 +1522,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 surface_guessed=destination_rows[0].get("selection_basis") == "best_supported_guess", admit=admitted)
             if destination_choice["basis"] in {NAMED_REGION, SITE_CHOICE}:
                 relocation = None
+        if overhang is not None:  # read again where relocation, a named area or the site's choice finally put it
+            from .website_destination_overhang import settled
+            overhang, held = settled(collider, overhang, subject_min, subject_max, np.linalg.solve(runtime_to_sim, [
+                *destination["position_world_m"], 1.0])[:3], up=up, meters_per_unit=mpu, up_sign=up_sign,
+                placement_residual_m=residual, radius=radius)
+            blockers += held
         if support is not None and len(blockers) == blockers_before:
             # A destination held above keeps its own code. Otherwise the region
             # evaluation will seal goes through the same admission, from the same
