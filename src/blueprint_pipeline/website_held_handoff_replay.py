@@ -278,7 +278,8 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
     ``confirmed_successor``: the website's current task context, one signed read, is the retained
     context's confirmed successor. ``intake_receipt``: the record's intake receipt is bound and reads.
     ``release``: the running release (``current_release_commit``) with the pipeline pieces the hold names,
-    for a hold on a Blueprint integration gap; each release re-evaluates it once.
+    for a hold on a Blueprint integration gap; each release re-evaluates it once. ``rules_reopen``: a hold the
+    current rules no longer stop on (``website_rules_reopen``), once per rules revision and held handoff.
     """
     root = Path(pipeline_root)
     kind = held_kind(root)
@@ -314,6 +315,11 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
         release, missing = current_release_commit(), _pipeline_missing(_handoff(root) or {})
         if release and missing:
             fact = {"kind": "release", "release_commit": release, "missing_pipeline": missing}
+    if fact is None and kind != "consent":
+        # A hold the current rules no longer stop on (``website_rules_reopen``), once per rules revision.
+        from .website_rules_reopen import rules_reopen
+
+        fact = rules_reopen(root)
     if fact is None:
         return None
     fact["fact_digest"] = canonical_digest(fact)
@@ -573,9 +579,10 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
     fact = superseded_scene(pipeline) or arrived_fact(pipeline)
     if fact is None:
         raise ValueError("website_held_handoff_resume_not_eligible")
-    if fact.get("kind") == "release" and fact.get("recapture_code"):
-        # A registration hold the site was told to film again: never re-driven once the site re-filmed,
-        # closed the run or withdrew (the door's own snapshot reads the same context first).
+    if fact.get("kind") == "rules_reopen" or fact.get("kind") == "release" and fact.get("recapture_code"):
+        # A registration hold the site was told to film again, or a hold reopened under the current rules: never
+        # re-driven once the site re-filmed, closed the run or withdrew (the door's own snapshot reads the same
+        # context first).
         try:
             require_still_open(capture_root, revision=ledger_revision)
         except Exception:  # noqa: BLE001 - the refusal is by name; the cause stays in the status read
