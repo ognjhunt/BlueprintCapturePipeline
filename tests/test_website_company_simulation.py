@@ -168,8 +168,10 @@ class World:
                 "filename": name}
 
     def retract(self, uri):
+        """Every version of the one object the link names (its digest), as the store's deletion does."""
         self.retracted.append(uri)
-        self.objects.clear()
+        for key in [key for key in self.objects if f"/{uri.split('/')[-2]}/" in key]:
+            del self.objects[key]
 
     def deliver(self, record, *, identity):
         if self.delivery_error:
@@ -2321,18 +2323,33 @@ def test_generated_views_in_the_look_are_named_in_one_sentence_only_when_the_loo
         assert sim.GENERATED_VIEWS_LOOK_NOTE not in " ".join(archive.read("README.txt").decode().split())
 
 
-# --- a splat look also ships as the standard 3DGS PLY splat viewers open --------------------------------------------
+# --- a look written again from its source splat, and its PLY ------------------------------------------------------
 
-#: The website look's frame (``website_native_appearance``): a levelled Y-up world, scaled and turned to Z-up.
+#: The website look's frame (``website_native_appearance``): a levelled Y-up world, scaled and turned to Z-up, in
+#: the writer's row-major form (its transpose is ``runtime_to_simulator``).
 LOOK_TRANSFORM = [[0.8, 0.0, 0.0, 0.0], [0.0, 0.0, 0.8, 0.0], [0.0, -0.8, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
 
 
-def _splat_job(tmp_path: Path, *, count: int = 3000, transform=LOOK_TRANSFORM) -> Job:
-    """A job whose look is a 3D Gaussian splat written as the website writes it (``write_particlefield_usd``)."""
+def _turns(count: int):
+    """Known turns about oblique axes, never their own scrambled order, at varied norms."""
     import numpy as np
 
-    from blueprint_pipeline.gaussian_splat_decode import SplatData
+    axes = np.asarray([[1, 2, 3], [-2, 0.5, 1], [0.3, -1, 0.2], [0, 0, 1], [1, 1, 0]], float)
+    angles = np.radians([37, 115, 170, 90, 63])
+    known = np.column_stack([np.cos(angles / 2), (axes / np.linalg.norm(axes, axis=1, keepdims=True))
+                             * np.sin(angles / 2)[:, None]])
+    return np.resize(known, (count, 4)) * np.linspace(0.5, 2.0, count)[:, None]
+
+
+def _splat_job(tmp_path: Path, *, count: int = 3000, old_writer: bool = False, receipt: bool = True) -> Job:
+    """A job whose look the website authored from its levelled splat (``website_native_appearance``), the room
+    package's way, so its sealed receipt names that source. ``old_writer``: the look and its receipt as the writer
+    before 2026-11-18 left them, every rotation stored scrambled. ``receipt=False``: a splat look nothing names."""
+    import numpy as np
+
+    from blueprint_pipeline.gaussian_splat_decode import SplatData, write_standard_3dgs_ply
     from blueprint_pipeline.particlefield_usd import write_particlefield_usd
+    from blueprint_pipeline.website_native_appearance import prepare_native_appearance
 
     job = Job(tmp_path)
     job.appearance.unlink()
@@ -2340,15 +2357,58 @@ def _splat_job(tmp_path: Path, *, count: int = 3000, transform=LOOK_TRANSFORM) -
     splat = SplatData(count=count, xyz=rng.uniform([-4, 0, -4], [4, 3, 4], (count, 3)).astype(np.float32),
                       opacity=rng.normal(0, 3, count).astype(np.float32),
                       f_dc=rng.normal(0, 1, (count, 3)).astype(np.float32),
-                      scales=rng.uniform(-5, -3, (count, 3)).astype(np.float32),
-                      quats=rng.standard_normal((count, 4)).astype(np.float32), properties=())
+                      scales=np.tile(np.log([0.02, 0.05, 0.11]), (count, 1)).astype(np.float32),
+                      quats=_turns(count).astype(np.float32), properties=())
+    preparation_root = job.capture / "pipeline" / "website_scene_preparation"
+    job.source = preparation_root / "atlas" / "atlas_depth_splat_levelled.ply"
+    job.source.parent.mkdir(parents=True, exist_ok=True)
+    write_standard_3dgs_ply(splat, job.source)
+    job.splat = splat
     job.appearance = job.assets / "appearance.usdc"
-    assert write_particlefield_usd(splat, job.appearance, layer_transform_row_major=transform)["status"] == "completed"
+    if not receipt:
+        written = write_particlefield_usd(splat, job.appearance, layer_transform_row_major=LOOK_TRANSFORM)
+        assert written["status"] == "completed"
+    else:
+        base = {"splat_path": str(job.source), "splat_digest": _sha(job.source)}
+        _write(preparation_root / "base_scene.json", base)
+        column = [list(row) for row in zip(*LOOK_TRANSFORM)]
+        frame = {"binding": {"splat_digest": base["splat_digest"]},
+                 "coordinate_frame": {"declared_meters_per_unit": 0.8, "declared_up_axis": "Y",
+                                      "physical_scale_measured": False, "runtime_to_simulator": column}}
+        frame["digest"] = canonical_digest(frame, digest_field="digest")
+        authored = prepare_native_appearance(preparation=frame, base_scene=base,
+                                             output_root=preparation_root / "room_package" / "appearance")
+        artifact = Path(authored["artifact"]["path"])
+        if old_writer:
+            _as_the_old_writer_left_it(artifact, artifact.parent / "appearance.json")
+        job.appearance.write_bytes(artifact.read_bytes())
     job.seal()
     plan = json.loads((job.packet / sim.PLAN_FILE).read_text())
     plan["appearance_frame_alignment"] = {"representation": "particlefield_3d_gaussian_splat"}
     _write(job.packet / sim.PLAN_FILE, plan)
     return job
+
+
+def _as_the_old_writer_left_it(look: Path, receipt_path: Path) -> None:
+    """The look's rotations stored as ``FromNumpy`` read (w, x, y, z) rows before 2026-11-18, and its receipt as
+    that writer sealed it (no ``orientation_storage``)."""
+    import numpy as np
+    from pxr import Vt
+
+    stage = Usd.Stage.Open(str(look))
+    field = next(prim for prim in stage.Traverse() if prim.GetTypeName() == "ParticleField3DGaussianSplat")
+    attribute = field.GetAttribute("orientations")
+    wxyz = np.asarray([(q.GetReal(), *q.GetImaginary()) for q in attribute.Get()], dtype=np.float32)
+    attribute.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(wxyz)))
+    stage.GetRootLayer().Save()
+    receipt = json.loads(receipt_path.read_text())
+    authoring = {key: value for key, value in receipt["authoring"].items() if key != "orientation_storage"}
+    authoring.update(output_sha256=_sha(look), output_bytes=look.stat().st_size)
+    authoring["receipt_digest"] = canonical_digest(authoring, digest_field="receipt_digest")
+    receipt.update(authoring=authoring, artifact={**receipt["artifact"], "digest": _sha(look),
+                                                  "size_bytes": look.stat().st_size})
+    receipt["digest"] = canonical_digest(receipt, digest_field="digest")
+    _write(receipt_path, receipt)
 
 
 def _unpacked(path: Path, into: Path) -> Path:
@@ -2357,7 +2417,45 @@ def _unpacked(path: Path, into: Path) -> Path:
     return into
 
 
-def test_a_splat_look_also_ships_as_a_viewer_ply_that_round_trips_against_the_usd(tmp_path):
+def _covariance(quats_wxyz, scales, linear=None):
+    """The 3D covariance a 3DGS renderer builds (L = R S, Sigma = L L^T), carried by ``linear`` when given."""
+    import numpy as np
+
+    w, x, y, z = (np.asarray(quats_wxyz, float) / np.linalg.norm(quats_wxyz, axis=1, keepdims=True)).T
+    turn = np.stack([np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], -1),
+                     np.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], -1),
+                     np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], -1)], 1)
+    covariance = turn @ (np.asarray(scales, float)[:, :, None] ** 2 * np.eye(3)) @ np.swapaxes(turn, 1, 2)
+    return covariance if linear is None else np.asarray(linear) @ covariance @ np.asarray(linear).T
+
+
+def _look_covariances(path: Path):
+    """The covariances a USD reader renders from a look file (Gf real part first), in the file's world, with the
+    field's arrays and world matrix."""
+    import numpy as np
+
+    stage = Usd.Stage.Open(str(path))
+    field = next(prim for prim in stage.Traverse() if prim.GetTypeName() == "ParticleField3DGaussianSplat")
+    matrix = np.asarray(UsdGeom.Xformable(field).ComputeLocalToWorldTransform(Usd.TimeCode.Default())).T
+    gf = [(q.GetReal(), *q.GetImaginary()) for q in field.GetAttribute("orientations").Get()]
+    stored = {name: np.asarray(field.GetAttribute(name).Get(), dtype=float)
+              for name in ("positions", "scales", "opacities", "radiance:sphericalHarmonicsCoefficients")}
+    return _covariance(gf, stored["scales"], matrix[:3, :3]), stored, matrix
+
+#: Float32 scales and rotations: covariance entries (at most 0.008 m^2 here) agree within 1e-8, under 2e-6 of the
+#: largest (5.4e-9 seen); a scrambled rotation is off by about 1e-3. Entries near zero make a relative bound
+#: meaningless.
+SAME = {"rtol": 0, "atol": 1e-8}
+
+
+def _source_covariances(job: Job):
+    import numpy as np
+
+    linear = np.asarray(LOOK_TRANSFORM).T[:3, :3]
+    return _covariance(job.splat.quats, np.exp(job.splat.scales.astype(float)), linear)
+
+
+def test_a_splat_look_is_written_again_and_ships_with_a_viewer_ply_of_the_same_source(tmp_path):
     import numpy as np
 
     from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply, viewer_3dgs_properties
@@ -2372,30 +2470,108 @@ def test_a_splat_look_also_ships_as_a_viewer_ply_that_round_trips_against_the_us
     header = data[:data.index(b"end_header\n")].decode("ascii").splitlines()
     assert header[:3] == ["ply", "format binary_little_endian 1.0", "element vertex 3000"]
     assert [line.removeprefix("property float ") for line in header[3:]] == list(viewer_3dgs_properties(0))
-    assert header[3:9] == [f"property float {name}" for name in ("x", "y", "z", "nx", "ny", "nz")]
-    # The PLY against the shipped USD's own values, where that file places them.
+    # The PLY against the shipped USD's own values, where that file places them, and both against the source.
     ply = read_standard_3dgs_ply(unpacked / "scene/room.ply")
-    stage = Usd.Stage.Open(str(unpacked / "scene/room.usdc"))
-    field = next(prim for prim in stage.Traverse() if prim.GetTypeName() == "ParticleField3DGaussianSplat")
-    matrix = np.asarray(UsdGeom.Xformable(field).ComputeLocalToWorldTransform(Usd.TimeCode.Default())).T
-
-    def stored(name):
-        return np.asarray(field.GetAttribute(name).Get(), dtype=float)
-    np.testing.assert_allclose(ply.xyz, stored("positions") @ matrix[:3, :3].T + matrix[:3, 3], atol=1e-5)
-    np.testing.assert_allclose(np.exp(ply.scales.astype(float)), 0.8 * stored("scales"), rtol=1e-6)
-    np.testing.assert_allclose(1 / (1 + np.exp(-ply.opacity.astype(float))), stored("opacities"), atol=1e-7)
-    np.testing.assert_array_equal(ply.f_dc, stored("radiance:sphericalHarmonicsCoefficients").astype(np.float32))
-    assert ply.sh_rest is None and np.allclose(np.linalg.norm(ply.quats, axis=1), 1, atol=1e-6)
-    # The look's up (Y in the splat) is the file's +Z: the PLY is in the USD look's frame, levelling included.
-    np.testing.assert_allclose(ply.xyz[:, 2], 0.8 * stored("positions")[:, 1], atol=1e-5)
+    usd, stored, matrix = _look_covariances(unpacked / "scene/room.usdc")
+    np.testing.assert_allclose(ply.xyz, stored["positions"] @ matrix[:3, :3].T + matrix[:3, 3], atol=1e-5)
+    np.testing.assert_allclose(np.exp(ply.scales.astype(float)), 0.8 * stored["scales"], rtol=1e-6)
+    np.testing.assert_allclose(1 / (1 + np.exp(-ply.opacity.astype(float))), stored["opacities"], atol=1e-7)
+    np.testing.assert_allclose(ply.f_dc, stored["radiance:sphericalHarmonicsCoefficients"], atol=1e-7)
+    np.testing.assert_allclose(_covariance(ply.quats, np.exp(ply.scales.astype(float))), usd, **SAME)
+    np.testing.assert_allclose(usd, _source_covariances(job), **SAME)
+    # The look's up (Y in the levelled splat) is the file's +Z: the PLY is in the USD look's frame.
+    np.testing.assert_allclose(ply.xyz[:, 2], 0.8 * job.splat.xyz[:, 1], atol=1e-5)
     readme = (unpacked / "README.txt").read_text()
     flat = " ".join(readme.split())
     assert "- scene/room.ply: the same look as a standard 3D Gaussian splat PLY" in readme
     assert "scene/room.ply holds the Gaussians where scene/room.usdc places them" in flat
-    assert "in its frame: up axis Z and 1 metres per unit." in flat and sim.PLY_LEFT_OUT not in flat
+    assert "in its frame: up axis Z and 1 metres per unit." in flat
+    assert sim.PLY_LEFT_OUT not in flat and sim.LOOK_AS_FIRST_WRITTEN not in flat
     assert "room.ply" not in (unpacked / "scene.usda").read_text()
+    assert "look_not_written" not in _manifest(job)["package"]
     assert world.publish()["status"] == "current"
 
+
+def test_a_package_the_old_writer_built_comes_out_with_the_sources_covariances_after_the_v3_rebuild(
+        tmp_path, monkeypatch):
+    """Review, 2026-11-18: nothing authors a finished job's look again, so a v3 rebuild of the half's look kept its
+    scrambled rotations (94% of Gaussians off by more than 10%). The rebuild writes it again from its source."""
+    import numpy as np
+
+    job = _splat_job(tmp_path, old_writer=True)
+    source = _source_covariances(job)
+    half, _field, _matrix = _look_covariances(job.appearance)
+    off = np.linalg.norm(half - source, axis=(1, 2)) / np.linalg.norm(source, axis=(1, 2))
+    assert (off > 0.1).mean() > 0.5  # the half's look as the old writer left it
+    # The package the v2 builder delivered: the half's look as it is.
+    monkeypatch.setattr(sim, "BUILDER_REVISION", "website_company_simulation_builder.v2")
+    monkeypatch.setattr(sim, "look_source", lambda *a, **k: None)
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    old = _manifest(job)["archive"]
+    delivered, _f, _m = _look_covariances(_unpacked(_package(job), tmp_path / "v2") / "scene/room.usdc")
+    assert np.abs(delivered - source).max() > 1e-4
+    monkeypatch.undo()
+    assert world.publish()["status"] == "published"
+    unpacked = _unpacked(_package(job), tmp_path / "v3")
+    usd, _f, _m = _look_covariances(unpacked / "scene/room.usdc")
+    np.testing.assert_allclose(usd, source, **SAME)
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
+    ply = read_standard_3dgs_ply(unpacked / "scene/room.ply")
+    np.testing.assert_allclose(_covariance(ply.quats, np.exp(ply.scales.astype(float))), source, **SAME)
+    readme = " ".join((unpacked / "README.txt").read_text().split())
+    assert sim.LOOK_AS_FIRST_WRITTEN not in readme and sim.ROTATIONS_STORED_WRONG not in readme
+    # The v2 package was read until the website took the v3 one, then retired.
+    assert world.retracted == [old["uri"]] and sim.permission.SUPERSEDED in _manifest(job)
+    assert _manifest(job)[sim.permission.SUPERSEDED]["retracted"] is True
+
+
+@pytest.mark.parametrize("why", ["missing", "over_memory_bound", "changed"])
+def test_a_look_whose_source_cannot_be_written_again_ships_as_first_written_and_says_so(tmp_path, monkeypatch, why):
+    job = _splat_job(tmp_path, old_writer=True)
+    if why == "missing":
+        job.source.unlink()
+    elif why == "over_memory_bound":
+        monkeypatch.setattr(sim, "REAUTHOR_MAX_SOURCE_BYTES", job.source.stat().st_size - 1)
+    else:
+        job.source.write_bytes(job.source.read_bytes()[:-4] + b"\x00\x00\x80\x3f")
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    files = world.delivered[0]["files"]
+    assert "scene/room.usdc" in files and not any(name.endswith(".ply") for name in files)
+    reason = {"missing": "missing", "over_memory_bound": "over_memory_bound", "changed": "changed"}[why]
+    assert _manifest(job)["package"]["look_not_written"] == {
+        "Room": f"website_company_simulation_look_source_{reason}"}
+    readme = " ".join(_unpacked(_package(job), tmp_path / "u").joinpath("README.txt").read_text().split())
+    assert sim.LOOK_AS_FIRST_WRITTEN in readme and sim.ROTATIONS_STORED_WRONG in readme and "room.ply" not in readme
+
+
+def test_a_fixed_writers_look_that_cannot_be_written_again_names_no_wrong_rotations(tmp_path):
+    job = _splat_job(tmp_path)
+    job.source.unlink()
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    readme = " ".join(_unpacked(_package(job), tmp_path / "u").joinpath("README.txt").read_text().split())
+    assert sim.LOOK_AS_FIRST_WRITTEN in readme and sim.ROTATIONS_STORED_WRONG not in readme
+
+
+def test_a_splat_look_nothing_names_ships_as_it_is_with_no_ply_and_no_note(tmp_path):
+    job = _splat_job(tmp_path, receipt=False)
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    assert not any(name.endswith(".ply") for name in world.delivered[0]["files"])
+    readme = " ".join(_unpacked(_package(job), tmp_path / "u").joinpath("README.txt").read_text().split())
+    assert sim.LOOK_AS_FIRST_WRITTEN not in readme and "look_not_written" not in _manifest(job)["package"]
+
+
+def test_a_look_that_is_not_a_splat_ships_no_ply_and_records_nothing(job):
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    assert not any(name.endswith(".ply") for name in world.delivered[0]["files"])
+    assert "look_not_written" not in _manifest(job)["package"]
+
+
+# --- over the limit: the PLY goes first, and a pass out of time leaves the next where it stopped ------------------
 
 def _look_sizes(job: Job, tmp_path: Path) -> tuple[int, int, int]:
     """The zip's bytes with the look and its PLY, with the look only, and with neither."""
@@ -2406,15 +2582,30 @@ def _look_sizes(job: Job, tmp_path: Path) -> tuple[int, int, int]:
     return sizes[0]["size_bytes"], sizes[1]["size_bytes"], sizes[2]["size_bytes"]
 
 
+_REAL_BUILD = sim._build_once
+
+
+def _counting(monkeypatch, *, timeout_on=None) -> list:
+    """Each build's (PLY left out, look left out), the real build behind it; ``timeout_on`` runs out of time."""
+    builds = []
+    real = _REAL_BUILD
+
+    def build(source, *a, **k):
+        step = (bool(source.get("ply_left_out")), bool(source.get("look_left_out")))
+        builds.append(step)
+        if step == timeout_on:
+            raise ValueError(sim.BUILD_TIMED_OUT)
+        return real(source, *a, **k)
+    monkeypatch.setattr(sim, "_build_once", build)
+    return builds
+
+
 @pytest.mark.parametrize("over", ["ply", "look"])
 def test_over_the_limit_the_ply_goes_before_the_look_and_the_readme_says_which(tmp_path, monkeypatch, over):
     job = _splat_job(tmp_path)
     whole, usd_only, bare = _look_sizes(job, tmp_path / "sizes")
     assert bare < usd_only < whole
-    builds = []
-    real = sim._build_once
-    monkeypatch.setattr(sim, "_build_once", lambda source, *a, **k: builds.append(
-        (bool(source.get("ply_left_out")), bool(source.get("look_left_out")))) or real(source, *a, **k))
+    builds = _counting(monkeypatch)
     world = World(job)
     assert world.publish(max_bytes=usd_only if over == "ply" else bare)["status"] == "published"
     record, package = world.delivered[0], _manifest(job)["package"]
@@ -2435,26 +2626,106 @@ def test_over_the_limit_the_ply_goes_before_the_look_and_the_readme_says_which(t
 def test_over_the_limit_even_without_the_look_is_over_the_cap_after_three_builds(tmp_path, monkeypatch):
     job = _splat_job(tmp_path)
     _whole, _usd_only, bare = _look_sizes(job, tmp_path / "sizes")
-    builds = []
-    real = sim._build_once
-    monkeypatch.setattr(sim, "_build_once", lambda source, *a, **k: builds.append(
-        (bool(source.get("ply_left_out")), bool(source.get("look_left_out")))) or real(source, *a, **k))
+    builds = _counting(monkeypatch)
     world = World(job)
     assert world.publish(max_bytes=bare - 1) == {"status": "over_size_cap"}
     assert builds == [(False, False), (True, False), (False, True)] and world.delivered == []
+    assert _manifest(job)["size_over"] == list(sim.SIZE_STEPS)
 
 
-def test_a_splat_look_the_ply_cannot_hold_ships_without_one_and_says_why_in_the_manifest(tmp_path):
-    sheared = [[1.0, 0.0, 0.0, 0.0], [0.4, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
-    job = _splat_job(tmp_path, transform=sheared)
+def test_a_pass_out_of_time_leaves_the_next_where_it_stopped(tmp_path, monkeypatch):
+    """Review, 2026-11-18: three builds inside one deadline could miss it on every pass. The steps found over the
+    limit are recorded, and the next try of the revision starts after them."""
+    job = _splat_job(tmp_path)
+    _whole, _usd_only, bare = _look_sizes(job, tmp_path / "sizes")
+    builds = _counting(monkeypatch, timeout_on=(True, False))
+    world = World(job)
+    assert world.publish(max_bytes=bare) == {"status": "build_timed_out"}
+    assert builds == [(False, False), (True, False)] and _manifest(job)["size_over"] == ["whole"]
+    builds = _counting(monkeypatch, timeout_on=(False, True))
+    later = sim.permission.LIVE_STATEMENT_RECHECK_SECONDS + 1
+    result = sim.publish_company_simulation(job.capture, now=lambda: NOW + later, check_rights=world.check_rights,
+                                            archive=world.archive, retract=world.retract, deliver=world.deliver,
+                                            queue_root=job.queue, max_bytes=bare)
+    assert result == {"status": "build_timed_out"} and builds == [(True, False), (False, True)]
+    assert _manifest(job)["size_over"] == ["whole", "without_ply"]
+    builds = _counting(monkeypatch)
+    result = sim.publish_company_simulation(job.capture, now=lambda: NOW + 2 * later, check_rights=world.check_rights,
+                                            archive=world.archive, retract=world.retract, deliver=world.deliver,
+                                            queue_root=job.queue, max_bytes=bare)
+    assert result["status"] == "published" and builds == [(False, True)]
+    assert _manifest(job)["package"]["look_left_out"] is True
+
+
+# --- the package out stays readable through a rebuild ----------------------------------------------------------------
+
+def _new_revision(job: Job) -> None:
+    job.criteria["settling"]["position_tolerance_m"] = 0.02
+    job.seal()
+
+
+def test_a_rebuild_keeps_the_delivered_package_readable_until_the_website_takes_the_new_one(job, monkeypatch):
+    """Review, 2026-11-18: the package out was taken back before each rebuild, so downloads failed for the build's
+    length. The new zip is built beside it; the website is moved by its delivery, and only then is the old retired."""
     world = World(job)
     assert world.publish()["status"] == "published"
-    assert "scene/room.ply" not in world.delivered[0]["files"] and "scene/room.usdc" in world.delivered[0]["files"]
-    assert _manifest(job)["package"]["look_ply_not_written"] == {"Room": "particlefield_transform_not_similarity"}
+    old = _manifest(job)["archive"]
+    _new_revision(job)
+    seen = []
+    real = sim._build_once
+    monkeypatch.setattr(sim, "_build_once", lambda *a, **k: seen.append(
+        _read_route(job, world, now=NOW + 1, digest=old["digest"])) or real(*a, **k))
+    delivered = []
+    original = world.deliver
+
+    def deliver(record, *, identity):
+        delivered.append(_read_route(job, world, now=NOW + 1, digest=old["digest"]))
+        original(record, identity=identity)
+    world.deliver = deliver
+    assert world.publish()["status"] == "published"
+    assert seen and all(isinstance(size, int) for size in seen)  # read through the build
+    assert isinstance(delivered[0], int)  # and up to the website's taking the new one
+    manifest = _manifest(job)
+    assert manifest["archive"]["digest"] != old["digest"] and world.retracted == [old["uri"]]
+    assert _read_route(job, world, now=NOW + 1, digest=old["digest"]) == "unavailable"
+    assert isinstance(_read_route(job, world, now=NOW + 1), int)
 
 
-def test_a_look_that_is_not_a_splat_ships_no_ply_and_records_nothing(job):
+def test_a_failed_delivery_of_the_new_package_keeps_the_old_one_read_until_the_next_pass_delivers(job):
     world = World(job)
     assert world.publish()["status"] == "published"
-    assert not any(name.endswith(".ply") for name in world.delivered[0]["files"])
-    assert "look_ply_not_written" not in _manifest(job)["package"]
+    old = _manifest(job)["archive"]
+    _new_revision(job)
+    world.delivery_error = RuntimeError("website unreachable")
+    assert world.publish()["status"] == "failed"
+    assert world.retracted == [] and isinstance(_read_route(job, world, now=NOW + 1, digest=old["digest"]), int)
+    world.delivery_error = None
+    assert world.publish()["status"] == "published" and world.retracted == [old["uri"]]
+    assert _read_route(job, world, now=NOW + 1, digest=old["digest"]) == "unavailable"
+
+
+def test_a_withdrawal_during_a_rebuild_takes_back_both_copies(job, monkeypatch):
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    old = _manifest(job)["archive"]
+    _new_revision(job)
+    real = sim._build_once
+    monkeypatch.setattr(sim, "_build_once", lambda *a, **k: _withdraw(job.capture) or real(*a, **k))
+    assert world.publish()["status"] == "withdrawn"
+    assert old["uri"] in world.retracted and world.objects == {}
+
+
+def test_a_new_package_the_website_never_took_is_taken_back_when_a_newer_one_is_built(job):
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    first = _manifest(job)["archive"]
+    _new_revision(job)
+    world.delivery_error = RuntimeError("website unreachable")
+    assert world.publish()["status"] == "failed"
+    second = _manifest(job)["archive"]
+    job.criteria["settling"]["position_tolerance_m"] = 0.03
+    job.seal()
+    world.delivery_error = None
+    assert world.publish()["status"] == "published"
+    # The second was never the website's: taken back at once; the first, the website's, after the third's delivery.
+    assert world.retracted == [second["uri"], first["uri"]]

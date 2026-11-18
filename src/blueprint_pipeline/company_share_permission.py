@@ -92,15 +92,43 @@ def hidden(archive: Mapping[str, Any]) -> bool:
     return archive.get("retracted") is True or archive.get("retraction") == "pending"
 
 
-def take_back(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
-    """Record the retraction before deleting, so a failed deletion is retried, never forgotten."""
-    from .website_scene_preview import _finish_retraction
-    archive = manifest.get("archive")
+#: The package a company may still be reading while its replacement is delivered (``website_company_simulation``):
+#: kept beside ``archive`` until the website takes the new one, then retired; taken back with ``archive`` always.
+SUPERSEDED = "superseded_archive"
+
+
+def retire(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None], key: str = SUPERSEDED) -> bool:
+    """Take back the one archived copy under ``key``, recording the retraction before deleting; True once none is left."""
+    from .website_scene_preview import _reason
+    archive = manifest.get(key)
     if not isinstance(archive, Mapping) or not isinstance(archive.get("uri"), str) or archive.get("retracted"):
         return True
+    manifest[key] = {**archive, "retraction": "pending"}
+    write_json(manifest_path, manifest)
+    try:
+        retract(archive["uri"])
+    except Exception as error:  # noqa: BLE001 - storage errors retry on the next pass
+        manifest[key] = {**manifest[key], "retraction_error": _reason(error),
+                         "retraction_attempts": int(archive.get("retraction_attempts") or 0) + 1}
+        write_json(manifest_path, manifest)
+        return False
+    manifest[key] = {**{name: value for name, value in archive.items()
+                        if name not in {"retraction", "retraction_error"}}, "retracted": True}
+    write_json(manifest_path, manifest)
+    return True
+
+
+def take_back(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
+    """Record the retraction before deleting, so a failed deletion is retried, never forgotten. A superseded copy a
+    company could still read (``SUPERSEDED``) goes with it."""
+    from .website_scene_preview import _finish_retraction
+    superseded = retire(manifest, manifest_path, retract)
+    archive = manifest.get("archive")
+    if not isinstance(archive, Mapping) or not isinstance(archive.get("uri"), str) or archive.get("retracted"):
+        return superseded
     manifest["archive"] = {**archive, "retraction": "pending"}
     write_json(manifest_path, manifest)
-    return _finish_retraction(manifest, manifest_path, retract)
+    return _finish_retraction(manifest, manifest_path, retract) and superseded
 
 
 def retract_object(uri: str) -> None:
@@ -109,8 +137,8 @@ def retract_object(uri: str) -> None:
     _retract(uri)
 
 
-def retraction_pending(manifest: Mapping[str, Any]) -> bool:
-    archive = manifest.get("archive")
+def retraction_pending(manifest: Mapping[str, Any], key: str = "archive") -> bool:
+    archive = manifest.get(key)
     return isinstance(archive, Mapping) and archive.get("retraction") == "pending" and isinstance(archive.get("uri"), str)
 
 
