@@ -115,6 +115,30 @@ def last_money_recheck(error: BaseException, now: float, window_ends_at_epoch: f
             and window_ends_at_epoch - now <= 2 * MONEY_RECHECK_SECONDS)
 
 
+class LaterTurnFailed(Exception):
+    """Raised by a multi-turn ``invoke`` (a repair turn after the first answer) when a turn fails after an earlier
+    turn of the same dispatch was answered: the provider did work for this dispatch, so it is never read as
+    refused, whatever the later turn's status; it is counted as spent and the next send takes a new reservation.
+    It chains the turn's own error and keeps its text, so a credits-depleted answer still waits on money and the
+    retry lane reads the failure as before."""
+
+    def __init__(self, error: BaseException):
+        super().__init__(str(error))
+        self.__cause__ = error
+
+
+def answered_before(exc: BaseException) -> bool:
+    """Whether ``LaterTurnFailed`` marks ``exc`` or one of its causes: it wins over the status found below it."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(seen) < 16:
+        seen.add(id(current))
+        if isinstance(current, LaterTurnFailed):
+            return True
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return False
+
+
 def credit_depleted(exc: BaseException) -> bool:
     """Whether Gemini answered 402 with its own reason that the prepaid credits are depleted (the client's
     ``code``, ``status`` and ``message``, or the same in its ``details``), on the error or one of its causes."""
@@ -212,7 +236,8 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
     is reused as it stands. A dispatch with no recorded answer is counted as spent and sent
     again under one new reservation, at most twice (``_dispatch_chain``); a 429 or 503 answer, Gemini's
     credits-depleted 402 (raised as ``CreditDepleted``, a money wait), or a run stopped before its
-    dispatch, reuses its own reservation. An earlier form's
+    dispatch, reuses its own reservation, unless an earlier turn of the same dispatch was answered
+    (``LaterTurnFailed``, raised by a multi-turn ``invoke``): then it is counted as spent. An earlier form's
     unanswered dispatch is counted the same way and this form is bought under its own
     reservation. ``accept_earlier(earlier_binding, result)``, when given, says which earlier answer still stands; one it
     refuses is kept as it is and this form is bought once. The existing WebApp transaction is the
@@ -277,7 +302,9 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
             result = invoke()
         except Exception as exc:
             status, depleted = _http_status(exc), credit_depleted(exc)
-            if status in NO_WORK_STATUSES or depleted:
+            # Refused before any work only when no turn of this dispatch was answered (``LaterTurnFailed``):
+            # otherwise it keeps no answer, is counted as spent, and the next send takes a new reservation.
+            if (status in NO_WORK_STATUSES or depleted) and not answered_before(exc):
                 _fsynced(path, {"status": "refused", "http_status": status,
                                 **({"reason": CREDIT_DEPLETED} if depleted else {}), "request_digest": dispatch,
                                 "request": request, "admission": admission, **marks})

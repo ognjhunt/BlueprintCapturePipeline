@@ -872,6 +872,7 @@ def _invoke_agentic_video(
     with audio_free_upload_copy(video_path) as (upload_path, audio_removal):
         handoff_lease_checkpoint("gemini_video_upload")
         uploaded = client.files.upload(file=str(upload_path), config={"mime_type": mime_type})
+    response = None
     try:
         deadline = time.monotonic() + 60
         while getattr(getattr(uploaded, "state", None), "name", "") == "PROCESSING":
@@ -893,7 +894,14 @@ def _invoke_agentic_video(
             timeout=300.0,
         )
     finally:
-        client.files.delete(name=uploaded.name)
+        try:
+            client.files.delete(name=uploaded.name)
+        except Exception as exc:
+            if response is None or isinstance(exc, HandoffLeaseError):
+                raise
+            # The analysis was answered (and billed) before the clean-up failed: never read as refused.
+            from .website_gemini_receipts import LaterTurnFailed
+            raise LaterTurnFailed(exc) from exc
     if getattr(response, "status", None) != "completed":
         raise ValueError("gemini_clean_plate_analysis_incomplete")
     steps = getattr(response, "steps", None) or []
@@ -1043,7 +1051,9 @@ def _analyze_removal_targets(
         raise
     except Exception as exc:  # pragma: no cover - live provider behavior
         if raise_provider_errors:
-            raise _provider_failure(exc) from exc
+            from .website_gemini_receipts import LaterTurnFailed
+            # Named for the provider's own error; a clean-up after the answer stays marked through ``exc``.
+            raise _provider_failure(exc.__cause__ if isinstance(exc, LaterTurnFailed) else exc) from exc
         return empty_removal_plan(
             status="blocked",
             model=model_name,
@@ -1077,7 +1087,9 @@ def _analyze_removal_targets(
             raise
         except Exception as provider_exc:  # pragma: no cover - live provider behavior
             if raise_provider_errors:
-                raise _provider_failure(provider_exc) from provider_exc
+                # The analysis turn was answered (and billed): the dispatch is never read as refused.
+                from .website_gemini_receipts import LaterTurnFailed
+                raise _provider_failure(provider_exc) from LaterTurnFailed(provider_exc)
             return empty_removal_plan(status="blocked", model=model_name, processing=processing_mode,
                                       blockers=[str(exc), _provider_error_blocker(provider_exc)],
                                       video_path=resolved_video, video_digest=video_digest)

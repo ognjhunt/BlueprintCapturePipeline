@@ -31,7 +31,7 @@ import numpy as np
 from PIL import Image
 
 from .common import write_json
-from .core.handoff_lease import handoff_lease_checkpoint
+from .core.handoff_lease import HandoffLeaseError, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _probe_video, _sha256_file
 from .website_task_masks import decode_track_mask
@@ -466,6 +466,12 @@ def _json_answer(text: str, repair: Callable[[str], str]) -> tuple[Any, dict[str
         return json.loads(repair(error)), {**record, "repaired": True}
     except ValueError as again:
         return None, {**record, "repaired": False, "repair_error": str(again)[:200]}
+    except HandoffLeaseError:
+        raise
+    except Exception as exc:
+        # The first turn was answered (and billed): the dispatch is never read as refused.
+        from .website_gemini_receipts import LaterTurnFailed
+        raise LaterTurnFailed(exc) from exc
 
 
 def _json_repair_prompt(text: str, error: str) -> str:
