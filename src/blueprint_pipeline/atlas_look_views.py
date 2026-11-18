@@ -80,8 +80,7 @@ def _usable(row) -> bool:
             and all(isinstance(key, str) for key in row["seen_by"]))
 
 
-def load_weak_regions(capture_root) -> list[dict] | None:
-    """The map's usable regions; None when there is no map or it does not read as ``atlas_weak_regions.v1``."""
+def _weak_region_map(capture_root) -> dict | None:
     path = Path(capture_root) / WEAK_REGIONS_RELATIVE
     if path.is_symlink() or not path.is_file():
         return None
@@ -92,7 +91,13 @@ def load_weak_regions(capture_root) -> list[dict] | None:
     if (not isinstance(value, dict) or WEAK_REGIONS_SCHEMA not in (value.get("schema_version"), value.get("schema"))
             or not isinstance(value.get("regions"), list)):
         return None
-    return [row for row in value["regions"] if _usable(row)]
+    return value
+
+
+def load_weak_regions(capture_root) -> list[dict] | None:
+    """The map's usable regions; None when there is no map or it does not read as ``atlas_weak_regions.v1``."""
+    value = _weak_region_map(capture_root)
+    return None if value is None else [row for row in value["regions"] if _usable(row)]
 
 
 # --- cameras -----------------------------------------------------------------------------------------------------
@@ -358,6 +363,12 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
             return dict(NONE)
         root.mkdir(parents=True, exist_ok=True)
         regions_digest = _sha256_file(capture_root / WEAK_REGIONS_RELATIVE)
+        named = (_weak_region_map(capture_root) or {}).get("pose_result_digest")
+        if named is not None and named != pose["digest"]:
+            # A map of another pose's world: its centroids are not in these cameras' frame.
+            record = _record(root, None, status="weak_regions_pose_mismatch", regions_digest=regions_digest,
+                             pose=pose, skipped=[], weak_regions_pose_result_digest=named)
+            return {"views": [], "record": record}
         targets, skipped = orbit_cameras(regions, frames)
     if sealed is not None and sealed.get("pose_result_digest") != pose["digest"]:
         record = _record(root, sealed, status="plan_changed", regions_digest=regions_digest, pose=pose,

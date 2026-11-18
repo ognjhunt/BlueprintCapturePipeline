@@ -31,10 +31,10 @@ def region(region_id="table", **changes):
             "orbit_deg": [15, 30], **changes}
 
 
-def write_map(capture, regions):
+def write_map(capture, regions, **fields):
     path = capture / look.WEAK_REGIONS_RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"schema_version": look.WEAK_REGIONS_SCHEMA, "regions": regions}))
+    path.write_text(json.dumps({"schema_version": look.WEAK_REGIONS_SCHEMA, "regions": regions, **fields}))
     return path
 
 
@@ -249,6 +249,12 @@ def test_money_the_allowance_and_walls_decide_before_anything_is_bought(job, mon
     write_map(third.parent.parent, [region()])
     value = run(third, failed)
     assert value["views"] == [] and value["record"]["batches"][0]["status"] == "failed"
+    elsewhere = job.parent.parent.parent / "fifth/pipeline/atlas"
+    write_map(elsewhere.parent.parent, [region()], pose_result_digest="sha256:" + "b" * 64)
+    assert run(elsewhere, atlas)["record"]["status"] == "weak_regions_pose_mismatch" and atlas.calls == []
+    same = job.parent.parent.parent / "sixth/pipeline/atlas"
+    write_map(same.parent.parent, [region()], pose_result_digest=POSE["digest"])
+    assert run(same, Atlas())["record"]["status"] == "checked"
     unpriced = job.parent.parent.parent / "fourth/pipeline/atlas"
     write_map(unpriced.parent.parent, [region()])
     policy = {key: v for key, v in POLICY.items() if key != "rgbd_view_cost_usd"}
