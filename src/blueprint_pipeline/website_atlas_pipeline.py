@@ -582,6 +582,34 @@ def _job_window_end(output_root: Path, task_context) -> float | None:
     return None
 
 
+#: The Atlas job files whose ``enqueued_at_epoch`` starts the job's own life: a website preview, an owned upload
+#: (``owned_capture_atlas_control.JOB_FILE``). Both end at ``MAXIMUM_JOB_SECONDS`` after it.
+_ATLAS_JOB_FILES = ("preview_job.json", "owned_job.json")
+
+
+def _job_deadline(output_root: Path, task_context) -> float | None:
+    """The latest this job can finish: its window's end, never later than its Atlas job's own life.
+
+    The worker ends an Atlas job ``MAXIMUM_JOB_SECONDS`` after enqueue (``atlas_preview_expired``) whatever
+    its window, and a window can end later (a grant issued after enqueue, renewed or extended). Either alone
+    when only one can be read; None when neither can.
+    """
+    from .website_atlas_preview_store import MAXIMUM_JOB_SECONDS
+    ends = [_job_window_end(output_root, task_context)]
+    for name in _ATLAS_JOB_FILES:
+        path = Path(output_root) / name
+        if path.is_file() and not path.is_symlink():
+            try:
+                enqueued = json.loads(path.read_text()).get("enqueued_at_epoch")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(enqueued, (int, float)) and not isinstance(enqueued, bool):
+                ends.append(float(enqueued) + MAXIMUM_JOB_SECONDS)
+                break
+    ends = [end for end in ends if end is not None]
+    return min(ends) if ends else None
+
+
 def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_context, source_digest,
                           configuration, check, experimental, max_polls,
                           review=None, source_root=None, rebuild=False):
@@ -672,7 +700,7 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
             remaining_cost_usd=lambda: _current_configuration(task_context, source_digest, configuration).get(
                 "remaining_cost_usd"),
             needed_usd=splat_cost(policy) + float(policy.get("mesh_export_cost_usd", 0)),
-            window_end=lambda: _job_window_end(output_root, task_context))
+            deadline=lambda: _job_deadline(output_root, task_context))
         if native["status"] == DRAFT_FINAL:
             return {"status": "completed", "basis": DRAFT_APPEARANCE,
                     "fallback_reason": "atlas_refined_splat_provider_failed", "refined_splat_retry": native["retry"]}
