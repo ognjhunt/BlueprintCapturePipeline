@@ -164,7 +164,9 @@ def test_synthetic_subject_profile_ignores_its_supports_mechanism(tmp_path, monk
         assert gap["inferred_profile_id"] == "rigid_pick_place"
         assert holds_native_task_preparation(retained_hold(context, gap), context)
     else:
-        assert result["blockers"] == ["coverage_pending"] and calls == ["coverage"]
+        # The coverage step was reached; a step still pending keeps the job waiting (``keeps_holding``).
+        assert result["status"] == "awaiting_inputs" and result["blockers"] == ["coverage_pending"]
+        assert calls == ["coverage"] and packaged == []
         assert "native_task_preparation_gap" not in result
     assert "runtime_inputs" not in result
 
@@ -361,7 +363,9 @@ def test_a_ready_atlas_job_is_the_scene_and_its_pose_the_geometry_without_marble
     monkeypatch.setattr(handoff, "compile_website_scene_preparation",
                         lambda **value: seen.update(compile=value) or (_ for _ in ()).throw(ValueError("stop")))
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert result["blockers"] == ["stop"] and result["geometry_backend"] == "world_labs_atlas"
+    # An untyped "stop" is read as Blueprint's defect: the job waits under its code (``blocker_code``).
+    assert result["blockers"] == [handoff.DEFECT + ":ValueError"] and result["defect"] == "ValueError: stop"
+    assert result["geometry_backend"] == "world_labs_atlas"
     assert seen["bind"] == {"task_masks": masks, "source_geometry": ready["source_geometry"]}
     assert seen["compile"]["base_scene"] == ready["base_scene"]
     assert seen["compile"]["source_geometry"] == ready["source_geometry"] and seen["compile"]["task_masks"] == bound
@@ -1101,28 +1105,92 @@ def test_job4_s_object_resting_within_the_window_still_builds_as_before(tmp_path
     assert not [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR]
 
 
+CONTEXT = {"context_digest": "sha256:" + "a" * 64}
+
+
 @pytest.mark.parametrize("blockers, development, expected", [
-    (["support_surface_not_found_under_subject"], False, True),
-    (["website_synthetic_subject_start_unplaceable"], False, True),
+    # Facts about the job's own scene or wording, as compile finds them, ship at once: one per hold it had.
+    *[([code], False, True) for code in sorted(__import__(
+        "blueprint_pipeline.website_task_preparation", fromlist=["SCENE_FACT_BLOCKERS"]).SCENE_FACT_BLOCKERS)],
     (["support_surface_not_found_under_subject", "website_assembly_whole_object_coverage_required"], False, True),
+    (["website_assembly_reference_parts_uncovered:drawer-1"], False, True),  # a coverage blocker names its target
     # Any code that reads as privacy, rights or money keeps the preparation: the authoring admissions.
     *[(["support_surface_not_found_under_subject", code], False, False) for code in ADMISSIONS],
     # A development test places the object on its own authored surface.
     (["support_surface_not_found_under_subject"], True, False),
-    # Other codes are not this cause: they are kept as before.
-    (["task_destination_surface_contact_required"], False, False),
-    (["website_owner_success_criteria_translation_required"], False, False),
+    # The job's own request is not a valid one, or its inputs are not ready or unsafe: kept.
+    (["scene_intake_owner_invalid"], False, False), (["website_scene_preparation_pending"], False, False),
+    (["website_subject_origin_conflict"], False, False),
+    # A stop only a new video clears keeps its own hold.
+    (["website_registration_poor_fit"], False, False),
+    # A dollar budget reads as money and holds.
+    (["website_native_construction_budget_exceeds_authority"], False, False),
+    (["website_scene_preparation_budget_exhausted"], False, False),
 ])
-def test_only_an_object_with_no_surface_to_start_on_and_no_wall_ships_the_room(monkeypatch, blockers, development,
-                                                                               expected):
+def test_one_rule_ships_every_blocker_that_is_no_wall(monkeypatch, blockers, development, expected):
     monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: development)
-    assert handoff.start_unsupported(blockers, {"context_digest": "sha256:" + "a" * 64}) is expected
+    assert handoff.goes_on(blockers, task_context=CONTEXT, now=0.0) is expected
+
+
+@pytest.mark.parametrize("code", [
+    # Anything that is no fact about the job's scene waits for the window's end, an unknown code included.
+    "website_some_code_nobody_classified", "authoring_frames_coverage_missing:front_view",
+    "website_assembly_builder_refused:the hinge axis is degenerate", "authoring_frames_token_budget_exceeded",
+    "authoring_frame_bytes_exceed_budget:decoded-000000003.png", "website_assembly_front_plane_degenerate",
+    "website_registration_scale_conflicts_declared", "website_assembly_coverage_key_missing",
+    "website_task_grounding_key_missing", "website_sam31_profile_missing",
+    # A published size that refutes our own size estimate is our estimate's fault, so it waits too.
+    "website_object_spec_dimension_conflict"])
+def test_every_other_blocker_waits_for_the_window_end_then_ships(monkeypatch, code):
+    """A request-size "budget" is not money, so it waits rather than holds; a configuration fault waits too."""
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    for window, ships in ((None, False), (3 * 86400.0, False), (2 * 3600.0, True), (60.0, True)):
+        assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, window_end=lambda window=window: window) is ships
+
+
+@pytest.mark.parametrize("code", [
+    "website_control_preparation-spend_http_409:website_scene_sponsorship_binding_invalid",
+    "website_control_task-context_http_409:website_task_context_changed",
+    "website_control_preparation-spend_http_409:website_registration_poor_fit"])
+def test_a_holding_code_after_the_website_s_operation_still_holds(monkeypatch, code):
+    """A site that edits its job mid-run: the website's refusal carries the holding code after its operation."""
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=ValueError(code),
+                           window_end=lambda: 0.0) is False
+
+
+@pytest.mark.parametrize("code", ["website_assembly_coverage_key_missing", "website_task_grounding_key_missing",
+                                  "website_sam31_profile_missing"])
+def test_a_missing_key_or_profile_pages_the_owner(code):
+    from blueprint_pipeline import preparation_fault_alert as fault
+    assert fault._fault({"status": "failed_retryable", "last_error": f"website_scene_preparation: {code}"}) == code
 
 
 def test_an_unreadable_development_allowlist_keeps_the_preparation(monkeypatch):
     monkeypatch.setenv("BLUEPRINT_WEBSITE_DEVELOPMENT_TEST_TASK_DIGESTS", "not json")
-    assert handoff.start_unsupported(["support_surface_not_found_under_subject"],
-                                     {"context_digest": "sha256:" + "a" * 64}) is False
+    assert handoff.goes_on(["support_surface_not_found_under_subject"], task_context=CONTEXT, now=0.0) is False
+
+
+@pytest.mark.parametrize("error, transient", [
+    (TimeoutError("timed out"), True), (ValueError("website_control_preparation-spend_http_503:unavailable"), True),
+    (ValueError("website_gemini_request_in_progress"), True), (OSError(28, "No space left on device"), True),
+    # Blueprint's defects wait like an outage: a release may fix them, and the room package is final.
+    (KeyError("frames"), True), (TypeError("'NoneType' object is not subscriptable"), True),
+    (ValueError("operands could not be broadcast together"), True), (FileNotFoundError(2, "No such file"), True),
+    # So do a step's typed refusal and a website refusal; only the end of a provider's bound ships at once.
+    (ValueError("website_assembly_front_plane_degenerate"), True),
+    (ValueError("website_control_task-context_http_422:website_task_context_unreadable"), True),
+    (ValueError("website_gemini_unanswered_dispatches_exhausted"), False)])
+def test_a_raised_failure_retried_until_the_deadline_waits_for_the_window_end_and_a_refusal_ships_at_once(
+        monkeypatch, error, transient):
+    from blueprint_pipeline.hard_stops import MoneyStop, PrivacyRightsStop
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    code = str(error)
+    for window, ships in ((None, not transient), (3 * 3600.0, not transient), (2 * 3600.0, True), (60.0, True)):
+        assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=error,
+                               window_end=lambda window=window: window) is ships
+    for wall in (MoneyStop(code), PrivacyRightsStop(code)):  # a wall waits whatever the window
+        assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=wall, window_end=lambda: 0.0) is False
 
 
 @pytest.mark.parametrize("code", ["website_gemini_unanswered_dispatches_exhausted",
@@ -1159,7 +1227,8 @@ def test_the_room_package_of_an_object_with_no_surface_to_start_on_says_so(tmp_p
     the room as reconstructed, no rule, that the object was not placed and why, and that it was taken out."""
     from blueprint_pipeline import website_company_simulation as sim
     from tests.test_website_scene_handoff_navigation import _published, _record, _said, room_job
-    assert sim.OBJECT_NOT_PLACED_FLAGS == handoff.START_UNSUPPORTED
+    assert sim.OBJECT_NOT_PLACED_FLAGS == {"support_surface_not_found_under_subject",
+                                           "website_synthetic_subject_start_unplaceable"}
     monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
                         lambda **_: {"status": "ready"})
     for name in ("website_assembly_coverage.attach_assembly_coverage",
@@ -1175,3 +1244,279 @@ def test_the_room_package_of_an_object_with_no_surface_to_start_on_says_so(tmp_p
     _status, members = _published(job)
     assert _said(members["README.txt"]).endswith(f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.OBJECT_NOT_PLACED} "
                                                  f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+
+
+# --- Owner, 2026-11-17: accept every job; one rule at the handoff (``goes_on``) ----------------------------------
+
+def test_a_compile_blocker_ships_the_room_package_at_once_and_names_the_piece(tmp_path, monkeypatch, ready_atlas):
+    """``website_task_preparation``: a destination compile cannot find ships the room package now, flagged, with
+    the piece it leaves out recorded; nothing is bound, registered or chosen."""
+    kwargs, asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop=False)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", lambda **kw: compiled.append(kw) or {
+        "status": "needs_input", "blockers": ["task_destination_surface_contact_required"]})
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
+                        lambda *_, **__: pytest.fail("bound"))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written" and result["blockers"] == []
+    assert packaged[-1]["flags"] == ["task_destination_surface_contact_required"]
+    assert packaged[-1]["not_prepared"] == [{"piece": "destination", "code": "task_destination_surface_contact_required"}]
+
+
+def test_a_raised_refusal_ships_at_once_and_a_transient_failure_waits_for_the_window_end(
+        tmp_path, monkeypatch, ready_atlas):
+    """``website_scene_handoff``: a step's refusal (no wall) ships the room package now; a timeout waits, retried,
+    until the job's window, read when it fails, ends within two hours, then ships the same; a wall waits."""
+    from blueprint_pipeline.hard_stops import MoneyStop
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    packaged = room_recorder(monkeypatch)
+
+    def failing(error):
+        monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                            lambda **_: (_ for _ in ()).throw(error))
+        return handoff.prepare_website_scene_handoff(**kwargs)
+    result = failing(ValueError("website_gemini_unanswered_dispatches_exhausted"))
+    assert result["status"] == "room_package_written"
+    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": "website_gemini_unanswered_dispatches_exhausted"}]
+    shipped = len(packaged)
+    assert failing(TimeoutError("timed out"))["status"] == "awaiting_inputs"  # no grant: no window to read
+    _granted(tmp_path, kwargs, ends_in=3 * 86400)
+    assert failing(TimeoutError("timed out"))["status"] == "awaiting_inputs"
+    _granted(tmp_path, kwargs, ends_in=3600)
+    assert failing(TimeoutError("timed out"))["status"] == "room_package_written"
+    assert len(packaged) == shipped + 1 and packaged[-1]["flags"] == ["timed out"]
+    result = failing(MoneyStop("website_scene_preparation_budget_exhausted"))
+    assert result["status"] == "awaiting_inputs" and len(packaged) == shipped + 1
+
+
+def test_a_development_test_still_takes_its_own_path(tmp_path, monkeypatch, ready_atlas):
+    _sunk_into_its_table(monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: True)
+    kwargs, _asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop=False)
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
+                        lambda *_, **__: (_ for _ in ()).throw(_Compiled()))  # past the room package: its own path
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert compiled[0]["blockers"] == ["support_surface_not_found_under_subject"] and packaged == []
+
+
+def test_a_room_record_of_a_job_with_nothing_left_out_is_unchanged(tmp_path, monkeypatch):
+    """Jobs that prepare: a room record with nothing left out carries no new field, so its bytes and digest are
+    main's (checked against main on 2026-11-18: this navigation job's handoff and record, and an intake-ready
+    job's floor, byte for byte)."""
+    from tests.test_website_scene_handoff_navigation import _record, room_job
+    _job, _context, result = room_job(tmp_path, monkeypatch)
+    assert "not_prepared" not in _record(result)
+
+
+def test_the_room_package_names_each_piece_it_could_not_prepare(tmp_path, monkeypatch):
+    """The README's one sentence per piece left out, with its codes and no reason of its own."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from tests.test_website_scene_handoff_navigation import _published, _said, room_job
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    for name in ("website_assembly_coverage.attach_assembly_coverage",
+                 "website_object_spec_research.attach_object_specs"):
+        monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: kw["task_masks"])
+    codes = ["task_destination_surface_contact_required", "website_owner_success_criteria_translation_required"]
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **_: {"status": "needs_input", "blockers": codes})
+    lamp = {"target_id": "cup-1", "task_effect": "manipulated", "semantic_label": "table lamp"}
+    job, _context, result = room_job(tmp_path, monkeypatch, family="rigid_pick_place", removal=[lamp],
+                                     all_targets=True, description="Move the lamp to the shelf")
+    assert result["status"] == "room_package_written"
+    _status, members = _published(job)
+    assert _said(members["README.txt"]).endswith(
+        f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} "
+        "Blueprint could not prepare the job's destination (task_destination_surface_contact_required). "
+        "Blueprint could not prepare the job's success rule (website_owner_success_criteria_translation_required). "
+        f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+
+
+def test_a_defect_waits_named_and_paged_and_ships_only_at_the_window_end(tmp_path, monkeypatch, ready_atlas):
+    """A KeyError in a preparation step is Blueprint's bug: the job waits under ``website_preparation_defect:KeyError``
+    (which pages the owner) with the message kept, so a fix release can still find it; only when the job's window
+    ends within two hours does the room package ship, the code named on its record."""
+    from blueprint_pipeline import preparation_fault_alert as fault
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    packaged = room_recorder(monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: {}["frames"])
+    code = "website_preparation_defect:KeyError"
+    stopped = {"status": "failed_retryable", "last_error": f"website_scene_preparation: {code}"}
+    assert fault._fault(stopped) == handoff.DEFECT  # the owner is paged, as for our own records
+    for ends_in in (None, 3 * 86400):
+        if ends_in is not None:
+            _granted(tmp_path, kwargs, ends_in=ends_in)
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "awaiting_inputs" and result["blockers"] == [code]
+        assert result["defect"] == "KeyError: 'frames'" and packaged == []
+    _granted(tmp_path, kwargs, ends_in=3600)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written"
+    assert packaged[-1]["flags"] == [code]  # the type stays on the record's flags, for whoever fixes it
+    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": handoff.DEFECT}]  # the README: code only
+
+
+def test_a_waiting_preparation_runs_once_more_in_the_last_two_hours_of_its_window(tmp_path):
+    """Retry lane: whatever its schedule (spent timed retries included), a waiting preparation runs once when its
+    window, read live, ends within two hours, so the handoff can ship the room package before the window ends."""
+    from datetime import datetime, timedelta, timezone
+    from blueprint_pipeline.website_preparation_retry import LAST_CALL_SECONDS, last_call_due
+    kwargs = inputs(tmp_path)
+    now = datetime.fromtimestamp(kwargs["now"], timezone.utc)
+    ledger = {"scene_id": kwargs["descriptor"]["scene_id"], "capture_id": kwargs["descriptor"]["capture_id"],
+              "last_attempt_started_at": (now - timedelta(hours=5)).isoformat()}
+    assert LAST_CALL_SECONDS == handoff.LAST_CALL_SECONDS
+    assert last_call_due(tmp_path, ledger, now) is False  # no grant: no window to read
+    _granted(tmp_path, kwargs, ends_in=3 * 3600)
+    assert last_call_due(tmp_path, ledger, now) is False  # not yet
+    _granted(tmp_path, kwargs, ends_in=3600)
+    assert last_call_due(tmp_path, ledger, now) is True
+    ran = {**ledger, "last_attempt_started_at": (now - timedelta(minutes=10)).isoformat()}
+    assert last_call_due(tmp_path, ran, now) is False  # once: it already ran in that stretch
+    _granted(tmp_path, kwargs, ends_in=-60)
+    assert last_call_due(tmp_path, ledger, now) is False  # the window has ended
+
+
+# --- Review 2026-11-18: never after the prepared scene is sent; our own faults wait; held codes by definition ------
+
+def _to_the_outbox(tmp_path, monkeypatch, enqueue):
+    """An intake-ready rigid job through the real compile to the prepared-scene write, which ``enqueue`` answers.
+    Returns the handoff's arguments and the room packages written."""
+    kwargs, _asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop=False)
+    kwargs["descriptor"]["metadata"]["website_scene_execution_authority"] = {
+        "schema_version": "website_scene_sponsorship.v1", "max_total_spend_usd": 20, "max_paid_attempts": 2,
+        "expires_at_epoch": kwargs["now"] + 3600}
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation", lambda value, **_: value)
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    monkeypatch.setattr(handoff, "prepare_rigid_native_inputs", lambda **_: True)
+    monkeypatch.setattr("blueprint_pipeline.website_scene_dispatch.binding_root", lambda: tmp_path / "bindings")
+    monkeypatch.setattr("blueprint_pipeline.website_scene_dispatch.register_website_preparation",
+                        lambda **_: {"status": "registered"})
+    monkeypatch.setattr("blueprint_pipeline.website_task_context.enqueue_website_prepared_scene", enqueue)
+    return kwargs, compiled, packaged
+
+
+@pytest.mark.parametrize("error", [ValueError("website_scene_outbox_receipt_invalid"),
+                                   ValueError("website_control_prepared-scene_http_409:idempotency_conflict"),
+                                   TimeoutError("timed out after the website committed")])
+def test_a_failed_prepared_scene_write_never_ships_the_room_package(tmp_path, monkeypatch, ready_atlas, error):
+    """The prepared-scene write creates an outbox entry forwarded into paid preparation: once it is sent (a refusal,
+    a conflict on a rerun, or a timeout after the website committed), the job keeps waiting as before, even at the
+    window's end; and a later run that fails earlier never ships the room package either."""
+    kwargs, compiled, packaged = _to_the_outbox(tmp_path, monkeypatch, lambda **_: (_ for _ in ()).throw(error))
+    _granted(tmp_path, kwargs, ends_in=60)  # the window's end: an outage would ship now
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert compiled[0]["status"] == "intake_ready" and result["status"] == "intake_ready"
+    assert result["runtime_inputs"] == {"status": "awaiting_inputs", "blockers": [str(error)]}
+    assert result["source_registration"] == {"status": "registered"}  # it got as far as the write
+    assert [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR] == []
+    assert handoff.prepared_scene_may_exist(tmp_path)
+    exhausted = ValueError("website_gemini_unanswered_dispatches_exhausted")  # would ship at once otherwise
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(exhausted))
+    for _ in range(2):  # reruns failing before compile, the second after the first rewrote the handoff
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "awaiting_inputs"
+        assert [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR] == []
+
+
+def test_an_earlier_release_s_outbox_receipt_is_kept_across_held_runs(tmp_path, monkeypatch, ready_atlas):
+    """A job that sent its prepared scene on an earlier release: its handoff's receipt is kept as the marker before
+    a held run rewrites the handoff, so no later run takes the fallback either."""
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    packaged = room_recorder(monkeypatch)
+    write_json(tmp_path / "pipeline/website_scene_preparation/handoff.json",
+               {"status": "intake_ready", "website_intake_outbox": {"id": "scene-1", "state": "forward_pending",
+                                                                   "request_digest": "sha256:" + "d" * 64}})
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError("website_gemini_unanswered_dispatches_exhausted")))
+    for _ in range(3):
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "awaiting_inputs" and packaged == []
+        assert "website_intake_outbox" not in result  # the handoff no longer carries it; the marker does
+    marker = json.loads((tmp_path / "pipeline/website_scene_preparation" / handoff.OUTBOX_MARKER).read_text())
+    assert (marker["state"], marker["outbox_id"]) == ("sent", "scene-1")
+
+
+def test_a_refused_retry_never_clears_an_earlier_send_that_may_have_committed(tmp_path, monkeypatch, ready_atlas):
+    """Codex P1 on #3637: a send that timed out after the website may have committed leaves the marker ``sending``;
+    a retry the website refuses with a typed answer proves only that the retry committed nothing, so the earlier
+    evidence stands and no later run takes the room-package fallback."""
+    answers = iter([ValueError("website_control_prepared-scene_timeout"),
+                    ValueError("website_control_prepared-scene_http_401:website_control_unauthorized")])
+    kwargs, _compiled, packaged = _to_the_outbox(tmp_path, monkeypatch, lambda **_: (_ for _ in ()).throw(next(answers)))
+    path = tmp_path / "pipeline/website_scene_preparation" / handoff.OUTBOX_MARKER
+    handoff.prepare_website_scene_handoff(**kwargs)
+    assert json.loads(path.read_text())["state"] == "sending"
+    handoff.prepare_website_scene_handoff(**kwargs)
+    marker = json.loads(path.read_text())
+    assert marker["state"] == "sending" and "http_401" in marker["later_refusal"]
+    assert handoff.prepared_scene_may_exist(tmp_path, task_context_digest=marker["task_context_digest"])
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError("website_gemini_unanswered_dispatches_exhausted")))
+    assert handoff.prepare_website_scene_handoff(**kwargs)["status"] == "awaiting_inputs"
+    assert [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR] == []
+
+
+def test_a_marker_for_a_refused_send_or_another_task_never_holds_the_job(tmp_path, monkeypatch, ready_atlas):
+    """A send the website refused with a typed answer that commits nothing settles the marker ``refused``; a marker
+    written for another task context names another job: neither keeps this job from its room package."""
+    error = ValueError("website_control_prepared-scene_http_422:website_scene_request_invalid")
+    kwargs, _compiled, packaged = _to_the_outbox(tmp_path, monkeypatch, lambda **_: (_ for _ in ()).throw(error))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["runtime_inputs"]["blockers"] == [str(error)]  # the send's own failure holds, as before
+    marker = json.loads((tmp_path / "pipeline/website_scene_preparation" / handoff.OUTBOX_MARKER).read_text())
+    assert marker["state"] == "refused" and not handoff.prepared_scene_may_exist(tmp_path)
+    write_json(tmp_path / "pipeline/website_scene_preparation" / handoff.OUTBOX_MARKER,
+               {**marker, "state": "sending"})
+    assert handoff.prepared_scene_may_exist(tmp_path, task_context_digest=marker["task_context_digest"])
+    assert not handoff.prepared_scene_may_exist(tmp_path, task_context_digest="sha256:" + "e" * 64)
+    assert packaged == [] or all(call["output_root"].name == handoff.ROOM_FLOOR for call in packaged)
+
+
+@pytest.mark.parametrize("code", ["website_registration_scale_conflicts_declared",
+                                  "website_registration_anchor_frame_invalid",
+                                  "website_registration_anchor_frame_missing"])
+def test_a_fault_of_our_own_waits_is_paged_and_ships_only_at_the_window_end(code):
+    """``preparation_fault_alert`` pages these as ours to fix; each waits until the job's window, read live, ends
+    within two hours, raised or a compile blocker alike, so a fix release can rescue it."""
+    from blueprint_pipeline import preparation_fault_alert as fault
+    assert code in fault.FAULT_CODES
+    for error in (None, ValueError(code)):
+        for window, ships in ((None, False), (3 * 86400.0, False), (3600.0, True)):
+            assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=error,
+                                   window_end=lambda window=window: window) is ships
+
+
+def test_the_codes_the_room_package_would_be_wrong_for_are_read_from_their_definitions():
+    """Every integrity code raised or appended on the preparation path, found in the source by its own wording (a
+    digest or binding that changed or does not match, a path outside the capture, a stored value out of range, a
+    receipt invalid or missing or needing reconciliation, a step still pending), keeps the job waiting."""
+    import re
+    from pathlib import Path
+    root = Path(handoff.__file__).parent
+    codes = set()
+    for name in ("website_scene_handoff", "website_task_preparation", "website_scene_runtime_inputs",
+                 "website_assembly_coverage", "website_task_masks", "website_atlas_scene_source",
+                 "website_preparation_revision", "task_family_preparation", "website_object_local_frame",
+                 "website_gemini_receipts", "website_task_grounding", "website_object_spec_research"):
+        source = (root / f"{name}.py").read_text()
+        codes |= set(re.findall(r'(?:Error|Refusal|blockers\.append)\("([a-z][a-z0-9_]+)"', source))
+    integrity = re.compile(r".*(_changed|_mismatch|_binding_invalid|_outside_capture|_scale_invalid|_receipt_invalid"
+                           r"|_receipts_invalid|_receipt_missing|_result_missing|_requires_reconciliation|_pending"
+                           r"|_not_ready)$")
+    found = sorted(code for code in codes if integrity.match(code))
+    assert {"website_assembly_coverage_binding_mismatch", "website_base_scene_scale_invalid",
+            "website_scene_task_identity_mismatch", "website_scene_removal_manifest_outside_capture",
+            "website_gemini_requires_reconciliation"} <= set(found)
+    assert all(handoff.keeps_holding(code) for code in found)
+    assert all(handoff.goes_on([code], task_context=CONTEXT, now=0.0) is False for code in found)
+    assert handoff.keeps_holding("website_subject_origin_conflict")
+    assert not handoff.keeps_holding("website_object_spec_dimension_conflict")  # a finding, not a bad record
+
+
+def test_the_readme_names_the_right_piece_and_never_a_builder_s_or_an_exception_s_words():
+    assert handoff.piece_of("website_articulated_task_has_no_destination") == "success rule"
+    assert handoff.piece_of("task_destination_surface_contact_required") == "destination"
+    assert handoff.piece_of("website_assembly_builder_refused:the hinge axis 'z' is degenerate") == "object"

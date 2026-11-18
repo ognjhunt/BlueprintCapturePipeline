@@ -476,6 +476,24 @@ def _due(root: Path, ledger: Mapping[str, Any], record: Mapping[str, Any]) -> da
     return due
 
 
+#: The last part of a job's window in which a waiting preparation runs once more, whatever its schedule
+#: (``website_scene_handoff.LAST_CALL_SECONDS``): a failure the handoff waits on (an outage, a defect) then ships
+#: the room package before the window ends, and a job whose timed retries are spent is not left to the ending.
+LAST_CALL_SECONDS = 2 * 3600
+
+
+def last_call_due(root: Path, ledger: Mapping[str, Any], now: datetime) -> bool:
+    """Whether the job's window, read now (``retained_window_end``), ends within ``LAST_CALL_SECONDS`` and no
+    attempt has started since that last stretch began: it runs once there. A window that cannot be read: no."""
+    from .website_preparation_terminal import _parse_utc, retained_window_end
+    window = retained_window_end(root, scene_id=ledger.get("scene_id"), capture_id=ledger.get("capture_id"))
+    if window is None:
+        return False
+    current, opens = now.timestamp(), window - LAST_CALL_SECONDS
+    started = _parse_utc(ledger.get("last_attempt_started_at"))
+    return opens <= current < window and (started is None or started.timestamp() < opens)
+
+
 def _transition(listener: Any, root: Path, before: Mapping[str, Any], after: Mapping[str, Any]) -> dict | None:
     """Commit ``after`` only over the exact revision read; None when the ledger moved on."""
     with listener._locked_job_ledger(root, create=False) as current:
@@ -488,7 +506,7 @@ def _redrive(listener: Any, root: Path, *, storage_root: Path, process_args: Map
              now: datetime) -> dict[str, Any] | None:
     before = listener._read_job_ledger(root)
     record = armed(before)
-    if record is None or _due(root, before, record) > now:
+    if record is None or (_due(root, before, record) > now and not last_call_due(root, before, now)):
         return None
     raw = retained_payload(listener, root, before)
     handoff = listener.parse_handoff_payload(raw)
@@ -560,10 +578,11 @@ def reconcile_preparation_retries(listener: Any, *, storage_root: Path, process_
                 counts["adopted"] += 1
                 ledger = committed
             when = _due(root, ledger, armed(ledger))
-            if when > current or deterministic_waiting(armed(ledger)) or spent_waiting(armed(ledger)):
+            if ((when > current or deterministic_waiting(armed(ledger)) or spent_waiting(armed(ledger)))
+                    and not last_call_due(root, ledger, current)):
                 counts["waiting"] += 1
             else:
-                due.append((when, "ledger", root))
+                due.append((min(when, current), "ledger", root))
         except Exception as error:  # noqa: BLE001 - one unreadable capture never stops the others
             counts["failed"] += 1
             note_recovery(listener, storage_root, key=key, recovery="preparation_retry", error=error,

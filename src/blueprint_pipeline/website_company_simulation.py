@@ -199,11 +199,15 @@ OBJECT_NOT_PREPARED = ("Blueprint could not prepare the job's object as a separa
                        "the video could not be completed.")
 OBJECT_NOT_PREPARED_FLAGS = frozenset({"website_gemini_unanswered_dispatches_exhausted",
                                        "website_gemini_provider_credit_depleted"})
-#: The job's object has no surface to start on in the scan (``website_scene_handoff.START_UNSUPPORTED``).
+#: The job's object has no surface to start on in the scan (compile, ``website_task_preparation``).
 OBJECT_NOT_PLACED = ("Blueprint did not place the job's object: no surface to start it on was found in the "
                      "room scan.")
 OBJECT_NOT_PLACED_FLAGS = frozenset({"support_surface_not_found_under_subject",
                                      "website_synthetic_subject_start_unplaceable"})
+#: Any other blocker a room package shipped for (``website_scene_handoff.goes_on``), from the record's
+#: ``not_prepared``: the piece of the job it left out and its code, as recorded, never a reason.
+NOT_PREPARED = "Blueprint could not prepare the job's {piece} ({codes})."
+NOT_PREPARED_PIECES = ("object", "destination", "success rule")
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."
 NOT_FILLED_IN = "Parts of the room the video did not show were not filled in."
@@ -632,6 +636,11 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
              **({"not_located": True} if "task_target_not_located" in (record.get("flags") or []) else {}),
              **({"object_not_prepared": True} if OBJECT_NOT_PREPARED_FLAGS & set(record.get("flags") or []) else {}),
              **({"object_not_placed": True} if OBJECT_NOT_PLACED_FLAGS & set(record.get("flags") or []) else {}),
+             **({"not_prepared": not_prepared} if (not_prepared := [
+                 [row["piece"], row["code"]] for row in record.get("not_prepared") or []
+                 if isinstance(row, Mapping) and row.get("piece") in NOT_PREPARED_PIECES
+                 and isinstance(row.get("code"), str)
+                 and row["code"] not in OBJECT_NOT_PREPARED_FLAGS | OBJECT_NOT_PLACED_FLAGS]) else {}),
              **({"nothing_taken_out": True} if JOB_OBJECT_RULE in (record.get("flags") or []) else {}),
              **({"not_filled_in": True} if "scene_completion_not_admitted" in (record.get("flags") or []) else {})}
             if record.get("schema_version") == ROOM_RECORD_SCHEMA else None)
@@ -1096,6 +1105,10 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_LOCATED] if room.get("not_located") else []),
                 *([OBJECT_NOT_PREPARED] if room.get("object_not_prepared") else []),
                 *([OBJECT_NOT_PLACED] if room.get("object_not_placed") else []),
+                *[NOT_PREPARED.format(piece=piece, codes=", ".join(code for named, code in room["not_prepared"]
+                                                                 if named == piece))
+                  for piece in NOT_PREPARED_PIECES
+                  if any(named == piece for named, _code in room.get("not_prepared") or [])],
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"] else OBJECTS_TAKEN_OUT.format(count=room["objects"])]
                   if room.get("objects") else []),
                 *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),

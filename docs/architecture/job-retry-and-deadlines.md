@@ -233,3 +233,25 @@ names the code as the outcome; the website asks the site to film again. A new vi
 capture (the owner's "update video" issues a replacement capture, which becomes the active one) and
 runs from the start. `website_registration_anchor_frame_missing`, `..._anchor_frame_invalid` and
 `..._scale_conflicts_declared` are not video faults and keep their earlier handling.
+
+## 8. A preparation blocker that is no wall ships the room package (2026-11-18)
+
+Owner direction 2026-11-17: accept every job, then decide what is needed. In the scene
+preparation (`website_scene_handoff.goes_on`), a blocker ships the room package, flagged, and
+buys nothing more, unless it is a wall (`hard_stops.is_wall`, or a code the retry policy reads as
+privacy, rights, money or the owner's closing of the run), the job's sentence is still to come, only
+a new video clears it, the job is a development test, or the room package would be wrong
+(`KEEP_HOLDING`: the job's record or inputs are bad or unsafe to read, or the room's inputs are not
+ready, read from the codes' own wording: a changed or mismatched record, a path outside the
+capture, an invalid or missing receipt, a step still pending), judged on every `:`-separated part of
+the code. Only facts about the job's own scene or wording that compile finds
+(`website_task_preparation.SCENE_FACT_BLOCKERS`) ship at once, and the end of a provider's bound of
+unanswered sends. Everything else, an unknown code included (a configuration fault, a missing key or
+profile, a website refusal, an outage, a defect with no typed code: `website_preparation_defect`),
+waits until the job's window, read when it fails, ends within two hours, then ships the same; the
+retry lane runs a waiting job once more in that last stretch, and `preparation_fault_alert` pages the
+faults ours to fix. The rule covers preparation and compile only: once the prepared scene is sent to
+the website, or may have been (a marker written before the write and settled by the answer, or an
+earlier handoff's receipt kept as that marker), a failure keeps the job waiting. The record names each piece left out (object, destination,
+success rule) with its code, and the package's README says so. If the room itself cannot be
+packaged, the job keeps waiting with the step's code.
