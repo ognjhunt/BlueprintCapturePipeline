@@ -430,6 +430,12 @@
       "admission": "src/blueprint_pipeline/website_atlas_tasks.py::reserve_website_preparation_spend",
       "note": "only the allocator's sponsored Atlas task entry may reach it (ATLAS_TASK_CAPABILITIES)"
     },
+    "src/blueprint_pipeline/website_build_choice.py::ask_gemini.invoke::gemini_client_construction": {
+      "provider": "gemini",
+      "class": "admitted",
+      "via": "src/blueprint_pipeline/website_build_choice.py::retained_gemini_call",
+      "admission": "src/blueprint_pipeline/website_gemini_receipts.py::reserve_website_preparation_spend"
+    },
     "src/blueprint_pipeline/website_capture_withdrawal_provider_copies.py::production_deleters.gemini::gemini_client_construction": {
       "provider": "gemini",
       "class": "not_paid",

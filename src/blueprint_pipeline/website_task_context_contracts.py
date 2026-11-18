@@ -48,10 +48,13 @@ def authoring_admission_blockers(spend: Mapping[str, Any], task_context: Mapping
     return found
 
 
-def without_withheld_gap(gap: Mapping[str, Any] | None,
-                         rule_withheld: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+def without_withheld_gap(gap: Mapping[str, Any] | None, rule_withheld: Mapping[str, Any] | None,
+                         build_choice: Mapping[str, Any] | None = None) -> Mapping[str, Any] | None:
     """The gap, unless it is the one the handoff withheld Blueprint's rule for (``website_scene_handoff``):
-    that job's one rigid object is built, so its gap holds nothing."""
+    that job's one rigid object is built, so its gap holds nothing. A model's honoured object build
+    (``website_build_choice``) decided what the gap rules decide: no gap."""
+    if build_choice is not None:
+        return None
     if rule_withheld is not None and gap is not None and gap.get("code") == rule_withheld.get("code"):
         return None
     return gap
