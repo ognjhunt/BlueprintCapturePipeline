@@ -59,6 +59,22 @@ def _chunk_centres(low, size, shape):
         yield index, low + (np.column_stack(np.unravel_index(index, shape)) + .5) * size
 
 
+def observed_grid(frames):
+    """The grid's low corner, high corner, voxel size and shape over these frames' observed bounds.
+
+    The coverage map (``atlas_coverage_map``) uses the same grid, so its voxels are these voxels.
+    """
+    from .atlas_depth_splat import frame_shape
+    from .atlas_scene_preservation import observed_scene_bounds
+
+    bounds = observed_scene_bounds(frames)
+    low, high = np.asarray(bounds["minimum"], float), np.asarray(bounds["maximum"], float)
+    extent = np.maximum(high - low, 1e-6)
+    pixels = sum(int(np.prod(frame_shape(frame, "depth"))) for frame in frames)
+    size = float(np.cbrt(np.prod(extent) / min(OBSERVED_SPACE_VOXELS, pixels)))
+    return low, high, size, np.maximum(np.ceil(extent / size).astype(int), 1)
+
+
 def observed_space(*, photographs, geometry_frames):
     """Carve the observed scene bounds into free, ranged, unranged and never-seen voxels.
 
@@ -70,18 +86,13 @@ def observed_space(*, photographs, geometry_frames):
     photograph and as geometry is projected once; the voxel flags they set are
     unions, so the order does not change them.
     """
-    from .atlas_depth_splat import MAX_MEDIAN_CROSS_VIEW_RESIDUAL, decoded_frame, frame_shape
-    from .atlas_scene_preservation import _project, _valid, observed_scene_bounds
+    from .atlas_depth_splat import MAX_MEDIAN_CROSS_VIEW_RESIDUAL, decoded_frame
+    from .atlas_scene_preservation import _project, _valid
 
     key = _frames_key(photographs, geometry_frames)
     if key in _SPACE:
         return _SPACE[key]
-    bounds = observed_scene_bounds([*geometry_frames, *photographs])
-    low, high = np.asarray(bounds["minimum"], float), np.asarray(bounds["maximum"], float)
-    extent = np.maximum(high - low, 1e-6)
-    pixels = sum(int(np.prod(frame_shape(frame, "depth"))) for frame in [*geometry_frames, *photographs])
-    size = float(np.cbrt(np.prod(extent) / min(OBSERVED_SPACE_VOXELS, pixels)))
-    shape = np.maximum(np.ceil(extent / size).astype(int), 1)
+    low, high, size, shape = observed_grid([*geometry_frames, *photographs])
     # A voxel centre may sit half a diagonal from the surface it stands for.
     half_diagonal = size * np.sqrt(3) / 2
     count = int(np.prod(shape))

@@ -28,7 +28,8 @@ cameras, then:
    segment beyond one is left out unless measured pairs tie it to the kept side.
 3. Holds back a few sharp, consistent views of the kept segment
    (``HELDOUT_FRAME_COUNT``). They are never sent, so the returned splat can be
-   scored against photographs it did not train on (``heldout_quality``).
+   rendered and scored against photographs it did not train on, and looked at
+   from the coverage map's weak regions (``heldout_quality``).
 
 Nothing here stops a job. Too few consistent views is flagged and the best
 consistent subset goes on, never fewer than the provider's two. Every decision is
@@ -40,6 +41,9 @@ import math
 from statistics import median
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+
+from .atlas_splat_render import REVISION as RENDERER_REVISION
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "atlas_splat_input_selection.v1"
@@ -63,8 +67,23 @@ HELDOUT_FRAME_COUNT = 2
 #: Views are held back only while at least this many are still sent.
 HELDOUT_MINIMUM_SENT_FRAMES = 24
 #: The held-out score's render width in pixels, and the gap that flags held-out views below training views.
-SCORE_WIDTH = 320
+SCORE_WIDTH = 640
 HELDOUT_BELOW_TRAINING_DB = 3.0
+#: The look check (planning thresholds, not measurements): SSIM blocks in render pixels, the block SSIM under
+#: which a weak region's held-out blocks flag it, and the held-out floors under which the whole look is weak.
+LOOK_BLOCK = 32
+LOOK_WEAK_BLOCK_SSIM = 0.5
+LOOK_HELDOUT_SSIM_FLOOR = 0.6
+LOOK_HELDOUT_PSNR_FLOOR_DB = 20.0
+#: A Gaussian is needle-like when its longest axis is this many times its middle one; a weak region
+#: with more than this share of them is flagged, as is an orbit view whose region footprint is this empty.
+NEEDLE_RATIO = 6.0
+NEEDLE_SHARE = 0.25
+STRETCH_DEGREES = 20.0
+OFF_PATH_VIEWS = 4
+OFF_PATH_HOLE_SHARE = 0.25
+#: Orbit views stop after this long; held-out views are always scored.
+LOOK_TIME_BUDGET_SECONDS = 480
 
 
 def limits() -> dict[str, Any]:
@@ -390,63 +409,164 @@ def scene_depth(frames: Sequence[Mapping[str, Any]]) -> float | None:
     return float(np.median(values)) if values else None
 
 
-def _point_render(splat, frame, width: int = SCORE_WIDTH):
-    """Each pixel's nearest opaque Gaussian centre colour at the view's camera; NaN where none lands."""
+def ssim_map(left, right):
+    """Wang et al. SSIM per pixel (11x11 Gaussian, sigma 1.5, L=1), channel mean, 'valid' window positions.
+
+    The same window and constants as ``heldout_appearance_evaluation_v2.windowed_ssim``, whose
+    value is this map's mean.
+    """
+    import cv2
     import numpy as np
+    from .heldout_appearance_evaluation_v2 import _KERNEL, SSIM_K1, SSIM_K2, SSIM_WINDOW
 
-    k = frame["intrinsics"]
-    factor = width / float(k["width"])
-    height = max(1, round(float(k["height"]) * factor))
-    local = (splat.xyz.astype(np.float64) - frame["position"]) @ frame["rotation"]
-    depth = -local[:, 2]
-    opaque = 1.0 / (1.0 + np.exp(-splat.opacity.astype(np.float64))) > 0.5
-    with np.errstate(divide="ignore", invalid="ignore"):
-        column = np.floor(local[:, 0] / depth * k["fx"] * factor + k["cx"] * factor)
-        row = np.floor(-local[:, 1] / depth * k["fy"] * factor + k["cy"] * factor)
-    inside = opaque & (depth > 0) & (column >= 0) & (column < width) & (row >= 0) & (row < height)
-    pixel = (row[inside] * width + column[inside]).astype(np.int64)
-    order = np.lexsort((depth[inside], pixel))
-    first = order[np.r_[True, pixel[order][1:] != pixel[order][:-1]]] if len(order) else order
-    colour = np.clip(splat.f_dc.astype(np.float64)[inside][first] * 0.28209479177387814 + 0.5, 0.0, 1.0)
-    image = np.full((height * width, 3), np.nan)
-    image[pixel[first]] = colour
-    return image.reshape(height, width, 3)
+    c1, c2 = SSIM_K1 ** 2, SSIM_K2 ** 2
+    cut = (SSIM_WINDOW - 1) // 2
+    kernel = _KERNEL.astype(np.float64)
+
+    def blur(value):
+        return cv2.sepFilter2D(value, cv2.CV_64F, kernel, kernel, borderType=cv2.BORDER_REFLECT)[
+            cut:value.shape[0] - cut, cut:value.shape[1] - cut]
+    maps = []
+    for channel in range(left.shape[2]):
+        a, b = left[..., channel].astype(np.float64), right[..., channel].astype(np.float64)
+        mu_a, mu_b = blur(a), blur(b)
+        var_a, var_b, cov = blur(a * a) - mu_a ** 2, blur(b * b) - mu_b ** 2, blur(a * b) - mu_a * mu_b
+        maps.append(((2 * mu_a * mu_b + c1) * (2 * cov + c2)) / ((mu_a ** 2 + mu_b ** 2 + c1) * (var_a + var_b + c2)))
+    return np.mean(maps, axis=0)
 
 
-def render_photo_score(splat, frame, width: int = SCORE_WIDTH) -> dict[str, Any]:
-    """PSNR, coverage and edge-energy ratio of a centre-point render against the view's own photograph."""
+def _photo(frame, width, height):
     import numpy as np
     from PIL import Image
     from .atlas_depth_splat import frame_arrays
 
-    render = _point_render(splat, frame, width)
-    height = render.shape[0]
-    photo = np.asarray(Image.fromarray(np.asarray(frame_arrays(frame, "rgb")[0], dtype=np.uint8)).resize(
+    return np.asarray(Image.fromarray(np.asarray(frame_arrays(frame, "rgb")[0], dtype=np.uint8)).resize(
         (width, height), Image.Resampling.BOX), dtype=np.float64) / 255.0
-    covered = np.isfinite(render).all(axis=2)
-    result = {"frame_id": frame["frame_id"], "coverage": round(float(covered.mean()), 6)}
-    if not covered.any():
-        return {**result, "psnr_db": None, "edge_energy_ratio": None}
-    mse = float(np.mean((render[covered] - photo[covered]) ** 2))
+
+
+def _scored(splat, frame, width: int = SCORE_WIDTH):
+    """The score row of one posed view, with its SSIM map and render kept for the block pass."""
+    import numpy as np
+    from .atlas_splat_render import render
+
+    rendered = render(splat, frame, width)
+    image, height = rendered["rgb"].astype(np.float64), rendered["height"]
+    photo = _photo(frame, width, height)
+    covered = rendered["alpha"] > 0.5
+    result = {"frame_id": frame["frame_id"], "coverage": round(float(covered.mean()), 6),
+              "visible_gaussians": rendered["visible_gaussians"]}
+    mse = float(np.mean((image - photo) ** 2))
     result["psnr_db"] = round(10 * math.log10(1.0 / max(mse, 1e-10)), 3)
+    local = ssim_map(image, photo) if min(image.shape[:2]) >= 11 else None
+    result["ssim"] = None if local is None else round(float(local.mean()), 6)
     both = covered[:, 1:] & covered[:, :-1]
-    if both.any():
-        rendered = np.abs(np.diff(render, axis=1))[both].mean()
-        observed = np.abs(np.diff(photo, axis=1))[both].mean()
-        result["edge_energy_ratio"] = round(float(rendered / observed), 6) if observed > 0 else None
-    else:
-        result["edge_energy_ratio"] = None
-    return result
+    observed = np.abs(np.diff(photo, axis=1))[both].mean() if both.any() else 0.0
+    result["edge_energy_ratio"] = (round(float(np.abs(np.diff(image, axis=1))[both].mean() / observed), 6)
+                                   if both.any() and observed > 0 else None)
+    return result, local, rendered
 
 
-def heldout_quality(*, splat, frames: Sequence[Mapping[str, Any]], selection: Mapping[str, Any]) -> dict[str, Any]:
-    """Score the returned splat at the held-out views and at their nearest sent views; record, never block.
+def render_photo_score(splat, frame, width: int = SCORE_WIDTH) -> dict[str, Any]:
+    """PSNR, SSIM, coverage and edge-energy ratio of an alpha-blended render against the view's own photograph."""
+    return _scored(splat, frame, width)[0]
 
-    The render takes each pixel's nearest opaque Gaussian centre, a cheap CPU
-    stand-in for rasterising the splat. Its numbers compare views with each other;
-    they are no image-quality measurement. Held-out views well below the training
-    views (``HELDOUT_BELOW_TRAINING_DB``) are flagged.
+
+def _in_box(points, region, pad):
+    import numpy as np
+
+    centre, half = np.asarray(region["centroid"], float), np.asarray(region["extent"], float) / 2 + pad
+    return np.all(np.abs(np.asarray(points, float) - centre) <= half, axis=-1)
+
+
+def _block_points(frame, local, width, height):
+    """Each LOOK_BLOCK px block of the SSIM map: its mean SSIM and the world point its median depth shows."""
+    import numpy as np
+    from .atlas_depth_splat import frame_arrays
+
+    depth, confidence = frame_arrays(frame, "depth", "confidence")
+    k, factor, cut = frame["intrinsics"], width / float(frame["intrinsics"]["width"]), 5
+    rows = []
+    for y0 in range(0, local.shape[0] - LOOK_BLOCK // 2, LOOK_BLOCK):
+        for x0 in range(0, local.shape[1] - LOOK_BLOCK // 2, LOOK_BLOCK):
+            block = local[y0:y0 + LOOK_BLOCK, x0:x0 + LOOK_BLOCK]
+            # The map starts ``cut`` px in; full-resolution pixels of the same block.
+            ys = slice(int((y0 + cut) / factor), int((y0 + cut + block.shape[0]) / factor))
+            xs = slice(int((x0 + cut) / factor), int((x0 + cut + block.shape[1]) / factor))
+            d = depth[ys, xs][(confidence[ys, xs] > 0) & np.isfinite(depth[ys, xs]) & (depth[ys, xs] > 0)]
+            if not d.size:
+                continue
+            z = float(np.median(d))
+            u, v = (xs.start + xs.stop) / 2, (ys.start + ys.stop) / 2
+            local_point = np.array([(u - k["cx"]) / k["fx"] * z, -(v - k["cy"]) / k["fy"] * z, -z])
+            rows.append({"frame_id": frame["frame_id"], "pixel_box": [x0 + cut, y0 + cut, block.shape[1], block.shape[0]],
+                         "ssim": float(block.mean()),
+                         "world_point": (np.asarray(frame["rotation"]) @ local_point + frame["position"]).tolist()})
+    return rows
+
+
+def _region_gaussians(splat, region, voxel):
+    """Needle-like and view-stretched shares of the Gaussians centred in a weak region."""
+    import numpy as np
+    from .atlas_splat_render import _quaternion_matrices
+
+    inside = np.flatnonzero(_in_box(splat.xyz, region, voxel))
+    if not len(inside):
+        return {"gaussian_count": 0, "needle_share": None, "stretched_along_filmed_direction_share": None}
+    scale = np.exp(np.asarray(splat.scales, np.float64)[inside])
+    order = np.argsort(scale, axis=1)
+    sorted_scale = np.take_along_axis(scale, order, axis=1)
+    needle = sorted_scale[:, 2] > NEEDLE_RATIO * np.maximum(sorted_scale[:, 1], 1e-12)
+    axes = _quaternion_matrices(np.asarray(splat.quats, np.float64)[inside])
+    longest = np.take_along_axis(axes, order[:, None, 2:3].repeat(3, axis=1), axis=2)[:, :, 0]
+    filmed = np.asarray(((region.get("suggested_orbit") or {}).get("filmed_direction")) or [0, 0, 0], float)
+    along = np.abs(longest @ filmed) >= math.cos(math.radians(STRETCH_DEGREES)) if np.any(filmed) else needle & False
+    return {"gaussian_count": int(len(inside)), "needle_share": round(float(needle.mean()), 4),
+            "stretched_along_filmed_direction_share": round(float((needle & along).mean()), 4)}
+
+
+def _off_path(splat, region, camera, width):
+    """Holes where an orbit view of a weak region shows nothing; no photograph exists there to compare."""
+    from .atlas_splat_render import camera_of, render
+
+    rendered = render(splat, camera, width)
+    centre, half = np.asarray(region["centroid"], float), np.asarray(region["extent"], float) / 2
+    corners = centre + half * np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+    position, rotation, k = camera_of(camera)
+    factor = width / float(k["width"])
+    local = (corners - position) @ rotation
+    z = -local[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = (local[:, 0] / z * k["fx"] + k["cx"]) * factor
+        v = (-local[:, 1] / z * k["fy"] + k["cy"]) * factor
+    row = {"camera_id": camera["camera_id"], "orbit_degrees": camera.get("orbit_degrees"),
+           "visible_gaussians": rendered["visible_gaussians"]}
+    if not (z > 0).all():
+        return {**row, "region_pixel_count": 0, "hole_share": None}
+    x0, x1 = (int(np.clip(math.floor(u.min()), 0, width)), int(np.clip(math.ceil(u.max()), 0, width)))
+    y0, y1 = (int(np.clip(math.floor(v.min()), 0, rendered["height"])),
+              int(np.clip(math.ceil(v.max()), 0, rendered["height"])))
+    alpha = rendered["alpha"][y0:y1, x0:x1]
+    return {**row, "region_pixel_count": int(alpha.size),
+            "hole_share": round(float((alpha < 0.5).mean()), 4) if alpha.size else None}
+
+
+def heldout_quality(*, splat, frames: Sequence[Mapping[str, Any]], selection: Mapping[str, Any],
+                    weak_regions: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Render the returned splat at the held-out views, their nearest sent views and the weak regions' orbits.
+
+    The render is an alpha-blended Gaussian render (``atlas_splat_render``) at
+    ``SCORE_WIDTH`` px. Held-out views are scored with PSNR and SSIM against
+    their photographs, and each ``LOOK_BLOCK`` px block's SSIM is placed in the
+    world through the photograph's depth, so a weak region's blocks are named.
+    Orbit views of the weak regions (``atlas_coverage_map``) have no photograph:
+    there the record counts holes in the region's footprint and needle-like
+    Gaussians in the region instead. ``look_quality`` is ``good`` or ``weak`` with
+    the regions named: information and a flag, never a stop. Held-out views well
+    below the training views (``HELDOUT_BELOW_TRAINING_DB``) are flagged too.
     """
+    import time
+
+    started = time.monotonic()
     by_id = {frame["frame_id"]: frame for frame in frames}
     heldout = [key for key in selection.get("heldout_frame_ids") or [] if key in by_id]
     sent = [key for key in selection.get("sent_frame_ids") or [] if key in by_id]
@@ -457,16 +577,68 @@ def heldout_quality(*, splat, frames: Sequence[Mapping[str, Any]], selection: Ma
                       key=lambda other: (abs(order.get(other, 0) - order.get(key, 0)), other), default=None)
         if nearest is not None:
             training.append(nearest)
-    scored = {"heldout": [render_photo_score(splat, by_id[key]) for key in heldout],
-              "training": [render_photo_score(splat, by_id[key]) for key in training]}
-    medians = {role: (median([row["psnr_db"] for row in rows if row["psnr_db"] is not None])
-                      if any(row["psnr_db"] is not None for row in rows) else None) for role, rows in scored.items()}
+    regions = list((weak_regions or {}).get("regions") or [])
+    voxel = float(((weak_regions or {}).get("grid") or {}).get("voxel_size_units") or 0.0)
+    blocks, scored = [], {"heldout": [], "training": []}
+    for role, keys in (("heldout", heldout), ("training", training)):
+        for key in keys:
+            row, local, rendered = _scored(splat, by_id[key])
+            scored[role].append(row)
+            if role == "heldout" and local is not None:
+                blocks += _block_points(by_id[key], local, rendered["width"], rendered["height"])
+    medians = {role: (median([row["psnr_db"] for row in rows]) if rows else None) for role, rows in scored.items()}
+    ssims = [row["ssim"] for row in scored["heldout"] if row["ssim"] is not None]
     flags = (["heldout_render_below_training"] if None not in medians.values()
              and medians["heldout"] < medians["training"] - HELDOUT_BELOW_TRAINING_DB else [])
-    record = {"schema_version": "atlas_splat_heldout_score.v1", "status": "scored",
-              "basis": "nearest_opaque_gaussian_centre_point_render", "render_width_pixels": SCORE_WIDTH,
-              "selection_digest": selection.get("digest"), **scored,
+    region_rows, off_path, named = [], [], []
+    for region in regions:
+        inside = [row for row in blocks if _in_box(row["world_point"], region, voxel)]
+        region_rows.append({"id": region["id"], "heldout_block_count": len(inside),
+                            "heldout_block_ssim": round(float(np.mean([row["ssim"] for row in inside])), 4)
+                            if inside else None, **_region_gaussians(splat, region, voxel), "off_path": []})
+    for region, row in zip(regions, region_rows):
+        for camera in (region.get("suggested_orbit") or {}).get("cameras") or []:
+            if len(off_path) >= OFF_PATH_VIEWS or abs(camera.get("orbit_degrees") or 0) != min(region["orbit_deg"]):
+                continue
+            if time.monotonic() - started > LOOK_TIME_BUDGET_SECONDS:
+                flags.append("look_check_time_budget_reached")
+                break
+            view = _off_path(splat, region, camera, SCORE_WIDTH)
+            row["off_path"].append(view)
+            off_path.append(view["camera_id"])
+    for row in region_rows:
+        holes = [view["hole_share"] for view in row["off_path"] if view["hole_share"] is not None]
+        row["flags"] = sorted({*(["low_heldout_block_ssim"] if row["heldout_block_ssim"] is not None
+                                 and row["heldout_block_ssim"] < LOOK_WEAK_BLOCK_SSIM else []),
+                               *(["needle_like_gaussians"] if (row["needle_share"] or 0) > NEEDLE_SHARE else []),
+                               *(["holes_off_path"] if holes and max(holes) > OFF_PATH_HOLE_SHARE else [])})
+        if row["flags"]:
+            named.append(row["id"])
+    if weak_regions is None:
+        flags.append("weak_regions_unavailable")
+    below = ((ssims and median(ssims) < LOOK_HELDOUT_SSIM_FLOOR)
+             or (medians["heldout"] is not None and medians["heldout"] < LOOK_HELDOUT_PSNR_FLOOR_DB))
+    verdict = "weak" if named or below else "good"
+    look = {"verdict": verdict, "weak_region_ids": named,
+            "heldout_below_floor": bool(below), "off_path_camera_ids": off_path, "regions": region_rows,
+            "worst_heldout_blocks": [{**row, "ssim": round(row["ssim"], 4),
+                                      "world_point": [round(x, 6) for x in row["world_point"]],
+                                      "region_id": next((region["id"] for region in regions
+                                                         if _in_box(row["world_point"], region, voxel)), None)}
+                                     for row in sorted(blocks, key=lambda row: row["ssim"])[:8]],
+            "limits": {"block_pixels": LOOK_BLOCK, "weak_block_ssim": LOOK_WEAK_BLOCK_SSIM,
+                       "heldout_ssim_floor": LOOK_HELDOUT_SSIM_FLOOR, "heldout_psnr_floor_db": LOOK_HELDOUT_PSNR_FLOOR_DB,
+                       "needle_ratio": NEEDLE_RATIO, "needle_share": NEEDLE_SHARE, "off_path_hole_share": OFF_PATH_HOLE_SHARE,
+                       "off_path_views": OFF_PATH_VIEWS},
+            "weak_regions_digest": (weak_regions or {}).get("digest")}
+    if verdict == "weak":
+        flags.append("look_quality_weak")
+    record = {"schema_version": "atlas_splat_heldout_score.v2", "status": "scored",
+              "basis": "alpha_blended_gaussian_render", "renderer": RENDERER_REVISION,
+              "render_width_pixels": SCORE_WIDTH, "selection_digest": selection.get("digest"), **scored,
               "median_heldout_psnr_db": medians["heldout"], "median_training_psnr_db": medians["training"],
-              "flags": flags, "claim_scope": "development_only", "image_quality_measurement": False}
+              "median_heldout_ssim": median(ssims) if ssims else None, "look_quality": look,
+              "seconds": round(time.monotonic() - started, 3), "flags": sorted(set(flags)),
+              "claim_scope": "development_only", "image_quality_measurement": True}
     record["digest"] = canonical_digest(record, digest_field="digest")
     return record
