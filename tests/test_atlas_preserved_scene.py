@@ -490,6 +490,56 @@ def test_the_handoff_accepts_a_refined_splat_of_the_captured_frames_only(tmp_pat
             scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / 'prep')
 
 
+@pytest.mark.parametrize('tamper', [None, 'record_changed', 'unrecorded_view', 'not_admitted', 'unmarked'])
+def test_the_handoff_takes_a_look_with_checked_generated_views_bound_to_their_record(tmp_path, tamper):
+    """Owner, 2026-11-18: the look may hold generated views checked against the filmed frames
+    (``atlas_look_views``); the scene takes them only bound to their sealed record, and says so."""
+    root = job_fixture(tmp_path, same_pose=True)
+    result = json.loads((root / 'result.json').read_text())
+    result.pop('automation')
+    shutil.move(root / 'automation/background_splat', root / 'splat')
+    shutil.move(root / 'automation/background_mesh', root / 'mesh')
+    manifest_path = root / 'splat/atlas_depth_splat_manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    source = json.loads((root / 'pose/atlas_posed_rgbd_result.json').read_text())
+    captured = [row['frame_id'] for row in source['operation_receipt']['input_usage']['frames']]
+    record = digest({'schema_version': 'atlas_look_views.v1', 'status': 'checked',
+                     'pose_result_digest': source['digest'], 'passed_view_ids': ['look-1', 'look-2'], 'views': []})
+    write(root / 'look_views/look_views.json', record)
+    frames = [{'frame_id': frame_id} for frame_id in captured] + [
+        {'frame_id': key, 'whole_view_review': {'admit_whole': tamper != 'not_admitted'}}
+        for key in ('look-1', 'look-2')]
+    if tamper == 'unrecorded_view':
+        frames.append({'frame_id': 'look-3', 'whole_view_review': {'admit_whole': True}})
+    manifest.update(splat_kind='atlas_refined', task='posedImages2Splats', generated_content=True,
+                    request_form='documented_reviewed_whole', frames=frames)
+    manifest = digest(manifest)
+    write(manifest_path, manifest)
+    registration_path = root / 'mesh/registered/atlas_mesh_registration.json'
+    registration = json.loads(registration_path.read_text())
+    registration['splat_manifest_digest'] = manifest['digest']
+    write(registration_path, digest(registration))
+    look = {'status': 'checked', 'record_digest': 'sha256:' + '0' * 64 if tamper == 'record_changed'
+            else record['digest'], 'record_relative_path': 'look_views/look_views.json',
+            'in_look_view_ids': ['look-1', 'look-2'], **({} if tamper == 'unmarked' else {'generated_views_in': 'look'})}
+    result.update(subject_origin='no_manipulated_subject', captured_scene_preserved=True,
+        object_removal_performed=False, image_inpainting_performed=False, generated_completion_performed=False,
+        mesh_available=True, splat_manifest_digest=manifest['digest'],
+        appearance={'basis': 'atlas_refined_splat', 'look_views': look})
+    write(root / 'result.json', digest(result))
+    write(root / 'preview_job.json', {'state': 'ready', 'result_digest': result['digest']})
+    if tamper is None:
+        value = scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / 'prep')
+        assert value['status'] == 'ready' and value['scene_content'] == 'captured_scene_preserved'
+        assert value['base_scene']['look_provenance'] == {
+            'generated_views_in': 'look', 'look_views_digest': record['digest'], 'view_count': 2,
+            'basis': 'filmed_frames_with_generated_views_checked_against_them'}
+        assert 'content_provenance' not in value['base_scene']
+    else:
+        with pytest.raises(ValueError, match='atlas_look_views_not_bound|atlas_preserved_completion_not_bound'):
+            scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / 'prep')
+
+
 @pytest.mark.parametrize('filled', [False, True])
 def test_completion_context_keeps_the_selection_viewpoints_when_the_splat_selection_was_filled(
         tmp_path, monkeypatch, filled):

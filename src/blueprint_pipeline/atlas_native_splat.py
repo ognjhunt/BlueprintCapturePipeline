@@ -116,7 +116,9 @@ def composited_views(frames):
     references = observation_references(references)
     result = []
     for base, view, rest in views:
-        if base in partial:
+        # A view composited where it was made (``atlas_look_views``, against the real frames overlapping it)
+        # carries its receipt and is posted as it is: every real frame per view held the room step ~24 min.
+        if base in partial and not view.get("gap_composite"):
             view, receipt = composite_view(view, references)
             view["gap_composite"] = receipt
         result.append((base, view, rest))

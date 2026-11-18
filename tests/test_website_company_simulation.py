@@ -2287,3 +2287,35 @@ def test_admitted_generated_geometry_is_named_where_it_is_and_nothing_else_chang
     assert (sim.GENERATED_COLLISION_ONLY_NOTE in readme) is (expected == "collision_only")
     assert (sim.GENERATED_LOOK_AND_COLLISION_NOTE in readme) is (expected == "look_and_collision")
     assert sim.GENERATED_NO_LOOK_NOTE not in readme
+
+
+@pytest.mark.parametrize("where", [None, "look", "unsealed", "other"])
+def test_generated_views_in_the_look_are_named_in_one_sentence_only_when_the_look_holds_them(job, tmp_path, where):
+    """Owner, 2026-11-18: the look may hold generated views of areas the video saw from few angles,
+    checked against the filmed frames and their depth (``atlas_look_views``). The README says so in one
+    sentence only when the base scene the handoff sealed records them; otherwise the package is unchanged."""
+    before = sim.simulation_source(job.capture, queue_root=job.queue)
+    preparation = job.capture / "pipeline" / "website_scene_preparation"
+    if where is not None:
+        _write(preparation / "base_scene.json", {"look_provenance": {
+            "generated_views_in": "look" if where != "other" else "collision_only",
+            "look_views_digest": "sha256:" + "5" * 64, "view_count": 3}})
+        handoff = {"status": "intake_ready", "base_scene_path": str(preparation / "base_scene.json")}
+        handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+        if where == "unsealed":
+            handoff["digest"] = "sha256:" + "0" * 64
+        _write(preparation / "handoff.json", handoff)
+    expected = where == "look"
+    assert sim.look_views(job.capture) is expected
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert bool(source.get("look_views")) is expected and source.get("generated_patch") is None
+    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not expected)
+    sim.build_package(source, tmp_path / "package.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "package.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    assert (sim.GENERATED_VIEWS_LOOK_NOTE in readme) is expected
+    assert readme.count("generated views") == (1 if expected else 0)
+    # A package built without the look says nothing of it.
+    sim.build_package(sim.without_look(source), tmp_path / "bare.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "bare.zip") as archive:
+        assert sim.GENERATED_VIEWS_LOOK_NOTE not in " ".join(archive.read("README.txt").decode().split())

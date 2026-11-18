@@ -592,10 +592,11 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     for fresh real-frames-only attempts (``atlas_refined_splat_retry``) until the allowance or the
     window's last two hours stop them, and the draft then carries that record. Admitted generated geometry never swaps
     the refined splat for the draft (owner, 2026-11-17): it goes into the collision shape only
-    (``_preserved_scene``). ``draft`` is always the captured frames' own draft, so nothing
-    generated reaches the request. A splat already bought is always adopted.
+    (``_preserved_scene``). ``draft`` is always the captured frames' own draft, so no completion
+    view reaches the request. A splat already bought is always adopted.
     A new purchase sends the views ``_splat_input_selection`` keeps (consistent, with
-    parallax, a few held back to score the result).
+    parallax, a few held back to score the result), and beside them only the generated
+    views of weak regions that agree with the filmed frames (``atlas_look_views``).
 
     A ``rebuild`` replaces a refined splat the job already has, so it never falls back
     to the draft: before buying, it needs World Labs to have accepted pose refinement,
@@ -635,6 +636,16 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
             return {"status": "completed", "basis": DRAFT_APPEARANCE,
                     "fallback_reason": "atlas_refined_splat_unaffordable"}
     sent = frames if selection is None else [f for f in frames if f["frame_id"] in set(selection["sent_frame_ids"])]
+    # Checked generated views of weakly observed regions join the real frames (owner, 2026-11-18). No
+    # weak-region map, or a splat already bought: none, and the request is the real frames as before.
+    from .atlas_look_views import disclosure as look_disclosure, look_views_for_splat
+    look = look_views_for_splat(frames=frames, pose=pose, output_root=output_root, policy=policy,
+        task_context=task_context, source_digest=source_digest, bought=bought, check=check, max_polls=max_polls,
+        sent=sent, configuration=lambda: _current_configuration(task_context, source_digest, configuration),
+        task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw))
+    if look.get("status") == "processing":
+        return look
+    sent = [*sent, *look["views"]]
     check("refined_splat")
     try:
         native = run_native_splat(frames=sent, result=pose, draft=draft, output_root=root, policy=policy,
@@ -666,6 +677,8 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
         return {"status": "processing", "stage": "refined_splat", "operation_id": native.get("operation_id")}
     appearance = {"status": "completed", "basis": REFINED_APPEARANCE, "splat_root": native["splat_root"],
                   "splat_manifest": native["splat_manifest"]}
+    if look["record"] is not None:
+        appearance["look_views"] = look_disclosure(look, native, output_root)
     if selection is not None:
         appearance["splat_input"] = {key: selection[key] for key in ("digest", "flags")}
         appearance["splat_input"].update(sent_frame_count=len(selection["sent_frame_ids"]),
@@ -896,7 +909,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         "billing_status": "provider_usage_unreported"}
     if appearance is not None:
         result['appearance'] = {key: appearance[key] for key in (
-            'basis', 'fallback_reason', 'splat_input', 'heldout_quality', 'refined_splat_retry') if key in appearance}
+            'basis', 'fallback_reason', 'splat_input', 'heldout_quality', 'refined_splat_retry', 'look_views')
+            if key in appearance}
     if repose is not None:
         result['windowed_repose'] = repose['disclosure']
     if completion is not None:

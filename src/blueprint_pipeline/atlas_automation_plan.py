@@ -15,6 +15,10 @@ JOB_OBJECT_RULE = "atlas_planner_removal_not_applied"
 #: collision mesh is made from (owner, 2026-11-17). Written by the room step, read by the company package README.
 GENERATED_ESTIMATES_BASIS = "captured_scene_with_bounded_generated_estimates"
 GENERATED_IN_COLLISION_ONLY = "collision_only"
+#: A preserved scene whose refined-splat look also holds generated views of areas the video saw from few angles,
+#: checked against the filmed frames and their depth (``atlas_look_views``, owner 2026-11-18). Written by the room
+#: step as ``look_provenance.generated_views_in``, read by the company package README.
+GENERATED_VIEWS_IN_LOOK = "look"
 
 
 def preserves_capture(value) -> bool:
