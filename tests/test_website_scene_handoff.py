@@ -164,9 +164,9 @@ def test_synthetic_subject_profile_ignores_its_supports_mechanism(tmp_path, monk
         assert gap["inferred_profile_id"] == "rigid_pick_place"
         assert holds_native_task_preparation(retained_hold(context, gap), context)
     else:
-        # The coverage step was reached; its refusal, no wall, ships the room package (``goes_on``).
-        assert result["status"] == "room_package_written" and calls == ["coverage"]
-        assert [call["flags"] for call in packaged] == [["coverage_pending"]]
+        # The coverage step was reached; a step still pending keeps the job waiting (``keeps_holding``).
+        assert result["status"] == "awaiting_inputs" and result["blockers"] == ["coverage_pending"]
+        assert calls == ["coverage"] and packaged == []
         assert "native_task_preparation_gap" not in result
     assert "runtime_inputs" not in result
 
@@ -1112,7 +1112,7 @@ CONTEXT = {"context_digest": "sha256:" + "a" * 64}
     # Every compile blocker that is no wall ships at once: one per hold the preparation had.
     *[([code], False, True) for code in (
         "support_surface_not_found_under_subject", "website_synthetic_subject_start_unplaceable",
-        "website_registration_scale_conflicts_declared", "website_articulated_part_label_required",
+        "website_articulated_part_label_required",
         "website_articulated_task_has_no_destination", "website_assembly_whole_object_coverage_required",
         "task_destination_relation_required", "task_destination_interior_geometry_required",
         "task_destination_surface_contact_required", "task_destination_overlaps_start",
@@ -1153,7 +1153,8 @@ def test_an_unreadable_development_allowlist_keeps_the_preparation(monkeypatch):
     (KeyError("frames"), True), (TypeError("'NoneType' object is not subscriptable"), True),
     (ValueError("operands could not be broadcast together"), True), (FileNotFoundError(2, "No such file"), True),
     (ValueError("website_gemini_unanswered_dispatches_exhausted"), False),
-    (ValueError("website_assembly_coverage_mask_resolution_mismatch"), False)])
+    (ValueError("website_assembly_front_plane_degenerate"), False),
+    (ValueError("website_control_task-context_http_422:website_task_context_unreadable"), False)])
 def test_a_raised_failure_retried_until_the_deadline_waits_for_the_window_end_and_a_refusal_ships_at_once(
         monkeypatch, error, transient):
     from blueprint_pipeline.hard_stops import MoneyStop, PrivacyRightsStop
@@ -1247,9 +1248,9 @@ def test_a_raised_refusal_ships_at_once_and_a_transient_failure_waits_for_the_wi
         monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
                             lambda **_: (_ for _ in ()).throw(error))
         return handoff.prepare_website_scene_handoff(**kwargs)
-    result = failing(ValueError("website_assembly_coverage_mask_resolution_mismatch"))
+    result = failing(ValueError("website_assembly_front_plane_degenerate"))
     assert result["status"] == "room_package_written"
-    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": "website_assembly_coverage_mask_resolution_mismatch"}]
+    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": "website_assembly_front_plane_degenerate"}]
     shipped = len(packaged)
     assert failing(TimeoutError("timed out"))["status"] == "awaiting_inputs"  # no grant: no window to read
     _granted(tmp_path, kwargs, ends_in=3 * 86400)
@@ -1326,7 +1327,8 @@ def test_a_defect_waits_named_and_paged_and_ships_only_at_the_window_end(tmp_pat
     _granted(tmp_path, kwargs, ends_in=3600)
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["status"] == "room_package_written"
-    assert packaged[-1]["flags"] == [code] and packaged[-1]["not_prepared"] == [{"piece": "object", "code": code}]
+    assert packaged[-1]["flags"] == [code]  # the type stays on the record's flags, for whoever fixes it
+    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": handoff.DEFECT}]  # the README: code only
 
 
 def test_a_waiting_preparation_runs_once_more_in_the_last_two_hours_of_its_window(tmp_path):
@@ -1348,3 +1350,101 @@ def test_a_waiting_preparation_runs_once_more_in_the_last_two_hours_of_its_windo
     assert last_call_due(tmp_path, ran, now) is False  # once: it already ran in that stretch
     _granted(tmp_path, kwargs, ends_in=-60)
     assert last_call_due(tmp_path, ledger, now) is False  # the window has ended
+
+
+# --- Review 2026-11-18: never after the prepared scene is sent; our own faults wait; held codes by definition ------
+
+def _to_the_outbox(tmp_path, monkeypatch, enqueue):
+    """An intake-ready rigid job through the real compile to the prepared-scene write, which ``enqueue`` answers.
+    Returns the handoff's arguments and the room packages written."""
+    kwargs, _asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop=False)
+    kwargs["descriptor"]["metadata"]["website_scene_execution_authority"] = {
+        "schema_version": "website_scene_sponsorship.v1", "max_total_spend_usd": 20, "max_paid_attempts": 2,
+        "expires_at_epoch": kwargs["now"] + 3600}
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation", lambda value, **_: value)
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    monkeypatch.setattr(handoff, "prepare_rigid_native_inputs", lambda **_: True)
+    monkeypatch.setattr("blueprint_pipeline.website_scene_dispatch.binding_root", lambda: tmp_path / "bindings")
+    monkeypatch.setattr("blueprint_pipeline.website_scene_dispatch.register_website_preparation",
+                        lambda **_: {"status": "registered"})
+    monkeypatch.setattr("blueprint_pipeline.website_task_context.enqueue_website_prepared_scene", enqueue)
+    return kwargs, compiled, packaged
+
+
+@pytest.mark.parametrize("error", [ValueError("website_scene_outbox_receipt_invalid"),
+                                   ValueError("website_control_prepared-scene_http_409:idempotency_conflict"),
+                                   TimeoutError("timed out after the website committed")])
+def test_a_failed_prepared_scene_write_never_ships_the_room_package(tmp_path, monkeypatch, ready_atlas, error):
+    """The prepared-scene write creates an outbox entry forwarded into paid preparation: once it is sent (a refusal,
+    a conflict on a rerun, or a timeout after the website committed), the job keeps waiting as before, even at the
+    window's end; and a later run that fails earlier never ships the room package either."""
+    kwargs, compiled, packaged = _to_the_outbox(tmp_path, monkeypatch, lambda **_: (_ for _ in ()).throw(error))
+    _granted(tmp_path, kwargs, ends_in=60)  # the window's end: an outage would ship now
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert compiled[0]["status"] == "intake_ready" and result["status"] == "intake_ready"
+    assert result["runtime_inputs"] == {"status": "awaiting_inputs", "blockers": [str(error)]}
+    assert result["source_registration"] == {"status": "registered"}  # it got as far as the write
+    assert [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR] == []
+    assert handoff.prepared_scene_may_exist(tmp_path)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError("website_assembly_front_plane_degenerate")))
+    result = handoff.prepare_website_scene_handoff(**kwargs)  # a rerun failing before compile
+    assert result["status"] == "awaiting_inputs"
+    assert [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR] == []
+
+
+def test_an_earlier_handoff_s_outbox_receipt_also_keeps_the_job_waiting(tmp_path, monkeypatch, ready_atlas):
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    packaged = room_recorder(monkeypatch)
+    write_json(tmp_path / "pipeline/website_scene_preparation/handoff.json",
+               {"status": "intake_ready", "website_intake_outbox": {"id": "scene-1", "state": "forward_pending"}})
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError("website_assembly_front_plane_degenerate")))
+    assert handoff.prepare_website_scene_handoff(**kwargs)["status"] == "awaiting_inputs" and packaged == []
+
+
+@pytest.mark.parametrize("code", ["website_registration_scale_conflicts_declared",
+                                  "website_registration_anchor_frame_invalid",
+                                  "website_registration_anchor_frame_missing"])
+def test_a_fault_of_our_own_waits_is_paged_and_ships_only_at_the_window_end(code):
+    """``preparation_fault_alert`` is the one list of faults ours to fix: each waits (paged there) until the job's
+    window, read live, ends within two hours, raised or a compile blocker alike, so a fix release can rescue it."""
+    from blueprint_pipeline import preparation_fault_alert as fault
+    assert code in fault.FAULT_CODES and handoff.ours(code)
+    for error in (None, ValueError(code)):
+        for window, ships in ((None, False), (3 * 86400.0, False), (3600.0, True)):
+            assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=error,
+                                   window_end=lambda window=window: window) is ships
+
+
+def test_the_codes_the_room_package_would_be_wrong_for_are_read_from_their_definitions():
+    """Every integrity code raised or appended on the preparation path, found in the source by its own wording (a
+    digest or binding that changed or does not match, a path outside the capture, a stored value out of range, a
+    receipt invalid or missing or needing reconciliation, a step still pending), keeps the job waiting."""
+    import re
+    from pathlib import Path
+    root = Path(handoff.__file__).parent
+    codes = set()
+    for name in ("website_scene_handoff", "website_task_preparation", "website_scene_runtime_inputs",
+                 "website_assembly_coverage", "website_task_masks", "website_atlas_scene_source",
+                 "website_preparation_revision", "task_family_preparation", "website_object_local_frame",
+                 "website_gemini_receipts"):
+        source = (root / f"{name}.py").read_text()
+        codes |= set(re.findall(r'(?:Error|Refusal|blockers\.append)\("([a-z][a-z0-9_]+)"', source))
+    integrity = re.compile(r".*(_changed|_mismatch|_binding_invalid|_outside_capture|_scale_invalid|_receipt_invalid"
+                           r"|_receipts_invalid|_receipt_missing|_result_missing|_requires_reconciliation|_pending"
+                           r"|_not_ready)$")
+    found = sorted(code for code in codes if integrity.match(code))
+    assert {"website_assembly_coverage_binding_mismatch", "website_base_scene_scale_invalid",
+            "website_scene_task_identity_mismatch", "website_scene_removal_manifest_outside_capture",
+            "website_gemini_requires_reconciliation"} <= set(found)
+    assert all(handoff.keeps_holding(code) for code in found)
+    assert all(handoff.goes_on([code], task_context=CONTEXT, now=0.0) is False for code in found)
+    assert handoff.keeps_holding("website_subject_origin_conflict")
+    assert not handoff.keeps_holding("website_object_spec_dimension_conflict")  # a finding, not a bad record
+
+
+def test_the_readme_names_the_right_piece_and_never_a_builder_s_or_an_exception_s_words():
+    assert handoff.piece_of("website_articulated_task_has_no_destination") == "success rule"
+    assert handoff.piece_of("task_destination_surface_contact_required") == "destination"
+    assert handoff.piece_of("website_assembly_builder_refused:the hinge axis 'z' is degenerate") == "object"

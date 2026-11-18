@@ -242,8 +242,13 @@ buys nothing more, unless it is a wall (`hard_stops.is_wall`, or a code the retr
 privacy, rights, money or the owner's closing of the run), the job's sentence is still to come, only
 a new video clears it, the job is a development test, or the room package would be wrong
 (`KEEP_HOLDING`: the job's record or inputs are bad or unsafe to read, or the room's inputs are not
-ready). A compile blocker or a refusal ships at once. A raised failure the retry policy retries
-until the deadline (an outage, a timeout) waits until the job's window, read when it fails, ends
-within two hours, then ships the same. The record names each piece left out (object, destination,
+ready, read from the codes' own wording: a changed or mismatched record, a path outside the
+capture, an invalid or missing receipt, a step still pending). A compile blocker or a typed refusal
+ships at once. A raised failure the retry policy retries until the deadline (an outage, a timeout), a
+defect (no typed code: `website_preparation_defect`) and a fault `preparation_fault_alert` pages as
+ours to fix wait until the job's window, read when it fails, ends within two hours, then ship the
+same; the retry lane runs a waiting job once more in that last stretch. The rule covers preparation
+and compile only: once the prepared scene is sent to the website, or may have been (a marker written
+before the write, or an earlier handoff's outbox receipt), a failure keeps the job waiting. The record names each piece left out (object, destination,
 success rule) with its code, and the package's README says so. If the room itself cannot be
 packaged, the job keeps waiting with the step's code.
