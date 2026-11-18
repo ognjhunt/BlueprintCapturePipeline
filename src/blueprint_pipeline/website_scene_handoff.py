@@ -375,28 +375,56 @@ KEEP_HOLDING_PREFIXES = ("scene_intake_",)
 
 
 #: Written beside the handoff just before the prepared scene is sent to the website (``prepared-scene``), whose
-#: outbox entry is forwarded into paid preparation. Once it exists, or a handoff recorded that entry, the job never
-#: takes the room-package fallback: the object may already be on its way to being bought.
+#: outbox entry is forwarded into paid preparation, and settled by the answer: ``sent`` (a receipt), ``refused`` (a
+#: typed answer that commits nothing), or left ``sending`` (no answer, or one that may have committed). An earlier
+#: release's receipt on the handoff is kept here too (``keep_outbox_receipt``), so held runs never lose it.
 OUTBOX_MARKER = "prepared_scene_outbox.json"
+#: The website's typed refusals of the write that commit nothing: a 4xx other than a conflict with an entry.
+_REFUSED_WRITE = re.compile(r"website_control_prepared-scene_http_4(?!09)[0-9]{2}(:|$)")
 
 
-def prepared_scene_may_exist(capture_root: Path) -> bool:
-    """Whether a prepared-scene outbox entry for this job may exist: this marker, or an earlier handoff's receipt."""
+def _outbox_marker(capture_root: Path) -> Path:
+    return Path(capture_root) / "pipeline" / "website_scene_preparation" / OUTBOX_MARKER
+
+
+def keep_outbox_receipt(capture_root: Path) -> None:
+    """An earlier handoff's prepared-scene receipt, kept as the marker before this run rewrites the handoff."""
     preparation = Path(capture_root) / "pipeline" / "website_scene_preparation"
-    if (preparation / OUTBOX_MARKER).exists():
-        return True
     try:
         earlier = json.loads((preparation / "handoff.json").read_text())
     except (OSError, ValueError):
+        return
+    receipt = earlier.get("website_intake_outbox") if isinstance(earlier, dict) else None
+    if isinstance(receipt, Mapping) and not _outbox_marker(capture_root).exists():
+        write_json(_outbox_marker(capture_root), {"state": "sent", "basis": "earlier_handoff_receipt",
+                                                  "outbox_id": receipt.get("id"),
+                                                  "request_digest": receipt.get("request_digest"),
+                                                  "task_context_digest": None})
+
+
+def prepared_scene_may_exist(capture_root: Path, *, task_context_digest: str | None = None) -> bool:
+    """Whether a prepared-scene outbox entry for this job may exist: a marker for this job's task context (or one
+    that names none) that is not settled ``refused``."""
+    try:
+        marker = json.loads(_outbox_marker(capture_root).read_text())
+    except FileNotFoundError:
         return False
-    return isinstance(earlier, dict) and earlier.get("website_intake_outbox") is not None
+    except (OSError, ValueError):
+        return True  # unreadable: it may exist
+    if not isinstance(marker, dict):
+        return True
+    if marker.get("state") == "refused":
+        return False
+    recorded = marker.get("task_context_digest")
+    return recorded is None or task_context_digest is None or recorded == task_context_digest
 
 
 def keeps_holding(code: str) -> bool:
-    """Whether the room package would be wrong for ``code`` (``KEEP_HOLDING``): judged on its head, before any
-    ``:detail``."""
-    head = code.split(":", 1)[0]
-    return head in KEEP_HOLDING or head.endswith(KEEP_HOLDING_SUFFIXES) or head.startswith(KEEP_HOLDING_PREFIXES)
+    """Whether the room package would be wrong for ``code`` (``KEEP_HOLDING``), judged on every ``:``-separated
+    segment: a website refusal carries its own code after its operation
+    (``website_control_preparation-spend_http_409:website_scene_sponsorship_binding_invalid``)."""
+    return any(part in KEEP_HOLDING or part.endswith(KEEP_HOLDING_SUFFIXES) or part.startswith(KEEP_HOLDING_PREFIXES)
+               for part in code.split(":"))
 
 
 #: Raised codes another run clears by itself (it holds the same paid call), waited on like an outage.
@@ -426,11 +454,15 @@ def piece_of(code: str) -> str:
     return "success rule" if head in RULE_CODES else "destination" if "destination" in head else "object"
 
 
-def ours(code: str) -> bool:
-    """Whether ``code`` is Blueprint's own fault to fix, as ``preparation_fault_alert`` pages it (its one list)."""
-    from .preparation_fault_alert import FAULT_CODES
+def ships_at_once(code: str) -> bool:
+    """Whether ``code`` is a fact about the job's own scene or wording that compile found
+    (``website_task_preparation.SCENE_FACT_BLOCKERS``), or the end of a provider's bound of unanswered sends, which
+    no later run can change (``website_gemini_receipts.EXHAUSTED``, #3636). Judged on its head: a coverage blocker
+    may name its target after a ``:``."""
+    from .website_gemini_receipts import EXHAUSTED
+    from .website_task_preparation import SCENE_FACT_BLOCKERS
     head = code.split(":", 1)[0]
-    return head in FAULT_CODES
+    return head in SCENE_FACT_BLOCKERS or code == EXHAUSTED
 
 
 def defect(error: BaseException) -> bool:
@@ -449,38 +481,38 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
             window_end: Any = lambda: None, error: BaseException | None = None) -> bool:
     """Whether a preparation stopped on ``codes`` ships the room package (owner, 2026-11-17), or keeps waiting.
 
-    It waits on a wall (``hard_stops.is_wall``, or a code the retry policy reads as privacy, rights or money,
-    the authoring admissions among them, or as the owner's closing of the run:
-    ``website_preparation_retry.classify``), on the job's sentence still to come, on a stop only a new video
-    clears (``website_recapture_required``), on a code the room package would be wrong for (``KEEP_HOLDING``),
-    and in a development test, which places the object on its own surface. A raised failure the retry policy
-    retries until the job's deadline (an outage, a timeout), a defect (``defect``) and a fault of Blueprint's own
-    (``ours``: paged by ``preparation_fault_alert``) wait until the job's window, read when asked
-    (``window_end()``), ends within ``LAST_CALL_SECONDS``, so a fix release can still find the job; a window that
-    cannot be read keeps it waiting. Every other blocker, a refusal decided by the job's inputs, ships at once. A
-    code whose "budget" is a request's size (``REQUEST_SIZE_CODES``) is not read as money.
+    It holds on a wall (``hard_stops.is_wall``, or a code the retry policy reads as privacy, rights or money, the
+    authoring admissions among them, or as the owner's closing of the run: ``website_preparation_retry.classify``),
+    on the job's sentence still to come, on a stop only a new video clears (``website_recapture_required``), on a
+    code the room package would be wrong for (``keeps_holding``, any segment), and in a development test, which
+    places the object on its own surface. Only facts about the job's own scene or wording ship at once
+    (``ships_at_once``). Everything else, an unknown code included (a configuration fault, a missing key or
+    profile, a website refusal, an outage, a defect), waits until the job's window, read when asked
+    (``window_end()``), ends within ``LAST_CALL_SECONDS``, so a fix or the next run can still prepare the job; a
+    window that cannot be read keeps it waiting. Faults ours to fix are paged (``preparation_fault_alert``). A code
+    whose "budget" is a request's size (``REQUEST_SIZE_CODES``) is not read as money.
     """
     from .hard_stops import is_wall
     from .job_retry_policy import MONEY, PRIVACY_RIGHTS
     from .website_development_test import enabled
-    from .website_preparation_retry import AWAITING_JOB_SENTENCE, OUTAGE, OWNER_CLOSED, classify
+    from .website_preparation_retry import AWAITING_JOB_SENTENCE, OWNER_CLOSED, classify
     from .website_recapture_required import CODES as RECAPTURE_CODES
     codes = [str(code) for code in codes]
     if (not codes or (error is not None and is_wall(error))
             or any(not code.startswith(REQUEST_SIZE_CODES)
                    and classify(code) in {PRIVACY_RIGHTS, MONEY, OWNER_CLOSED, AWAITING_JOB_SENTENCE} for code in codes)
-            or any(code in RECAPTURE_CODES or keeps_holding(code) for code in codes)):
+            or any(keeps_holding(code) or any(part in RECAPTURE_CODES for part in code.split(":"))
+                   for code in codes)):
         return False
     try:
         if enabled(task_context["context_digest"]):
             return False
     except (ValueError, KeyError):
         return False  # an unreadable test allowlist: the preparation is kept as before
-    if any(ours(code) for code in codes) or error is not None and (
-            str(error) in TRANSIENT or defect(error) or classify(f"{type(error).__name__}: {error}") == OUTAGE):
-        window = window_end()
-        return window is not None and window - now <= LAST_CALL_SECONDS
-    return True
+    if all(ships_at_once(code) for code in codes) and (error is None or not defect(error)):
+        return True
+    window = window_end()
+    return window is not None and window - now <= LAST_CALL_SECONDS
 
 
 def sealed_rule_withheld(capture_root: Path | None) -> dict[str, Any] | None:
@@ -734,16 +766,28 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
 
     def may_fall_back() -> bool:
         # Preparation and compile only: never once the prepared scene is being, or may have been, sent.
-        return not dispatching and not prepared_scene_may_exist(capture_root)
+        return not dispatching and not prepared_scene_may_exist(
+            capture_root, task_context_digest=(metadata.get("site_task_context") or {}).get("context_digest"))
 
-    def sending(request: Mapping[str, Any]) -> None:
+    def send(request: Mapping[str, Any]) -> dict[str, Any]:
+        # The prepared scene to the website, marked before the write and settled by its answer.
         nonlocal dispatching
+        from .website_task_context import enqueue_website_prepared_scene
         dispatching = True
-        write_json(capture_root / "pipeline" / "website_scene_preparation" / OUTBOX_MARKER,
-                   {"request_digest": cross_runtime_canonical_digest(request),
-                    "task_context_digest": context.get("context_digest")})
+        marker = {"request_digest": cross_runtime_canonical_digest(request),
+                  "task_context_digest": context.get("context_digest")}
+        write_json(_outbox_marker(capture_root), {**marker, "state": "sending"})
+        try:
+            receipt = enqueue_website_prepared_scene(task_context=context, request=request)
+        except ValueError as exc:
+            if _REFUSED_WRITE.search(str(exc)):
+                write_json(_outbox_marker(capture_root), {**marker, "state": "refused", "code": str(exc)[:200]})
+            raise
+        write_json(_outbox_marker(capture_root), {**marker, "state": "sent", "outbox_id": receipt.get("id")})
+        return receipt
 
     room_ready = dispatching = False
+    keep_outbox_receipt(capture_root)
     try:
         if clean_plate.get("privacy_verified") is not True or clean_plate.get("status") not in {"noop", "objects_removed"}:
             raise ValueError("website_scene_preparation_pending")
@@ -934,10 +978,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     preparation_path=root / "preparation.json", runtime_inputs_path=native_path,
                     task_context_path=context_path, root=binding_root(), now=now)
                 if (metadata.get("website_scene_execution_authority") or {}).get("schema_version") == "website_scene_sponsorship.v1":
-                    from .website_task_context import enqueue_website_prepared_scene
-                    sending(preparation["intake_request"])
-                    result["website_intake_outbox"] = enqueue_website_prepared_scene(
-                        task_context=context, request=preparation["intake_request"])
+                    result["website_intake_outbox"] = send(preparation["intake_request"])
             result["digest"] = canonical_digest(result, digest_field="digest")
             write_json(handoff_path, result)
             return result
@@ -1079,10 +1120,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     preparation_path=root / "preparation.json", runtime_inputs_path=native_root / "runtime_inputs.json",
                     task_context_path=context_path, root=binding_root(), now=now)
                 if authority.get("schema_version") == "website_scene_sponsorship.v1":
-                    from .website_task_context import enqueue_website_prepared_scene
-                    sending(preparation["intake_request"])
-                    result["website_intake_outbox"] = enqueue_website_prepared_scene(
-                        task_context=context, request=preparation["intake_request"])
+                    result["website_intake_outbox"] = send(preparation["intake_request"])
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
             code = blocker_code(exc)
             if may_fall_back() and goes_on([*preparation["blockers"], code], task_context=context, now=now,

@@ -34,7 +34,10 @@ FAULT_CODES = ("website_registration_anchor_frame_invalid", "website_registratio
                "website_registration_scale_conflicts_declared",
                # Since 2026-11-18: a preparation step failed in Blueprint's own code, not on a typed code
                # (``website_scene_handoff.DEFECT``); it waits for a fix release until the job's window ends.
-               "website_preparation_defect")
+               "website_preparation_defect",
+               # A host configuration the step needs is missing (a provider key, a segmenter profile).
+               "website_assembly_coverage_key_missing", "website_task_grounding_key_missing",
+               "website_sam31_profile_missing")
 _FAULT = re.compile(r"\b(" + "|".join(FAULT_CODES) + r")\b")
 _STOPPED = frozenset({"failed_retryable", "retryable_blocked", "failed_terminal"})
 
