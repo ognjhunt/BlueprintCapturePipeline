@@ -57,6 +57,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .atlas_scene_estimates import SUPPORT_GUESSED
 from .sharing_statement import OWNED_CAPTURES_PATH, SHARING_STATEMENT_VERSIONS, covers_sharing, owned_captures
 from .site_roots import is_bucket
 
@@ -112,6 +113,7 @@ ESTIMATE_SENTENCES = {
     "scene_estimate:surrounding_views_dropped": "Some surrounding views were left out to keep within the frame budget.",
     "scene_estimate:task_views_left_out": "Some views of the task area were too blurred or did not connect to the others and were left out; the object's start position comes from the views that were kept.",
     "scene_estimate:surroundings_not_connected": "Only the task area was filmed in views that connect. Any of the room around it in the simulation was not filmed; it is generated from the surrounding footage.",
+    SUPPORT_GUESSED: "No surface lay at the object's estimated bottom: Blueprint chose the surface it rests on from the video (the one its frames show it touching, else the nearest under it) and corrected where it rests onto that surface, as the object size line says.",
 }
 KIND_WORDS = {"articulated": "open or close one moving part of a fixture (a door, drawer or lid)",
               "container": "put one object into a container",
@@ -860,6 +862,25 @@ def done_sentence(contract: Mapping[str, Any] | None, *, object_name: str | None
             + _site_answer_words(assumption, _mapping(contract.get("provenance"))))
 
 
+def _resting_words(prep: Mapping[str, Any]) -> str:
+    """How Blueprint set the object down when no surface lay at its estimated bottom; empty when one did."""
+    guess = _mapping(_mapping(prep.get("support")).get("guess"))
+    heights = _mapping(_mapping(prep.get("support_search")).get("correction"))
+    moved = _number(guess.get("bottom_moved_m"))
+    if guess.get("correction") == "bottom_raised_to_the_surface_observed_top_kept" and moved is not None:
+        return (f"; its box reached {_length(moved)} below the surface its frames show it resting on, so Blueprint "
+                "raised its bottom onto that surface and kept its observed top (height "
+                f"{_length(heights.get('height_before_m'))} before, {_length(heights.get('height_after_m'))} after)")
+    if guess.get("correction") in ("moved_up_onto_the_surface", "moved_down_onto_the_surface") and moved:
+        return (f"; Blueprint moved it {'up' if moved > 0 else 'down'} {_length(abs(moved))} onto the surface its "
+                "frames show it resting on, its size unchanged")
+    drop = _number(guess.get("drop_m"))
+    if guess.get("basis") == "nearest_surface_under_footprint" and drop:
+        return (f"; no surface lay at its estimated bottom, so Blueprint moved it {'down' if drop > 0 else 'up'} "
+                f"{_length(abs(drop))} onto the nearest surface under it, its size unchanged")
+    return ""
+
+
 def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[str, Any] | None,
                             fit_table: Mapping[str, Any] | None) -> tuple[list[str], list[str]]:
     prep = preparation
@@ -880,7 +901,7 @@ def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[
     if (isinstance(low, list) and isinstance(high, list) and len(low) == len(high) == 3
             and all(_number(v) is not None for v in (*low, *high)) and all(a <= b for a, b in zip(low, high, strict=True))):
         estimated.append("Object size: " + " × ".join(_length(b - a) for a, b in zip(low, high, strict=True))
-                         + ", from the video.")
+                         + ", from the video" + _resting_words(prep) + ".")
     bounds = _mapping(_mapping(prep.get("physics")).get("bounds"))
     if "mass_kg" in bounds:
         estimated.append(f"Mass used in the simulation: {_range(bounds.get('mass_kg'), 'kg')}, a prior from the object's "
@@ -894,6 +915,8 @@ def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[
                          "estimated geometry.")
     codes = {row["code"] for row in _mapping(base_scene).get("scene_estimates") or []
              if isinstance(row, Mapping) and isinstance(row.get("code"), str)}
+    if _mapping(_mapping(prep.get("support")).get("guess")).get("flag") == SUPPORT_GUESSED:
+        codes.add(SUPPORT_GUESSED)  # the preparation's own estimate (``atlas_scene_estimates.preparation_flags``)
     for code in sorted(codes):
         estimated.append(f"`{code}`: {ESTIMATE_SENTENCES.get(code, 'an estimate the scene rests on (no plain sentence recorded for this code).')}")
     if not codes:

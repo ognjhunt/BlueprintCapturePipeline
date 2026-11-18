@@ -72,7 +72,8 @@ TASK_OBJECT_BOX_FIT_FLAGS = frozenset({"task_object_box_fit_offset", "task_objec
 #: (``website_support_height_agreement``), and it was not corrected.
 SUPPORT_HEIGHT = "scene_estimate:support_height_differs_from_picture"
 #: No surface lay within the search window under the object's estimated bottom; it rests on the nearest
-#: one under its footprint (``website_support_geometry.nearest_support_under``), moved by the recorded drop.
+#: one under its footprint (``website_support_geometry.nearest_support_under``), moved by the recorded drop,
+#: or on the surface it visibly rests on, its bottom corrected onto it (``website_resting_support``).
 SUPPORT_GUESSED = "scene_estimate:support_guessed"
 #: No catalog robot fits the job on paper (``website_robot_fit_precheck``): a note on the job, never a stop.
 #: Carried as ``scene_estimate:robot_fit_none:<cause>``, the cause that refused the most candidates.

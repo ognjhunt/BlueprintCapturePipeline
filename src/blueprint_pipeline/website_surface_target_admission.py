@@ -153,6 +153,20 @@ def admit_surface_target(*, destination: Mapping[str, Any], support: Mapping[str
     return target
 
 
+def sealer_admits(*, support, subject_min, subject_max, registration, size_tolerance, outline):
+    """The sealer's own admission of a sealed destination, run at preparation ($0)."""
+    def admitted(sealed: Mapping[str, Any]) -> bool:
+        try:
+            admit_surface_target(destination=sealed, support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), support)),
+                subject_min=subject_min, subject_max=subject_max, development_support=False,
+                placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
+                relative_error=size_tolerance, support_outline=outline)
+        except ValueError:
+            return False
+        return True
+    return admitted
+
+
 def submission_relocates_destination(preparation: Mapping[str, Any], destination: Mapping[str, Any], *,
                                      subject_min: Sequence[float], subject_max: Sequence[float]) -> bool:
     """Whether native submission moves this destination off the start before it seals the region.
