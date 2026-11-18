@@ -225,6 +225,11 @@ def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None
     return request, uploads, provenance
 
 
+def _sh_degree(splat) -> int:
+    """The spherical-harmonic degree a decoded splat carries: 0 (base colour only) to 3."""
+    return 0 if splat.sh_rest is None else round((1 + splat.sh_rest.shape[1] // 3) ** 0.5) - 1
+
+
 def _provider_failed_and_exhausted(root: Path) -> bool:
     """Every attempt under root ended without a purchase, and the provider failed one."""
     states = []
@@ -402,10 +407,14 @@ def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, 
     spz, ply = root / "atlas_refined_splat.spz", root / "atlas_refined_splat.ply"
     shutil.copyfile(original, spz)
     # Atlas publishes SPZ v2 with degree-0 colour, which decodes exactly in
-    # Python (bit-identical to splat-transform on a 2M-Gaussian Atlas splat).
-    # Any other layout fails closed here with the paid SPZ retained.
+    # Python (bit-identical to splat-transform on a 2M-Gaussian Atlas splat;
+    # capture-7c42's 2M-Gaussian splat, 2026-11-17, is degree 0 too). A splat
+    # with view-dependent colour (degree 1 to 3) keeps it: the PLY carries its
+    # ``f_rest_*`` and the package's ParticleField its degree. Any other layout
+    # fails closed here with the paid SPZ retained.
     splat = decode_spz(spz.read_bytes())
-    parameters = [splat.xyz, splat.opacity, splat.f_dc, splat.scales, splat.quats]
+    parameters = [splat.xyz, splat.opacity, splat.f_dc, splat.scales, splat.quats,
+                  *([splat.sh_rest] if splat.sh_rest is not None else [])]
     if splat.count != int(selected["role"].split("-")[-1]) or not all(np.isfinite(v).all() for v in parameters):
         raise ValueError("atlas_native_splat_decoded_count_invalid")
     write_standard_3dgs_ply(splat, ply)
@@ -421,7 +430,7 @@ def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, 
         "scale_status": "unscaled_provider_world_units", "metric_measurement_proven": False,
         "simulation_qualified": False, "physical_evidence": False,
         "claim_scope": "development_only", "billing": state["billing"],
-        "decoder": {"name": "atlas_depth_splat.decode_spz", "format": "spz_v2_sh0"},
+        "decoder": {"name": "atlas_depth_splat.decode_spz", "format": f"spz_v2_sh{_sh_degree(splat)}"},
         "outputs": [{"role": role, "path": path.name, "sha256": _sha256_file(path), "bytes": path.stat().st_size}
                     for role, path in (("splat_spz", spz), ("splat_ply", ply))]}
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")

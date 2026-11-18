@@ -198,7 +198,8 @@ retry: the same video and release give the same answer. Two changes answer it.
 
 - **Continue on a labelled estimate.** Levelling with nothing observed to level on takes the
   provider's +Y, unverified, with both observed tilts recorded (`scene_estimate:level`); a splat with
-  view-dependent colour keeps its base colour (`scene_estimate:splat_view_dependence_dropped`). A
+  view-dependent colour keeps it, turned with the splat (since 2026-11-18; before, it kept its base colour,
+  `scene_estimate:splat_view_dependence_dropped`). A
   mesh that fits no declared frame, or two, takes the frame of smallest median residual and keeps
   only faces near observed geometry (`scene_estimate:collider_registration`; no splat-aligned
   collider exists at $0 today). A scene review's citation of an unusable frame is dropped

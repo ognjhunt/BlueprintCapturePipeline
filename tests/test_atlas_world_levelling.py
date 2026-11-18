@@ -278,12 +278,38 @@ def test_a_floor_the_cameras_stand_below_is_not_declared(tmp_path):
     assert value["up_basis"] == "dominant_level_surface"
 
 
-def test_a_view_dependent_splat_is_levelled_with_its_base_colour_only_and_flagged(tmp_path):
+@pytest.mark.parametrize("degree", [1, 3])
+def test_a_view_dependent_splat_keeps_its_colour_turned_with_the_levelled_world(tmp_path, monkeypatch, degree):
+    """Since 2026-11-18 the levelled copy keeps view-dependent colour: every view sees the colour it saw before."""
+    import dataclasses
+    from blueprint_pipeline import gaussian_splat_decode
+    from blueprint_pipeline.splat_sh_rotation import sh_basis
+
+    rng = np.random.default_rng(degree)
+    dim = (degree + 1) ** 2 - 1
+    written = {}
+    original = gaussian_splat_decode.write_standard_3dgs_ply
+
+    def with_shine(splat, path):
+        # The room's splat as written by the fixture, given non-zero coefficients of this degree.
+        if Path(path).name == "atlas_depth_splat.ply":
+            splat = dataclasses.replace(splat, sh_rest=rng.normal(0, .2, (splat.count, 3 * dim)).astype(np.float32))
+            written["rest"] = splat.sh_rest
+        return original(splat, path)
+    import tests.atlas_level_room_fixture as fixture
+    monkeypatch.setattr(fixture, "write_standard_3dgs_ply", with_shine, raising=False)
     value, _ = level(tmp_path, sh_rest=True)
     assert value["status"] == "levelled" and value["up_basis"] == "observed_floor"
-    estimate = value["appearance_estimate"]
-    assert estimate["code"] == levelling.APPEARANCE_ESTIMATE_FLAG and estimate["dropped_coefficients_per_gaussian"] > 0
-    assert read_standard_3dgs_ply(outputs(value)["splat_ply"]).sh_rest is None
+    assert "appearance_estimate" not in value
+    rest = read_standard_3dgs_ply(outputs(value)["splat_ply"]).sh_rest
+    assert rest is not None and rest.shape == written["rest"].shape
+    turn = np.asarray(value["provider_to_levelled"])[:3, :3]
+    directions = rng.normal(size=(16, 3))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+
+    def colour(coefficients, seen_from):
+        return np.einsum("nck,mk->nmc", coefficients.reshape(len(coefficients), 3, dim), sh_basis(seen_from, degree))
+    assert np.abs(colour(rest, directions @ turn.T) - colour(written["rest"], directions)).max() < 1e-5
 
 
 def test_a_receipt_of_a_refusal_no_longer_made_is_derived_again(tmp_path):

@@ -147,9 +147,15 @@ def test_native_schema_refuses_invalid_input_before_purchase(case, tmp_path, cha
     assert fake.posts == fake.reservations == 0
 
 
-def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
+@pytest.mark.parametrize("degree", [0, 3])
+def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path, degree):
+    import dataclasses
     frames = source_frames()
     splat, _ = depth.fuse_posed_frames(frames)
+    if degree:
+        # A splat with view-dependent colour keeps it in the decoded PLY (f_rest_*), never refused or dropped.
+        rest = np.random.default_rng(0).integers(0, 256, (splat.count, 45)).astype(np.float32)
+        splat = dataclasses.replace(splat, sh_rest=(rest - 128) / 128)
     blob = depth.encode_spz(splat)
     pose = {"digest": "sha256:" + "a" * 64, "operation": {"id": "op_pose"},
             "binding": {"source_video_digest": "sha256:" + "b" * 64}}
@@ -186,6 +192,11 @@ def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
     assert (out / "atlas_refined_splat.spz").read_bytes() == blob
     decoded = read_standard_3dgs_ply(out / "atlas_refined_splat.ply")
     assert decoded.count == splat.count
+    assert manifest["decoder"]["format"] == f"spz_v2_sh{degree}"
+    if degree:
+        assert np.array_equal(decoded.sh_rest, splat.sh_rest)
+    else:
+        assert decoded.sh_rest is None
     assert manifest["splat_kind"] == "atlas_refined" and manifest["photometric_optimization"] is True
     assert manifest["metric_measurement_proven"] is manifest["simulation_qualified"] is False
     assert calls[0]["task"] == "posedImages2Splats"

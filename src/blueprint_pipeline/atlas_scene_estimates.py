@@ -11,7 +11,8 @@ measured is adjusted: an estimate only adds a flag.
 Codes, each ``scene_estimate:<kind>``:
 
 - ``level``: nothing observed gave the up direction; the provider's +Y stands in, unverified.
-- ``splat_view_dependence_dropped``: the levelled splat keeps its base colour only.
+- ``splat_view_dependence_dropped``: the levelled splat keeps its base colour only (receipts levelled
+  before 2026-11-18; levelling now turns view-dependent colour with the splat).
 - ``floor``: a flat floor stands in for an uneven or missing scanned one (the levelling's
   ``fallback_floor`` or ``walked_floor``).
 - ``collider_registration``: the collider's frame, or the faces kept, are an estimate.

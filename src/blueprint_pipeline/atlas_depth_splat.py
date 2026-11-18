@@ -1194,8 +1194,22 @@ def _uint8(values: np.ndarray) -> np.ndarray:
     return np.clip(np.round(values), 0, 255).astype(np.uint8)
 
 
+def _sh_degree(rest: np.ndarray | None, count: int) -> int:
+    """The degree of channel-major higher-order SH (``SplatData.sh_rest``); 0 when there is none."""
+    if rest is None:
+        return 0
+    rest = np.asarray(rest)
+    coefficients = rest.shape[1] // 3 if rest.ndim == 2 else -1
+    degree = next((d for d in (1, 2, 3) if (d + 1) ** 2 - 1 == coefficients), None)
+    if rest.ndim != 2 or rest.shape[0] != count or rest.shape[1] % 3 or degree is None:
+        raise ValueError("atlas_depth_splat_spz_sh_invalid")
+    return degree
+
+
 def encode_spz(splat: SplatData) -> bytes:
-    """Niantic SPZ v2 with degree-0 colour, gzip-wrapped and byte-reproducible."""
+    """Niantic SPZ v2, gzip-wrapped and byte-reproducible: degree-0 colour, plus higher-order SH when the splat
+    carries it (``sh_rest``), stored as SPZ does, colour channel innermost, ``round(v * 128 + 128)``."""
+    degree = _sh_degree(splat.sh_rest, splat.count)
     fixed = np.round(splat.xyz.astype(np.float64) * (1 << SPZ_FRACTIONAL_BITS)).astype(np.int64)
     if np.any(np.abs(fixed) >= 1 << 23):
         raise ValueError("atlas_depth_splat_spz_position_out_of_range")
@@ -1203,24 +1217,32 @@ def encode_spz(splat: SplatData) -> bytes:
     quats = splat.quats.astype(np.float64)
     quats /= np.linalg.norm(quats, axis=1, keepdims=True)
     quats *= np.where(quats[:, :1] < 0, -1.0, 1.0)
-    payload = b"".join([
-        struct.pack("<IIIBBBB", SPZ_MAGIC, SPZ_VERSION, splat.count, 0, SPZ_FRACTIONAL_BITS, 0, 0),
+    parts = [
+        struct.pack("<IIIBBBB", SPZ_MAGIC, SPZ_VERSION, splat.count, degree, SPZ_FRACTIONAL_BITS, 0, 0),
         positions.astype(np.uint8).tobytes(),
         _uint8(255.0 / (1.0 + np.exp(-splat.opacity.astype(np.float64)))).tobytes(),
         _uint8(splat.f_dc.astype(np.float64) * (SPZ_COLOR_SCALE * 255.0) + 127.5).tobytes(),
         _uint8((splat.scales.astype(np.float64) + 10.0) * 16.0).tobytes(),
         _uint8(quats[:, 1:] * 127.5 + 127.5).tobytes(),
-    ])
-    return gzip.compress(payload, compresslevel=9, mtime=0)
+    ]
+    if degree:
+        dim = (degree + 1) ** 2 - 1
+        rest = np.asarray(splat.sh_rest, np.float64).reshape(splat.count, 3, dim).transpose(0, 2, 1)
+        parts.append(_uint8(rest * 128.0 + 128.0).tobytes())
+    return gzip.compress(b"".join(parts), compresslevel=9, mtime=0)
 
 
 def decode_spz(data: bytes) -> SplatData:
+    """Niantic SPZ v2 of SH degree 0 to 3. Higher-order SH (stored colour channel innermost, ``(b - 128) / 128``)
+    comes back channel-major in ``sh_rest`` with its ``f_rest_*`` names, as a standard 3DGS PLY holds it; a
+    degree-0 file decodes exactly as it always has."""
     raw = gzip.decompress(data)
     magic, version, count, degree, fractional, _flags, _reserved = struct.unpack_from("<IIIBBBB", raw)
-    if magic != SPZ_MAGIC or version != SPZ_VERSION or degree != 0 or len(raw) != 16 + count * 19:
+    dim = (degree + 1) ** 2 - 1 if degree <= 3 else -1
+    if magic != SPZ_MAGIC or version != SPZ_VERSION or dim < 0 or len(raw) != 16 + count * (19 + 3 * dim):
         raise ValueError("atlas_depth_splat_spz_invalid")
     body = np.frombuffer(raw, dtype=np.uint8, offset=16).astype(np.int64)
-    position, rest = body[:count * 9].reshape(count, 3, 3), body[count * 9:]
+    position, rest = body[:count * 9].reshape(count, 3, 3), body[count * 9:count * 19]
     fixed = position[..., 0] | (position[..., 1] << 8) | (position[..., 2] << 16)
     fixed = np.where(fixed & 0x800000, fixed - (1 << 24), fixed)
     alpha = np.clip(rest[:count] / 255.0, 1e-6, 1 - 1e-6)
@@ -1228,11 +1250,16 @@ def decode_spz(data: bytes) -> SplatData:
                                 for index in range(3))
     xyz = rotation / 127.5 - 1.0
     w = np.sqrt(np.clip(1.0 - np.sum(xyz * xyz, axis=1), 0.0, None))
+    sh_rest, properties = None, PLY_PROPERTIES
+    if dim:
+        coefficients = body[count * 19:].reshape(count, dim, 3).transpose(0, 2, 1).reshape(count, 3 * dim)
+        sh_rest = ((coefficients - 128.0) / 128.0).astype(np.float32)
+        properties = (*PLY_PROPERTIES, *(f"f_rest_{index}" for index in range(3 * dim)))
     return SplatData(count=count, xyz=(fixed / float(1 << fractional)).astype(np.float32),
                      opacity=np.log(alpha / (1 - alpha)).astype(np.float32),
                      f_dc=((colors / 255.0 - 0.5) / SPZ_COLOR_SCALE).astype(np.float32),
                      scales=(scales / 16.0 - 10.0).astype(np.float32),
-                     quats=np.column_stack([w, xyz]).astype(np.float32), properties=PLY_PROPERTIES)
+                     quats=np.column_stack([w, xyz]).astype(np.float32), properties=properties, sh_rest=sh_rest)
 
 
 def splats2mesh_task_spec(*, frames: Sequence[Mapping[str, Any]], spz: Path,

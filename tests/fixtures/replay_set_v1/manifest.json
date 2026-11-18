@@ -260,7 +260,7 @@
    "synthetic": true,
    "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
    "job_kind": "website_scene_preparation",
-   "description": "A floor and two walls whose splat carries view-dependent colour: levelled on the observed floor with its base colour only, and the floor filled under the filmed path, both named.",
+   "description": "A floor and two walls whose splat carries view-dependent colour: levelled on the observed floor with that colour turned with it, and the floor filled under the filmed path, named.",
    "input_variety": {
     "video_resolution": "not_applicable",
     "clip_length": "not_applicable",
@@ -280,7 +280,7 @@
      "expected_stop": {
       "kind": "estimate",
       "stage": "levelling",
-      "code": "scene_estimate:floor,scene_estimate:splat_view_dependence_dropped"
+      "code": "scene_estimate:floor"
      }
     }
    ]

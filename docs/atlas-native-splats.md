@@ -34,8 +34,12 @@ gaps in the draft, which is no longer the final appearance.
 3. The largest returned count is kept. Its original SPZ is retained and decoded
    in Python (`atlas_depth_splat.decode_spz`; Atlas publishes SPZ v2 with
    degree-0 colour, bit-identical to `splat-transform` on a 2M-Gaussian Atlas
-   splat) into a standard 3DGS PLY. Any other layout fails closed with the paid
-   SPZ kept, so a retry never buys twice.
+   splat; capture-7c42's 2M-Gaussian splat of 2026-11-17 is degree 0 too) into a
+   standard 3DGS PLY. A splat of SH degree 1 to 3 keeps its view-dependent colour:
+   the PLY carries its `f_rest_*` (channel-major), levelling turns it with the
+   splat (`splat_sh_rotation`) and the package's ParticleField carries its degree.
+   The website preview stays band-0 (`website_scene_preview`, see there). Any other
+   layout fails closed with the paid SPZ kept, so a retry never buys twice.
 4. `atlas_refined_splat_manifest.json` binds the pose, the draft manifest, the
    generated-result digests, the request, every upload and the whole-view
    verdicts. Mesh registration keeps the draft's fusion grid as its tolerance.
