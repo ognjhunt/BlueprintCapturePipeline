@@ -363,7 +363,9 @@ def test_a_ready_atlas_job_is_the_scene_and_its_pose_the_geometry_without_marble
     monkeypatch.setattr(handoff, "compile_website_scene_preparation",
                         lambda **value: seen.update(compile=value) or (_ for _ in ()).throw(ValueError("stop")))
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert result["blockers"] == ["stop"] and result["geometry_backend"] == "world_labs_atlas"
+    # An untyped "stop" is read as Blueprint's defect: the job waits under its code (``blocker_code``).
+    assert result["blockers"] == [handoff.DEFECT + ":ValueError"] and result["defect"] == "ValueError: stop"
+    assert result["geometry_backend"] == "world_labs_atlas"
     assert seen["bind"] == {"task_masks": masks, "source_geometry": ready["source_geometry"]}
     assert seen["compile"]["base_scene"] == ready["base_scene"]
     assert seen["compile"]["source_geometry"] == ready["source_geometry"] and seen["compile"]["task_masks"] == bound
@@ -1127,8 +1129,12 @@ CONTEXT = {"context_digest": "sha256:" + "a" * 64}
     (["website_subject_origin_conflict"], False, False),
     # A stop only a new video clears keeps its own hold.
     (["website_registration_poor_fit"], False, False),
-    # A code that reads as money holds, though this one counts the builder's tokens (a keyword false positive).
-    (["authoring_frames_token_budget_exceeded"], False, False),
+    # The frame "budget" is the size of one authoring request (``authoring_frame_budget``: 40,000 tokens, 15 MB),
+    # not money: it ships. A budget of dollars still reads as money and holds.
+    (["authoring_frames_token_budget_exceeded"], False, True),
+    (["authoring_frame_bytes_exceed_budget:decoded-000000003.png"], False, True),
+    (["website_native_construction_budget_exceeds_authority"], False, False),
+    (["website_scene_preparation_budget_exhausted"], False, False),
 ])
 def test_one_rule_ships_every_blocker_that_is_no_wall(monkeypatch, blockers, development, expected):
     monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: development)
@@ -1143,7 +1149,10 @@ def test_an_unreadable_development_allowlist_keeps_the_preparation(monkeypatch):
 @pytest.mark.parametrize("error, transient", [
     (TimeoutError("timed out"), True), (ValueError("website_control_preparation-spend_http_503:unavailable"), True),
     (ValueError("website_gemini_request_in_progress"), True), (OSError(28, "No space left on device"), True),
-    (ValueError("website_gemini_unanswered_dispatches_exhausted"), False), (KeyError("frames"), False),
+    # Blueprint's defects wait like an outage: a release may fix them, and the room package is final.
+    (KeyError("frames"), True), (TypeError("'NoneType' object is not subscriptable"), True),
+    (ValueError("operands could not be broadcast together"), True), (FileNotFoundError(2, "No such file"), True),
+    (ValueError("website_gemini_unanswered_dispatches_exhausted"), False),
     (ValueError("website_assembly_coverage_mask_resolution_mismatch"), False)])
 def test_a_raised_failure_retried_until_the_deadline_waits_for_the_window_end_and_a_refusal_ships_at_once(
         monkeypatch, error, transient):
@@ -1294,3 +1303,48 @@ def test_the_room_package_names_each_piece_it_could_not_prepare(tmp_path, monkey
         "Blueprint could not prepare the job's destination (task_destination_surface_contact_required). "
         "Blueprint could not prepare the job's success rule (website_owner_success_criteria_translation_required). "
         f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+
+
+def test_a_defect_waits_named_and_paged_and_ships_only_at_the_window_end(tmp_path, monkeypatch, ready_atlas):
+    """A KeyError in a preparation step is Blueprint's bug: the job waits under ``website_preparation_defect:KeyError``
+    (which pages the owner) with the message kept, so a fix release can still find it; only when the job's window
+    ends within two hours does the room package ship, the code named on its record."""
+    from blueprint_pipeline import preparation_fault_alert as fault
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    packaged = room_recorder(monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: {}["frames"])
+    code = "website_preparation_defect:KeyError"
+    stopped = {"status": "failed_retryable", "last_error": f"website_scene_preparation: {code}"}
+    assert fault._fault(stopped) == handoff.DEFECT  # the owner is paged, as for our own records
+    for ends_in in (None, 3 * 86400):
+        if ends_in is not None:
+            _granted(tmp_path, kwargs, ends_in=ends_in)
+        result = handoff.prepare_website_scene_handoff(**kwargs)
+        assert result["status"] == "awaiting_inputs" and result["blockers"] == [code]
+        assert result["defect"] == "KeyError: 'frames'" and packaged == []
+    _granted(tmp_path, kwargs, ends_in=3600)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written"
+    assert packaged[-1]["flags"] == [code] and packaged[-1]["not_prepared"] == [{"piece": "object", "code": code}]
+
+
+def test_a_waiting_preparation_runs_once_more_in_the_last_two_hours_of_its_window(tmp_path):
+    """Retry lane: whatever its schedule (spent timed retries included), a waiting preparation runs once when its
+    window, read live, ends within two hours, so the handoff can ship the room package before the window ends."""
+    from datetime import datetime, timedelta, timezone
+    from blueprint_pipeline.website_preparation_retry import LAST_CALL_SECONDS, last_call_due
+    kwargs = inputs(tmp_path)
+    now = datetime.fromtimestamp(kwargs["now"], timezone.utc)
+    ledger = {"scene_id": kwargs["descriptor"]["scene_id"], "capture_id": kwargs["descriptor"]["capture_id"],
+              "last_attempt_started_at": (now - timedelta(hours=5)).isoformat()}
+    assert LAST_CALL_SECONDS == handoff.LAST_CALL_SECONDS
+    assert last_call_due(tmp_path, ledger, now) is False  # no grant: no window to read
+    _granted(tmp_path, kwargs, ends_in=3 * 3600)
+    assert last_call_due(tmp_path, ledger, now) is False  # not yet
+    _granted(tmp_path, kwargs, ends_in=3600)
+    assert last_call_due(tmp_path, ledger, now) is True
+    ran = {**ledger, "last_attempt_started_at": (now - timedelta(minutes=10)).isoformat()}
+    assert last_call_due(tmp_path, ran, now) is False  # once: it already ran in that stretch
+    _granted(tmp_path, kwargs, ends_in=-60)
+    assert last_call_due(tmp_path, ledger, now) is False  # the window has ended

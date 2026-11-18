@@ -7,6 +7,7 @@ discard completed preparation or label the scene simulator-ready.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -368,6 +369,15 @@ KEEP_HOLDING = frozenset({
 KEEP_HOLDING_PREFIXES = ("scene_intake_",)
 #: Raised codes another run clears by itself (it holds the same paid call), waited on like an outage.
 TRANSIENT = frozenset({"website_gemini_request_in_progress"})
+#: A typed blocker: a refusal raised under its own code (``word_word[:detail]``). Anything else raised (a
+#: KeyError, a TypeError, an untyped message) is Blueprint's defect, not a fact about the job.
+_TYPED = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?::|$)")
+#: A defect is recorded under this code with its exception type (``blocker_code``). It never ships at once: the
+#: room package is final, and a release that fixes the defect must still find the job. It waits like an outage,
+#: the owner is paged (``preparation_fault_alert``), and at the window's end it ships, the code named.
+DEFECT = "website_preparation_defect"
+#: Codes whose "budget" counts tokens or bytes of one provider request (``authoring_frame_budget``), never money.
+REQUEST_SIZE_CODES = ("authoring_frame_bytes_exceed_budget:", "authoring_frames_token_budget_exceeded")
 #: Blockers that leave out Blueprint's success rule rather than the object or its destination.
 RULE_CODES = frozenset({"website_owner_success_criteria_translation_required"})
 #: For a job with a grant, the longest wait between two retries of an outage or a money wait
@@ -380,6 +390,18 @@ def piece_of(code: str) -> str:
     return "destination" if "destination" in code else "success rule" if code in RULE_CODES else "object"
 
 
+def defect(error: BaseException) -> bool:
+    """Whether ``error`` is Blueprint's defect: raised under no typed code, and no outage either."""
+    from .website_preparation_retry import OUTAGE, classify
+    return not ((isinstance(error, ValueError) and _TYPED.match(str(error))) or str(error) in TRANSIENT
+                or classify(f"{type(error).__name__}: {error}") == OUTAGE)
+
+
+def blocker_code(error: BaseException) -> str:
+    """The code a raised failure is recorded under: its own, or ``DEFECT`` with its type."""
+    return f"{DEFECT}:{type(error).__name__}" if defect(error) else str(error)
+
+
 def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float,
             window_end: Any = lambda: None, error: BaseException | None = None) -> bool:
     """Whether a preparation stopped on ``codes`` ships the room package (owner, 2026-11-17), or keeps waiting.
@@ -389,9 +411,10 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
     ``website_preparation_retry.classify``), on the job's sentence still to come, on a stop only a new video
     clears (``website_recapture_required``), on a code the room package would be wrong for (``KEEP_HOLDING``),
     and in a development test, which places the object on its own surface. A raised failure the retry policy
-    retries until the job's deadline (an outage, a timeout) waits until the job's window, read when asked
-    (``window_end()``), ends within ``LAST_CALL_SECONDS``; a window that cannot be read keeps it waiting. Every
-    other blocker, a refusal decided by the job's inputs, ships at once.
+    retries until the job's deadline (an outage, a timeout), and a defect (``defect``), wait until the job's
+    window, read when asked (``window_end()``), ends within ``LAST_CALL_SECONDS``; a window that cannot be read
+    keeps it waiting. Every other blocker, a refusal decided by the job's inputs, ships at once. A code whose
+    "budget" is a request's size (``REQUEST_SIZE_CODES``) is not read as money.
     """
     from .hard_stops import is_wall
     from .job_retry_policy import MONEY, PRIVACY_RIGHTS
@@ -400,7 +423,8 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
     from .website_recapture_required import CODES as RECAPTURE_CODES
     codes = [str(code) for code in codes]
     if (not codes or (error is not None and is_wall(error))
-            or any(classify(code) in {PRIVACY_RIGHTS, MONEY, OWNER_CLOSED, AWAITING_JOB_SENTENCE} for code in codes)
+            or any(not code.startswith(REQUEST_SIZE_CODES)
+                   and classify(code) in {PRIVACY_RIGHTS, MONEY, OWNER_CLOSED, AWAITING_JOB_SENTENCE} for code in codes)
             or any(code in RECAPTURE_CODES or code in KEEP_HOLDING or code.startswith(KEEP_HOLDING_PREFIXES)
                    for code in codes)):
         return False
@@ -409,10 +433,10 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
             return False
     except (ValueError, KeyError):
         return False  # an unreadable test allowlist: the preparation is kept as before
-    if error is not None:
-        if str(error) in TRANSIENT or classify(f"{type(error).__name__}: {error}") == OUTAGE:
-            window = window_end()
-            return window is not None and window - now <= LAST_CALL_SECONDS
+    if error is not None and (str(error) in TRANSIENT or defect(error)
+                              or classify(f"{type(error).__name__}: {error}") == OUTAGE):
+        window = window_end()
+        return window is not None and window - now <= LAST_CALL_SECONDS
     return True
 
 
@@ -995,30 +1019,36 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     result["website_intake_outbox"] = enqueue_website_prepared_scene(
                         task_context=context, request=preparation["intake_request"])
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
-            if goes_on([*preparation["blockers"], str(exc)], task_context=context, now=now, error=exc,
+            code = blocker_code(exc)
+            if goes_on([*preparation["blockers"], code], task_context=context, now=now, error=exc,
                        window_end=lambda: retained_window_end(capture_root, scene_id=descriptor["scene_id"],
                                                               capture_id=descriptor["capture_id"])):
                 # The object's inputs cannot be made, and nothing the preparation holds is a wall: the room
                 # package, flagged (``goes_on``).
-                return room_package(None, flags=[str(exc)], not_prepared=[str(exc)])
+                return room_package(None, flags=[code], not_prepared=[code])
             # Preserve finished CPU outputs when a later handoff is held.
-            result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])
+            result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[code],
+                **({"defect": f"{type(exc).__name__}: {exc}"[:500]} if code != str(exc) else {}))
     except (ValueError, KeyError, TypeError, OSError) as exc:
         from .website_gemini_receipts import CreditDepleted, last_money_recheck
 
         def window_end() -> float | None:
             return retained_window_end(capture_root, scene_id=descriptor["scene_id"],
                                        capture_id=descriptor["capture_id"])
-        if room_ready and (goes_on([str(exc)], task_context=metadata.get("site_task_context") or {}, now=now,
+        code = blocker_code(exc)
+        if room_ready and (goes_on([code], task_context=metadata.get("site_task_context") or {}, now=now,
                                    error=exc, window_end=window_end)
                            or isinstance(exc, CreditDepleted) and last_money_recheck(exc, now, window_end())):
             # A step of this preparation failed for no wall (``goes_on``): the job goes on as the room package,
             # flagged, and buys nothing. Gemini's answer that Blueprint's credits are depleted is a money wait
             # until the job's window, read now, ends before it can be asked again (``CreditDepleted``).
             try:
-                return room_package(None, flags=[str(exc)], not_prepared=[str(exc)])
+                return room_package(None, flags=[code], not_prepared=[code])
             except (ValueError, KeyError, TypeError, OSError):
                 pass  # the room cannot be packaged either: the step's code is kept, and the job retries
+        if code != str(exc):
+            # A defect waits, recorded under its code (the owner is paged) with its message for whoever fixes it.
+            result["defect"] = f"{type(exc).__name__}: {exc}"[:500]
         from .website_recapture_required import CODES as RECAPTURE_CODES, FIELD as RECAPTURE_FIELD, record
         stopped_context = metadata.get("site_task_context") or {}
         if (isinstance(exc, ValueError) and str(exc) in RECAPTURE_CODES
@@ -1027,7 +1057,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result.update(status="needs_input", blockers=[str(exc)], **{RECAPTURE_FIELD: record(
                 str(exc), task_context_digest=stopped_context["context_digest"])})
         else:
-            result.update(status="awaiting_inputs", blockers=[str(exc)])
+            result.update(status="awaiting_inputs", blockers=[code])
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(handoff_path, result)
     return result

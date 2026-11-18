@@ -31,7 +31,10 @@ LEDGER_GLOB = "*/scenes/site-*/captures/*/pipeline_job_ledger.json"
 MAX_LEDGERS = 2048
 MAX_LEDGER_BYTES = 1024 * 1024
 FAULT_CODES = ("website_registration_anchor_frame_invalid", "website_registration_anchor_frame_missing",
-               "website_registration_scale_conflicts_declared")
+               "website_registration_scale_conflicts_declared",
+               # Since 2026-11-18: a preparation step failed in Blueprint's own code, not on a typed code
+               # (``website_scene_handoff.DEFECT``); it waits for a fix release until the job's window ends.
+               "website_preparation_defect")
 _FAULT = re.compile(r"\b(" + "|".join(FAULT_CODES) + r")\b")
 _STOPPED = frozenset({"failed_retryable", "retryable_blocked", "failed_terminal"})
 
@@ -97,5 +100,5 @@ def describe(alert: Mapping[str, Any]) -> str:
     more = int(alert.get("count") or 1) - 1
     tail = f" (+{more} more)" if more > 0 else ""
     blockers = alert.get("blockers") or ["?"]
-    return (f"website preparation stopped on Blueprint's own records [{blockers[0]}], ours to fix; the site "
+    return (f"website preparation stopped on Blueprint's own records or code [{blockers[0]}], ours to fix; the site "
             f"is told only that it needs our review: {alert.get('label') or alert.get('target')}{tail}")
