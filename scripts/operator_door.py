@@ -412,6 +412,9 @@ def _terminal(state: dict[str, Any]) -> bool | None:
         if kind == "selected-handoff" and outcome.get("status") == "completed":
             # This proves the bounded command returned, not downstream job completion.
             return type(outcome.get("exit_code")) is int and outcome["exit_code"] == 0
+        if kind == "purge-experiment-folder":
+            # Its own successes; an absent folder is one already removed, not a failure.
+            return outcome.get("status") in {"planned", "emptied", "already_empty", "absent"}
         return outcome.get("status") in _TERMINAL_OK
     status = result.get("status")
     if status == "done":

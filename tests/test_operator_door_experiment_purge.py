@@ -285,3 +285,13 @@ def test_the_client_sends_one_named_folder(monkeypatch, apply):
     assert sent == [{"kind": "purge-experiment-folder", "folder": FOLDER, "apply": apply}]
     with pytest.raises(SystemExit):
         client.build_parser().parse_args(["purge-experiment-folder", "g1-841757-development"])
+
+
+@pytest.mark.parametrize(("status", "verdict"), [("planned", True), ("emptied", True), ("already_empty", True),
+                                                 ("absent", True), ("refused", False), ("failed", False)])
+def test_the_waiting_client_treats_each_purge_outcome_as_done_or_failed(status, verdict):
+    client = _module(ROOT / "scripts" / "operator_door.py", "operator_door_client_purge_wait")
+    state = {"request": {"kind": "purge-experiment-folder"}, "outcome": {"status": status}}
+    assert client._terminal(state) is verdict
+    # Other kinds keep their own sets: an "absent" retirement is not a success.
+    assert client._terminal({"request": {"kind": "retire-scene-workspace"}, "outcome": {"status": "absent"}}) is False
