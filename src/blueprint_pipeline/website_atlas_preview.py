@@ -427,8 +427,11 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
         result = (run_step() if run_step is not None else run_atlas_pipeline(source_video=source_video,
             output_root=job_dir, task_context=task_context, max_polls=1, checkpoint=checkpoint))
         if result["status"] == "processing":
+            # A step may name when it is next due (a refined splat's timed retry); otherwise at once.
+            due = result.get("next_attempt_at_epoch")
+            due = int(due) if isinstance(due, (int, float)) and not isinstance(due, bool) and due > current else current
             return _transition(job, current, "processing", None, stage=result["stage"],
-                               next_attempt_at_epoch=current, **_answered(job, result["stage"]))
+                               next_attempt_at_epoch=_by_deadline(job, due), **_answered(job, result["stage"]))
         completion = result.get('scene_completion') or {}
         if completion.get('status') not in (None, 'completed'):
             # A downloadable source reconstruction is retained evidence, not a
@@ -468,10 +471,14 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
     # never ran (it runs only once a job ends); the source is authorized now.
     if job.get("archive_retraction") == "pending":
         job = {**job, "archive_retraction": None}
-    # The adopted refined-splat form; a minimal one that left gap views out may be upgraded once.
+    # The adopted refined-splat form; a minimal one that left gap views out may be upgraded once. A look that
+    # is the draft for good names why (``preparation_fault_alert`` pages it once).
+    fallback = (result.get("appearance") or {}).get("fallback_reason")
     return _transition(job, current, "ready", None, stage="archived", archive=archive, transient_failures=0,
                        result_digest=result["digest"], splat_available=bool(result.get("splat_available")),
-                       mesh_available=bool(result.get("mesh_available")), refined_splat=result.get("refined_splat"))
+                       mesh_available=bool(result.get("mesh_available")), refined_splat=result.get("refined_splat"),
+                       **({"look_fallback": fallback if isinstance(fallback, str) else None}
+                          if isinstance(fallback, str) or "look_fallback" in job else {}))
 
 
 def atlas_asset_ids(job_dir: Path) -> list[str]:

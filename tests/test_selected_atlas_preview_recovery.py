@@ -738,7 +738,13 @@ def test_status_shows_a_splat_rebuild_and_retry_requests_it_only_within_the_allo
     status = recover(site)["atlas"]
     rebuild = status["job"]["splat_rebuild"]
     assert rebuild["reasons"] == ["pose_refinement_not_accepted", "views_disagree_with_measured_neighbours"]
-    assert rebuild["expected_cost_usd"] == 6.56 and rebuild["allowance_covers_maximum"] is (remaining == 23.5)
+    # Expected: the 31 candidates the parent's selection judged (a fresh selection keeps every distinct,
+    # sharp one up to the provider's 512) plus its 10 task-source views at $0.01, then the $5 splat and
+    # $0.50 mesh: 41 x 0.01 + 5.5 = 5.91. The allowance check reads the maximum, the worst case: 512 views
+    # plus the 10 task-source views, the splat and mesh and one $4 scale review, 5.22 + 5.5 + 4 = 14.72.
+    assert rebuild["expected_cost_usd"] == pytest.approx(5.91)
+    assert rebuild["maximum_cost_usd"] == pytest.approx(14.72)
+    assert rebuild["allowance_covers_maximum"] is (remaining == 23.5)
     before = site.job_path.read_bytes()
     if remaining == 5:
         # Money: the job's allowance must cover the most the rebuild can cost.

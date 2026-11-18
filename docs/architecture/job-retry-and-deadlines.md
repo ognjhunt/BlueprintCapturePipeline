@@ -198,7 +198,8 @@ retry: the same video and release give the same answer. Two changes answer it.
 
 - **Continue on a labelled estimate.** Levelling with nothing observed to level on takes the
   provider's +Y, unverified, with both observed tilts recorded (`scene_estimate:level`); a splat with
-  view-dependent colour keeps its base colour (`scene_estimate:splat_view_dependence_dropped`). A
+  view-dependent colour keeps it, turned with the splat (since 2026-11-18; before, it kept its base colour,
+  `scene_estimate:splat_view_dependence_dropped`). A
   mesh that fits no declared frame, or two, takes the frame of smallest median residual and keeps
   only faces near observed geometry (`scene_estimate:collider_registration`; no splat-aligned
   collider exists at $0 today). A scene review's citation of an unusable frame is dropped
@@ -255,3 +256,23 @@ the website, or may have been (a marker written before the write and settled by 
 earlier handoff's receipt kept as that marker), a failure keeps the job waiting. The record names each piece left out (object, destination,
 success rule) with its code, and the package's README says so. If the room itself cannot be
 packaged, the job keeps waiting with the step's code.
+
+## 9. A refined splat that keeps failing waits for a fresh attempt (2026-11-18)
+
+When every refined-splat form of a website job has failed at World Labs (the task runner's three
+operations on outages and one resubmit of `EXECUTION_FAILED`, then the real-frames-only form), the job
+no longer takes the depth-fused draft as its look at once (`atlas_refined_splat_retry`). It waits at
+`refined_splat_retry_wait` (a scheduled wait the Atlas worker and the stall alarm honour) and then
+buys a fresh real-frames-only attempt under its own root, reservation and idempotency key, on this
+policy's six timed retries and then daily while the window is open. The draft becomes the look for
+good, recorded as `refined_splat_retry` on the result's `appearance` and as `look_fallback` on the
+ready Atlas job (paged once, `website_atlas_look_draft_final`), only when the job's remaining
+allowance cannot cover another splat and the mesh after it, when a money wall refuses an attempt
+with nothing in flight (the job has a usable draft, so it takes it rather than park; nothing more is
+bought for the look), when the job's deadline is within two hours, or, with no deadline readable,
+after the six timed retries. The deadline is the window, read live
+(`website_preparation_terminal.retained_window_end`), never later than the Atlas job's own seven-day
+life (`MAXIMUM_JOB_SECONDS`, which ends it `atlas_preview_expired`): a grant issued after enqueue,
+renewed or extended can end after it. An attempt that has sent anything is always resumed from its
+receipts; a new one is recorded only once every earlier operation is proven failed. A privacy or
+rights refusal stays a stop.

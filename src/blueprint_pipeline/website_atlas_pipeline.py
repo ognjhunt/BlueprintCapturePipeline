@@ -476,15 +476,16 @@ def _job_edit_scope(output_root: Path, requested: str | None, *, default="requir
     return scope
 
 
-def _splat_input_options(pose_root, *, review, policy, edit_scope):
+def _splat_input_options(pose_root, *, review, policy, edit_scope, repose_view_cost_usd=0.0):
     """Keep historical inputs immutable; new refined-splat jobs pose denser real footage.
 
     A removal job that cleans every selected view keeps 16 to 30 of them: each is
     also an edit. A preserved scene's refined splat trains on its posed selection,
-    so that selection fills toward ``SPLAT_FRAME_TARGET`` sharp views spread in
+    so that selection keeps every distinct sharp view toward ``SPLAT_FRAME_TARGET`` (the provider's capacity), spread in
     time. Every new selection's added views also clear the clip's relative
     sharpness floor (``RELATIVE_SHARPNESS_FRACTION``). A retained selection (or
-    its inputs, before the plan is written) keeps the profile it recorded.
+    its inputs, before the plan is written) keeps the profile it recorded. A new refined-splat
+    selection holds ``repose_view_cost_usd`` back for each view it poses (the job's re-pose term).
     """
     from .atlas_video_inputs import GEOMETRY_INPUTS_FILE, RELATIVE_SHARPNESS_FRACTION, takes_reviewed_background
     from .website_atlas_pose import SPLAT_FRAME_TARGET
@@ -494,21 +495,25 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
                     else json.loads(inputs.read_text()).get("binding", {}))
         dense, target = recorded.get("minimum_source_frames") == 16, recorded.get("splat_frame_target")
         sharpness = recorded.get("relative_sharpness_fraction")
+        hold = (json.loads(inputs.read_text()).get("binding", {}) if inputs.is_file() else {}).get(
+            "repose_view_cost_usd")
     else:
         splat = "refined_splat_cost_usd" in policy
         dense = splat and edit_scope == "all_selected_views" and takes_reviewed_background(review)
         target = SPLAT_FRAME_TARGET if splat and review.get("subject_origin") in PRESERVED_SCENE_ORIGINS else None
         sharpness = RELATIVE_SHARPNESS_FRACTION
+        hold = repose_view_cost_usd
     profile = {"relative_sharpness_fraction": sharpness} if sharpness else {}
     if dense:
         return {"minimum_frames": 16, "maximum_frames": 30, **profile}
-    return {**({"splat_frame_target": target} if target else {}), **profile}
+    return {**({"splat_frame_target": target} if target else {}), **profile,
+            **({"repose_view_cost_usd": hold} if target and hold else {})}
 
 
 REFINED_APPEARANCE, DRAFT_APPEARANCE = "atlas_refined_splat", "depth_fused_draft_fallback"
 
 
-def _splat_input_selection(*, frames, pose, draft, output_root, review, source_root, bought):
+def _splat_input_selection(*, frames, pose, draft, output_root, review, source_root, bought, source_pose=None):
     """The posed views the refined splat is sent, decided once before its purchase and recorded.
 
     ``atlas_splat_input_quality.select_splat_frames`` reads the draft's per-pair
@@ -534,14 +539,22 @@ def _splat_input_selection(*, frames, pose, draft, output_root, review, source_r
     inputs_path = source_root / GEOMETRY_INPUTS_FILE
     rows = json.loads(inputs_path.read_text()).get("frames", []) if inputs_path.is_file() else []
     agreement = draft.get("cross_view_agreement") if draft.get("pose_result_digest") == pose["digest"] else None
-    record = select_splat_frames(frames=frames, agreement=agreement,
+    route = {key for group in review.get("coverage_requirements") or []
+             if group.get("role") in WORKING_AREA_ROLES for key in group.get("required_frame_ids", [])}
+    # The coverage map first ($0, once per pose, never raises): a view that saw one of its weak regions is
+    # never cut as a no-parallax near-duplicate (owner, 2026-11-18).
+    from .atlas_coverage_map import coverage_before_splat
+    mapped = coverage_before_splat(frames=frames, pose=pose, output_root=output_root, source_root=source_root,
+                                   selection={"route_frame_ids": sorted(route)}, source_pose=source_pose) or {}
+    weak = sorted({key for row in (mapped.get("regions") or []) if mapped.get("status") == "mapped"
+                   for key in row.get("seen_by") or []})
+    record = select_splat_frames(frames=frames, agreement=agreement, weak_region_frame_ids=weak,
         timestamps={row["frame_id"]: row.get("timestamp_seconds") for row in rows},
         sharpness={row["frame_id"]: row.get("sharpness") for row in rows
                    if isinstance(row.get("sharpness"), (int, float))},
         scene_depth=scene_depth(frames),
         pose_refinement_accepted=pose["operation"]["response"].get("poseRefinementAccepted"),
-        route_frame_ids={key for group in review.get("coverage_requirements") or []
-                         if group.get("role") in WORKING_AREA_ROLES for key in group.get("required_frame_ids", [])})
+        route_frame_ids=route)
     record.pop("digest")
     record.update(pose_result_digest=pose["digest"], draft_splat_manifest_digest=draft["digest"])
     record["digest"] = canonical_digest(record, digest_field="digest")
@@ -549,8 +562,9 @@ def _splat_input_selection(*, frames, pose, draft, output_root, review, source_r
     return record
 
 
-def _heldout_quality(*, frames, selection, splat_root):
+def _heldout_quality(*, frames, selection, splat_root, weak_root=None):
     """Score the returned splat against the views held back from it, once; record and flag only."""
+    from .atlas_coverage_map import read_weak_regions
     from .atlas_splat_input_quality import SCORE_FILE, heldout_quality
     path = Path(splat_root) / SCORE_FILE
     if path.is_file() and not path.is_symlink():
@@ -558,7 +572,8 @@ def _heldout_quality(*, frames, selection, splat_root):
     try:
         from .atlas_depth_splat import decode_spz
         splat = decode_spz((Path(splat_root) / "atlas_refined_splat.spz").read_bytes())
-        record = heldout_quality(splat=splat, frames=frames, selection=selection)
+        record = heldout_quality(splat=splat, frames=frames, selection=selection,
+                                 weak_regions=read_weak_regions(weak_root) if weak_root is not None else None)
     except Exception as exc:  # noqa: BLE001 - a score never blocks the splat it describes
         record = {"schema_version": "atlas_splat_heldout_score.v1", "status": "not_scored",
                   "reason": type(exc).__name__, "selection_digest": selection.get("digest")}
@@ -566,18 +581,63 @@ def _heldout_quality(*, frames, selection, splat_root):
     return record
 
 
+def _job_window_end(output_root: Path, task_context) -> float | None:
+    """The job's window end, read live from the capture that holds this job's directory, or None.
+
+    The nearest parent with the job's retained grant is its capture (``pipeline/atlas`` for a website job);
+    ``website_preparation_terminal.retained_window_end`` binds the grant to the context's scene and capture.
+    """
+    from .website_preparation_terminal import GRANT_FILE, retained_window_end
+    for capture_root in list(Path(output_root).resolve().parents)[:4]:
+        if (capture_root / GRANT_FILE).is_file():
+            return retained_window_end(capture_root, scene_id=task_context.get("scene_id"),
+                                       capture_id=task_context.get("capture_id"))
+    return None
+
+
+#: The Atlas job files whose ``enqueued_at_epoch`` starts the job's own life: a website preview, an owned upload
+#: (``owned_capture_atlas_control.JOB_FILE``). Both end at ``MAXIMUM_JOB_SECONDS`` after it.
+_ATLAS_JOB_FILES = ("preview_job.json", "owned_job.json")
+
+
+def _job_deadline(output_root: Path, task_context) -> float | None:
+    """The latest this job can finish: its window's end, never later than its Atlas job's own life.
+
+    The worker ends an Atlas job ``MAXIMUM_JOB_SECONDS`` after enqueue (``atlas_preview_expired``) whatever
+    its window, and a window can end later (a grant issued after enqueue, renewed or extended). Either alone
+    when only one can be read; None when neither can.
+    """
+    from .website_atlas_preview_store import MAXIMUM_JOB_SECONDS
+    ends = [_job_window_end(output_root, task_context)]
+    for name in _ATLAS_JOB_FILES:
+        path = Path(output_root) / name
+        if path.is_file() and not path.is_symlink():
+            try:
+                enqueued = json.loads(path.read_text()).get("enqueued_at_epoch")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(enqueued, (int, float)) and not isinstance(enqueued, bool):
+                ends.append(float(enqueued) + MAXIMUM_JOB_SECONDS)
+                break
+    ends = [end for end in ends if end is not None]
+    return min(ends) if ends else None
+
+
 def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_context, source_digest,
                           configuration, check, experimental, max_polls,
-                          review=None, source_root=None, rebuild=False):
+                          review=None, source_root=None, rebuild=False, source_pose=None):
     """Atlas's refined splat of the captured frames, or the draft with the reason it is the fallback.
 
     The draft is the fallback only when the job's Atlas money cannot cover the refined splat and
-    the mesh after it, or when Atlas fails every attempt. Admitted generated geometry never swaps
+    the mesh after it, or when Atlas fails every attempt: after the first forms fail, the job waits
+    for fresh attempts of the same request (``atlas_refined_splat_retry``) until the allowance or the
+    window's last two hours stop them, and the draft then carries that record. Admitted generated geometry never swaps
     the refined splat for the draft (owner, 2026-11-17): it goes into the collision shape only
-    (``_preserved_scene``). ``draft`` is always the captured frames' own draft, so nothing
-    generated reaches the request. A splat already bought is always adopted.
+    (``_preserved_scene``). ``draft`` is always the captured frames' own draft, so no completion
+    view reaches the request. A splat already bought is always adopted.
     A new purchase sends the views ``_splat_input_selection`` keeps (consistent, with
-    parallax, a few held back to score the result).
+    parallax, a few held back to score the result), and beside them only the generated
+    views of weak regions that agree with the filmed frames (``atlas_look_views``).
 
     A ``rebuild`` replaces a refined splat the job already has, so it never falls back
     to the draft: before buying, it needs World Labs to have accepted pose refinement,
@@ -591,8 +651,13 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     root = output_root / "refined_splat"
     bought = any(_started(form_root) for _, form_root in _form_roots(root))
     selection = (_splat_input_selection(frames=frames, pose=pose, draft=draft, output_root=output_root,
-                                        review=review or {}, source_root=source_root, bought=bought)
+                                        review=review or {}, source_root=source_root, bought=bought,
+                                        source_pose=source_pose)
                  if source_root is not None else None)
+    if selection is not None:
+        from .atlas_coverage_map import coverage_before_splat  # $0, once per pose, before the purchase
+        coverage_before_splat(frames=frames, pose=pose, output_root=output_root, source_root=source_root,
+                              selection=selection, source_pose=source_pose)
     if rebuild and not bought:
         flags = set((selection or {}).get("flags") or [])
         stop = ("atlas_splat_rebuild_input_selection_missing" if selection is None
@@ -613,6 +678,18 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
             return {"status": "completed", "basis": DRAFT_APPEARANCE,
                     "fallback_reason": "atlas_refined_splat_unaffordable"}
     sent = frames if selection is None else [f for f in frames if f["frame_id"] in set(selection["sent_frame_ids"])]
+    # Checked generated views of weakly observed regions join the real frames (owner, 2026-11-18). No
+    # weak-region map, or a splat already bought: none, and the request is the real frames as before.
+    from .atlas_look_views import disclosure as look_disclosure, look_views_for_splat
+    look = look_views_for_splat(frames=frames, pose=pose, output_root=output_root, policy=policy,
+        task_context=task_context, source_digest=source_digest, bought=bought, check=check, max_polls=max_polls,
+        sent=sent, heldout_frame_ids=(selection or {}).get("heldout_frame_ids") or (),
+        task_frame_ids=(selection or {}).get("route_frame_ids") or (),
+        configuration=lambda: _current_configuration(task_context, source_digest, configuration),
+        task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw))
+    if look.get("status") == "processing":
+        return look
+    sent = [*sent, *look["views"]]
     check("refined_splat")
     try:
         native = run_native_splat(frames=sent, result=pose, draft=draft, output_root=root, policy=policy,
@@ -622,20 +699,51 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     except ValueError as exc:
         if str(exc) != "atlas_task_operation_failed" or rebuild:
             raise
-        return {"status": "completed", "basis": DRAFT_APPEARANCE,
-                "fallback_reason": "atlas_refined_splat_provider_failed"}
+        # Every form failed: the job waits for a fresh attempt (``atlas_refined_splat_retry``) that resends the
+        # first one's request, its reviewed generated views included, then real frames only; the draft is the
+        # look only once the allowance or the window cannot carry another.
+        from .atlas_native_splat import first_attempt_review
+        from .atlas_refined_splat_forms import MINIMAL, WHOLE
+        from .atlas_refined_splat_retry import DRAFT_FINAL, WAIT_STAGE, next_refined_splat
+        reviewed = first_attempt_review(root)
+        # Without an admitted generated view the attempt is the filmed frames alone, sent as that list.
+        resent = sent if reviewed else [frame for frame in sent if frame.get("keep_mask") is None]
+        native = next_refined_splat(output_root=output_root, original_root=root, now=time.time(),
+            run_attempt=lambda base: run_native_splat(frames=resent, result=pose, draft=draft, output_root=base,
+                policy=policy, task_context=task_context, max_polls=max_polls,
+                forms=(WHOLE, MINIMAL) if reviewed else (MINIMAL,),
+                task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
+                **({"whole_view_review": reviewed} if reviewed else {}),
+                **({"input_selection_digest": selection["digest"]} if selection is not None else {})),
+            remaining_cost_usd=lambda: _current_configuration(task_context, source_digest, configuration).get(
+                "remaining_cost_usd"),
+            needed_usd=splat_cost(policy) + float(policy.get("mesh_export_cost_usd", 0)),
+            deadline=lambda: _job_deadline(output_root, task_context))
+        if native["status"] == DRAFT_FINAL:
+            return {"status": "completed", "basis": DRAFT_APPEARANCE,
+                    "fallback_reason": "atlas_refined_splat_provider_failed", "refined_splat_retry": native["retry"]}
+        if native.get("stage") == WAIT_STAGE:
+            return native
     if native["status"] != "completed":
         return {"status": "processing", "stage": "refined_splat", "operation_id": native.get("operation_id")}
     appearance = {"status": "completed", "basis": REFINED_APPEARANCE, "splat_root": native["splat_root"],
                   "splat_manifest": native["splat_manifest"]}
+    if look["record"] is not None:
+        appearance["look_views"] = look_disclosure(look, native, output_root)
     if selection is not None:
         appearance["splat_input"] = {key: selection[key] for key in ("digest", "flags")}
         appearance["splat_input"].update(sent_frame_count=len(selection["sent_frame_ids"]),
             left_out_frame_count=len(selection["left_out"]), heldout_frame_ids=selection["heldout_frame_ids"])
         if selection["heldout_frame_ids"]:
-            score = _heldout_quality(frames=frames, selection=selection, splat_root=native["splat_root"])
+            score = _heldout_quality(frames=frames, selection=selection, splat_root=native["splat_root"],
+                                     weak_root=output_root)
             appearance["heldout_quality"] = {key: score.get(key) for key in (
-                "status", "median_heldout_psnr_db", "median_training_psnr_db", "flags", "reason") if key in score}
+                "status", "basis", "median_heldout_psnr_db", "median_training_psnr_db", "median_heldout_ssim",
+                "flags", "reason") if key in score}
+            if "look_quality" in score:
+                appearance["heldout_quality"]["look_quality"] = {
+                    key: score["look_quality"][key] for key in ("verdict", "weak_region_ids", "weak_regions_assessed")
+                    if key in score["look_quality"]}
     return appearance
 
 
@@ -779,7 +887,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         appearance = _preserved_appearance(frames=frames, pose=pose, draft=draft, output_root=output_root,
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
             check=check, experimental=experimental, max_polls=max_polls,
-            review=review, source_root=source_root, rebuild=rebuild)
+            review=review, source_root=source_root, rebuild=rebuild, source_pose=source_pose)
         if appearance['status'] in ('processing', 'needs_input'):
             return appearance
         if appearance['basis'] == REFINED_APPEARANCE:
@@ -853,7 +961,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         "billing_status": "provider_usage_unreported"}
     if appearance is not None:
         result['appearance'] = {key: appearance[key] for key in (
-            'basis', 'fallback_reason', 'splat_input', 'heldout_quality') if key in appearance}
+            'basis', 'fallback_reason', 'splat_input', 'heldout_quality', 'refined_splat_retry', 'look_views')
+            if key in appearance}
     if repose is not None:
         result['windowed_repose'] = repose['disclosure']
     if completion is not None:
@@ -923,6 +1032,7 @@ def _windowed_repose(*, output_root, first_pose_root, source_root, review, sourc
                                survey=json.loads(survey_path.read_text()), pose_root=root)
     # The selection profile the first pose recorded: its splat target, sharpness floor and input bound.
     profile = _splat_input_options(first_pose_root, review=review, policy=policy, edit_scope="required_and_additional")
+    profile.pop("repose_view_cost_usd", None)  # The re-pose is what was held for; it holds nothing itself.
 
     def finish(outcome, ready=None):
         value = {"root": reposes.ROOT, "records": (WINDOW_FILE, reposes.OUTCOME_FILE),
@@ -1235,7 +1345,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # A new job's term for one windowed re-pose before its refined splat (owner 2026-11-09): decided
     # once before its first purchase, and its maximum held back from the selection. A job that bought
     # before this release has none and keeps the quote it was admitted under.
-    from .website_atlas_windowed_repose import decide_term, held_back_usd
+    from .website_atlas_windowed_repose import decide_term, held_back_per_view_usd, held_back_usd
     repose_term = decide_term(output_root, policy=held, purchased=reviews.exists() or selection_path.exists(),
                               available_usd=budget,
                               minimum_usd=2 * policy["pose_input_cost_usd"] + render_cost(policy, 2))
@@ -1308,7 +1418,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     pose_root.mkdir(exist_ok=True)
     inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root,
         exclude_transients=route == "geometry_only",
-        **_splat_input_options(pose_root, review=review, policy=held, edit_scope=edit_scope))
+        **_splat_input_options(pose_root, review=review, policy=held, edit_scope=edit_scope,
+                               repose_view_cost_usd=held_back_per_view_usd(repose_term)))
     if not selection_path.exists():
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})

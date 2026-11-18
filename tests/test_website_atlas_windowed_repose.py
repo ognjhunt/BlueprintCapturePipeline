@@ -35,7 +35,12 @@ def test_a_new_job_records_its_repose_term_once_before_its_first_purchase(tmp_pa
     assert term["maximum_cost_usd"] == pytest.approx(SPLAT_POSE_INPUT_CAPACITY * .01)
     assert term["expected_cost_usd"] == 0 and "first_pose_refinement_not_accepted" in term["conditional_on"]
     assert term["price_review"]["reviewed_by"] == "test"
-    assert reposes.held_back_usd(term) == term["maximum_cost_usd"]
+    # The hold is one view price per view the selection poses, not the 512-view maximum (review of 20c67e1eb);
+    # a term recorded before then still holds its whole maximum up front.
+    assert term["hold_basis"] == reposes.HOLD_PER_POSED_VIEW and reposes.held_back_usd(term) == 0
+    assert reposes.held_back_per_view_usd(term) == .01
+    earlier = {key: value for key, value in term.items() if key != "hold_basis"}
+    assert reposes.held_back_usd(earlier) == term["maximum_cost_usd"] and reposes.held_back_per_view_usd(earlier) == 0
     # Read back, never re-decided: not by a later price, a purchase or a smaller allowance.
     assert reposes.decide_term(tmp_path, policy=_policy(pose_input_cost_usd=.02), purchased=True,
                                available_usd=0, minimum_usd=1) == term
@@ -50,9 +55,11 @@ def test_an_in_flight_job_gets_no_term_and_is_never_re_priced(tmp_path):
 
 
 def test_an_allowance_that_cannot_hold_the_repose_back_records_it_disabled_and_holds_nothing(tmp_path):
-    term = reposes.decide_term(tmp_path, policy=_policy(), purchased=False, available_usd=1.0, minimum_usd=.03)
+    # Less than the least selection posed and held for its re-pose.
+    term = reposes.decide_term(tmp_path, policy=_policy(), purchased=False, available_usd=.05, minimum_usd=.03)
     assert term["enabled"] is False and term["reason"] == "allowance_cannot_hold_back_the_repose"
     assert term["maximum_cost_usd"] == 0 and reposes.held_back_usd(term) == 0
+    assert reposes.held_back_per_view_usd(term) == 0
 
 
 @pytest.mark.parametrize("bought", [False, True])
@@ -89,8 +96,11 @@ def test_the_selection_budget_holds_the_repose_maximum_back_only_for_a_new_job(t
     if bought:
         assert reviewed.value.args[0] == pytest.approx(before) and not (root / reposes.TERM_FILE).exists()
     else:
+        # The reviewer's job: $20, reviews $4, splat and mesh $5.50. The selection gets the whole $6.50 and
+        # holds the re-pose per view it poses (``atlas_video_inputs``), not $5.12 up front.
         term = json.loads((root / reposes.TERM_FILE).read_text())
-        assert reviewed.value.args[0] == pytest.approx(before - term["maximum_cost_usd"])
+        assert term["enabled"] is True and term["hold_basis"] == reposes.HOLD_PER_POSED_VIEW
+        assert reviewed.value.args[0] == pytest.approx(before) == pytest.approx(6.5)
 
 
 FRAMES = _views([("still", 20), ("jump", 0), ("move", 30)])
@@ -253,7 +263,7 @@ def test_no_term_a_refined_first_pose_or_a_disabled_term_tries_nothing(tmp_path,
     job, first_root, source, review, _ = _job(tmp_path, term=case != "in_flight", accepted=case == "refined")
     if case == "disabled":
         (job / reposes.TERM_FILE).unlink()
-        reposes.decide_term(job, policy=_policy(), purchased=False, available_usd=.5, minimum_usd=.03)
+        reposes.decide_term(job, policy=_policy(), purchased=False, available_usd=.05, minimum_usd=.03)
     stage = _Stage(monkeypatch, job)
     assert _repose(job, first_root, source, review) is None
     assert not (job / reposes.ROOT).exists() and stage.posed == []

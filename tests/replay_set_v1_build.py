@@ -299,10 +299,9 @@ RECORDS: list[dict[str, Any]] = [
     {"record_id": "levelling-view-dependent-splat", "job_kind": "website_scene_preparation",
      "input_variety": {"video_resolution": "not_applicable", "clip_length": "not_applicable"},
      "description": "A floor and two walls whose splat carries view-dependent colour: levelled on the observed "
-                    "floor with its base colour only, and the floor filled under the filmed path, both named.",
+                    "floor with that colour turned with it, and the floor filled under the filmed path, named.",
      "tool": STAGE, "build": lambda root: _small_world(root, terrain=False, sh_rest=True), "until": "levelling",
-     "expected_stop": {"kind": "estimate", "stage": "levelling",
-                       "code": "scene_estimate:floor,scene_estimate:splat_view_dependence_dropped"}},
+     "expected_stop": {"kind": "estimate", "stage": "levelling", "code": "scene_estimate:floor"}},
     {"record_id": "mesh-registration-closest-frame-estimate", "job_kind": "website_scene_preparation",
      "input_variety": {"video_resolution": "not_applicable", "clip_length": "not_applicable"},
      "description": "A mesh that registers to no declared frame of its splat: the frame of smallest median "

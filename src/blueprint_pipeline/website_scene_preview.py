@@ -66,6 +66,11 @@ ARTIFACT_KIND = "website-scene-preview"
 #: (``isCompressedPly``, ``readCompressedPly`` and ``SplatCompressedIterator`` in WebApp
 #: ``client/public/splat-viewer/index.js``): an ``element chunk`` of float bounds per 256
 #: consecutive Gaussians, then an ``element vertex`` of four packed uints per Gaussian.
+#: The preview stays band-0 when the package's splat carries higher-order SH (2026-11-18). The viewer
+#: (SuperSplat viewer 1.37.0) renders bands 1 to 3 from a compressed PLY's ``element sh`` (uint8
+#: ``f_rest_*``, channel-major; ``shBands`` from 9, 24 or 45 of them), but the WebApp accepts only
+#: ``ply_3dgs_sh0`` and ``ply_3dgs_compressed_sh0`` (``server/utils/websiteScenePreview.ts``), and band 3
+#: adds 45 bytes a Gaussian: a 2 M Gaussian splat would pass ``MAX_PREVIEW_BYTES`` threefold.
 FORMAT = "ply_3dgs_compressed_sh0"
 CHUNK_SPLATS = 256
 CHUNK_PROPERTIES = ("min_x", "min_y", "min_z", "max_x", "max_y", "max_z",

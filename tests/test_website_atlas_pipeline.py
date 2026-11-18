@@ -674,7 +674,7 @@ def test_a_preserved_scene_buying_the_refined_splat_fills_its_selection_and_othe
     options = dict(review=preserved, policy={"refined_splat_cost_usd": 5}, edit_scope="all_selected_views")
     sharp = {"relative_sharpness_fraction": .6}
     assert pipeline._splat_input_options(tmp_path, **options) == {"splat_frame_target": SPLAT_FRAME_TARGET, **sharp} \
-        == {"splat_frame_target": 96, **sharp}
+        == {"splat_frame_target": 512, **sharp}
     # No splat bought (a geometry-only job's policy drops the price): only the sharpness floor is new.
     assert pipeline._splat_input_options(tmp_path, **{**options, "policy": {"pose_input_cost_usd": .01}}) == sharp
     # A captured subject's plain route posts its selection as generation context, not to the splat.
@@ -1132,3 +1132,23 @@ def test_people_only_outside_the_edited_views_keep_todays_route(tmp_path, monkey
     root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=("noop", []))
     run()
     assert len(automated) == 1 and not posed and automated[0]["review"] == review
+
+
+def test_a_new_refined_splat_selection_holds_its_repose_per_view_and_a_retained_one_keeps_its_own(tmp_path):
+    """Review of 20c67e1eb: the re-pose is held per view the selection poses, recorded with the selection."""
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    from blueprint_pipeline.atlas_video_inputs import GEOMETRY_INPUTS_FILE
+    preserved = {"subject_origin": "no_manipulated_subject", "automation": {"objects": [{"disposition": "keep"}]}}
+    options = dict(review=preserved, policy={"refined_splat_cost_usd": 5}, edit_scope="all_selected_views")
+    assert pipeline._splat_input_options(tmp_path / "new", **options, repose_view_cost_usd=.01) == {
+        "splat_frame_target": 512, "relative_sharpness_fraction": .6, "repose_view_cost_usd": .01}
+    # No refined splat, no hold.
+    assert "repose_view_cost_usd" not in pipeline._splat_input_options(
+        tmp_path / "new", **{**options, "policy": {}}, repose_view_cost_usd=.01)
+    for name, binding, expected in (("held", {"splat_frame_target": 512, "repose_view_cost_usd": .01}, .01),
+                                    ("before", {"splat_frame_target": 96}, None)):
+        root = tmp_path / name
+        root.mkdir()
+        (root / GEOMETRY_INPUTS_FILE).write_text(json.dumps({"binding": binding}))
+        value = pipeline._splat_input_options(root, **options, repose_view_cost_usd=.02)
+        assert value.get("repose_view_cost_usd") == expected

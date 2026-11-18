@@ -422,15 +422,21 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     source = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
     if preserved and splat_manifest["pose_result_digest"] != source["digest"]:
         raise ValueError("website_atlas_preserved_scene_pose_mismatch")
+    # A look whose refined splat also holds generated views checked against the filmed frames
+    # (``atlas_look_views``), bound to their sealed record; the README says so.
+    from .atlas_look_views import bound_look_views
+    look_views = (bound_look_views(splat=splat_manifest, source=source, appearance=result.get('appearance'),
+                                   job_dir=job_dir) if preserved else None)
     if completion_admission is not None:
         from .atlas_preserved_completion import validate_preserved_completion
         validate_preserved_completion(report=completion_admission, job_root=job_dir,
             source_pose_digest=source['digest'], source_video_digest=result['source_video_digest'],
             task_context_digest=result['task_context_digest'], splat=collision_manifest)
-        if collision_manifest is not splat_manifest and not _captured_frames_refinement(splat_manifest, source):
+        if (collision_manifest is not splat_manifest and not _captured_frames_refinement(splat_manifest, source)
+                and look_views is None):
             raise ValueError('atlas_preserved_completion_not_bound')
     elif preserved and splat_manifest.get('generated_content') and not _captured_frames_refinement(
-            splat_manifest, source):
+            splat_manifest, source) and look_views is None:
         raise ValueError('atlas_preserved_completion_not_bound')
     background_root = pose_root
     if splat_manifest["pose_result_digest"] == source["digest"]:
@@ -512,6 +518,9 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
             'completion_admission_digest': completion_admission['digest'], 'generated_geometry_is_estimate': True,
             # Read by the company package's README (``website_company_simulation``).
             **({'generated_geometry_in': GENERATED_IN_COLLISION_ONLY} if collision_manifest is not splat_manifest else {})}
+    if look_views is not None:
+        # Read by the company package's README (``website_company_simulation``).
+        base['look_provenance'] = look_views
     # Where the camera walked, in the levelled scene in metres (Y up), in video order: the
     # filmed route a locomotion task's start and goal can be read from (``website_locomotion_task``).
     walked = sorted((key, row) for key, row in _cameras(background_pose).items() if str(key).startswith("decoded-"))

@@ -1728,6 +1728,8 @@ def test_money_credit_spend_and_stall_pages_are_unchanged():
         "scene_budget_doubled",
         # 2026-11-10: a preparation stopped on a mismatch inside Blueprint's own records (ours to fix).
         "website_preparation_blueprint_fault",
+        # 2026-11-18: a website job's look is the depth-fused draft for good (no refined splat could be had).
+        "website_atlas_look_draft_final",
         # 2026-11-11: the state backup stopped completing (a held timer, a dead unit).
         "control_plane_backup_stale"}
     assert preparation_delivery.PAGE_CODES == {"preparation_delivery_stalled"}

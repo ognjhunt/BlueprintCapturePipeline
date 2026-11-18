@@ -34,8 +34,12 @@ gaps in the draft, which is no longer the final appearance.
 3. The largest returned count is kept. Its original SPZ is retained and decoded
    in Python (`atlas_depth_splat.decode_spz`; Atlas publishes SPZ v2 with
    degree-0 colour, bit-identical to `splat-transform` on a 2M-Gaussian Atlas
-   splat) into a standard 3DGS PLY. Any other layout fails closed with the paid
-   SPZ kept, so a retry never buys twice.
+   splat; capture-7c42's 2M-Gaussian splat of 2026-11-17 is degree 0 too) into a
+   standard 3DGS PLY. A splat of SH degree 1 to 3 keeps its view-dependent colour:
+   the PLY carries its `f_rest_*` (channel-major), levelling turns it with the
+   splat (`splat_sh_rotation`) and the package's ParticleField carries its degree.
+   The website preview stays band-0 (`website_scene_preview`, see there). Any other
+   layout fails closed with the paid SPZ kept, so a retry never buys twice.
 4. `atlas_refined_splat_manifest.json` binds the pose, the draft manifest, the
    generated-result digests, the request, every upload and the whole-view
    verdicts. Mesh registration keeps the draft's fusion grid as its tolerance.
@@ -188,19 +192,23 @@ the `documented_minimal` splat trained on 41 frames (31 selected, 10
 task-source). It came out soft.
 
 When the policy carries `refined_splat_cost_usd`, a new selection keeps the
-connected cover and distinct views, then fills toward 96 frames
-(`SPLAT_FRAME_TARGET`, under the 128-image `SPLAT_POSE_INPUT_CAPACITY`) with
-`add_time_spread_views`. The admitted still frames' span is cut into 96 equal
-windows. Each step takes the sharpest candidate of the emptiest window that
+connected cover and distinct views, then keeps every other distinct, sharp,
+connected candidate up to the provider's capacity with `add_time_spread_views`
+(owner, 2026-11-18). `SPLAT_POSE_INPUT_CAPACITY` and `SPLAT_FRAME_TARGET` are both
+posedImages2Splats' `maxItems` in the pinned provider schema
+(`_atlas_schemas/posedImages2Splats.json`, 512); selections recorded before keep
+their own 96 under 128. The admitted still frames' span is cut into that many
+equal windows. Each step takes the sharpest candidate of the emptiest window that
 passes the sharpness and clipping policy and overlaps a kept time neighbour by
 the policy's inlier count (24 by default). The displacement rule does not apply,
 an identical source image is never repeated, and with fewer usable frames the
 set stays short. These views are labelled `time_spread_view`; the plan's
 `frame_policy` and the input binding record `splat_frame_target`.
 
-Pose is priced on the actual count, about $0.01 a frame (96 frames, about $1).
-A budget that cannot pose the set refuses it
-(`atlas_selection_budget_below_accurate_inputs`) and never poses fewer.
+Pose is priced on the actual count, about $0.01 a frame (itest-c0cbbf20's about
+141 candidates: at most about $0.45 more than 96 frames). The reviewed dollars bound how many density
+views are added; a budget that cannot pose the cover and distinct views refuses
+them (`atlas_selection_budget_below_accurate_inputs`) and never poses fewer.
 
 Gap completion runs on the same source pose before the splat, and its
 `atlasGenerate` context shares the served model's rollout: `target_batches`
@@ -220,7 +228,7 @@ Nothing else changes. Jobs that buy no refined splat keep
 subject's plain route posts its whole selection as `atlasGenerate` context, and
 keeps its selection. A retained selection resumes with the profile and the
 `provider_input_capacity` it recorded. No Atlas pose request above 64 images
-has run in production yet, so 128 is configured, not verified.
+had run in production by 2026-11-18; the images2PosedRGBD page states no maximum.
 
 World Labs' limits, read 2026-11-08:
 
@@ -282,18 +290,29 @@ request's input binding names it (`input_selection_digest`). It works in three s
    around no-parallax runs (within 2 % of the scene depth for at least 1 s). It
    keeps the moving segment covering most of the reviewed task route, then most
    baseline, plus every other moving segment on the same side of any jump. It
-   keeps at most 4 views of each no-parallax run, spread widest in viewing
-   direction. Measured pairs only compare nearest cameras, so they never compare
+   keeps every view of each no-parallax run except its near-duplicates (a view
+   within 1° of the viewing direction of one kept, widest first), and never
+   leaves out a view that saw a weak region of the coverage map (owner,
+   2026-11-18: the cap of 4 cut 33 of 103 posed views on itest-c0cbbf20). Measured pairs only compare nearest cameras, so they never compare
    views across a jump. A segment beyond a jump is left out unless measured pairs
    tie it to the kept side. A capture that never moved keeps every view.
 3. **Held out.** When at least 24 views would still be sent, it holds back 2
    sharp, measured, interior views of the kept segment, never task-route views.
-   When the splat returns, `heldout_render_score.json` beside its manifest records
-   a render-vs-photo score at those views and at their nearest sent views. The
-   render takes each pixel's nearest opaque Gaussian centre at 320 px width, a CPU
-   stand-in for rasterising the splat. It compares views with each other and is no
-   image-quality measurement. Held-out views more than 3 dB below the training
-   views are flagged. It never blocks.
+   Before the splat is bought, `weak_regions.json` in the job's Atlas root
+   (`atlas_coverage_map`) records the regions the views leave weak: surfaces that
+   are not flat, seen over under 10 degrees or no finer than 3 mm a pixel, each
+   with the views that saw it and an orbit of cameras 15 and 30 degrees either side.
+   When the splat returns, `heldout_render_score.json` beside its manifest
+   (`atlas_splat_heldout_score.v2`) records an alpha-blended Gaussian render
+   (`atlas_splat_render`, 640 px wide, on the CPU) at those views and at their
+   nearest sent views: PSNR, SSIM, and each 32 px block's SSIM placed in the world
+   through the photograph's depth. It also renders each weak region's ±15 degree
+   orbit views, where no photograph exists, and counts holes there and needle-like
+   Gaussians in the region. `look_quality` is `good`, `weak` with the regions
+   named, or `weak_regions_not_assessed` when there was no map. Held-out views
+   more than 3 dB below the training views are flagged. It never blocks. A score
+   recorded before this (`basis` `nearest_opaque_gaussian_centre_point_render`)
+   compares views with each other only.
 
 On the library job's retained records this keeps the 19 dolly views. It drops the
 10 opening views, leaves out the 12 consistent pan views across the jump, and
@@ -478,8 +497,12 @@ moving shot, a pan or tripod, an unreadable pose) buys nothing extra
 - **The term, before the first purchase.** A new job records
   `windowed_repose.json` once, before its first paid review. It holds the owner's
   decision, the per-view price, the input bound (`SPLAT_POSE_INPUT_CAPACITY`,
-  128) and the most the re-pose can cost (128 x the per-view price, $1.28 at
-  $0.01). That last figure counts toward the job's maximum but not its expected
+  the provider's 512; 128 for terms recorded before 2026-11-18) and the most the
+  re-pose can cost (that bound x the per-view price). A term recorded from
+  2026-11-18 (`hold_basis: per_posed_view`) is not held back up front: the
+  selection holds one view price for each view it poses, and trims what the
+  dollars cannot pose and hold, never refusing it; an earlier term holds its
+  maximum ($1.28) as before. That last figure counts toward the job's maximum but not its expected
   cost, and the term says what it is conditional on. The job's selection budget
   holds that maximum back, so the scene review's recorded `selection_budget` (the
   first pose's price review) leaves room for it. An allowance that cannot hold it

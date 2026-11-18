@@ -21,14 +21,32 @@ WHOLE, MINIMAL = "documented_reviewed_whole", "documented_minimal"
 # Labs does not document: adopted or polled, never bought again.
 FORMS = (("reviewed_masks_and_confidence", ""), ("reviewed_masks", "-masks"), (WHOLE, "-whole"), (MINIMAL, "-minimal"))
 LEGACY_FORMS = frozenset({"reviewed_masks_and_confidence", "reviewed_masks"})
+
+
+def provider_splat_capacity() -> int:
+    """posedImages2Splats' maximum posed frames, from the pinned provider schema (``_atlas_schemas``).
+
+    World Labs documents "Provide 2 to 512 ordered posedFrames" (read 2026-11-08) and the pinned
+    schema carries the same ``maxItems``; the capacity is that provider data, never a constant here.
+    """
+    schema = json.loads((Path(__file__).parent / "_atlas_schemas" / "posedImages2Splats.json").read_text())
+    frames = schema["components"]["schemas"]["PosedImages2SplatsRequest"]["properties"]["posedFrames"]
+    if type(frames.get("maxItems")) is not int or frames["maxItems"] < frames.get("minItems", 2):
+        raise ValueError("atlas_splat_provider_capacity_unreadable")
+    return frames["maxItems"]
+
+
 #: A job that buys Atlas's refined splat trains it on every posed source view, and
 #: forward camera motion leaves few views the near-duplicate rule calls distinct
-#: (capture-5b067498: 31 of 152 candidates). Its selection fills toward
-#: ``SPLAT_FRAME_TARGET`` sharp views spread in time, under this capacity; the
-#: headroom holds the task-source views the source pose adds. posedImages2Splats
-#: takes 2 to 512 frames; no Atlas pose request above 64 images has run yet.
-SPLAT_POSE_INPUT_CAPACITY = 128
-SPLAT_FRAME_TARGET = 96
+#: (capture-5b067498: 31 of 152 candidates). Its selection keeps every distinct,
+#: sharp, connected candidate, spread in time (``add_time_spread_views``), up to
+#: the provider's capacity (owner, 2026-11-18): the target is the capacity. The
+#: accuracy survey offers at most a few hundred candidates (``MAXIMUM_REVIEW_FRAMES``),
+#: so the task-source views the source pose adds and the look's generated views
+#: stay inside it. The images2PosedRGBD page states no maximum; no Atlas pose
+#: request above 64 images had run in production by 2026-11-18.
+SPLAT_POSE_INPUT_CAPACITY = provider_splat_capacity()
+SPLAT_FRAME_TARGET = SPLAT_POSE_INPUT_CAPACITY
 
 
 def splat_manifest_path(root: Path) -> Path:

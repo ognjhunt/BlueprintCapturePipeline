@@ -43,6 +43,35 @@ def oriented_photograph(frame):
     return (np.rot90(rgb, -1) if rotated else rgb), camera, rotated
 
 
+#: The served ``atlasGenerate`` model's rollout (``target_batches``, docs/atlas-native-splats.md): the context
+#: photographs plus two views per target camera (the target and its depth-context view) fit in this many,
+#: with at most ``ROLLOUT_TARGETS`` targets. It is the provider's capacity for generation context.
+ROLLOUT_VIEWS, ROLLOUT_TARGETS = 64, 32
+
+
+def photograph_boxes(k):
+    """The overlapping 16:9 crops ``prepare_source_photographs`` takes of an oriented photograph with intrinsics ``k``."""
+    width, height = k['width'], k['height']
+    crop_width = min(width, height * 1280 / 720)
+    crop_height = crop_width * 720 / 1280
+    xs = np.linspace(0, width - crop_width, max(1, math.ceil((width - crop_width) / (.75 * crop_width)) + 1))
+    ys = np.linspace(0, height - crop_height, max(1, math.ceil((height - crop_height) / (.75 * crop_height)) + 1))
+    boxes = [(float(x), float(y), float(x + crop_width), float(y + crop_height)) for x in xs for y in ys]
+    # Ensure an eligible centered source photograph without replacing the
+    # edge tiles: all original coverage must survive the native crop.
+    x, y = k['cx'] - crop_width / 2, k['cy'] - crop_height / 2
+    if 0 <= x <= width - crop_width and 0 <= y <= height - crop_height:
+        centered = (x, y, x + crop_width, y + crop_height)
+        if not any(np.allclose(centered, box, atol=1e-8, rtol=0) for box in boxes):
+            boxes.append(centered)
+    return boxes
+
+
+def photograph_count(frame) -> int:
+    """How many context photographs a frame becomes, from its camera alone."""
+    return len(photograph_boxes(oriented_camera(frame)[0]['intrinsics']))
+
+
 def prepare_source_photographs(*, frames, root):
     """Cover every source pixel with overlapping 16:9 photographs, without padding.
 
@@ -61,18 +90,7 @@ def prepare_source_photographs(*, frames, root):
         width, height = k['width'], k['height']
         if rgb.shape != (height, width, 3):
             raise ValueError('atlas_chisel_source_grid_changed')
-        crop_width = min(width, height * 1280 / 720)
-        crop_height = crop_width * 720 / 1280
-        xs = np.linspace(0, width - crop_width, max(1, math.ceil((width - crop_width) / (.75 * crop_width)) + 1))
-        ys = np.linspace(0, height - crop_height, max(1, math.ceil((height - crop_height) / (.75 * crop_height)) + 1))
-        boxes = [(float(x), float(y), float(x + crop_width), float(y + crop_height)) for x in xs for y in ys]
-        # Ensure an eligible centered source photograph without replacing the
-        # edge tiles: all original coverage must survive the native crop.
-        x, y = k['cx'] - crop_width / 2, k['cy'] - crop_height / 2
-        if 0 <= x <= width - crop_width and 0 <= y <= height - crop_height:
-            centered = (x, y, x + crop_width, y + crop_height)
-            if not any(np.allclose(centered, box, atol=1e-8, rtol=0) for box in boxes):
-                boxes.append(centered)
+        boxes = photograph_boxes(k)
         image = Image.fromarray(rgb)
         for tile, (left, top, right, bottom) in enumerate(boxes):
             pixels = np.asarray(image.resize((1280, 720), Image.Resampling.LANCZOS,
@@ -95,7 +113,7 @@ def prepare_source_photographs(*, frames, root):
 def target_batches(*, selected, candidates, source_count):
     """Respect the native rollout limit while retaining every photo per batch."""
     # One depth-context view accompanies each generated camera.
-    capacity = min(32, (64 - source_count) // 2)
+    capacity = min(ROLLOUT_TARGETS, (ROLLOUT_VIEWS - source_count) // 2)
     wide = [row for row in candidates if row['purpose'] == 'wide']
     if capacity < 2 or not wide:
         raise ValueError('atlas_chisel_source_rollout_capacity_insufficient')

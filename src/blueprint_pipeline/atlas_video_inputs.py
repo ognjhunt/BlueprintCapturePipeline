@@ -505,6 +505,24 @@ def takes_reviewed_background(review: Mapping[str, Any]) -> bool:
     return bool(edited & set(review.get("transient_frame_ids", [])))
 
 
+def trim_to_allowance(*, frames, cover, selected, diagnostics, limit, priority_frame_ids=()):
+    """The selection cut to ``limit`` views, and a diagnostic row for each view left out for the allowance.
+
+    The cover stays whole (it holds the reviewed task and surrounding views); then the views in
+    ``priority_frame_ids``; then every other view in the order the selection admitted it (its
+    diagnostics), distinct views before the time-spread fill. Deterministic: the same inputs keep
+    the same views.
+    """
+    keep = list(dict.fromkeys(sorted(cover)))
+    rest = [i for i in selected if i not in set(keep)]
+    position = {row.get("frame_id"): n for n, row in enumerate(diagnostics)}
+    priority = set(priority_frame_ids)
+    rest.sort(key=lambda i: (frames[i]["frame_id"] not in priority, position.get(frames[i]["frame_id"], len(position)), i))
+    keep += rest[:max(0, limit - len(keep))]
+    gone = rest[max(0, limit - len(cover)):]
+    return sorted(keep), [{"frame_id": frames[i]["frame_id"], "decision": "left_out_for_allowance"} for i in gone]
+
+
 def selection_frame_budget(review: Mapping[str, Any]) -> int:
     """A planning ceiling from reviewed dollars, never provider authority."""
     from datetime import datetime, timezone
@@ -525,7 +543,7 @@ def selection_frame_budget(review: Mapping[str, Any]) -> int:
 
 
 def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_frames, minimum_frames=0,
-                           splat_frame_target=0, relative_sharpness_fraction=0):
+                           splat_frame_target=0, relative_sharpness_fraction=0, repose_view_cost_usd=0):
     """Reuse a completed CPU handoff only with its current source/privacy bytes.
 
     A later admission wait must not rerun feature matching and face screening.
@@ -603,7 +621,8 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
         "source_video_digest": survey["source_video_digest"], "maximum_frames": maximum,
         "adapter_version": 3, "survey_digest": survey["digest"],
         "scene_state_review_digest": canonical_digest(review), "privacy_screen": privacy,
-        **splat_profile, **sharpness_profile, **selection_profile})
+        **splat_profile, **sharpness_profile, **selection_profile,
+        **({"repose_view_cost_usd": repose_view_cost_usd} if repose_view_cost_usd else {})})
     require(plan.get("maximum_frames") == maximum and plan.get("selected_frame_count") == len(prepared)
             and policy == {"basis": "accuracy_first", "provider_input_capacity": capacity,
                            "frame_target": maximum, "connected_cover_frames": cover_count,
@@ -637,19 +656,28 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
 def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output_root: Path,
                          maximum_frames: int | None = None, minimum_frames: int = 0,
                          splat_frame_target: int = 0, relative_sharpness_fraction: float = 0,
-                         exclude_transients: bool = False) -> dict[str, Any]:
+                         exclude_transients: bool = False, repose_view_cost_usd: float = 0,
+                         priority_frame_ids: Sequence[str] = ()) -> dict[str, Any]:
     """Build the existing pose producer's pending input from a reviewed survey.
 
     ``exclude_transients`` is for a job no editor works on (geometry only): it
     leaves out every frame showing a transient, as the direct path does.
     ``splat_frame_target`` is for a job whose refined splat trains on these views:
     after the cover and the distinct views, sharp views spread in time fill the
-    set toward it (``add_time_spread_views``) under ``SPLAT_POSE_INPUT_CAPACITY``.
+    set toward it (``add_time_spread_views``) under ``SPLAT_POSE_INPUT_CAPACITY`` and the reviewed dollars.
     ``relative_sharpness_fraction`` raises the sharpness floor of every view added
     after the reviewed cover to that fraction of the candidates' median sharpness
     (``RELATIVE_SHARPNESS_FRACTION`` for new jobs). The cover keeps the reviewed
     floor, so a required view is never refused for it; a soft one is named in the
     plan. A retained selection keeps the profile it recorded.
+
+    ``repose_view_cost_usd`` is the price the job's one windowed re-pose holds back for each view
+    this selection poses (``website_atlas_windowed_repose``): the hold is sized to the views posed,
+    never to the provider's capacity. When the reviewed dollars cannot pose and hold every distinct
+    view, a refined-splat selection is trimmed, deterministically, instead of refused: the reviewed
+    cover (the task and surrounding views) stays whole, then ``priority_frame_ids`` (views that saw a
+    weak region of a coverage map already made), then the views in the order they were admitted.
+    Only a cover the dollars cannot pose at all still refuses.
     """
     from .website_worldlabs import prepare_atlas_pose_inputs
     from .website_scene_geometry import INPUT_SCHEMA
@@ -674,6 +702,15 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
             raise ValueError("atlas_static_interval_invalid")
     from .website_atlas_pose import MAX_POSE_INPUT_IMAGES, SPLAT_POSE_INPUT_CAPACITY
     budget_frames = selection_frame_budget(review)
+    if (isinstance(repose_view_cost_usd, bool) or not isinstance(repose_view_cost_usd, (int, float))
+            or not math.isfinite(repose_view_cost_usd) or repose_view_cost_usd < 0):
+        raise ValueError("atlas_selection_repose_hold_invalid")
+    held_frames = budget_frames
+    if repose_view_cost_usd:
+        from decimal import Decimal
+        budget = review["selection_budget"]
+        held_frames = int(Decimal(str(budget["maximum_pose_cost_usd"]))
+                          / (Decimal(str(budget["input_cost_usd"])) + Decimal(str(repose_view_cost_usd))))
     if maximum_frames is not None and (type(maximum_frames) is not int or maximum_frames < 2):
         raise ValueError("atlas_selection_limit_invalid")
     # The connected cover is bounded only by the reviewed dollars (or an operator's
@@ -715,7 +752,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     retained = _retained_video_inputs(root=output_root.resolve(), survey=survey, review=review,
                                      frames=frames, capacity=capacity, budget_frames=budget_frames,
                                      minimum_frames=minimum_frames, splat_frame_target=splat_frame_target,
-                                     relative_sharpness_fraction=relative_sharpness_fraction)
+                                     relative_sharpness_fraction=relative_sharpness_fraction,
+                                     repose_view_cost_usd=repose_view_cost_usd)
     if retained is not None:
         return retained
     features = [_features(r, rotation) for r in frames]
@@ -740,10 +778,20 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     distinct_count = len(selected) - len(cover)
     spread = []
     if splat_frame_target:
+        # Density views are optional: the reviewed dollars bound how many are added, so they never make
+        # money refuse the accurate set below.
         selected, spread = add_time_spread_views(frames=frames, features=features, selected=selected,
-            frame_target=maximum_frames, policy=fill_policy)
+            frame_target=max(2, min(maximum_frames, max(held_frames, len(selected)))), policy=fill_policy)
         spread_ids = {row["frame_id"] for row in spread}
         diagnostics = [row for row in diagnostics if row.get("frame_id") not in spread_ids] + spread
+        if len(selected) > max(held_frames, len(cover)):
+            selected, trimmed = trim_to_allowance(frames=frames, cover=cover, selected=selected,
+                                                  diagnostics=diagnostics, limit=max(held_frames, len(cover)),
+                                                  priority_frame_ids=priority_frame_ids)
+            gone = {row["frame_id"] for row in trimmed}
+            diagnostics = [row for row in diagnostics if row.get("frame_id") not in gone] + trimmed
+            spread = [row for row in spread if row["frame_id"] not in gone]
+            distinct_count = len(selected) - len(cover) - len(spread)
     support = []
     if minimum_frames:
         selected, support = add_overlapping_support_views(frames=frames, features=features, selected=selected,
@@ -793,7 +841,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
                           **({"splat_frame_target": splat_frame_target} if splat_frame_target else {}),
                           **({"relative_sharpness_fraction": relative_sharpness_fraction}
                              if relative_sharpness_fraction else {}),
-                          **({"minimum_source_frames": minimum_frames} if minimum_frames else {})},
+                          **({"minimum_source_frames": minimum_frames} if minimum_frames else {}),
+                          **({"repose_view_cost_usd": repose_view_cost_usd} if repose_view_cost_usd else {})},
               "frames": prepared, "source_sample_count": survey["sample_count"],
               "heldout_frame_count": survey["heldout_frame_count"], "heldout_pixels_included": False}
     # Reviewed frames the selection left out and named (uncaptured): later steps never ask for them.

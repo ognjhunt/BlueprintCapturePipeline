@@ -89,7 +89,8 @@ def test_a_stationary_run_inside_the_moving_shot_is_capped_as_the_splat_selectio
     assert [(row["kind"], row["decision"]) for row in segments] == [
         ("moving", "primary"), ("no_parallax", "capped"), ("moving", "kept")]
     capped = segments[1]
-    assert len(capped["kept_frame_ids"]) == quality.STATIONARY_FRAME_CAP
+    # The still views turn half a degree apart: only their near-duplicates are left out, every other one.
+    assert len(capped["kept_frame_ids"]) == len(capped["frame_ids"]) // 2
     assert window["status"] == "windowed" and window["intervals_seconds"] == [
         [_time(frames, "v000"), _time(frames, "v041")]]
     span = window["capped_no_parallax_spans"][0]
@@ -262,7 +263,7 @@ def test_the_windowed_retry_poses_only_the_window_and_its_stop_is_final(tmp_path
     assert window["status"] == "windowed" and window["digest"] == canonical_digest(window, digest_field="digest")
     assert window["intervals_seconds"] == [[_time(frames, "v020"), _time(frames, "v049")]]
     assert window["original_review_digest"] == canonical_digest(review)
-    assert selected[0]["review"] == window["review"] and selected[0]["splat_frame_target"] == 96
+    assert selected[0]["review"] == window["review"] and selected[0]["splat_frame_target"] == 512
     assert json.loads((root / "atlas_scene_review.json").read_text()) == window["review"]
     if outcome == "stopped":
         assert value == parent

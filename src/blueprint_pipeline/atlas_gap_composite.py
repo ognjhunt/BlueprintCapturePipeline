@@ -314,7 +314,7 @@ def well_observed(rendered):
             & (rendered["views"] >= MIN_VIEWS))
 
 
-def composite_view(view, references):
+def composite_view(view, references, rendered=None):
     """The provider's view, with the capture's pixel and depth wherever it contradicts a well-observed capture.
 
     The provider's pixels are ``view["provider_rgb"]`` (its own image, before
@@ -324,6 +324,7 @@ def composite_view(view, references):
     depth, or blurred colour beyond ``AGREE_COLOUR``. Isolated contradictions
     smaller than a named gap are noise. Admission, confidence and camera are
     unchanged. Returns the view and a receipt of what each pixel came from.
+    ``rendered`` is ``render_observed(references, camera)`` when the caller already has it.
     """
     import cv2
     from scipy.ndimage import distance_transform_edt
@@ -331,7 +332,7 @@ def composite_view(view, references):
     keep = np.asarray(view["keep_mask"], bool)
     provider = np.asarray(view.get("provider_rgb", view["rgb"]))
     camera = {"intrinsics": view["intrinsics"], "extrinsics": view["extrinsics"]}
-    rendered = render_observed(references, camera)
+    rendered = render_observed(references, camera) if rendered is None else rendered
     rgb, depth, observed = rendered["rgb"], rendered["depth"], rendered["observed"]
     if rgb.shape != provider.shape or rgb.shape != view["rgb"].shape or depth.shape != view["depth"].shape:
         raise ValueError("atlas_gap_composite_grid_changed")

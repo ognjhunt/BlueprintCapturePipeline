@@ -72,25 +72,46 @@ def test_the_kitchen_pattern_is_unchanged():
     assert [(row["kind"], row["decision"]) for row in record["motion"]["segments"]] == [("moving", "primary")]
 
 
-def test_a_pan_without_a_jump_keeps_only_its_widest_views_beside_the_dolly():
-    value = _fixture("library_aisle_capture_5b067498.json")
+def _registered_pan(value):
     jump = np.subtract(*[next(row["extrinsics"]["position"] for row in value["frames"] if row["frame_id"] == key)
                          for key in ("decoded-000000203", "decoded-000000199")])
     # The same capture, registered: the pan stood just behind where the dolly starts.
     for row in value["frames"]:
         if row["timestamp_seconds"] < 8.1:
             row["extrinsics"]["position"] = list(np.add(row["extrinsics"]["position"], .95 * jump))
+    return value
+
+
+def test_a_pan_without_a_jump_leaves_out_only_its_near_duplicates_and_never_a_weak_regions_view():
+    """Owner, 2026-11-18: the no-parallax cut is for true near-duplicates only (it cut 33 of 103 posed views
+    on itest-c0cbbf20), and never takes a view that saw a weak region of the coverage map."""
+    value = _registered_pan(_fixture("library_aisle_capture_5b067498.json"))
     record = _select(value)
     assert record["motion"]["jumps"] == []
     segments = record["motion"]["segments"]
     assert [(row["kind"], row["decision"]) for row in segments] == [("no_parallax", "capped"), ("moving", "primary")]
-    assert len(segments[0]["kept_frame_ids"]) == quality.STATIONARY_FRAME_CAP
-    assert "decoded-000000199" in segments[0]["kept_frame_ids"]  # the view next to the dolly seeds the spread
-    assert len(record["sent_frame_ids"]) == 19 + quality.STATIONARY_FRAME_CAP
+    pan, kept = segments[0]["frame_ids"], segments[0]["kept_frame_ids"]
+    cut = [row["frame_id"] for row in record["left_out"] if row["reason"] == "no_parallax_near_duplicate"]
+    assert len(kept) == 9 and set(kept) | set(cut) == set(pan) and len(cut) == 3
+    assert "decoded-000000199" in kept  # the view next to the dolly seeds the spread
+    rows = {row["frame_id"]: row for row in quality.camera_rows(
+        [frame for frame in value["frames"] if frame["frame_id"] in set(pan)],
+        {row["frame_id"]: row["timestamp_seconds"] for row in value["frames"]})}
+    # Every view left out is within the near-duplicate angle of one kept; the kept are farther apart than it.
+    assert all(min(quality._direction_angle(rows[key]["forward"], rows[other]["forward"]) for other in kept)
+               < quality.NEAR_DUPLICATE_DEGREES for key in cut)
+    assert all(quality._direction_angle(rows[a]["forward"], rows[b]["forward"]) >= quality.NEAR_DUPLICATE_DEGREES
+               for a in kept for b in kept if a < b)
+    assert len(record["sent_frame_ids"]) + len(record["heldout_frame_ids"]) == 19 + len(kept)
     assert "splat_no_parallax_frames_capped" in record["flags"]
     assert {row["reason"] for row in record["left_out"]} == {"depth_disagrees_with_measured_neighbours",
                                                               "agrees_only_with_views_that_disagree_elsewhere",
-                                                              "no_parallax_view_beyond_cap"}
+                                                              "no_parallax_near_duplicate"}
+    # A near-duplicate that saw a weak region of the map is kept.
+    protected = _select(value, weak_region_frame_ids=[cut[0]])
+    assert cut[0] in protected["motion"]["segments"][0]["kept_frame_ids"]
+    assert protected["weak_region_frame_ids"] == [cut[0]]
+    assert cut[0] not in {row["frame_id"] for row in protected["left_out"]}
 
 
 def test_measured_pairs_that_tie_a_segment_across_a_jump_keep_it():
@@ -98,9 +119,10 @@ def test_measured_pairs_that_tie_a_segment_across_a_jump_keep_it():
     value["pairs"] += [{"source": "decoded-000000199", "target": "decoded-000000203", "median_relative_residual": .01},
                        {"source": "decoded-000000187", "target": "decoded-000000215", "median_relative_residual": .02}]
     record = _select(value)
-    assert [(row["kind"], row["decision"]) for row in record["motion"]["segments"]] == [
-        ("no_parallax", "capped"), ("moving", "primary")]
-    assert len(record["sent_frame_ids"]) == 19 + quality.STATIONARY_FRAME_CAP
+    segments = record["motion"]["segments"]
+    assert [(row["kind"], row["decision"]) for row in segments] == [("no_parallax", "capped"), ("moving", "primary")]
+    assert (len(record["sent_frame_ids"]) + len(record["heldout_frame_ids"])
+            == 19 + len(segments[0]["kept_frame_ids"]))
     assert "splat_pose_jump_segment_left_out" not in record["flags"]
 
 
@@ -143,37 +165,120 @@ def test_a_capture_that_never_moved_keeps_every_view():
     assert len(record["sent_frame_ids"]) == 12 and record["flags"] == ["splat_no_parallax_capture"]
 
 
-def _plane_splat(colours, k):
+def _plane_splat(colours, k, margin=12):
+    """One Gaussian per photo pixel on a plane 2 units ahead, reaching ``margin`` px past every edge."""
     from blueprint_pipeline.gaussian_splat_decode import SplatData
     height, width, _ = colours.shape
-    v, u = np.mgrid[0:height, 0:width]
+    v, u = np.mgrid[-margin:height + margin, -margin:width + margin]
     depth = 2.0
     xyz = np.stack([(u + .5 - k["cx"]) / k["fx"] * depth, -(v + .5 - k["cy"]) / k["fy"] * depth,
                     np.full(u.shape, -depth)], axis=-1).reshape(-1, 3)
+    padded = colours[np.clip(v, 0, height - 1), np.clip(u, 0, width - 1)]
     count = len(xyz)
+    # About 1.5 render pixels wide at the 640 px score: a continuous surface.
     return SplatData(count=count, xyz=xyz.astype(np.float32), opacity=np.full(count, 4.0, np.float32),
-                     f_dc=((colours.reshape(-1, 3) - .5) / .28209479177387814).astype(np.float32),
-                     scales=np.full((count, 3), -5.0, np.float32), quats=np.tile([1, 0, 0, 0], (count, 1)).astype(
-                         np.float32), properties=())
+                     f_dc=((padded.reshape(-1, 3) - .5) / .28209479177387814).astype(np.float32),
+                     scales=np.full((count, 3), np.log(.005), np.float32),
+                     quats=np.tile([1, 0, 0, 0], (count, 1)).astype(np.float32), properties=())
 
 
-def test_the_heldout_score_compares_a_centre_render_with_each_photo_and_flags_held_out_views_below_training():
-    rng = np.random.default_rng(0)
-    k = {"fx": 300.0, "fy": 300.0, "cx": 160.0, "cy": 90.0, "width": 320, "height": 180}
-    colours = rng.random((180, 320, 3))
-    splat = _plane_splat(colours, k)
-    camera = {"intrinsics": k, "position": np.zeros(3), "rotation": np.eye(3)}
-    match = {**camera, "frame_id": "train", "rgb": np.round(colours * 255).astype(np.uint8)}
-    other = {**camera, "frame_id": "held", "rgb": np.round((1 - colours) * 255).astype(np.uint8)}
+K_SCORE = {"fx": 300.0, "fy": 300.0, "cx": 160.0, "cy": 90.0, "width": 320, "height": 180}
+
+
+def _smooth_colours():
+    v, u = np.mgrid[0:180, 0:320]
+    return np.stack([u / 320, v / 180, .5 + .3 * np.sin(u / 23.0) * np.cos(v / 17.0)], axis=-1)
+
+
+def _view(frame_id, colours):
+    return {"frame_id": frame_id, "intrinsics": K_SCORE, "position": np.zeros(3), "rotation": np.eye(3),
+            "rgb": np.round(colours * 255).astype(np.uint8), "depth": np.full((180, 320), 2.0, np.float32),
+            "confidence": np.ones((180, 320), np.float32)}
+
+
+def test_the_heldout_score_renders_the_splat_against_each_photo_and_flags_held_out_views_below_training():
+    colours = _smooth_colours()
+    splat = _plane_splat(colours, K_SCORE)
+    match, other = _view("train", colours), _view("held", 1 - colours)
     good = quality.render_photo_score(splat, match)
-    assert good["coverage"] > .99 and good["psnr_db"] > 35 and good["edge_energy_ratio"] == pytest.approx(1, abs=.05)
-    assert quality.render_photo_score(splat, other)["psnr_db"] < 10
+    assert good["coverage"] > .99 and good["psnr_db"] > 30 and good["ssim"] > .9
+    assert good["edge_energy_ratio"] == pytest.approx(1, abs=.1)
+    bad = quality.render_photo_score(splat, other)
+    assert bad["psnr_db"] < 12 and bad["ssim"] < good["ssim"] - .3
     record = quality.heldout_quality(splat=splat, frames=[match, other], selection={
         "digest": "sha256:" + "d" * 64, "posed_frame_ids": ["train", "held"], "sent_frame_ids": ["train"],
         "heldout_frame_ids": ["held"]})
-    assert record["status"] == "scored" and record["flags"] == ["heldout_render_below_training"]
+    assert record["status"] == "scored" and "heldout_render_below_training" in record["flags"]
     assert [row["frame_id"] for row in record["training"]] == ["train"]
-    assert record["image_quality_measurement"] is False and record["claim_scope"] == "development_only"
+    assert record["basis"] == "alpha_blended_gaussian_render" and record["claim_scope"] == "development_only"
+    # Without a coverage map there are no orbit views; the held-out views alone make the look weak here.
+    assert record["look_quality"]["verdict"] == "weak" and record["look_quality"]["weak_region_ids"] == []
+    assert "weak_regions_not_assessed" in record["flags"] and record["look_quality"]["heldout_below_floor"]
+    assert record["look_quality"]["weak_regions_assessed"] is False
+    assert record["digest"] == canonical_digest(record, digest_field="digest")
+
+
+def test_the_ssim_map_is_the_evaluators_windowed_ssim():
+    from blueprint_pipeline.heldout_appearance_evaluation_v2 import windowed_ssim
+    rng = np.random.default_rng(1)
+    left = rng.random((40, 50, 3))
+    right = np.clip(left + rng.normal(0, .1, left.shape), 0, 1)
+    assert quality.ssim_map(left, right).mean() == pytest.approx(windowed_ssim(left, right), abs=1e-9)
+
+
+def _weak_record(splat_centre=(0.0, 0.0, -2.0)):
+    from blueprint_pipeline import atlas_coverage_map as coverage
+    centre = np.asarray(splat_centre)
+    region = {"id": "wr-000", "centroid": centre.tolist(), "extent": [.4, .3, .06], "orbit_deg": [15, 30],
+              "suggested_orbit": coverage._orbit("wr-000", centre, np.zeros((1, 3)), K_SCORE,
+                                                 np.array([0.0, 1.0, 0.0]))}
+    return {"status": "mapped", "digest": "sha256:" + "e" * 64, "grid": {"voxel_size_units": .02},
+            "regions": [region]}
+
+
+def test_a_clean_splat_looks_good_on_its_held_out_view_and_from_the_weak_regions_orbit():
+    colours = _smooth_colours()
+    splat = _plane_splat(colours, K_SCORE)
+    record = quality.heldout_quality(splat=splat, frames=[_view("a", colours), _view("b", colours)],
+                                     selection={"posed_frame_ids": ["a", "b"], "sent_frame_ids": ["a"],
+                                                "heldout_frame_ids": ["b"]}, weak_regions=_weak_record())
+    look = record["look_quality"]
+    assert look["verdict"] == "good" and look["weak_region_ids"] == [] and "look_quality_weak" not in record["flags"]
+    region = look["regions"][0]
+    # Two orbit views at +-15 degrees, both covered where the region is; the held-out blocks there match.
+    assert [view["orbit_degrees"] for view in region["off_path"]] == [-15, 15]
+    assert all(view["hole_share"] == 0 for view in region["off_path"])
+    assert region["heldout_block_count"] > 0 and region["heldout_block_ssim"] > .9
+    assert region["needle_share"] == 0 and region["gaussian_count"] > 100
+
+
+@pytest.mark.parametrize("weak_regions", [None, {"status": "not_mapped", "reason": "atlas_coverage_no_ranged_surface",
+                                                  "regions": []}])
+def test_a_clean_render_without_a_coverage_map_says_the_regions_were_not_assessed(weak_regions):
+    colours = _smooth_colours()
+    record = quality.heldout_quality(splat=_plane_splat(colours, K_SCORE), frames=[_view("a", colours),
+                                     _view("b", colours)], selection={"posed_frame_ids": ["a", "b"],
+                                     "sent_frame_ids": ["a"], "heldout_frame_ids": ["b"]}, weak_regions=weak_regions)
+    look = record["look_quality"]
+    assert look["verdict"] == "weak_regions_not_assessed" and look["heldout_below_floor"] is False
+    assert look["weak_regions_assessed"] is False and "weak_regions_not_assessed" in record["flags"]
+    assert look["weak_regions_not_assessed_reason"] == (weak_regions or {}).get("reason", "coverage_map_unavailable")
+
+
+def test_needle_like_gaussians_in_a_weak_region_make_the_look_weak_and_name_the_region():
+    colours = _smooth_colours()
+    splat = _plane_splat(colours, K_SCORE)
+    inside = np.all(np.abs(splat.xyz - [0, 0, -2]) <= [.21, .16, .04], axis=1)
+    splat.scales[inside] = np.log([.002, .002, .08])  # long along the filmed direction (z)
+    record = quality.heldout_quality(splat=splat, frames=[_view("a", colours), _view("b", colours)],
+                                     selection={"posed_frame_ids": ["a", "b"], "sent_frame_ids": ["a"],
+                                                "heldout_frame_ids": ["b"]}, weak_regions=_weak_record())
+    look = record["look_quality"]
+    assert look["verdict"] == "weak" and look["weak_region_ids"] == ["wr-000"]
+    region = look["regions"][0]
+    assert region["needle_share"] > .9 and region["stretched_along_filmed_direction_share"] > .9
+    assert "needle_like_gaussians" in region["flags"] and "look_quality_weak" in record["flags"]
+    assert record["status"] == "scored"
 
 
 def _posed(value):
@@ -209,6 +314,36 @@ def test_the_pipeline_records_the_selection_once_before_the_purchase_and_reads_i
     with pytest.raises(ValueError, match="atlas_splat_input_selection_changed"):
         pipeline._splat_input_selection(**{**options, "draft": {**draft, "digest": "sha256:" + "3" * 64}},
                                         bought=False)
+
+
+def test_the_pipeline_reads_the_coverage_map_before_selecting_and_keeps_a_weak_regions_views(tmp_path, monkeypatch):
+    """The map is written before the selection ($0, once per pose); a view that saw a weak region is never cut."""
+    from blueprint_pipeline import atlas_coverage_map
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    value = _registered_pan(_fixture("library_aisle_capture_5b067498.json"))
+    cut = [row["frame_id"] for row in _select(value)["left_out"] if row["reason"] == "no_parallax_near_duplicate"]
+    source_root = tmp_path / "pose/full-view-source-v1"
+    source_root.mkdir(parents=True)
+    (source_root / "atlas_geometry_inputs.json").write_text(json.dumps({"frames": [
+        {"frame_id": row["frame_id"], "timestamp_seconds": row["timestamp_seconds"], "sharpness": row["sharpness"]}
+        for row in value["frames"]]}))
+    pose = {"digest": "sha256:" + "1" * 64, "operation": {"response": {"poseRefinementAccepted": False}}}
+    draft = {"digest": "sha256:" + "2" * 64, "pose_result_digest": pose["digest"],
+             "cross_view_agreement": {"pairs": value["pairs"]}}
+    review = {"coverage_requirements": [{"role": "task_region", "required_frame_ids": value["route_frame_ids"]}]}
+    mapped = []
+    monkeypatch.setattr(atlas_coverage_map, "coverage_before_splat", lambda **kw: mapped.append(kw) or {
+        "status": "mapped", "regions": [{"id": "wr-000", "seen_by": [cut[0]]}]})
+    source_pose = {"status": "completed", "measurements_relative_path": "scene_measurements_reviewed.json"}
+    record = pipeline._splat_input_selection(frames=_posed(value), pose=pose, draft=draft, output_root=tmp_path,
+                                             review=review, source_root=source_root, bought=False,
+                                             source_pose=source_pose)
+    # The adopted scale's source pose goes with it, so a scale-reviewed job is mapped once, not twice.
+    assert mapped[0]["selection"] == {"route_frame_ids": sorted(value["route_frame_ids"])}
+    assert mapped[0]["source_pose"] == source_pose
+    assert record["weak_region_frame_ids"] == [cut[0]]
+    assert cut[0] in record["sent_frame_ids"] + record["heldout_frame_ids"]
+    assert set(cut[1:]) <= {row["frame_id"] for row in record["left_out"]}
 
 
 @pytest.mark.parametrize("case", ["refused_pose", "few_views", "unaffordable", "bought"])
@@ -283,9 +418,10 @@ def test_a_ready_library_like_job_qualifies_for_one_rebuild_with_its_reasons_and
     assert eligible == {"parent_result_digest": result["digest"],
                         "reasons": ["pose_refinement_not_accepted", "views_disagree_with_measured_neighbours"],
                         "parent_posed_frame_count": 41, "views_dropped_by_consistency": 10,
-                        # 96 views plus its 10 task-source views, the $5 splat and the $0.50 mesh.
-                        "expected_cost_usd": 6.56,
-                        "maximum_cost_usd": pytest.approx((128 + 10) * .01 + 5.5 + 4)}
+                        # The 31 candidates its selection judged plus its 10 task-source views, the $5 splat and
+                        # the $0.50 mesh; at most the provider's 512 views.
+                        "expected_cost_usd": pytest.approx((31 + 10) * .01 + 5.5),
+                        "maximum_cost_usd": pytest.approx((512 + 10) * .01 + 5.5 + 4)}
     # A job whose pose was accepted and agrees, or one already bought under a selection, does not qualify.
     clean, clean_job, _ = _ready_job(tmp_path / "clean", accepted=True, pairs=[])
     assert rebuilds.rebuild_eligibility(clean, clean_job) is None
@@ -340,7 +476,7 @@ def test_the_rebuild_runs_in_its_own_root_and_publishes_or_hands_the_parent_back
         experimental=False, max_polls=1)
     value = pipeline._run_splat_rebuild(**options)
     # A new selection under the current profile: the splat target and the relative sharpness floor.
-    assert selected[0]["splat_frame_target"] == 96 and selected[0]["relative_sharpness_fraction"] == .6
+    assert selected[0]["splat_frame_target"] == 512 and selected[0]["relative_sharpness_fraction"] == .6
     assert json.loads((root / "atlas_scene_review.json").read_text()) == {"subject_origin": "no_manipulated_subject"}
     if outcome == "processing":
         assert value["status"] == "processing" and not (root / rebuilds.OUTCOME_FILE).exists()

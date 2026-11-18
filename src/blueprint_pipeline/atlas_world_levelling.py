@@ -14,9 +14,10 @@ A scene where nothing observed gives the up direction (open terrain, a floor mor
 the provider's +Y with no level surface agreeing) is levelled on the provider's +Y, unverified, and
 flagged (``LEVEL_ESTIMATE_FLAG``, with both observed tilt estimates). Before 2026-11-10 it waited for
 input with ``website_atlas_scene_level_unobserved``, and the same mesh and code refused it again on every
-timed retry (capture-5b067498, 2026-11-07). A splat with view-dependent colour is copied with its base
-colour only, since rotating higher-order terms is not implemented, and flagged
-(``APPEARANCE_ESTIMATE_FLAG``); it used to refuse with ``website_atlas_scene_level_splat_view_dependent``.
+timed retry (capture-5b067498, 2026-11-07). A splat with view-dependent colour keeps it: its spherical
+harmonics are turned with the splat (``splat_sh_rotation``, since 2026-11-18). It was copied with its base
+colour only and flagged (``APPEARANCE_ESTIMATE_FLAG``) before, and refused with
+``website_atlas_scene_level_splat_view_dependent`` before that.
 A receipt written with either refusal is derived again: no other receipt changes.
 
 A single level plane holding a twentieth of the surface is the first test. A
@@ -963,15 +964,8 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
                           "floor_declared": floor is not None, "claim": "development_only_estimate"}
     value["level_search"] = search
     splat = read_standard_3dgs_ply(splat_path)
-    appearance_estimate = None
-    if splat.sh_rest is not None:
-        # Rotating view-dependent colour is not implemented: the copy keeps the base colour only.
-        appearance_estimate = {"code": APPEARANCE_ESTIMATE_FLAG, "basis": "base_colour_only",
-                               "reason": "website_atlas_scene_level_splat_view_dependent",
-                               "dropped_coefficients_per_gaussian": int(np.asarray(splat.sh_rest).shape[1]),
-                               "claim": "development_only_estimate"}
-        splat = dataclasses.replace(splat, sh_rest=None, properties=tuple(
-            name for name in splat.properties if not name.startswith("f_rest_")))
+    # View-dependent colour (``f_rest_*``) is turned with the splat below (``splat_sh_rotation``), so the
+    # levelled copy keeps it; ``APPEARANCE_ESTIMATE_FLAG`` is no longer raised here (older receipts keep it).
     up = floor["normal"] if floor is not None else normal
     rotation = _rotation_to_up(up)
     transform = np.eye(4)
@@ -1001,6 +995,9 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
     mesh.export(str(root / MESH_NAME))
     xyz = splat.xyz.astype(np.float64) @ rotation.T + transform[:3, 3]
     quats = _rotate_quaternions(rotation, splat.quats.astype(np.float64))
+    if splat.sh_rest is not None:
+        from .splat_sh_rotation import rotate_sh_rest
+        splat = dataclasses.replace(splat, sh_rest=rotate_sh_rest(splat.sh_rest, rotation))
     write_standard_3dgs_ply(dataclasses.replace(splat, xyz=xyz.astype(np.float32), quats=quats.astype(np.float32)),
                             root / SPLAT_NAME)
     value.update(
@@ -1013,7 +1010,6 @@ def level_atlas_world(*, splat_path: Path, splat_digest: str, mesh_path: Path, m
         **({"fallback_floor": fallback} if fallback is not None else {}),
         **({"walked_floor": walked} if walked is not None else {}),
         **({"level_estimate": level_estimate} if level_estimate is not None else {}),
-        **({"appearance_estimate": appearance_estimate} if appearance_estimate is not None else {}),
         ground_plane_offset_m=0.0 if floor is not None else None,
         floor=None if floor is None else {
             "height_before_m": floor["height_m"], "inlier_share": floor["inlier_share"],

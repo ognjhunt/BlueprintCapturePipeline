@@ -116,7 +116,9 @@ def composited_views(frames):
     references = observation_references(references)
     result = []
     for base, view, rest in views:
-        if base in partial:
+        # A view composited where it was made (``atlas_look_views``, against the real frames overlapping it)
+        # carries its receipt and is posted as it is: every real frame per view held the room step ~24 min.
+        if base in partial and not view.get("gap_composite"):
             view, receipt = composite_view(view, references)
             view["gap_composite"] = receipt
         result.append((base, view, rest))
@@ -225,6 +227,11 @@ def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None
     return request, uploads, provenance
 
 
+def _sh_degree(splat) -> int:
+    """The spherical-harmonic degree a decoded splat carries: 0 (base colour only) to 3."""
+    return 0 if splat.sh_rest is None else round((1 + splat.sh_rest.shape[1] // 3) ** 0.5) - 1
+
+
 def _provider_failed_and_exhausted(root: Path) -> bool:
     """Every attempt under root ended without a purchase, and the provider failed one."""
     states = []
@@ -262,7 +269,8 @@ def _refined_marker(form, root: Path, manifest, frames, roots) -> dict:
 
 
 def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_context,
-                     task_runner, max_polls=2, checkpoint=None, retained_only=False, input_selection_digest=None):
+                     task_runner, max_polls=2, checkpoint=None, retained_only=False, input_selection_digest=None,
+                     forms=None, whole_view_review=None):
     """Resume one refined-splat operation; publish its original SPZ and lossless decoded PLY.
 
     World Labs documents a posed frame as image, depth and camera only. It
@@ -277,6 +285,11 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
     one unless an operator requested that upgrade (``request_gap_preserving_upgrade``).
     ``input_selection_digest`` names the recorded choice of ``frames``
     (``atlas_splat_input_quality``); a new request's input binding keeps it.
+    ``forms``, when given, are the only forms tried here. A later fresh attempt
+    (``atlas_refined_splat_retry``) resends its first attempt's request: with
+    ``whole_view_review``, that attempt's retained verdicts on these same views
+    (``first_attempt_review``), the reviewed-whole form is posted again, admitting
+    the same views, and no review is bought again; then the real-frames-only form.
     """
     from . import atlas_whole_view_review
 
@@ -284,6 +297,8 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
     upgrade = _upgrade_roots(roots[-1][1])
     review = views = None
     for index, (form, root) in enumerate(roots):
+        if forms is not None and form not in forms:
+            continue
         if not (root / "native/result.json").is_file():
             if _provider_failed_and_exhausted(root / "native"):
                 continue
@@ -294,16 +309,28 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
                 continue
             if form == WHOLE and not _bought(root):
                 views = _review_views(root, frames)
-                review = atlas_whole_view_review.review_whole_views(
-                    views=views, root=root, task_context=task_context, policy=policy,
-                    source_video_digest=result["binding"]["source_video_digest"], checkpoint=checkpoint,
-                    retained_only=retained_only)
+                if whole_view_review is not None:
+                    candidates = {(base, view["frame_id"]) for base, view, _ in views
+                                  if _admission(view)[0] and _admission(view)[1] is not None}
+                    # The verdicts name these views by position: views that changed are never admitted by them.
+                    review = (whole_view_review if all((row["position"], row["frame_id"]) in candidates
+                                                       for row in whole_view_review["verdicts"])
+                              else {**whole_view_review, "verdicts": []})
+                    write_json(root / REVIEW_RECORD, review)
+                else:
+                    review = atlas_whole_view_review.review_whole_views(
+                        views=views, root=root, task_context=task_context, policy=policy,
+                        source_video_digest=result["binding"]["source_video_digest"], checkpoint=checkpoint,
+                        retained_only=retained_only)
                 if not any(verdict["admit_whole"] for verdict in review["verdicts"]):
                     continue  # Real frames only: the minimal form is that same request.
         try:
             value = _run_form(form=form, root=root, frames=frames, result=result, draft=draft, policy=policy,
                               task_context=task_context, task_runner=task_runner, max_polls=max_polls,
-                              checkpoint=checkpoint, review=review, views=views if form == WHOLE else None,
+                              # The minimal form posts real frames only: the review of views it never sent is not
+                              # its own, and a scene kept as filmed takes only a splat that carries none.
+                              checkpoint=checkpoint, review=review if form == WHOLE else None,
+                              views=views if form == WHOLE else None,
                               input_selection_digest=input_selection_digest)
         except ValueError as exc:
             # The provider failed this form's last attempt; the next form follows. A wall is never a failed
@@ -316,6 +343,20 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
             value["refined_splat"] = _refined_marker(form, root, value["splat_manifest"], frames, roots)
         return value
     raise ValueError("atlas_task_operation_failed")
+
+
+def first_attempt_review(output_root: Path) -> dict | None:
+    """The reviewed-whole verdicts the job's first refined-splat attempt was sent under, when it admitted a view."""
+    root = dict(_form_roots(output_root))[WHOLE]
+    path = root / REVIEW_RECORD
+    if path.is_symlink() or not path.is_file() or not (root / "input_binding.json").is_file():
+        return None
+    review = json.loads(path.read_text())
+    sent = json.loads((root / "input_binding.json").read_text()).get("whole_view_review")
+    # Only verdicts that request carried: the record beside it is that same review.
+    if sent != review or not any(row.get("admit_whole") for row in review.get("verdicts") or []):
+        return None
+    return review
 
 
 def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, task_runner, max_polls,
@@ -397,10 +438,14 @@ def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, 
     spz, ply = root / "atlas_refined_splat.spz", root / "atlas_refined_splat.ply"
     shutil.copyfile(original, spz)
     # Atlas publishes SPZ v2 with degree-0 colour, which decodes exactly in
-    # Python (bit-identical to splat-transform on a 2M-Gaussian Atlas splat).
-    # Any other layout fails closed here with the paid SPZ retained.
+    # Python (bit-identical to splat-transform on a 2M-Gaussian Atlas splat;
+    # capture-7c42's 2M-Gaussian splat, 2026-11-17, is degree 0 too). A splat
+    # with view-dependent colour (degree 1 to 3) keeps it: the PLY carries its
+    # ``f_rest_*`` and the package's ParticleField its degree. Any other layout
+    # fails closed here with the paid SPZ retained.
     splat = decode_spz(spz.read_bytes())
-    parameters = [splat.xyz, splat.opacity, splat.f_dc, splat.scales, splat.quats]
+    parameters = [splat.xyz, splat.opacity, splat.f_dc, splat.scales, splat.quats,
+                  *([splat.sh_rest] if splat.sh_rest is not None else [])]
     if splat.count != int(selected["role"].split("-")[-1]) or not all(np.isfinite(v).all() for v in parameters):
         raise ValueError("atlas_native_splat_decoded_count_invalid")
     write_standard_3dgs_ply(splat, ply)
@@ -416,7 +461,7 @@ def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, 
         "scale_status": "unscaled_provider_world_units", "metric_measurement_proven": False,
         "simulation_qualified": False, "physical_evidence": False,
         "claim_scope": "development_only", "billing": state["billing"],
-        "decoder": {"name": "atlas_depth_splat.decode_spz", "format": "spz_v2_sh0"},
+        "decoder": {"name": "atlas_depth_splat.decode_spz", "format": f"spz_v2_sh{_sh_degree(splat)}"},
         "outputs": [{"role": role, "path": path.name, "sha256": _sha256_file(path), "bytes": path.stat().st_size}
                     for role, path in (("splat_spz", spz), ("splat_ply", ply))]}
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")

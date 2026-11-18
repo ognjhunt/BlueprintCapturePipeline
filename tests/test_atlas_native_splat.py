@@ -58,7 +58,11 @@ def test_posed_frames_follow_the_documented_2_to_512_and_pose_capacity_stays_ins
             tasks.validate_task_request("posedImages2Splats", {"posedFrames": frames})
     # Jobs without a refined splat keep 64; a splat job's target leaves room for task-source views.
     assert pose_api.MAX_POSE_INPUT_IMAGES == 64
-    assert pose_api.SPLAT_FRAME_TARGET == 96 < pose_api.SPLAT_POSE_INPUT_CAPACITY == 128 < 512
+    # The splat's capacity is the provider's (the pinned schema's posedFrames maxItems), and the fill keeps
+    # every distinct, sharp, connected candidate up to it (owner, 2026-11-18).
+    schema = json.loads((Path(native.__file__).parent / "_atlas_schemas/posedImages2Splats.json").read_text())
+    provider = schema["components"]["schemas"]["PosedImages2SplatsRequest"]["properties"]["posedFrames"]["maxItems"]
+    assert pose_api.SPLAT_FRAME_TARGET == pose_api.SPLAT_POSE_INPUT_CAPACITY == provider == 512
 
 
 def test_native_request_refuses_misaligned_depth_before_runner(tmp_path):
@@ -147,9 +151,15 @@ def test_native_schema_refuses_invalid_input_before_purchase(case, tmp_path, cha
     assert fake.posts == fake.reservations == 0
 
 
-def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
+@pytest.mark.parametrize("degree", [0, 3])
+def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path, degree):
+    import dataclasses
     frames = source_frames()
     splat, _ = depth.fuse_posed_frames(frames)
+    if degree:
+        # A splat with view-dependent colour keeps it in the decoded PLY (f_rest_*), never refused or dropped.
+        rest = np.random.default_rng(0).integers(0, 256, (splat.count, 45)).astype(np.float32)
+        splat = dataclasses.replace(splat, sh_rest=(rest - 128) / 128)
     blob = depth.encode_spz(splat)
     pose = {"digest": "sha256:" + "a" * 64, "operation": {"id": "op_pose"},
             "binding": {"source_video_digest": "sha256:" + "b" * 64}}
@@ -186,6 +196,11 @@ def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
     assert (out / "atlas_refined_splat.spz").read_bytes() == blob
     decoded = read_standard_3dgs_ply(out / "atlas_refined_splat.ply")
     assert decoded.count == splat.count
+    assert manifest["decoder"]["format"] == f"spz_v2_sh{degree}"
+    if degree:
+        assert np.array_equal(decoded.sh_rest, splat.sh_rest)
+    else:
+        assert decoded.sh_rest is None
     assert manifest["splat_kind"] == "atlas_refined" and manifest["photometric_optimization"] is True
     assert manifest["metric_measurement_proven"] is manifest["simulation_qualified"] is False
     assert calls[0]["task"] == "posedImages2Splats"
@@ -796,3 +811,59 @@ def test_a_wall_in_a_failed_form_is_raised_never_taken_as_the_next_forms_turn(tm
         native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=tmp_path / "draft-refined",
                                 policy=splat_policy(), task_context=CONTEXT, task_runner=runner)
     assert raised.value is wall and len(calls) == 1
+
+
+def test_a_fresh_attempt_resends_the_reviewed_request_and_never_buys_the_review_again(tmp_path, reviewer):
+    """``atlas_refined_splat_retry``: after both forms failed, a new attempt root posts the same reviewed-whole
+    request (the generated view the first review admitted included), then real frames only."""
+    from blueprint_pipeline.atlas_refined_splat_forms import MINIMAL, WHOLE
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []
+    reviewer.admit = {"candidate-0002"}
+    first = tmp_path / "refined_splat"
+    with pytest.raises(ValueError, match="atlas_task_operation_failed"):
+        refined(frames, first, ["failed", "failed"], calls)
+    reviewed = native.first_attempt_review(first)
+    assert [row["admit_whole"] for row in reviewed["verdicts"]] == [True] and len(reviewer.asked) == 1
+    retry = tmp_path / "refined_splat-retry-1"
+    done = native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=retry, policy=splat_policy(),
+                                   task_context=CONTEXT, task_runner=scripted_runner(["completed"], calls),
+                                   forms=(WHOLE, MINIMAL), whole_view_review=reviewed)
+    assert calls[-1]["output_root"] == tmp_path / "refined_splat-retry-1-whole/native"
+    assert calls[-1]["request"] == calls[0]["request"] and len(calls[0]["request"]["posedFrames"]) == 3
+    assert len(reviewer.asked) == 1  # The retained verdicts, not a second review.
+    binding = json.loads((tmp_path / "refined_splat-retry-1-whole/input_binding.json").read_text())
+    assert binding["whole_view_review"] == reviewed and binding["frames"][2]["whole_view_review"]["admit_whole"]
+    assert done["refined_splat"]["request_form"] == WHOLE
+    # Verdicts on other views admit nothing: the fresh attempt is real frames only.
+    other = tmp_path / "other"
+    changed = [*source_frames(), gap_view(keep(slice(20, None)), frame_id="another")]
+    value = native.run_native_splat(frames=changed, result=POSE, draft=DRAFT, output_root=other, policy=splat_policy(),
+                                    task_context=CONTEXT, task_runner=scripted_runner(["completed"], calls),
+                                    forms=(WHOLE, MINIMAL), whole_view_review=reviewed)
+    assert value["refined_splat"]["request_form"] == MINIMAL and len(reviewer.asked) == 1
+    # A first attempt whose review admitted nothing has no request to resend with generated views.
+    assert native.first_attempt_review(tmp_path / "never") is None
+
+
+@pytest.mark.parametrize("case", ["none_admitted", "over_review_cap", "whole_failed"])
+def test_the_real_frames_only_splat_after_generated_views_is_one_a_scene_kept_as_filmed_takes(tmp_path, reviewer,
+                                                                                                case):
+    """Review (genviews): with a generated view beside the filmed frames that the review did not admit, or
+    could not be bought, or whose reviewed-whole request failed, the minimal splat bought next carries no
+    review of views it never sent, so the scene source takes it as the filmed frames' own refinement."""
+    from blueprint_pipeline.website_atlas_scene_source import _captured_frames_refinement
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)), frame_id="look-1")], []
+    reviewer.admit = {"candidate-0002"} if case == "whole_failed" else set()
+    policy = {**splat_policy(), **({"maximum_review_cost_usd": 0.0001} if case == "over_review_cap" else {})}
+    done = native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=tmp_path / "refined_splat",
+        policy=policy, task_context=CONTEXT, task_runner=scripted_runner(
+            ["failed", "completed"] if case == "whole_failed" else ["completed"], calls))
+    assert done["refined_splat"]["request_form"] == "documented_minimal"
+    manifest = done["splat_manifest"]
+    assert "whole_view_review" not in manifest and [row["frame_id"] for row in manifest["frames"]] == ["0", "1"]
+    source = {"digest": POSE["digest"], "operation_receipt": {"input_usage": {"frames": [
+        {"frame_id": "0"}, {"frame_id": "1"}]}}}
+    assert _captured_frames_refinement(manifest, source)
+    if case == "whole_failed":
+        whole = json.loads((tmp_path / "refined_splat-whole/input_binding.json").read_text())
+        assert whole["whole_view_review"]["verdicts"][0]["admit_whole"] is True
