@@ -1233,7 +1233,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     residual = (registration.get("task_region") or {}).get("trimmed_rmse_m")
     destination_rows = chosen_destination_rows(build_choice, task_masks["targets"])
-    start = None
+    start, subject_extent = None, {}
     if body is not None:
         subject_min, subject_max = levelled_body_bounds(body, matrix, up=up)
     elif synthetic is not None:
@@ -1243,7 +1243,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     else:
         subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
                                                 source_to_target=matrix)
-        subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
+        from .website_object_extent import own_points_extent  # its own points, where its masks spilled
+        subject_min, subject_max, subject_extent = own_points_extent(subject_bounds["minimum"],
+            subject_bounds["maximum"], subject_target, source_geometry["frames"], matrix, runtime_to_sim, residual)
 
     searched: dict[str, Any] = {}  # the visible-rest search's record, as the last placement made it
 
@@ -1918,7 +1920,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination, **searched,
-        **surface_estimate,
+        **surface_estimate, **subject_extent,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
         **({"destination_choice": destination_choice} if destination_choice is not None and not rule_withheld else {}),

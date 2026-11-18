@@ -212,7 +212,10 @@ retry: the same video and release give the same answer. Two changes answer it.
   does not show (glass and other see-through or shiny surfaces) is estimated from its visible edges in
   the frames, checked across them, and added to the collider only
   (`scene_estimate:destination_surface_estimated`, `website_unscanned_surface`); one the frames do not
-  agree on stops as before. Each estimate is named on the
+  agree on stops as before. A job object whose box does not fit its own masks is sized again from its
+  points the frames agree on, its masks' spill onto what lies under or behind it left out
+  (`scene_estimate:object_size_from_its_points`, `website_object_extent`); an exact model's published
+  size only cross-checks it (`scene_estimate:object_size_disagrees_with_published`). Each estimate is named on the
   base scene (`atlas_scene_estimates`), copied into the screening plan, and published in v3
   `scene_feasibility.flags`; the website names each in its own sentence. Counts and intervals are
   shown as measured: no estimate adjusts them.

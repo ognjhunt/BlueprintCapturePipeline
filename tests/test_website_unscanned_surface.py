@@ -61,11 +61,11 @@ def _camera(position, target) -> np.ndarray:
     return pose
 
 
-def _cast(boxes: list, pose: np.ndarray) -> np.ndarray:
+def _cast(boxes: list, pose: np.ndarray, focal: float = FOCAL) -> np.ndarray:
     """Each pixel's depth (camera z) to the nearest of ``boxes``, inf where its ray meets none (slab method: a ray
     whose camera z is 1 reaches depth t at parameter t)."""
     rows, columns = np.mgrid[0:HEIGHT, 0:WIDTH]
-    rays = np.stack([(columns.ravel() - WIDTH / 2) / FOCAL, (rows.ravel() - HEIGHT / 2) / FOCAL,
+    rays = np.stack([(columns.ravel() - WIDTH / 2) / focal, (rows.ravel() - HEIGHT / 2) / focal,
                      np.ones(rows.size)], axis=1) @ pose[:3, :3].T
     depth = np.full(rows.size, np.inf)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -79,17 +79,16 @@ def _cast(boxes: list, pose: np.ndarray) -> np.ndarray:
 
 
 @functools.lru_cache(maxsize=None)
-def _views(opaque_shelf: bool) -> tuple:
+def _views(opaque_shelf: bool, cameras: tuple | None = None, focal: float = FOCAL) -> tuple:
     """Per camera: the frame's depth, the depth of its clean plate (the cup taken out) the scan is made from, and
-    the shelf's and the cup's masks. Glass: the shelf is in its mask but in neither depth."""
+    the shelf's, the cup's and the table's masks. Glass: the shelf is in its mask but in neither depth."""
     views = []
-    for position, target in CAMERAS:
+    for position, target in cameras or CAMERAS:
         pose = _camera(position, target)
-        depth = _cast(_room(opaque_shelf=opaque_shelf), pose)
-        shelf_depth, cup_depth = _cast([SHELF], pose), _cast([CUP], pose)
-        views.append((pose, depth, _cast(_room(opaque_shelf=opaque_shelf, cup=False), pose),
-                      np.isfinite(shelf_depth) & (shelf_depth <= depth + 1e-6),
-                      np.isfinite(cup_depth) & (cup_depth <= depth + 1e-6)))
+        depth = _cast(_room(opaque_shelf=opaque_shelf), pose, focal)
+        shelf_depth, cup_depth, table_depth = (_cast([box], pose, focal) for box in (SHELF, CUP, TABLE))
+        views.append((pose, depth, _cast(_room(opaque_shelf=opaque_shelf, cup=False), pose, focal),
+                      *(np.isfinite(seen) & (seen <= depth + 1e-6) for seen in (shelf_depth, cup_depth, table_depth))))
     return tuple(views)
 
 
@@ -105,11 +104,14 @@ def _track(name: str, masks: list[np.ndarray]) -> dict:
         for index, mask in enumerate(masks) if mask.any()]}
 
 
-def _arguments(root: Path, *, opaque_shelf: bool = False, shelf_masks=None) -> dict:
-    """Compile's inputs for the room: its source geometry, a collider made from that depth alone, and masks."""
+def _arguments(root: Path, *, opaque_shelf: bool = False, shelf_masks=None, cup_masks=None,
+               cameras: tuple | None = None, focal: float = FOCAL, onto_table: bool = False) -> dict:
+    """Compile's inputs for the room: its source geometry, a collider made from that depth alone, and masks
+    (``cameras`` and ``focal``: another set of views of the same room; ``onto_table``: the destination is the
+    table the cup stands on, a surface the scan shows)."""
     root.mkdir(parents=True, exist_ok=True)
     frames, points, faces = [], [], []
-    for index, (pose, depth, clean, _shelf, _cup) in enumerate(_views(opaque_shelf)):
+    for index, (pose, depth, clean, *_masks) in enumerate(_views(opaque_shelf, cameras, focal)):
         valid = np.isfinite(depth)
         geometry = root / f"frame-{index}.npz"
         np.savez(geometry, depth_m=np.where(valid, depth, 0.0), valid_mask=valid)
@@ -120,11 +122,11 @@ def _arguments(root: Path, *, opaque_shelf: bool = False, shelf_masks=None) -> d
         frames.append({"frame_id": f"frame-{index}", "timestamp_seconds": index * 0.5, "image_path": str(image),
                        "image_digest": _sha256_file(image), "geometry_path": str(geometry),
                        "geometry_digest": _sha256_file(geometry),
-                       "intrinsics": [[FOCAL, 0, WIDTH / 2], [0, FOCAL, HEIGHT / 2], [0, 0, 1]],
+                       "intrinsics": [[focal, 0, WIDTH / 2], [0, focal, HEIGHT / 2], [0, 0, 1]],
                        "world_from_camera": source_pose.tolist(), "width": WIDTH, "height": HEIGHT})
         # The collider is the depth's own surface, a pixel grid like a splat-derived mesh.
         rows, columns = np.mgrid[0:HEIGHT, 0:WIDTH]
-        camera = np.stack([(columns - WIDTH / 2) / FOCAL, (rows - HEIGHT / 2) / FOCAL, np.ones_like(rows, float)],
+        camera = np.stack([(columns - WIDTH / 2) / focal, (rows - HEIGHT / 2) / focal, np.ones_like(rows, float)],
                           axis=-1) * clean[..., None]
         upright = camera.reshape(-1, 3) @ pose[:3, :3].T + pose[:3, 3]
         offset = sum(len(block) for block in points)
@@ -140,8 +142,9 @@ def _arguments(root: Path, *, opaque_shelf: bool = False, shelf_masks=None) -> d
     source_geometry = {"schema_version": "website_source_geometry.v1", "frames": frames, "unit": "estimated_meters",
                        "scale_status": "model_estimated", "metric_measurement_proven": False}
     source_geometry["digest"] = canonical_digest(source_geometry, digest_field="digest")
-    views = _views(opaque_shelf)
-    cup, shelf = _track("cup", [view[4] for view in views]), _track("glass_shelf", shelf_masks or [view[3] for view in views])
+    views = _views(opaque_shelf, cameras, focal)
+    cup = _track("cup", cup_masks or [view[4] for view in views])
+    shelf = _track("glass_shelf", shelf_masks or [view[5 if onto_table else 3] for view in views])
     targets = [{"target_id": "cup-1", "task_effect": "manipulated", "disposition": "remove", "semantic_label": "cup",
                 "track": cup, "estimated_visible_bounds": estimate_target_bounds(cup, frames)},
                {"target_id": "glass_shelf", "task_effect": "static_contact", "disposition": "keep",

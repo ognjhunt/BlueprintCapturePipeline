@@ -2361,6 +2361,33 @@ def test_an_estimated_destination_surface_is_named_in_one_sentence_only_when_the
     assert (sim.SURFACE_ESTIMATED_NO_LOOK_NOTE in bare) is expected and sim.SURFACE_ESTIMATED_NOTE not in bare
 
 
+@pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees"])
+def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_it_was(job, tmp_path, extent):
+    """The object's size read again from its own points, its masks' spill left out (``website_object_extent``):
+    the README says so in one sentence, and says when the exact model's published size disagrees with it. A job
+    whose box fit its masks records nothing and its package is unchanged, at the same revision."""
+    before = sim.simulation_source(job.capture, queue_root=job.queue)
+    preparation = job.capture / "pipeline" / "website_scene_preparation"
+    if extent is not None:
+        record = {"status": "kept" if extent == "kept" else "from_its_own_points",
+                  **({"published_cross_check": {"status": "disagrees"}} if extent == "disagrees" else {})}
+        _write(preparation / "preparation.json", {"subject_extent": record})
+        handoff = {"status": "intake_ready", "preparation_path": str(preparation / "preparation.json")}
+        handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+        _write(preparation / "handoff.json", handoff)
+    expected = {"size_from_its_points": extent in ("from_its_own_points", "disagrees"),
+                "size_disagrees_with_published": extent == "disagrees"}
+    assert sim.size_notes(job.capture) == {key: True for key, value in expected.items() if value}
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not any(expected.values()))
+    sim.build_package(source, tmp_path / "package.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "package.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    assert (sim.SIZE_FROM_ITS_POINTS_NOTE in readme) is expected["size_from_its_points"]
+    assert (sim.SIZE_DISAGREES_WITH_PUBLISHED_NOTE in readme) is expected["size_disagrees_with_published"]
+    assert readme.count("points of the object") == (1 if expected["size_from_its_points"] else 0)
+
+
 # --- a look written again from its source splat, and its PLY ------------------------------------------------------
 
 #: The website look's frame (``website_native_appearance``): a levelled Y-up world, scaled and turned to Z-up, in
