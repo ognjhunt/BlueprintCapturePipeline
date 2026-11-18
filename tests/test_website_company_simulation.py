@@ -2099,9 +2099,10 @@ def test_a_half_without_its_rule_and_without_a_sealed_named_reason_is_refused(jo
     assert (result["status"], result["reason"]) == ("refused", "website_company_simulation_" + reason), result
 
 
-def test_the_withheld_reasons_are_the_handoffs_room_gaps():
+def test_the_withheld_reasons_are_the_handoffs_room_gaps_and_the_model_s_choice():
+    from blueprint_pipeline.website_build_choice import RULE_WITHHELD_CODE
     from blueprint_pipeline.website_scene_handoff import ROOM_GAPS
-    assert sim.RULE_WITHHELD_REASONS == ROOM_GAPS
+    assert sim.RULE_WITHHELD_REASONS == ROOM_GAPS | {RULE_WITHHELD_CODE}
 
 
 # --- the size limit is on the download ----------------------------------------------------------------------------

@@ -688,10 +688,47 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
     return record
 
 
+class BuildChoiceUnsatisfiable(Exception):
+    """An honoured build choice compile cannot build as chosen: not a ValueError, so no step records it as a stop."""
+
+
+def build_choice_root(capture_root: Path) -> Path:
+    """Beside every revision of the workspace, so a target correction that leaves the menu as it was finds the same
+    receipt."""
+    return Path(capture_root) / "pipeline" / "website_scene_preparation" / "build_choice"
+
+
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
                                  capture_root: Path, now: float,
                                  allow_operation_coverage_review: bool = False,
-                                 allow_static_target_recovery: bool = False) -> dict[str, Any]:
+                                 allow_static_target_recovery: bool = False,
+                                 allow_build_choice: bool = False) -> dict[str, Any]:
+    """``allow_build_choice``: the job's build is the model's choice from the pipeline's menu where it answers validly
+    (``website_build_choice``), one retained paid call; without it, or on any fallback, today's rules decide.
+
+    A choice compile cannot build as chosen is rejected and this run goes on under the rules, never held; the next
+    run decides again with that build off the menu. The decision's record keeps what shipped."""
+    from .website_build_choice import record_shipped, reject_choice
+    arguments = dict(descriptor=descriptor, clean_plate=clean_plate, capture_root=capture_root, now=now,
+                     allow_operation_coverage_review=allow_operation_coverage_review,
+                     allow_static_target_recovery=allow_static_target_recovery)
+    decided: list[dict[str, Any]] = []
+    try:
+        result = _prepare_website_scene_handoff(**arguments, allow_build_choice=allow_build_choice, decided=decided)
+    except BuildChoiceUnsatisfiable as exc:
+        reject_choice(build_choice_root(capture_root), decided[-1], code=str(exc))
+        result = _prepare_website_scene_handoff(**arguments, allow_build_choice=False, decided=None)
+        record_shipped(build_choice_root(capture_root), decided[-1], result, rejected=str(exc))
+        return result
+    if decided:
+        record_shipped(build_choice_root(capture_root), decided[-1], result)
+    return result
+
+
+def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
+                                   capture_root: Path, now: float, allow_operation_coverage_review: bool,
+                                   allow_static_target_recovery: bool, allow_build_choice: bool,
+                                   decided: list[dict[str, Any]] | None) -> dict[str, Any]:
     handoff_lease_checkpoint("website_scene_handoff_start")
     from .website_preparation_revision import workspace, bind_preparation
     from .website_preparation_terminal import retained_window_end
@@ -876,7 +913,46 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     task_context=context, source_video_digest=source_video_digest)
                 semantics = clarified["task_semantics"]
         semantics_options = {"task_semantics": semantics, "source_video_digest": source_video_digest}
-        gap = native_task_preparation_gap(context, **semantics_options)
+        # The model's object build, honoured in place of today's judgement rules (``website_build_choice``).
+        override = None
+        if allow_build_choice:
+            from .website_build_choice import (RECORD, ROOM_FLAG, ROOM_ONLY, RULE_WITHHELD, RULE_WITHHELD_CODE,
+                                               decide_build, rules_route)
+            found_targets = (clean_plate.get("task_masks") or {}).get("targets") or []
+            rules = rules_route(task_context=context, removal=removal, targets=found_targets,
+                                flags=clean_plate.get("flags") or [], geometry_only=geometry_only, **semantics_options)
+            if rules is not None:
+                video = clean_plate.get("input_video_path")
+                key_video = Path(video) if isinstance(video, str) else None
+                if key_video is not None and (key_video.is_symlink() or not key_video.is_file()
+                                              or not key_video.resolve().is_relative_to(capture_root.resolve())):
+                    key_video = None
+                handoff_lease_checkpoint("website_scene_handoff_build_choice")
+                decision = decide_build(task_context=context, removal=removal, targets=found_targets, rules=rules,
+                                        output_root=build_choice_root(capture_root), source_video=key_video,
+                                        task_semantics=semantics, source_video_digest=source_video_digest)
+                if decision is not None and decided is not None:
+                    decided.append(decision)
+                if decision is not None and decision["honoured"]:
+                    chosen = decision["choice"]
+                    result["build_choice"] = {"build": chosen["build"], "rules_build": rules["build"],
+                                              "source": "model",
+                                              "record_path": str(build_choice_root(capture_root) / RECORD),
+                                              "request_binding_digest": decision["request_binding_digest"]}
+                    if chosen["build"] == ROOM_ONLY:
+                        from .task_profile_contracts import task_profile_for
+                        from .website_early_task_hold import task_family_runtime_gap
+                        from .website_task_semantics import effective_task_profile
+                        own = task_profile_for(effective_task_profile(task_context=context, **semantics_options))
+                        missing = task_family_runtime_gap(context, **semantics_options) is not None
+                        return room_package(own.profile_id if own is not None else None,
+                                            flags=[ROOM_FLAG, *([RUNTIME_GAP] if missing else [])])
+                    override = {"build": chosen["build"], "destination_target_id": chosen["destination_target_id"],
+                                "request_binding_digest": decision["request_binding_digest"]}
+                    if chosen["build"] == RULE_WITHHELD:
+                        result["rule_withheld"] = {"code": RULE_WITHHELD_CODE,
+                                                   "task_id": "website-" + context["context_digest"][7:27]}
+        gap = None if override is not None else native_task_preparation_gap(context, **semantics_options)
         if gap is not None and gap["code"] in ROOM_GAPS:
             from .website_operation_coverage import clarification_request
             if semantics is None or clarification_request(semantics, task_context=context,
@@ -1013,7 +1089,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                                                       synthetic_subject=synthetic)
         elif len(subjects) == 1 and subjects[0].get("target_id") in targets:
             _, inferred = native_task_subject_profile(subjects[0], targets[subjects[0]["target_id"]])
-        if inferred is not None:
+        if inferred is not None and override is None:
             gap = native_task_preparation_gap(context, inferred_profile_id=inferred, **semantics_options)
             if gap is not None and gap["code"] != (result.get("rule_withheld") or {}).get("code"):
                 # The reading and the object disagree (the only gap left here): fitted to neither, the room
@@ -1022,7 +1098,9 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         if synthetic is None:
             # Several task objects, or a soft one, under a one-rigid-object or one-opening
             # profile: held here, before coverage, spec research and authoring buy anything for it.
-            gap = native_task_subject_gap(context, subjects=subjects, targets=targets, **semantics_options)
+            # The model's honoured build decided this already (one object, as it chose).
+            gap = None if override is not None else native_task_subject_gap(
+                context, subjects=subjects, targets=targets, **semantics_options)
             if gap is not None:
                 # Not narrowed to one rigid object: the room package, the objects counted, no rule of Blueprint's.
                 return room_for(gap)
@@ -1072,8 +1150,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 **({"task_semantics": semantics} if semantics is not None else {}),
                 **({"atlas_route": "geometry_only"} if geometry_only else {}),
                 **({"rule_withheld": result["rule_withheld"]} if "rule_withheld" in result else {}),
+                **({"build_choice": override} if override is not None else {}),
             )
         except ValueError as exc:
+            from .website_build_choice import BINDING_INVALID
+            if override is not None and str(exc) == BINDING_INVALID:
+                raise BuildChoiceUnsatisfiable(str(exc)) from exc  # the rules decide this run; never a hold
             if "rule_withheld" in result and str(exc) in REGISTRATION_REFUSALS | RECAPTURE_CODES:
                 # The object does not fit the scene or the video: left out, never a hold or a new video.
                 return room_package(None, flags=[str(exc)])

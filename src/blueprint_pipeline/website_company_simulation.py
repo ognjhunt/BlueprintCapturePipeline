@@ -241,7 +241,9 @@ ROOM_RECORD_SCHEMA = "blueprint.room_package_inputs.v1"
 #: why (``team_scene_packet``: no rule in the plan or the record). Only such a half, with its object, ships
 #: without a rule, and says so (``NO_RULE``); a rule beside the reason refuses it.
 RULE_WITHHELD_REASONS = frozenset({"website_native_task_profile_preparation_required",
-                                   "website_task_operation_coverage_unresolved"})
+                                   "website_task_operation_coverage_unresolved",
+                                   # The model chose the object built with no rule (``website_build_choice``).
+                                   "website_build_choice_rule_withheld"})
 #: The stage-4 record a rigid website object passes (``task_object_artisan_candidate``, ``_usd_findings``).
 RIGID_STATIC_SCHEMA = "task_evaluation_rigid_replacement_static_qualification.v1"
 _USD = frozenset({".usd", ".usda", ".usdc", ".usdz"})

@@ -34,6 +34,7 @@ from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
+from .website_build_choice import chosen_destination_rows, chosen_mechanism  # the model's honoured object build
 from .website_task_context_contracts import (GEOMETRY_ONLY_BLOCKER, authoring_admission_blockers,
                                              without_withheld_gap)
 from .website_preparation_contracts import scene_configuration_max_retries
@@ -1113,7 +1114,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       evaluation_inputs: Mapping[str, Any] | None = None,
                                       synthetic_authoring_backend: str = "pinned_cad_primitive_v1",
                                       atlas_route: str = "full",
-                                      artisan_provider_choice: Any = None,
+                                      artisan_provider_choice: Any = None, build_choice: Any = None,
                                       rule_withheld: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """``atlas_route="geometry_only"``: the Atlas job kept the scene as filmed
     (``website_atlas_pipeline.ROUTE_ENV``). The preparation is for the robot fit check
@@ -1126,7 +1127,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     blockers: list[str] = []
     semantics_options = {"task_semantics": task_semantics,
                          "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest")}
-    gap = without_withheld_gap(native_task_preparation_gap(task_context, **semantics_options), rule_withheld)
+    gap = without_withheld_gap(native_task_preparation_gap(task_context, **semantics_options), rule_withheld, build_choice)
     from .task_family_scoring import canonical_task_family
     from .website_task_semantics import effective_task_profile
     family = canonical_task_family(effective_task_profile(task_context=task_context, **semantics_options))
@@ -1191,12 +1192,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         raise ValueError("website_single_manipulated_subject_required")
     else:
         subject_entry, subject_target = removed[0], targets[removed[0]["target_id"]]
-    articulation_kind, inferred_profile_id = native_task_subject_profile(
-        subject_entry, subject_target, synthetic_subject=synthetic)
+    articulation_kind, inferred_profile_id = chosen_mechanism(build_choice, subject_entry, subject_target, synthetic) \
+        or native_task_subject_profile(subject_entry, subject_target, synthetic_subject=synthetic)
     articulated = inferred_profile_id == "articulated_open_close"
     gap = without_withheld_gap(native_task_preparation_gap(
-        task_context, inferred_profile_id=inferred_profile_id, **semantics_options), rule_withheld)
-    if gap is None and synthetic is None:
+        task_context, inferred_profile_id=inferred_profile_id, **semantics_options), rule_withheld, build_choice)
+    if gap is None and synthetic is None and build_choice is None:
         # A designed primitive is rigid by construction; an observed object may not be.
         gap = native_task_subject_gap(task_context, subjects=removed, targets=targets, **semantics_options)
     if gap is not None:
@@ -1266,7 +1267,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     import trimesh
     collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     residual = (registration.get("task_region") or {}).get("trimmed_rmse_m")
-    destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
+    destination_rows = chosen_destination_rows(build_choice, task_masks["targets"])
     start = None
     if body is not None:
         subject_min, subject_max = levelled_body_bounds(body, matrix, up=up)
