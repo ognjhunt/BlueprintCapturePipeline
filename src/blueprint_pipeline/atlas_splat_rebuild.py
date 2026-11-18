@@ -140,10 +140,13 @@ def _costs(posed: list[str], selected: list, prices: tuple[float, float, float])
     task_views = max(0, len(posed) - sum(not row.get("judged_only") for row in selected))
     pose_cost, review_cost, after_pose = prices
     expected_views = min(SPLAT_FRAME_TARGET, len(selected))
+    # The most a fresh selection poses: the provider's capacity, or a reviewed cover larger than it (a
+    # selection is never cut below its cover), whatever the parent posed, plus the task-source views.
+    # No re-pose is held for a rebuild, and trimming only ever poses fewer.
+    most_views = max(SPLAT_POSE_INPUT_CAPACITY, len(selected))
     return {"expected_cost_usd": round((expected_views + task_views) * pose_cost + after_pose, 6),
             # A scale review (one planner call) runs only if the new pose's references need it.
-            "maximum_cost_usd": round((SPLAT_POSE_INPUT_CAPACITY + task_views) * pose_cost + after_pose
-                                      + review_cost, 6)}
+            "maximum_cost_usd": round((most_views + task_views) * pose_cost + after_pose + review_cost, 6)}
 
 
 def _window_retry_eligibility(job_dir: Path, result: Mapping[str, Any]) -> dict[str, Any] | None:
