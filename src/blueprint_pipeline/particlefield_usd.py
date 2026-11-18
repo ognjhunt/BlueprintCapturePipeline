@@ -633,7 +633,11 @@ def write_particlefield_usd(
     # ParticleFieldEmissive material or renderer hints used by private PPISP
     # fixtures; neither public reference converter authors them.
 
-    # quaternions: try numpy fast path, fall back to per-element Gf.Quatf (w, x, y, z)
+    # quaternions: try numpy fast path, fall back to per-element Gf.Quatf (w, x, y, z).
+    # A Gf.Quatf is laid out imaginary part first, so ``FromNumpy`` reads each row as
+    # (x, y, z, w). Until 2026-11-18 the rows went in as (w, x, y, z): every Gaussian was
+    # stored turned (real part z, imaginary part w, x, y), and anisotropic splats rendered
+    # with the wrong covariance.
     q = arr["orientations"]
     quat_attr = (
         field.CreateOrientationsAttr()
@@ -641,7 +645,7 @@ def write_particlefield_usd(
         else prim.CreateAttribute("orientations", Sdf.ValueTypeNames.QuatfArray)
     )
     try:
-        quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q, dtype=np.float32)))
+        quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q[:, [1, 2, 3, 0]], dtype=np.float32)))
     except Exception:  # noqa: BLE001
         quat_attr.Set(
             Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q])

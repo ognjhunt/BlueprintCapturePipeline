@@ -542,3 +542,52 @@ def test_no_splat_or_a_transform_a_gaussian_cannot_take_is_refused(tmp_path: Pat
         reason = "particlefield_transform_not_similarity"
     with pytest.raises(ValueError, match=reason):
         particlefield_usd.read_particlefield_splat(path)
+
+
+def _covariances(quats_wxyz: np.ndarray, scales: np.ndarray, linear: np.ndarray | None = None) -> np.ndarray:
+    """The 3D covariance a 3DGS renderer builds (``build_scaling_rotation``: L = R S, Sigma = L L^T), optionally
+    carried by a linear map (Sigma' = A Sigma A^T)."""
+    covariance = _matrices(quats_wxyz) @ (np.asarray(scales, float)[:, :, None] ** 2 * np.eye(3)) @ np.swapaxes(
+        _matrices(quats_wxyz), 1, 2)
+    return covariance if linear is None else linear @ covariance @ linear.T
+
+
+def _axis_angle(axis, degrees: float) -> list[float]:
+    axis = np.asarray(axis, float) / np.linalg.norm(axis)
+    half = np.radians(degrees) / 2
+    return [np.cos(half), *(np.sin(half) * axis)]
+
+
+@pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")
+def test_known_rotations_render_the_same_covariance_in_the_source_the_usd_and_the_ply(tmp_path: Path) -> None:
+    """Owner, 2026-11-18: the writer stored every Gaussian's rotation scrambled (``FromNumpy`` reads x, y, z, w).
+    Known turns about oblique axes, with three unequal scales, must render the same ellipsoid from the source
+    splat, from the USD as any USD reader takes it (Gf real part first), and from the PLY made of that USD."""
+    from pxr import Usd
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply, write_viewer_3dgs_ply
+
+    known = np.asarray([_axis_angle((1, 2, 3), 37), _axis_angle((-2, 0.5, 1), 115), _axis_angle((0.3, -1, 0.2), 170),
+                        _axis_angle((0, 0, 1), 90), _axis_angle((1, 1, 0), 63)])
+    n = 1500
+    rng = np.random.default_rng(18)
+    splat = SplatData(count=n, xyz=rng.uniform([-3, 0, -3], [3, 2.5, 3], (n, 3)).astype(np.float32),
+                      opacity=np.full(n, 2.0, np.float32), f_dc=np.zeros((n, 3), np.float32),
+                      scales=np.tile(np.log([0.02, 0.05, 0.11]), (n, 1)).astype(np.float32),
+                      quats=np.resize(known, (n, 4)).astype(np.float32), properties=())
+    source = _covariances(splat.quats, np.exp(splat.scales.astype(float)), _WEBSITE_TRANSFORM[:3, :3])
+    # The scrambled layout renders these as other ellipsoids: the test can tell them apart.
+    scrambled = _covariances(splat.quats[:, [3, 0, 1, 2]], np.exp(splat.scales.astype(float)), _WEBSITE_TRANSFORM[:3, :3])
+    assert np.abs(scrambled - source).max() > 1e-3
+
+    authored = write_particlefield_usd(splat, tmp_path / "look.usdc",
+                                       layer_transform_row_major=_WEBSITE_TRANSFORM.T.tolist())
+    assert authored["status"] == "completed"
+    stage = Usd.Stage.Open(str(tmp_path / "look.usdc"))
+    prim = stage.GetPrimAtPath(authored["prim_path"])
+    gf = np.asarray([(q.GetReal(), *q.GetImaginary()) for q in prim.GetAttribute("orientations").Get()])
+    usd = _covariances(gf, np.asarray(prim.GetAttribute("scales").Get(), float), _WEBSITE_TRANSFORM[:3, :3])
+    np.testing.assert_allclose(usd, source, rtol=0, atol=1e-8)
+
+    write_viewer_3dgs_ply(particlefield_usd.read_particlefield_splat(tmp_path / "look.usdc"), tmp_path / "look.ply")
+    ply = read_standard_3dgs_ply(tmp_path / "look.ply")
+    np.testing.assert_allclose(_covariances(ply.quats, np.exp(ply.scales.astype(float))), source, rtol=0, atol=1e-8)
