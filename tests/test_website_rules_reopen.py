@@ -41,8 +41,9 @@ def _held(tmp_path, *, gap=True, blockers=None, status="needs_input", ledger="co
 def test_a_held_mismatch_reopens_once_through_the_resume_path(tmp_path, monkeypatch):
     capture, pipeline = _held(tmp_path)
     verdict = reopen.reopen_verdict(pipeline)
-    assert verdict == {"reopen": True, "reason": "held_gap_now_ships_room_package",
-                       "stopped_on": ["website_task_profile_mechanism_mismatch"]}
+    assert verdict == {"reopen": True, "reason": "held_gap_reopens_may_build_object_and_buy_authoring",
+                       "stopped_on": ["website_task_profile_mechanism_mismatch"], "what_happens": reopen.WHAT_HAPPENS}
+    assert "buys the object's authoring" in reopen.WHAT_HAPPENS
     fact = replay.arrived_fact(pipeline)
     assert fact["kind"] == reopen.KIND and fact["rules_revision"] == reopen.REVISION
     assert fact["fact_digest"] == canonical_digest({key: value for key, value in fact.items() if key != "fact_digest"})
@@ -61,6 +62,25 @@ def test_a_held_mismatch_reopens_once_through_the_resume_path(tmp_path, monkeypa
         replay.resume_held_preparation(Listener(), capture_root=capture, storage_root=tmp_path, handoff_payload=b"p",
                                        ledger_digest="sha256:" + "1" * 64, ledger_revision=4, provider="local")
     assert len(runs) == 1
+    # The run claimed the job (its ledger moved on) and held again on another handoff: still never reopened.
+    write_json(capture / reopen.LEDGER, {"status": "completed", "revision": 4, "scene_id": "site-x",
+                                         "capture_id": "walkthrough-x", "producer_delivery_key": "k"})
+    other = {"schema_version": "website_scene_handoff.v1", "status": "awaiting_inputs", "scene_id": "site-x",
+             "capture_id": "walkthrough-x", "blockers": ["support_surface_not_found_under_subject"]}
+    write_json(pipeline / "website_scene_preparation/handoff.json",
+               {**other, "digest": canonical_digest(other, digest_field="digest")})
+    assert reopen.reopen_verdict(pipeline)["reason"] == "already_reopened_under_these_rules"
+    assert replay.arrived_fact(pipeline) is None
+    with pytest.raises(ValueError, match="not_eligible"):
+        replay.resume_held_preparation(Listener(), capture_root=capture, storage_root=tmp_path, handoff_payload=b"p",
+                                       ledger_digest="sha256:" + "1" * 64, ledger_revision=4, provider="local")
+
+
+def test_a_reopen_whose_run_never_claimed_the_job_stays_eligible(tmp_path, monkeypatch):
+    capture, pipeline = _held(tmp_path)
+    fact = replay.arrived_fact(pipeline)
+    reopen.mark_reopened(pipeline, fact=fact, ledger_revision=3)  # marked, then the run died before its claim
+    assert reopen.reopen_verdict(pipeline)["reopen"] is True
 
 
 def test_a_reopen_refuses_a_site_that_closed_withdrew_or_refilmed(tmp_path, monkeypatch):
@@ -77,7 +97,7 @@ def test_a_reopen_refuses_a_site_that_closed_withdrew_or_refilmed(tmp_path, monk
 def test_a_blocker_the_current_rules_ship_at_once_reopens(tmp_path):
     _, pipeline = _held(tmp_path, gap=False, status="awaiting_inputs",
                         blockers=["support_surface_not_found_under_subject"])
-    assert reopen.reopen_verdict(pipeline)["reason"] == "blocker_now_goes_on"
+    assert reopen.reopen_verdict(pipeline)["reason"] == "blocker_reopens_may_build_object_and_buy_authoring"
 
 
 @pytest.mark.parametrize("change, reason", [

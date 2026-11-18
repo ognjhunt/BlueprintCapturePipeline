@@ -320,7 +320,8 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
             reopen = reopen_verdict(capture_root / "pipeline")
             if reopen["reopen"]:
                 value["native_preparation"]["rules_reopen"] = {"rules_revision": REVISION, "reason": reopen["reason"],
-                                                               "stopped_on": reopen["stopped_on"]}
+                                                               "stopped_on": reopen["stopped_on"],
+                                                               "what_happens": reopen["what_happens"]}
     if type(job.get("reason")) is str and _CODE.fullmatch(job["reason"]):
         value["job"]["reason"] = job["reason"]
     if type(job.get("stage")) is str and _CODE.fullmatch(job["stage"]):

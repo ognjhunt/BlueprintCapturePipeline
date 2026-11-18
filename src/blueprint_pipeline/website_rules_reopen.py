@@ -5,7 +5,10 @@ still to run: Gemini's credits-depleted answer is a money wait, never a non-answ
 blocker that is no wall ships the room package, flagged (#3637, with the holds of 2026-11-16 before it). A job that
 ended before them on a hold they would not stop on stays as it ended: a completed stage is never run again, and its
 hold names no fact a later run could bring (``website_held_handoff_replay``). This adds that fact: the rules
-revision (``REVISION``), once per held handoff.
+revision (``REVISION``), once per job (``REOPENED_FILE``).
+
+What a reopen does (``WHAT_HAPPENS``): the preparation runs again under the current rules. It may ship the room
+package, or build the job's object, which buys the object's authoring within the job's grant and its spend limits.
 
 The reopen is the existing resume path: the held-replay fact ``rules_reopen`` (``rules_reopen``), which the door's
 ``selected-handoff --resume-preparation`` (``resume_held_preparation``) and, for a ledger that kept its bytes, the
@@ -30,6 +33,10 @@ from typing import Any, Mapping
 #: wall ships the room package), with the holds the room package replaced on 2026-11-16. A later revision reopens again.
 REVISION = "website_accept_every_job.2026-11-17"
 KIND = "rules_reopen"
+WHAT_HAPPENS = ("The preparation runs again on the current release from its retained outputs. It may ship the room "
+                "package, or build the job's object, which buys the object's authoring within the job's grant.")
+#: Kept beside the handoff when a reopen is started (``mark_reopened``): this job reopens once per rules revision.
+REOPENED_FILE = "rules_reopen.json"
 #: The handoff holds an earlier release retained that the current handoff ships as the room package: no task profile,
 #: a reading naming no family, the mechanism mismatch, several objects, a soft object.
 REOPENED_GAPS = frozenset({"website_native_task_profile_preparation_required",
@@ -66,6 +73,8 @@ def _reopen_verdict(root: Path, *, now: float) -> dict[str, Any]:
     status = ledger.get("status") if isinstance(ledger, dict) else None
     if status != "completed":
         return _verdict(False, "ledger_" + str(status or "missing"))
+    if reopened(root, ledger_revision=ledger.get("revision")):
+        return _verdict(False, "already_reopened_under_these_rules")
     handoff, context = _handoff(root), _retained_context(root)
     if handoff is None or context is None:
         return _verdict(False, "no_retained_handoff")
@@ -91,7 +100,8 @@ def _reopen_verdict(root: Path, *, now: float) -> dict[str, Any]:
         from .website_task_context_contracts import holds_native_task_preparation
         from .website_task_context_lineage import binding_contexts
         if any(holds_native_task_preparation(handoff, bound) for bound in binding_contexts(root, context)):
-            return _verdict(True, "held_gap_now_ships_room_package", stopped_on=blockers)
+            return _verdict(True, "held_gap_reopens_may_build_object_and_buy_authoring", stopped_on=blockers,
+                            what_happens=WHAT_HAPPENS)
         return _verdict(False, "hold_unverified", stopped_on=blockers)
     from .website_preparation_terminal import retained_window_end
 
@@ -99,22 +109,46 @@ def _reopen_verdict(root: Path, *, now: float) -> dict[str, Any]:
         return retained_window_end(capture, scene_id=str(context.get("scene_id")),
                                    capture_id=str(context.get("capture_id")))
     if goes_on(blockers, task_context=context, now=now, window_end=window_end):
-        return _verdict(True, "blocker_now_goes_on", stopped_on=blockers)
+        return _verdict(True, "blocker_reopens_may_build_object_and_buy_authoring", stopped_on=blockers,
+                        what_happens=WHAT_HAPPENS)
     return _verdict(False, "current_rules_still_wait", stopped_on=blockers)
+
+
+def reopened(pipeline_root: Path, *, ledger_revision: Any) -> bool:
+    """Whether a reopen under ``REVISION`` already ran for this job: marked, and claimed (the ledger moved past the
+    revision it was marked at). A mark whose run never claimed the job (a crash, a refused claim) leaves it eligible."""
+    try:
+        mark = json.loads((Path(pipeline_root) / "website_scene_preparation" / REOPENED_FILE).read_text())
+    except (OSError, ValueError):
+        return False
+    return (isinstance(mark, dict) and mark.get("rules_revision") == REVISION
+            and mark.get("ledger_revision") != ledger_revision)
+
+
+def mark_reopened(pipeline_root: Path, *, fact: Mapping[str, Any], ledger_revision: Any) -> None:
+    """Kept before the reopen runs, beside the held-replay state, so the job reopens once per rules revision."""
+    if fact.get("kind") != KIND:
+        return
+    from .common import write_json
+    write_json(Path(pipeline_root) / "website_scene_preparation" / REOPENED_FILE,
+               {"schema_version": "website_rules_reopen.v1", "rules_revision": REVISION,
+                "fact_digest": fact.get("fact_digest"), "ledger_revision": ledger_revision,
+                "reopened_at_epoch": time.time()})
 
 
 def rules_reopen(pipeline_root: Path, *, now: float | None = None) -> dict[str, Any] | None:
     """The held-replay fact (no digest yet: ``website_held_handoff_replay.arrived_fact`` adds it), or None.
 
-    Keyed by the rules revision and the held handoff's digest: once reopened, the job's next handoff is another, and
-    a replay that held again on the same handoff has spent its fact.
+    Keyed by the job and the rules revision only, so whatever the reopened run holds on next, it never reopens again
+    under these rules (``reopened``).
     """
     verdict = reopen_verdict(pipeline_root, now=now)
     if not verdict["reopen"]:
         return None
-    from .website_held_handoff_replay import _handoff
+    from .website_held_handoff_replay import _retained_context
     return {"kind": KIND, "rules_revision": REVISION, "reason": verdict["reason"],
-            "stopped_on": verdict["stopped_on"], "handoff_digest": (_handoff(Path(pipeline_root)) or {}).get("digest")}
+            "what_happens": WHAT_HAPPENS,
+            "task_context_digest": (_retained_context(Path(pipeline_root)) or {}).get("context_digest")}
 
 
 def survey(storage_root: Path, *, now: float | None = None) -> list[dict[str, Any]]:
@@ -139,7 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["KIND", "REOPENED_GAPS", "REVISION", "reopen_verdict", "rules_reopen", "survey"]
+__all__ = ["KIND", "REOPENED_FILE", "REOPENED_GAPS", "REVISION", "WHAT_HAPPENS", "mark_reopened", "reopen_verdict",
+           "reopened", "rules_reopen", "survey"]
 
 
 if __name__ == "__main__":

@@ -551,6 +551,9 @@ def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit
                 "schema_version": "website_held_handoff_replay_state.v1", "fact": fact,
                 "fact_digest": fact["fact_digest"], "handoff_digest": (_handoff(pipeline) or {}).get("digest"),
                 "ledger_revision": before.get("revision"), "replayed_at_epoch": current})
+            from .website_rules_reopen import mark_reopened
+
+            mark_reopened(pipeline, fact=fact, ledger_revision=before.get("revision"))
             listener.process_handoff_payload(raw, storage_root=storage_root,
                 payload_digest=record["source_payload_sha256"],
                 expected_held_replay={"revision": before["revision"], "record": record, "fact": fact},
@@ -596,6 +599,9 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
         "schema_version": "website_held_handoff_replay_state.v1", "fact": fact,
         "fact_digest": fact["fact_digest"], "handoff_digest": (_handoff(pipeline) or {}).get("digest"),
         "ledger_revision": ledger_revision, "replayed_at_epoch": time.time(), "operator": True})
+    from .website_rules_reopen import mark_reopened
+
+    mark_reopened(pipeline, fact=fact, ledger_revision=ledger_revision)
     return listener.process_handoff_payload(handoff_payload, storage_root=Path(storage_root), provider=provider,
         expected_preparation_purpose="scene_preparation",
         expected_held_replay={"review_schema": OPERATOR_SCHEMA, "ledger_digest": ledger_digest,
