@@ -95,21 +95,42 @@ def test_the_menu_offers_what_the_pipeline_can_build_for_this_job_and_says_why_n
     menu = choice.build_menu(task_context=context, removal=removal, targets=targets, rules=rules)
     assert choice.available_builds(menu) == [choice.RIGID, choice.ARTICULATED, choice.RULE_WITHHELD, choice.ROOM_ONLY]
     pouring = next(row for row in menu["builds"] if row["build"] == "pouring")
-    assert pouring["available"] is False and "own registered task" in pouring["why_not"]
+    assert pouring["available"] is False and "needs no choice" in pouring["why_not"]
     assert menu["objects"][0]["opening_joint"] == "prismatic" and menu["destinations"][0]["target_id"] == "shelf"
     assert menu["menu_digest"] == canonical_digest(menu, digest_field="menu_digest")
 
 
-def test_a_family_job_may_only_keep_its_family_or_take_the_room_as_filmed(tmp_path):
-    kwargs = _job(tmp_path, family="wiping")
-    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+def _rules(tmp_path, kwargs, **extra):
     removal = json.loads((tmp_path / "pipeline/removal.json").read_text())
-    targets = kwargs["clean_plate"]["task_masks"]["targets"]
-    rules = choice.rules_route(task_context=context, removal=removal, targets=targets, flags=[], task_semantics=None,
-                               source_video_digest=None, geometry_only=False)
-    assert rules["build"] == "wiping"
-    menu = choice.build_menu(task_context=context, removal=removal, targets=targets, rules=rules)
-    assert choice.available_builds(menu) == ["wiping", choice.ROOM_ONLY]
+    return choice.rules_route(task_context=kwargs["descriptor"]["metadata"]["site_task_context"], removal=removal,
+                              targets=kwargs["clean_plate"]["task_masks"]["targets"], flags=extra.pop("flags", []),
+                              task_semantics=None, source_video_digest=None,
+                              geometry_only=extra.pop("geometry_only", False))
+
+
+@pytest.mark.parametrize("family", ["wiping", "navigation"])
+def test_family_and_navigation_jobs_never_wait_on_the_model(tmp_path, monkeypatch, ready, family):
+    """Blocker 2: no judgement is left for a job whose words name its own task, so no call is made at all."""
+    kwargs = _job(tmp_path, family=family)
+    assert _rules(tmp_path, kwargs) is None
+    monkeypatch.setattr(choice, "ask_gemini", lambda **_: pytest.fail("a family or navigation job asked the model"))
+    packaged = room_recorder(monkeypatch)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", lambda **_: pytest.fail("compiled"))
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    with_choice = handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
+    without = handoff.prepare_website_scene_handoff(**kwargs)
+    assert with_choice == without and packaged[0] == packaged[1]
+    assert not (tmp_path / DECIDED / choice.RECORD).exists()
+
+
+def test_a_designed_object_or_the_geometry_only_route_never_reaches_the_model(tmp_path):
+    """Blocker 1 (and geometry-only): a designed object's build is the rules', with no call to go wrong."""
+    from tests.test_website_task_preparation import SYNTHETIC_BALL
+    kwargs = _job(tmp_path, family="articulated_open_close", destinations=("shelf", "cart"))
+    assert _rules(tmp_path, kwargs, geometry_only=True) is None
+    write_json(tmp_path / "pipeline/removal.json", {"entries": [], "synthetic_subject": dict(SYNTHETIC_BALL)})
+    assert _rules(tmp_path, kwargs) is None
 
 
 def test_a_valid_menu_choice_is_honoured(tmp_path, monkeypatch, ready):
@@ -123,8 +144,10 @@ def test_a_valid_menu_choice_is_honoured(tmp_path, monkeypatch, ready):
     [call] = compiled
     assert call["build_choice"]["build"] == choice.ARTICULATED and "rule_withheld" not in call
     record = _record(tmp_path)
-    assert (record["source"], record["honoured"], record["rules"]["build"]) == ("model", True, choice.ROOM_ONLY)
+    assert (record["source"], record["honoured"], record["rules_prediction"]["build"]) == (
+        "model", True, choice.ROOM_ONLY)
     assert record["choice"]["reasons"] and record["digest"] == canonical_digest(record, digest_field="digest")
+    assert record["shipped"]["model_choice_built"] is True
 
 
 def test_the_room_as_filmed_is_honoured_and_buys_nothing_for_the_object(tmp_path, monkeypatch, ready):
@@ -155,6 +178,7 @@ def test_a_chosen_rule_withheld_build_carries_its_own_sealed_reason(tmp_path, mo
     (_answer(choice.ARTICULATED), "build_not_on_menu"),  # no joint type in the analysis
     (_answer(choice.ROOM_ONLY, destination="shelf"), "destination_for_a_build_without_one"),
     (_answer(choice.RIGID, quote="Throw the box away"), "job_quote_not_in_job"),
+    (_answer(choice.RIGID, quote="the box"), "job_quote_too_short"),
     ({"build": choice.ROOM_ONLY}, "shape"),
     (None, "shape"),
 ])
@@ -165,28 +189,33 @@ def test_an_invalid_choice_falls_back_to_today_s_rules(tmp_path, monkeypatch, re
     with_choice = handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
     record = _record(tmp_path)
     assert record["source"] == "rules" and record["fallback"] == f"{choice.INVALID}:{why}"
-    assert record["honoured"] is False and record["build"] == choice.RIGID
+    assert record["honoured"] is False and record["rules_prediction"]["build"] == choice.RIGID
     assert "build_choice" not in compiled[0] and "build_choice" not in with_choice
     without = handoff.prepare_website_scene_handoff(**kwargs)
     assert with_choice == without and compiled[0] == compiled[1]
 
 
-def test_a_call_that_fails_for_no_wall_falls_back_and_a_money_stop_stays_a_stop(tmp_path, monkeypatch, ready):
-    from blueprint_pipeline.website_gemini_receipts import CREDIT_DEPLETED, CreditDepleted
+def test_a_failed_or_unfunded_call_falls_back_to_the_rules_and_only_privacy_or_a_held_call_stops(
+        tmp_path, monkeypatch, ready):
+    """Blocker 2: a call refused for money leaves the rules, which spend nothing to decide; the job goes on."""
+    from blueprint_pipeline.hard_stops import MoneyStop, PrivacyRightsStop
+    from blueprint_pipeline.website_gemini_receipts import CreditDepleted
     kwargs = _job(tmp_path)
     compiled = _to_compile(monkeypatch)
-    _answering(monkeypatch, TimeoutError("no answer"))
-    handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
-    assert len(compiled) == 1 and "build_choice" not in compiled[0]
-    record = _record(tmp_path)
-    assert (record["source"], record["fallback_error_type"], record["honoured"]) == ("rules", "TimeoutError", False)
-    _answering(monkeypatch, CreditDepleted())
-    result = handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
-    assert len(compiled) == 1  # nothing more was prepared
-    assert (result["status"], result["blockers"]) == ("awaiting_inputs", [CREDIT_DEPLETED])
+    for error, kind in ((TimeoutError("no answer"), "TimeoutError"), (CreditDepleted(), "CreditDepleted"),
+                        (MoneyStop("website_preparation_spend_receipt_invalid"), "MoneyStop")):
+        _answering(monkeypatch, error)
+        handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
+        record = _record(tmp_path)
+        assert (record["source"], record["fallback_error_type"], record["honoured"]) == ("rules", kind, False)
+        assert "build_choice" not in compiled[-1]
+    assert len(compiled) == 3  # each run went on to compile under the rules
     _answering(monkeypatch, ValueError(choice.IN_PROGRESS))  # another run holds the call: wait for it
     result = handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
-    assert result["blockers"] == [choice.IN_PROGRESS] and len(compiled) == 1
+    assert result["blockers"] == [choice.IN_PROGRESS] and len(compiled) == 3
+    _answering(monkeypatch, PrivacyRightsStop("website_preparation_spend_receipt_invalid"))
+    result = handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
+    assert result["status"] == "awaiting_inputs" and len(compiled) == 3
 
 
 @pytest.mark.parametrize("family, mechanism, destinations, removed, answer", [
@@ -216,7 +245,7 @@ def test_jobs_whose_choice_matches_today_s_rules_are_unchanged(tmp_path, monkeyp
     if answer is None:
         assert asked == [] and not (tmp_path / DECIDED / choice.RECORD).exists()
     else:
-        assert len(asked) == 1 and _record(tmp_path)["agrees_with_rules"] is True
+        assert len(asked) == 1 and _record(tmp_path)["agrees_with_rules_prediction"] is True
 
 
 def test_a_rerun_makes_no_new_call(tmp_path, monkeypatch):
@@ -244,7 +273,7 @@ def test_a_rerun_makes_no_new_call(tmp_path, monkeypatch):
                                    output_root=tmp_path / "decision") for _ in range(3)]
     assert [row[0] for row in calls] == ["reserve", "invoke"]
     assert records[0] == records[1] == records[2]
-    assert records[0]["honoured"] is True and records[0]["build"] == choice.RULE_WITHHELD
+    assert records[0]["honoured"] is True and records[0]["choice"]["build"] == choice.RULE_WITHHELD
     assert records[0]["maximum_cost_usd"] <= 0.05
 
 
@@ -273,3 +302,104 @@ def test_compile_builds_the_chosen_mechanism_and_destination_and_nothing_else_ch
     with pytest.raises(ValueError, match="website_build_choice_binding_invalid"):  # no joint type to open
         preparation.compile_website_scene_preparation(
             **arguments, build_choice={"build": choice.ARTICULATED, "destination_target_id": None})
+
+
+def _retained(monkeypatch, calls, answer):
+    """The real retained receipts with the reservation stubbed; ``answer`` is what the provider would say."""
+    import blueprint_pipeline.website_gemini_receipts as receipts
+    real = receipts.retained_gemini_call
+
+    def retained(**kw):
+        preflight = kw["preflight"]
+
+        def checked():
+            try:
+                preflight()
+            except Exception as exc:  # noqa: BLE001 - no key or client here; only the frames check is under test
+                if str(exc) == choice.FRAMES_UNREADABLE:
+                    raise
+        kw["preflight"] = checked
+        kw["invoke"] = lambda: calls.append(("invoke", None)) or {"answer": answer(), "frames": []}
+        return real(**kw)
+    monkeypatch.setattr(receipts, "retained_gemini_call", retained)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_removal_analysis_gemini._api_key", lambda: ("key", "env"))
+
+
+def test_a_rerun_whose_source_video_is_gone_reuses_the_stored_answer(tmp_path, monkeypatch):
+    from tests.test_website_gemini_receipts import context, setup_call
+    _, calls = setup_call(tmp_path, monkeypatch)
+    _retained(monkeypatch, calls, lambda: _answer(choice.RULE_WITHHELD, "shelf"))
+    decoded = []
+    monkeypatch.setattr(choice, "decode_frames", lambda video, times, root: decoded.append(times) or [
+        {"timestamp_seconds": t, "path": str(video), "sha256": "sha256:" + "0" * 64} for t in times])
+    removal = {"entries": [{"target_id": "box", "task_effect": "manipulated",
+                            "spatial_evidence": [{"timestamp_seconds": 2.5, "box_xywh_normalized": [0, 0, 1, 1]}]}]}
+    targets = [{"target_id": "box"}, {"target_id": "shelf", "target_role": "destination"}]
+    rules = {"build": choice.RIGID, "destination_target_id": "shelf", "basis": "job_profile"}
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"video")
+    args = dict(task_context=context(), removal=removal, targets=targets, rules=rules, output_root=tmp_path / "d")
+    first = choice.decide_build(**args, source_video=video)
+    again = choice.decide_build(**args, source_video=None)  # the video was retired: the same answer, no call
+    assert [row[0] for row in calls] == ["reserve", "invoke"] and decoded == [[2.5]]
+    assert first["choice"] == again["choice"] and again["request_binding_digest"] == first["request_binding_digest"]
+    other = choice.decide_build(**{**args, "output_root": tmp_path / "e"}, source_video=None)  # nothing stored
+    assert other["fallback"] == choice.FRAMES_UNREADABLE and len(calls) == 2  # nothing reserved or sent
+
+
+def test_a_choice_the_build_cannot_satisfy_falls_back_now_and_is_never_served_again(tmp_path, monkeypatch, ready):
+    """Blocker 1: compile refuses the chosen build; this run goes on under the rules, never held, the record says
+    what shipped, and the next run asks again with that build off the menu (a new request, not the stored answer)."""
+    kwargs = _job(tmp_path, mechanism="prismatic", destinations=(), description="Open the box lid all the way")
+    compiled = _to_compile(monkeypatch)
+    inner = handoff.compile_website_scene_preparation
+
+    def refusing(**kw):
+        if "build_choice" in kw:
+            raise ValueError(choice.BINDING_INVALID)
+        return inner(**kw)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", refusing)
+    packaged = room_recorder(monkeypatch)
+    asked = _answering(monkeypatch, _answer(choice.ARTICULATED, quote="Open the box lid"))
+    result = handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
+    assert result == handoff.prepare_website_scene_handoff(**kwargs)  # the rules' outcome: the mismatch room
+    assert result["status"] == "room_package_written" and [call["flags"] for call in packaged][0] == [handoff.MISMATCH]
+    record = _record(tmp_path)
+    assert (record["rejected"], record["honoured"]) == (choice.BINDING_INVALID, False)
+    assert record["shipped"]["status"] == "room_package_written" and record["shipped"]["model_choice_built"] is False
+    [rejected] = choice.read_rejected(tmp_path / DECIDED)
+    assert rejected["build"] == choice.ARTICULATED
+    handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
+    assert len(asked) == 2 and asked[1]["binding"] != asked[0]["binding"]  # decided again, the build off the menu
+    assert '"build": "articulated_open_close"' in asked[1]["binding"]["prompt"]
+    record = _record(tmp_path)
+    assert record["fallback"] == f"{choice.INVALID}:build_not_on_menu" and compiled == []
+    assert "an earlier choice of it could not be built" in asked[1]["binding"]["prompt"]
+
+
+def test_a_soft_object_is_never_offered_as_a_rigid_body(tmp_path):
+    """Blocker 3: the analysis's reading of the object as soft is a fact, like its joint type."""
+    kwargs = _job(tmp_path)
+    removal = json.loads((tmp_path / "pipeline/removal.json").read_text())
+    removal["entries"][0].update(rigidity="deformable", rigidity_reason="it drapes")
+    write_json(tmp_path / "pipeline/removal.json", removal)
+    rules = _rules(tmp_path, kwargs)
+    assert rules["build"] == choice.ROOM_ONLY  # today's soft-object room
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    menu = choice.build_menu(task_context=context, removal=removal,
+                             targets=kwargs["clean_plate"]["task_masks"]["targets"], rules=rules)
+    assert choice.available_builds(menu) == [choice.ROOM_ONLY]
+    assert "soft" in next(row for row in menu["builds"] if row["build"] == choice.RIGID)["why_not"]
+    assert choice.decide_build(task_context=context, removal=removal, rules=rules, output_root=tmp_path / "d",
+                               targets=kwargs["clean_plate"]["task_masks"]["targets"],
+                               ask=lambda **_: pytest.fail("a menu of one build asked the model")) is None
+
+
+def test_the_room_chosen_for_a_job_with_no_runtime_keeps_its_flag(tmp_path, monkeypatch, ready):
+    kwargs = _job(tmp_path)
+    _to_compile(monkeypatch)
+    packaged = room_recorder(monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_early_task_hold.task_family_runtime_gap", lambda *_, **__: {})
+    _answering(monkeypatch, _answer(choice.ROOM_ONLY))
+    handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
+    assert packaged[0]["flags"] == [choice.ROOM_FLAG, handoff.RUNTIME_GAP]

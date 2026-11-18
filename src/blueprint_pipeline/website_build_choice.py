@@ -21,9 +21,15 @@ The answer is structured, validated against the menu (``validate_choice``: a bui
 lists, words quoted from the job) and recorded with its reasons (``RECORD``). The handoff honours a valid choice that
 differs from today's rules (``rules_route``); a choice that matches them leaves the job's output unchanged.
 
-Fallback: an answer off the menu, or a call that fails for any reason but a wall, leaves the job on today's rules,
-the reason recorded. A wall stays a stop (``hard_stops.is_wall``, or a code the retry policy reads as privacy, rights,
-money or the owner's closing; Gemini's credits-depleted answer among them); a call another run holds waits for it.
+Fallback: an answer off the menu, or a call that fails or is refused (for money too: the rules spend nothing to
+decide), leaves the job on today's rules, the reason recorded. Only privacy, rights, the owner's closing and the job's
+sentence still to come stop it, and a call another run holds waits for it. A choice the build cannot satisfy
+(``BINDING_INVALID``) is rejected (``reject_choice``): that run goes on under the rules, and the next asks again with
+that build off the menu, at most ``MAX_REJECTIONS`` times; a rejected answer is never served again.
+
+No call is made where no judgement is left: a family or navigation job (its own registered task, which the packet's
+records re-read from the site's words), a designed object, the geometry-only route, an object not found or outlined,
+or a menu with one build (several objects, a soft object). ``RECORD`` says what shipped (``record_shipped``).
 
 Replaced, when the model answers validly (judgement):
 the mechanism-mismatch room (``website_task_profile_mechanism_mismatch``), the soft-object room and its word list
@@ -33,12 +39,11 @@ object with the rule withheld, else the room), the declared family's alias for a
 destination among several the analysis named.
 
 Kept as facts, because they are not judgements of the job but of the capture or of the code: what the analysis found
-(how many objects it took out of the room, whether a part has a joint type, a designed object), the object kept in the
-scan or not found or outlined (``ROOM_AS_FILMED``), the geometry-only route, a family runtime not installed, every
-geometry and coverage check compile makes, and every wall. A family or navigation job keeps its family: the packet's
-records re-read it from the site's words (``website_task_context_contracts``), so the model may confirm it or choose
-the room as filmed, never another family. Several objects stay the room: a one-object build would leave the others
-out of the room the analysis took them from.
+(how many objects it took out of the room, whether a part has a joint type, whether it reads the object as soft, a
+designed object), the object kept in the scan or not found or outlined (``ROOM_AS_FILMED``), the geometry-only route,
+a family runtime not installed, every geometry and coverage check compile makes, and every wall. A family or
+navigation job keeps its own task with no call. Several objects stay the room: a one-object build would leave the
+others out of the room the analysis took them from.
 """
 from __future__ import annotations
 
@@ -70,6 +75,13 @@ RULE_WITHHELD_CODE = "website_build_choice_rule_withheld"
 #: Fallback codes, recorded; none of them stops the job.
 INVALID = "website_build_choice_invalid"
 FRAMES_UNREADABLE = "website_build_choice_frames_unreadable"
+#: Raised when an honoured choice cannot be built as chosen (compile's bindings): the choice is rejected, never held.
+BINDING_INVALID = "website_build_choice_binding_invalid"
+REJECTED = "rejected_choices.json"
+MAX_REJECTIONS = 2
+REJECTIONS_EXHAUSTED = "website_build_choice_rejections_exhausted"
+#: A quote shorter than this, in characters and in words, proves nothing about the job (unless it is the whole job).
+MIN_QUOTE_CHARACTERS, MIN_QUOTE_WORDS = 12, 3
 KEY_MISSING = "website_build_choice_key_missing"
 INCOMPLETE = "website_build_choice_incomplete"
 #: A call another run of this job holds: wait for it (``website_scene_handoff.TRANSIENT``), never decide twice.
@@ -128,9 +140,10 @@ def rules_route(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], 
     """What today's rules build for the job, in the menu's terms; None when the job is not at a build decision.
 
     The same functions and order as ``website_scene_handoff.prepare_website_scene_handoff``, read through its module
-    so a patched rule is the one predicted. None: the job waits for a clarification of its reading, holds on a gap
-    that is no build, has no object or route to decide (nothing found, outlined or captured whole), or is on the
-    geometry-only route. ``basis`` names the rule that decided.
+    so a patched rule is the one predicted. None, so no call is made: the job waits for a clarification of its
+    reading, holds on a gap that is no build, has no object to decide (nothing found or outlined, none captured, a
+    designed one), is on the geometry-only route, or is its own registered family or navigation task (no judgement
+    left: the rules build it as the site's words name it). ``basis`` names the rule that decided.
     """
     from . import website_scene_handoff as handoff
     from .task_family_scoring import canonical_task_family
@@ -141,7 +154,8 @@ def rules_route(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], 
     destinations = _rules_destination([key for key, row in by_id.items() if row.get("target_role") == "destination"])
     manipulated = [row for row in removal.get("entries") or [] if row.get("task_effect") == "manipulated"]
     synthetic = removal.get("synthetic_subject")
-    not_found = bool(set(handoff.ROOM_AS_FILMED) & set(flags))
+    if geometry_only or synthetic is not None or set(handoff.ROOM_AS_FILMED) & set(flags):
+        return None  # facts decide: the fit-check route, a designed object, nothing found or outlined
     gap = handoff.native_task_preparation_gap(task_context, **options)
     if gap is not None:
         if gap["code"] not in handoff.ROOM_GAPS:
@@ -151,25 +165,14 @@ def rules_route(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], 
             if clarification_request(task_semantics, task_context=task_context,
                                      source_video_digest=source_video_digest) is not None:
                 return None
-        if (len(manipulated) == 1 and not geometry_only and synthetic is None
-                and manipulated[0].get("target_id") in by_id and handoff.native_task_subject_profile(
-                    manipulated[0], by_id[manipulated[0]["target_id"]])[1] == RIGID):
-            if not_found:
-                return None  # the object is not there to build: the room as filmed, a fact
+        if (len(manipulated) == 1 and manipulated[0].get("target_id") in by_id and handoff.native_task_subject_profile(
+                manipulated[0], by_id[manipulated[0]["target_id"]])[1] == RIGID):
             return {"build": RULE_WITHHELD, "destination_target_id": destinations, "basis": gap["code"]}
         return {"build": ROOM_ONLY, "destination_target_id": None, "basis": gap["code"]}
     resolved = task_profile_for(effective_task_profile(task_context=task_context, **options))
-    if not_found:
-        return None
-    if resolved is not None and not resolved.requires_manipulation:
-        return {"build": resolved.profile_id, "destination_target_id": None, "basis": "job_profile"}
-    family = canonical_task_family(effective_task_profile(task_context=task_context, **options))
-    if family is not None:
-        return {"build": family, "destination_target_id": None, "basis": "job_profile"}
-    if geometry_only:
-        return None
-    if synthetic is not None:
-        return {"build": RIGID, "destination_target_id": destinations, "basis": "synthetic_subject"}
+    if resolved is not None and (not resolved.requires_manipulation
+                                 or canonical_task_family(resolved.profile_id) is not None):
+        return None  # the job's own family or navigation task
     if len(manipulated) > 1:
         gap = handoff.native_task_subject_gap(task_context, subjects=manipulated, targets=by_id, **options)
         return {"build": ROOM_ONLY, "destination_target_id": None, "basis": gap["code"]} if gap is not None else None
@@ -184,10 +187,12 @@ def rules_route(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], 
 
 
 def build_menu(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], targets: Sequence[Mapping[str, Any]],
-               rules: Mapping[str, Any], task_semantics: Mapping[str, Any] | None = None) -> dict[str, Any]:
+               rules: Mapping[str, Any], task_semantics: Mapping[str, Any] | None = None,
+               rejected: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """Every build the pipeline has, each marked available for this job or not and why, with the job's objects and
     destinations as the analysis found them. Availability is a fact about the capture and the code, never a
-    judgement of the job."""
+    judgement of the job: an object the analysis read as soft is no rigid body, a part with no joint type cannot
+    open, and a build an earlier choice of which could not be built (``rejected``) is not offered again."""
     from .task_profile_contracts import TASK_PROFILES
     by_id = {str(row.get("target_id")): row for row in targets if isinstance(row, Mapping)}
     manipulated = [row for row in removal.get("entries") or [] if row.get("task_effect") == "manipulated"]
@@ -209,18 +214,20 @@ def build_menu(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], t
                      else None}
                     for key, row in sorted(by_id.items()) if row.get("target_role") == "destination"]
     own = str(rules["build"])
-    object_route = own in (*OBJECT_BUILDS, ROOM_ONLY) and rules.get("basis") != "synthetic_subject"
     why_not_object = (
-        None if object_route and len(objects) == 1 and objects[0]["found_in_masks"] else
-        "the job is routed to its own registered task" if not object_route and rules.get("basis") == "job_profile" else
-        "the job's object is designed, not filmed" if rules.get("basis") == "synthetic_subject" else
+        None if len(objects) == 1 and objects[0]["found_in_masks"] else
         f"the analysis took {len(objects)} objects out of the room; a one-object build would leave the others out"
         if len(objects) > 1 else "the analysis found no single object of the job in the video")
+    if why_not_object is None and objects[0]["rigidity"] == "deformable":
+        why_not_object = "the analysis read the object as soft: a rigid body cannot stand in for it"
+    refused = {str(row.get("build")): str(row.get("code")) for row in rejected if isinstance(row, Mapping)}
     builds = []
     for build in (RIGID, ARTICULATED, RULE_WITHHELD):
         why = why_not_object
         if why is None and build == ARTICULATED and objects[0]["opening_joint"] is None:
             why = "the analysis found no moving part with a joint type on the object"
+        if why is None and build in refused:
+            why = f"an earlier choice of it could not be built ({refused[build]})"
         builds.append({"build": build, "builds": _DESCRIPTIONS[build], "available": build == own or why is None,
                        **({"why_not": why} if build != own and why is not None else {})})
     for profile in TASK_PROFILES:
@@ -232,7 +239,7 @@ def build_menu(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], t
                                   "The robot moves itself to a goal region in the room; no object is handled."),
                        "available": profile.profile_id == own,
                        **({} if profile.profile_id == own else {"why_not": (
-                           "a job keeps its own registered task: the packet's records read it from the site's words")})})
+                           "only a job whose words name this task is built as it, and that one needs no choice")})})
     builds.append({"build": ROOM_ONLY, "builds": _DESCRIPTIONS[ROOM_ONLY], "available": True})
     job = {"description": _text(task_context.get("description")),
            "success_criteria": task_context.get("success_criteria"),
@@ -275,9 +282,13 @@ def validate_choice(answer: Any, *, menu: Mapping[str, Any], task_context: Mappi
     if destination is not None and build not in DESTINATION_BUILDS:
         raise refuse("destination_for_a_build_without_one")
     quote, reasons, left = answer["job_quote"], answer["reasons"], answer["not_built"]
+    sources = [_normalized(text) for text in task_text_sources(task_context)]
     if (not isinstance(quote, str) or not quote.strip() or len(quote) > 1000
-            or not any(_normalized(quote) in _normalized(text) for text in task_text_sources(task_context))):
+            or not any(_normalized(quote) in text for text in sources)):
         raise refuse("job_quote_not_in_job")
+    said = _normalized(quote)
+    if (len(said) < MIN_QUOTE_CHARACTERS or len(said.split()) < MIN_QUOTE_WORDS) and said not in sources:
+        raise refuse("job_quote_too_short")
     if not isinstance(reasons, str) or not reasons.strip() or len(reasons) > 2000:
         raise refuse("reasons")
     if (not isinstance(left, list) or len(left) > 8
@@ -338,13 +349,18 @@ def request_binding(*, menu: Mapping[str, Any], times: Sequence[float],
     return binding, cost
 
 
-def ask_gemini(*, binding: Mapping[str, Any], maximum_cost_usd: float, frames: Sequence[Mapping[str, Any]],
-               task_context: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
-    """The one retained call: a completed answer is reused as it stands, valid or not."""
+def ask_gemini(*, binding: Mapping[str, Any], maximum_cost_usd: float,
+               frames: Sequence[Mapping[str, Any]] | None, task_context: Mapping[str, Any],
+               output_root: Path) -> dict[str, Any]:
+    """The one retained call: a completed answer is reused as it stands, valid or not. ``frames`` None: the key frames
+    cannot be decoded on this run (the source video is gone or unreadable); a stored answer still serves, and nothing
+    new is bought without them."""
     from .clean_plate_removal_analysis_gemini import _api_key
     from .website_gemini_receipts import retained_gemini_call
 
     def preflight() -> None:
+        if frames is None:
+            raise ValueError(FRAMES_UNREADABLE)
         if not _api_key()[0]:
             raise ValueError(KEY_MISSING)
         from google import genai  # noqa: F401
@@ -379,12 +395,51 @@ def ask_gemini(*, binding: Mapping[str, Any], maximum_cost_usd: float, frames: S
 
 
 def _stops(error: BaseException) -> bool:
-    """A wall, the owner's closing, the job's sentence still to come, or a call another run holds: never a fallback."""
-    from .hard_stops import is_wall
-    from .job_retry_policy import MONEY, PRIVACY_RIGHTS
+    """Privacy, rights, the owner's closing, the job's sentence still to come, or a call another run holds: never a
+    fallback. Money is: a refused or unfunded call leaves the rules, which spend nothing to decide."""
+    from .hard_stops import wall_kind
+    from .job_retry_policy import PRIVACY_RIGHTS
     from .website_preparation_retry import AWAITING_JOB_SENTENCE, OWNER_CLOSED, classify
-    return (is_wall(error) or str(error) == IN_PROGRESS
-            or classify(str(error)) in {PRIVACY_RIGHTS, MONEY, OWNER_CLOSED, AWAITING_JOB_SENTENCE})
+    return (wall_kind(error) == PRIVACY_RIGHTS or str(error) == IN_PROGRESS
+            or classify(str(error)) in {PRIVACY_RIGHTS, OWNER_CLOSED, AWAITING_JOB_SENTENCE})
+
+
+def read_rejected(output_root: Path) -> list[dict[str, Any]]:
+    """The choices compile could not build as chosen (``reject_choice``), oldest first; none when unreadable."""
+    try:
+        value = json.loads((Path(output_root) / REJECTED).read_text())
+    except (OSError, ValueError):
+        return []
+    rows = value.get("rejected") if isinstance(value, Mapping) else None
+    return [dict(row) for row in rows if isinstance(row, Mapping)] if isinstance(rows, list) else []
+
+
+def reject_choice(output_root: Path, record: Mapping[str, Any], *, code: str) -> None:
+    """Keep that the honoured choice of ``record`` could not be built (``code``): its build leaves the menu, so the
+    next decision is a new request and the stored answer is never served again."""
+    choice = record.get("choice") or {}
+    rows = read_rejected(output_root)
+    row = {"request_binding_digest": record.get("request_binding_digest"), "build": choice.get("build"),
+           "destination_target_id": choice.get("destination_target_id"), "code": code}
+    if row not in rows:
+        write_json(Path(output_root) / REJECTED, {"schema_version": SCHEMA_VERSION, "rejected": [*rows, row]})
+
+
+def record_shipped(output_root: Path, record: Mapping[str, Any], result: Mapping[str, Any], *,
+                   rejected: str | None = None) -> dict[str, Any]:
+    """The decision's record, with what the handoff shipped on this run: its status and blockers, the room package's
+    task profile and flags, a withheld rule, and whether the model's choice was built. Re-sealed and rewritten."""
+    room = result.get("room_package") if isinstance(result.get("room_package"), Mapping) else None
+    shipped = {"status": result.get("status"), "blockers": list(result.get("blockers") or []),
+               "model_choice_built": bool(result.get("build_choice")) and rejected is None,
+               **({"room_package_task_profile": room.get("task_profile")} if room is not None else {}),
+               **({"rule_withheld": (result.get("rule_withheld") or {}).get("code")}
+                  if result.get("rule_withheld") else {})}
+    value = {key: item for key, item in record.items() if key != "digest"}
+    value.update(shipped=shipped, **({"rejected": rejected, "honoured": False} if rejected is not None else {}))
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    write_json(Path(output_root) / RECORD, value)
+    return value
 
 
 def decide_build(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], targets: Sequence[Mapping[str, Any]],
@@ -395,26 +450,33 @@ def decide_build(*, task_context: Mapping[str, Any], removal: Mapping[str, Any],
 
     None when the menu offers one build only (nothing to decide, nothing bought). ``source`` is ``model`` or
     ``rules``; ``honoured`` says the handoff builds the model's choice in place of the rules' (``differs``).
+    ``rules_prediction`` is what today's rules would build here; ``shipped`` (``record_shipped``) what did.
+    The key frames are asked for by their instants, so a rerun whose source video is gone still finds its answer.
     """
+    output_root = Path(output_root)
+    rejected = read_rejected(output_root)
     menu = build_menu(task_context=task_context, removal=removal, targets=targets, rules=rules,
-                      task_semantics=task_semantics)
+                      task_semantics=task_semantics, rejected=rejected)
     if len(available_builds(menu)) < 2:
         return None
-    output_root = Path(output_root)
-    times = frame_times(removal=removal, targets=targets) if source_video is not None else []
+    times = frame_times(removal=removal, targets=targets)
     choice = fallback = fallback_type = result = None
     binding, cost = request_binding(menu=menu, times=times, source_video_digest=source_video_digest)
     try:
-        try:
-            frames = decode_frames(source_video, times, output_root / "frames") if times else []
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ValueError(FRAMES_UNREADABLE) from exc
+        if len(rejected) >= MAX_REJECTIONS:
+            raise ValueError(REJECTIONS_EXHAUSTED)
+        frames: list[dict[str, Any]] | None = []
+        if times:
+            try:
+                frames = decode_frames(source_video, times, output_root / "frames") if source_video else None
+            except (OSError, subprocess.SubprocessError):
+                frames = None  # only an answer already bought for these instants serves
         result = (ask or ask_gemini)(binding=binding, maximum_cost_usd=cost, frames=frames,
                                      task_context=task_context, output_root=output_root / "receipts")
         if not isinstance(result, Mapping):
             raise ValueError(INCOMPLETE)
         choice = validate_choice(result.get("answer"), menu=menu, task_context=task_context)
-    except Exception as exc:  # noqa: BLE001 - every failure but a wall falls back to the rules, recorded
+    except Exception as exc:  # noqa: BLE001 - every failure but privacy, rights or a held call falls back, recorded
         if _stops(exc):
             raise
         from .website_scene_handoff import blocker_code
@@ -422,12 +484,11 @@ def decide_build(*, task_context: Mapping[str, Any], removal: Mapping[str, Any],
     honoured = choice is not None and differs(choice, rules)
     record = {"schema_version": SCHEMA_VERSION, "revision": REVISION,
               "task_context_digest": task_context.get("context_digest"), "menu_digest": menu["menu_digest"],
-              "available": available_builds(menu), "rules": dict(rules),
+              "available": available_builds(menu), "rules_prediction": dict(rules),
               "source": "model" if choice is not None else "rules", "choice": choice,
-              "build": (choice or rules)["build"],
-              "destination_target_id": (choice or rules).get("destination_target_id"),
-              "agrees_with_rules": choice is not None and not honoured, "honoured": honoured,
+              "agrees_with_rules_prediction": choice is not None and not honoured, "honoured": honoured,
               **({"fallback": fallback, "fallback_error_type": fallback_type} if fallback is not None else {}),
+              **({"earlier_choices_rejected": len(rejected)} if rejected else {}),
               "request_binding_digest": canonical_digest(binding), "maximum_cost_usd": cost,
               **({"result_digest": canonical_digest(dict(result))} if isinstance(result, Mapping) else {}),
               "claim_boundary": "A model's reading of the job for what to build; no measurement and no robot verdict."}
@@ -445,9 +506,10 @@ def validate_compile_choice(value: Mapping[str, Any] | None) -> dict[str, Any] |
     destination = value.get("destination_target_id") if isinstance(value, Mapping) else None
     if (not isinstance(value, Mapping) or value.get("build") not in OBJECT_BUILDS
             or (destination is not None and (not isinstance(destination, str) or value["build"] not in DESTINATION_BUILDS))):
-        raise ValueError("website_build_choice_binding_invalid")
+        raise ValueError(BINDING_INVALID)
     return {"build": value["build"], "destination_target_id": destination, "source": "model",
-            **({"record_digest": value["record_digest"]} if isinstance(value.get("record_digest"), str) else {})}
+            **({"request_binding_digest": value["request_binding_digest"]}
+               if isinstance(value.get("request_binding_digest"), str) else {})}
 
 
 def chosen_mechanism(value: Mapping[str, Any] | None, subject_entry: Mapping[str, Any],
@@ -458,12 +520,12 @@ def chosen_mechanism(value: Mapping[str, Any] | None, subject_entry: Mapping[str
     if choice is None:
         return None
     if synthetic is not None:
-        raise ValueError("website_build_choice_binding_invalid")  # the menu offers a captured object only
+        raise ValueError(BINDING_INVALID)  # the menu offers a captured object only
     if choice["build"] != ARTICULATED:
         return "", RIGID
     kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
     if kind not in {"prismatic", "revolute"}:
-        raise ValueError("website_build_choice_binding_invalid")
+        raise ValueError(BINDING_INVALID)
     return kind, ARTICULATED
 
 
@@ -476,6 +538,7 @@ def chosen_destination_rows(value: Mapping[str, Any] | None,
             and (choice is None or row.get("target_id") == choice["destination_target_id"])]
 
 
-__all__ = ["ARTICULATED", "DESTINATION_BUILDS", "OBJECT_BUILDS", "RECORD", "RIGID", "ROOM_FLAG", "ROOM_ONLY",
-           "RULE_WITHHELD", "RULE_WITHHELD_CODE", "available_builds", "build_menu", "decide_build", "differs",
-           "rules_route", "validate_choice", "validate_compile_choice"]
+__all__ = ["ARTICULATED", "BINDING_INVALID", "DESTINATION_BUILDS", "OBJECT_BUILDS", "RECORD", "RIGID", "ROOM_FLAG",
+           "ROOM_ONLY", "RULE_WITHHELD", "RULE_WITHHELD_CODE", "available_builds", "build_menu", "decide_build",
+           "differs", "read_rejected", "record_shipped", "reject_choice", "rules_route", "validate_choice",
+           "validate_compile_choice"]
