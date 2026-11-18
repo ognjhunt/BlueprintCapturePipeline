@@ -5,6 +5,7 @@ the WebApp rights read, the private artifact store, the WebApp acceptance and th
 host is reached, and nothing is paid for.
 """
 # Covers: src/blueprint_pipeline/website_company_simulation.py
+# Covers: src/blueprint_pipeline/website_company_look.py
 # Covers: src/blueprint_pipeline/outbound_file_scan.py
 from __future__ import annotations
 
@@ -2532,7 +2533,8 @@ def test_a_look_whose_source_cannot_be_written_again_ships_as_first_written_and_
     if why == "missing":
         job.source.unlink()
     elif why == "over_memory_bound":
-        monkeypatch.setattr(sim, "REAUTHOR_MAX_SOURCE_BYTES", job.source.stat().st_size - 1)
+        from blueprint_pipeline import website_company_look
+        monkeypatch.setattr(website_company_look, "REAUTHOR_MAX_SOURCE_BYTES", job.source.stat().st_size - 1)
     else:
         job.source.write_bytes(job.source.read_bytes()[:-4] + b"\x00\x00\x80\x3f")
     world = World(job)
