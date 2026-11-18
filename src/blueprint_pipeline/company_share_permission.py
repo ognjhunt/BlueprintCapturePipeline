@@ -109,6 +109,17 @@ def _retire_one(record: Mapping[str, Any], retract: Callable[[str], None]) -> di
                if name not in {"retraction", "retraction_error"}}, "retracted": True}
 
 
+def mark_retiring(manifest: dict[str, Any]) -> None:
+    """Mark every live superseded copy's retraction pending, unwritten: the caller writes it with the record that
+    ends them (the delivery of a newer package), so a stop before ``retire`` leaves them pending, never forgotten."""
+    manifest[SUPERSEDED] = [
+        {**record, "retraction": "pending"} if isinstance(record, Mapping) and isinstance(record.get("uri"), str)
+        and not record.get("retracted") else record
+        for record in manifest.get(SUPERSEDED) or []]
+    if not manifest[SUPERSEDED]:
+        manifest.pop(SUPERSEDED)
+
+
 def retire(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
     """Take back every superseded copy (``SUPERSEDED``), recording each retraction before deleting; True once none
     is left."""

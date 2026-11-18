@@ -2786,3 +2786,30 @@ def test_a_copy_whose_delivery_answer_was_lost_stays_read_until_a_newer_one_is_t
     assert sorted(world.retracted) == sorted([first["uri"], second["uri"]])
     assert _route_reads(job, world, first, second) == ["unavailable", "unavailable"]
     assert isinstance(_read_route(job, world, now=NOW + 1), int)
+
+
+class _Stopped(BaseException):
+    """The process stopping (no ``except Exception`` catches it)."""
+
+
+def test_a_stop_right_after_the_delivery_is_written_still_retires_the_old_copies(job, monkeypatch):
+    """Codex P2, PR #3641: the delivered manifest was written before the old copies' retirement was recorded, so a
+    stop between the two left them live for good (the next pass found the package current). The delivery and the
+    retirement intent are now one write, and the next pass retires them first."""
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    old = _manifest(job)["archive"]
+    _new_revision(job)
+
+    def stop(*a, **k):
+        raise _Stopped()
+    monkeypatch.setattr(sim.permission, "retire", stop)
+    with pytest.raises(_Stopped):
+        world.publish()
+    manifest = _manifest(job)
+    assert manifest["delivered"]["simulation_digest"] == manifest["simulation_digest"] and world.retracted == []
+    assert [row.get("retraction") for row in manifest[sim.permission.SUPERSEDED]] == ["pending"]
+    assert _read_route(job, world, now=NOW + 1, digest=old["digest"]) == "unavailable"  # the website moved on
+    monkeypatch.undo()
+    assert world.publish()["status"] == "current" and world.retracted == [old["uri"]]
+    assert [row["retracted"] for row in _manifest(job)[sim.permission.SUPERSEDED]] == [True]

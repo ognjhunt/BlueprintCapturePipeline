@@ -1790,8 +1790,11 @@ def _publish_built(root, identity, manifest, manifest_path, package_path, basis,
     manifest["delivered"] = {"simulation_digest": record["simulation_digest"], "at_epoch": int(now())}
     manifest.pop("last_delivery_error", None)
     manifest.pop("refused_by_webapp", None)
+    # The website reads the new package now: the copies it may have read before are marked for retirement in this
+    # same write, so a stop before their deletion leaves them pending for the next pass, which retires them before
+    # anything else (``retraction_pending``), the already-current path included.
+    permission.mark_retiring(manifest)
     write_json(manifest_path, manifest)
-    # The website reads the new package now: the one it read before is retired (again next pass if this fails).
     permission.retire(manifest, manifest_path, retract)
     return {"status": "published", "simulation_revision": revision, "simulation_digest": record["simulation_digest"]}
 
