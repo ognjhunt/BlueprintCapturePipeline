@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import activation_hold, holds
+from . import activation_hold, experiment_purge, holds
 from .config import DoorConfig
 from .hostinfo import CommandRunner, SubprocessRunner
 from .requests import (
@@ -338,6 +338,26 @@ def _parked_delivery_properties(config: DoorConfig, request: dict[str, Any]) -> 
             f"ReadWritePaths={writable}")
 
 
+def _purge_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_INSTALL_ROOT": config.install_root, "DOOR_PURGE_FOLDER": request["folder"],
+            "DOOR_PURGE_APPLY": "1" if request["apply"] else "0"}
+
+
+def _purge_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
+    """Root with no network and every secret hidden. A plan writes only its result; an apply may
+    also write inside the one approved folder (validated with the request), never its parent.
+    CAP_SYS_PTRACE reads other processes' open files and the host's mount table."""
+    results = str(Path(config.spool_root) / "results")
+    # "-": an already-removed folder must not stop the unit (226/NAMESPACE); the module says absent.
+    writable = (f"-{experiment_purge.PARENT}/{request['folder']} " if request["apply"] else "") + results
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0022",
+            "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
+            "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SYS_PTRACE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            f"ReadWritePaths={writable}")
+
+
 @dataclass(frozen=True)
 class _LaunchSpec:
     """How one request kind becomes one transient ``.service`` unit running one installed script."""
@@ -428,6 +448,12 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
     "test-job": _LaunchSpec("blueprint-operator-door-test-job", "door-test-job.sh", "5min",
                             lambda request: hashlib.sha256(request["idempotency_key"].encode("utf-8")).hexdigest()[:12],
                             _test_job_environment, _test_job_properties),
+    # Named by the folder (an allowlisted constant) and the mode.
+    "purge-experiment-folder": _LaunchSpec(
+        "blueprint-operator-door-purge", "door-purge-experiment-folder.sh", "2h",
+        lambda request: hashlib.sha256((request["folder"] + ("/apply" if request["apply"] else "/plan"))
+                                       .encode("utf-8")).hexdigest()[:12],
+        _purge_environment, _purge_properties),
     "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
                                 lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
                                                                 .encode("utf-8")).hexdigest()[:12],
