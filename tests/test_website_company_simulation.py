@@ -2361,22 +2361,24 @@ def test_an_estimated_destination_surface_is_named_in_one_sentence_only_when_the
     assert (sim.SURFACE_ESTIMATED_NO_LOOK_NOTE in bare) is expected and sim.SURFACE_ESTIMATED_NOTE not in bare
 
 
-@pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees"])
+@pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees", "overhang"])
 def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_it_was(job, tmp_path, extent):
     """The object's size read again from its own points, its masks' spill left out (``website_object_extent``):
-    the README says so in one sentence, and says when the exact model's published size disagrees with it. A job
-    whose box fit its masks records nothing and its package is unchanged, at the same revision."""
+    the README says so in one sentence, and says when the exact model's published size disagrees with it, and when
+    it overhangs its destination (``website_destination_overhang``). A job whose box fit its masks and whose
+    destination holds it records nothing and its package is unchanged, at the same revision."""
     before = sim.simulation_source(job.capture, queue_root=job.queue)
     preparation = job.capture / "pipeline" / "website_scene_preparation"
     if extent is not None:
-        record = {"status": "kept" if extent == "kept" else "from_its_own_points",
+        record = {"status": "kept" if extent in ("kept", "overhang") else "from_its_own_points",
                   **({"published_cross_check": {"status": "disagrees"}} if extent == "disagrees" else {})}
-        _write(preparation / "preparation.json", {"subject_extent": record})
+        _write(preparation / "preparation.json", {"subject_extent": record, **(
+            {"destination_overhang": {"flag": "scene_estimate:destination_overhang"}} if extent == "overhang" else {})})
         handoff = {"status": "intake_ready", "preparation_path": str(preparation / "preparation.json")}
         handoff["digest"] = canonical_digest(handoff, digest_field="digest")
         _write(preparation / "handoff.json", handoff)
     expected = {"size_from_its_points": extent in ("from_its_own_points", "disagrees"),
-                "size_disagrees_with_published": extent == "disagrees"}
+                "size_disagrees_with_published": extent == "disagrees", "destination_overhang": extent == "overhang"}
     assert sim.size_notes(job.capture) == {key: True for key, value in expected.items() if value}
     source = sim.simulation_source(job.capture, queue_root=job.queue)
     assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not any(expected.values()))
@@ -2386,6 +2388,7 @@ def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_
     assert (sim.SIZE_FROM_ITS_POINTS_NOTE in readme) is expected["size_from_its_points"]
     assert (sim.SIZE_DISAGREES_WITH_PUBLISHED_NOTE in readme) is expected["size_disagrees_with_published"]
     assert readme.count("points of the object") == (1 if expected["size_from_its_points"] else 0)
+    assert (sim.DESTINATION_OVERHANG_NOTE in readme) is expected["destination_overhang"]
 
 
 # --- a look written again from its source splat, and its PLY ------------------------------------------------------

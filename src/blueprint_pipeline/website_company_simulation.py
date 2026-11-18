@@ -199,6 +199,10 @@ SURFACE_ESTIMATED_NO_LOOK_NOTE = ("The destination shelf or surface the job's ob
 SIZE_FROM_ITS_POINTS_NOTE = ("The job's object's size was estimated from the video's points of the object that the "
                              "frames agree on: points its masks also took in from what lies under or behind it were "
                              "left out.")
+#: No surface at the destination holds the object's whole footprint: its centre is over the surface, part of it over
+#: the edge (``website_destination_overhang``, read with the size notes). Never in a room package.
+DESTINATION_OVERHANG_NOTE = ("The job's object is a little larger than the surface it is placed on: its centre is over "
+                             "the surface and part of it hangs over the edge.")
 #: The object's exact model has a published size that disagrees with the video's estimate; the file keeps the estimate.
 SIZE_DISAGREES_WITH_PUBLISHED_NOTE = ("The published size of the job's object's exact model disagrees with the size "
                                       "estimated from the video; the object's file keeps the video's estimate.")
@@ -581,9 +585,9 @@ def look_views(capture_root: Path) -> bool:
 
 
 def size_notes(capture_root: Path) -> dict[str, bool]:
-    """What the preparation the job's scene handoff names says of the object's size (``subject_extent``): read from
-    its own points, and an exact model's published size that disagrees. Empty when neither, so its package says
-    what it said before."""
+    """What the preparation the job's scene handoff names says of the object's size (``subject_extent``) and where it
+    rests: read from its own points, an exact model's published size that disagrees, and a destination it
+    overhangs (``destination_overhang``). Empty when none, so its package says what it said before."""
     root = Path(capture_root)
     preparation = root / "pipeline" / "website_scene_preparation" / "preparation.json"
     named = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json").get("preparation_path")
@@ -593,8 +597,10 @@ def size_notes(capture_root: Path) -> dict[str, bool]:
     extent = _read(preparation).get("subject_extent")
     extent = extent if isinstance(extent, Mapping) else {}
     check = extent.get("published_cross_check") if isinstance(extent.get("published_cross_check"), Mapping) else {}
+    overhang = _read(preparation).get("destination_overhang")
     return {**({"size_from_its_points": True} if extent.get("status") == "from_its_own_points" else {}),
-            **({"size_disagrees_with_published": True} if check.get("status") == "disagrees" else {})}
+            **({"size_disagrees_with_published": True} if check.get("status") == "disagrees" else {}),
+            **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {})}
 
 
 def surface_estimated(capture_root: Path) -> bool:
@@ -809,7 +815,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room",
                                         "generated_patch", "look_views", "surface_estimated", "size_from_its_points",
-                                        "size_disagrees_with_published") if source.get(key)},
+                                        "size_disagrees_with_published", "destination_overhang") if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
                                           for prim, row in sorted(source["files"].items())
@@ -1225,6 +1231,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                if source.get("surface_estimated") else []),
              *([SIZE_FROM_ITS_POINTS_NOTE] if source.get("size_from_its_points") else []),
              *([SIZE_DISAGREES_WITH_PUBLISHED_NOTE] if source.get("size_disagrees_with_published") else []),
+             *([DESTINATION_OVERHANG_NOTE] if source.get("destination_overhang") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
                if source.get("support_not_held") and not withheld else []),
              *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,

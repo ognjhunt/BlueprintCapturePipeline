@@ -215,7 +215,10 @@ retry: the same video and release give the same answer. Two changes answer it.
   agree on stops as before. A job object whose box does not fit its own masks is sized again from its
   points the frames agree on, its masks' spill onto what lies under or behind it left out
   (`scene_estimate:object_size_from_its_points`, `website_object_extent`); an exact model's published
-  size only cross-checks it (`scene_estimate:object_size_disagrees_with_published`). Each estimate is named on the
+  size only cross-checks it (`scene_estimate:object_size_disagrees_with_published`). An object no
+  destination surface holds whole is set down with its centre, the scorer's disc and at least half its
+  footprint over one surface, the overhang recorded (`scene_estimate:destination_overhang`,
+  `website_destination_overhang`); otherwise it stops as before. Each estimate is named on the
   base scene (`atlas_scene_estimates`), copied into the screening plan, and published in v3
   `scene_feasibility.flags`; the website names each in its own sentence. Counts and intervals are
   shown as measured: no estimate adjusts them.

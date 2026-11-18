@@ -57,7 +57,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .atlas_scene_estimates import OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_SIZE_FROM_ITS_POINTS, SUPPORT_GUESSED
+from .atlas_scene_estimates import (DESTINATION_OVERHANG, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED,
+                                    OBJECT_SIZE_FROM_ITS_POINTS, SUPPORT_GUESSED)
 from .sharing_statement import OWNED_CAPTURES_PATH, SHARING_STATEMENT_VERSIONS, covers_sharing, owned_captures
 from .site_roots import is_bucket
 
@@ -114,6 +115,7 @@ ESTIMATE_SENTENCES = {
     "scene_estimate:task_views_left_out": "Some views of the task area were too blurred or did not connect to the others and were left out; the object's start position comes from the views that were kept.",
     "scene_estimate:surroundings_not_connected": "Only the task area was filmed in views that connect. Any of the room around it in the simulation was not filmed; it is generated from the surrounding footage.",
     SUPPORT_GUESSED: "No surface lay at the object's estimated bottom: Blueprint chose the surface it rests on from the video (the one its frames show it touching, else the nearest under it) and corrected where it rests onto that surface, as the object size line says.",
+    DESTINATION_OVERHANG: "No surface at the destination holds the object's whole footprint: it is placed with its centre over the surface and part of it over the edge, as the overhang line says.",
     OBJECT_SIZE_FROM_ITS_POINTS: "The object's masks also took in what lies under or behind it in some frames: Blueprint estimated its size from the video's points of the object that the frames agree on, as the object size line says.",
     OBJECT_SIZE_DISAGREES_WITH_PUBLISHED: "The published size of the object's exact model disagrees with the size estimated from the video; the simulation keeps the video's estimate.",
     "scene_estimate:destination_surface_estimated": "The destination shelf or surface did not show in the scan (glass and other see-through or shiny surfaces do not); it was estimated from its visible edges in the video and is in the collision file, not in the look.",
@@ -915,6 +917,10 @@ def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[
             and all(_number(v) is not None for v in (*low, *high)) and all(a <= b for a, b in zip(low, high, strict=True))):
         estimated.append("Object size: " + " × ".join(_length(b - a) for a, b in zip(low, high, strict=True))
                          + ", from the video" + _size_words(prep) + _resting_words(prep) + ".")
+    overhang = _number(_mapping(prep.get("destination_overhang")).get("largest_overhang_m"))
+    if overhang is not None:
+        estimated.append("The object is a little larger than the destination surface: about "
+                         f"{max(1, round(overhang * 100))} cm hangs over its edge; its centre is over the surface.")
     bounds = _mapping(_mapping(prep.get("physics")).get("bounds"))
     if "mass_kg" in bounds:
         estimated.append(f"Mass used in the simulation: {_range(bounds.get('mass_kg'), 'kg')}, a prior from the object's "
@@ -930,6 +936,10 @@ def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[
              if isinstance(row, Mapping) and isinstance(row.get("code"), str)}
     if _mapping(_mapping(prep.get("support")).get("guess")).get("flag") == SUPPORT_GUESSED:
         codes.add(SUPPORT_GUESSED)  # the preparation's own estimate (``atlas_scene_estimates.preparation_flags``)
+    extent = _mapping(prep.get("subject_extent"))
+    codes |= {code for code in (extent.get("flag"), _mapping(extent.get("published_cross_check")).get("flag"),
+                                _mapping(prep.get("destination_overhang")).get("flag"))
+              if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG)}
     for code in sorted(codes):
         estimated.append(f"`{code}`: {ESTIMATE_SENTENCES.get(code, 'an estimate the scene rests on (no plain sentence recorded for this code).')}")
     if not codes:

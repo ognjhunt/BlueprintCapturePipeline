@@ -42,6 +42,9 @@ Codes, each ``scene_estimate:<kind>``:
   left out (``website_object_extent``).
 - ``object_size_disagrees_with_published``: the exact model's published size disagrees with the
   box beyond the estimate's stated error; the box is the video's, never the published figure.
+- ``destination_overhang``: no surface holds the object's whole footprint at its destination; it is
+  set down with its centre and most of its footprint over the surface, a little of it over the
+  edge (``website_destination_overhang``).
 
 Pure apart from reading the retained JSON records named. Records written before these estimates
 existed carry none of their fields and give no code.
@@ -91,6 +94,9 @@ DESTINATION_SURFACE_ESTIMATED = "scene_estimate:destination_surface_estimated"
 OBJECT_SIZE_FROM_ITS_POINTS = "scene_estimate:object_size_from_its_points"
 #: The exact model's published size disagrees with the box beyond its stated error: a cross-check, never the size.
 OBJECT_SIZE_DISAGREES_WITH_PUBLISHED = "scene_estimate:object_size_disagrees_with_published"
+#: The object is a little larger than its destination surface: set down with its centre over it, part of it over
+#: the edge (``website_destination_overhang``).
+DESTINATION_OVERHANG = "scene_estimate:destination_overhang"
 #: No catalog robot fits the job on paper (``website_robot_fit_precheck``): a note on the job, never a stop.
 #: Carried as ``scene_estimate:robot_fit_none:<cause>``, the cause that refused the most candidates.
 ROBOT_FIT_NONE = "scene_estimate:robot_fit_none"
@@ -104,7 +110,7 @@ CODES = frozenset({LEVEL, APPEARANCE, FLOOR, COLLIDER, CITATIONS, SURROUNDING, T
                    TARGET_ROLE_KEPT, TASK_REVIEW_ESTIMATED, DESTINATION_GUESSED, DESTINATION_NEAR_START,
                    REGISTRATION_AMBIGUOUS, PLACEMENT_UNCERTAINTY, SUPPORT_HEIGHT, SUPPORT_GUESSED,
                    TASK_VIEWS_DROPPED, SURROUNDINGS_GENERATED, DESTINATION_SURFACE_ESTIMATED,
-                   OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED})
+                   OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -200,8 +206,9 @@ def preparation_flags(path: Path) -> set[str]:
     if _mapping(value.get("destination_surface_estimate")).get("flag") == DESTINATION_SURFACE_ESTIMATED:
         flags.append(DESTINATION_SURFACE_ESTIMATED)
     extent = _mapping(value.get("subject_extent"))
-    flags += [code for code in (extent.get("flag"), _mapping(extent.get("published_cross_check")).get("flag"))
-              if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED)]
+    flags += [code for code in (extent.get("flag"), _mapping(extent.get("published_cross_check")).get("flag"),
+                                _mapping(value.get("destination_overhang")).get("flag"))
+              if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG)]
     codes = {code for code in flags if code in CODES} | (box_fit & TASK_OBJECT_BOX_FIT_FLAGS)
     fit = _robot_fit_none(path.parent / "native" / "robot_fit_precheck.json")
     codes |= {fit} if fit else set()

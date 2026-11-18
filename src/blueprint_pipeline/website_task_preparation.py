@@ -1350,6 +1350,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     size_tolerance = replacement_size_tolerance(dimension_authority=subject_dimension_authority,
                                                 relative_error=DIMENSION_RELATIVE_ERROR, development=False)
     destination = distinct_support = relocation = region_record = surface_target_admission = region_outline = None
+    overhang = None  # the destination's surface a little smaller than the object (``website_destination_overhang``)
     destination_choice = None
     interior = None
     from .website_destination_choice import SITE_CHOICE, settle_place  # the places offered; the site's pick
@@ -1433,6 +1434,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 if near is None:
                     destination_support = lookup(collider, destination_min, destination_max, up=up,
                                                  meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
+            if destination_support is None:  # no surface under the whole footprint: its centre over one, flagged
+                from .website_destination_overhang import centre_supported
+                destination_support, overhang = centre_supported(collider, destination_min, destination_max, up=up,
+                    meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual, radius=radius, look=lookup)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
@@ -1483,6 +1488,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       "grounded_centre_world_m": stated, "harness_choice": True, **recorded_tolerance}
                 if outline is not None:
                     region_outline = outline.in_frame(runtime_to_sim)
+        overhang = None if relocation is not None else overhang  # a relocation found a spot holding all of it
         label = destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"]
         destination = {"relation": relation, "visible_label": label,
                        **({"mode": "existing_support_surface"} if relation == "on" or interior is not None else {}),
@@ -1920,7 +1926,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination, **searched,
-        **surface_estimate, **subject_extent,
+        **surface_estimate, **subject_extent, **({"destination_overhang": overhang} if overhang else {}),
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
         **({"destination_choice": destination_choice} if destination_choice is not None and not rule_withheld else {}),
