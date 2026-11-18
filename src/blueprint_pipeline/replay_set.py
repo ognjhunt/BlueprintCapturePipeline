@@ -50,6 +50,9 @@ MANIFEST_FILENAME = "manifest.json"
 DEFAULT_MATERIALIZE_ROOT = "/tmp/blueprint-replay-set-v1"  # nosec B108 - fixed root of committed synthetic fixtures
 #: Manifest field: the wall-clock instant every record is replayed at (``_replay_clock``).
 CLOCK_FIELD = "replay_clock_epoch"
+#: The process's own clock, kept at import: a ``now=time.time`` default bound before a caller wrapped
+#: ``time.time`` (a test shifting the clock) still holds this one, and the replay must move it too.
+_PROCESS_TIME, _PROCESS_DATETIME = time.time, datetime.datetime
 GZIP_SUFFIX = ".gz"
 STOP_FIELDS = ("kind", "stage", "code")
 #: Compared only where a record's expected stop names it: the job's state once the replay stopped
@@ -184,32 +187,44 @@ def _replay_clock(epoch: float | None) -> Iterator[None]:
     real_time, real_datetime, origin = time.time, datetime.datetime, time.monotonic()
     clock = time.time = lambda: epoch + (time.monotonic() - origin)
     datetime.datetime = _ReplayDatetime  # type: ignore[misc]
-    _rebind(real_time, clock)
-    _rebind(real_datetime, _ReplayDatetime)
+    changed = _rebind((real_time, _PROCESS_TIME), clock) + _rebind((real_datetime, _PROCESS_DATETIME), _ReplayDatetime)
     try:
         yield
     finally:
         time.time, datetime.datetime = real_time, real_datetime  # type: ignore[misc]
+        for holder, key, value in reversed(changed):
+            setattr(holder, key, value)
         # Also in a module first imported during the replay, which bound the replay clock.
-        _rebind(clock, real_time)
-        _rebind(_ReplayDatetime, real_datetime)
+        _rebind((clock,), real_time)
+        _rebind((_ReplayDatetime,), real_datetime)
 
 
-def _rebind(old: Any, new: Any) -> None:
-    """Point every loaded package module's global, and its functions' defaults, that is ``old`` at ``new``."""
+def _rebind(olds: tuple[Any, ...], new: Any) -> list[tuple[Any, str, Any]]:
+    """Point every loaded package module's global, and its functions' defaults, that is one of ``olds`` at ``new``.
+
+    Returns each ``(holder, attribute, value before)`` it changed, so the caller can put back exactly that.
+    """
+    def is_old(item: Any) -> bool:
+        return any(item is old for old in olds)
+
+    changed: list[tuple[Any, str, Any]] = []
     for name, module in list(sys.modules.items()):
         if module is None or name == __name__ or not (
                 name == "blueprint_pipeline" or name.startswith("blueprint_pipeline.")):
             continue
         for key, value in list(vars(module).items()):
-            if value is old:
+            if is_old(value):
+                changed.append((module, key, value))
                 setattr(module, key, new)
             elif isinstance(value, types.FunctionType) and value.__module__ == name:
-                if value.__defaults__ and any(item is old for item in value.__defaults__):
-                    value.__defaults__ = tuple(new if item is old else item for item in value.__defaults__)
-                if value.__kwdefaults__ and any(item is old for item in value.__kwdefaults__.values()):
-                    value.__kwdefaults__ = {field: new if item is old else item
+                if value.__defaults__ and any(is_old(item) for item in value.__defaults__):
+                    changed.append((value, "__defaults__", value.__defaults__))
+                    value.__defaults__ = tuple(new if is_old(item) else item for item in value.__defaults__)
+                if value.__kwdefaults__ and any(is_old(item) for item in value.__kwdefaults__.values()):
+                    changed.append((value, "__kwdefaults__", value.__kwdefaults__))
+                    value.__kwdefaults__ = {field: new if is_old(item) else item
                                             for field, item in value.__kwdefaults__.items()}
+    return changed
 
 
 def _boundary_breaches(report: Mapping[str, Any]) -> list[str]:
