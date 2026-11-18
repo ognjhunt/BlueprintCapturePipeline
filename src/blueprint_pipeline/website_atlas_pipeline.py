@@ -566,13 +566,29 @@ def _heldout_quality(*, frames, selection, splat_root):
     return record
 
 
+def _job_window_end(output_root: Path, task_context) -> float | None:
+    """The job's window end, read live from the capture that holds this job's directory, or None.
+
+    The nearest parent with the job's retained grant is its capture (``pipeline/atlas`` for a website job);
+    ``website_preparation_terminal.retained_window_end`` binds the grant to the context's scene and capture.
+    """
+    from .website_preparation_terminal import GRANT_FILE, retained_window_end
+    for capture_root in list(Path(output_root).resolve().parents)[:4]:
+        if (capture_root / GRANT_FILE).is_file():
+            return retained_window_end(capture_root, scene_id=task_context.get("scene_id"),
+                                       capture_id=task_context.get("capture_id"))
+    return None
+
+
 def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_context, source_digest,
                           configuration, check, experimental, max_polls,
                           review=None, source_root=None, rebuild=False):
     """Atlas's refined splat of the captured frames, or the draft with the reason it is the fallback.
 
     The draft is the fallback only when the job's Atlas money cannot cover the refined splat and
-    the mesh after it, or when Atlas fails every attempt. Admitted generated geometry never swaps
+    the mesh after it, or when Atlas fails every attempt: after the first forms fail, the job waits
+    for fresh real-frames-only attempts (``atlas_refined_splat_retry``) until the allowance or the
+    window's last two hours stop them, and the draft then carries that record. Admitted generated geometry never swaps
     the refined splat for the draft (owner, 2026-11-17): it goes into the collision shape only
     (``_preserved_scene``). ``draft`` is always the captured frames' own draft, so nothing
     generated reaches the request. A splat already bought is always adopted.
@@ -622,8 +638,24 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     except ValueError as exc:
         if str(exc) != "atlas_task_operation_failed" or rebuild:
             raise
-        return {"status": "completed", "basis": DRAFT_APPEARANCE,
-                "fallback_reason": "atlas_refined_splat_provider_failed"}
+        # Every form failed: the job waits for a fresh real-frames-only attempt (``atlas_refined_splat_retry``);
+        # the draft is the look only once the allowance or the window cannot carry another.
+        from .atlas_refined_splat_forms import MINIMAL
+        from .atlas_refined_splat_retry import DRAFT_FINAL, WAIT_STAGE, next_refined_splat
+        native = next_refined_splat(output_root=output_root, original_root=root, now=time.time(),
+            run_attempt=lambda base: run_native_splat(frames=sent, result=pose, draft=draft, output_root=base,
+                policy=policy, task_context=task_context, max_polls=max_polls, forms=(MINIMAL,),
+                task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
+                **({"input_selection_digest": selection["digest"]} if selection is not None else {})),
+            remaining_cost_usd=lambda: _current_configuration(task_context, source_digest, configuration).get(
+                "remaining_cost_usd"),
+            needed_usd=splat_cost(policy) + float(policy.get("mesh_export_cost_usd", 0)),
+            window_end=lambda: _job_window_end(output_root, task_context))
+        if native["status"] == DRAFT_FINAL:
+            return {"status": "completed", "basis": DRAFT_APPEARANCE,
+                    "fallback_reason": "atlas_refined_splat_provider_failed", "refined_splat_retry": native["retry"]}
+        if native.get("stage") == WAIT_STAGE:
+            return native
     if native["status"] != "completed":
         return {"status": "processing", "stage": "refined_splat", "operation_id": native.get("operation_id")}
     appearance = {"status": "completed", "basis": REFINED_APPEARANCE, "splat_root": native["splat_root"],
@@ -853,7 +885,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         "billing_status": "provider_usage_unreported"}
     if appearance is not None:
         result['appearance'] = {key: appearance[key] for key in (
-            'basis', 'fallback_reason', 'splat_input', 'heldout_quality') if key in appearance}
+            'basis', 'fallback_reason', 'splat_input', 'heldout_quality', 'refined_splat_retry') if key in appearance}
     if repose is not None:
         result['windowed_repose'] = repose['disclosure']
     if completion is not None:

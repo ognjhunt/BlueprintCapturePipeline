@@ -104,6 +104,8 @@ PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trig
                         # Not a stall: a preparation stopped on Blueprint's own records, paged once
                         # (preparation_fault_alert).
                         "website_preparation_blueprint_fault",
+                        # Not a stall: a website job's look is the draft for good, paged once (same module).
+                        "website_atlas_look_draft_final",
                         # Not a stall: the state backup's newest complete generation is over two hours old
                         # (control_plane_state_backup.backup_freshness); a host never set up stays quiet.
                         "control_plane_backup_stale"})
@@ -1612,7 +1614,7 @@ def describe(alert: Mapping[str, Any]) -> str | None:
     if code == "scene_budget_doubled":
         from .scene_budget_alert import describe as describe_budget
         return describe_budget(alert)
-    if code == "website_preparation_blueprint_fault":
+    if code in ("website_preparation_blueprint_fault", "website_atlas_look_draft_final"):
         from .preparation_fault_alert import describe as describe_fault
         return describe_fault(alert)
     if code == "control_plane_backup_stale":

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -357,6 +358,10 @@ def test_a_scene_kept_as_filmed_takes_atlas_refined_splat_with_the_draft_only_as
     completed = {'digest': 'sha256:' + 'd' * 64, 'splat_kind': 'depth_fused_draft'}
     remaining = 3 if outcome.endswith('unaffordable') else 23
     monkeypatch.setattr(pipeline, 'load_configuration', lambda *args: {'remaining_cost_usd': remaining})
+    # The window ends within its last two hours, so a failed refined splat takes the draft at once
+    # (``atlas_refined_splat_retry``; a later retry is covered in tests/test_atlas_refined_splat_retry.py).
+    window_end = time.time() + 3600
+    monkeypatch.setattr(pipeline, '_job_window_end', lambda *_: window_end)
 
     def complete(**_options):
         calls.append('completion')
@@ -431,8 +436,11 @@ def test_a_scene_kept_as_filmed_takes_atlas_refined_splat_with_the_draft_only_as
     reasons = {'unaffordable': 'atlas_refined_splat_unaffordable',
                'provider_failed': 'atlas_refined_splat_provider_failed'}
     # No refined splat to use: the draft is the look (with the admitted patch when there is one), as before.
+    retry = ({'refined_splat_retry': {'attempts': 0, 'final_reason': 'atlas_refined_splat_window_closing',
+                                      'window_end_epoch': window_end, 'remaining_cost_usd': 23.0}}
+             if outcome.endswith('provider_failed') else {})
     assert result['appearance'] == {'basis': 'depth_fused_draft_fallback',
-                                    'fallback_reason': reasons[outcome.removeprefix('admitted_')]}
+                                    'fallback_reason': reasons[outcome.removeprefix('admitted_')], **retry}
     assert ('refined_splat' in calls) is outcome.endswith('provider_failed')
     assert calls[-1] == 'mesh' and result['splat_kind'] == 'depth_fused_draft'
     assert meshed == [completed_root if admitted else tmp_path / 'splat']

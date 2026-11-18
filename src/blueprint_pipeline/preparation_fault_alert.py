@@ -39,6 +39,12 @@ FAULT_CODES = ("website_registration_anchor_frame_invalid", "website_registratio
                "website_assembly_coverage_key_missing", "website_task_grounding_key_missing",
                "website_sam31_profile_missing")
 _FAULT = re.compile(r"\b(" + "|".join(FAULT_CODES) + r")\b")
+#: Since 2026-11-18: a website job became ready with the depth-fused draft as its room's look for good
+#: (``look_fallback`` on its Atlas job, ``website_atlas_preview``): the refined splat could not be had within
+#: the job's allowance or before its window's last two hours (``atlas_refined_splat_retry``). Paged once per
+#: capture, on the same route and memory as the faults above; it gates nothing.
+LOOK_CODE = "website_atlas_look_draft_final"
+ATLAS_JOB_GLOB = "*/scenes/site-*/captures/*/pipeline/atlas/preview_job.json"
 _STOPPED = frozenset({"failed_retryable", "retryable_blocked", "failed_terminal"})
 
 
@@ -85,13 +91,18 @@ def check_preparation_faults(root: Path | None, *, now: float, remembered: Mappi
         if now - since < ANNOUNCE_SECONDS:
             offenders.append({"target": key, "label": path.parent.name[:120], "status": ledger.get("status"),
                               "blockers": [code], "age_seconds": round(now - since)})
+    looks, look_unreadable, look_truncated = _draft_looks(Path(root), now=now, remembered=remembered,
+                                                          memory_out=memory_out)
     section = {"status": "observed", "ledgers": min(len(paths), MAX_LEDGERS), "truncated": truncated,
-               "stopped": stopped, "announced": len(offenders), "unreadable": unreadable}
+               "stopped": stopped, "announced": len(offenders), "unreadable": unreadable,
+               "draft_looks_announced": len(looks), "draft_looks_unreadable": look_unreadable}
     alerts: list[dict[str, Any]] = []
-    if offenders:
-        offenders.sort(key=lambda row: row["target"])
-        alerts.append({"code": CODE, "count": len(offenders),
-                       "targets": [row["target"] for row in offenders[:10]], **offenders[0]})
+    for code, rows in ((CODE, offenders), (LOOK_CODE, looks)):
+        if rows:
+            rows.sort(key=lambda row: row["target"])
+            alerts.append({"code": code, "count": len(rows), "targets": [row["target"] for row in rows[:10]], **rows[0]})
+    if look_truncated:
+        alerts.append({"code": "stall_check_incomplete", "reason": "atlas_jobs_truncated"})
     if truncated:
         # More ledgers than one tick reads: what was not read is unknown, never "nothing found".
         alerts.append({"code": "stall_check_incomplete", "reason": "preparation_ledgers_truncated",
@@ -99,9 +110,41 @@ def check_preparation_faults(root: Path | None, *, now: float, remembered: Mappi
     return section, alerts
 
 
+def _draft_looks(root: Path, *, now: float, remembered: Mapping[str, Any],
+                 memory_out: dict[str, Any] | None) -> tuple[list[dict[str, Any]], int, bool]:
+    """One row per capture whose ready Atlas job's look is the draft for good, within its announce window."""
+    paths = sorted(root.glob(ATLAS_JOB_GLOB))
+    rows, unreadable = [], 0
+    for path in paths[:MAX_LEDGERS]:
+        try:
+            if path.is_symlink() or path.stat().st_size > MAX_LEDGER_BYTES:
+                raise ValueError("job_unreadable")
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            unreadable += 1
+            continue
+        reason = job.get("look_fallback") if isinstance(job, Mapping) and job.get("state") == "ready" else None
+        if not isinstance(reason, str):
+            continue
+        capture = path.parents[2]  # <capture>/pipeline/atlas/preview_job.json
+        key = f"{capture.relative_to(root)}:{LOOK_CODE}"
+        prior = remembered.get(key) if isinstance(remembered.get(key), Mapping) else {}
+        since = prior.get("since")
+        since = since if isinstance(since, (int, float)) and not isinstance(since, bool) else now
+        if memory_out is not None:
+            memory_out[key] = {"since": since}
+        if now - since < ANNOUNCE_SECONDS:
+            rows.append({"target": key, "label": capture.name[:120], "status": "ready", "blockers": [reason[:120]],
+                         "age_seconds": round(now - since)})
+    return rows, unreadable, len(paths) > MAX_LEDGERS
+
+
 def describe(alert: Mapping[str, Any]) -> str:
     more = int(alert.get("count") or 1) - 1
     tail = f" (+{more} more)" if more > 0 else ""
     blockers = alert.get("blockers") or ["?"]
+    if alert.get("code") == LOOK_CODE:
+        return (f"website job ready with the depth-fused draft as its room's look [{blockers[0]}]; no refined splat "
+                f"within its allowance or window: {alert.get('label') or alert.get('target')}{tail}")
     return (f"website preparation stopped on Blueprint's own records or code [{blockers[0]}], ours to fix; the site "
             f"is told only that it needs our review: {alert.get('label') or alert.get('target')}{tail}")

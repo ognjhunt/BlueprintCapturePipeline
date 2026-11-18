@@ -262,7 +262,8 @@ def _refined_marker(form, root: Path, manifest, frames, roots) -> dict:
 
 
 def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_context,
-                     task_runner, max_polls=2, checkpoint=None, retained_only=False, input_selection_digest=None):
+                     task_runner, max_polls=2, checkpoint=None, retained_only=False, input_selection_digest=None,
+                     forms=None):
     """Resume one refined-splat operation; publish its original SPZ and lossless decoded PLY.
 
     World Labs documents a posed frame as image, depth and camera only. It
@@ -277,6 +278,8 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
     one unless an operator requested that upgrade (``request_gap_preserving_upgrade``).
     ``input_selection_digest`` names the recorded choice of ``frames``
     (``atlas_splat_input_quality``); a new request's input binding keeps it.
+    ``forms``, when given, are the only forms tried here: a later fresh attempt
+    (``atlas_refined_splat_retry``) is the real-frames-only form alone.
     """
     from . import atlas_whole_view_review
 
@@ -284,6 +287,8 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
     upgrade = _upgrade_roots(roots[-1][1])
     review = views = None
     for index, (form, root) in enumerate(roots):
+        if forms is not None and form not in forms:
+            continue
         if not (root / "native/result.json").is_file():
             if _provider_failed_and_exhausted(root / "native"):
                 continue
