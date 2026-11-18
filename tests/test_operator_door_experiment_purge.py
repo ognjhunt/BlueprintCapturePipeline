@@ -227,6 +227,172 @@ def test_an_absent_folder_is_reported_not_failed(host):
     assert _purge(host, apply=True)["outcome"] == "absent"
 
 
+def _device_text(path):
+    device = os.stat(path).st_dev
+    return f"{os.major(device)}:{os.minor(device)}"
+
+
+def test_one_entry_that_cannot_be_deleted_does_not_keep_the_rest(host, monkeypatch):
+    import errno
+
+    from operator_door import experiment_purge
+
+    real = os.unlink
+
+    def unlink(name, *args, **kwargs):
+        if name == "0001.png":
+            raise PermissionError(errno.EPERM, "stuck")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(experiment_purge.os, "unlink", unlink)
+    document = _purge(host, apply=True)
+    assert (document["outcome"], document["code"]) == ("partly_emptied", "delete_failed:EPERM")
+    assert document["entries_left_names"] == ["repair-a"]
+    assert not (host["folder"] / "retained.json").exists()
+    assert not (host["folder"] / "repair-a" / "link-out").exists()
+    assert (host["folder"] / "repair-a" / "frames" / "0001.png").exists()
+    assert host["outside"].exists()
+
+
+def test_a_part_of_the_tree_that_cannot_be_read_stops_it(host, monkeypatch):
+    from operator_door import experiment_purge
+
+    real = os.fwalk
+
+    def fwalk(*args, onerror=None, **kwargs):
+        onerror(PermissionError(13, "unreadable"))
+        yield from real(*args, onerror=onerror, **kwargs)
+
+    monkeypatch.setattr(experiment_purge.os, "fwalk", fwalk)
+    document = _purge(host, apply=True)
+    assert (document["outcome"], document["code"]) == ("refused", "survey_incomplete:EACCES")
+    assert (host["folder"] / "retained.json").exists()
+
+
+def test_a_process_that_ends_while_read_is_not_unreadable(host, monkeypatch):
+    from operator_door import experiment_purge
+
+    pid = host["proc"] / "55"
+    (pid / "fd").mkdir(parents=True)
+    (pid / "maps").write_text("", encoding="utf-8")
+    real = experiment_purge.open if hasattr(experiment_purge, "open") else open
+
+    def gone(path, *args, **kwargs):
+        if str(path).endswith("/55/maps"):
+            raise ProcessLookupError(3, "exited")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", gone)
+    document = _purge(host, apply=False)
+    assert document["processes_unreadable"] == 0 and document["would_stop"] == []
+
+
+def test_a_mount_of_another_filesystem_under_the_folder_stops_it(host, monkeypatch):
+    from types import SimpleNamespace
+
+    from operator_door import experiment_purge
+
+    real = os.stat
+
+    def stat(path, *args, **kwargs):
+        info = real(path, *args, **kwargs)
+        if path == "retained.json":
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            return SimpleNamespace(**{**fields, "st_dev": info.st_dev + 1})
+        return info
+
+    monkeypatch.setattr(experiment_purge.os, "stat", stat)
+    assert _purge(host, apply=True)["code"] == "folder_spans_filesystems"
+
+
+def test_a_symlink_part_way_up_the_path_is_refused(host, tmp_path):
+    from operator_door import experiment_purge
+
+    parent = Path(host["parent"])
+    moved = tmp_path / "real-parent"
+    parent.rename(moved)
+    parent.symlink_to(moved)
+    document = experiment_purge.run(FOLDER, True, host["result"], REQUEST_ID, parent=str(parent),
+                                    proc_root=str(host["proc"]))
+    assert (document["outcome"], document["code"]) == ("refused", "folder_path_has_symlink")
+    assert (moved / FOLDER / "retained.json").exists()
+
+
+def test_a_bind_mount_of_the_folder_in_any_other_namespace_stops_it(host):
+    device = _device_text(host["folder"])
+    with (host["proc"] / "1" / "mountinfo").open("a", encoding="utf-8") as stream:
+        stream.write(f"23 1 {device} / / rw - ext4 /dev/x rw\n")
+    container = host["proc"] / "300"
+    (container / "ns").mkdir(parents=True)
+    (container / "ns" / "mnt").write_text("", encoding="utf-8")
+    (container / "mountinfo").write_text(
+        f"50 40 {device} {host['folder']}/repair-a /data rw - ext4 /dev/x rw\n", encoding="utf-8")
+    document = _purge(host, apply=True)
+    assert (document["outcome"], document["code"]) == ("refused", "folder_has_mount_point")
+    assert document["mount_points_under"] == ["pid 300: /data"]
+
+
+def test_a_host_bind_mount_elsewhere_stops_it_and_this_units_own_namespace_does_not(host):
+    device = _device_text(host["folder"])
+    (host["proc"] / "self" / "ns").mkdir(parents=True)
+    (host["proc"] / "self" / "ns" / "mnt").write_text("", encoding="utf-8")
+    own = host["proc"] / "301"
+    (own / "ns").mkdir(parents=True)
+    os.link(host["proc"] / "self" / "ns" / "mnt", own / "ns" / "mnt")
+    (own / "mountinfo").write_text(f"70 60 {device} {host['folder']} {host['folder']} rw - ext4 /dev/x rw\n",
+                                   encoding="utf-8")
+    with (host["proc"] / "1" / "mountinfo").open("a", encoding="utf-8") as stream:
+        stream.write(f"23 1 {device} / / rw - ext4 /dev/x rw\n")
+    assert _purge(host, apply=False)["would_stop"] == []
+    with (host["proc"] / "1" / "mountinfo").open("a", encoding="utf-8") as stream:
+        stream.write(f"60 23 {device} {host['folder']} /srv/copy rw - ext4 /dev/x rw\n")
+    assert _purge(host, apply=False)["mount_points_under"] == ["/srv/copy"]
+
+
+def test_an_open_file_seen_by_another_path_is_matched_by_its_inode(host, tmp_path):
+    alias = tmp_path / "container-view"
+    alias.symlink_to(host["folder"] / "retained.json")
+    pid = host["proc"] / "88"
+    (pid / "fd").mkdir(parents=True)
+    (pid / "fd" / "4").symlink_to(alias)
+    (pid / "maps").write_text("", encoding="utf-8")
+    assert _purge(host, apply=False)["processes_holding"] == [{"pid": 88, "process": "", "holds": "fd"}]
+
+
+def test_a_mapping_is_matched_by_device_and_inode_without_a_path(host):
+    info = os.stat(host["folder"] / "repair-a" / "frames" / "0001.png")
+    pid = host["proc"] / "89"
+    (pid / "fd").mkdir(parents=True)
+    (pid / "maps").write_text(
+        f"7f00-7f01 r--p 00000000 {os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x} {info.st_ino}\n",
+        encoding="utf-8")
+    assert _purge(host, apply=False)["processes_holding"][0]["holds"] == "map"
+
+
+def test_any_threads_working_directory_counts(host):
+    pid = host["proc"] / "90"
+    (pid / "task" / "90").mkdir(parents=True)
+    (pid / "task" / "91").mkdir(parents=True)
+    (pid / "task" / "90" / "cwd").symlink_to("/elsewhere")
+    (pid / "task" / "91" / "cwd").symlink_to(str(host["folder"] / "repair-a"))
+    assert _purge(host, apply=False)["processes_holding"][0]["holds"] == "cwd"
+
+
+def test_a_real_process_working_in_the_folder_is_found(host):
+    import subprocess
+
+    child = subprocess.Popen(["sleep", "30"], cwd=host["folder"] / "repair-a")
+    try:
+        (host["proc"] / str(child.pid)).symlink_to(f"/proc/{child.pid}")
+        document = _purge(host, apply=True)
+        assert (document["outcome"], document["code"]) == ("refused", "folder_in_use_by_process")
+        assert document["processes_holding"] == [{"pid": child.pid, "process": "sleep", "holds": "cwd"}]
+        assert (host["folder"] / "retained.json").exists()
+    finally:
+        child.kill()
+        child.wait()
+
+
 def test_the_module_runs_standalone_with_the_standard_library_only():
     text = (ROOT / "deploy/operator-door/operator_door/experiment_purge.py").read_text(encoding="utf-8")
     assert "from ." not in text and "import operator_door" not in text and "blueprint_pipeline" not in text
@@ -241,7 +407,7 @@ def purge_env(env, tmp_path):  # noqa: F811 - the scripts module's fixture
         "import json, os, sys\n"
         "out = sys.argv[sys.argv.index('--result-out') + 1]\n"
         "open(os.environ['STUB_LOG'], 'a').write('purge ' + ' '.join(sys.argv[1:]) + '\\n')\n"
-        "json.dump(json.loads(os.environ['FAKE_PURGE']), open(out, 'w'))\n"
+        "if os.environ['FAKE_PURGE'] != 'none': json.dump(json.loads(os.environ['FAKE_PURGE']), open(out, 'w'))\n"
         "sys.exit(int(os.environ.get('FAKE_PURGE_RC', '0')))\n", encoding="utf-8")
     return {**env, "DOOR_INSTALL_ROOT": str(tmp_path / "installed"), "DOOR_PURGE_FOLDER": FOLDER}
 
@@ -253,10 +419,14 @@ def purge_env(env, tmp_path):  # noqa: F811 - the scripts module's fixture
     ("1", {"outcome": "refused", "code": "folder_in_use_by_process"}, 1, "refused", "folder_in_use_by_process"),
     ("1", {"outcome": "partly_emptied", "code": "delete_failed:EPERM"}, 1, "failed", "delete_failed:EPERM"),
     ("1", {"outcome": "bogus"}, 0, "failed", "purge_failed"),
+    # A crash mid-delete leaves the first receipt behind.
+    ("1", {"outcome": "emptying"}, 1, "failed", "purge_incomplete"),
+    ("1", "none", 1, "failed", "purge_failed"),
 ])
 def test_the_script_runs_the_installed_module_and_reports_its_outcome(purge_env, apply, row, rc, status, code):
     done, outcome, calls = _run("door-purge-experiment-folder.sh", purge_env, DOOR_REQUEST_ID=REQUEST_ID,
-                                DOOR_PURGE_APPLY=apply, FAKE_PURGE=json.dumps(row), FAKE_PURGE_RC=str(rc))
+                                DOOR_PURGE_APPLY=apply, FAKE_PURGE=row if row == "none" else json.dumps(row),
+                                FAKE_PURGE_RC=str(rc))
     assert (outcome["status"], outcome["code"]) == (status, code)
     assert done == (0 if status in {"planned", "emptied", "absent"} else (rc or 1))
     purge_call = next(call for call in calls if call.startswith("purge "))

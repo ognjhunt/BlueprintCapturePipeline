@@ -354,6 +354,8 @@ def _purge_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str,
             "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0022",
             "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
             "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SYS_PTRACE",
+            # CAP_SYS_PTRACE only to read other processes' /proc entries: never to attach or read memory.
+            "SystemCallFilter=@system-service", "SystemCallFilter=~ptrace process_vm_readv process_vm_writev",
             "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
             f"ReadWritePaths={writable}")
 
