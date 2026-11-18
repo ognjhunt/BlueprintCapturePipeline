@@ -1608,3 +1608,154 @@ def test_a_job_repairing_one_round_per_step_lets_another_job_move_between_rounds
     assert order.count(site.capture.name) == order.count(other.capture.name) >= 2
     # No job runs two rounds in a row while the other waits: they alternate.
     assert all(first != second for first, second in zip(order, order[1:]))
+
+
+# 2026-11-18, itest-c0cbbf20: while its refined splat (28 min) and mesh (1 h 56 min) ran at World Labs, each of 44
+# ticks replayed the job's retained work for about 100 s of CPU only to reach the same poll and return.
+
+
+def _live_task(world, kwargs, *, relative="preserved_completion/mesh/m1"):
+    root = kwargs["output_root"] / relative
+    binding = {"task": "splats2Mesh", "maximum_cost_usd": 1.0}
+    (root / "atlas_pose").mkdir(parents=True, exist_ok=True)
+    (root / "atlas_pose/submission.json").write_text(json.dumps({
+        "status": "submitted", "operation_id": "op_mesh", "binding": binding,
+        "request_digest": canonical_digest(binding), "api_base": "https://api.example.worldlabs.ai/api/v2"}))
+    world.operations["op_mesh"] = {"done": False}
+    return {"status": "processing", "stage": "mesh", "operation_id": "op_mesh"}
+
+
+def _read_through(monkeypatch, world):
+    real = preview._read_only_client
+    reads = []
+
+    def client(transport=None):
+        def send(method, url, headers, data):
+            reads.append((method, url.rsplit("/", 1)[1]))
+            return world.transport(method, url, headers, data)
+        return real(send)
+    monkeypatch.setattr(preview, "_read_only_client", client)
+    return reads
+
+
+def test_a_job_whose_provider_operations_all_still_run_is_polled_not_replayed(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [lambda kw: _live_task(world, kw), OSError("reset"),
+                                      {"status": "processing", "stage": "mesh_registration"}])
+    reads = _read_through(monkeypatch, world)
+    assert world.advance() == "processing" and len(world.runs) == 1  # submitted the mesh
+    fields = ("state", "stage", "reason", "revision", "refusal_retries", "retry_at_epoch", "next_attempt_at_epoch")
+    before = {key: _job(site).get(key) for key in fields}
+    for _ in range(3):
+        world.clock += 70
+        assert world.advance() == "processing"
+    # Three reads of the one operation, through the read-only client; no replay of the job's work.
+    assert len(world.runs) == 1 and reads == [("GET", "op_mesh")] * 3
+    after = _job(site)
+    assert {key: after.get(key) for key in fields} == {**before, "next_attempt_at_epoch": world.clock}
+    assert preview.STEP_IN_FLIGHT not in after and after["last_tick_epoch"] == world.clock
+    # The operation ends: the read records the failure exactly as the provider poll would, and the step runs at
+    # once to decide what follows (here an outage, then forward progress).
+    world.operations["op_mesh"] = {"done": True, "error": {"code": 13}}
+    world.clock += 70
+    assert world.advance() == "processing" and len(world.runs) == 2 and _job(site)["transient_failures"] == 1
+    record = json.loads((site.pipeline / "atlas/preserved_completion/mesh/m1/atlas_pose/submission.json").read_text())
+    assert record["status"] == "failed" and record["terminal_operation"]["error"] == {"code": 13}
+    world.clock = _job(site)["next_attempt_at_epoch"]
+    assert world.advance() == "processing" and len(world.runs) == 3
+    assert _job(site)["stage"] == "mesh_registration" and _job(site)["transient_failures"] == 0
+
+
+def test_a_provider_wait_still_reads_the_task_context_and_an_unreadable_operation_runs_the_step(monkeypatch, site):
+    from blueprint_pipeline import website_task_context as context
+    _enqueue(site)
+    world = World(monkeypatch, site, [lambda kw: _live_task(world, kw),
+                                      {"status": "processing", "stage": "mesh"}])
+    _read_through(monkeypatch, world)
+    world.advance()
+    # The operation cannot be read (a 404 here): the step runs and its own poll decides, as before.
+    del world.operations["op_mesh"]
+    world.clock += 70
+    assert world.advance() == "processing" and len(world.runs) == 2
+    # A withdrawal the WebApp reports while the job waits on World Labs ends it at the next tick, as before.
+    world.operations["op_mesh"] = {"done": False}
+    monkeypatch.setattr(context, "load_current_website_task_context",
+                        lambda **_kw: (_ for _ in ()).throw(ValueError("consent_revoked")))
+    world.clock += 70
+    assert world.advance() == "withdrawn" and len(world.runs) == 2
+    assert _job(site)["reason"] == "website_capture_withdrawn"
+
+
+def test_a_target_correction_keeps_its_own_step_while_it_waits(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [lambda kw: _live_task(world, kw)])
+    world.advance()
+    _set(site, target_correction={"request_digest": "sha256:" + "e" * 64})
+    monkeypatch.setattr(preview, "_waiting_on_provider", lambda *_a: pytest.fail("a correction was not stepped"))
+    from blueprint_pipeline import website_target_background_worker as correction
+    ran = []
+    monkeypatch.setattr(correction, "advance_correction",
+                        lambda **_kw: ran.append(True) or {"status": "processing", "stage": "target_correction"})
+    world.clock += 70
+    assert world.advance() == "processing" and ran == [True]
+
+
+def _jobs(tmp_path, names):
+    paths = {}
+    for name in names:
+        path = tmp_path / f"bucket/scenes/site-req{name}/captures/walkthrough-req{name}/pipeline/atlas" / preview.JOB_FILE
+        path.parent.mkdir(parents=True)
+        path.write_text("{}")
+        paths[path] = name
+    return paths
+
+
+def _stepping(monkeypatch, jobs, seconds):
+    """Each job's step takes ``seconds[name]`` and moves the job to a new stage it can continue from at once."""
+    elapsed, stepped = [0.0], []
+
+    def advance(path, *, now):
+        name = jobs[path]
+        stepped.append(name)
+        elapsed[0] += seconds[name]
+        path.write_text(json.dumps({"state": "processing", "stage": f"{name}{stepped.count(name)}",
+                                    "next_attempt_at_epoch": 0, "last_tick_epoch": len(stepped)}))
+        return "processing"
+    monkeypatch.setattr(preview, "advance_job", advance)
+    monkeypatch.setattr(preview, "_read", lambda path: json.loads(path.read_text()))
+    return elapsed, stepped
+
+
+def test_another_jobs_short_steps_run_while_one_jobs_long_step_waits_its_next_turn(monkeypatch, tmp_path):
+    """Before: a 25-minute step spent the tick's whole continuation window, so the other job got one step a round."""
+    jobs = _jobs(tmp_path, ["a", "b"])
+    elapsed, stepped = _stepping(monkeypatch, jobs, {"a": 1500, "b": 60})
+    counts = preview.tick(tmp_path, now=lambda: 0, continue_seconds=480, clock=lambda: elapsed[0])
+    # a's long step had its turn and is not repeated; b's short steps run back to back for a whole window after it.
+    assert counts == {"processing": 2} and stepped == ["a"] + ["b"] * 8
+    elapsed[0] = 0.0
+    preview.tick(tmp_path, now=lambda: 0, continue_seconds=480, clock=lambda: elapsed[0])
+    assert stepped[9:] == ["a"] + ["b"] * 8  # a goes first on the next tick: fair turns, one job at a time
+
+
+def test_every_job_whose_step_outran_the_window_has_had_its_turn(monkeypatch, tmp_path):
+    jobs = _jobs(tmp_path, ["a", "b", "c"])
+    elapsed, stepped = _stepping(monkeypatch, jobs, {"a": 900, "b": 600, "c": 100})
+    preview.tick(tmp_path, now=lambda: 0, continue_seconds=480, clock=lambda: elapsed[0])
+    assert stepped == ["a", "b"] + ["c"] * 5  # c's window opens where b's long step ended
+
+
+def test_short_steps_after_a_long_one_still_start_inside_the_ticks_budget(monkeypatch, tmp_path):
+    jobs = _jobs(tmp_path, ["a", "b"])
+    elapsed, stepped = _stepping(monkeypatch, jobs, {"a": preview.STEP_START_BUDGET_SECONDS - 100, "b": 60})
+    preview.tick(tmp_path, now=lambda: 0, continue_seconds=480, clock=lambda: elapsed[0])
+    assert stepped == ["a", "b", "b"]  # b's third step would start past the budget
+
+
+@pytest.mark.parametrize("seconds,expected", [(1500, 1), (100, 5)])
+def test_a_single_jobs_path_is_unchanged(monkeypatch, tmp_path, seconds, expected):
+    """One job: a long step ends the tick; short ones continue for the window from the tick's start, as before."""
+    jobs = _jobs(tmp_path, ["a"])
+    elapsed, stepped = _stepping(monkeypatch, jobs, {"a": seconds})
+    assert preview.tick(tmp_path, now=lambda: 0, continue_seconds=480, clock=lambda: elapsed[0]) == {"processing": 1}
+    assert stepped == ["a"] * expected
