@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "retire-parked-delivery", "test-job"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "retire-parked-delivery", "test-job", "retire-scene-workspace", "restore-scene-workspace"}
 # The owner-approved, time-only scene window extension passes the fence.
 assert r.required_scope("extend-scene-execution-window") == "operate"
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
@@ -71,6 +71,16 @@ assert r.validate_request({**parked, "apply":True}) == {**parked, "apply":True}
 try: r.validate_request({**parked, "capture":"bucket/scenes/site-a/captures/walkthrough-a/../../../x"})
 except r.RequestRefused as e: assert e.code == "parked_delivery_capture_invalid"
 else: raise AssertionError("an unsafe capture path admitted for a parked delivery retirement")
+# The owner-approved (2026-11-18) scene workspace retirement and restore, plan by default.
+assert r.required_scope("retire-scene-workspace") == "operate"
+assert r.required_scope("restore-scene-workspace") == "operate"
+assert r.validate_request_id("20261118T000000Z-retire-scene-workspace-0123abcd")
+retire = {"kind":"retire-scene-workspace", "scene_id":"site-itest-0123"}
+assert r.validate_request(retire) == {**retire, "apply":False}
+assert r.validate_request({**retire, "apply":True}) == {**retire, "apply":True}
+try: r.validate_request({**retire, "scene_id":".."})
+except r.RequestRefused as e: assert e.code == "scene_id_invalid"
+else: raise AssertionError("an unsafe scene id admitted for a workspace retirement")
 commit = "a" * 40
 payload = json.dumps({"schema_version":"blueprint.deploy_release_provenance.v1",
     "status":"verified", "git_sha":commit, "workflow_name":"Full Test Lane",
@@ -137,7 +147,8 @@ for action in ("stop", "restart"):
     try: r.validate_request({"kind":"unit","unit":"blueprint-gpu-spend-guard.timer","action":action})
     except r.RequestRefused as e: assert e.code == "unit_safety_critical"
     else: raise AssertionError("baseline safety restriction changed")
-for kind in ("retire-scene-workspace", "restore-scene-workspace", "retire-scene", "restore-scene", "lane-scratch", "owner-census-decision", "legacy-owner-census", "provider-output-resume"):
+# Workspace retirement and restore are owner-approved since 2026-11-18; everything else stays outside the fence.
+for kind in ("retire-scene", "restore-scene", "lane-scratch", "owner-census-decision", "legacy-owner-census", "provider-output-resume"):
     for call in (lambda: r.required_scope(kind), lambda: r.validate_request({"kind":kind})):
         try: call()
         except r.RequestRefused as e: assert e.code == "kind_unknown"
