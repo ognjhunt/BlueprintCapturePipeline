@@ -385,6 +385,12 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
     try:
         context = load_current_website_task_context(request_id=job["request_id"], scene_id=job["scene_id"],
                                                     capture_id=job["capture_id"], purpose="scene_preparation")
+        if job["state"] == "processing" and not job.get("target_correction") and _waiting_on_provider(job_dir, now):
+            # The step would replay its receipts only to reach the same poll; the job is left as that step leaves it.
+            logger.info("website_atlas_preview_provider_wait capture=%s stage=%s", job.get("capture_id"),
+                        job.get("stage"))
+            return _transition(job, current, "processing", None, stage=job.get("stage"),
+                               next_attempt_at_epoch=_by_deadline(job, current), **_answered(job, job.get("stage")))
         correction = {}
         if job.get('target_correction'):
             from .website_target_background_worker import advance_correction, publish_correction
@@ -840,6 +846,13 @@ def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_s
     quiesce) ends the tick. Counts are each job's last outcome. Jobs are stepped
     least recently ticked first, and no step starts after ``STEP_START_BUDGET_SECONDS``:
     the jobs left are counted ``deferred`` and go first on the next tick.
+
+    The steps are serial, one job at a time. A job whose own step ran longer than
+    ``continue_seconds`` has had its turn and is not stepped again this tick; the
+    window opens again where that step ended, so the other jobs' short steps run
+    back to back after one job's long step instead of one a round (2026-11-18: a
+    single step of one job ran 54 min). A job whose live World Labs operations all
+    still run is answered by one read-only poll, not a replay (``_waiting_on_provider``).
     """
     paths = sorted((path for path in Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}")
                     if capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name)),
@@ -858,15 +871,19 @@ def _tick_passes(paths: list[Path], *, started: float, now: Callable[[], float],
                  stop_reason: Callable[[], str | None], clock: Callable[[], float]) -> dict[str, int]:
     outcomes: dict[Path, str] = {}
     passes, deferred, spent = 1, 0, False
+    # The continuation window opens at the tick's start, and again where a step ends that alone outran it.
+    window = started
     while True:
-        advanced = []
+        advanced, starts = [], []
         for index, path in enumerate(paths):
-            if clock() - started >= STEP_START_BUDGET_SECONDS:
+            at = clock()
+            if at - started >= STEP_START_BUDGET_SECONDS:
                 # In the first pass these jobs were not stepped at all this tick; later, only not again.
                 spent, deferred = True, len(paths) - index if passes == 1 else 0
                 logger.info("website_atlas_preview_step_budget_spent pass=%d jobs_left=%d", passes,
                             len(paths) - index)
                 break
+            starts.append((path, at))
             before = _progress(path) if continue_seconds > 0 else None
             try:
                 outcome = advance_job(path, now=now)
@@ -878,14 +895,22 @@ def _tick_passes(paths: list[Path], *, started: float, now: Callable[[], float],
                 advanced.append(path)
         if not advanced or spent:
             break
-        elapsed = clock() - started
-        reason = "budget_spent" if elapsed >= continue_seconds else stop_reason()
+        ended = clock()
+        # Each step ran until the next one's start (the last, until now). A job whose step alone outran the window
+        # has had its turn: it is not stepped again this tick, and the jobs after it get a whole window of short
+        # steps, so one job's long steps never hold another's short ones to one a round (``tick``).
+        for (path, at), (_next, until) in zip(starts, [*starts[1:], (None, ended)]):
+            if until - at >= continue_seconds:
+                window = until
+                if path in advanced:
+                    advanced.remove(path)
+        reason = "budget_spent" if not advanced or ended - window >= continue_seconds else stop_reason()
         if reason is not None:
             logger.info("website_atlas_preview_continuation_stopped reason=%s passes=%d", reason, passes)
             break
         passes += 1
         logger.info("website_atlas_preview_continuing jobs=%d pass=%d elapsed_seconds=%d",
-                    len(advanced), passes, elapsed)
+                    len(advanced), passes, ended - started)
         paths = advanced
     counts: dict[str, int] = {"deferred": deferred} if deferred else {}
     for outcome in outcomes.values():
@@ -924,6 +949,28 @@ def _live_submissions(job_dir: Path) -> list[Path]:
         if state.get("status") == "submitted" and isinstance(state.get("operation_id"), str):
             roots.append(path.parent.parent)
     return roots
+
+
+def _waiting_on_provider(job_dir: Path, now: Callable[[], float]) -> bool:
+    """Whether every World Labs operation the job has live is still running, read once each, read-only.
+
+    A step resumes from its receipts, so stepping a job whose operations all still run replays its retained work
+    only to reach the same poll and return. On 2026-11-18 that was 44 ticks of about 100 s of CPU and 0.4-0.8 GB
+    each while one job's refined splat (28 min) and mesh (1 h 56 min) ran at World Labs, and every other job
+    waited behind each one. The read here is the provider poll's own (``poll_jobs``): a finished operation is
+    retained or its failure recorded, exactly as that poll records it, and the step then runs at once. Any other
+    answer, an error included, runs the step as before.
+    """
+    try:
+        roots = _live_submissions(job_dir)
+        if not roots:
+            return False
+        client = _read_only_client()
+        return all(_poll_submission(root, client=client, now=now) == "processing" for root in roots)
+    except Exception as error:  # noqa: BLE001 - the step itself polls and records whatever this could not read
+        logger.info("website_atlas_preview_provider_wait_unread type=%s code=%s", type(error).__name__,
+                    _reason(error))
+        return False
 
 
 def _poll_submission(root: Path, *, client: Any, now: Callable[[], float]) -> str:
