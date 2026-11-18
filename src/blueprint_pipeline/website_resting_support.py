@@ -8,7 +8,9 @@ The search looked only the registration's residual (7.5 cm) up from that bottom,
 footprint by the box's corners, three of four of which missed the round top.
 
 This runs when ``support_under`` found no surface at the estimated bottom, so a job whose support was
-found there finds the same one. It runs before the nearest-surface guess (``nearest_support_under``),
+found there finds the same one. Compile places the object through it (``rest_where_seen``) before it
+flattens the surfaces objects rest on (``website_collider_conditioning``), so the surface found is
+flattened under the corrected box. It runs before the nearest-surface guess (``nearest_support_under``),
 which takes no evidence that the object touches what it is put on: job 4's floor under the table did
 not pass that guess's own test, and a flat floor would have taken the lamp
 (``tests/test_website_resting_support``). Where the frames show no contact with any surface, that guess
@@ -20,16 +22,18 @@ decides as before. It reads the object's own points, one array per frame
   masks do not cover, ``1 - median overlap``, of the box's height; else the search window. Never above
   where the object visibly rests: the top of the support the analysis named under it
   (``target_role`` ``support``), plus the search window. Down: ``NEAREST_SUPPORT_MAX_DROP_M``, as before.
-- **Footprint, contact, preference.** ``website_support_geometry.resting_surface_under``: the object's
-  own outline, an area-overlap threshold, contact in the frames, nearest its lowest observed points.
-- **Correction.** A surface above the box's bottom: the object's points below a surface it rests on
-  cannot be the object, so its bottom is raised to the surface and its observed top kept. A surface
-  below: the object is moved down onto it, as ``nearest_support_under`` moves it. Either way the move is
+- **Footprint, room, contact, preference.** ``website_support_geometry.resting_surface_under``: the
+  object's own outline over an upward-facing surface (an area-overlap threshold), room above it, its
+  lowest points at the surface in its frames, nearest its lowest observed points.
+- **Correction.** Within the search window of the box's bottom, the whole box moves onto the surface,
+  its height kept, as every support snap moves it. Farther up, the box's points below a surface it
+  rests on cannot be the object, so its bottom rises to the surface and its observed top stays; a
+  surface at or above the observed top is refused. Below: the box moves down onto it. The move is
   recorded and the support carries ``scene_estimate:support_guessed``.
 
-Nothing found: the nearest-surface guess (``rest_on_a_surface``), and with none compile keeps
-``support_surface_not_found_under_subject`` (so the room package still ships). The record
-(``support_search`` in the preparation) is kept either way. Estimates only.
+Nothing found: compile's nearest-surface guess, and with none ``support_surface_not_found_under_subject``
+(so the room package still ships). The record (``support_search`` in the preparation) is kept either way.
+Estimates only.
 """
 from __future__ import annotations
 
@@ -121,8 +125,8 @@ def visible_resting_support(*, collider: Any, subject_min: Sequence[float], subj
                             ) -> tuple[dict[str, Any] | None, dict[str, Any], list[float], list[float]]:
     """The support the object visibly rests on, the record, and the object's box resting on it (runtime units).
 
-    The box comes back unchanged when no support is found, and when the support lies below (the
-    caller's snap moves it down, as for every support).
+    The box is new lists, corrected as the support's ``resting_correction`` says; unchanged when no
+    support is found.
     """
     from .website_task_masks import masked_view_points
 
@@ -156,53 +160,43 @@ def visible_resting_support(*, collider: Any, subject_min: Sequence[float], subj
     record["search"] = search
     if support is None:
         return None, record, low, high
+    correction = support["resting_correction"]
+    top = float(support["top_runtime_units"])
     bottom = low[up] if up_sign == 1 else high[up]
-    moved_m = float((support["top_runtime_units"] - bottom) * up_sign * meters_per_unit)
-    height_before_m = float(high[up] - low[up]) * meters_per_unit
-    if moved_m > 0:
+    if correction["basis"] == "bottom_raised_to_the_surface_observed_top_kept":
         # Its points below a surface it rests on cannot be the object: the bottom rises, the observed top stays.
-        (low if up_sign == 1 else high)[up] = float(support["top_runtime_units"])
-        basis = "bottom_raised_to_the_surface_observed_top_kept"
+        (low if up_sign == 1 else high)[up] = top
     else:
-        basis = "moved_down_onto_the_surface"
-    correction = {"basis": basis, "bottom_moved_m": moved_m, "height_before_m": height_before_m,
-                  "height_after_m": float(high[up] - low[up]) * meters_per_unit, "physical_measurement": False}
+        # Within the window (or down onto a surface below): the whole box moves, its height kept.
+        low[up], high[up] = low[up] + top - bottom, high[up] + top - bottom
     record.update(status="found", correction=correction)
-    support = {**support, "guess": {"basis": GUESS_BASIS, "flag": SUPPORT_GUESSED, "bottom_moved_m": moved_m,
-                                    "correction": basis, "maximum_rise_m": rise_m,
-                                    "maximum_drop_m": NEAREST_SUPPORT_MAX_DROP_M}}
+    support = {**support, "guess": {"basis": GUESS_BASIS, "flag": SUPPORT_GUESSED,
+                                    "bottom_moved_m": correction["bottom_moved_m"], "correction": correction["basis"],
+                                    "maximum_rise_m": rise_m, "maximum_drop_m": NEAREST_SUPPORT_MAX_DROP_M}}
     return support, record, low, high
 
 
-def rest_on_a_surface(collider: Any, subject_min: list[float], subject_max: list[float],
-                      source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
-                      subject_target: Mapping[str, Any] | None, matrix: Any, runtime_to_sim: Any, up: int,
-                      up_sign: int, meters_per_unit: float, placement_residual_m: float | None, /
-                      ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """No surface at the object's estimated bottom: the one it visibly rests on, else the nearest under it.
+def rest_where_seen(collider: Any, subject_min: Sequence[float], subject_max: Sequence[float],
+                    source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
+                    subject_target: Mapping[str, Any], matrix: Any, runtime_to_sim: Any, up: int, up_sign: int,
+                    meters_per_unit: float, placement_residual_m: float | None, record: dict[str, Any], /
+                    ) -> tuple[list[float], list[float], dict[str, Any] | None]:
+    """Compile's placement when no surface lies at the object's estimated bottom (``website_task_preparation``).
 
-    Compile's fallback (``website_task_preparation``). The visible-rest search needs the object's own
-    tracked points (``subject_target``; None for an articulated assembly, whose box is its rebuilt body).
-    Without a surface it touches, the nearest-surface guess (``nearest_support_under``) decides as it did
-    before. Corrects the object's box (runtime units, the lists given) in place. Returns the support or
-    None, and ``{"support_search": record}`` for the preparation when the search ran, else ``{}``.
+    The object's box resting on the surface it visibly rests on and that support, or its box unchanged
+    and None. ``record`` is made this search's record (``support_search`` in the preparation). Compile
+    places the object through this before it flattens the surfaces objects rest on, so the surface
+    found is flattened under the corrected box; with none found, its nearest-surface guess
+    (``nearest_support_under``) decides afterwards, as before.
     """
-    from .website_support_geometry import nearest_support_under
-
-    support, searched = None, {}
-    track = (subject_target or {}).get("track")
-    if track:
-        support, record, low, high = visible_resting_support(
-            collider=collider, subject_min=subject_min, subject_max=subject_max, track=track,
-            frames=source_geometry["frames"], matrix=matrix, runtime_to_sim=runtime_to_sim,
-            targets=task_masks["targets"], up=up, up_sign=up_sign, meters_per_unit=meters_per_unit,
-            placement_residual_m=placement_residual_m)
-        subject_min[:], subject_max[:], searched = low, high, {"support_search": record}
-    if support is None:
-        support = nearest_support_under(collider, subject_min, subject_max, up=up, meters_per_unit=meters_per_unit,
-                                        up_sign=up_sign, placement_residual_m=placement_residual_m)
-    return support, searched
+    support, found, low, high = visible_resting_support(
+        collider=collider, subject_min=subject_min, subject_max=subject_max, track=subject_target["track"],
+        frames=source_geometry["frames"], matrix=matrix, runtime_to_sim=runtime_to_sim, targets=task_masks["targets"],
+        up=up, up_sign=up_sign, meters_per_unit=meters_per_unit, placement_residual_m=placement_residual_m)
+    record.clear()
+    record["support_search"] = found
+    return low, high, support
 
 
-__all__ = ["GUESS_BASIS", "SCHEMA_VERSION", "estimate_uncertainty", "rest_on_a_surface", "visible_rest",
+__all__ = ["GUESS_BASIS", "SCHEMA_VERSION", "estimate_uncertainty", "rest_where_seen", "visible_rest",
            "visible_resting_support"]

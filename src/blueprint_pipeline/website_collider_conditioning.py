@@ -38,11 +38,12 @@ import numpy as np
 from .core.handoff_lease import HandoffLeaseError, handoff_effect
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-from .website_support_geometry import SUPPORT_FACE_BLOCK
+from .website_support_geometry import FITTED_BASES, SUPPORT_FACE_BLOCK
 
 REVISION = "website_collider_conditioning.v1"
-#: The one support basis that is a fit to bumpy triangles. Level faces are already
-#: flat; floors, container floors and authored surfaces are not this.
+#: The support basis that is a fit to bumpy triangles under a footprint's probes. Level faces are
+#: already flat; floors, container floors and authored surfaces are not this. A surface fitted under
+#: the object's own outline (``website_resting_support``) is flattened too (``FITTED_BASES``).
 FLATTENED_BASIS = "fitted_surface_under_footprint"
 #: A vertex moves only within this many fit RMS of its surface's fit, or within the
 #: registration's placement uncertainty near the task when that is larger.
@@ -103,7 +104,7 @@ def _surfaces(placements: Sequence[Mapping[str, Any]], face_count: int
             continue
         faces = support.get("face_indices") or []
         reason = ("measured_surface" if support.get("physical_measurement") is True
-                  else None if support.get("basis") == FLATTENED_BASIS else "not_a_fitted_surface")
+                  else None if support.get("basis") in FITTED_BASES else "not_a_fitted_surface")
         if reason is None and (not faces or min(faces) < 0 or max(faces) >= face_count):
             reason = "support_faces_not_in_collider"
         if reason is not None:
@@ -316,7 +317,7 @@ def condition_placement_collider(*, base_scene: Mapping[str, Any], collider: Any
     support's ``face_indices`` still names the same triangles; retries reuse it.
     """
     candidates = [row for row in placements if isinstance(row.get("support"), Mapping)]
-    if smoothing is None and not any(row["support"].get("basis") == FLATTENED_BASIS for row in candidates):
+    if smoothing is None and not any(row["support"].get("basis") in FITTED_BASES for row in candidates):
         return {"status": "unchanged"}
     source_digest = base_scene["collision_mesh_digest"]
     record: dict[str, Any] = {"schema_version": REVISION, "source_collision_mesh_digest": source_digest}

@@ -399,8 +399,12 @@ RESTING_MAX_CANDIDATES = 8
 #: object lie within the search window of that surface's plane ...
 CONTACT_MIN_POINT_SHARE = 0.01
 #: ... and the object touches it when at least this share of its frames show that, as a resting place
-#: must be seen in a third of the views (``website_task_masks.resting_views``).
+#: must be seen in a third of the views (``website_task_masks.resting_views``) ...
 CONTACT_MIN_FRAME_SHARE = 1 / 3
+#: ... and its lowest points sit at the plane: at most this share of its points lie farther below it
+#: than the window, and that quantile lies within the window of it (job 4's lamp: 1% fell below the
+#: table, its mask's bleed; a plane through the middle of an object has far more below it).
+CONTACT_MAX_BELOW_SHARE = 0.05
 
 
 def object_outline(points: np.ndarray, lower: Sequence[float], upper: Sequence[float], *, up: int) -> np.ndarray:
@@ -454,6 +458,13 @@ def _heights_under(triangles: np.ndarray, points: np.ndarray, *, up: int) -> tup
     return owner[inside], height[inside]
 
 
+def _facing_up(triangles: np.ndarray, up: int) -> np.ndarray:
+    """Whether each triangle's outward normal (its winding's) has an upward component."""
+    if not len(triangles):
+        return np.zeros(0, dtype=bool)
+    return np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])[:, up] > 0
+
+
 def _box_rectangle(lower: np.ndarray, upper: np.ndarray, *, up: int) -> np.ndarray:
     """A box's footprint in plan, counter-clockwise."""
     first, second = (axis for axis in range(3) if axis != up)
@@ -484,17 +495,23 @@ def resting_surface_under(mesh: Any, lower: Sequence[float], upper: Sequence[flo
     - Range: from ``drop_m`` below the box's bottom (its lowest observed points) to ``rise_m``
       above it; the caller sets ``rise_m`` from how uncertain the object's own estimate is.
     - Footprint: the plan convex hull of the object's points (``object_outline``). A level, smooth,
-      connected surface (``_fitted_support``'s fit) must lie under at least
-      ``RESTING_OUTLINE_MIN_SHARE`` of that outline's area, so round and irregular tops count.
-    - Room: no other surface lies across that share of the outline in the space the object would
-      fill resting there (the underside of a slab is not where anything rests).
-    - Contact: at least ``CONTACT_MIN_FRAME_SHARE`` of the frames show the object's points at the
-      surface's plane (within the search window, ``search_window_m``).
+      connected surface of upward-facing faces (``_fitted_support``'s fit) must lie under at least
+      ``RESTING_OUTLINE_MIN_SHARE`` of that outline's area, so round and irregular tops count. The
+      underside of a slab faces down: nothing rests on it.
+    - Correction: within the window of the box's bottom, the whole box moves onto the surface (its
+      height kept), as every support snap moves it; above that, the box's points below the surface
+      are not the object, so its bottom rises to the surface and its observed top stays. A surface
+      at or above the observed top is refused: nothing is shrunk to nothing.
+    - Room: no other face lies across that share of the outline in the space the corrected box fills.
+    - Contact: the object's lowest points sit at the surface's plane (``CONTACT_MAX_BELOW_SHARE``)
+      and at least ``CONTACT_MIN_FRAME_SHARE`` of its frames show points there, within the search
+      window (``search_window_m``).
     - Preference: the surface whose plane lies nearest the box's bottom, of those that pass.
 
     Returns ``(support, record)``: the support as ``support_under`` gives one (``OUTLINE_BASIS``,
-    seated where the plane lies under the outline's centre) or None, and a record of the outline,
-    the range and every candidate tried, with why each was refused. Estimates only.
+    seated where the plane lies under the outline's centre, with its ``resting_correction``) or
+    None, and a record of the outline, the range and every candidate tried, with why each was
+    refused. Estimates only.
     """
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
     views = [np.asarray(view, dtype=float).reshape(-1, 3) for view in views]
@@ -550,13 +567,18 @@ def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndar
     # Gentle faces reaching over the outline's bounds in plan; those within the range (and the fit band's reach).
     gentle, centres = collider.gentle, collider.centres
     band = FITTED_BAND_BOUNDS_M[1] / mpu
-    over = []
+    over, facing = [], []
     for block in _row_blocks(len(gentle)):
-        extent = collider.triangles(gentle[block])[:, :, plan]
-        over.append(np.flatnonzero(np.all((extent.max(axis=1) >= low_xy) & (extent.min(axis=1) <= high_xy), axis=1))
-                    + block.start)
-    over = _joined(over)
-    near = over[(centres[over, up] >= floor_limit - band) & (centres[over, up] <= top_limit + band)]
+        triangles = collider.triangles(gentle[block])
+        extent = triangles[:, :, plan]
+        reaching = np.all((extent.max(axis=1) >= low_xy) & (extent.min(axis=1) <= high_xy), axis=1)
+        over.append(np.flatnonzero(reaching) + block.start)
+        facing.append(_facing_up(triangles[reaching], up))
+    over, facing = _joined(over), _joined(facing, bool)
+    # Only a face whose outward side looks up can carry anything: never the underside of a slab.
+    within = (centres[over, up] >= floor_limit - band) & (centres[over, up] <= top_limit + band)
+    near = over[facing & within]
+    record["faces_in_range_facing_down"] = int((within & ~facing).sum())
     heights = centres[near, up]
     # A candidate level: a face lies within the fit band of it under at least the threshold share of the
     # outline's samples. Read per sample, so a large triangle counts too.
@@ -589,6 +611,10 @@ def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndar
             row["refused"] = "no_connected_surface"
             continue
         tried[faces] = True
+        faces = faces[_facing_up(collider.triangles(gentle[faces]), up)]
+        if len(faces) < 3:
+            row["refused"] = "no_connected_surface"
+            continue
         normal, middle, rms = _plane(centres[faces], up)
         tilt = float(np.degrees(np.arccos(min(1.0, float(normal[up])))))
         row.update(fit_tilt_degrees=tilt, fit_rms_m=rms * mpu)
@@ -617,27 +643,45 @@ def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndar
         if not floor_limit <= top <= top_limit:
             row["refused"] = "outside_the_range"
             continue
-        # Resting there, the object fills its outline up to its top; a surface across that space (the
-        # top of the slab whose underside this is, a table over the floor) leaves it no room.
-        reach = top + float(upper[up] - max(top, float(lower[up])))
-        above = over[(centres[over, up] > top + band) & (centres[over, up] <= reach)]
+        # The object's box resting there, its correction decided as ``resting_correction`` says. Never
+        # above its observed top, and never cut within the window, where the whole box moves.
+        rise = top - bottom
+        if rise * mpu > window_m and top >= float(upper[up]):
+            row["refused"] = "surface_above_the_observed_top"
+            continue
+        trim = rise * mpu > window_m
+        corrected_top = float(upper[up]) if trim else float(upper[up]) + rise
+        # Resting there, the object fills its outline up to its top; any other face across that space
+        # (the slab over this one, a table over the floor) leaves it no room.
+        above = over[~np.isin(gentle[over], surface) & (centres[over, up] > top + FITTED_BAND_BOUNDS_M[0] / mpu)
+                     & (centres[over, up] <= corrected_top)]
         occupied = (float(SupportOutline(collider.triangles(gentle[above]), np.zeros((0, 2, 3)), window_m / mpu, up=up)
                           .covers(samples).mean()) if len(above) else 0.0)
         row["occupied_share"] = occupied
         if occupied >= RESTING_OUTLINE_MIN_SHARE:
             row["refused"] = "no_room_above_it"
             continue
-        touching = sum(float(np.mean(np.abs(view[:, up] - plane(view[:, plan])) * mpu <= window_m))
-                       >= CONTACT_MIN_POINT_SHARE for view in views)
-        row.update(contact_frames=int(touching), frames=len(views))
-        if touching < needed:
+        # Contact: the object's lowest points sit at the plane (all but ``CONTACT_MAX_BELOW_SHARE`` of its
+        # points at or above it, within the window), and a third of its frames show points there.
+        offsets = [view[:, up] - plane(view[:, plan]) for view in views]
+        lowest = float(np.quantile(np.concatenate(offsets), CONTACT_MAX_BELOW_SHARE)) * mpu
+        touching = sum(float(np.mean(np.abs(offset) * mpu <= window_m)) >= CONTACT_MIN_POINT_SHARE
+                       for offset in offsets)
+        row.update(lowest_points_from_plane_m=lowest, contact_frames=int(touching), frames=len(views))
+        if abs(lowest) > window_m or touching < needed:
             row["refused"] = "no_contact_in_the_frames"
             continue
         row["chosen"] = True
         low, high = collider.bounds(surface)
+        height = float(upper[up] - lower[up])
+        correction = {"basis": ("bottom_raised_to_the_surface_observed_top_kept" if trim
+                                else "moved_up_onto_the_surface" if rise > 0 else "moved_down_onto_the_surface"),
+                      "bottom_moved_m": rise * mpu, "height_before_m": height * mpu,
+                      "height_after_m": (corrected_top - top) * mpu, "physical_measurement": False}
         return {"top_runtime_units": top, "aabb_min": low, "aabb_max": high, "face_indices": surface.tolist(),
                 "basis": OUTLINE_BASIS, "fit_rms_m": rms * mpu, "fit_tilt_degrees": tilt, "outline_share": share,
-                "contact_frames": int(touching), "frames": len(views), "physical_measurement": False}, record
+                "lowest_points_from_plane_m": lowest, "contact_frames": int(touching), "frames": len(views),
+                "resting_correction": correction, "physical_measurement": False}, record
     return None, record
 
 

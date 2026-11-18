@@ -13,6 +13,9 @@ table top 0.226 m above it, the box-fit check's flags and overlap (0.187), the n
 #   src/blueprint_pipeline/website_support_geometry.py
 #   src/blueprint_pipeline/website_task_masks.py
 #   src/blueprint_pipeline/website_task_preparation.py
+#   src/blueprint_pipeline/website_collider_conditioning.py
+#   src/blueprint_pipeline/job_packet_export.py
+#   src/blueprint_pipeline/website_surface_target_admission.py
 from __future__ import annotations
 
 import json
@@ -39,11 +42,12 @@ RECORDED_BOX_FIT = {"status": "assessed", "flags": ["task_object_box_fit_offset"
                                 "median_size_ratio": {"x": 0.6434749303986047, "y": 0.46733140755294217}}}
 
 
-def _room(*, floor: bool = True, table: bool = True) -> trimesh.Trimesh:
+def _room(*, floor: bool = True, table: bool = True, thickness: float = 0.03) -> trimesh.Trimesh:
+    """A closed round table top (its underside faces down) over a flat floor."""
     parts = []
     if table:
-        top = trimesh.creation.cylinder(radius=TABLE_RADIUS_M, height=0.03, sections=64)
-        top.apply_translation([*TABLE_CENTRE, TABLE_TOP_M - 0.015])
+        top = trimesh.creation.cylinder(radius=TABLE_RADIUS_M, height=thickness, sections=64)
+        top.apply_translation([*TABLE_CENTRE, TABLE_TOP_M - thickness / 2])
         parts.append(top)
     if floor:
         slab = trimesh.creation.box(extents=[3.0, 3.0, 0.02],
@@ -79,8 +83,10 @@ def _box(views: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     return low, high
 
 
-def test_the_lamp_rests_on_the_round_table_its_frames_show_it_on():
-    mesh, views = _room(), _lamp_views()
+@pytest.mark.parametrize("thickness", [0.018, 0.025, 0.03])
+def test_the_lamp_rests_on_the_round_table_its_frames_show_it_on(thickness):
+    # Review of the first build: a closed top 1.8 or 2.5 cm thick put the lamp on its underside.
+    mesh, views = _room(thickness=thickness), _lamp_views()
     low, high = _box(views)
     assert TABLE_TOP_M - low[2] == pytest.approx(0.226, abs=0.03)  # the box reaches about 22 cm under the top
     corners = [[x, y] for x in (low[0], high[0]) for y in (low[1], high[1])]
@@ -95,8 +101,9 @@ def test_the_lamp_rests_on_the_round_table_its_frames_show_it_on():
     # Now: the object's own outline, contact in its frames, nearest its lowest observed points.
     support, record = resting_surface_under(mesh, low, high, views=views, up=2, meters_per_unit=1.0,
                                             placement_residual_m=RESIDUAL_M, rise_m=0.334)
-    assert support["top_runtime_units"] == pytest.approx(TABLE_TOP_M, abs=0.005)
+    assert support["top_runtime_units"] == pytest.approx(TABLE_TOP_M, abs=1e-6)  # the top, never the underside
     assert support["basis"] == OUTLINE_BASIS and support["physical_measurement"] is False
+    assert support["resting_correction"]["basis"] == "bottom_raised_to_the_surface_observed_top_kept"
     assert support["outline_share"] >= 0.5 and support["contact_frames"] == support["frames"] == 6
     assert record["outline"]["basis"] == "convex_hull_of_observed_points"
     assert record["outline"]["area_m2"] < record["outline"]["box_area_m2"]
@@ -118,16 +125,17 @@ def test_the_floor_under_the_table_is_not_chosen_without_contact():
     assert floor["height_m"] == pytest.approx(FLOOR_TOP_M - low[2], abs=0.01) and floor["contact_frames"] == 0
 
 
-def test_a_y_down_collider_finds_the_same_table():
+@pytest.mark.parametrize("thickness", [0.018, 0.03])
+def test_a_y_down_collider_finds_the_same_table(thickness):
     # The same room in a frame whose up is -Y: (x, y, z) -> (x, -z, y).
     swap = np.array([[1.0, 0, 0], [0, 0, -1.0], [0, 1.0, 0]])
-    mesh = _room()
+    mesh = _room(thickness=thickness)
     mesh = trimesh.Trimesh(vertices=np.asarray(mesh.vertices) @ swap.T, faces=mesh.faces, process=False)
     views = [view @ swap.T for view in _lamp_views()]
     low, high = _box(views)
     support, _ = resting_surface_under(mesh, low, high, views=views, up=1, up_sign=-1, meters_per_unit=1.0,
                                        placement_residual_m=RESIDUAL_M, rise_m=0.334)
-    assert support["top_runtime_units"] == pytest.approx(-TABLE_TOP_M, abs=0.005)
+    assert support["top_runtime_units"] == pytest.approx(-TABLE_TOP_M, abs=1e-6)
     assert support["aabb_min"][1] == pytest.approx(-TABLE_TOP_M, abs=1e-6)  # the top's own faces, back in -Y
     assert support["aabb_max"][0] - support["aabb_min"][0] == pytest.approx(2 * TABLE_RADIUS_M, abs=0.01)
 
@@ -186,6 +194,54 @@ def test_no_surface_under_the_lamp_finds_nothing(monkeypatch):
     (low, high), (support, record, new_low, new_high) = _search(monkeypatch, mesh=elsewhere)
     assert support is None and record["status"] == "not_found" and record["search"]["candidates"] == []
     assert (new_low, new_high) == (low.tolist(), high.tolist())
+
+
+def _small_object_views(low_by_m: float, count: int = 6) -> list[np.ndarray]:
+    """A 2 cm, 0.4 m wide object on the round top whose points all sit ``low_by_m`` (to 2 cm less) too low:
+    its box corners lie off the round edge, and its own outline is the box's square."""
+    rng = np.random.default_rng(9)
+    return [np.c_[TABLE_CENTRE + rng.uniform(-0.2, 0.2, (600, 2)),
+                  TABLE_TOP_M - low_by_m + rng.uniform(0.0, 0.02, 600)] for _ in range(count)]
+
+
+def test_a_box_low_within_the_window_moves_up_whole_and_keeps_its_height(monkeypatch):
+    # Review probe: points 3-5 cm low. The bottom was raised past the top and the height went negative.
+    views = _small_object_views(0.05)
+    low, high = _box(views)
+    assert support_under(_room(), low, high, up=2, meters_per_unit=1.0, placement_residual_m=RESIDUAL_M) is None
+    _, (support, record, new_low, new_high) = _search(monkeypatch, views=views)
+    correction = record["correction"]
+    assert correction["basis"] == "moved_up_onto_the_surface"
+    assert correction["height_before_m"] > 0
+    assert correction["height_after_m"] == pytest.approx(correction["height_before_m"])
+    assert new_low[2] == pytest.approx(TABLE_TOP_M, abs=1e-6)  # on the top, not inside the table
+    assert new_high[2] - new_low[2] == pytest.approx(high[2] - low[2])
+
+
+def test_a_surface_above_the_observed_top_is_never_taken(monkeypatch):
+    # The same object 10-12 cm low, past the window: raising its bottom would put it above its own top.
+    views = _small_object_views(0.12)
+    low, high = _box(views)
+    support, record = resting_surface_under(_room(floor=False), low, high, views=views, up=2, meters_per_unit=1.0,
+                                            placement_residual_m=RESIDUAL_M, rise_m=0.3)
+    assert support is None
+    assert {row["refused"] for row in record["candidates"]} == {"surface_above_the_observed_top"}
+
+
+def test_a_plane_through_the_object_is_no_contact():
+    # A shelf at the height of the middle of a tall object's points: points meet its plane in every
+    # frame, but half the object lies below it. Its lowest points do not sit there.
+    rng = np.random.default_rng(5)
+    shelf = trimesh.creation.box(extents=[0.6, 0.6, 0.02],
+                                 transform=trimesh.transformations.translation_matrix([0, 0, 0.99])).subdivide().subdivide()
+    views = [np.c_[rng.uniform(-0.05, 0.05, (500, 2)), rng.uniform(0.80, 1.20, 500)] for _ in range(6)]
+    low, high = _box(views)
+    support, record = resting_surface_under(shelf, low, high, views=views, up=2, meters_per_unit=1.0,
+                                            placement_residual_m=RESIDUAL_M, rise_m=0.3)
+    assert support is None
+    row = record["candidates"][0]
+    assert row["refused"] == "no_contact_in_the_frames" and row["contact_frames"] == 6
+    assert row["lowest_points_from_plane_m"] < -0.15
 
 
 # Compile: the code with no surface is today's, and a job that found a support before finds the same one.
@@ -273,6 +329,91 @@ def test_no_plausible_surface_raises_the_same_code_and_keeps_the_record(tmp_path
     assert value["support_search"]["estimate_uncertainty"]["box_fit"]["status"] != "assessed"  # one masked frame
     assert value["digest"] == canonical_digest(value, digest_field="digest")
     assert SUPPORT_GUESSED not in preparation_flags(tmp_path / "out" / "preparation.json")
+
+
+def _bled_below(arguments):
+    """The cup wider, one of its 40 pixels' depth bled behind the table (below its top, 2.5%), and the
+    room's collider wound outward (the fixture's grid faces down): its box reaches under the table."""
+    frame = arguments["source_geometry"]["frames"][0]
+    with np.load(frame["geometry_path"]) as data:
+        depth, valid = data["depth_m"], data["valid_mask"]
+    yy, xx = np.indices((5, 8))
+    depth[20:25, 21:29] = 1.57 + 0.005 * (xx % 4 + yy)
+    depth[24, 28] = 2.2
+    cup = arguments["task_masks"]["targets"][0]
+    cup["track"] = {**cup["track"], "observations": [
+        {**cup["track"]["observations"][0], "runs": [{"start": row * depth.shape[1] + 21, "length": 8,
+                                                      "probability": 0.9} for row in range(20, 25)]}]}
+    base = arguments["base_scene"]
+    mesh = trimesh.load(base["collision_mesh_path"], force="mesh", process=False)
+    trimesh.Trimesh(vertices=mesh.vertices, faces=np.asarray(mesh.faces)[:, ::-1], process=False).export(
+        base["collision_mesh_path"])
+    base["collision_mesh_digest"] = _sha256_file(Path(base["collision_mesh_path"]))
+    return _rebind(arguments, frame, depth, valid)
+
+
+def test_compile_rests_a_box_reaching_under_its_table_on_it_and_flattens_that_surface(tmp_path, monkeypatch):
+    monkeypatch.setattr("blueprint_pipeline.website_task_placement_check.check_video_placement",
+                        lambda **_: RECORDED_BOX_FIT)
+    value = preparation.compile_website_scene_preparation(**_bled_below(_preparation_fixture()._arguments(tmp_path)))
+    assert "support_surface_not_found_under_subject" not in value["blockers"]
+    support, search = value["support"], value["support_search"]
+    assert support["basis"] == OUTLINE_BASIS and support["guess"]["flag"] == SUPPORT_GUESSED
+    assert search["status"] == "found" and search["correction"]["basis"] == "bottom_raised_to_the_surface_observed_top_kept"
+    # The table top is runtime y = 1.75, simulator z = 3.5: the bottom rests there, the observed top stays.
+    assert value["subject"]["aabb_min_xyz"][2] == pytest.approx(3.5, abs=1e-6)
+    assert support["subject_snap_m"] == pytest.approx(0.0, abs=1e-9)
+    # The surface found is flattened under the corrected box, as every surface an object rests on is.
+    surfaces = value["collider_conditioning"]["flattening"]["surfaces"]
+    assert [row["roles"] for row in surfaces][0] == ["start_support"] and surfaces[0]["status"] == "flattened"
+    assert SUPPORT_GUESSED in preparation_flags(tmp_path / "out" / "preparation.json")
+
+
+def test_a_bumpy_top_found_under_the_outline_is_flattened_level_at_its_top():
+    from blueprint_pipeline.website_collider_conditioning import flatten_placement_surfaces
+
+    mesh = _room(floor=False).subdivide().subdivide()
+    vertices = np.asarray(mesh.vertices).copy()
+    rim = np.hypot(*(vertices[:, :2] - TABLE_CENTRE).T) > TABLE_RADIUS_M - 0.02
+    top = (np.abs(vertices[:, 2] - TABLE_TOP_M) < 1e-9) & ~rim
+    vertices[top, 2] += np.random.default_rng(2).uniform(-0.004, 0.004, int(top.sum()))
+    bumpy = trimesh.Trimesh(vertices=vertices, faces=mesh.faces, process=False)
+    views = _lamp_views()
+    support, _ = resting_surface_under(bumpy, *_box(views), views=views, up=2, meters_per_unit=1.0,
+                                       placement_residual_m=RESIDUAL_M, rise_m=0.334)
+    assert support["basis"] == OUTLINE_BASIS
+    flattened, record = flatten_placement_surfaces(vertices, np.asarray(mesh.faces),
+        [{"role": "start_support", "support": support}], up=2, up_sign=1, meters_per_unit=1.0,
+        placement_uncertainty_m=RESIDUAL_M)
+    surface = record["surfaces"][0]
+    assert surface["status"] == "flattened" and surface["max_displacement_m"] > 0
+    moved = np.unique(np.asarray(mesh.faces)[support["face_indices"]])
+    interior = moved[~rim[moved]]
+    assert np.allclose(flattened[interior, 2], support["top_runtime_units"])
+
+
+def test_the_package_says_where_the_object_was_set_down_and_why():
+    from blueprint_pipeline.job_packet_export import ESTIMATE_SENTENCES, _measured_and_estimated
+
+    subject = {"aabb_min_xyz": [0.0, 0.0, 0.765], "aabb_max_xyz": [0.4, 0.375, 1.208]}
+    raised = {"subject": subject, "support": {"guess": {"basis": resting.GUESS_BASIS, "flag": SUPPORT_GUESSED,
+                                                        "bottom_moved_m": 0.226,
+                                                        "correction": "bottom_raised_to_the_surface_observed_top_kept"}},
+              "support_search": {"correction": {"height_before_m": 0.669, "height_after_m": 0.443}}}
+    _, estimated = _measured_and_estimated(raised, {"scene_estimates": []}, None)
+    size = next(line for line in estimated if line.startswith("Object size"))
+    assert size.endswith("from the video; its box reached 23 cm below the surface its frames show it resting on, "
+                         "so Blueprint raised its bottom onto that surface and kept its observed top (height 67 cm "
+                         "before, 44 cm after).")
+    assert f"`{SUPPORT_GUESSED}`: {ESTIMATE_SENTENCES[SUPPORT_GUESSED]}" in estimated
+    nearest = {"subject": subject, "support": {"guess": {"basis": "nearest_surface_under_footprint",
+                                                         "drop_m": 0.2, "flag": SUPPORT_GUESSED}}}
+    assert "moved it down 20 cm onto the nearest surface under it, its size unchanged." in \
+        next(line for line in _measured_and_estimated(nearest, None, None)[1] if line.startswith("Object size"))
+    plain = _measured_and_estimated({"subject": subject, "support": {"basis": "fitted_surface_under_footprint"}},
+                                    {"scene_estimates": []}, None)[1]
+    assert next(line for line in plain if line.startswith("Object size")).endswith(", from the video.")
+    assert not any(SUPPORT_GUESSED in line for line in plain)
 
 
 def test_the_object_outline_is_its_points_hull_not_its_box():

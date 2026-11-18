@@ -49,7 +49,7 @@ from .website_registration_admissibility import (  # noqa: F401 - re-exported fo
     REGISTRATION_DECISIVE_RATIO, RegistrationRefusal, _close_runner_up,
 )
 from .website_surface_target_admission import (admit_surface_target, preparation_size_tolerance,
-                                               replacement_size_tolerance, website_target_radius,
+                                               replacement_size_tolerance, sealer_admits, website_target_radius,
                                                website_target_reach)
 
 
@@ -1077,20 +1077,6 @@ def _unplaceable_part_estimate(code: str, configuration: Mapping[str, Any]) -> s
     return part if part is not None and any(row.get("part_id") == part for row in rows) else None
 
 
-def _sealer_admits(*, support, subject_min, subject_max, registration, size_tolerance, outline):
-    """The sealer's own admission of a sealed destination, run at preparation ($0)."""
-    def admitted(sealed: Mapping[str, Any]) -> bool:
-        try:
-            admit_surface_target(destination=sealed, support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), support)),
-                subject_min=subject_min, subject_max=subject_max, development_support=False,
-                placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
-                relative_error=size_tolerance, support_outline=outline)
-        except ValueError:
-            return False
-        return True
-    return admitted
-
-
 def _flag_only_record(measure: Callable[[], Any]) -> dict[str, Any]:
     """A flag-only measurement's record, or a "not assessed" one with the reason: never a stop.
 
@@ -1280,11 +1266,19 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                 source_to_target=matrix)
         subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
 
+    searched: dict[str, Any] = {}  # the visible-rest search's record, as the last placement made it
+
     def placed(mesh: Any, lookup: Any) -> tuple[Any, Any, dict[str, Any] | None, dict[str, Any] | None]:
         """The subject's bounds on ``mesh`` and the support under them, as preparation places it."""
         if synthetic is None:
-            return subject_min, subject_max, lookup(mesh, subject_min, subject_max, up=up, meters_per_unit=mpu,
-                                                    up_sign=up_sign, placement_residual_m=residual), None
+            found = lookup(mesh, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign,
+                           placement_residual_m=residual)
+            if found is not None or articulated or not subject_target.get("track"):
+                return subject_min, subject_max, found, None
+            # None at its estimated bottom: the surface it visibly rests on, its box corrected onto it.
+            from .website_resting_support import rest_where_seen
+            return (*rest_where_seen(mesh, subject_min, subject_max, source_geometry, task_masks, subject_target,
+                                     matrix, runtime_to_sim, up, up_sign, mpu, residual, searched), None)
         from .website_synthetic_subject import choose_start
         return choose_start(collider=mesh, region=region, attractor=attractor, design=synthetic, up=up,
                             up_sign=up_sign, meters_per_unit=mpu, support_under=lookup)
@@ -1319,7 +1313,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             articulated=articulated, output_root=output_root,
             named_position=None if named_place is None else named_place[2])
         placed_min, placed_max, support, start = placed(collider, lookup)
-        if synthetic is not None and support is not None:
+        if support is not None:  # a designed subject's start, or a captured one corrected onto what it rests on
             subject_min, subject_max = placed_min, placed_max
     if synthetic is not None and support is None:
         blockers.append("website_synthetic_subject_start_unplaceable")
@@ -1346,11 +1340,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             # band: the snap below moves that body down onto the floor instead.
             if published is None:
                 (subject_min if up_sign == 1 else subject_max)[up] = grounding["top_runtime_units"]
-    snap, support_search = 0.0, {}
+    snap = 0.0
     if support is None and collider is not None and synthetic is None and not independent_object:
-        from .website_resting_support import rest_on_a_surface  # what it visibly rests on, else a flagged guess
-        support, support_search = rest_on_a_surface(collider, subject_min, subject_max, source_geometry, task_masks,
-            None if articulated else subject_target, matrix, runtime_to_sim, up, up_sign, mpu, residual)
+        from .website_support_geometry import nearest_support_under  # a recorded, flagged best guess
+        support = nearest_support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu,
+                                        up_sign=up_sign, placement_residual_m=residual)
     if support is None:
         blockers.append("support_surface_not_found_under_subject")
     else:
@@ -1522,8 +1516,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             # The place the sentence names is where the object goes, and the area scored and marked
             # (``website_destination_area``); a harness relocation never moves it away again.
             from .website_destination_area import NAMED_REGION, choose_destination
-            admitted = _sealer_admits(support=sim_support, subject_min=sim_min, subject_max=sim_max,
-                                      registration=registration, size_tolerance=size_tolerance, outline=region_outline)
+            admitted = sealer_admits(support=sim_support, subject_min=sim_min, subject_max=sim_max,
+                                     registration=registration, size_tolerance=size_tolerance, outline=region_outline)
             destination, destination_choice = choose_destination(
                 destination=destination, subject_min=sim_min, subject_max=sim_max, support_min=sim_support[0],
                 support_max=sim_support[1], region=region_record, relocation=relocation, admit=admitted,
@@ -1586,8 +1580,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 subject_min=sim_min, subject_max=sim_max, support=sim_support,
                 holds=None if surface is None else (
                     lambda centre, radius: surface.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M)),
-                admit=_sealer_admits(support=sim_support, subject_min=sim_min, subject_max=sim_max,
-                                     registration=registration, size_tolerance=size_tolerance, outline=surface))
+                admit=sealer_admits(support=sim_support, subject_min=sim_min, subject_max=sim_max,
+                                    registration=registration, size_tolerance=size_tolerance, outline=surface))
             relocation = None if destination_choice["basis"] == SITE_CHOICE else relocation
     else:
         blockers.append("task_destination_pose_required")
@@ -1938,7 +1932,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "physical_scale_measured": False,
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
-        "subject": request["task"]["subject"], "support": support, "destination": destination, **support_search,
+        "subject": request["task"]["subject"], "support": support, "destination": destination, **searched,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
         **({"destination_choice": destination_choice} if destination_choice is not None and not rule_withheld else {}),
