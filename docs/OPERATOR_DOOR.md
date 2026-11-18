@@ -344,6 +344,15 @@ writes one sealed record naming the owner as approver. It changes no
 threshold, starts no compute and moves no money. It was added to the profile
 in its own commit for the owner's explicit sign-off.
 
+Since 2026-11-18 the profile also admits `retire-scene-workspace` and
+`restore-scene-workspace`. The owner approved adding them to free disk by
+retiring finished internal test jobs' workspaces ("Yes, add it"). A retirement
+is a plan unless `--apply` is given. An apply re-proves every retention check
+under the listener's ledger locks, archives what Firebase Storage does not hold
+and writes a replayable receipt before it removes anything. A restore puts a
+retired workspace back from that receipt. Neither starts compute or moves money.
+Both take effect on the host only after `upgrade-door` to a commit that has them.
+
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |

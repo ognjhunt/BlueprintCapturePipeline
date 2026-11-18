@@ -126,11 +126,21 @@ if DISPATCHER_HOLD_ONLY:
     # dont need to do it? and yes - already pre--approve the upgrade/test
     # videos, etc.") starting internal test jobs through the door: one signed
     # call to the website's test-job route; the job's spend passes every paid
-    # admission a site's job does, and no limit changes.
+    # admission a site's job does, and no limit changes. The owner approved
+    # (2026-11-18, answering "Add workspace cleanup (retire-scene-workspace:
+    # plan first, then apply behind a receipt; restore available) to the
+    # operator door's owner-approved fenced list, so I can free disk by
+    # retiring finished test jobs' workspaces?" with "Yes, add it") scene
+    # workspace retirement and its restore: a plan by default; an apply
+    # re-proves every retention check under the listener's ledger locks,
+    # archives what Firebase Storage does not hold and writes a replayable
+    # receipt before removing anything; restore puts a retired workspace back
+    # from that receipt. Neither starts compute or moves money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
-                           "confirm-owner-success-contract", "retire-parked-delivery", "test-job"}}
+                           "confirm-owner-success-contract", "retire-parked-delivery", "test-job",
+                           "retire-scene-workspace", "restore-scene-workspace"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TEST_JOB_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
 _TEST_JOB_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}")
