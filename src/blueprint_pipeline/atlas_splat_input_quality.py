@@ -560,8 +560,9 @@ def heldout_quality(*, splat, frames: Sequence[Mapping[str, Any]], selection: Ma
     world through the photograph's depth, so a weak region's blocks are named.
     Orbit views of the weak regions (``atlas_coverage_map``) have no photograph:
     there the record counts holes in the region's footprint and needle-like
-    Gaussians in the region instead. ``look_quality`` is ``good`` or ``weak`` with
-    the regions named: information and a flag, never a stop. Held-out views well
+    Gaussians in the region instead. ``look_quality`` is ``good``, ``weak`` with
+    the regions named, or ``weak_regions_not_assessed`` (flagged) when the held-out
+    views pass but no coverage map was made: information and a flag, never a stop. Held-out views well
     below the training views (``HELDOUT_BELOW_TRAINING_DB``) are flagged too.
     """
     import time
@@ -614,12 +615,16 @@ def heldout_quality(*, splat, frames: Sequence[Mapping[str, Any]], selection: Ma
                                *(["holes_off_path"] if holes and max(holes) > OFF_PATH_HOLE_SHARE else [])})
         if row["flags"]:
             named.append(row["id"])
-    if weak_regions is None:
-        flags.append("weak_regions_unavailable")
-    below = ((ssims and median(ssims) < LOOK_HELDOUT_SSIM_FLOOR)
-             or (medians["heldout"] is not None and medians["heldout"] < LOOK_HELDOUT_PSNR_FLOOR_DB))
-    verdict = "weak" if named or below else "good"
-    look = {"verdict": verdict, "weak_region_ids": named,
+    # Without a map (none written, or one that could not be made) the regions were not looked at.
+    assessed = weak_regions is not None and weak_regions.get("status") == "mapped"
+    if not assessed:
+        flags.append("weak_regions_not_assessed")
+    below = bool((ssims and median(ssims) < LOOK_HELDOUT_SSIM_FLOOR)
+                 or (medians["heldout"] is not None and medians["heldout"] < LOOK_HELDOUT_PSNR_FLOOR_DB))
+    verdict = "weak" if named or below else "good" if assessed else "weak_regions_not_assessed"
+    look = {"verdict": verdict, "weak_region_ids": named, "weak_regions_assessed": assessed,
+            **({} if assessed else {"weak_regions_not_assessed_reason": (weak_regions or {}).get("reason")
+                                    or "coverage_map_unavailable"}),
             "heldout_below_floor": bool(below), "off_path_camera_ids": off_path, "regions": region_rows,
             "worst_heldout_blocks": [{**row, "ssim": round(row["ssim"], 4),
                                       "world_point": [round(x, 6) for x in row["world_point"]],

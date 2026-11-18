@@ -191,7 +191,8 @@ def test_the_heldout_score_renders_the_splat_against_each_photo_and_flags_held_o
     assert record["basis"] == "alpha_blended_gaussian_render" and record["claim_scope"] == "development_only"
     # Without a coverage map there are no orbit views; the held-out views alone make the look weak here.
     assert record["look_quality"]["verdict"] == "weak" and record["look_quality"]["weak_region_ids"] == []
-    assert "weak_regions_unavailable" in record["flags"] and record["look_quality"]["heldout_below_floor"]
+    assert "weak_regions_not_assessed" in record["flags"] and record["look_quality"]["heldout_below_floor"]
+    assert record["look_quality"]["weak_regions_assessed"] is False
     assert record["digest"] == canonical_digest(record, digest_field="digest")
 
 
@@ -209,7 +210,8 @@ def _weak_record(splat_centre=(0.0, 0.0, -2.0)):
     region = {"id": "wr-000", "centroid": centre.tolist(), "extent": [.4, .3, .06], "orbit_deg": [15, 30],
               "suggested_orbit": coverage._orbit("wr-000", centre, np.zeros((1, 3)), K_SCORE,
                                                  np.array([0.0, 1.0, 0.0]))}
-    return {"digest": "sha256:" + "e" * 64, "grid": {"voxel_size_units": .02}, "regions": [region]}
+    return {"status": "mapped", "digest": "sha256:" + "e" * 64, "grid": {"voxel_size_units": .02},
+            "regions": [region]}
 
 
 def test_a_clean_splat_looks_good_on_its_held_out_view_and_from_the_weak_regions_orbit():
@@ -226,6 +228,19 @@ def test_a_clean_splat_looks_good_on_its_held_out_view_and_from_the_weak_regions
     assert all(view["hole_share"] == 0 for view in region["off_path"])
     assert region["heldout_block_count"] > 0 and region["heldout_block_ssim"] > .9
     assert region["needle_share"] == 0 and region["gaussian_count"] > 100
+
+
+@pytest.mark.parametrize("weak_regions", [None, {"status": "not_mapped", "reason": "atlas_coverage_no_ranged_surface",
+                                                  "regions": []}])
+def test_a_clean_render_without_a_coverage_map_says_the_regions_were_not_assessed(weak_regions):
+    colours = _smooth_colours()
+    record = quality.heldout_quality(splat=_plane_splat(colours, K_SCORE), frames=[_view("a", colours),
+                                     _view("b", colours)], selection={"posed_frame_ids": ["a", "b"],
+                                     "sent_frame_ids": ["a"], "heldout_frame_ids": ["b"]}, weak_regions=weak_regions)
+    look = record["look_quality"]
+    assert look["verdict"] == "weak_regions_not_assessed" and look["heldout_below_floor"] is False
+    assert look["weak_regions_assessed"] is False and "weak_regions_not_assessed" in record["flags"]
+    assert look["weak_regions_not_assessed_reason"] == (weak_regions or {}).get("reason", "coverage_map_unavailable")
 
 
 def test_needle_like_gaussians_in_a_weak_region_make_the_look_weak_and_name_the_region():
