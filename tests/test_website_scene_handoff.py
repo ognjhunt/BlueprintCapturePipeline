@@ -1439,6 +1439,26 @@ def test_an_earlier_release_s_outbox_receipt_is_kept_across_held_runs(tmp_path, 
     assert (marker["state"], marker["outbox_id"]) == ("sent", "scene-1")
 
 
+def test_a_refused_retry_never_clears_an_earlier_send_that_may_have_committed(tmp_path, monkeypatch, ready_atlas):
+    """Codex P1 on #3637: a send that timed out after the website may have committed leaves the marker ``sending``;
+    a retry the website refuses with a typed answer proves only that the retry committed nothing, so the earlier
+    evidence stands and no later run takes the room-package fallback."""
+    answers = iter([ValueError("website_control_prepared-scene_timeout"),
+                    ValueError("website_control_prepared-scene_http_401:website_control_unauthorized")])
+    kwargs, _compiled, packaged = _to_the_outbox(tmp_path, monkeypatch, lambda **_: (_ for _ in ()).throw(next(answers)))
+    path = tmp_path / "pipeline/website_scene_preparation" / handoff.OUTBOX_MARKER
+    handoff.prepare_website_scene_handoff(**kwargs)
+    assert json.loads(path.read_text())["state"] == "sending"
+    handoff.prepare_website_scene_handoff(**kwargs)
+    marker = json.loads(path.read_text())
+    assert marker["state"] == "sending" and "http_401" in marker["later_refusal"]
+    assert handoff.prepared_scene_may_exist(tmp_path, task_context_digest=marker["task_context_digest"])
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError("website_gemini_unanswered_dispatches_exhausted")))
+    assert handoff.prepare_website_scene_handoff(**kwargs)["status"] == "awaiting_inputs"
+    assert [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR] == []
+
+
 def test_a_marker_for_a_refused_send_or_another_task_never_holds_the_job(tmp_path, monkeypatch, ready_atlas):
     """A send the website refused with a typed answer that commits nothing settles the marker ``refused``; a marker
     written for another task context names another job: neither keeps this job from its room package."""

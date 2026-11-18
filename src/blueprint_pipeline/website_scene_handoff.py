@@ -402,6 +402,20 @@ def keep_outbox_receipt(capture_root: Path) -> None:
                                                   "task_context_digest": None})
 
 
+def _unsettled_outbox_evidence(capture_root: Path) -> dict[str, Any] | None:
+    """The marker as it stands before a new send, unless it is absent or settled ``refused``: an earlier send that may
+    have committed (``sending``), one that did (``sent``), or a marker that cannot be read."""
+    try:
+        prior = json.loads(_outbox_marker(capture_root).read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {"state": "unreadable", "task_context_digest": None}
+    if not isinstance(prior, dict):
+        return {"state": "unreadable", "task_context_digest": None}
+    return None if prior.get("state") == "refused" else prior
+
+
 def prepared_scene_may_exist(capture_root: Path, *, task_context_digest: str | None = None) -> bool:
     """Whether a prepared-scene outbox entry for this job may exist: a marker for this job's task context (or one
     that names none) that is not settled ``refused``."""
@@ -776,12 +790,17 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         dispatching = True
         marker = {"request_digest": cross_runtime_canonical_digest(request),
                   "task_context_digest": context.get("context_digest")}
+        prior = _unsettled_outbox_evidence(capture_root)
         write_json(_outbox_marker(capture_root), {**marker, "state": "sending"})
         try:
             receipt = enqueue_website_prepared_scene(task_context=context, request=request)
         except ValueError as exc:
             if _REFUSED_WRITE.search(str(exc)):
-                write_json(_outbox_marker(capture_root), {**marker, "state": "refused", "code": str(exc)[:200]})
+                # This send committed nothing, but an earlier one that may have (or did) still may be forwarding into
+                # paid preparation: its evidence stands, and only a marker with none behind it settles ``refused``.
+                write_json(_outbox_marker(capture_root),
+                           {**prior, "later_refusal": str(exc)[:200]} if prior is not None
+                           else {**marker, "state": "refused", "code": str(exc)[:200]})
             raise
         write_json(_outbox_marker(capture_root), {**marker, "state": "sent", "outbox_id": receipt.get("id")})
         return receipt
