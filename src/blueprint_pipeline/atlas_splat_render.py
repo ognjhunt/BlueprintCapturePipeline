@@ -97,11 +97,11 @@ def project_gaussians(xyz, scales_log, quats, position, rotation, intrinsics, wi
 
 def _sh_colour(splat, index: np.ndarray, directions: np.ndarray) -> np.ndarray:
     """RGB in [0, 1] of the Gaussians ``index`` seen along unit ``directions`` (camera to Gaussian)."""
-    colour = SH_C0 * np.asarray(splat.f_dc, np.float64)[index]
+    colour = SH_C0 * np.asarray(splat.f_dc)[index].astype(np.float64)
     rest = getattr(splat, "sh_rest", None)
     if rest is not None and np.shape(rest)[1] >= 9:
         coefficients = np.shape(rest)[1] // 3
-        r = np.asarray(rest, np.float64)[index].reshape(len(index), 3, coefficients)
+        r = np.asarray(rest)[index].astype(np.float64).reshape(len(index), 3, coefficients)
         x, y, z = directions[:, 0], directions[:, 1], directions[:, 2]
         basis = [-_SH_C1 * y, _SH_C1 * z, -_SH_C1 * x]
         if coefficients >= 8:

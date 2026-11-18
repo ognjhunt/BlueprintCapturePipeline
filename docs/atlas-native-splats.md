@@ -292,12 +292,21 @@ request's input binding names it (`input_selection_digest`). It works in three s
    tie it to the kept side. A capture that never moved keeps every view.
 3. **Held out.** When at least 24 views would still be sent, it holds back 2
    sharp, measured, interior views of the kept segment, never task-route views.
-   When the splat returns, `heldout_render_score.json` beside its manifest records
-   a render-vs-photo score at those views and at their nearest sent views. The
-   render takes each pixel's nearest opaque Gaussian centre at 320 px width, a CPU
-   stand-in for rasterising the splat. It compares views with each other and is no
-   image-quality measurement. Held-out views more than 3 dB below the training
-   views are flagged. It never blocks.
+   Before the splat is bought, `weak_regions.json` in the job's Atlas root
+   (`atlas_coverage_map`) records the regions the views leave weak: surfaces that
+   are not flat, seen over under 10 degrees or no finer than 3 mm a pixel, each
+   with the views that saw it and an orbit of cameras 15 and 30 degrees either side.
+   When the splat returns, `heldout_render_score.json` beside its manifest
+   (`atlas_splat_heldout_score.v2`) records an alpha-blended Gaussian render
+   (`atlas_splat_render`, 640 px wide, on the CPU) at those views and at their
+   nearest sent views: PSNR, SSIM, and each 32 px block's SSIM placed in the world
+   through the photograph's depth. It also renders each weak region's ±15 degree
+   orbit views, where no photograph exists, and counts holes there and needle-like
+   Gaussians in the region. `look_quality` is `good`, `weak` with the regions
+   named, or `weak_regions_not_assessed` when there was no map. Held-out views
+   more than 3 dB below the training views are flagged. It never blocks. A score
+   recorded before this (`basis` `nearest_opaque_gaussian_centre_point_render`)
+   compares views with each other only.
 
 On the library job's retained records this keeps the 19 dolly views. It drops the
 10 opening views, leaves out the 12 consistent pan views across the jump, and

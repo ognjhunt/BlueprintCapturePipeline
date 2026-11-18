@@ -157,5 +157,43 @@ def test_a_job_without_the_inputs_skips_cleanly(tmp_path):
     record = coverage.write_weak_regions(frames=frames, output_root=tmp_path / "pipeline/atlas", pose_digest=None)
     assert record["status"] == "not_mapped" and record["regions"] == [] and record["reason"] == "atlas_coverage_no_ranged_surface"
     assert coverage.load_weak_regions(tmp_path) is None
-    # The pipeline's call never raises, whatever it is given.
-    assert coverage.coverage_before_splat(frames=[{"frame_id": "a"}], pose={}, output_root=tmp_path / "x") is None
+    # The pipeline's call never raises, whatever it is given; it records why there is no map.
+    assert coverage.coverage_before_splat(frames=[{"frame_id": "a"}], pose={},
+                                          output_root=tmp_path / "x")["status"] == "not_mapped"
+
+
+def test_the_pipeline_call_reads_the_adopted_measurement_and_never_raises_on_a_bad_one(tmp_path):
+    source_root = tmp_path / "pose/full-view-source-v1"
+    source_root.mkdir(parents=True)
+    (source_root / "scene_measurements.json").write_text(json.dumps({"meters_per_unit_estimate": 1.0}))
+    reviewed = "scene_measurements_reference-0123456789abcdef.json"
+    (source_root / reviewed).write_text(json.dumps({"meters_per_unit_estimate": 4.0, "digest": "sha256:" + "7" * 64,
+                                                     "scale_status": "estimated_from_named_assumptions"}))
+    frames = _arc(1.5, count=4)
+    pose = {"digest": "sha256:" + "2" * 64}
+    record = coverage.coverage_before_splat(frames=frames, pose=pose, output_root=tmp_path / "a",
+                                            source_root=source_root,
+                                            source_pose={"measurements_relative_path": reviewed})
+    # A scale-reviewed job uses its reviewed scale, never the first estimate it superseded.
+    assert record["status"] == "mapped" and record["meters_per_unit"] == 4.0
+    assert record["scale_source"] == {"relative_path": reviewed, "digest": "sha256:" + "7" * 64,
+                                      "scale_status": "estimated_from_named_assumptions"}
+    assert record["scale_basis"] == "scene_measurement_estimate"
+    # A measurement holding no record maps in pose units, saying why.
+    (source_root / "scene_measurements.json").write_text("[1]")
+    record = coverage.coverage_before_splat(frames=frames, pose=pose, output_root=tmp_path / "b",
+                                            source_root=source_root, source_pose={})
+    assert record["status"] == "mapped" and record["meters_per_unit"] is None
+    assert record["scale_unavailable_reason"] == "scene_measurement_unreadable"
+    assert "scale_unverified_mm_per_pixel_in_pose_units" in record["flags"]
+    # A path out of the pose root is not followed.
+    record = coverage.coverage_before_splat(frames=frames, pose=pose, output_root=tmp_path / "c",
+                                            source_root=source_root,
+                                            source_pose={"measurements_relative_path": "../../x.json"})
+    assert record["scale_unavailable_reason"] == "scene_measurement_path_invalid"
+    # Inputs it cannot use at all leave a sealed record of why, and nothing is raised.
+    record = coverage.coverage_before_splat(frames=[{"frame_id": "a"}], pose=pose, output_root=tmp_path / "d",
+                                            source_root=source_root, source_pose=[1])
+    assert record["status"] == "not_mapped" and record["reason"] == "AttributeError"
+    assert record["digest"] == canonical_digest(record, digest_field="digest")
+    assert coverage.load_weak_regions(tmp_path / "d") is None

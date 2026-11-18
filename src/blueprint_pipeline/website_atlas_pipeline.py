@@ -612,7 +612,7 @@ def _job_deadline(output_root: Path, task_context) -> float | None:
 
 def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_context, source_digest,
                           configuration, check, experimental, max_polls,
-                          review=None, source_root=None, rebuild=False):
+                          review=None, source_root=None, rebuild=False, source_pose=None):
     """Atlas's refined splat of the captured frames, or the draft with the reason it is the fallback.
 
     The draft is the fallback only when the job's Atlas money cannot cover the refined splat and
@@ -643,7 +643,7 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     if selection is not None:
         from .atlas_coverage_map import coverage_before_splat  # $0, once per pose, before the purchase
         coverage_before_splat(frames=frames, pose=pose, output_root=output_root, source_root=source_root,
-                              selection=selection)
+                              selection=selection, source_pose=source_pose)
     if rebuild and not bought:
         flags = set((selection or {}).get("flags") or [])
         stop = ("atlas_splat_rebuild_input_selection_missing" if selection is None
@@ -722,11 +722,12 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
             score = _heldout_quality(frames=frames, selection=selection, splat_root=native["splat_root"],
                                      weak_root=output_root)
             appearance["heldout_quality"] = {key: score.get(key) for key in (
-                "status", "median_heldout_psnr_db", "median_training_psnr_db", "median_heldout_ssim", "flags",
-                "reason") if key in score}
+                "status", "basis", "median_heldout_psnr_db", "median_training_psnr_db", "median_heldout_ssim",
+                "flags", "reason") if key in score}
             if "look_quality" in score:
                 appearance["heldout_quality"]["look_quality"] = {
-                    key: score["look_quality"][key] for key in ("verdict", "weak_region_ids")}
+                    key: score["look_quality"][key] for key in ("verdict", "weak_region_ids", "weak_regions_assessed")
+                    if key in score["look_quality"]}
     return appearance
 
 
@@ -870,7 +871,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         appearance = _preserved_appearance(frames=frames, pose=pose, draft=draft, output_root=output_root,
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
             check=check, experimental=experimental, max_polls=max_polls,
-            review=review, source_root=source_root, rebuild=rebuild)
+            review=review, source_root=source_root, rebuild=rebuild, source_pose=source_pose)
         if appearance['status'] in ('processing', 'needs_input'):
             return appearance
         if appearance['basis'] == REFINED_APPEARANCE:

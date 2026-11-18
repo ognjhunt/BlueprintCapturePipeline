@@ -384,8 +384,9 @@ def coverage_map(frames: Sequence[Mapping[str, Any]], *, meters_per_unit: float 
             "up_axis": [round(float(x), 6) for x in up], "regions": regions, "summary": summary, "arrays": arrays}
 
 
-def _inputs_digest(frames, pose_digest, meters_per_unit, priority_frame_ids):
+def _inputs_digest(frames, pose_digest, meters_per_unit, priority_frame_ids, scale_source=None):
     return canonical_digest({"revision": REVISION, "limits": limits(), "pose_result_digest": pose_digest,
+                             "scale_source": dict(scale_source) if scale_source else None,
                              "meters_per_unit": meters_per_unit, "priority_frame_ids": sorted(priority_frame_ids),
                              "cameras": [{"frame_id": frame["frame_id"], "intrinsics": dict(frame["intrinsics"]),
                                           "extrinsics": dict(frame["extrinsics"])} for frame in frames]})
@@ -418,7 +419,9 @@ def load_weak_regions(capture_root: Path) -> list[dict[str, Any]] | None:
 
 
 def write_weak_regions(*, frames: Sequence[Mapping[str, Any]], output_root: Path, pose_digest: str | None,
-                       meters_per_unit: float | None = None, priority_frame_ids: Sequence[str] = ()) -> dict[str, Any]:
+                       meters_per_unit: float | None = None, priority_frame_ids: Sequence[str] = (),
+                       scale_source: Mapping[str, Any] | None = None, scale_reason: str | None = None
+                       ) -> dict[str, Any]:
     """Map the coverage once per pose and seal it in ``output_root``; a map that fails is recorded, not raised.
 
     ``priority_frame_ids`` (the job's route views) put the regions they saw first in the list.
@@ -430,7 +433,7 @@ def write_weak_regions(*, frames: Sequence[Mapping[str, Any]], output_root: Path
 
     output_root = Path(output_root)
     priority_frame_ids = sorted({str(key) for key in priority_frame_ids})
-    inputs_digest = _inputs_digest(frames, pose_digest, meters_per_unit, priority_frame_ids)
+    inputs_digest = _inputs_digest(frames, pose_digest, meters_per_unit, priority_frame_ids, scale_source)
     try:
         saved = read_weak_regions(output_root)
     except (ValueError, KeyError, json.JSONDecodeError):
@@ -443,7 +446,9 @@ def write_weak_regions(*, frames: Sequence[Mapping[str, Any]], output_root: Path
                               "pose_result_digest": pose_digest, "meters_per_unit": meters_per_unit,
                               "priority_frame_ids": priority_frame_ids,
                               "scale_basis": "scene_measurement_estimate" if known_scale
-                              else "pose_units_taken_as_metres_unverified"}
+                              else "pose_units_taken_as_metres_unverified",
+                              "scale_source": dict(scale_source) if scale_source else None,
+                              **({"scale_unavailable_reason": scale_reason} if scale_reason else {})}
     try:
         mapped = coverage_map(frames, meters_per_unit=meters_per_unit, priority_frame_ids=priority_frame_ids)
     except Exception as exc:  # noqa: BLE001 - a map is planning evidence; it never stops the job
@@ -474,19 +479,61 @@ def write_weak_regions(*, frames: Sequence[Mapping[str, Any]], output_root: Path
     return record
 
 
-def coverage_before_splat(*, frames: Sequence[Mapping[str, Any]], pose: Mapping[str, Any], output_root: Path,
-                          source_root: Path | None = None, selection: Mapping[str, Any] | None = None
-                          ) -> dict[str, Any] | None:
-    """The call before the refined splat is bought: the job's scale estimate, then ``write_weak_regions``."""
-    metres = None
-    measurements = None if source_root is None else Path(source_root) / "scene_measurements.json"
-    if measurements is not None and measurements.is_file() and not measurements.is_symlink():
-        value = json.loads(measurements.read_text()).get("meters_per_unit_estimate")
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0:
-            metres = float(value)
+def _scale(source_root, source_pose):
+    """Metres per pose unit from the measurement the source pose adopted, its record, and why none if none.
+
+    A scale-reviewed job names its reviewed measurement (``measurements_relative_path``,
+    beside the pose); the first estimate it superseded is never read.
+    """
+    if source_root is None:
+        return None, None, "source_root_unavailable"
+    relative = (source_pose or {}).get("measurements_relative_path", "scene_measurements.json")
+    root = Path(source_root)
+    path = root / str(relative)
+    if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+        return None, {"relative_path": str(relative)}, "scene_measurement_path_invalid"
+    if not path.is_file():
+        return None, {"relative_path": str(relative)}, "scene_measurement_missing"
     try:
-        return write_weak_regions(frames=frames, output_root=output_root, pose_digest=pose.get("digest"),
-                                  meters_per_unit=metres, priority_frame_ids=(selection or {}).get("route_frame_ids")
-                                  or ())
-    except Exception:  # noqa: BLE001 - nothing here may hold the splat purchase
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None, {"relative_path": str(relative)}, "scene_measurement_unreadable"
+    if not isinstance(record, dict):
+        return None, {"relative_path": str(relative)}, "scene_measurement_unreadable"
+    value = record.get("meters_per_unit_estimate")
+    source = {"relative_path": str(relative), "digest": record.get("digest"), "scale_status": record.get("scale_status")}
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0:
+        return float(value), source, None
+    return None, source, "scene_measurement_without_scale"
+
+
+def _record_failure(output_root, pose, reason):
+    """A sealed ``not_mapped`` record naming why there is no map, best effort."""
+    try:
+        record = {"schema_version": SCHEMA_VERSION, "revision": REVISION, "status": "not_mapped", "reason": reason,
+                  "pose_result_digest": pose.get("digest") if isinstance(pose, Mapping) else None, "regions": [],
+                  "voxel_size_m": None, "claim_scope": "development_only", "purchase_performed": False}
+        record["digest"] = canonical_digest(record, digest_field="digest")
+        write_json(Path(output_root) / WEAK_REGIONS_FILE, record)
+        return record
+    except Exception:  # noqa: BLE001 - a record of a failure is itself best effort
         return None
+
+
+def coverage_before_splat(*, frames: Sequence[Mapping[str, Any]], pose: Mapping[str, Any], output_root: Path,
+                          source_root: Path | None = None, selection: Mapping[str, Any] | None = None,
+                          source_pose: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    """The call before the refined splat is bought: the adopted scale, then ``write_weak_regions``.
+
+    It never raises into the pipeline: anything it cannot use is recorded as the reason.
+    A measurement it cannot read leaves mm per pixel in pose units, flagged with why.
+    """
+    try:
+        metres, scale_source, scale_reason = _scale(source_root, source_pose)
+        record = write_weak_regions(frames=frames, output_root=output_root, pose_digest=pose.get("digest"),
+                                    meters_per_unit=metres,
+                                    priority_frame_ids=(selection or {}).get("route_frame_ids") or (),
+                                    scale_source=scale_source, scale_reason=scale_reason)
+    except Exception as exc:  # noqa: BLE001 - nothing here may hold the splat purchase
+        return _record_failure(output_root, pose, str(exc) if str(exc).startswith("atlas_") else type(exc).__name__)
+    return record
