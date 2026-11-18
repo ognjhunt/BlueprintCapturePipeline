@@ -909,21 +909,51 @@ def test_job3_a_genuine_non_answer_past_the_bound_ships_the_room_package_and_buy
     assert written["digest"] == canonical_digest(written, digest_field="digest") and written == result
 
 
-def test_job3_replay_credits_out_is_a_money_wait_and_after_a_top_up_the_drawer_goes_on_unpaid_again(
+def test_job3_replay_its_402s_kept_as_no_answer_take_the_room_package_and_buy_nothing(
         tmp_path, monkeypatch, ready_atlas):
     """Test job 3 as the host holds it: three dispatches Gemini answered 402 "prepayment credits are depleted",
-    recorded with no answer and counted as spent, the ledger keeping each run's failure. After this change the
-    first is read as the refusal it was: its hold pays the next dispatch (no reservation is made). While the
-    credits are out the job is a money wait, rechecked on the money schedule, and nothing ships; once Gemini
-    answers, the drawer's views are bought under that same hold and the job goes on to compile."""
+    which the release then kept as no answer and counted as spent, the ledger keeping each run's failure text but
+    naming no dispatch. Nothing reads a dispatch as refused from the ledger, so the next run ends on the
+    unanswered bound and ships the room package, flagged; nothing is reserved or sent."""
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    args, calls = _sent_three_times(tmp_path, monkeypatch, depleted, ledger=True)
+    assert len(list((tmp_path / RECEIPTS).glob("*.unanswered-*.json"))) == 3  # as on the host
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: pytest.fail("reserved again"))
+    args["invoke"] = lambda: pytest.fail("sent again")
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: receipts.retained_gemini_call(**args))
+    packaged = room_recorder(monkeypatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written" and packaged[-1]["flags"] == [receipts.EXHAUSTED]
+    assert calls == []
+
+
+def _granted(tmp_path, kwargs, *, ends_in, extended_by=None):
+    """The grant the job's delivery retained (``website_preparation_terminal.GRANT_FILE``), its window ending
+    ``ends_in`` seconds after the handoff's ``now``; ``extended_by``: an owner-approved extension on its scene
+    intent (``effective_execution_expiry``), in seconds past that."""
+    from blueprint_pipeline.website_preparation_terminal import GRANT_FILE
+    descriptor = kwargs["descriptor"]
+    grant = {"schema_version": "website_scene_sponsorship.v1", "scene_id": descriptor["scene_id"],
+             "capture_id": descriptor["capture_id"], "owner": {"user_id": "u", "organization_id": "o"},
+             "expires_at_epoch": kwargs["now"] + ends_in}
+    write_json(tmp_path / GRANT_FILE, {**grant, "authority_digest": canonical_digest(grant, digest_field="authority_digest")})
+    return grant
+
+
+def test_job3_going_forward_credits_out_is_a_money_wait_and_a_top_up_buys_the_drawer_under_the_same_hold(
+        tmp_path, monkeypatch, ready_atlas):
+    """A 402 credits-depleted answer kept on its receipt: while the credits are out the job is a money wait on the
+    same hold, nothing counted or shipped; once Gemini answers, the drawer's views are bought under that hold and
+    the job goes on to compile, never paying for the refused dispatches."""
     from blueprint_pipeline import website_gemini_receipts as receipts
     from blueprint_pipeline.hard_stops import is_wall
     from blueprint_pipeline.website_preparation_retry import classify
-    args, calls = _sent_three_times(tmp_path, monkeypatch, depleted, ledger=True)
-    root = tmp_path / RECEIPTS
-    assert len(list(root.glob("*.unanswered-*.json"))) == 3  # as on the host: the bound spent
+    from tests.test_website_gemini_receipts import setup_call
+    args, calls = setup_call(tmp_path / RECEIPTS, monkeypatch)
     kwargs = _drawer_job(tmp_path, monkeypatch)
-    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: pytest.fail("reserved again"))
+    _granted(tmp_path, kwargs, ends_in=5 * 86400)
     raised = []
 
     def coverage(**kw):
@@ -941,40 +971,60 @@ def test_job3_replay_credits_out_is_a_money_wait_and_after_a_top_up_the_drawer_g
                         lambda **kw: compiled.append(kw) or (_ for _ in ()).throw(_Compiled()))
     packaged = room_recorder(monkeypatch)
     args["invoke"] = lambda: calls.append(("invoke", None)) or (_ for _ in ()).throw(depleted())
-    for _ in range(2):  # credits still out: a money wait, the same hold each time, nothing counted or shipped
+    for _ in range(3):
         result = handoff.prepare_website_scene_handoff(**kwargs)
         assert result["status"] == "awaiting_inputs" and result["blockers"] == [receipts.CREDIT_DEPLETED]
         assert is_wall(raised[-1]) and classify(f"website_scene_preparation: {result['blockers'][0]}") == "money"
-    assert packaged == [] and compiled == []
-    first = json.loads(next(path for path in root.glob("*.json") if "." not in path.stem).read_text())
-    assert (first["status"], first["http_status"], first["reason"]) == ("refused", 402, receipts.CREDIT_DEPLETED)
-    counted = sorted(json.loads(path.read_text())["status"] for path in root.glob("*.unanswered-*.json"))
-    assert counted == ["answered_refused_before_work", "counted_as_spent", "counted_as_spent"]
+    assert packaged == [] and compiled == [] and not list((tmp_path / RECEIPTS).glob("*.unanswered-*.json"))
     args["invoke"] = lambda: calls.append(("invoke", None)) or {"classification": "drawer"}  # the owner topped up
     with pytest.raises(_Compiled):
         handoff.prepare_website_scene_handoff(**kwargs)
     assert compiled[0]["task_masks"]["targets"][0]["authoring_coverage"] == {"classified": {"classification": "drawer"}}
-    assert [row[0] for row in calls] == ["source_read", "invoke"] * 3  # under the first hold only
+    assert [row[0] for row in calls] == ["reserve", "invoke"] + ["source_read", "invoke"] * 3  # one hold
     with pytest.raises(_Compiled):  # and never bought again
         handoff.prepare_website_scene_handoff(**kwargs)
-    assert len(calls) == 6 and packaged == []
+    assert len(calls) == 8 and packaged == []
 
 
-def test_credits_out_at_the_end_of_the_job_s_window_ships_the_room_package(tmp_path, monkeypatch, ready_atlas):
-    """Only when the job's window ends before the money wait can ask again does it go on without the drawer:
-    the room package, flagged with the credits-depleted code."""
+def test_credits_out_ships_the_room_package_only_near_the_window_end_read_when_the_answer_comes(
+        tmp_path, monkeypatch, ready_atlas):
+    """The window end is read when the answer comes: the retained grant, moved later by an extension on its scene
+    intent. Within two hours of it the room package ships, flagged; an extension keeps the job waiting; a grant
+    that cannot be read keeps it waiting."""
     from blueprint_pipeline import website_gemini_receipts as receipts
+    from blueprint_pipeline import website_preparation_terminal as terminal
     kwargs = _drawer_job(tmp_path, monkeypatch)
     packaged = room_recorder(monkeypatch)
-    for left, shipped in ((3 * 3600, False), (2 * 3600, True), (60, True)):
-        monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
-                            lambda left=left, **_: (_ for _ in ()).throw(receipts.CreditDepleted(kwargs["now"] + left)))
-        result = handoff.prepare_website_scene_handoff(**kwargs)
-        assert result["status"] == ("room_package_written" if shipped else "awaiting_inputs")
-        assert (packaged[-1]["flags"] == [receipts.CREDIT_DEPLETED]) if shipped else (packaged == [])
     monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
-                        lambda **_: (_ for _ in ()).throw(receipts.CreditDepleted(None)))  # no window known: waits
-    assert handoff.prepare_website_scene_handoff(**kwargs)["status"] == "awaiting_inputs"
+                        lambda **_: (_ for _ in ()).throw(receipts.CreditDepleted()))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(tmp_path / "intents"))
+
+    def handed():
+        return handoff.prepare_website_scene_handoff(**kwargs)["status"]
+    assert handed() == "awaiting_inputs"  # no grant retained: no window to read
+    for ends_in, status in ((3 * 3600, "awaiting_inputs"), (2 * 3600, "room_package_written"),
+                            (60, "room_package_written")):
+        _granted(tmp_path, kwargs, ends_in=ends_in)
+        assert handed() == status
+    assert [call["flags"] for call in packaged] == [[receipts.CREDIT_DEPLETED]] * 2
+    grant = _granted(tmp_path, kwargs, ends_in=60)
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_scene_intent_contracts._read",
+                        lambda path, field: {"request": {"submission_id": kwargs["descriptor"]["capture_id"]}})
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_scene_execution_window_evidence.effective_execution_expiry",
+                        lambda directory, intent: grant["expires_at_epoch"] + 2 * 86400)
+    from blueprint_pipeline.task_evaluation_scene_intent_contracts import canonical_digest as intent_digest
+    identity = intent_digest({"owner": grant["owner"], "submission_id": grant["capture_id"]})
+    intent = tmp_path / "intents" / ("scene-" + identity.removeprefix("sha256:")) / "intent.json"
+    intent.parent.mkdir(parents=True)
+    intent.write_text("{}")
+    assert terminal.retained_window_end(tmp_path, scene_id=grant["scene_id"], capture_id=grant["capture_id"]) == (
+        grant["expires_at_epoch"] + 2 * 86400)
+    assert handed() == "awaiting_inputs" and len(packaged) == 2  # the owner extended it: still a money wait
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_scene_intent_contracts._read",
+                        lambda path, field: (_ for _ in ()).throw(ValueError("unreadable")))
+    assert handed() == "awaiting_inputs" and len(packaged) == 2  # an intent that cannot be read: waits
+    (tmp_path / terminal.GRANT_FILE).write_text("{not json")
+    assert handed() == "awaiting_inputs" and len(packaged) == 2
 
 
 def test_a_wall_or_another_code_at_the_same_step_is_never_the_room_package(tmp_path, monkeypatch, ready_atlas):
@@ -1085,7 +1135,9 @@ def test_the_room_package_of_a_drawer_that_could_not_be_prepared_says_so(tmp_pat
     from blueprint_pipeline import website_gemini_receipts as receipts
     from tests.test_website_scene_handoff_navigation import _published, _record, _said, room_job
     assert sim.OBJECT_NOT_PREPARED_FLAGS == {receipts.EXHAUSTED, receipts.CREDIT_DEPLETED}
-    error = ValueError(code) if code == receipts.EXHAUSTED else receipts.CreditDepleted(0)
+    error = ValueError(code) if code == receipts.EXHAUSTED else receipts.CreditDepleted()
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_terminal.retained_window_end",
+                        lambda *_a, **_k: 0.0)  # the window ends before the money wait can ask again
     monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
                         lambda **_: {"status": "ready"})
     monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
@@ -1100,3 +1152,26 @@ def test_the_room_package_of_a_drawer_that_could_not_be_prepared_says_so(tmp_pat
     said = _said(members["README.txt"])
     assert said.endswith(f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.OBJECT_NOT_PREPARED} "
                          f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+
+
+def test_the_room_package_of_an_object_with_no_surface_to_start_on_says_so(tmp_path, monkeypatch):
+    """Test job 4's package: the real room package and its README after compile found no surface under the object:
+    the room as reconstructed, no rule, that the object was not placed and why, and that it was taken out."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from tests.test_website_scene_handoff_navigation import _published, _record, _said, room_job
+    assert sim.OBJECT_NOT_PLACED_FLAGS == handoff.START_UNSUPPORTED
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    for name in ("website_assembly_coverage.attach_assembly_coverage",
+                 "website_object_spec_research.attach_object_specs"):
+        monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: kw["task_masks"])
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", lambda **_: {
+        "status": "needs_input", "blockers": ["support_surface_not_found_under_subject"]})
+    lamp = {"target_id": "cup-1", "task_effect": "manipulated", "semantic_label": "table lamp"}
+    job, _context, result = room_job(tmp_path, monkeypatch, family="rigid_pick_place", removal=[lamp],
+                                     all_targets=True, description="Move the lamp to the shelf")
+    assert (result["status"], result["blockers"]) == ("room_package_written", [])
+    assert _record(result)["flags"][0] == "support_surface_not_found_under_subject"
+    _status, members = _published(job)
+    assert _said(members["README.txt"]).endswith(f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.OBJECT_NOT_PLACED} "
+                                                 f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")

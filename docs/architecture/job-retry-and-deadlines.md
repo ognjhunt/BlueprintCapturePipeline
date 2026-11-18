@@ -169,8 +169,10 @@ extension. The WebApp half landed as WebApp #1257.
    dispatch and it is not counted toward that bound. It is a money wait
    (`website_gemini_provider_credit_depleted`), asked again on the money
    schedule until the account has funds; in the scene preparation, only when
-   the job's window ends before it can be asked again does the job ship the
-   room package with that flag. The WebApp ledger has no settlement for a
+   the job's window (read when the answer comes: the retained grant and any
+   extension on its scene intent) ends before it can be asked again does the
+   job ship the room package with that flag. A dispatch whose receipt holds
+   no answer is counted as spent, whatever the job's ledger says. The WebApp ledger has no settlement for a
    Google hold, so a refused dispatch's hold stays counted against the job's
    ceiling until one exists. A Gemini error in the clean-plate analysis is raised
    (`GeminiProviderError`) and retried by this policy, never retained as a

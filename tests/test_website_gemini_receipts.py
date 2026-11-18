@@ -597,8 +597,6 @@ def test_a_credits_depleted_402_is_a_money_wait_on_the_same_hold_and_never_count
         with pytest.raises(module.CreditDepleted) as refused:
             module.retained_gemini_call(**args)
         assert is_wall(refused.value) and str(refused.value) == module.CREDIT_DEPLETED
-        held = json.loads(next(tmp_path.glob("*.json")).read_text())["admission"]
-        assert refused.value.window_ends_at_epoch == held["expires_at_epoch"]  # the job's window, from its hold
     assert classify("website_scene_preparation: " + module.CREDIT_DEPLETED) == "money"
     receipt = json.loads(next(tmp_path.glob("*.json")).read_text())
     assert (receipt["status"], receipt["http_status"], receipt["reason"]) == ("refused", 402, module.CREDIT_DEPLETED)
@@ -623,52 +621,87 @@ def test_no_other_402_or_body_is_read_as_credits_depleted(tmp_path, monkeypatch,
     assert not module.credit_depleted(error)
 
 
-def _old_release_chain(tmp_path, monkeypatch, *, error_text, shift=0.0):
-    """Three dispatches the release before this change left ``submitting``, the 4th run counting the third,
-    and a job ledger whose three failed runs carry ``error_text`` over windows moved by ``shift`` seconds."""
-    from datetime import datetime, timedelta, timezone
+def _old_release_chain(tmp_path, monkeypatch, answers, *, ledger_error):
+    """Dispatches of one request answered in turn by ``answers`` (an exception is raised, a dict returned) on the
+    release before this change, which kept no 402 on the receipt; then a job ledger whose one failed attempt,
+    spanning them all, ended on ``ledger_error``. Returns the call arguments and calls on this release."""
+    from datetime import datetime, timezone
     root = tmp_path / "capture/pipeline/website_scene_preparation/assembly_coverage/drawer/receipts"
-    rows = []
+    started = datetime.now(timezone.utc)
     with pytest.MonkeyPatch.context() as release:
         args, _calls = setup_call(root, release)
-        args["invoke"] = lambda: (_ for _ in ()).throw(TimeoutError("as recorded: no answer"))
-        for attempt in range(3):
-            started = datetime.now(timezone.utc)
-            with pytest.raises(TimeoutError):
+        release.setattr(module, "credit_depleted", lambda _exc: False)  # that release
+        for answer in answers:
+            args["invoke"] = lambda answer=answer: answer if isinstance(answer, dict) else (_ for _ in ()).throw(answer)
+            try:
                 module.retained_gemini_call(**args)
-            ended = datetime.now(timezone.utc)
-            rows.append({"attempt_number": 10 + attempt, "status": "failed_retryable", "error": error_text,
-                         "started_at": (started + timedelta(seconds=shift)).isoformat(),
-                         "failed_at": (ended + timedelta(seconds=shift)).isoformat()})
-        with pytest.raises(ValueError, match=module.EXHAUSTED):
-            module.retained_gemini_call(**args)
-    (tmp_path / "capture/pipeline_job_ledger.json").write_text(json.dumps({"attempt_history": rows}))
+            except Exception:  # noqa: BLE001 - each run ends on its answer, as on the host
+                pass
+    (tmp_path / "capture/pipeline_job_ledger.json").write_text(json.dumps({"attempt_history": [
+        {"attempt_number": 7, "status": "failed_retryable", "error": ledger_error,
+         "started_at": started.isoformat(), "failed_at": datetime.now(timezone.utc).isoformat()}]}))
     args, calls = setup_call(root, monkeypatch)
     return args, calls, root
 
 
-def test_a_dispatch_the_ledger_shows_answered_credits_depleted_is_read_as_refused(tmp_path, monkeypatch):
-    """Test job 3's records: the first dispatch is read as the refusal it was, its counted record says so, and
-    its hold pays the next dispatch; no reservation is made."""
-    text = str(_depleted())
-    assert text.startswith("402 RESOURCE_EXHAUSTED. {'error': {'code': 402, 'message': 'Your prepayment credits")
-    args, calls, root = _old_release_chain(tmp_path, monkeypatch, error_text=text)
-    assert module.retained_gemini_call(**args) == {"status": "completed", "targets": ["box"]}
-    assert [row[0] for row in calls] == ["source_read", "invoke"]
-    first = json.loads(next(path for path in root.glob("*.json") if "." not in path.stem).read_text())
-    assert first["status"] == "completed"
-    counted = json.loads(next(root.glob("*.unanswered-1.json")).read_text())  # the evidence, kept
-    assert (counted["status"], counted["outcome"]) == ("answered_refused_before_work", module.CREDIT_DEPLETED)
-    assert counted["answer"]["basis"] == "job_ledger_attempt" and counted["answer"]["attempt_number"] == 10
+def test_job3_s_old_402_chain_stays_counted_and_never_reaches_an_unreserved_resend(tmp_path, monkeypatch):
+    """Test job 3's records: three 402s the release before kept as no answer (original, resend-1, resend-2). The
+    ledger names no dispatch, so nothing is read as refused from it: the chain stays counted, the 4th run sends
+    and reserves nothing and ends on the unanswered bound, never ``..._spend_unreserved`` (review probe a)."""
+    args, calls, root = _old_release_chain(tmp_path, monkeypatch, [_depleted()] * 3 + [None],
+                                           ledger_error=str(_depleted()))
+    args["invoke"] = lambda: pytest.fail("sent again")
+    for _ in range(2):
+        with pytest.raises(ValueError, match=module.EXHAUSTED):
+            module.retained_gemini_call(**args)
+    assert calls == []
+    assert sorted(json.loads(path.read_text())["status"] for path in root.glob("*.json")
+                  if ".unanswered-" not in path.name) == ["submitting"] * 3
 
 
-@pytest.mark.parametrize("text, shift", [
-    (str(_depleted()), 3600.0),                                  # the right answer, in other runs' windows
-    ("402 RESOURCE_EXHAUSTED. {'error': {'code': 402, 'message': 'Billing account disabled.'}}", 0.0),
-    ("TimeoutError: no answer", 0.0)])
-def test_a_dispatch_the_ledger_does_not_show_refused_stays_counted(tmp_path, monkeypatch, text, shift):
-    args, calls, root = _old_release_chain(tmp_path, monkeypatch, error_text=text, shift=shift)
-    with pytest.raises(ValueError, match=module.EXHAUSTED):
+def test_a_request_whose_resend_was_answered_is_never_bought_again(tmp_path, monkeypatch):
+    """A first look left unanswered, its resend answered, then another call's 402 ended the attempt: the request's
+    latest record is the answer, returned as it stands; nothing is reserved or sent (review probe b)."""
+    answered = {"status": "completed", "targets": ["box"]}
+    args, calls, _root = _old_release_chain(tmp_path, monkeypatch, [TimeoutError("unusable look"), answered],
+                                            ledger_error=str(_depleted()))
+    args["invoke"] = lambda: pytest.fail("bought again")
+    assert module.retained_gemini_call(**args) == answered and calls == []
+
+
+def test_a_resend_after_a_top_up_that_times_out_is_an_ordinary_non_answer(tmp_path, monkeypatch):
+    """A 402 kept on the receipt; after a top-up its hold pays the resend, which times out: the next run counts it
+    as unanswered (not money) and sends once more under one new reservation; at the bound the chain ends on the
+    unanswered code, never a money one. With a 402 between two timeouts, none of it is unreserved (probe 2)."""
+    from blueprint_pipeline.website_preparation_retry import classify
+    args, calls = setup_call(tmp_path, monkeypatch)
+    answers = iter([_depleted(), TimeoutError("t1"), TimeoutError("t2"), TimeoutError("t3")])
+
+    def invoke():
+        calls.append(("invoke", None))
+        raise next(answers)
+    args["invoke"] = invoke
+    with pytest.raises(module.CreditDepleted):
         module.retained_gemini_call(**args)
-    assert calls == [] and all(json.loads(path.read_text())["status"] == "counted_as_spent"
-                               for path in root.glob("*.unanswered-*.json"))
+    for _ in range(3):
+        with pytest.raises(TimeoutError):
+            module.retained_gemini_call(**args)
+    with pytest.raises(ValueError, match=module.EXHAUSTED) as ended:
+        module.retained_gemini_call(**args)
+    assert classify("website_scene_preparation: " + str(ended.value)) == "refusal"
+    assert [row[0] for row in calls] == ["reserve", "invoke", "source_read", "invoke"] + ["reserve", "invoke"] * 2
+    args2, calls2 = setup_call(tmp_path / "probe2", monkeypatch)
+    answers2 = iter([TimeoutError("t1"), _depleted(), TimeoutError("t2"), None])
+
+    def invoke2():
+        calls2.append(("invoke", None))
+        answer = next(answers2)
+        if answer is None:
+            return {"status": "completed", "targets": ["box"]}
+        raise answer
+    args2["invoke"] = invoke2
+    for expected in (TimeoutError, module.CreditDepleted, TimeoutError):
+        with pytest.raises(expected):
+            module.retained_gemini_call(**args2)
+    assert module.retained_gemini_call(**args2) == {"status": "completed", "targets": ["box"]}
+    assert [row[0] for row in calls2].count("reserve") == 3  # the original, its resend, the resend's resend

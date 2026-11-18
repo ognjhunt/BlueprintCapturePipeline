@@ -950,13 +950,16 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])
     except (ValueError, KeyError, TypeError, OSError) as exc:
         from .hard_stops import is_wall
-        from .website_gemini_receipts import EXHAUSTED, last_money_recheck
-        if room_ready and (str(exc) == EXHAUSTED and not is_wall(exc) or last_money_recheck(exc, now)):
+        from .website_gemini_receipts import EXHAUSTED, CreditDepleted, last_money_recheck
+        from .website_preparation_terminal import retained_window_end
+        window = (retained_window_end(capture_root, scene_id=descriptor["scene_id"],
+                                      capture_id=descriptor["capture_id"]) if isinstance(exc, CreditDepleted) else None)
+        if room_ready and (str(exc) == EXHAUSTED and not is_wall(exc) or last_money_recheck(exc, now, window)):
             # A Gemini call of this preparation (an object's assembly views, a mask's grounding) was sent the most
             # times its bound allows and never answered; or Gemini answered that Blueprint's credits are depleted
-            # and the job's window ends before the money wait can ask again (until then that answer is a money
-            # wait: ``CreditDepleted``). The object cannot be built without that answer, so the job goes on as the
-            # room package, flagged, and buys nothing.
+            # and the job's window, read now, ends before the money wait can ask again (until then that answer is
+            # a money wait: ``CreditDepleted``; a window that cannot be read keeps it waiting). The object cannot be
+            # built without that answer, so the job goes on as the room package, flagged, and buys nothing.
             try:
                 return room_package(None, flags=[str(exc)])
             except (ValueError, KeyError, TypeError, OSError):

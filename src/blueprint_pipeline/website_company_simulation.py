@@ -199,6 +199,11 @@ OBJECT_NOT_PREPARED = ("Blueprint could not prepare the job's object as a separa
                        "the video could not be completed.")
 OBJECT_NOT_PREPARED_FLAGS = frozenset({"website_gemini_unanswered_dispatches_exhausted",
                                        "website_gemini_provider_credit_depleted"})
+#: The job's object has no surface to start on in the scan (``website_scene_handoff.START_UNSUPPORTED``).
+OBJECT_NOT_PLACED = ("Blueprint did not place the job's object: no surface to start it on was found in the "
+                     "room scan.")
+OBJECT_NOT_PLACED_FLAGS = frozenset({"support_surface_not_found_under_subject",
+                                     "website_synthetic_subject_start_unplaceable"})
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."
 NOT_FILLED_IN = "Parts of the room the video did not show were not filled in."
@@ -626,6 +631,7 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
              **({"not_found": True} if "task_relevant_target_not_observed" in (record.get("flags") or []) else {}),
              **({"not_located": True} if "task_target_not_located" in (record.get("flags") or []) else {}),
              **({"object_not_prepared": True} if OBJECT_NOT_PREPARED_FLAGS & set(record.get("flags") or []) else {}),
+             **({"object_not_placed": True} if OBJECT_NOT_PLACED_FLAGS & set(record.get("flags") or []) else {}),
              **({"nothing_taken_out": True} if JOB_OBJECT_RULE in (record.get("flags") or []) else {}),
              **({"not_filled_in": True} if "scene_completion_not_admitted" in (record.get("flags") or []) else {})}
             if record.get("schema_version") == ROOM_RECORD_SCHEMA else None)
@@ -1089,6 +1095,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_FOUND] if room.get("not_found") else []),
                 *([NOT_LOCATED] if room.get("not_located") else []),
                 *([OBJECT_NOT_PREPARED] if room.get("object_not_prepared") else []),
+                *([OBJECT_NOT_PLACED] if room.get("object_not_placed") else []),
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"] else OBJECTS_TAKEN_OUT.format(count=room["objects"])]
                   if room.get("objects") else []),
                 *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),
