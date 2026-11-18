@@ -387,6 +387,12 @@ def resting_views(views: list[np.ndarray]) -> list[np.ndarray]:
 
 
 def masked_source_points(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> np.ndarray:
+    return np.concatenate(masked_view_points(track, frames))
+
+
+def masked_view_points(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> list[np.ndarray]:
+    """The masked surfaces lifted through each frame's estimated depth and camera, one array per view
+    where the object rests (``resting_views``), in the source frame."""
     by_id = {frame["frame_id"]: frame for frame in frames}
     points = []
     for observation in track["observations"]:
@@ -407,7 +413,7 @@ def masked_source_points(track: Mapping[str, Any], frames: list[Mapping[str, Any
         points.append(camera_points @ pose[:3, :3].T + pose[:3, 3])
     if not points:
         raise ValueError("task_target_has_no_estimated_geometry")
-    return np.concatenate(resting_views(points))
+    return resting_views(points)
 
 
 def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]],

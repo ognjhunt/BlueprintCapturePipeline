@@ -386,6 +386,261 @@ def nearest_support_under(mesh: Any, lower: Sequence[float], upper: Sequence[flo
     return None
 
 
+#: The object rests on a surface under at least this share of its own outline: a flat surface under
+#: that share of a footprint is somewhere it could rest (``INTERMEDIATE_SURFACE_MIN_FOOTPRINT_SHARE``).
+RESTING_OUTLINE_MIN_SHARE = 0.5
+#: Plan samples per axis over the outline's bounds (cell centres; ``REGION_GRID_STEPS``).
+RESTING_OUTLINE_GRID_STEPS = 33
+#: Candidate surface heights are read this finely, each over the fitted band's widest reach.
+RESTING_HEIGHT_STEP_M = 0.01
+#: Candidate surfaces fitted, nearest the object's lowest observed points first, before none is chosen.
+RESTING_MAX_CANDIDATES = 8
+#: A frame shows the object touching a surface when at least this share of the points it lifted for the
+#: object lie within the search window of that surface's plane ...
+CONTACT_MIN_POINT_SHARE = 0.01
+#: ... and the object touches it when at least this share of its frames show that, as a resting place
+#: must be seen in a third of the views (``website_task_masks.resting_views``).
+CONTACT_MIN_FRAME_SHARE = 1 / 3
+
+
+def object_outline(points: np.ndarray, lower: Sequence[float], upper: Sequence[float], *, up: int) -> np.ndarray:
+    """The object's own outline in plan: the convex hull of its observed points inside its box.
+
+    Counter-clockwise in the plan axes (``up`` left out, in order). The box is its points' 1st-99th
+    percentile on each axis (``estimate_target_bounds``), and its corners are not the object: a round
+    base, a tapered shade. The box's own rectangle when the points inside it span no area.
+    """
+    from scipy.spatial import ConvexHull
+
+    plan = [axis for axis in range(3) if axis != up]
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    rectangle = _box_rectangle(lower, upper, up=up)
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    inside = points[np.all((points >= lower) & (points <= upper), axis=1)][:, plan]
+    if len(inside) < 3:
+        return rectangle
+    try:
+        hull = ConvexHull(inside)
+    except RuntimeError:  # QhullError: the points lie on a line
+        return rectangle
+    return inside[hull.vertices] if hull.volume > 0 else rectangle
+
+
+def _heights_under(triangles: np.ndarray, points: np.ndarray, *, up: int) -> tuple[np.ndarray, np.ndarray]:
+    """For each triangle over each plan point: the point's index and the triangle's height there."""
+    from itertools import chain
+
+    from scipy.spatial import cKDTree
+
+    if not len(triangles) or not len(points):
+        return np.zeros(0, dtype=np.int64), np.zeros(0)
+    plan = [axis for axis in range(3) if axis != up]
+    flat = triangles[:, :, plan]
+    middle = flat.mean(axis=1)
+    rows = cKDTree(middle).query_ball_point(points, float(np.linalg.norm(flat - middle[:, None], axis=2).max()))
+    owner = np.repeat(np.arange(len(points)), [len(row) for row in rows])
+    index = np.fromiter(chain.from_iterable(rows), dtype=np.int64, count=len(owner))
+    a, b, c = (flat[index, corner] for corner in range(3))
+    e1, e2, offset = b - a, c - a, points[owner] - a
+    determinant = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+    safe = np.abs(determinant) > 1e-12
+    u = np.divide(offset[:, 0] * e2[:, 1] - offset[:, 1] * e2[:, 0], determinant,
+                  out=np.full_like(determinant, -1.0), where=safe)
+    v = np.divide(e1[:, 0] * offset[:, 1] - e1[:, 1] * offset[:, 0], determinant,
+                  out=np.full_like(determinant, -1.0), where=safe)
+    inside = safe & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9)
+    z = triangles[index, :, up]
+    height = z[:, 0] + u * (z[:, 1] - z[:, 0]) + v * (z[:, 2] - z[:, 0])
+    return owner[inside], height[inside]
+
+
+def _box_rectangle(lower: np.ndarray, upper: np.ndarray, *, up: int) -> np.ndarray:
+    """A box's footprint in plan, counter-clockwise."""
+    first, second = (axis for axis in range(3) if axis != up)
+    return np.array([[lower[first], lower[second]], [upper[first], lower[second]],
+                     [upper[first], upper[second]], [lower[first], upper[second]]], dtype=float)
+
+
+def _inside_outline(outline: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """Whether each plan point lies inside (or on) the counter-clockwise convex ``outline``."""
+    points = np.asarray(points, dtype=float).reshape(-1, 2)
+    inside = np.ones(len(points), dtype=bool)
+    for a, b in zip(outline, np.roll(outline, -1, axis=0)):
+        inside &= (b[0] - a[0]) * (points[:, 1] - a[1]) - (b[1] - a[1]) * (points[:, 0] - a[0]) >= 0
+    return inside
+
+
+def resting_surface_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
+                          views: Sequence[np.ndarray], up: int, meters_per_unit: float, up_sign: int = 1,
+                          placement_residual_m: float | None = None, rise_m: float,
+                          drop_m: float = NEAREST_SUPPORT_MAX_DROP_M) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """The surface the object visibly rests on, judged by its own outline and its own points.
+
+    For when ``support_under`` finds none at the object's estimated bottom (internal test job 4,
+    2026-11-18: a lamp whose box reached 22 cm below the round table it stood on, and three of
+    whose four box corners missed the round top; ``website_resting_support``). ``views`` are the object's observed points, one
+    array per frame, in the mesh's frame and units; ``lower``/``upper`` its box.
+
+    - Range: from ``drop_m`` below the box's bottom (its lowest observed points) to ``rise_m``
+      above it; the caller sets ``rise_m`` from how uncertain the object's own estimate is.
+    - Footprint: the plan convex hull of the object's points (``object_outline``). A level, smooth,
+      connected surface (``_fitted_support``'s fit) must lie under at least
+      ``RESTING_OUTLINE_MIN_SHARE`` of that outline's area, so round and irregular tops count.
+    - Room: no other surface lies across that share of the outline in the space the object would
+      fill resting there (the underside of a slab is not where anything rests).
+    - Contact: at least ``CONTACT_MIN_FRAME_SHARE`` of the frames show the object's points at the
+      surface's plane (within the search window, ``search_window_m``).
+    - Preference: the surface whose plane lies nearest the box's bottom, of those that pass.
+
+    Returns ``(support, record)``: the support as ``support_under`` gives one (``OUTLINE_BASIS``,
+    seated where the plane lies under the outline's centre) or None, and a record of the outline,
+    the range and every candidate tried, with why each was refused. Estimates only.
+    """
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    views = [np.asarray(view, dtype=float).reshape(-1, 3) for view in views]
+    views = [view for view in views if len(view)]
+    if (lower.shape != (3,) or upper.shape != (3,) or not np.isfinite([lower, upper]).all()
+            or np.any(upper <= lower) or up not in {1, 2} or up_sign not in {-1, 1}
+            or not np.isfinite(meters_per_unit) or meters_per_unit <= 0 or not views
+            or not all(np.isfinite(view).all() for view in views)
+            or not all(math.isfinite(value) and value >= 0 for value in (rise_m, drop_m))):
+        raise ValueError("website_support_query_invalid")
+    options = dict(up=up, meters_per_unit=meters_per_unit, window_m=search_window_m(placement_residual_m),
+                   rise_m=float(rise_m), drop_m=float(drop_m))
+    if up_sign == -1:
+        # Search in an upright frame (the reflection of ``up``); keep output in the source frame.
+        low, high = lower.copy(), upper.copy()
+        low[up], high[up] = -upper[up], -lower[up]
+        reflected = [view * np.where(np.arange(3) == up, -1.0, 1.0) for view in views]
+        support, record = _resting_upright(MergedCollider(mesh, up=up, flipped=True), low, high, reflected, **options)
+        if support is not None:
+            support["top_runtime_units"] *= -1
+            support["aabb_min"][up], support["aabb_max"][up] = -support["aabb_max"][up], -support["aabb_min"][up]
+        return support, record
+    return _resting_upright(MergedCollider(mesh, up=up), lower, upper, views, **options)
+
+
+def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, views: list[np.ndarray], *,
+                     up: int, meters_per_unit: float, window_m: float, rise_m: float,
+                     drop_m: float) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """``resting_surface_under`` with ``up`` upright. Heights in the record are metres above the box's bottom."""
+    plan = [axis for axis in range(3) if axis != up]
+    mpu, bottom = meters_per_unit, float(lower[up])
+    outline = object_outline(np.concatenate(views), lower, upper, up=up)
+    rectangle = _box_rectangle(lower, upper, up=up)
+    corners_only = outline.shape == rectangle.shape and np.array_equal(outline, rectangle)
+    x, y = outline[:, 0], outline[:, 1]
+    area = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+    low_xy, high_xy = outline.min(axis=0), outline.max(axis=0)
+    cells = (np.arange(RESTING_OUTLINE_GRID_STEPS) + 0.5) / RESTING_OUTLINE_GRID_STEPS
+    grid = np.stack(np.meshgrid(*(low_xy[i] + cells * (high_xy[i] - low_xy[i]) for i in range(2)), indexing="ij"),
+                    axis=-1).reshape(-1, 2)
+    samples = grid[_inside_outline(outline, grid)]
+    if not len(samples):
+        samples = outline.mean(axis=0, keepdims=True)
+    centre = samples.mean(axis=0)
+    floor_limit, top_limit = bottom - drop_m / mpu, bottom + rise_m / mpu
+    record: dict[str, Any] = {
+        "outline": {"basis": "box_rectangle" if corners_only else "convex_hull_of_observed_points",
+                    "vertices": int(len(outline)), "area_m2": area * mpu ** 2,
+                    "box_area_m2": float(np.prod((upper - lower)[plan])) * mpu ** 2,
+                    "samples": int(len(samples))},
+        "range_m": {"above_lowest_observed_points": rise_m, "below_lowest_observed_points": drop_m},
+        "contact_window_m": window_m, "candidates": []}
+    # Gentle faces reaching over the outline's bounds in plan; those within the range (and the fit band's reach).
+    gentle, centres = collider.gentle, collider.centres
+    band = FITTED_BAND_BOUNDS_M[1] / mpu
+    over = []
+    for block in _row_blocks(len(gentle)):
+        extent = collider.triangles(gentle[block])[:, :, plan]
+        over.append(np.flatnonzero(np.all((extent.max(axis=1) >= low_xy) & (extent.min(axis=1) <= high_xy), axis=1))
+                    + block.start)
+    over = _joined(over)
+    near = over[(centres[over, up] >= floor_limit - band) & (centres[over, up] <= top_limit + band)]
+    heights = centres[near, up]
+    # A candidate level: a face lies within the fit band of it under at least the threshold share of the
+    # outline's samples. Read per sample, so a large triangle counts too.
+    step = RESTING_HEIGHT_STEP_M / mpu
+    levels = np.arange(floor_limit, top_limit + step / 2, step)
+    owner, under = _heights_under(collider.triangles(gentle[near]), samples, up=up)
+    bins, spread = np.rint((under - floor_limit) / step).astype(np.int64), int(round(band / step))
+    hit = np.zeros((len(samples), len(levels)), dtype=bool)
+    for shift in range(-spread, spread + 1):
+        target = bins + shift
+        valid = (target >= 0) & (target < len(levels))
+        hit[owner[valid], target[valid]] = True
+    held = hit.mean(axis=0)
+    # Nearest the lowest observed points first. Each level seeds a fit from the faces at it, which grows over
+    # the connected surface; a level whose faces belong to a surface already fitted adds nothing.
+    tried = np.zeros(len(gentle), dtype=bool)
+    tilt_limit = math.cos(math.radians(FITTED_MAX_TILT_DEGREES))
+    needed = max(1, math.ceil(len(views) * CONTACT_MIN_FRAME_SHARE - 1e-9))
+    for level in sorted(levels[held >= RESTING_OUTLINE_MIN_SHARE], key=lambda level: (abs(level - bottom), level)):
+        seed = near[np.abs(heights - level) <= step]
+        if len(seed) < 3 or tried[seed].mean() >= SAME_FITTED_SURFACE_MIN_OVERLAP:
+            continue
+        if len(record["candidates"]) >= RESTING_MAX_CANDIDATES:
+            break
+        row: dict[str, Any] = {"height_m": float(level - bottom) * mpu, "seed_faces": int(len(seed))}
+        record["candidates"].append(row)
+        faces = _grown_surface(collider, seed, up=up, meters_per_unit=mpu)
+        tried[seed] = True
+        if faces is None:
+            row["refused"] = "no_connected_surface"
+            continue
+        tried[faces] = True
+        normal, middle, rms = _plane(centres[faces], up)
+        tilt = float(np.degrees(np.arccos(min(1.0, float(normal[up])))))
+        row.update(fit_tilt_degrees=tilt, fit_rms_m=rms * mpu)
+        if normal[up] < tilt_limit or rms * mpu > FITTED_MAX_RMS_M:
+            row["refused"] = "not_level_and_smooth"
+            continue
+
+        def plane(xy: np.ndarray) -> np.ndarray:
+            return middle[up] - (normal[plan[0]] * (xy[:, 0] - middle[plan[0]])
+                                 + normal[plan[1]] * (xy[:, 1] - middle[plan[1]])) / normal[up]
+
+        top = float(plane(centre[None])[0])
+        row["height_m"] = (top - bottom) * mpu
+        surface = gentle[faces]
+        local = []
+        for block in _row_blocks(len(surface)):
+            extent = collider.triangles(surface[block])[:, :, plan]
+            local.append(surface[block][np.all((extent.max(axis=1) >= low_xy) & (extent.min(axis=1) <= high_xy), axis=1)])
+        local = _joined(local)
+        share = (float(SupportOutline(collider.triangles(local), np.zeros((0, 2, 3)), window_m / mpu, up=up)
+                       .covers(samples).mean()) if len(local) else 0.0)
+        row["outline_share"] = share
+        if share < RESTING_OUTLINE_MIN_SHARE:
+            row["refused"] = "outline_not_over_the_surface"
+            continue
+        if not floor_limit <= top <= top_limit:
+            row["refused"] = "outside_the_range"
+            continue
+        # Resting there, the object fills its outline up to its top; a surface across that space (the
+        # top of the slab whose underside this is, a table over the floor) leaves it no room.
+        reach = top + float(upper[up] - max(top, float(lower[up])))
+        above = over[(centres[over, up] > top + band) & (centres[over, up] <= reach)]
+        occupied = (float(SupportOutline(collider.triangles(gentle[above]), np.zeros((0, 2, 3)), window_m / mpu, up=up)
+                          .covers(samples).mean()) if len(above) else 0.0)
+        row["occupied_share"] = occupied
+        if occupied >= RESTING_OUTLINE_MIN_SHARE:
+            row["refused"] = "no_room_above_it"
+            continue
+        touching = sum(float(np.mean(np.abs(view[:, up] - plane(view[:, plan])) * mpu <= window_m))
+                       >= CONTACT_MIN_POINT_SHARE for view in views)
+        row.update(contact_frames=int(touching), frames=len(views))
+        if touching < needed:
+            row["refused"] = "no_contact_in_the_frames"
+            continue
+        row["chosen"] = True
+        low, high = collider.bounds(surface)
+        return {"top_runtime_units": top, "aabb_min": low, "aabb_max": high, "face_indices": surface.tolist(),
+                "basis": OUTLINE_BASIS, "fit_rms_m": rms * mpu, "fit_tilt_degrees": tilt, "outline_share": share,
+                "contact_frames": int(touching), "frames": len(views), "physical_measurement": False}, record
+    return None, record
+
+
 def _support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
              meters_per_unit: float, window_m: float) -> dict[str, Any] | None:
     result = (_level_face_support(collider, lower, upper, up=up, meters_per_unit=meters_per_unit, window_m=window_m)
@@ -475,6 +730,9 @@ SAME_FITTED_SURFACE_MIN_OVERLAP = 0.9
 #: corrugation sits 4 cm off. The object rests on the highest of them.
 FITTED_MAX_CONTACT_DEVIATION_M = 0.025
 FITTED_CONTACT_RADIUS_M = 0.01
+#: A surface fitted under the object's own outline, not its box (``resting_surface_under``).
+OUTLINE_BASIS = "fitted_surface_under_object_outline"
+FITTED_BASES = frozenset({"fitted_surface_under_footprint", OUTLINE_BASIS})
 
 
 def _plane(points: np.ndarray, up: int) -> tuple[np.ndarray, np.ndarray, float]:
@@ -482,6 +740,33 @@ def _plane(points: np.ndarray, up: int) -> tuple[np.ndarray, np.ndarray, float]:
     normal = np.linalg.svd(points - middle, full_matrices=False)[2][-1]
     normal = normal if normal[up] >= 0 else -normal
     return normal, middle, float(np.sqrt(np.mean(((points - middle) @ normal) ** 2)))
+
+
+def _grown_surface(collider: MergedCollider, seed: np.ndarray, *, up: int,
+                   meters_per_unit: float) -> np.ndarray | None:
+    """Fit a plane to the ``seed`` faces and grow it over connected gentle faces near it, refitting.
+
+    Positions into ``collider.gentle``; None when no seeded face stays near the plane.
+    """
+    gentle, centres = collider.gentle, collider.centres
+    low_band, high_band = (bound / meters_per_unit for bound in FITTED_BAND_BOUNDS_M)
+    faces = seed
+    for _ in range(FITTED_ITERATIONS):
+        normal, middle, rms = _plane(centres[faces], up)
+        band = min(max(2.5 * rms, low_band), high_band)
+        near = np.zeros(len(centres), dtype=bool)
+        for block in _row_blocks(len(centres)):
+            near[block] = np.abs((centres[block] - middle) @ normal) <= band
+        candidates = np.flatnonzero(near)
+        labels = collider.components(gentle[candidates])
+        seeded = labels[np.searchsorted(candidates, seed[near[seed]])]
+        if not len(seeded):
+            return None
+        grown = candidates[labels == np.bincount(seeded).argmax()]
+        if np.array_equal(grown, faces):
+            break
+        faces = grown
+    return faces
 
 
 def _fitted_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
@@ -507,23 +792,9 @@ def _fitted_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarr
         seed = seed[np.abs(centres[seed, up] - top) <= 0.03 / meters_per_unit]
     if len(seed) < 3:
         return None
-    low_band, high_band = (bound / meters_per_unit for bound in FITTED_BAND_BOUNDS_M)
-    faces = seed
-    for _ in range(FITTED_ITERATIONS):
-        normal, middle, rms = _plane(centres[faces], up)
-        band = min(max(2.5 * rms, low_band), high_band)
-        near = np.zeros(len(centres), dtype=bool)
-        for block in _row_blocks(len(centres)):
-            near[block] = np.abs((centres[block] - middle) @ normal) <= band
-        candidates = np.flatnonzero(near)
-        labels = collider.components(gentle[candidates])
-        seeded = labels[np.searchsorted(candidates, seed[near[seed]])]
-        if not len(seeded):
-            return None
-        grown = candidates[labels == np.bincount(seeded).argmax()]
-        if np.array_equal(grown, faces):
-            break
-        faces = grown
+    faces = _grown_surface(collider, seed, up=up, meters_per_unit=meters_per_unit)
+    if faces is None:
+        return None
     normal, middle, rms = _plane(centres[faces], up)
     tilt = float(np.degrees(np.arccos(min(1.0, float(normal[up])))))
     if tilt > FITTED_MAX_TILT_DEGREES or rms * meters_per_unit > FITTED_MAX_RMS_M:
@@ -606,16 +877,19 @@ def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
 
     Level faces nearly all within a fitted surface are that surface: a conditioned
     collider's flattened patch (website_collider_conditioning) reads level under a
-    footprint wholly on it, and fitted under one that spans a gap in it.
+    footprint wholly on it, and fitted under one that spans a gap in it. A surface fitted under the
+    object's own outline (``resting_surface_under``) is a fitted surface like any other.
     """
-    if first["basis"] != second["basis"]:
+    first_fitted, second_fitted = (row["basis"] in FITTED_BASES for row in (first, second))
+    if first["basis"] != second["basis"] and not (first_fitted and second_fitted):
         bases = {first["basis"]: first, second["basis"]: second}
-        if set(bases) != {"fitted_surface_under_footprint", "reconstructed_triangle_footprint_contacts"}:
+        level = bases.get("reconstructed_triangle_footprint_contacts")
+        fitted = first if first_fitted else second if second_fitted else None
+        if level is None or fitted is None:
             return False
-        level = set(bases["reconstructed_triangle_footprint_contacts"]["face_indices"])
-        fitted = set(bases["fitted_surface_under_footprint"]["face_indices"])
+        level, fitted = set(level["face_indices"]), set(fitted["face_indices"])
         return bool(level) and len(level & fitted) >= SAME_FITTED_SURFACE_MIN_OVERLAP * len(level)
-    if first["basis"] != "fitted_surface_under_footprint":
+    if not first_fitted:
         return first["face_indices"] == second["face_indices"]
     a, b = set(first["face_indices"]), set(second["face_indices"])
     return len(a & b) >= SAME_FITTED_SURFACE_MIN_OVERLAP * len(a | b)
