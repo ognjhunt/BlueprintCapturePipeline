@@ -1160,6 +1160,9 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 # The object does not fit the scene or the video: left out, never a hold or a new video.
                 return room_package(None, flags=[str(exc)])
             raise
+        if (preparation.get("destination_surface_estimate") or {}).get("status") == "estimated":
+            # Compile added a destination surface the scan missed to the collider: every package reads that one.
+            base = json.loads((root / "base_scene.json").read_text())
         if (preparation["status"] != "intake_ready" and not preparation.get("native_task_preparation_gap")
                 and may_fall_back()
                 and ("rule_withheld" in result and not set(preparation["blockers"]) & REGISTRATION_REFUSALS

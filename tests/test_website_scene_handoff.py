@@ -301,6 +301,41 @@ def test_runtime_inputs_read_the_collider_compile_sealed(tmp_path, monkeypatch, 
     assert result["runtime_inputs"]["blockers"] == ["stopped_after_binding"]
 
 
+@pytest.mark.parametrize("blockers", [["website_scene_execution_authority_required"],
+                                      ["task_destination_surface_contact_required"]])
+def test_every_package_reads_the_collider_holding_an_estimated_destination_surface(
+        tmp_path, monkeypatch, ready_atlas, blockers):
+    # Compile added a destination surface the scan missed (glass) to the collider and sealed it in the base scene
+    # (website_unscanned_surface): native inputs bind that one, and so does the room package a job ships when its
+    # object still does not fit there, so its README's sentence about the estimate is true of its collision file.
+    kwargs = inputs(tmp_path)
+    kwargs["descriptor"]["metadata"]["site_task_context"]["context_digest"] = "sha256:" + "c" * 64
+    sealed = {**ready_atlas["base_scene"], "collision_mesh_digest": "sha256:" + "e" * 64}
+
+    def compile(**value):
+        assert value["base_scene"] == ready_atlas["base_scene"]
+        write_json(value["output_root"] / "base_scene.json", sealed)
+        return {"status": "needs_input", "blockers": blockers, "digest": "sha256:" + "a" * 64, "thumbnail": {},
+                "destination_surface_estimate": {"status": "estimated"}}
+
+    bound = []
+
+    def runtime_inputs(**value):
+        bound.append(value["base_scene"])
+        raise ValueError("stopped_after_binding")
+
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", compile)
+    monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", runtime_inputs)
+    packaged = room_recorder(monkeypatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    if result["status"] == handoff.ROOM_PACKAGE:
+        assert [call["base_scene"] for call in packaged] == [sealed] and bound == []
+    else:
+        assert bound == [sealed] and packaged == []
+    assert result["status"] == (handoff.ROOM_PACKAGE if "task_destination_surface_contact_required" in blockers
+                                else "needs_input")
+
+
 @pytest.mark.parametrize("deferred_masks", [False, True])
 @pytest.mark.parametrize("atlas,status", [
     ({"status": "needs_input", "reason": "website_atlas_job_required"}, "needs_input"),

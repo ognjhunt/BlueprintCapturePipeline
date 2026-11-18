@@ -13,7 +13,6 @@ category; nothing is promoted to a physical measurement.
 from __future__ import annotations
 
 import base64
-import copy
 import hashlib
 import io
 import json
@@ -43,7 +42,8 @@ from .website_track_mask_codec import canonical_track_digest, load_track_json
 from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start, on_surface_radius,
                                        farthest_supported_destination, footprint_at, ground_on_observed_floor,
                                        nearest_supported_destination, same_support_surface,
-                                       supported_destination_near_place, support_outline, support_under)
+                                       supported_destination_near_place, support_outline, support_under,
+                                       SupportLookups)
 from .website_registration_admissibility import (  # noqa: F401 - re-exported for callers and tests
     CLOSE_POSE_DEGREES, CLOSE_POSE_METRES, CLOSE_POSE_SCALE, REGISTRATION_AMBIGUOUS_FLAG,
     REGISTRATION_DECISIVE_RATIO, RegistrationRefusal, _close_runner_up,
@@ -697,8 +697,8 @@ def _runtime_bounds(bounds: Mapping[str, Any], matrix: np.ndarray) -> tuple[list
 
 def _grounded_destination(row: Mapping[str, Any], matrix: np.ndarray, *, up: int,
                           up_sign: int) -> tuple[list[float], list[float], list[float]]:
-    """A destination mask's runtime bounds, and the centre of its top where the subject is set down."""
-    low, high = _runtime_bounds(row["estimated_visible_bounds"], matrix)
+    """A destination mask's runtime bounds (or an estimated surface's), and the centre of its top where it is set down."""
+    low, high = row.get("estimated_surface_runtime") or _runtime_bounds(row["estimated_visible_bounds"], matrix)
     position = [(low[i] + high[i]) / 2 for i in range(3)]
     position[up] = (high if up_sign == 1 else low)[up]
     return low, high, position
@@ -742,27 +742,6 @@ def _named_destination_place(removal_manifest: Mapping[str, Any], row: Mapping[s
     return record, (region_low, region_high), position
 
 
-class _SupportLookups:
-    """``support_under`` on one collider, each footprint looked up once.
-
-    The collider conditioning looks up the start and destination supports first;
-    when it leaves the collider as it was, placement reuses those lookups.
-    """
-
-    def __init__(self, collider: Any):
-        self.collider, self.found = collider, {}
-
-    def __call__(self, mesh: Any, lower: Sequence[float], upper: Sequence[float], **options: Any):
-        if mesh is not self.collider:
-            return support_under(mesh, lower, upper, **options)
-        # Rounded: a footprint rebuilt from snapped bounds differs only in its last bits.
-        key = (np.round(np.asarray(lower, dtype=float), 9).tobytes(),
-               np.round(np.asarray(upper, dtype=float), 9).tobytes(), tuple(sorted(options.items())))
-        if key not in self.found:
-            self.found[key] = support_under(mesh, lower, upper, **options)
-        return copy.deepcopy(self.found[key])
-
-
 def _seal_placement_collider(*, collider: Any, base_scene: Mapping[str, Any], placed: Any,
                              destination_rows: Sequence[Mapping[str, Any]], matrix: np.ndarray, up: int,
                              up_sign: int, meters_per_unit: float, placement_residual_m: float | None,
@@ -782,7 +761,7 @@ def _seal_placement_collider(*, collider: Any, base_scene: Mapping[str, Any], pl
     """
     from . import website_collider_conditioning as conditioning
 
-    lookup = _SupportLookups(collider)
+    lookup = SupportLookups(collider, support_under)
     subject_min, subject_max, support, _ = placed(collider, lookup)
     placements = []
     if support is not None:
@@ -807,7 +786,7 @@ def _seal_placement_collider(*, collider: Any, base_scene: Mapping[str, Any], pl
     sealed = result["base_scene"]
     write_json(output_root / "base_scene.json", sealed)
     collider = trimesh.load(sealed["collision_mesh_path"], force="mesh", process=False)
-    return collider, sealed, result["record"], _SupportLookups(collider)
+    return collider, sealed, result["record"], SupportLookups(collider, support_under)
 
 
 def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path) -> dict[str, Any] | None:
@@ -1303,8 +1282,14 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 base_scene, collider = excised["base_scene"], excised["collider"]
                 write_json(output_root / "base_scene.json", base_scene)
         blockers.append(GEOMETRY_ONLY_BLOCKER)
-    support = collider_conditioning = None
+    support, collider_conditioning, surface_estimate = None, None, {}
     if not independent_object:
+        if not articulated:  # A destination surface the scan missed (glass) is estimated from its visible edges.
+            from .website_unscanned_surface import estimate_unscanned_destination
+            collider, base_scene, destination_rows, surface_estimate = estimate_unscanned_destination(
+                collider=collider, base_scene=base_scene, rows=destination_rows, frames=source_geometry["frames"],
+                matrix=matrix, subject=None if synthetic is not None else (subject_min, subject_max), up=up,
+                up_sign=up_sign, meters_per_unit=mpu, placement_residual_m=residual, output_root=output_root)
         # The surfaces the subject starts and ends on are flattened before anything rests
         # on them: every lookup below reads the collider that is sealed and digest-bound.
         collider, base_scene, collider_conditioning, lookup = _seal_placement_collider(
@@ -1933,6 +1918,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination, **searched,
+        **surface_estimate,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
         **({"destination_choice": destination_choice} if destination_choice is not None and not rule_withheld else {}),

@@ -208,7 +208,11 @@ retry: the same video and release give the same answer. Two changes answer it.
   that connects to no other, or a blurry one that is not the anchor, is left out the same way
   (`scene_estimate:task_views_left_out`), and
   a room no surrounding view connects to leaves the task area's views as the scene
-  (`scene_estimate:surroundings_not_connected`). Each estimate is named on the
+  (`scene_estimate:surroundings_not_connected`). Since 2026-11-18 a job's destination surface the scan
+  does not show (glass and other see-through or shiny surfaces) is estimated from its visible edges in
+  the frames, checked across them, and added to the collider only
+  (`scene_estimate:destination_surface_estimated`, `website_unscanned_surface`); one the frames do not
+  agree on stops as before. Each estimate is named on the
   base scene (`atlas_scene_estimates`), copied into the screening plan, and published in v3
   `scene_feasibility.flags`; the website names each in its own sentence. Counts and intervals are
   shown as measured: no estimate adjusts them.
