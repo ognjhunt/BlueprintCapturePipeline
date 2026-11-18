@@ -267,8 +267,12 @@ buys a fresh real-frames-only attempt under its own root, reservation and idempo
 policy's six timed retries and then daily while the window is open. The draft becomes the look for
 good, recorded as `refined_splat_retry` on the result's `appearance` and as `look_fallback` on the
 ready Atlas job (paged once, `website_atlas_look_draft_final`), only when the job's remaining
-allowance cannot cover another splat and the mesh after it, when the window, read live
-(`website_preparation_terminal.retained_window_end`), ends within two hours, or, for a job whose
-window cannot be read, after the six timed retries. An attempt that has sent anything is always
-resumed from its receipts; a new one is recorded only once every earlier operation is proven
-failed. A money, privacy or rights refusal raised by an attempt's own admission stays a stop.
+allowance cannot cover another splat and the mesh after it, when a money wall refuses an attempt
+with nothing in flight (the job has a usable draft, so it takes it rather than park; nothing more is
+bought for the look), when the job's deadline is within two hours, or, with no deadline readable,
+after the six timed retries. The deadline is the window, read live
+(`website_preparation_terminal.retained_window_end`), never later than the Atlas job's own seven-day
+life (`MAXIMUM_JOB_SECONDS`, which ends it `atlas_preview_expired`): a grant issued after enqueue,
+renewed or extended can end after it. An attempt that has sent anything is always resumed from its
+receipts; a new one is recorded only once every earlier operation is proven failed. A privacy or
+rights refusal stays a stop.
