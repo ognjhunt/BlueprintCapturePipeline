@@ -270,7 +270,7 @@ def _refined_marker(form, root: Path, manifest, frames, roots) -> dict:
 
 def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_context,
                      task_runner, max_polls=2, checkpoint=None, retained_only=False, input_selection_digest=None,
-                     forms=None):
+                     forms=None, whole_view_review=None):
     """Resume one refined-splat operation; publish its original SPZ and lossless decoded PLY.
 
     World Labs documents a posed frame as image, depth and camera only. It
@@ -285,8 +285,11 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
     one unless an operator requested that upgrade (``request_gap_preserving_upgrade``).
     ``input_selection_digest`` names the recorded choice of ``frames``
     (``atlas_splat_input_quality``); a new request's input binding keeps it.
-    ``forms``, when given, are the only forms tried here: a later fresh attempt
-    (``atlas_refined_splat_retry``) is the real-frames-only form alone.
+    ``forms``, when given, are the only forms tried here. A later fresh attempt
+    (``atlas_refined_splat_retry``) resends its first attempt's request: with
+    ``whole_view_review``, that attempt's retained verdicts on these same views
+    (``first_attempt_review``), the reviewed-whole form is posted again, admitting
+    the same views, and no review is bought again; then the real-frames-only form.
     """
     from . import atlas_whole_view_review
 
@@ -306,10 +309,19 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
                 continue
             if form == WHOLE and not _bought(root):
                 views = _review_views(root, frames)
-                review = atlas_whole_view_review.review_whole_views(
-                    views=views, root=root, task_context=task_context, policy=policy,
-                    source_video_digest=result["binding"]["source_video_digest"], checkpoint=checkpoint,
-                    retained_only=retained_only)
+                if whole_view_review is not None:
+                    candidates = {(base, view["frame_id"]) for base, view, _ in views
+                                  if _admission(view)[0] and _admission(view)[1] is not None}
+                    # The verdicts name these views by position: views that changed are never admitted by them.
+                    review = (whole_view_review if all((row["position"], row["frame_id"]) in candidates
+                                                       for row in whole_view_review["verdicts"])
+                              else {**whole_view_review, "verdicts": []})
+                    write_json(root / REVIEW_RECORD, review)
+                else:
+                    review = atlas_whole_view_review.review_whole_views(
+                        views=views, root=root, task_context=task_context, policy=policy,
+                        source_video_digest=result["binding"]["source_video_digest"], checkpoint=checkpoint,
+                        retained_only=retained_only)
                 if not any(verdict["admit_whole"] for verdict in review["verdicts"]):
                     continue  # Real frames only: the minimal form is that same request.
         try:
@@ -328,6 +340,20 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
             value["refined_splat"] = _refined_marker(form, root, value["splat_manifest"], frames, roots)
         return value
     raise ValueError("atlas_task_operation_failed")
+
+
+def first_attempt_review(output_root: Path) -> dict | None:
+    """The reviewed-whole verdicts the job's first refined-splat attempt was sent under, when it admitted a view."""
+    root = dict(_form_roots(output_root))[WHOLE]
+    path = root / REVIEW_RECORD
+    if path.is_symlink() or not path.is_file() or not (root / "input_binding.json").is_file():
+        return None
+    review = json.loads(path.read_text())
+    sent = json.loads((root / "input_binding.json").read_text()).get("whole_view_review")
+    # Only verdicts that request carried: the record beside it is that same review.
+    if sent != review or not any(row.get("admit_whole") for row in review.get("verdicts") or []):
+        return None
+    return review
 
 
 def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, task_runner, max_polls,

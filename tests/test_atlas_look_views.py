@@ -33,9 +33,12 @@ def region(region_id="table", **changes):
 
 
 def write_map(capture, regions, **fields):
+    """The map as ``atlas_coverage_map.write_weak_regions`` seals it in the Atlas job root."""
     path = capture / look.WEAK_REGIONS_RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"schema_version": look.WEAK_REGIONS_SCHEMA, "regions": regions, **fields}))
+    record = {"schema_version": look.WEAK_REGIONS_SCHEMA, "status": "mapped", "regions": regions, **fields}
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    path.write_text(json.dumps(record))
     return path
 
 
@@ -122,9 +125,10 @@ def test_orbit_cameras_keep_the_filmed_distance_height_and_intrinsics_and_look_a
         assert footprint[360, 640] and 0 < footprint.mean() < 1
 
 
-def test_regions_and_views_are_capped_weakest_first_and_unposed_regions_are_named():
-    regions = [region(f"r{i}", angle_spread_deg=float(i)) for i in range(8)]
-    regions.append(region("ghost", angle_spread_deg=0.1, seen_by=["not-posed"]))
+def test_regions_and_views_are_capped_in_the_maps_order_and_unposed_regions_are_named():
+    # The map ranks the regions the job's route views saw first; a wider spread there still comes first.
+    regions = [region("ghost", angle_spread_deg=0.1, seen_by=["not-posed"])]
+    regions += [region(f"r{i}", angle_spread_deg=float(8 - i)) for i in range(8)]
     targets, skipped = look.orbit_cameras(regions, real_frames())
     kept = {row["region_id"] for row in targets}
     assert kept == {"r0", "r1", "r2", "r3", "r4", "r5"} and len(targets) == look.MAX_VIEWS == 24
@@ -138,8 +142,13 @@ def test_the_map_is_read_only_when_it_is_the_contract(tmp_path):
     assert look.load_weak_regions(tmp_path) is None
     path = write_map(tmp_path, [region(), {"id": "broken", "centroid": [0, 0]}])
     assert [row["id"] for row in look.load_weak_regions(tmp_path)] == ["table"]
-    path.write_text(json.dumps({"schema_version": "other.v1", "regions": [region()]}))
-    assert look.load_weak_regions(tmp_path) is None
+    sealed = json.loads(path.read_text())
+    for changed in ({**sealed, "regions": [region("edited")]},  # no longer the sealed record
+                    {**sealed, "status": "not_mapped"}, {**sealed, "schema_version": "other.v1"}):
+        if changed.get("regions") == sealed["regions"]:
+            changed["digest"] = canonical_digest(changed, digest_field="digest")
+        path.write_text(json.dumps(changed))
+        assert look.load_weak_regions(tmp_path) is None
     path.write_text("{")
     assert look.load_weak_regions(tmp_path) is None
 
@@ -264,9 +273,12 @@ def test_money_the_allowance_and_walls_decide_before_anything_is_bought(job, mon
 
 # --- the splat input, the result and the scene -------------------------------------------------------------------
 
-def _appearance(job, monkeypatch, *, form):
-    from blueprint_pipeline import atlas_native_splat, paid_resource_allocator
+def _appearance(job, monkeypatch, *, form, mapped=False):
+    """``_preserved_appearance`` with the map the fixture wrote, or the one ``atlas_coverage_map`` writes."""
+    from blueprint_pipeline import atlas_coverage_map, atlas_native_splat, paid_resource_allocator
     from blueprint_pipeline import website_atlas_pipeline as pipeline
+    if not mapped:
+        monkeypatch.setattr(atlas_coverage_map, "coverage_before_splat", lambda **_: None)
     frames = real_frames()
     selection = {"digest": "sha256:" + "4" * 64, "pose_refinement_accepted": True, "flags": [],
                  "sent_frame_ids": ["real-0", "real-1", "real-2", "real-3"], "left_out": [], "heldout_frame_ids": []}
@@ -306,13 +318,30 @@ def test_the_real_frames_only_fallback_says_the_look_holds_none(job, monkeypatch
     assert "generated_views_in" not in appearance["look_views"] and appearance["look_views"]["in_look_view_ids"] == []
 
 
-def test_without_a_map_the_splat_input_and_the_appearance_are_exactly_mains(tmp_path, monkeypatch):
+@pytest.mark.parametrize("map_state", ["absent", "not_mapped", "no_regions"])
+def test_without_a_mapped_region_the_splat_input_and_the_appearance_are_exactly_mains(tmp_path, monkeypatch,
+                                                                                        map_state):
     job = tmp_path / "capture/pipeline/atlas"
     job.mkdir(parents=True)
+    if map_state != "absent":
+        write_map(job.parent.parent, [], **({"status": "not_mapped"} if map_state == "not_mapped" else {}))
+    before = sorted(job.rglob("*"))
     appearance, sent, atlas = _appearance(job, monkeypatch, form="documented_minimal")
     assert [frame["frame_id"] for frame in sent[0]] == ["real-0", "real-1", "real-2", "real-3"]
-    assert all(frame is real or frame["frame_id"] == real["frame_id"] for frame, real in zip(sent[0], real_frames()))
-    assert "look_views" not in appearance and atlas.calls == [] and not any(job.iterdir())
+    assert "look_views" not in appearance and atlas.calls == [] and sorted(job.rglob("*")) == before
+
+
+def test_the_coverage_map_written_before_the_splat_feeds_the_look_views(job, monkeypatch):
+    """Merged with ``atlas_coverage_map``: its map, written before the purchase, names the regions orbited."""
+    monkeypatch.setattr(look, "check_view", lambda view, references, footprint, **_: {"passed": True})
+    appearance, sent, atlas = _appearance(job, monkeypatch, form="documented_reviewed_whole", mapped=True)
+    from blueprint_pipeline.atlas_coverage_map import read_weak_regions
+    mapped = read_weak_regions(job)
+    record = json.loads((job / look.ROOT / look.RECORD).read_text())
+    assert mapped["status"] == "mapped" and record["weak_regions_digest"] == look._sha256_file(job / "weak_regions.json")
+    assert {row["region_id"] for row in record["views"]} <= {row["id"] for row in mapped["regions"]}
+    assert [frame["frame_id"] for frame in sent[0]][4:] == record["passed_view_ids"] and atlas.purchases
+    assert appearance["look_views"]["in_look_view_ids"] == record["passed_view_ids"]
 
 
 def _bound(job, *, form="documented_reviewed_whole", admit=True, extra=None):
@@ -386,3 +415,69 @@ def test_each_view_is_composited_once_and_paired_only_against_the_real_frames_th
     few = [f for f in frames if f["frame_id"] not in row["context_frame_ids"][1:]]
     named = look.reference_frame_ids(row, few)
     assert named[0] == row["context_frame_ids"][0] and set(named) == {f["frame_id"] for f in few}
+
+
+def test_a_refined_splat_retry_resends_the_same_request_and_its_records_match_the_look(job, monkeypatch):
+    """``atlas_refined_splat_retry``: when the first attempt's forms failed, the fresh attempt posts the same
+    frames, the look views included, under the first attempt's retained review; the result, the record
+    and the scene binding then agree on which generated views the look holds."""
+    from blueprint_pipeline import atlas_coverage_map, atlas_native_splat, paid_resource_allocator
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    from blueprint_pipeline.atlas_refined_splat_forms import MINIMAL, WHOLE
+    from blueprint_pipeline import atlas_refined_splat_retry as retry
+    monkeypatch.setattr(atlas_coverage_map, "coverage_before_splat", lambda **_: None)
+    selection = {"digest": "sha256:" + "4" * 64, "pose_refinement_accepted": True, "flags": [],
+                 "sent_frame_ids": ["real-0", "real-1", "real-2", "real-3"], "left_out": [], "heldout_frame_ids": []}
+    monkeypatch.setattr(pipeline, "_splat_input_selection", lambda **_: selection)
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **__: {"policy": POLICY, "remaining_cost_usd": 17})
+    monkeypatch.setattr(pipeline, "_job_window_end", lambda *_: 2_000_000_000 + 5 * 86400)
+    clock = [2_000_000_000]
+    monkeypatch.setattr(pipeline.time, "time", lambda: clock[0])
+    atlas = Atlas()
+    monkeypatch.setattr(paid_resource_allocator, "run_sponsored_website_atlas_task", lambda experimental, **kw: atlas(**kw))
+    calls = []
+
+    def splat(**kw):
+        calls.append(kw)
+        look_ids = [f["frame_id"] for f in kw["frames"] if f.get("keep_mask") is not None]
+        if kw["output_root"] == job / "refined_splat":
+            # The first attempt: its review admitted every look view, then both forms failed at the provider.
+            whole = job / "refined_splat-whole"
+            review = {"schema_version": "atlas_whole_view_review.v1", "status": "reviewed", "verdicts": [
+                {"position": 4 + i, "frame_id": key, "admit_whole": True, "reason": "compared"}
+                for i, key in enumerate(look_ids)]}
+            (whole / "native/atlas_pose").mkdir(parents=True, exist_ok=True)
+            (whole / "whole_view_review.json").write_text(json.dumps(review))
+            (whole / "input_binding.json").write_text(json.dumps({"request_form": WHOLE, "whole_view_review": review}))
+            for root in (whole, job / "refined_splat-minimal"):
+                (root / "native/atlas_pose").mkdir(parents=True, exist_ok=True)
+                (root / "native/atlas_pose/submission.json").write_text(json.dumps(
+                    {"status": "failed", "terminal_operation": {"error": {"code": 13}}}))
+            raise ValueError("atlas_task_operation_failed")
+        rows = [{"frame_id": f["frame_id"], **({"whole_view_review": {"admit_whole": True}}
+                                               if f.get("keep_mask") is not None else {})} for f in kw["frames"]]
+        return {"status": "completed", "splat_root": str(kw["output_root"]) + "-whole",
+                "splat_manifest": {"splat_kind": "atlas_refined", "task": "posedImages2Splats", "request_form": WHOLE,
+                                   "pose_result_digest": POSE["digest"], "frames": rows},
+                "refined_splat": {"request_form": WHOLE}}
+    monkeypatch.setattr(atlas_native_splat, "run_native_splat", splat)
+    options = dict(frames=real_frames(), pose=POSE, draft={"digest": "d"}, output_root=job, policy=POLICY,
+                   task_context={"context_digest": "t"}, source_digest="s", configuration={},
+                   check=lambda *_: None, experimental=False, max_polls=1, review={}, source_root=job)
+    waiting = pipeline._preserved_appearance(**options)
+    assert waiting["stage"] == retry.WAIT_STAGE
+    clock[0] = waiting["next_attempt_at_epoch"]
+    appearance = pipeline._preserved_appearance(**options)
+    first, again = calls[0], calls[-1]
+    assert again["output_root"] == retry.attempt_root(job, 1) and again["forms"] == (WHOLE, MINIMAL)
+    assert [f["frame_id"] for f in again["frames"]] == [f["frame_id"] for f in first["frames"]]
+    assert again["whole_view_review"] == json.loads((job / "refined_splat-whole/whole_view_review.json").read_text())
+    assert len(atlas.purchases) == 1  # The look views were generated once, for both attempts.
+    record = json.loads((job / look.ROOT / look.RECORD).read_text())
+    assert appearance["look_views"]["generated_views_in"] == "look"
+    assert appearance["look_views"]["in_look_view_ids"] == record["passed_view_ids"]
+    source = {"digest": POSE["digest"], "operation_receipt": {"input_usage": {"frames": [
+        {"frame_id": f"real-{i}"} for i in range(4)]}}}
+    bound = look.bound_look_views(splat=appearance["splat_manifest"], source=source,
+                                  appearance={"look_views": appearance["look_views"]}, job_dir=job)
+    assert bound["view_count"] == len(record["passed_view_ids"]) and bound["look_views_digest"] == record["digest"]

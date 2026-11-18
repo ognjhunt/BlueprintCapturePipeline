@@ -8,7 +8,7 @@ splat is blurry and streaky there. Only new angles fix that.
 
 The weak-region map (``pipeline/atlas/weak_regions.json``, schema ``atlas_weak_regions.v1``, written by
 its own builder) names those regions in the posed cameras' world. For each (at most ``MAX_REGIONS``,
-weakest angle spread first; at most ``MAX_VIEWS`` views a job) cameras orbit the region's centroid
+in the map's order; at most ``MAX_VIEWS`` views a job) cameras orbit the region's centroid
 about the vertical by the region's ``orbit_deg``, starting from the filmed camera in ``seen_by`` that
 looks most directly at it: the same distance and intrinsics (on Atlas's 1280x720 target grid), aimed
 at the centroid. ``atlasGenerate`` makes the views from the real photographs that saw the region and
@@ -43,7 +43,7 @@ WEAK_REGIONS_SCHEMA = "atlas_weak_regions.v1"
 WEAK_REGIONS_RELATIVE = Path("pipeline/atlas/weak_regions.json")
 SCHEMA = "atlas_look_views.v1"
 ROOT, PLAN, RECORD = "look_views", "look_views_plan.json", "look_views.json"
-#: Bounds per job (owner's brief, 2026-11-18): weakest regions first.
+#: Bounds per job (owner's brief, 2026-11-18), regions in the map's order.
 MAX_REGIONS, MAX_VIEWS = 6, 24
 #: Views a region gets at most: two orbit magnitudes, each side of its filmed camera.
 VIEWS_PER_REGION = 4
@@ -83,15 +83,15 @@ def _usable(row) -> bool:
 
 
 def _weak_region_map(capture_root) -> dict | None:
-    path = Path(capture_root) / WEAK_REGIONS_RELATIVE
-    if path.is_symlink() or not path.is_file():
-        return None
+    """The sealed map ``atlas_coverage_map`` wrote before the splat, when it mapped; a changed one is none."""
+    from .atlas_coverage_map import read_weak_regions
+
     try:
-        value = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    if (not isinstance(value, dict) or WEAK_REGIONS_SCHEMA not in (value.get("schema_version"), value.get("schema"))
-            or not isinstance(value.get("regions"), list)):
+        value = read_weak_regions(Path(capture_root) / WEAK_REGIONS_RELATIVE.parent)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None  # Flagged by the map's own reader; the look keeps its filmed frames.
+    if (not isinstance(value, dict) or value.get("schema_version") != WEAK_REGIONS_SCHEMA
+            or value.get("status") != "mapped" or not isinstance(value.get("regions"), list)):
         return None
     return value
 
@@ -131,7 +131,8 @@ def _facing(frame, centroid) -> float:
 def orbit_cameras(regions, frames, *, max_regions=MAX_REGIONS, max_views=MAX_VIEWS):
     """Cameras orbiting each weak region's centroid, and the regions given none with the reason.
 
-    The base is the filmed camera in ``seen_by`` that looks most directly at the centroid. Each new
+    Regions are taken in the map's order (``atlas_coverage_map``: those the job's route views saw
+    first, then the nearest), up to ``max_regions`` with cameras this pose holds. The base is the filmed camera in ``seen_by`` that looks most directly at the centroid. Each new
     camera turns the base position about the vertical through the centroid (Atlas worlds are Y up),
     so it keeps the base's distance and height, and looks at the centroid with the base's intrinsics.
     """
@@ -139,8 +140,7 @@ def orbit_cameras(regions, frames, *, max_regions=MAX_REGIONS, max_views=MAX_VIE
     from .atlas_completion_cameras import aimed_rotation
 
     by_id = {frame["frame_id"]: frame for frame in frames}
-    ordered = sorted(regions, key=lambda row: (row.get("angle_spread_deg")
-                                               if _finite(row.get("angle_spread_deg")) else math.inf, row["id"]))
+    ordered = list(regions)
     # A region none of whose cameras this pose holds takes no slot.
     skipped = [{"region_id": row["id"], "reason": "seen_by_cameras_not_posed"} for row in ordered
                if not any(key in by_id for key in row["seen_by"])]
@@ -564,8 +564,8 @@ def disclosure(look, native, output_root: Path) -> dict:
     record = look["record"]
     passed = set(record.get("passed_view_ids") or [])
     rows = (native.get("splat_manifest") or {}).get("frames") or []
-    in_look = sorted({row["frame_id"] for row in rows
-                      if row.get("frame_id") in passed and row.get("whole_view_review")})
+    posted = {row.get("frame_id") for row in rows if row.get("whole_view_review")}
+    in_look = [key for key in record.get("passed_view_ids") or [] if key in posted]
     return {"status": record["status"], "record_digest": record["digest"],
             "record_relative_path": str((Path(output_root) / ROOT / RECORD).relative_to(output_root)),
             "generated_view_count": len(record.get("views") or []), "passed_view_count": len(passed),

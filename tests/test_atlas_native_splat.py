@@ -807,3 +807,35 @@ def test_a_wall_in_a_failed_form_is_raised_never_taken_as_the_next_forms_turn(tm
         native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=tmp_path / "draft-refined",
                                 policy=splat_policy(), task_context=CONTEXT, task_runner=runner)
     assert raised.value is wall and len(calls) == 1
+
+
+def test_a_fresh_attempt_resends_the_reviewed_request_and_never_buys_the_review_again(tmp_path, reviewer):
+    """``atlas_refined_splat_retry``: after both forms failed, a new attempt root posts the same reviewed-whole
+    request (the generated view the first review admitted included), then real frames only."""
+    from blueprint_pipeline.atlas_refined_splat_forms import MINIMAL, WHOLE
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []
+    reviewer.admit = {"candidate-0002"}
+    first = tmp_path / "refined_splat"
+    with pytest.raises(ValueError, match="atlas_task_operation_failed"):
+        refined(frames, first, ["failed", "failed"], calls)
+    reviewed = native.first_attempt_review(first)
+    assert [row["admit_whole"] for row in reviewed["verdicts"]] == [True] and len(reviewer.asked) == 1
+    retry = tmp_path / "refined_splat-retry-1"
+    done = native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=retry, policy=splat_policy(),
+                                   task_context=CONTEXT, task_runner=scripted_runner(["completed"], calls),
+                                   forms=(WHOLE, MINIMAL), whole_view_review=reviewed)
+    assert calls[-1]["output_root"] == tmp_path / "refined_splat-retry-1-whole/native"
+    assert calls[-1]["request"] == calls[0]["request"] and len(calls[0]["request"]["posedFrames"]) == 3
+    assert len(reviewer.asked) == 1  # The retained verdicts, not a second review.
+    binding = json.loads((tmp_path / "refined_splat-retry-1-whole/input_binding.json").read_text())
+    assert binding["whole_view_review"] == reviewed and binding["frames"][2]["whole_view_review"]["admit_whole"]
+    assert done["refined_splat"]["request_form"] == WHOLE
+    # Verdicts on other views admit nothing: the fresh attempt is real frames only.
+    other = tmp_path / "other"
+    changed = [*source_frames(), gap_view(keep(slice(20, None)), frame_id="another")]
+    value = native.run_native_splat(frames=changed, result=POSE, draft=DRAFT, output_root=other, policy=splat_policy(),
+                                    task_context=CONTEXT, task_runner=scripted_runner(["completed"], calls),
+                                    forms=(WHOLE, MINIMAL), whole_view_review=reviewed)
+    assert value["refined_splat"]["request_form"] == MINIMAL and len(reviewer.asked) == 1
+    # A first attempt whose review admitted nothing has no request to resend with generated views.
+    assert native.first_attempt_review(tmp_path / "never") is None

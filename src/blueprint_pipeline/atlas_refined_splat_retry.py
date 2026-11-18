@@ -2,8 +2,10 @@
 
 When every refined-splat form failed (``atlas_native_splat.run_native_splat``: up to three operations
 on outages and one resubmit of ``EXECUTION_FAILED`` per form), the job used to take the depth-fused
-draft as its look at once. Now it waits and tries again: a new attempt root that sends the documented
-real-frames-only form (``documented_minimal``) under its own intent, reservation and idempotency key.
+draft as its look at once. Now it waits and tries again: a new attempt root that resends the first
+attempt's request under its own intent, reservation and idempotency key: the reviewed-whole form with
+the same generated views its retained review admitted (``atlas_look_views``), when it had any, then
+the documented real-frames-only form (``documented_minimal``).
 ``job_retry_policy`` times the attempts (15 min, 1 h, 3 h, 6 h, 12 h, 24 h, then daily while the
 window stays open). Only these make the draft final, flagged on the job's result:
 

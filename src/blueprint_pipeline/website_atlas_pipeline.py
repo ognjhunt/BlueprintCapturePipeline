@@ -589,7 +589,7 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
 
     The draft is the fallback only when the job's Atlas money cannot cover the refined splat and
     the mesh after it, or when Atlas fails every attempt: after the first forms fail, the job waits
-    for fresh real-frames-only attempts (``atlas_refined_splat_retry``) until the allowance or the
+    for fresh attempts of the same request (``atlas_refined_splat_retry``) until the allowance or the
     window's last two hours stop them, and the draft then carries that record. Admitted generated geometry never swaps
     the refined splat for the draft (owner, 2026-11-17): it goes into the collision shape only
     (``_preserved_scene``). ``draft`` is always the captured frames' own draft, so no completion
@@ -655,14 +655,19 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     except ValueError as exc:
         if str(exc) != "atlas_task_operation_failed" or rebuild:
             raise
-        # Every form failed: the job waits for a fresh real-frames-only attempt (``atlas_refined_splat_retry``);
-        # the draft is the look only once the allowance or the window cannot carry another.
-        from .atlas_refined_splat_forms import MINIMAL
+        # Every form failed: the job waits for a fresh attempt (``atlas_refined_splat_retry``) that resends the
+        # first one's request, its reviewed generated views included, then real frames only; the draft is the
+        # look only once the allowance or the window cannot carry another.
+        from .atlas_native_splat import first_attempt_review
+        from .atlas_refined_splat_forms import MINIMAL, WHOLE
         from .atlas_refined_splat_retry import DRAFT_FINAL, WAIT_STAGE, next_refined_splat
+        reviewed = first_attempt_review(root)
         native = next_refined_splat(output_root=output_root, original_root=root, now=time.time(),
             run_attempt=lambda base: run_native_splat(frames=sent, result=pose, draft=draft, output_root=base,
-                policy=policy, task_context=task_context, max_polls=max_polls, forms=(MINIMAL,),
+                policy=policy, task_context=task_context, max_polls=max_polls,
+                forms=(WHOLE, MINIMAL) if reviewed else (MINIMAL,),
                 task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
+                **({"whole_view_review": reviewed} if reviewed else {}),
                 **({"input_selection_digest": selection["digest"]} if selection is not None else {})),
             remaining_cost_usd=lambda: _current_configuration(task_context, source_digest, configuration).get(
                 "remaining_cost_usd"),
