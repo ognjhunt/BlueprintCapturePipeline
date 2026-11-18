@@ -166,6 +166,21 @@ def test_standard_ply_round_trip_preserves_higher_order_sh(tmp_path: Path) -> No
     np.testing.assert_array_equal(loaded.sh_rest, splat.sh_rest)
 
 
+def _header(path: Path) -> list[str]:
+    data = path.read_bytes()
+    return data[:data.index(b"end_header\n") + len(b"end_header\n")].decode("ascii").splitlines()
+
+
+def test_the_standard_writer_keeps_its_own_layout(tmp_path: Path) -> None:
+    """The writer the levelled and refined splats use is unchanged: no normals, ``f_rest_*`` after the rotation."""
+    splat = _make_splat(2)
+    splat.sh_rest = np.zeros((2, 9), dtype=np.float32)
+    names = [line.split()[-1] for line in _header(write_standard_3dgs_ply(splat, tmp_path / "s.ply"))
+             if line.startswith("property")]
+    assert names == ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2",
+                     "rot_0", "rot_1", "rot_2", "rot_3", *(f"f_rest_{index}" for index in range(9))]
+
+
 def test_opacity_sigmoid_clip_bounds_and_aabb_shape() -> None:
     """opacity_sigmoid clips raw logits to [-30, 30] before the sigmoid, so even
     saturating logits stay strictly inside (0, 1); aabb() returns (min, max) (3,)."""

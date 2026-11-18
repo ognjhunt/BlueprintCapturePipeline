@@ -20,6 +20,12 @@ company clip is published (``website_company_clip``):
   only) and ``README.txt``. No record, manifest, ledger or receipt goes in, the plan included; no file name carries
   an id. Every outside or absolute USD reference is rewritten to a path inside the package, or the package is
   refused; a plan row that cannot be placed refuses it, naming the row's role;
+- a look the website authored from a splat (``website_native_appearance``, found by ``look_source``) is written
+  again from that source splat with today's writer, in the job's own frame, and ships twice: as that USD and as the
+  standard 3DGS PLY common splat viewers open (``scene/room.ply``, ``particlefield_usd.write_placed_viewer_ply``),
+  both from the same source; scene.usda does not use the PLY. A look whose source cannot be written again ships as
+  its half holds it, with no PLY, and the README says so. Over the size limit, the PLY goes first, then the look
+  (``build_package``, ``SIZE_STEPS``, carried between passes as ``size_over``);
 - every file is read with the shared outbound scan (``outbound_file_scan``: ids in both forms, account ids,
   keys, host paths, storage, file and web links, bare web addresses, and the text form of every binary USD
   layer) before the zip is made; a finding refuses the package (``refused``), naming the file and the kind;
@@ -50,7 +56,7 @@ import shutil
 import stat
 import time
 import zipfile
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -68,6 +74,7 @@ from .decision_evidence_contracts import canonical_digest, cross_runtime_canonic
 from .outbound_file_scan import capture_site_identity
 from .sharing_statement import covers_sharing
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
+from .website_company_look import look_ply, look_source, reauthor_look
 
 logger = logging.getLogger(__name__)
 
@@ -102,10 +109,22 @@ SIZE_RULE = "zip_bytes.v1"
 LOOK_LEFT_OUT = ("The room's photographed look is not in this package: with it the download would have been larger "
                  "than Blueprint's size limit. The collision file, which holds the room's shape, is shown in its "
                  "place.")
+#: A look written from its source splat (``look_source``) also ships as the standard 3DGS PLY common splat viewers
+#: open. It is the first thing a zip over the limit gives up: built once more without it, then without the look.
+PLY_LEFT_OUT = ("The room's look is in this package as USD only: with a splat PLY of it as well, the download would "
+                "have been larger than Blueprint's size limit.")
+#: A look whose source splat could not be written again here (missing, changed, over ``website_company_look.REAUTHOR_MAX_SOURCE_BYTES``
+#: or refused by the writer) ships as its half holds it, with no PLY.
+LOOK_AS_FIRST_WRITTEN = ("The room's look is in this package as Blueprint first wrote it, and only as USD: Blueprint "
+                         "could not write it again for this package.")
+#: ... and, when that first writing predates 2026-11-18 (``look_source``'s ``first_rotations_scrambled``):
+ROTATIONS_STORED_WRONG = "That first writing stored each Gaussian's rotation in the wrong order."
 #: Moves whenever what the builder writes changes, so a package built or refused by the earlier builder is built once
 #: more at the first pass after the release. v2 (2026-11-16): the layer's flatten note naming a host file is
-#: dropped (``place``); a package v1 refused for that note waited six hours for its retry.
-BUILDER_REVISION = "website_company_simulation_builder.v2"
+#: dropped (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a look
+#: is written again from its source splat with the fixed writer (every Gaussian's rotation as given) and also ships
+#: as a standard 3DGS PLY of that source.
+BUILDER_REVISION = "website_company_simulation_builder.v3"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
@@ -323,7 +342,7 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
             statuses.append((path.stat().st_mtime_ns, path.name, status))
     for _mtime, _name, status in sorted(statuses, reverse=True):
         source = _half(Path(status["team_scene_inputs_path"]).parent, status, estimates=object_estimates(root),
-                       generated=generated_patch(root), look=look_views(root))
+                       generated=generated_patch(root), look=look_views(root), capture=root)
         if source is not None:
             return source
     # Else the room package the scene handoff wrote (``website_scene_handoff.write_room_package``), when sealed.
@@ -332,7 +351,7 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
     record = (_inside(root, Path(path)) if isinstance(path, str) and handoff.get("status") == "room_package_written"
               and handoff.get("digest") == canonical_digest(handoff, digest_field="digest") else None)
     source = (_half(record.parent, {"team_scene_inputs_path": str(record)},
-                    generated=generated_patch(root), look=look_views(root)) if record is not None else None)
+                    generated=generated_patch(root), look=look_views(root), capture=root) if record is not None else None)
     return source if source is not None and source.get("room") is not None else None
 
 
@@ -444,7 +463,7 @@ def _floor_source(root: Path, *, queue_root: Path, now: float, reason: str | Non
             notes["reason"] = reason  # cannot be read or bound to this job: nothing ships, the pass says why
         return None
     source = _half(record.parent, {"team_scene_inputs_path": str(record)},
-                   generated=generated_patch(root), look=look_views(root))
+                   generated=generated_patch(root), look=look_views(root), capture=root)
     if source is None or source.get("room") is None or FLOOR_FLAG not in (_read(record).get("flags") or []):
         return None
     return {**source, "source_kind": "floor", "floor_reason": reason}
@@ -545,8 +564,9 @@ def look_views(capture_root: Path) -> bool:
 
 
 def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None,
-          generated: str | None = None, look: bool = False) -> dict[str, Any] | None:
-    """The half's plan and shipped files; a row that cannot be placed is kept as ``refusal`` naming its role."""
+          generated: str | None = None, look: bool = False, capture: Path | None = None) -> dict[str, Any] | None:
+    """The half's plan and shipped files; a row that cannot be placed is kept as ``refusal`` naming its role. The
+    look's row carries the splat it was authored from (``look_source``) when ``capture``'s records name one."""
     from .scene_package_stage import StageRefused, neutral_rule, placements, up_axis
     if not scene.is_absolute() or scene.is_symlink() or not scene.is_dir():
         return None
@@ -597,6 +617,9 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
                                          "suffix": PurePosixPath(placement["usd_path"]).suffix.lower(),
                                          "placement": {key: value for key, value in placement.items()
                                                        if key != "usd_path"}}
+                found = look_source(capture, raw["sha256"]) if capture is not None and role == "scene_appearance" else None
+                if found is not None:
+                    source["files"][placement["prim"]]["look_source"] = found
             source.update(axis=axis, rule=rule, assets_dir=packet / str(plan.get("asset_directory") or "assets"),
                           appearance_representation=(plan.get("appearance_frame_alignment") or {}).get(
                               "representation"))
@@ -732,7 +755,11 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         # Only a wording that differs from the packages before it names a new revision.
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room",
-                                        "generated_patch", "look_views") if source.get(key)}})
+                                        "generated_patch", "look_views") if source.get(key)},
+        # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
+        **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
+                                          for prim, row in sorted(source["files"].items())
+                                          if row.get("look_source")}) else {})})
 
 
 # --- what must never leave --------------------------------------------------------------------------------------
@@ -1051,10 +1078,18 @@ def _root_offset(path: Path) -> dict[str, list[float]] | None:
             "rotation_xyzw": [round(value, 6) for value in xyzw]}
 
 
+def _stated(up: str | None, metres: float | None) -> str:
+    stated = [f"up axis {up}" if up else None, f"{metres:g} metres per unit" if metres is not None else None]
+    return " and ".join(item for item in stated if item) or "no up axis or unit"
+
+
 def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[str],
             units: Mapping[str, tuple[str | None, float | None]],
-            offsets: Mapping[str, Any] | None = None) -> str:
-    """Only what is true of the package in front of it."""
+            offsets: Mapping[str, Any] | None = None, plys: Mapping[str, str] | None = None,
+            first_written: Mapping[str, Mapping[str, Any]] | None = None) -> str:
+    """Only what is true of the package in front of it. ``first_written``: the look sources that could not be
+    written again, so their looks ship as first written."""
+    plys, first_written = plys or {}, first_written or {}
     room, withheld = source.get("room"), bool(source.get("rule_withheld"))
     what = (["A simulation of the site a deployment company was asked about, with the job's object in it at its",
              "start position as estimated from the video. Test in your own tools."] if withheld else
@@ -1073,6 +1108,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
         says = _SAYS.get(row["role"], "a part of the site")
         visible = row["placement"]["visible"]
         lines.append(f"- {relative} (/World/{prim}): {says}." + ("" if visible else " Hidden in scene.usda."))
+        if prim in plys:
+            lines += [f"- {plys[prim]}: the same look as a standard 3D Gaussian splat PLY, for splat viewers that do",
+                      "  not open USD. scene.usda does not use it."]
         if not visible:
             hidden.append(prim)
     if any(name.startswith("scene/files/") for name in names):
@@ -1102,10 +1140,11 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     lines += ["", "Units and axes", "", "- scene.usda is in metres (1 unit is 1 metre), radians and seconds.",
               f"- Up is +{source['axis']} in scene.usda."]
     for prim, relative in placed.items():
-        up, metres = units[prim]
-        stated = [f"up axis {up}" if up else None, f"{metres:g} metres per unit" if metres is not None else None]
-        stated = [item for item in stated if item]
-        lines.append(f"- {relative} states " + (" and ".join(stated) if stated else "no up axis or unit") + ".")
+        lines.append(f"- {relative} states {_stated(*units[prim])}.")
+    for prim, relative in plys.items():
+        lines += [f"- {relative} holds the Gaussians where {placed[prim]} places them (that file's own transform",
+                  f"  applied), in its frame: {_stated(*units[prim])}. A PLY states no axis, so a viewer that",
+                  "  assumes another up axis shows it turned."]
     if source.get("appearance_representation") == "particlefield_3d_gaussian_splat" and not source.get("look_left_out"):
         lines += ["- The room's look is a 3D Gaussian splat stored as USD particle fields. Some tools cannot show",
                   "  it; the hidden collision part holds the room's geometry."]
@@ -1116,6 +1155,10 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     import textwrap
 
     notes = [*([LOOK_LEFT_OUT] if source.get("look_left_out") else []),
+             *([PLY_LEFT_OUT] if source.get("ply_left_out") and not source.get("look_left_out") else []),
+             *([LOOK_AS_FIRST_WRITTEN, *([ROTATIONS_STORED_WRONG] if any(row["first_rotations_scrambled"]
+                                                                        for row in first_written.values()) else [])]
+               if first_written and not source.get("look_left_out") else []),
              *(PHYSICS_CHECK_WORDS.get(source.get("physics_check")) or ()),
              *([(FURNITURE_REMOVED_NO_LOOK if source.get("look_left_out") else FURNITURE_REMOVED).format(
                  count=source["removed_items"])] if source.get("removed_items") else []),
@@ -1163,28 +1206,57 @@ def without_look(source: Mapping[str, Any]) -> dict[str, Any] | None:
                if key not in ("appearance_quality", "appearance_representation")}, "files": kept, "look_left_out": True}
 
 
+#: The packages tried in turn while the zip is over the limit: whole, without the look's PLY, without the look.
+SIZE_STEPS = ("whole", "without_ply", "without_look")
+
+
 def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tuple[str, str]],
                   words: list[tuple[bytes, str]] | None = None, max_bytes: int = MAX_PACKAGE_BYTES,
-                  deadline: float | None = None) -> dict[str, Any]:
+                  deadline: float | None = None, known_over: Sequence[str] = (),
+                  over: list[str] | None = None) -> dict[str, Any]:
     """Stage, rewrite, compose, scan and zip the package to ``output``; ``PackageRefused`` or ``OVER_CAP`` otherwise.
 
     The limit is on the zip. Source files above ``MAX_SOURCE_BYTES`` are refused unbuilt. A zip over the limit is
-    built once more without the room's look (``without_look``); only when that one is over too is it ``OVER_CAP``.
+    built once more as the next of ``SIZE_STEPS``: without the look's PLY (``PLY_LEFT_OUT``; skipped when the zip
+    held none), then without the room's look (``without_look``); only when that one is over too is it
+    ``OVER_CAP``. Each step found over is appended to ``over``, and steps in ``known_over`` (an earlier pass's, for
+    this revision) are not built again, so a package that runs out of time starts the next pass where it stopped.
     It holds no lock: every file it writes is its own (a staging folder and a partial zip named for this build).
     ``deadline`` (a ``time.monotonic`` value) is checked between steps and files: past it, ``BUILD_TIMED_OUT``.
     """
+    over = [] if over is None else over
     if source.get("refusal"):
         raise ShapeRefused(source["refusal"])
     if sum(row["size_bytes"] for row in source["files"].values()) > MAX_SOURCE_BYTES:
         raise ValueError(OVER_CAP)
-    try:
-        return _build_once(source, output, literals=literals, words=words, max_bytes=max_bytes, deadline=deadline)
-    except ValueError as error:
-        lighter = without_look(source) if str(error) == OVER_CAP else None
-        if lighter is None:
-            raise
-    built = _build_once(lighter, output, literals=literals, words=words, max_bytes=max_bytes, deadline=deadline)
-    return {**built, "look_left_out": True}
+    options = {"literals": literals, "words": words, "max_bytes": max_bytes, "deadline": deadline}
+    for step in SIZE_STEPS:
+        if step in known_over or step in over:
+            continue
+        value = (source if step == "whole" else {**source, "ply_left_out": True} if step == "without_ply"
+                 else without_look(source))
+        if value is None:
+            break  # no look to leave out, or no collision to show in its place
+        try:
+            built = _build_once(value, output, **options)
+        except ValueError as error:
+            if str(error) != OVER_CAP:
+                raise
+            over.append(step)
+            if step == "whole" and not getattr(error, "plys", False):
+                over.append("without_ply")  # it held no PLY: without one it is the same package
+            continue
+        return {**built, **({"ply_left_out": True} if step == "without_ply" else
+                            {"look_left_out": True} if step == "without_look" else {})}
+    raise ValueError(OVER_CAP)
+
+
+class _OverCap(ValueError):
+    """``OVER_CAP``, saying whether the zip held a splat PLY of the look (``plys``), which goes first."""
+
+    def __init__(self, plys: bool):
+        super().__init__(OVER_CAP)
+        self.plys = plys
 
 
 def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple[str, str]],
@@ -1204,6 +1276,9 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
     scratch.mkdir(mode=0o700)
     try:
         localizer = _Localizer(Path(source["assets_dir"]), staging)
+        written: dict[str, Mapping[str, Any]] = {}  # looks written again from their source splat
+        first_written: dict[str, Mapping[str, Any]] = {}  # looks with a source that could not be
+        not_written: dict[str, str] = {}
         placed: dict[str, str] = {}
         units: dict[str, tuple[str | None, float | None]] = {}
         offsets: dict[str, dict[str, list[float]]] = {}
@@ -1213,13 +1288,34 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             if _sha256_file(row["path"]) != row["sha256"]:
                 raise PackageRefused("website_company_simulation_source_changed", row["role"])
             relative = row["placement"]["name"] + row["suffix"]
-            localizer.place(Path(row["path"]), staging / relative, row["role"])
+            look = row.get("look_source")
+            why = reauthor_look(look, staging / relative) if look else None
+            if look and why is None:
+                written[prim] = look
+            else:
+                if why is not None:
+                    first_written[prim] = look
+                    not_written[prim] = why
+                    logger.warning("website_company_simulation_look_not_written_again reason=%s", why)
+                localizer.place(Path(row["path"]), staging / relative, row["role"])
             placed[prim] = relative
             units[prim] = _layer_units(staging / relative)
             offset = _root_offset(staging / relative)
             if offset is not None:
                 offsets[prim] = offset
             rows.append({**row["placement"], "file": relative})
+        plys: dict[str, str] = {}
+        for prim, look in written.items():
+            if source.get("ply_left_out"):
+                continue
+            on_time()
+            relative = source["files"][prim]["placement"]["name"] + ".ply"
+            why = look_ply(look, staging / relative)
+            if why is None:
+                plys[prim] = relative
+            else:
+                not_written[prim] = why
+                logger.warning("website_company_simulation_look_ply_not_written reason=%s", why)
         try:
             write_stage(staging / "scene.usda", rows, axis=source["axis"])
         except StageRefused as error:
@@ -1232,7 +1328,9 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
                                                        encoding="utf-8")
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
-        (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units, offsets), encoding="utf-8")
+        (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units, offsets, plys,
+                                                    first_written),
+                                            encoding="utf-8")
         on_time()
         _resolves_inside(staging, room=source.get("room") is not None)
         findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time,
@@ -1252,12 +1350,13 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
                     shutil.copyfileobj(stream, member, 8 << 20)
         size = partial.stat().st_size
         if size > max_bytes:
-            raise ValueError(OVER_CAP)
+            raise _OverCap(bool(plys))
         os.replace(partial, output)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return {"format": FORMAT, "content_type": CONTENT_TYPE, "digest": _sha256_file(output), "size_bytes": size,
-            "files": names, "max_bytes": int(max_bytes)}
+            "files": names, "max_bytes": int(max_bytes),
+            **({"look_not_written": dict(sorted(not_written.items()))} if not_written else {})}
 
 
 def _resolves_inside(staging: Path, *, room: bool = False) -> None:
@@ -1442,6 +1541,13 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             manifest = _read(manifest_path)
             if permission.retraction_pending(manifest) and not permission.take_back(manifest, manifest_path, retract):
                 return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
+    if permission.retraction_pending(_read(manifest_path), permission.SUPERSEDED):
+        # The copy the website read before its new package: retired after that delivery, and again if it failed.
+        with package_lock(root):
+            manifest = _read(manifest_path)
+            if (permission.retraction_pending(manifest, permission.SUPERSEDED)
+                    and not permission.retire(manifest, manifest_path, retract)):
+                return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
     if capture_withdrawn(root):
         return {"status": "withdrawn"}
     if not permission.delivery_gate_allows(root, surface="website_company_simulation"):
@@ -1479,12 +1585,12 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         if _current(manifest, revision, package_path):
             return (_kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now, owned)
                     or {"status": "current", "simulation_revision": revision})
-        refused, refused_at = manifest.get("refused"), manifest.get("refused_at_epoch")
+        refusal = _refusal(manifest, revision)
+        refused, refused_at = refusal.get("refused"), refusal.get("refused_at_epoch")
         # A size refusal stands for its revision; one made under the old rule (no ``size_rule``) is built once more.
-        if manifest.get("simulation_revision") == revision and refused == OVER_CAP \
-                and manifest.get("size_rule") == SIZE_RULE:
+        if refused == OVER_CAP and refusal.get("size_rule") == SIZE_RULE:
             return {"status": "over_size_cap"}
-        if (manifest.get("simulation_revision") == revision and isinstance(refused, str) and refused != OVER_CAP
+        if (isinstance(refused, str) and refused != OVER_CAP
                 and isinstance(refused_at, int) and _RETRIED_AFTER_WINDOW.fullmatch(refused)
                 and 0 <= now() - refused_at < permission.LIVE_STATEMENT_RECHECK_SECONDS):
             return ({"status": "build_timed_out"} if refused == BUILD_TIMED_OUT
@@ -1520,13 +1626,10 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         built = manifest.get("package") or {}
         needs_build = (manifest.get("simulation_revision") != revision or package_path.is_symlink()
                        or not package_path.is_file() or _sha256_file(package_path) != built.get("digest"))
-        # A floor that stands for a half is kept until the half is built and has passed its checks: a half that
-        # gives way again (shape, size, time) leaves it where it is.
-        deferred = (needs_build and source["source_kind"] == "half" and _floor_package(manifest)
-                    and _floor_stands(root, manifest, queue_root=queue_root, max_bytes=max_bytes, now=now()))
-        if (needs_build and not deferred and manifest.get("archive")
-                and not permission.take_back(manifest, manifest_path, retract)):
-            return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
+        # The package out now stays readable through the build: the new zip is built beside it, the website is
+        # moved to the new one by its delivery, and only then is the old one retired (``_publish_built``). A
+        # rebuild that gives way (shape, size, time) leaves it exactly as it was.
+        known_over = _size_over(manifest, revision)
     base = {"schema_version": MANIFEST_SCHEMA, **identity, "simulation_revision": revision,
             "source": {"plan_digest": source.get("plan_digest"),
                        "files": {prim: row["sha256"] for prim, row in sorted(source["files"].items())}},
@@ -1537,11 +1640,12 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             **({"refused_half": manifest["refused_half"]} if source["source_kind"] == "floor"
                and isinstance(manifest.get("refused_half"), Mapping) else {})}
     candidate, outcome, shape = directory / f".candidate-{revision[7:23]}.zip", None, False
+    over: list[str] = []
     if needs_build:
         try:
             built = build_package(source, candidate, literals=secret_literals(root, source),
                                   words=capture_site_identity(root), max_bytes=max_bytes,
-                                  deadline=time.monotonic() + build_seconds)
+                                  deadline=time.monotonic() + build_seconds, known_over=known_over, over=over)
         except PackageRefused as error:
             outcome = {**base, "package": None, "refused": error.reason, "detail": error.detail,
                        "refused_at_epoch": int(now())}
@@ -1552,15 +1656,20 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                 raise
             outcome = {**base, "package": None, "refused": str(error), "refused_at_epoch": int(now())}
             shape = True
+        # The steps already found over the limit: the next try of this revision starts after them.
+        size_over = [step for step in SIZE_STEPS if step in {*known_over, *over}]
+        if outcome is not None and size_over:
+            outcome["size_over"] = size_over
         if outcome is not None and shape and source["source_kind"] == "half":
             # Its own scene or its size: the room floor ships instead until a new half revision arrives. Its build
             # time: the floor ships meanwhile, and the half is tried again once a window (``package_source``).
             outcome["refused_half"] = {"simulation_revision": revision, "reason": outcome["refused"],
-                                       "size_rule": SIZE_RULE, "refused_at_epoch": outcome["refused_at_epoch"]}
+                                       "size_rule": SIZE_RULE, "refused_at_epoch": outcome["refused_at_epoch"],
+                                       **({"size_over": size_over} if size_over else {})}
 
     def stop(result: dict[str, Any]) -> dict[str, Any]:
-        # A floor kept through the build is taken back whenever the build itself would have been stopped.
-        if deferred:
+        # The package kept readable through the build is taken back whenever the build itself is stopped.
+        if needs_build:
             current = _read(manifest_path)
             if current and not permission.take_back(current, manifest_path, retract):
                 return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
@@ -1585,26 +1694,25 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                 fresh = package_source(root, queue_root=queue_root, manifest=manifest, max_bytes=max_bytes, now=now())
                 if fresh is None or simulation_revision(fresh, max_bytes=max_bytes) != revision:
                     return {"status": "failed", "reason": "website_company_simulation_changed_during_build"}
-                current = _read(manifest_path) if deferred else {}
+                current = _read(manifest_path)
                 if outcome is not None:
                     logger.warning("website_company_simulation_not_built capture=%s reason=%s",
                                    identity["capture_id"], outcome["refused"])
-                    if (deferred and outcome.get("refused_half")
-                            and current.get("simulation_revision") == manifest.get("simulation_revision")
-                            and not permission.hidden(current.get("archive") or {})
-                            and _floor_stands(root, current, queue_root=queue_root, max_bytes=max_bytes, now=now())):
-                        # The half gave way again: the floor stays, and records the half it stands for.
-                        write_json(manifest_path, {**current, "refused_half": outcome["refused_half"]})
+                    if _kept_copies(current):
+                        # A rebuild refused, out of time or over the limit leaves what is out exactly as it was, still
+                        # read; its refusal is kept beside it for its revision (and a half's, for the floor rule).
+                        write_json(manifest_path, {**current, "rebuild_refused": {
+                            key: outcome[key] for key in ("simulation_revision", "refused", "detail", "refused_at_epoch",
+                                                          "size_rule", "size_over") if key in outcome},
+                            **({"refused_half": outcome["refused_half"]} if outcome.get("refused_half") else {})})
                         return _not_built(outcome)
-                    if deferred and not permission.take_back(current, manifest_path, retract):
-                        return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
                     package_path.unlink(missing_ok=True)
                     write_json(manifest_path, outcome)
                     return _not_built(outcome)
-                if deferred and not permission.take_back(current, manifest_path, retract):
-                    return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
+                superseded = _kept_copies(current, besides=built["digest"])
                 os.replace(candidate, package_path)
                 manifest = {**base, "package": {**built, "path": PACKAGE_FILE},
+                            **({permission.SUPERSEDED: superseded} if superseded else {}),
                             **({"refused_by_webapp": manifest["refused_by_webapp"]}
                                if isinstance(manifest.get("refused_by_webapp"), Mapping) else {})}
             return _publish_built(root, identity, manifest, manifest_path, package_path, basis, upload, built,
@@ -1613,19 +1721,34 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         candidate.unlink(missing_ok=True)
 
 
-def _floor_package(manifest: Mapping[str, Any]) -> bool:
-    """The manifest holds a built floor (a room standing in for a half the builder could not ship)."""
-    return bool(manifest.get("package")) and (manifest.get("source_kind") == "floor"
-                                              or bool(manifest.get("floor_reason")))
+def _refusal(manifest: Mapping[str, Any], revision: str) -> Mapping[str, Any]:
+    """This revision's recorded refusal: the manifest's own, or the failed rebuild's kept beside a package out."""
+    for record in (manifest, manifest.get("rebuild_refused")):
+        if isinstance(record, Mapping) and record.get("simulation_revision") == revision and record.get("refused"):
+            return record
+    return {}
 
 
-def _floor_stands(root: Path, manifest: Mapping[str, Any], *, queue_root: Path | None, max_bytes: int,
-                  now: float) -> bool:
-    """The floor this manifest holds is still the one the job's records give (``_floor_source``, same revision)."""
-    reason = str(manifest.get("floor_reason") or "object_not_built:refused_half")
-    floor = _floor_source(root, queue_root=Path(queue_root or _queue_root()), now=now,
-                          reason=reason if reason.startswith("object_not_built:") else "object_not_built:refused_half")
-    return floor is not None and simulation_revision(floor, max_bytes=max_bytes) == manifest.get("simulation_revision")
+def _size_over(manifest: Mapping[str, Any], revision: str) -> list[str]:
+    """The ``SIZE_STEPS`` an earlier pass found over the limit for this revision (its own record, a failed rebuild's
+    kept beside a package out, or the half's a floor stands for)."""
+    for record in (manifest, manifest.get("rebuild_refused"), manifest.get("refused_half")):
+        if (isinstance(record, Mapping) and record.get("simulation_revision") == revision
+                and isinstance(record.get("size_over"), list)):
+            return [step for step in SIZE_STEPS if step in record["size_over"]]
+    return []
+
+
+def _kept_copies(current: Mapping[str, Any], *, besides: str | None = None) -> list[dict[str, Any]]:
+    """Every archived copy a company may still be reading: the package out and each one kept since the last the
+    website is known to have taken (a delivery whose answer was lost may have moved it to any of them), never
+    the one named ``besides``. Retired only once a newer package is taken (``_publish_built``)."""
+    kept: dict[str, dict[str, Any]] = {}
+    for record in [*(current.get(permission.SUPERSEDED) or []), current.get("archive")]:
+        if (isinstance(record, Mapping) and isinstance(record.get("uri"), str) and not permission.hidden(record)
+                and record.get("digest") != besides):
+            kept[str(record.get("digest"))] = dict(record)
+    return list(kept.values())
 
 
 def _not_built(outcome: Mapping[str, Any]) -> dict[str, Any]:
@@ -1667,7 +1790,12 @@ def _publish_built(root, identity, manifest, manifest_path, package_path, basis,
     manifest["delivered"] = {"simulation_digest": record["simulation_digest"], "at_epoch": int(now())}
     manifest.pop("last_delivery_error", None)
     manifest.pop("refused_by_webapp", None)
+    # The website reads the new package now: the copies it may have read before are marked for retirement in this
+    # same write, so a stop before their deletion leaves them pending for the next pass, which retires them before
+    # anything else (``retraction_pending``), the already-current path included.
+    permission.mark_retiring(manifest)
     write_json(manifest_path, manifest)
+    permission.retire(manifest, manifest_path, retract)
     return {"status": "published", "simulation_revision": revision, "simulation_digest": record["simulation_digest"]}
 
 
@@ -1731,7 +1859,9 @@ def open_company_simulation(*, request_id: str, capture_id: str, digest: str, st
     if len(roots) != 1:
         raise CompanySimulationUnavailable("website_company_simulation_unavailable")
     manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
-    stored = manifest.get("archive") or {}
+    # The package out now, or one the website may still read while a newer one is delivered (``SUPERSEDED``).
+    stored = next((record for record in (manifest.get("archive"), *(manifest.get(permission.SUPERSEDED) or []))
+                   if isinstance(record, Mapping) and record.get("digest") == digest), None) or {}
     moment = _wall_clock() if now is None else now
     if (not permission.delivery_gate_allows(roots[0], surface="website_company_simulation")
             or manifest.get("schema_version") != MANIFEST_SCHEMA or stored.get("digest") != digest

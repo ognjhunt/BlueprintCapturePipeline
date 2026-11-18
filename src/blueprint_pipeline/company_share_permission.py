@@ -92,15 +92,64 @@ def hidden(archive: Mapping[str, Any]) -> bool:
     return archive.get("retracted") is True or archive.get("retraction") == "pending"
 
 
+#: The packages a company may still be reading while a newer one is delivered (``website_company_simulation``): every
+#: copy archived since the last one the website is known to have taken, kept beside ``archive`` until a newer one
+#: is taken, then retired; taken back with ``archive`` always.
+SUPERSEDED = "superseded_archives"
+
+
+def _retire_one(record: Mapping[str, Any], retract: Callable[[str], None]) -> dict[str, Any]:
+    from .website_scene_preview import _reason
+    try:
+        retract(record["uri"])
+    except Exception as error:  # noqa: BLE001 - storage errors retry on the next pass
+        return {**record, "retraction": "pending", "retraction_error": _reason(error),
+                "retraction_attempts": int(record.get("retraction_attempts") or 0) + 1}
+    return {**{name: value for name, value in record.items()
+               if name not in {"retraction", "retraction_error"}}, "retracted": True}
+
+
+def mark_retiring(manifest: dict[str, Any]) -> None:
+    """Mark every live superseded copy's retraction pending, unwritten: the caller writes it with the record that
+    ends them (the delivery of a newer package), so a stop before ``retire`` leaves them pending, never forgotten."""
+    manifest[SUPERSEDED] = [
+        {**record, "retraction": "pending"} if isinstance(record, Mapping) and isinstance(record.get("uri"), str)
+        and not record.get("retracted") else record
+        for record in manifest.get(SUPERSEDED) or []]
+    if not manifest[SUPERSEDED]:
+        manifest.pop(SUPERSEDED)
+
+
+def retire(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
+    """Take back every superseded copy (``SUPERSEDED``), recording each retraction before deleting; True once none
+    is left."""
+    records = [dict(record) for record in manifest.get(SUPERSEDED) or [] if isinstance(record, Mapping)]
+    live = [index for index, record in enumerate(records)
+            if isinstance(record.get("uri"), str) and not record.get("retracted")]
+    if not live:
+        return True
+    for index in live:
+        records[index] = {**records[index], "retraction": "pending"}
+    manifest[SUPERSEDED] = records
+    write_json(manifest_path, manifest)
+    for index in live:
+        records[index] = _retire_one(records[index], retract)
+    manifest[SUPERSEDED] = records
+    write_json(manifest_path, manifest)
+    return all(record.get("retracted") for record in records if isinstance(record.get("uri"), str))
+
+
 def take_back(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
-    """Record the retraction before deleting, so a failed deletion is retried, never forgotten."""
+    """Record the retraction before deleting, so a failed deletion is retried, never forgotten. A superseded copy a
+    company could still read (``SUPERSEDED``) goes with it."""
     from .website_scene_preview import _finish_retraction
+    superseded = retire(manifest, manifest_path, retract)
     archive = manifest.get("archive")
     if not isinstance(archive, Mapping) or not isinstance(archive.get("uri"), str) or archive.get("retracted"):
-        return True
+        return superseded
     manifest["archive"] = {**archive, "retraction": "pending"}
     write_json(manifest_path, manifest)
-    return _finish_retraction(manifest, manifest_path, retract)
+    return _finish_retraction(manifest, manifest_path, retract) and superseded
 
 
 def retract_object(uri: str) -> None:
@@ -109,9 +158,10 @@ def retract_object(uri: str) -> None:
     _retract(uri)
 
 
-def retraction_pending(manifest: Mapping[str, Any]) -> bool:
-    archive = manifest.get("archive")
-    return isinstance(archive, Mapping) and archive.get("retraction") == "pending" and isinstance(archive.get("uri"), str)
+def retraction_pending(manifest: Mapping[str, Any], key: str = "archive") -> bool:
+    records = (manifest.get(SUPERSEDED) or []) if key == SUPERSEDED else [manifest.get(key)]
+    return any(isinstance(record, Mapping) and record.get("retraction") == "pending"
+               and isinstance(record.get("uri"), str) for record in records)
 
 
 # --- the basis --------------------------------------------------------------------------------------------------

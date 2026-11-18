@@ -407,16 +407,39 @@ def write_standard_3dgs_ply(splat: SplatData, path: str | Path) -> Path:
         if (degree + 1) ** 2 != coefficient_count:
             raise ValueError("invalid sh_rest coefficient count")
         order.extend((f"f_rest_{index}", rest[:, index]) for index in range(rest.shape[1]))
-    header = ["ply", "format binary_little_endian 1.0", f"element vertex {splat.count}"]
-    header += [f"property float {name}" for name, _ in order]
+    return _write_float_ply(path, splat.count, order)
+
+
+def float_ply_header(count: int, names: Sequence[str]) -> bytes:
+    """The header of a binary little-endian PLY of one ``vertex`` element with a float32 property per name."""
+    header = ["ply", "format binary_little_endian 1.0", f"element vertex {count}"]
+    header += [f"property float {name}" for name in names]
     header.append("end_header\n")
-    table = np.empty((splat.count, len(order)), dtype="<f4")
+    return "\n".join(header).encode("ascii")
+
+
+def _write_float_ply(path: Path, count: int, order: Sequence[tuple[str, np.ndarray]]) -> Path:
+    """A binary little-endian PLY of one ``vertex`` element, one float32 column per (name, values) in order."""
+    table = np.empty((count, len(order)), dtype="<f4")
     for col, (_, values) in enumerate(order):
         table[:, col] = np.asarray(values, dtype="<f4")
     with open(path, "wb") as handle:
-        handle.write(("\n".join(header)).encode("ascii"))
+        handle.write(float_ply_header(count, [name for name, _ in order]))
         handle.write(table.tobytes(order="C"))
     return path
+
+
+def viewer_3dgs_properties(rest_count: int = 0) -> tuple[str, ...]:
+    """The vertex properties of the 3DGS PLY common splat viewers open, in the reference 3DGS ``save_ply`` order.
+
+    Position, normals (written as zero, as the reference writes them), band-0 colour, the higher bands when there
+    are any (channel-major), the opacity logit, the log scales and the rotation quaternion w, x, y, z: the values
+    of :func:`write_standard_3dgs_ply`, which writes no normals and puts ``f_rest_*`` after the rotation.
+    ``particlefield_usd.write_placed_viewer_ply`` writes it; :func:`read_standard_3dgs_ply` reads it by name.
+    """
+    return ("x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2",
+            *(f"f_rest_{index}" for index in range(rest_count)),
+            "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")
 
 
 def write_standard_3dgs_ply_subset_exact(

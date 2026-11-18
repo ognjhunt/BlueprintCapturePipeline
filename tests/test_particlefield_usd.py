@@ -400,3 +400,163 @@ def test_nurec_with_scene_relative_gaussian_divergence_is_refused(
     assert result["gaussian_field_quality"]["status"] == "blocked"
     assert not output.exists()
     assert not receipt_path.exists()
+
+
+# --- the look's source as the PLY splat viewers open, placed where the look's USD places it ---------------------
+
+#: The website look's frame (``website_native_appearance``): a provider's Y-up world, scaled, turned to Z-up and moved.
+_WEBSITE_TRANSFORM = np.eye(4)
+_WEBSITE_TRANSFORM[:3, :3] = 0.8 * np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+_WEBSITE_TRANSFORM[:3, 3] = [0.3, -0.2, 0.1]
+
+
+def _matrices(quats: np.ndarray) -> np.ndarray:
+    """Rotation matrices of (w, x, y, z) quaternions."""
+    w, x, y, z = (np.asarray(quats, float) / np.linalg.norm(quats, axis=1, keepdims=True)).T
+    return np.stack([np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], -1),
+                     np.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], -1),
+                     np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], -1)], 1)
+
+
+def _covariances(quats_wxyz: np.ndarray, scales: np.ndarray, linear: np.ndarray | None = None) -> np.ndarray:
+    """The 3D covariance a 3DGS renderer builds (``build_scaling_rotation``: L = R S, Sigma = L L^T), optionally
+    carried by a linear map (Sigma' = A Sigma A^T)."""
+    covariance = _matrices(quats_wxyz) @ (np.asarray(scales, float)[:, :, None] ** 2 * np.eye(3)) @ np.swapaxes(
+        _matrices(quats_wxyz), 1, 2)
+    return covariance if linear is None else linear @ covariance @ linear.T
+
+
+def _axis_angle(axis, degrees: float) -> list[float]:
+    axis = np.asarray(axis, float) / np.linalg.norm(axis)
+    half = np.radians(degrees) / 2
+    return [np.cos(half), *(np.sin(half) * axis)]
+
+
+#: Known turns about oblique axes (and one plain one): none is its own scrambled order.
+_KNOWN = np.asarray([_axis_angle((1, 2, 3), 37), _axis_angle((-2, 0.5, 1), 115), _axis_angle((0.3, -1, 0.2), 170),
+                     _axis_angle((0, 0, 1), 90), _axis_angle((1, 1, 0), 63)])
+
+
+def _source(path: Path, *, n: int = 1500, degree: int = 0) -> SplatData:
+    """A standard 3DGS PLY as the levelled splat is written (``write_standard_3dgs_ply``): known rotations, three
+    unequal scales."""
+    from blueprint_pipeline.gaussian_splat_decode import write_standard_3dgs_ply
+
+    rng = np.random.default_rng(18 + degree)
+    width = 3 * ((degree + 1) ** 2 - 1)
+    splat = SplatData(count=n, xyz=rng.uniform([-3, 0, -3], [3, 2.5, 3], (n, 3)).astype(np.float32),
+                      opacity=rng.normal(0, 3, n).astype(np.float32), f_dc=rng.normal(0, 1, (n, 3)).astype(np.float32),
+                      scales=np.tile(np.log([0.02, 0.05, 0.11]), (n, 1)).astype(np.float32),
+                      quats=(np.resize(_KNOWN, (n, 4)) * rng.uniform(0.5, 2.0, (n, 1))).astype(np.float32),
+                      properties=(), sh_rest=(0.1 * rng.standard_normal((n, width))).astype(np.float32) if width else None)
+    write_standard_3dgs_ply(splat, path)
+    return splat
+
+
+def test_the_placed_ply_has_the_viewer_layout_and_the_sources_values_unplaced(tmp_path: Path) -> None:
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply, viewer_3dgs_properties
+
+    splat = _source(tmp_path / "source.ply", n=300, degree=1)
+    out = particlefield_usd.write_placed_viewer_ply(tmp_path / "source.ply", tmp_path / "viewer.ply", np.eye(4))
+    data = out.read_bytes()
+    header = data[:data.index(b"end_header\n")].decode("ascii").splitlines()
+    assert header[:3] == ["ply", "format binary_little_endian 1.0", "element vertex 300"]
+    assert [line.removeprefix("property float ") for line in header[3:]] == list(viewer_3dgs_properties(9))
+    assert viewer_3dgs_properties(9)[:12] == ("x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2",
+                                             "f_rest_0", "f_rest_1", "f_rest_2")
+    assert viewer_3dgs_properties(0) == ("x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+                                         "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")
+    back = read_standard_3dgs_ply(out)
+    for field in ("xyz", "f_dc", "scales", "sh_rest"):
+        np.testing.assert_allclose(getattr(back, field), getattr(splat, field), rtol=0, atol=1e-6)
+    np.testing.assert_allclose(back.opacity, np.clip(splat.opacity, -30, 30), atol=1e-6)
+    np.testing.assert_allclose(back.quats, splat.quats / np.linalg.norm(splat.quats, axis=1, keepdims=True), atol=1e-6)
+    table = np.frombuffer(data[data.index(b"end_header\n") + 11:], dtype="<f4").reshape(300, -1)
+    assert not table[:, 3:6].any()  # zero normals, as the reference writes them
+
+
+def test_the_placed_ply_is_the_same_whatever_the_chunk(tmp_path: Path) -> None:
+    _source(tmp_path / "source.ply", n=1000, degree=3)
+    whole = particlefield_usd.write_placed_viewer_ply(tmp_path / "source.ply", tmp_path / "a.ply", _WEBSITE_TRANSFORM)
+    chunked = particlefield_usd.write_placed_viewer_ply(tmp_path / "source.ply", tmp_path / "b.ply", _WEBSITE_TRANSFORM,
+                                                        chunk=7)
+    assert whole.read_bytes() == chunked.read_bytes()
+
+
+@pytest.mark.skipif(not _HAS_PXR, reason="usd-core unavailable")
+@pytest.mark.parametrize("degree", [0, 3])
+def test_known_rotations_render_the_same_covariance_in_the_source_the_usd_and_the_ply(tmp_path: Path,
+                                                                                      degree: int) -> None:
+    """Owner, 2026-11-18: the writer stored every Gaussian's rotation scrambled (``FromNumpy`` reads x, y, z, w).
+    Known turns about oblique axes, with three unequal scales, must render the same ellipsoid from the source
+    splat, from the USD the writer authors of it as any USD reader takes it (Gf real part first), and from the
+    PLY of the same source placed as that USD places it; view-dependent colour turns with them."""
+    from pxr import Usd
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
+    from blueprint_pipeline.splat_sh_rotation import sh_basis
+
+    splat = _source(tmp_path / "source.ply", degree=degree)
+    n, linear = splat.count, _WEBSITE_TRANSFORM[:3, :3]
+    source = _covariances(splat.quats, np.exp(splat.scales.astype(float)), linear)
+    # The scrambled layout renders these as other ellipsoids: the test can tell them apart.
+    scrambled = _covariances(splat.quats[:, [3, 0, 1, 2]], np.exp(splat.scales.astype(float)), linear)
+    assert np.abs(scrambled - source).max() > 1e-3
+
+    authored = write_particlefield_usd(tmp_path / "source.ply", tmp_path / "look.usdc",
+                                       layer_transform_row_major=_WEBSITE_TRANSFORM.T.tolist())
+    assert authored["status"] == "completed" and authored["orientation_storage"] == "gf_real_first"
+    stage = Usd.Stage.Open(str(tmp_path / "look.usdc"))
+    prim = stage.GetPrimAtPath(authored["prim_path"])
+    gf = np.asarray([(q.GetReal(), *q.GetImaginary()) for q in prim.GetAttribute("orientations").Get()])
+    usd = _covariances(gf, np.asarray(prim.GetAttribute("scales").Get(), float), linear)
+    np.testing.assert_allclose(usd, source, rtol=0, atol=1e-8)
+
+    particlefield_usd.write_placed_viewer_ply(tmp_path / "source.ply", tmp_path / "look.ply", _WEBSITE_TRANSFORM)
+    ply = read_standard_3dgs_ply(tmp_path / "look.ply")
+    np.testing.assert_allclose(_covariances(ply.quats, np.exp(ply.scales.astype(float))), source, rtol=0, atol=1e-8)
+    # The rest of the PLY against the USD's own values, where the USD places them.
+    positions = np.asarray(prim.GetAttribute("positions").Get(), float)
+    np.testing.assert_allclose(ply.xyz, positions @ linear.T + _WEBSITE_TRANSFORM[:3, 3], atol=1e-6)
+    np.testing.assert_allclose(1 / (1 + np.exp(-ply.opacity.astype(float))),
+                               np.asarray(prim.GetAttribute("opacities").Get(), float), atol=1e-7)
+    coefficients = np.asarray(prim.GetAttribute("radiance:sphericalHarmonicsCoefficients").Get(), float)
+    coefficients = coefficients.reshape(n, (degree + 1) ** 2, 3)
+    np.testing.assert_allclose(ply.f_dc, coefficients[:, 0, :], atol=1e-7)
+    if degree:
+        rng = np.random.default_rng(4)
+        directions = rng.standard_normal((40, 3))
+        directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+        bands = ply.sh_rest.reshape(n, 3, 15).transpose(0, 2, 1)
+        np.testing.assert_allclose(np.einsum("mk,nkc->nmc", sh_basis(directions, 3), bands),
+                                   np.einsum("mk,nkc->nmc", sh_basis(directions @ (linear / 0.8), 3),
+                                             coefficients[:, 1:]), atol=1e-6)
+
+
+def test_a_half_turn_about_any_axis_turns_every_gaussian(tmp_path: Path) -> None:
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply
+
+    splat = _source(tmp_path / "source.ply", n=50)
+    for axis in range(3):  # the quaternion's largest part is never w
+        transform = np.eye(4)
+        transform[:3, :3] = -np.eye(3)
+        transform[axis, axis] = 1.0
+        out = particlefield_usd.write_placed_viewer_ply(tmp_path / "source.ply", tmp_path / f"{axis}.ply", transform)
+        np.testing.assert_allclose(_matrices(read_standard_3dgs_ply(out).quats),
+                                   transform[:3, :3] @ _matrices(splat.quats), atol=1e-6)
+
+
+@pytest.mark.parametrize("case", ["shear", "mirror", "not_standard"])
+def test_a_transform_a_gaussian_cannot_take_or_a_source_that_is_not_standard_is_refused(tmp_path: Path,
+                                                                                        case: str) -> None:
+    _source(tmp_path / "source.ply", n=20, degree=1)
+    transform = np.eye(4)
+    if case == "shear":
+        transform[0, 1] = 0.4
+    elif case == "mirror":
+        transform[0, 0] = -1.0
+    else:
+        data = (tmp_path / "source.ply").read_bytes()
+        (tmp_path / "source.ply").write_bytes(data.replace(b"property float f_rest_8\n", b""))
+    reason = "particlefield_placed_source_not_standard" if case == "not_standard" else "not_similarity"
+    with pytest.raises(ValueError, match=reason):
+        particlefield_usd.write_placed_viewer_ply(tmp_path / "source.ply", tmp_path / "out.ply", transform)

@@ -633,7 +633,11 @@ def write_particlefield_usd(
     # ParticleFieldEmissive material or renderer hints used by private PPISP
     # fixtures; neither public reference converter authors them.
 
-    # quaternions: try numpy fast path, fall back to per-element Gf.Quatf (w, x, y, z)
+    # quaternions: try numpy fast path, fall back to per-element Gf.Quatf (w, x, y, z).
+    # A Gf.Quatf is laid out imaginary part first, so ``FromNumpy`` reads each row as
+    # (x, y, z, w). Until 2026-11-18 the rows went in as (w, x, y, z): every Gaussian was
+    # stored turned (real part z, imaginary part w, x, y), and anisotropic splats rendered
+    # with the wrong covariance.
     q = arr["orientations"]
     quat_attr = (
         field.CreateOrientationsAttr()
@@ -641,7 +645,7 @@ def write_particlefield_usd(
         else prim.CreateAttribute("orientations", Sdf.ValueTypeNames.QuatfArray)
     )
     try:
-        quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q, dtype=np.float32)))
+        quat_attr.Set(Vt.QuatfArray.FromNumpy(np.ascontiguousarray(q[:, [1, 2, 3, 0]], dtype=np.float32)))
     except Exception:  # noqa: BLE001
         quat_attr.Set(
             Vt.QuatfArray([Gf.Quatf(float(w), float(x), float(y), float(z)) for w, x, y, z in q])
@@ -684,12 +688,128 @@ def write_particlefield_usd(
         "gaussian_field_quality": field_quality,
         "sealed_source_mutated": False,
         "layer_transform_row_major": transform.tolist(),
+        # Since 2026-11-18 every Gaussian's rotation is stored as given (``FromNumpy`` rows x, y, z, w). A receipt
+        # without this field names a look whose rotations were stored scrambled.
+        "orientation_storage": "gf_real_first",
         "proof_boundary": "ParticleField USD authoring only; Isaac RTX render is the GPU step.",
     }
     result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
     if receipt_path is not None:
         write_json(Path(receipt_path), result)
     return result
+
+
+#: The opacity logits a placed PLY keeps (``write_placed_viewer_ply``): ``_sigmoid`` clips here, so the writer reads
+#: +30 back as 1.0 and -30 as 9e-14, and the file holds no infinity.
+OPACITY_LOGIT_BOUND = 30.0
+
+
+def _similarity(matrix: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    """A column-vector 4x4 transform as (uniform scale, rotation, translation); refused when it is not one."""
+    linear = matrix[:3, :3]
+    determinant = float(np.linalg.det(linear))
+    if not np.isfinite(matrix).all() or determinant <= 0 or not np.allclose(matrix[3], [0, 0, 0, 1]):
+        raise ValueError("particlefield_transform_not_similarity")
+    scale = determinant ** (1.0 / 3.0)
+    rotation = linear / scale
+    if not np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-6):
+        raise ValueError("particlefield_transform_not_similarity")
+    return scale, rotation, matrix[:3, 3]
+
+
+def _rotation_quaternion(rotation: np.ndarray) -> np.ndarray:
+    """The unit quaternion (w, x, y, z) of a rotation matrix, for any angle (largest component first)."""
+    m = rotation
+    trace = float(np.trace(m))
+    candidates = [trace, m[0, 0], m[1, 1], m[2, 2]]
+    best = int(np.argmax(candidates))
+    if best == 0:
+        w = np.sqrt(1.0 + trace) / 2.0
+        q = [w, (m[2, 1] - m[1, 2]) / (4 * w), (m[0, 2] - m[2, 0]) / (4 * w), (m[1, 0] - m[0, 1]) / (4 * w)]
+    else:
+        i = best - 1
+        j, k = (i + 1) % 3, (i + 2) % 3
+        v = np.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k]) / 2.0
+        q = [0.0, 0.0, 0.0, 0.0]
+        q[0] = (m[k, j] - m[j, k]) / (4 * v)
+        q[1 + i], q[1 + j], q[1 + k] = v, (m[j, i] + m[i, j]) / (4 * v), (m[k, i] + m[i, k]) / (4 * v)
+    q = np.asarray(q, dtype=np.float64)
+    return q / np.linalg.norm(q)
+
+
+def _turned(left: np.ndarray, quats: np.ndarray) -> np.ndarray:
+    """``left`` (w, x, y, z) times every row of ``quats`` (w, x, y, z): the Gaussians' rotations after the turn."""
+    w0, x0, y0, z0 = left
+    w, x, y, z = quats.T
+    return np.stack([w0 * w - x0 * x - y0 * y - z0 * z, w0 * x + x0 * w + y0 * z - z0 * y,
+                     w0 * y - x0 * z + y0 * w + z0 * x, w0 * z + x0 * y - y0 * x + z0 * w], axis=1)
+
+
+#: Gaussians placed and written per step by ``write_placed_viewer_ply``: about 130 MiB of working memory at degree
+#: 3, whatever the splat's size.
+PLACED_PLY_CHUNK = 1 << 17
+
+
+def write_placed_viewer_ply(source: str | Path, target: str | Path, transform: Sequence[Sequence[float]], *,
+                            chunk: int = PLACED_PLY_CHUNK) -> Path:
+    """The standard 3DGS PLY at ``source``, placed by ``transform``, written as the PLY splat viewers open.
+
+    ``transform`` is the column-vector 4x4 the look's USD carries on its field (``write_particlefield_usd`` with
+    ``layer_transform_row_major=transform.T``, as ``website_native_appearance`` authors it), so the PLY holds the
+    same Gaussians where that file places them: positions moved, the uniform scale added to the log scales, every
+    (normalised) rotation and its higher bands (``splat_sh_rotation``) turned, base colour as read, the opacity
+    logit as read within ``-/+OPACITY_LOGIT_BOUND`` (the writer's own activation reads those back as 9e-14 and 1).
+    Layout: ``gaussian_splat_decode.viewer_3dgs_properties``. Read through a memory map and written ``chunk``
+    Gaussians at a time, so memory does not grow with the splat. Refused (``ValueError``) for a source that is
+    not a float binary 3DGS PLY, a zero rotation, or a transform that is not a rotation, a uniform scale and a
+    translation (a sheared or mirrored Gaussian is no longer one with three scales and a quaternion).
+    """
+    import re
+
+    from .gaussian_splat_decode import _FLOAT_PLY_TYPES, _parse_ply_header, float_ply_header, viewer_3dgs_properties
+    from .splat_sh_rotation import rotate_sh_rest
+
+    scale, rotation, translation = _similarity(np.asarray(transform, dtype=np.float64))
+    with open(source, "rb") as handle:
+        fmt, count, props, offset = _parse_ply_header(handle)
+    names = [name for _, name in props]
+    index = {name: column for column, name in enumerate(names)}
+    rest = sorted((name for name in names if re.fullmatch(r"f_rest_[0-9]+", name)),
+                  key=lambda name: int(name.rsplit("_", 1)[1]))
+    base = ("x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2",
+            "rot_0", "rot_1", "rot_2", "rot_3")
+    if (fmt != "binary_little_endian" or any(kind not in _FLOAT_PLY_TYPES for kind, _ in props)
+            or any(name not in index for name in base) or count < 1
+            or (rest and (len(rest) % 3 or round((1 + len(rest) // 3) ** 0.5) ** 2 != 1 + len(rest) // 3))):
+        raise ValueError("particlefield_placed_source_not_standard")
+    table = np.memmap(source, dtype="<f4", mode="r", offset=offset, shape=(count, len(names)))
+    left, linear, log_scale = _rotation_quaternion(rotation), scale * rotation, float(np.log(scale))
+    order = viewer_3dgs_properties(len(rest))
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "wb") as handle:
+        handle.write(float_ply_header(count, order))
+        for start in range(0, count, chunk):
+            rows = np.asarray(table[start:start + chunk], dtype=np.float64)
+
+            def columns(keys) -> np.ndarray:
+                return rows[:, [index[key] for key in keys]]
+            quats = columns(("rot_0", "rot_1", "rot_2", "rot_3"))
+            norms = np.linalg.norm(quats, axis=1, keepdims=True)
+            if (norms <= np.finfo(np.float32).eps).any():
+                raise ValueError("particlefield_zero_quaternion")
+            placed = {"xyz": columns(("x", "y", "z")) @ linear.T + translation,
+                      "f_dc": columns(("f_dc_0", "f_dc_1", "f_dc_2")),
+                      "opacity": np.clip(columns(("opacity",)), -OPACITY_LOGIT_BOUND, OPACITY_LOGIT_BOUND),
+                      "scales": columns(("scale_0", "scale_1", "scale_2")) + log_scale,
+                      "quats": _turned(left, quats / norms),
+                      "rest": rotate_sh_rest(columns(rest), rotation) if rest else np.empty((len(rows), 0))}
+            out = np.empty((len(rows), len(order)), dtype="<f4")
+            out[:, 0:3], out[:, 3:6], out[:, 6:9] = placed["xyz"], 0.0, placed["f_dc"]
+            out[:, 9:9 + len(rest)] = placed["rest"]
+            out[:, 9 + len(rest):] = np.concatenate([placed["opacity"], placed["scales"], placed["quats"]], axis=1)
+            handle.write(out.tobytes(order="C"))
+    return target
 
 
 def _sha256_bytes(payload: bytes) -> str:
