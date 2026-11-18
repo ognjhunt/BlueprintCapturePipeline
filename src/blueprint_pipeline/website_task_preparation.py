@@ -1346,22 +1346,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             # band: the snap below moves that body down onto the floor instead.
             if published is None:
                 (subject_min if up_sign == 1 else subject_max)[up] = grounding["top_runtime_units"]
-    snap = 0.0
-    support_search = None
-    if (support is None and collider is not None and synthetic is None and not independent_object and not articulated
-            and subject_target.get("track")):
-        # The surface the object visibly rests on, judged by its own points and outline, before any guess
-        # without that evidence; its bottom is corrected onto it and the record kept (``website_resting_support``).
-        from .website_resting_support import visible_resting_support
-        support, support_search, subject_min, subject_max = visible_resting_support(
-            collider=collider, subject_min=subject_min, subject_max=subject_max, track=subject_target["track"],
-            frames=source_geometry["frames"], matrix=matrix, runtime_to_sim=runtime_to_sim,
-            targets=task_masks["targets"], up=up, up_sign=up_sign, meters_per_unit=mpu,
-            placement_residual_m=residual)
+    snap, support_search = 0.0, {}
     if support is None and collider is not None and synthetic is None and not independent_object:
-        from .website_support_geometry import nearest_support_under  # a recorded, flagged best guess
-        support = nearest_support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu,
-                                        up_sign=up_sign, placement_residual_m=residual)
+        from .website_resting_support import rest_on_a_surface  # what it visibly rests on, else a flagged guess
+        support, support_search = rest_on_a_surface(collider, subject_min, subject_max, source_geometry, task_masks,
+            None if articulated else subject_target, matrix, runtime_to_sim, up, up_sign, mpu, residual)
     if support is None:
         blockers.append("support_surface_not_found_under_subject")
     else:
@@ -1949,8 +1938,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "physical_scale_measured": False,
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
-        "subject": request["task"]["subject"], "support": support, "destination": destination,
-        **({"support_search": support_search} if support_search is not None else {}),
+        "subject": request["task"]["subject"], "support": support, "destination": destination, **support_search,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
         **({"destination_choice": destination_choice} if destination_choice is not None and not rule_withheld else {}),

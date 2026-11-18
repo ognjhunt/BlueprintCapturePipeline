@@ -27,7 +27,7 @@ decides as before. It reads the object's own points, one array per frame
   below: the object is moved down onto it, as ``nearest_support_under`` moves it. Either way the move is
   recorded and the support carries ``scene_estimate:support_guessed``.
 
-Nothing found: the caller tries the nearest-surface guess, and with none keeps
+Nothing found: the nearest-surface guess (``rest_on_a_surface``), and with none compile keeps
 ``support_surface_not_found_under_subject`` (so the room package still ships). The record
 (``support_search`` in the preparation) is kept either way. Estimates only.
 """
@@ -174,4 +174,35 @@ def visible_resting_support(*, collider: Any, subject_min: Sequence[float], subj
     return support, record, low, high
 
 
-__all__ = ["GUESS_BASIS", "SCHEMA_VERSION", "estimate_uncertainty", "visible_rest", "visible_resting_support"]
+def rest_on_a_surface(collider: Any, subject_min: list[float], subject_max: list[float],
+                      source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
+                      subject_target: Mapping[str, Any] | None, matrix: Any, runtime_to_sim: Any, up: int,
+                      up_sign: int, meters_per_unit: float, placement_residual_m: float | None, /
+                      ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """No surface at the object's estimated bottom: the one it visibly rests on, else the nearest under it.
+
+    Compile's fallback (``website_task_preparation``). The visible-rest search needs the object's own
+    tracked points (``subject_target``; None for an articulated assembly, whose box is its rebuilt body).
+    Without a surface it touches, the nearest-surface guess (``nearest_support_under``) decides as it did
+    before. Corrects the object's box (runtime units, the lists given) in place. Returns the support or
+    None, and ``{"support_search": record}`` for the preparation when the search ran, else ``{}``.
+    """
+    from .website_support_geometry import nearest_support_under
+
+    support, searched = None, {}
+    track = (subject_target or {}).get("track")
+    if track:
+        support, record, low, high = visible_resting_support(
+            collider=collider, subject_min=subject_min, subject_max=subject_max, track=track,
+            frames=source_geometry["frames"], matrix=matrix, runtime_to_sim=runtime_to_sim,
+            targets=task_masks["targets"], up=up, up_sign=up_sign, meters_per_unit=meters_per_unit,
+            placement_residual_m=placement_residual_m)
+        subject_min[:], subject_max[:], searched = low, high, {"support_search": record}
+    if support is None:
+        support = nearest_support_under(collider, subject_min, subject_max, up=up, meters_per_unit=meters_per_unit,
+                                        up_sign=up_sign, placement_residual_m=placement_residual_m)
+    return support, searched
+
+
+__all__ = ["GUESS_BASIS", "SCHEMA_VERSION", "estimate_uncertainty", "rest_on_a_surface", "visible_rest",
+           "visible_resting_support"]
