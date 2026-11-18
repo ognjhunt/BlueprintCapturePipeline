@@ -86,7 +86,7 @@ def _published(job) -> tuple[dict, dict[str, str]]:
     assert published["status"] == "published", published
     with zipfile.ZipFile(_package(job)) as archive:
         return published, {name: archive.read(name).decode() for name in archive.namelist()
-                           if not name.endswith(".usdc")}
+                           if not name.endswith((".usdc", ".ply"))}
 
 
 def _said(readme: str) -> str:

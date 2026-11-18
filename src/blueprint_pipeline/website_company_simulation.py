@@ -20,6 +20,10 @@ company clip is published (``website_company_clip``):
   only) and ``README.txt``. No record, manifest, ledger or receipt goes in, the plan included; no file name carries
   an id. Every outside or absolute USD reference is rewritten to a path inside the package, or the package is
   refused; a plan row that cannot be placed refuses it, naming the row's role;
+- a look that is a 3D Gaussian splat (``ParticleField3DGaussianSplat``) ships twice: as its USD and as the standard
+  3DGS PLY common splat viewers open (``scene/room.ply``), written from the shipped USD's own values where that file
+  places them (``particlefield_usd.read_particlefield_splat``, ``gaussian_splat_decode.write_viewer_3dgs_ply``);
+  scene.usda does not use it. Over the size limit, the PLY goes first, then the look (``build_package``);
 - every file is read with the shared outbound scan (``outbound_file_scan``: ids in both forms, account ids,
   keys, host paths, storage, file and web links, bare web addresses, and the text form of every binary USD
   layer) before the zip is made; a finding refuses the package (``refused``), naming the file and the kind;
@@ -102,10 +106,15 @@ SIZE_RULE = "zip_bytes.v1"
 LOOK_LEFT_OUT = ("The room's photographed look is not in this package: with it the download would have been larger "
                  "than Blueprint's size limit. The collision file, which holds the room's shape, is shown in its "
                  "place.")
+#: A look that is a 3D Gaussian splat also ships as the standard 3DGS PLY common splat viewers open (``_look_ply``).
+#: It is the first thing a zip over the limit gives up: built once more without it, then without the look at all.
+PLY_LEFT_OUT = ("The room's look is in this package as USD only: with a splat PLY of it as well, the download would "
+                "have been larger than Blueprint's size limit.")
 #: Moves whenever what the builder writes changes, so a package built or refused by the earlier builder is built once
 #: more at the first pass after the release. v2 (2026-11-16): the layer's flatten note naming a host file is
-#: dropped (``place``); a package v1 refused for that note waited six hours for its retry.
-BUILDER_REVISION = "website_company_simulation_builder.v2"
+#: dropped (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a splat
+#: look also ships as a standard 3DGS PLY (``_look_ply``).
+BUILDER_REVISION = "website_company_simulation_builder.v3"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
@@ -1049,10 +1058,16 @@ def _root_offset(path: Path) -> dict[str, list[float]] | None:
             "rotation_xyzw": [round(value, 6) for value in xyzw]}
 
 
+def _stated(up: str | None, metres: float | None) -> str:
+    stated = [f"up axis {up}" if up else None, f"{metres:g} metres per unit" if metres is not None else None]
+    return " and ".join(item for item in stated if item) or "no up axis or unit"
+
+
 def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[str],
             units: Mapping[str, tuple[str | None, float | None]],
-            offsets: Mapping[str, Any] | None = None) -> str:
+            offsets: Mapping[str, Any] | None = None, plys: Mapping[str, str] | None = None) -> str:
     """Only what is true of the package in front of it."""
+    plys = plys or {}
     room, withheld = source.get("room"), bool(source.get("rule_withheld"))
     what = (["A simulation of the site a deployment company was asked about, with the job's object in it at its",
              "start position as estimated from the video. Test in your own tools."] if withheld else
@@ -1071,6 +1086,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
         says = _SAYS.get(row["role"], "a part of the site")
         visible = row["placement"]["visible"]
         lines.append(f"- {relative} (/World/{prim}): {says}." + ("" if visible else " Hidden in scene.usda."))
+        if prim in plys:
+            lines += [f"- {plys[prim]}: the same look as a standard 3D Gaussian splat PLY, for splat viewers that do",
+                      "  not open USD. scene.usda does not use it."]
         if not visible:
             hidden.append(prim)
     if any(name.startswith("scene/files/") for name in names):
@@ -1100,10 +1118,11 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     lines += ["", "Units and axes", "", "- scene.usda is in metres (1 unit is 1 metre), radians and seconds.",
               f"- Up is +{source['axis']} in scene.usda."]
     for prim, relative in placed.items():
-        up, metres = units[prim]
-        stated = [f"up axis {up}" if up else None, f"{metres:g} metres per unit" if metres is not None else None]
-        stated = [item for item in stated if item]
-        lines.append(f"- {relative} states " + (" and ".join(stated) if stated else "no up axis or unit") + ".")
+        lines.append(f"- {relative} states {_stated(*units[prim])}.")
+    for prim, relative in plys.items():
+        lines += [f"- {relative} holds the Gaussians where {placed[prim]} places them (that file's own transform",
+                  f"  applied), in its frame: {_stated(*units[prim])}. A PLY states no axis, so a viewer that",
+                  "  assumes another up axis shows it turned."]
     if source.get("appearance_representation") == "particlefield_3d_gaussian_splat" and not source.get("look_left_out"):
         lines += ["- The room's look is a 3D Gaussian splat stored as USD particle fields. Some tools cannot show",
                   "  it; the hidden collision part holds the room's geometry."]
@@ -1114,6 +1133,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     import textwrap
 
     notes = [*([LOOK_LEFT_OUT] if source.get("look_left_out") else []),
+             *([PLY_LEFT_OUT] if source.get("ply_left_out") and not source.get("look_left_out") else []),
              *(PHYSICS_CHECK_WORDS.get(source.get("physics_check")) or ()),
              *([(FURNITURE_REMOVED_NO_LOOK if source.get("look_left_out") else FURNITURE_REMOVED).format(
                  count=source["removed_items"])] if source.get("removed_items") else []),
@@ -1166,23 +1186,63 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
                   deadline: float | None = None) -> dict[str, Any]:
     """Stage, rewrite, compose, scan and zip the package to ``output``; ``PackageRefused`` or ``OVER_CAP`` otherwise.
 
-    The limit is on the zip. Source files above ``MAX_SOURCE_BYTES`` are refused unbuilt. A zip over the limit is
-    built once more without the room's look (``without_look``); only when that one is over too is it ``OVER_CAP``.
-    It holds no lock: every file it writes is its own (a staging folder and a partial zip named for this build).
-    ``deadline`` (a ``time.monotonic`` value) is checked between steps and files: past it, ``BUILD_TIMED_OUT``.
+    The limit is on the zip. Source files above ``MAX_SOURCE_BYTES`` are refused unbuilt. A zip over the limit that
+    held a splat PLY of the look is built once more without the PLY (``PLY_LEFT_OUT``); one still over, or that held
+    none, is built once more without the room's look (``without_look``); only when that one is over too is it
+    ``OVER_CAP``. It holds no lock: every file it writes is its own (a staging folder and a partial zip named for
+    this build). ``deadline`` (a ``time.monotonic`` value) is checked between steps and files: past it,
+    ``BUILD_TIMED_OUT``.
     """
     if source.get("refusal"):
         raise ShapeRefused(source["refusal"])
     if sum(row["size_bytes"] for row in source["files"].values()) > MAX_SOURCE_BYTES:
         raise ValueError(OVER_CAP)
+    options = {"literals": literals, "words": words, "max_bytes": max_bytes, "deadline": deadline}
     try:
-        return _build_once(source, output, literals=literals, words=words, max_bytes=max_bytes, deadline=deadline)
+        return _build_once(source, output, **options)
     except ValueError as error:
-        lighter = without_look(source) if str(error) == OVER_CAP else None
-        if lighter is None:
+        if str(error) != OVER_CAP:
             raise
-    built = _build_once(lighter, output, literals=literals, words=words, max_bytes=max_bytes, deadline=deadline)
+        error_with_ply = bool(getattr(error, "plys", False))
+    if error_with_ply:
+        try:
+            return {**_build_once({**source, "ply_left_out": True}, output, **options), "ply_left_out": True}
+        except ValueError as error:
+            if str(error) != OVER_CAP:
+                raise
+    lighter = without_look(source)
+    if lighter is None:
+        raise ValueError(OVER_CAP)
+    built = _build_once(lighter, output, **options)
     return {**built, "look_left_out": True}
+
+
+class _OverCap(ValueError):
+    """``OVER_CAP``, saying whether the zip held a splat PLY of the look (``plys``), which goes first."""
+
+    def __init__(self, plys: bool):
+        super().__init__(OVER_CAP)
+        self.plys = plys
+
+
+def _look_ply(look: Path, target: Path) -> str | None:
+    """Write the look's splat as the standard 3DGS PLY at ``target``; None when written, else why not.
+
+    The values are the shipped look's own, read back through the ParticleField conventions and placed where the
+    look's file places them (``read_particlefield_splat``), so the PLY round-trips against the USD. A look with no
+    splat says ``PARTICLEFIELD_ABSENT``; any other reason is flagged and the package ships without the PLY.
+    """
+    from .gaussian_splat_decode import write_viewer_3dgs_ply
+    from .particlefield_usd import read_particlefield_splat
+    try:
+        write_viewer_3dgs_ply(read_particlefield_splat(look), target)
+    except ValueError as error:
+        target.unlink(missing_ok=True)
+        return str(error)
+    except Exception as error:  # noqa: BLE001 - a look pxr cannot read for this is flagged, never raised
+        target.unlink(missing_ok=True)
+        return f"website_company_simulation_look_ply_unreadable:{type(error).__name__}"
+    return None
 
 
 def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple[str, str]],
@@ -1218,6 +1278,20 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             if offset is not None:
                 offsets[prim] = offset
             rows.append({**row["placement"], "file": relative})
+        from .particlefield_usd import PARTICLEFIELD_ABSENT
+        plys: dict[str, str] = {}
+        not_written: dict[str, str] = {}
+        for prim, row in source["files"].items():
+            if row["role"] != "scene_appearance" or source.get("ply_left_out"):
+                continue
+            on_time()
+            relative = row["placement"]["name"] + ".ply"
+            why = _look_ply(staging / placed[prim], staging / relative)
+            if why is None:
+                plys[prim] = relative
+            elif why != PARTICLEFIELD_ABSENT:
+                not_written[prim] = why
+                logger.warning("website_company_simulation_look_ply_not_written reason=%s", why)
         try:
             write_stage(staging / "scene.usda", rows, axis=source["axis"])
         except StageRefused as error:
@@ -1230,7 +1304,8 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
                                                        encoding="utf-8")
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
-        (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units, offsets), encoding="utf-8")
+        (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units, offsets, plys),
+                                            encoding="utf-8")
         on_time()
         _resolves_inside(staging, room=source.get("room") is not None)
         findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time,
@@ -1250,12 +1325,13 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
                     shutil.copyfileobj(stream, member, 8 << 20)
         size = partial.stat().st_size
         if size > max_bytes:
-            raise ValueError(OVER_CAP)
+            raise _OverCap(bool(plys))
         os.replace(partial, output)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return {"format": FORMAT, "content_type": CONTENT_TYPE, "digest": _sha256_file(output), "size_bytes": size,
-            "files": names, "max_bytes": int(max_bytes)}
+            "files": names, "max_bytes": int(max_bytes),
+            **({"look_ply_not_written": dict(sorted(not_written.items()))} if not_written else {})}
 
 
 def _resolves_inside(staging: Path, *, room: bool = False) -> None:

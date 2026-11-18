@@ -166,6 +166,56 @@ def test_standard_ply_round_trip_preserves_higher_order_sh(tmp_path: Path) -> No
     np.testing.assert_array_equal(loaded.sh_rest, splat.sh_rest)
 
 
+#: The reference 3DGS ``save_ply`` order, written out by hand: what splat viewers expect to find.
+VIEWER_DEGREE_0 = ["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+                   "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
+
+
+def _header(path: Path) -> list[str]:
+    data = path.read_bytes()
+    return data[:data.index(b"end_header\n") + len(b"end_header\n")].decode("ascii").splitlines()
+
+
+@pytest.mark.parametrize("degree", [0, 1, 3])
+def test_the_viewer_ply_has_the_reference_names_in_order_and_the_same_values(tmp_path: Path, degree: int) -> None:
+    splat = _make_splat(7)
+    width = 3 * ((degree + 1) ** 2 - 1)
+    splat.sh_rest = np.arange(7 * width, dtype=np.float32).reshape(7, width) if degree else None
+    output = gsd.write_viewer_3dgs_ply(splat, tmp_path / "viewer.ply")
+    rest = [f"f_rest_{index}" for index in range(width)]
+    expected = [*VIEWER_DEGREE_0[:9], *rest, *VIEWER_DEGREE_0[9:]]
+    assert gsd.viewer_3dgs_properties(width) == tuple(expected)
+    assert _header(output) == ["ply", "format binary_little_endian 1.0", "element vertex 7",
+                               *(f"property float {name}" for name in expected), "end_header"]
+    assert output.stat().st_size == len("\n".join(_header(output))) + 1 + 7 * 4 * len(expected)
+    loaded = read_standard_3dgs_ply(output)
+    for field in ("xyz", "opacity", "f_dc", "scales", "quats"):
+        np.testing.assert_array_equal(getattr(loaded, field), getattr(splat, field))
+    if degree:
+        np.testing.assert_array_equal(loaded.sh_rest, splat.sh_rest)
+    else:
+        assert loaded.sh_rest is None
+    table = np.fromfile(output, dtype="<f4", offset=len("\n".join(_header(output))) + 1).reshape(7, len(expected))
+    assert not table[:, 3:6].any()  # zero normals, as the reference writes them
+
+
+def test_the_standard_writer_keeps_its_own_layout(tmp_path: Path) -> None:
+    """The writer the levelled and refined splats use is unchanged: no normals, ``f_rest_*`` after the rotation."""
+    splat = _make_splat(2)
+    splat.sh_rest = np.zeros((2, 9), dtype=np.float32)
+    names = [line.split()[-1] for line in _header(write_standard_3dgs_ply(splat, tmp_path / "s.ply"))
+             if line.startswith("property")]
+    assert names == ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2",
+                     "rot_0", "rot_1", "rot_2", "rot_3", *(f"f_rest_{index}" for index in range(9))]
+
+
+def test_the_viewer_writer_refuses_a_band_count_that_is_not_one(tmp_path: Path) -> None:
+    splat = _make_splat(2)
+    splat.sh_rest = np.zeros((2, 6), dtype=np.float32)
+    with pytest.raises(ValueError, match="invalid sh_rest shape"):
+        gsd.write_viewer_3dgs_ply(splat, tmp_path / "bad.ply")
+
+
 def test_opacity_sigmoid_clip_bounds_and_aabb_shape() -> None:
     """opacity_sigmoid clips raw logits to [-30, 30] before the sigmoid, so even
     saturating logits stay strictly inside (0, 1); aabb() returns (min, max) (3,)."""

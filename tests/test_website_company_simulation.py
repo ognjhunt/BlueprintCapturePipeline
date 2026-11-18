@@ -2319,3 +2319,142 @@ def test_generated_views_in_the_look_are_named_in_one_sentence_only_when_the_loo
     sim.build_package(sim.without_look(source), tmp_path / "bare.zip", literals=[])
     with zipfile.ZipFile(tmp_path / "bare.zip") as archive:
         assert sim.GENERATED_VIEWS_LOOK_NOTE not in " ".join(archive.read("README.txt").decode().split())
+
+
+# --- a splat look also ships as the standard 3DGS PLY splat viewers open --------------------------------------------
+
+#: The website look's frame (``website_native_appearance``): a levelled Y-up world, scaled and turned to Z-up.
+LOOK_TRANSFORM = [[0.8, 0.0, 0.0, 0.0], [0.0, 0.0, 0.8, 0.0], [0.0, -0.8, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+
+
+def _splat_job(tmp_path: Path, *, count: int = 3000, transform=LOOK_TRANSFORM) -> Job:
+    """A job whose look is a 3D Gaussian splat written as the website writes it (``write_particlefield_usd``)."""
+    import numpy as np
+
+    from blueprint_pipeline.gaussian_splat_decode import SplatData
+    from blueprint_pipeline.particlefield_usd import write_particlefield_usd
+
+    job = Job(tmp_path)
+    job.appearance.unlink()
+    rng = np.random.default_rng(count)
+    splat = SplatData(count=count, xyz=rng.uniform([-4, 0, -4], [4, 3, 4], (count, 3)).astype(np.float32),
+                      opacity=rng.normal(0, 3, count).astype(np.float32),
+                      f_dc=rng.normal(0, 1, (count, 3)).astype(np.float32),
+                      scales=rng.uniform(-5, -3, (count, 3)).astype(np.float32),
+                      quats=rng.standard_normal((count, 4)).astype(np.float32), properties=())
+    job.appearance = job.assets / "appearance.usdc"
+    assert write_particlefield_usd(splat, job.appearance, layer_transform_row_major=transform)["status"] == "completed"
+    job.seal()
+    plan = json.loads((job.packet / sim.PLAN_FILE).read_text())
+    plan["appearance_frame_alignment"] = {"representation": "particlefield_3d_gaussian_splat"}
+    _write(job.packet / sim.PLAN_FILE, plan)
+    return job
+
+
+def _unpacked(path: Path, into: Path) -> Path:
+    with zipfile.ZipFile(path) as archive:
+        archive.extractall(into)
+    return into
+
+
+def test_a_splat_look_also_ships_as_a_viewer_ply_that_round_trips_against_the_usd(tmp_path):
+    import numpy as np
+
+    from blueprint_pipeline.gaussian_splat_decode import read_standard_3dgs_ply, viewer_3dgs_properties
+
+    job = _splat_job(tmp_path)
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    files = world.delivered[0]["files"]
+    assert "scene/room.ply" in files and "scene/room.usdc" in files
+    unpacked = _unpacked(_package(job), tmp_path / "unpacked")
+    data = (unpacked / "scene/room.ply").read_bytes()
+    header = data[:data.index(b"end_header\n")].decode("ascii").splitlines()
+    assert header[:3] == ["ply", "format binary_little_endian 1.0", "element vertex 3000"]
+    assert [line.removeprefix("property float ") for line in header[3:]] == list(viewer_3dgs_properties(0))
+    assert header[3:9] == [f"property float {name}" for name in ("x", "y", "z", "nx", "ny", "nz")]
+    # The PLY against the shipped USD's own values, where that file places them.
+    ply = read_standard_3dgs_ply(unpacked / "scene/room.ply")
+    stage = Usd.Stage.Open(str(unpacked / "scene/room.usdc"))
+    field = next(prim for prim in stage.Traverse() if prim.GetTypeName() == "ParticleField3DGaussianSplat")
+    matrix = np.asarray(UsdGeom.Xformable(field).ComputeLocalToWorldTransform(Usd.TimeCode.Default())).T
+
+    def stored(name):
+        return np.asarray(field.GetAttribute(name).Get(), dtype=float)
+    np.testing.assert_allclose(ply.xyz, stored("positions") @ matrix[:3, :3].T + matrix[:3, 3], atol=1e-5)
+    np.testing.assert_allclose(np.exp(ply.scales.astype(float)), 0.8 * stored("scales"), rtol=1e-6)
+    np.testing.assert_allclose(1 / (1 + np.exp(-ply.opacity.astype(float))), stored("opacities"), atol=1e-7)
+    np.testing.assert_array_equal(ply.f_dc, stored("radiance:sphericalHarmonicsCoefficients").astype(np.float32))
+    assert ply.sh_rest is None and np.allclose(np.linalg.norm(ply.quats, axis=1), 1, atol=1e-6)
+    # The look's up (Y in the splat) is the file's +Z: the PLY is in the USD look's frame, levelling included.
+    np.testing.assert_allclose(ply.xyz[:, 2], 0.8 * stored("positions")[:, 1], atol=1e-5)
+    readme = (unpacked / "README.txt").read_text()
+    flat = " ".join(readme.split())
+    assert "- scene/room.ply: the same look as a standard 3D Gaussian splat PLY" in readme
+    assert "scene/room.ply holds the Gaussians where scene/room.usdc places them" in flat
+    assert "in its frame: up axis Z and 1 metres per unit." in flat and sim.PLY_LEFT_OUT not in flat
+    assert "room.ply" not in (unpacked / "scene.usda").read_text()
+    assert world.publish()["status"] == "current"
+
+
+def _look_sizes(job: Job, tmp_path: Path) -> tuple[int, int, int]:
+    """The zip's bytes with the look and its PLY, with the look only, and with neither."""
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    sizes = [sim.build_package(value, tmp_path / f"{index}.zip", literals=[], max_bytes=1 << 30)
+             for index, value in enumerate((source, {**source, "ply_left_out": True}, sim.without_look(source)))]
+    assert "scene/room.ply" in sizes[0]["files"] and "scene/room.ply" not in sizes[1]["files"]
+    return sizes[0]["size_bytes"], sizes[1]["size_bytes"], sizes[2]["size_bytes"]
+
+
+@pytest.mark.parametrize("over", ["ply", "look"])
+def test_over_the_limit_the_ply_goes_before_the_look_and_the_readme_says_which(tmp_path, monkeypatch, over):
+    job = _splat_job(tmp_path)
+    whole, usd_only, bare = _look_sizes(job, tmp_path / "sizes")
+    assert bare < usd_only < whole
+    builds = []
+    real = sim._build_once
+    monkeypatch.setattr(sim, "_build_once", lambda source, *a, **k: builds.append(
+        (bool(source.get("ply_left_out")), bool(source.get("look_left_out")))) or real(source, *a, **k))
+    world = World(job)
+    assert world.publish(max_bytes=usd_only if over == "ply" else bare)["status"] == "published"
+    record, package = world.delivered[0], _manifest(job)["package"]
+    assert "scene/room.ply" not in record["files"]
+    readme = " ".join(_unpacked(_package(job), tmp_path / "unpacked").joinpath("README.txt").read_text().split())
+    assert "room.ply" not in readme
+    if over == "ply":
+        assert builds == [(False, False), (True, False)] and record["size_bytes"] == usd_only
+        assert package["ply_left_out"] is True and "look_left_out" not in package
+        assert "scene/room.usdc" in record["files"] and sim.PLY_LEFT_OUT in readme and sim.LOOK_LEFT_OUT not in readme
+    else:
+        assert builds == [(False, False), (True, False), (False, True)] and record["size_bytes"] == bare
+        assert package["look_left_out"] is True and "ply_left_out" not in package
+        assert "scene/room.usdc" not in record["files"]
+        assert sim.LOOK_LEFT_OUT in readme and sim.PLY_LEFT_OUT not in readme and "Gaussian" not in readme
+
+
+def test_over_the_limit_even_without_the_look_is_over_the_cap_after_three_builds(tmp_path, monkeypatch):
+    job = _splat_job(tmp_path)
+    _whole, _usd_only, bare = _look_sizes(job, tmp_path / "sizes")
+    builds = []
+    real = sim._build_once
+    monkeypatch.setattr(sim, "_build_once", lambda source, *a, **k: builds.append(
+        (bool(source.get("ply_left_out")), bool(source.get("look_left_out")))) or real(source, *a, **k))
+    world = World(job)
+    assert world.publish(max_bytes=bare - 1) == {"status": "over_size_cap"}
+    assert builds == [(False, False), (True, False), (False, True)] and world.delivered == []
+
+
+def test_a_splat_look_the_ply_cannot_hold_ships_without_one_and_says_why_in_the_manifest(tmp_path):
+    sheared = [[1.0, 0.0, 0.0, 0.0], [0.4, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    job = _splat_job(tmp_path, transform=sheared)
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    assert "scene/room.ply" not in world.delivered[0]["files"] and "scene/room.usdc" in world.delivered[0]["files"]
+    assert _manifest(job)["package"]["look_ply_not_written"] == {"Room": "particlefield_transform_not_similarity"}
+
+
+def test_a_look_that_is_not_a_splat_ships_no_ply_and_records_nothing(job):
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    assert not any(name.endswith(".ply") for name in world.delivered[0]["files"])
+    assert "look_ply_not_written" not in _manifest(job)["package"]

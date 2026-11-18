@@ -407,16 +407,60 @@ def write_standard_3dgs_ply(splat: SplatData, path: str | Path) -> Path:
         if (degree + 1) ** 2 != coefficient_count:
             raise ValueError("invalid sh_rest coefficient count")
         order.extend((f"f_rest_{index}", rest[:, index]) for index in range(rest.shape[1]))
-    header = ["ply", "format binary_little_endian 1.0", f"element vertex {splat.count}"]
+    return _write_float_ply(path, splat.count, order)
+
+
+def _write_float_ply(path: Path, count: int, order: Sequence[tuple[str, np.ndarray]]) -> Path:
+    """A binary little-endian PLY of one ``vertex`` element, one float32 column per (name, values) in order."""
+    header = ["ply", "format binary_little_endian 1.0", f"element vertex {count}"]
     header += [f"property float {name}" for name, _ in order]
     header.append("end_header\n")
-    table = np.empty((splat.count, len(order)), dtype="<f4")
+    table = np.empty((count, len(order)), dtype="<f4")
     for col, (_, values) in enumerate(order):
         table[:, col] = np.asarray(values, dtype="<f4")
     with open(path, "wb") as handle:
         handle.write(("\n".join(header)).encode("ascii"))
         handle.write(table.tobytes(order="C"))
     return path
+
+
+def viewer_3dgs_properties(rest_count: int = 0) -> tuple[str, ...]:
+    """The vertex properties of the 3DGS PLY common splat viewers open, in the reference 3DGS ``save_ply`` order.
+
+    Position, normals (written as zero, as the reference writes them), band-0 colour, the higher bands when there
+    are any (channel-major), the opacity logit, the log scales and the rotation quaternion w, x, y, z.
+    """
+    return ("x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2",
+            *(f"f_rest_{index}" for index in range(rest_count)),
+            "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")
+
+
+def write_viewer_3dgs_ply(splat: SplatData, path: str | Path) -> Path:
+    """Write ``splat`` as the standard 3DGS PLY splat viewers open (``viewer_3dgs_properties``).
+
+    The values are those of :func:`write_standard_3dgs_ply` (opacity as a logit, scales in log space, rotation
+    w, x, y, z, ``f_rest_*`` channel-major); only the layout differs: zero normals after the position and the
+    higher bands after the base colour, as the reference 3DGS writer orders them. Read back with
+    :func:`read_standard_3dgs_ply`, which maps columns by name.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rest = None
+    if splat.sh_rest is not None:
+        rest = np.asarray(splat.sh_rest, dtype=np.float32)
+        coefficient_count = 1 + rest.shape[1] // 3 if rest.ndim == 2 else 0
+        if (rest.ndim != 2 or rest.shape[0] != splat.count or rest.shape[1] % 3
+                or (int(round(coefficient_count**0.5))) ** 2 != coefficient_count):
+            raise ValueError("invalid sh_rest shape")
+    zero = np.zeros(splat.count, dtype=np.float32)
+    columns = {"x": splat.xyz[:, 0], "y": splat.xyz[:, 1], "z": splat.xyz[:, 2], "nx": zero, "ny": zero, "nz": zero,
+               **{f"f_dc_{index}": splat.f_dc[:, index] for index in range(3)},
+               **({f"f_rest_{index}": rest[:, index] for index in range(rest.shape[1])} if rest is not None else {}),
+               "opacity": splat.opacity,
+               **{f"scale_{index}": splat.scales[:, index] for index in range(3)},
+               **{f"rot_{index}": splat.quats[:, index] for index in range(4)}}
+    names = viewer_3dgs_properties(0 if rest is None else rest.shape[1])
+    return _write_float_ply(path, splat.count, [(name, columns[name]) for name in names])
 
 
 def write_standard_3dgs_ply_subset_exact(

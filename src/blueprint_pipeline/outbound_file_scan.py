@@ -22,7 +22,7 @@ its content (its magic bytes, or valid UTF-8 with no NUL byte for text), never b
 | USDZ archive | each member by its own kind (a USD layer, a PNG or a JPEG; anything else may not ship); each member's name as text; an archive comment may not ship | as each member's kind; names: all classes |
 | PNG, JPEG | their metadata chunks (tEXt, zTXt, iTXt, eXIf; APPn and COM), decompressed; the written files hold none | metadata: all classes; raw bytes: the raw set |
 | Text (by content): Blueprint's own README, ``success_rule.json``, ``scene.usda``, the packet's sheet and README | the file itself | all classes |
-| PLY (the packet's reconstruction splat, ascii or binary) | its header, up to and including ``end_header`` within 1 MiB, read as text (a header that does not end refuses); the body is not rewritten | header: all classes; body: the raw set |
+| PLY (the packet's reconstruction splat, the package's splat look; ascii or binary) | its header, up to and including ``end_header`` within 1 MiB, read as text (a header that does not end refuses); the body is not rewritten | header: all classes; body: the raw set |
 | GLB (the packet's collision mesh) | its JSON chunk, read as text | JSON: all classes; body: the raw set |
 | MP4 (the packet's video, written by Blueprint's own ffmpeg step without sound and checked with ffprobe by its own code; the trial clips, Blueprint's own review renders, copied) | none here | raw bytes: the raw set |
 | Any other kind | none | refused where only the closed list may ship (``closed``: the package, the packet's simulation folders); elsewhere raw bytes: the raw set |

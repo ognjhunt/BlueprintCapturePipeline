@@ -692,6 +692,130 @@ def write_particlefield_usd(
     return result
 
 
+#: The opacity logit written for an activated opacity of exactly 0 or 1: ``_sigmoid`` clips here, so the writer
+#: reads +30 back as 1.0 and -30 as 9e-14, and the file holds no infinity.
+OPACITY_LOGIT_BOUND = 30.0
+PARTICLEFIELD_ABSENT = "particlefield_3dgs_absent"
+
+
+def _similarity(matrix: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    """A column-vector 4x4 transform as (uniform scale, rotation, translation); refused when it is not one."""
+    linear = matrix[:3, :3]
+    determinant = float(np.linalg.det(linear))
+    if not np.isfinite(matrix).all() or determinant <= 0 or not np.allclose(matrix[3], [0, 0, 0, 1]):
+        raise ValueError("particlefield_transform_not_similarity")
+    scale = determinant ** (1.0 / 3.0)
+    rotation = linear / scale
+    if not np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-6):
+        raise ValueError("particlefield_transform_not_similarity")
+    return scale, rotation, matrix[:3, 3]
+
+
+def _rotation_quaternion(rotation: np.ndarray) -> np.ndarray:
+    """The unit quaternion (w, x, y, z) of a rotation matrix, for any angle (largest component first)."""
+    m = rotation
+    trace = float(np.trace(m))
+    candidates = [trace, m[0, 0], m[1, 1], m[2, 2]]
+    best = int(np.argmax(candidates))
+    if best == 0:
+        w = np.sqrt(1.0 + trace) / 2.0
+        q = [w, (m[2, 1] - m[1, 2]) / (4 * w), (m[0, 2] - m[2, 0]) / (4 * w), (m[1, 0] - m[0, 1]) / (4 * w)]
+    else:
+        i = best - 1
+        j, k = (i + 1) % 3, (i + 2) % 3
+        v = np.sqrt(1.0 + m[i, i] - m[j, j] - m[k, k]) / 2.0
+        q = [0.0, 0.0, 0.0, 0.0]
+        q[0] = (m[k, j] - m[j, k]) / (4 * v)
+        q[1 + i], q[1 + j], q[1 + k] = v, (m[j, i] + m[i, j]) / (4 * v), (m[k, i] + m[i, k]) / (4 * v)
+    q = np.asarray(q, dtype=np.float64)
+    return q / np.linalg.norm(q)
+
+
+def _turned(left: np.ndarray, quats: np.ndarray) -> np.ndarray:
+    """``left`` (w, x, y, z) times every row of ``quats`` (w, x, y, z): the Gaussians' rotations after the turn."""
+    w0, x0, y0, z0 = left
+    w, x, y, z = quats.T
+    return np.stack([w0 * w - x0 * x - y0 * y - z0 * z, w0 * x + x0 * w + y0 * z - z0 * y,
+                     w0 * y - x0 * z + y0 * w + z0 * x, w0 * z + x0 * y - y0 * x + z0 * w], axis=1)
+
+
+def read_particlefield_splat(path: str | Path) -> SplatData:
+    """Every ``ParticleField3DGaussianSplat`` in a USD file, as standard 3DGS values where the file places them.
+
+    The inverse of :func:`build_particlefield_arrays`: opacity back to its logit (an exact 0 or 1 to
+    ``-/+OPACITY_LOGIT_BOUND``), scales back to log space, orientations as read (Gf real part first, so w, x, y, z),
+    and the radiance coefficients split into ``f_dc`` and channel-major ``f_rest``. Each field's own composed
+    transform in the file (the look's levelling and frame, ``layer_transform_row_major``) is applied, so the
+    Gaussians sit where the file puts them: positions moved, the uniform scale added to the log scales, the
+    rotation turned onto every Gaussian and its higher bands (``splat_sh_rotation``). Several fields are joined,
+    a lower degree padded with zero coefficients (no view dependence, exactly). Refused (``ValueError``) for no
+    field (``PARTICLEFIELD_ABSENT``), arrays that do not agree, or a transform that is not a rotation, a uniform
+    scale and a translation: a Gaussian sheared or mirrored is no longer one with three scales and a quaternion.
+    """
+    try:
+        from pxr import Usd, UsdGeom
+    except Exception as exc:  # noqa: BLE001 - pxr/usd-core not installed here
+        raise ValueError("usd_core_unavailable") from exc
+    from .splat_sh_rotation import rotate_sh_rest
+
+    stage = Usd.Stage.Open(str(path))
+    fields = [prim for prim in stage.Traverse() if str(prim.GetTypeName()) == PARTICLEFIELD_SCHEMA] if stage else []
+    if not fields:
+        raise ValueError(PARTICLEFIELD_ABSENT)
+
+    def values(prim, name: str) -> np.ndarray:
+        for spelling in (name, name + "h"):  # the float form, else the schema's half-precision one
+            attribute = prim.GetAttribute(spelling)
+            value = attribute.Get() if attribute and attribute.HasValue() else None
+            if value is not None and len(value):
+                return np.asarray(value, dtype=np.float64)
+        raise ValueError(f"particlefield_{name}_missing")
+
+    parts = []
+    for prim in fields:
+        positions, scales = values(prim, "positions"), values(prim, "scales")
+        opacities = values(prim, "opacities")
+        imaginary_first = values(prim, "orientations")  # Gf memory order: x, y, z, then the real part
+        coefficients = values(prim, "radiance:sphericalHarmonicsCoefficients")
+        degree = prim.GetAttribute("radiance:sphericalHarmonicsDegree").Get()
+        count = len(positions)
+        per = (degree + 1) ** 2 if isinstance(degree, int) and 0 <= degree <= 3 else 0
+        if (per == 0 or positions.shape != (count, 3) or scales.shape != (count, 3)
+                or opacities.shape != (count,) or imaginary_first.shape != (count, 4)
+                or coefficients.shape != (count * per, 3)
+                or not all(np.isfinite(v).all() for v in (positions, scales, opacities, imaginary_first, coefficients))
+                or (scales <= 0).any() or (opacities < 0).any() or (opacities > 1).any()):
+            raise ValueError("particlefield_arrays_invalid")
+        scale, rotation, translation = _similarity(np.asarray(
+            UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()), dtype=np.float64).T)
+        with np.errstate(divide="ignore"):
+            logits = np.log(opacities) - np.log1p(-opacities)
+        coefficients = coefficients.reshape(count, per, 3)
+        rest = coefficients[:, 1:, :].transpose(0, 2, 1).reshape(count, 3 * (per - 1)) if per > 1 else None
+        parts.append({
+            "xyz": positions @ (scale * rotation).T + translation,
+            "opacity": np.clip(logits, -OPACITY_LOGIT_BOUND, OPACITY_LOGIT_BOUND),
+            "f_dc": coefficients[:, 0, :],
+            "scales": np.log(scales) + np.log(scale),
+            "quats": _turned(_rotation_quaternion(rotation), imaginary_first[:, [3, 0, 1, 2]]),
+            "sh_rest": rotate_sh_rest(rest, rotation) if rest is not None else None, "degree": degree})
+    top = max(part["degree"] for part in parts)
+    width = (top + 1) ** 2 - 1
+    for part in parts:
+        if width and part["degree"] < top:
+            have = (part["degree"] + 1) ** 2 - 1
+            padded = np.zeros((len(part["xyz"]), 3, width))
+            if have:
+                padded[:, :, :have] = part["sh_rest"].reshape(-1, 3, have)
+            part["sh_rest"] = padded.reshape(-1, 3 * width)
+
+    def joined(key: str) -> np.ndarray:
+        return np.ascontiguousarray(np.concatenate([part[key] for part in parts]), dtype=np.float32)
+    return SplatData(count=sum(len(part["xyz"]) for part in parts), xyz=joined("xyz"), opacity=joined("opacity"),
+                     f_dc=joined("f_dc"), scales=joined("scales"), quats=joined("quats"), properties=(),
+                     sh_rest=joined("sh_rest") if width else None)
+
+
 def _sha256_bytes(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
