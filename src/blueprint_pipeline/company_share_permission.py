@@ -92,30 +92,40 @@ def hidden(archive: Mapping[str, Any]) -> bool:
     return archive.get("retracted") is True or archive.get("retraction") == "pending"
 
 
-#: The package a company may still be reading while its replacement is delivered (``website_company_simulation``):
-#: kept beside ``archive`` until the website takes the new one, then retired; taken back with ``archive`` always.
-SUPERSEDED = "superseded_archive"
+#: The packages a company may still be reading while a newer one is delivered (``website_company_simulation``): every
+#: copy archived since the last one the website is known to have taken, kept beside ``archive`` until a newer one
+#: is taken, then retired; taken back with ``archive`` always.
+SUPERSEDED = "superseded_archives"
 
 
-def retire(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None], key: str = SUPERSEDED) -> bool:
-    """Take back the one archived copy under ``key``, recording the retraction before deleting; True once none is left."""
+def _retire_one(record: Mapping[str, Any], retract: Callable[[str], None]) -> dict[str, Any]:
     from .website_scene_preview import _reason
-    archive = manifest.get(key)
-    if not isinstance(archive, Mapping) or not isinstance(archive.get("uri"), str) or archive.get("retracted"):
-        return True
-    manifest[key] = {**archive, "retraction": "pending"}
-    write_json(manifest_path, manifest)
     try:
-        retract(archive["uri"])
+        retract(record["uri"])
     except Exception as error:  # noqa: BLE001 - storage errors retry on the next pass
-        manifest[key] = {**manifest[key], "retraction_error": _reason(error),
-                         "retraction_attempts": int(archive.get("retraction_attempts") or 0) + 1}
-        write_json(manifest_path, manifest)
-        return False
-    manifest[key] = {**{name: value for name, value in archive.items()
-                        if name not in {"retraction", "retraction_error"}}, "retracted": True}
+        return {**record, "retraction": "pending", "retraction_error": _reason(error),
+                "retraction_attempts": int(record.get("retraction_attempts") or 0) + 1}
+    return {**{name: value for name, value in record.items()
+               if name not in {"retraction", "retraction_error"}}, "retracted": True}
+
+
+def retire(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
+    """Take back every superseded copy (``SUPERSEDED``), recording each retraction before deleting; True once none
+    is left."""
+    records = [dict(record) for record in manifest.get(SUPERSEDED) or [] if isinstance(record, Mapping)]
+    live = [index for index, record in enumerate(records)
+            if isinstance(record.get("uri"), str) and not record.get("retracted")]
+    if not live:
+        return True
+    for index in live:
+        records[index] = {**records[index], "retraction": "pending"}
+    manifest[SUPERSEDED] = records
     write_json(manifest_path, manifest)
-    return True
+    for index in live:
+        records[index] = _retire_one(records[index], retract)
+    manifest[SUPERSEDED] = records
+    write_json(manifest_path, manifest)
+    return all(record.get("retracted") for record in records if isinstance(record.get("uri"), str))
 
 
 def take_back(manifest: dict[str, Any], manifest_path: Path, retract: Callable[[str], None]) -> bool:
@@ -138,8 +148,9 @@ def retract_object(uri: str) -> None:
 
 
 def retraction_pending(manifest: Mapping[str, Any], key: str = "archive") -> bool:
-    archive = manifest.get(key)
-    return isinstance(archive, Mapping) and archive.get("retraction") == "pending" and isinstance(archive.get("uri"), str)
+    records = (manifest.get(SUPERSEDED) or []) if key == SUPERSEDED else [manifest.get(key)]
+    return any(isinstance(record, Mapping) and record.get("retraction") == "pending"
+               and isinstance(record.get("uri"), str) for record in records)
 
 
 # --- the basis --------------------------------------------------------------------------------------------------

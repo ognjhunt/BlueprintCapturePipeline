@@ -1583,12 +1583,12 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         if _current(manifest, revision, package_path):
             return (_kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now, owned)
                     or {"status": "current", "simulation_revision": revision})
-        refused, refused_at = manifest.get("refused"), manifest.get("refused_at_epoch")
+        refusal = _refusal(manifest, revision)
+        refused, refused_at = refusal.get("refused"), refusal.get("refused_at_epoch")
         # A size refusal stands for its revision; one made under the old rule (no ``size_rule``) is built once more.
-        if manifest.get("simulation_revision") == revision and refused == OVER_CAP \
-                and manifest.get("size_rule") == SIZE_RULE:
+        if refused == OVER_CAP and refusal.get("size_rule") == SIZE_RULE:
             return {"status": "over_size_cap"}
-        if (manifest.get("simulation_revision") == revision and isinstance(refused, str) and refused != OVER_CAP
+        if (isinstance(refused, str) and refused != OVER_CAP
                 and isinstance(refused_at, int) and _RETRIED_AFTER_WINDOW.fullmatch(refused)
                 and 0 <= now() - refused_at < permission.LIVE_STATEMENT_RECHECK_SECONDS):
             return ({"status": "build_timed_out"} if refused == BUILD_TIMED_OUT
@@ -1625,10 +1625,8 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         needs_build = (manifest.get("simulation_revision") != revision or package_path.is_symlink()
                        or not package_path.is_file() or _sha256_file(package_path) != built.get("digest"))
         # The package out now stays readable through the build: the new zip is built beside it, the website is
-        # moved to the new one by its delivery, and only then is the old one retired (``_publish_built``). A floor
-        # that stands for a half is kept, too, when the half gives way again (shape, size, time).
-        deferred = (needs_build and source["source_kind"] == "half" and _floor_package(manifest)
-                    and _floor_stands(root, manifest, queue_root=queue_root, max_bytes=max_bytes, now=now()))
+        # moved to the new one by its delivery, and only then is the old one retired (``_publish_built``). A
+        # rebuild that gives way (shape, size, time) leaves it exactly as it was.
         known_over = _size_over(manifest, revision)
     base = {"schema_version": MANIFEST_SCHEMA, **identity, "simulation_revision": revision,
             "source": {"plan_digest": source.get("plan_digest"),
@@ -1698,21 +1696,18 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
                 if outcome is not None:
                     logger.warning("website_company_simulation_not_built capture=%s reason=%s",
                                    identity["capture_id"], outcome["refused"])
-                    if (deferred and outcome.get("refused_half")
-                            and current.get("simulation_revision") == manifest.get("simulation_revision")
-                            and not permission.hidden(current.get("archive") or {})
-                            and _floor_stands(root, current, queue_root=queue_root, max_bytes=max_bytes, now=now())):
-                        # The half gave way again: the floor stays, and records the half it stands for.
-                        write_json(manifest_path, {**current, "refused_half": outcome["refused_half"]})
+                    if _kept_copies(current):
+                        # A rebuild refused, out of time or over the limit leaves what is out exactly as it was, still
+                        # read; its refusal is kept beside it for its revision (and a half's, for the floor rule).
+                        write_json(manifest_path, {**current, "rebuild_refused": {
+                            key: outcome[key] for key in ("simulation_revision", "refused", "detail", "refused_at_epoch",
+                                                          "size_rule", "size_over") if key in outcome},
+                            **({"refused_half": outcome["refused_half"]} if outcome.get("refused_half") else {})})
                         return _not_built(outcome)
-                    if not permission.take_back(current, manifest_path, retract):
-                        return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
                     package_path.unlink(missing_ok=True)
                     write_json(manifest_path, outcome)
                     return _not_built(outcome)
-                superseded = _superseded(current, manifest_path, retract, built["digest"])
-                if superseded is False:
-                    return {"status": "failed", "reason": "website_company_simulation_retraction_pending"}
+                superseded = _kept_copies(current, besides=built["digest"])
                 os.replace(candidate, package_path)
                 manifest = {**base, "package": {**built, "path": PACKAGE_FILE},
                             **({permission.SUPERSEDED: superseded} if superseded else {}),
@@ -1724,51 +1719,34 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         candidate.unlink(missing_ok=True)
 
 
+def _refusal(manifest: Mapping[str, Any], revision: str) -> Mapping[str, Any]:
+    """This revision's recorded refusal: the manifest's own, or the failed rebuild's kept beside a package out."""
+    for record in (manifest, manifest.get("rebuild_refused")):
+        if isinstance(record, Mapping) and record.get("simulation_revision") == revision and record.get("refused"):
+            return record
+    return {}
+
+
 def _size_over(manifest: Mapping[str, Any], revision: str) -> list[str]:
-    """The ``SIZE_STEPS`` an earlier pass found over the limit for this revision (its own record, or the half's a
-    floor stands for)."""
-    for record in (manifest, manifest.get("refused_half")):
+    """The ``SIZE_STEPS`` an earlier pass found over the limit for this revision (its own record, a failed rebuild's
+    kept beside a package out, or the half's a floor stands for)."""
+    for record in (manifest, manifest.get("rebuild_refused"), manifest.get("refused_half")):
         if (isinstance(record, Mapping) and record.get("simulation_revision") == revision
                 and isinstance(record.get("size_over"), list)):
             return [step for step in SIZE_STEPS if step in record["size_over"]]
     return []
 
 
-def _superseded(current: dict[str, Any], manifest_path: Path, retract: Callable[[str], None],
-                new_digest: str) -> dict[str, Any] | None | bool:
-    """The copy companies keep reading until the website takes the new package: the one it was delivered, if any.
-
-    A copy the website never took (built and archived, its delivery failed) is taken back now. None when there is
-    nothing to keep (or it is the new package itself); False when a take-back failed (it stays pending).
-    """
-    archive = current.get("archive") if isinstance(current.get("archive"), Mapping) else {}
-    delivered = bool(current.get("delivered")) and (current.get("delivered") or {}).get(
-        "simulation_digest") == current.get("simulation_digest") and archive.get("digest") == (
-        current.get("package") or {}).get("digest")
-    keep, drop = ("archive", permission.SUPERSEDED) if delivered else (permission.SUPERSEDED, "archive")
-    if (current.get(drop) or {}).get("digest") != new_digest and not permission.retire(
-            current, manifest_path, retract, drop):
-        return False
-    record = current.get(keep)
-    if (not isinstance(record, Mapping) or not isinstance(record.get("uri"), str) or permission.hidden(record)
-            or record.get("digest") == new_digest):
-        return None
-    return dict(record)
-
-
-def _floor_package(manifest: Mapping[str, Any]) -> bool:
-    """The manifest holds a built floor (a room standing in for a half the builder could not ship)."""
-    return bool(manifest.get("package")) and (manifest.get("source_kind") == "floor"
-                                              or bool(manifest.get("floor_reason")))
-
-
-def _floor_stands(root: Path, manifest: Mapping[str, Any], *, queue_root: Path | None, max_bytes: int,
-                  now: float) -> bool:
-    """The floor this manifest holds is still the one the job's records give (``_floor_source``, same revision)."""
-    reason = str(manifest.get("floor_reason") or "object_not_built:refused_half")
-    floor = _floor_source(root, queue_root=Path(queue_root or _queue_root()), now=now,
-                          reason=reason if reason.startswith("object_not_built:") else "object_not_built:refused_half")
-    return floor is not None and simulation_revision(floor, max_bytes=max_bytes) == manifest.get("simulation_revision")
+def _kept_copies(current: Mapping[str, Any], *, besides: str | None = None) -> list[dict[str, Any]]:
+    """Every archived copy a company may still be reading: the package out and each one kept since the last the
+    website is known to have taken (a delivery whose answer was lost may have moved it to any of them), never
+    the one named ``besides``. Retired only once a newer package is taken (``_publish_built``)."""
+    kept: dict[str, dict[str, Any]] = {}
+    for record in [*(current.get(permission.SUPERSEDED) or []), current.get("archive")]:
+        if (isinstance(record, Mapping) and isinstance(record.get("uri"), str) and not permission.hidden(record)
+                and record.get("digest") != besides):
+            kept[str(record.get("digest"))] = dict(record)
+    return list(kept.values())
 
 
 def _not_built(outcome: Mapping[str, Any]) -> dict[str, Any]:
@@ -1876,8 +1854,8 @@ def open_company_simulation(*, request_id: str, capture_id: str, digest: str, st
     if len(roots) != 1:
         raise CompanySimulationUnavailable("website_company_simulation_unavailable")
     manifest = _read(roots[0].joinpath(*DIRECTORY) / MANIFEST_FILE)
-    # The package out now, or the one the website read before it while the new one is delivered (``SUPERSEDED``).
-    stored = next((record for record in (manifest.get("archive"), manifest.get(permission.SUPERSEDED))
+    # The package out now, or one the website may still read while a newer one is delivered (``SUPERSEDED``).
+    stored = next((record for record in (manifest.get("archive"), *(manifest.get(permission.SUPERSEDED) or []))
                    if isinstance(record, Mapping) and record.get("digest") == digest), None) or {}
     moment = _wall_clock() if now is None else now
     if (not permission.delivery_gate_allows(roots[0], surface="website_company_simulation")

@@ -587,8 +587,11 @@ GIVE_WAY = {"time": (ValueError(sim.BUILD_TIMED_OUT), {"status": "build_timed_ou
 
 
 @pytest.mark.parametrize("why", sorted(GIVE_WAY))
-def test_a_kept_floor_its_records_no_longer_give_is_taken_back_and_the_half_is_not_rebuilt_each_pass(
+def test_a_kept_floor_its_records_no_longer_give_stays_read_until_its_successor_and_the_half_is_not_rebuilt_each_pass(
         tmp_path, monkeypatch, why):
+    """Re-review, 2026-11-18: a failed rebuild leaves what is out exactly as it was. A floor the job's records no
+    longer give is no longer taken back when the half gives way again: it stays read, with the half's refusal
+    beside it, until a package that is built and taken by the website replaces it."""
     error, status = GIVE_WAY[why]
     floor = Floor(tmp_path, monkeypatch, half=True)
     floor.started(reason="spend_cap_reached")
@@ -604,6 +607,7 @@ def test_a_kept_floor_its_records_no_longer_give_is_taken_back_and_the_half_is_n
     world = World(floor.job)
     assert world.publish() == status
     assert world.publish()["status"] == "published" and _manifest(floor.job)["source_kind"] == "floor"
+    kept = _manifest(floor.job)["archive"]
     # The handoff's floor record changes: the published floor is no longer the one the job's records give.
     value = json.loads((floor.workspace / "handoff.json").read_text())
     value["room_floor"]["inputs_digest"] = "sha256:" + "2" * 64
@@ -614,15 +618,18 @@ def test_a_kept_floor_its_records_no_longer_give_is_taken_back_and_the_half_is_n
     first = _at(world, 60)
     assert first == status and builds == ["half", "floor", "half"]
     manifest = _manifest(floor.job)
-    assert manifest["archive"] is None and len(world.retracted) == 1 and not _package(floor.job).exists()
-    assert manifest["source_kind"] == "half" and manifest["refused_half"]["size_rule"] == sim.SIZE_RULE
+    assert manifest["archive"] == kept and world.retracted == [] and _package(floor.job).exists()
+    assert manifest["source_kind"] == "floor" and manifest["refused_half"]["size_rule"] == sim.SIZE_RULE
+    assert manifest["rebuild_refused"]["refused"] == manifest["refused_half"]["reason"]
+    # The records give no floor now: the half's refusal stands for its window, and the floor out stays read.
     for seconds in (120, 180, 3600):
         assert _at(world, seconds)["status"] == status["status"]
-    assert builds == ["half", "floor", "half"] and len(world.retracted) == 1 and len(world.delivered) == 1
+    assert builds == ["half", "floor", "half"] and world.retracted == [] and len(world.delivered) == 1
+    assert _manifest(floor.job)["archive"] == kept and _package(floor.job).exists()
     # Past the window a timed-out or shape-refused half is tried once more (the policy before this change); a size
     # refusal under this rule stands.
     _at(world, sim.permission.LIVE_STATEMENT_RECHECK_SECONDS + 61)
-    assert builds == ["half", "floor", "half"] + ([] if why == "size" else ["half"])
+    assert builds == ["half", "floor", "half"] + ([] if why == "size" else ["half"]) and world.retracted == []
 
 
 def test_a_timed_out_half_is_tried_once_a_window_and_replaces_the_delivered_floor_when_it_builds(tmp_path,

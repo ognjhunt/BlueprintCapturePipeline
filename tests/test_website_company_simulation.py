@@ -2523,8 +2523,8 @@ def test_a_package_the_old_writer_built_comes_out_with_the_sources_covariances_a
     readme = " ".join((unpacked / "README.txt").read_text().split())
     assert sim.LOOK_AS_FIRST_WRITTEN not in readme and sim.ROTATIONS_STORED_WRONG not in readme
     # The v2 package was read until the website took the v3 one, then retired.
-    assert world.retracted == [old["uri"]] and sim.permission.SUPERSEDED in _manifest(job)
-    assert _manifest(job)[sim.permission.SUPERSEDED]["retracted"] is True
+    assert world.retracted == [old["uri"]]
+    assert [row["retracted"] for row in _manifest(job)[sim.permission.SUPERSEDED]] == [True]
 
 
 @pytest.mark.parametrize("why", ["missing", "over_memory_bound", "changed"])
@@ -2717,17 +2717,71 @@ def test_a_withdrawal_during_a_rebuild_takes_back_both_copies(job, monkeypatch):
     assert old["uri"] in world.retracted and world.objects == {}
 
 
-def test_a_new_package_the_website_never_took_is_taken_back_when_a_newer_one_is_built(job):
+def _route_reads(job: Job, world: World, *archives) -> list:
+    return [_read_route(job, world, now=NOW + 1, digest=archive["digest"]) for archive in archives]
+
+
+@pytest.mark.parametrize("failure", ["refused", "over_size_cap", "build_timed_out"])
+def test_a_failed_rebuild_leaves_the_delivered_package_exactly_as_it_was(job, monkeypatch, failure):
+    """Re-review, 2026-11-18: a rebuild refused, out of time or over the limit took the delivered zip back. It now
+    leaves it as it was, still read, and keeps the refusal beside it for its revision."""
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    before = _manifest(job)
+    if failure == "refused":
+        _stage(job.collision, "Collision", doc=f"compiled for {REQUEST}")  # the job's id: the scan refuses it
+        job.seal()
+        result = world.publish()
+    elif failure == "over_size_cap":
+        result = world.publish(max_bytes=1024)
+    else:
+        _new_revision(job)
+        result = sim.publish_company_simulation(job.capture, now=lambda: NOW, check_rights=world.check_rights,
+                                                archive=world.archive, retract=world.retract, deliver=world.deliver,
+                                                queue_root=job.queue, build_seconds=-1)
+    assert result["status"] == failure
+    after = _manifest(job)
+    assert {key: after[key] for key in ("archive", "package", "delivered", "simulation_revision")} == {
+        key: before[key] for key in ("archive", "package", "delivered", "simulation_revision")}
+    assert after["rebuild_refused"]["refused"] != before.get("refused") and world.retracted == []
+    assert isinstance(_read_route(job, world, now=NOW + 1), int) and _package(job).is_file()
+    # The refusal stands for its revision as before: no build again within its window, and the package stays. A
+    # half refused for its size or time is the floor rule's (``refused_half``): a delivered half stays, no source.
+    monkeypatch.setattr(sim, "build_package", lambda *a, **k: pytest.fail("rebuilt within the refusal's window"))
+    again = (world.publish(max_bytes=1024) if failure == "over_size_cap" else _at(world, 60))
+    assert again["status"] == (failure if failure == "refused" else "no_source")
+    assert world.retracted == [] and len(world.delivered) == 1 and isinstance(_read_route(job, world, now=NOW + 1), int)
+
+
+def test_a_copy_whose_delivery_answer_was_lost_stays_read_until_a_newer_one_is_taken(job):
+    """Re-review, 2026-11-18: the website took a package but its answer was lost, then the next revision's upload
+    failed: nothing was readable until a later pass. Every copy since the last one known taken stays readable,
+    in any order of failures, until a newer one is taken."""
     world = World(job)
     assert world.publish()["status"] == "published"
     first = _manifest(job)["archive"]
     _new_revision(job)
-    world.delivery_error = RuntimeError("website unreachable")
+    original = world.deliver
+
+    def taken_but_answer_lost(record, *, identity):
+        original(record, identity=identity)
+        raise RuntimeError("website answer lost")
+    world.deliver = taken_but_answer_lost
     assert world.publish()["status"] == "failed"
     second = _manifest(job)["archive"]
+    assert len(world.delivered) == 2  # the website holds the second now
+    world.deliver = original
     job.criteria["settling"]["position_tolerance_m"] = 0.03
     job.seal()
-    world.delivery_error = None
+    upload = world.archive
+
+    def upload_fails(path, *, identity):
+        raise RuntimeError("store unavailable")
+    world.archive = upload_fails
+    assert world.publish()["status"] == "failed"
+    assert world.retracted == [] and all(isinstance(size, int) for size in _route_reads(job, world, first, second))
+    world.archive = upload
     assert world.publish()["status"] == "published"
-    # The second was never the website's: taken back at once; the first, the website's, after the third's delivery.
-    assert world.retracted == [second["uri"], first["uri"]]
+    assert sorted(world.retracted) == sorted([first["uri"], second["uri"]])
+    assert _route_reads(job, world, first, second) == ["unavailable", "unavailable"]
+    assert isinstance(_read_route(job, world, now=NOW + 1), int)
