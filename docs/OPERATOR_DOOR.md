@@ -353,6 +353,30 @@ and writes a replayable receipt before it removes anything. A restore puts a
 retired workspace back from that receipt. Neither starts compute or moves money.
 Both take effect on the host only after `upgrade-door` to a commit that has them.
 
+Since 2026-11-18 the profile also admits `purge-experiment-folder`. The owner
+approved permanently deleting old experiment folders that nothing uses, to free
+disk for new jobs ("Yes, delete those 3"). Only two folders under
+`/var/lib/blueprint/pipeline-control-plane` can be named:
+`atlas-beta-dishwasher-20261021` and `flora-episode-benchmarks`. The third in the
+owner's list, `g1-841757-development`, is not admitted, because
+`config/native_g1_shared_inputs.v1.json` still points the G1 humanoid trial at
+it. The command is a plan unless `--apply` is given. The plan reports the
+folder's size and anything that would stop an apply. An apply runs the door's own
+`experiment_purge.py` as root with no network. It deletes the folder's contents
+without following symlinks, and only if:
+
+- no running process has a file, working directory or mapping under the folder;
+- no mount point is at or under it;
+- no file under it changed in the last 7 days;
+- no symlink is on its path.
+
+It writes a receipt before and after, listing each top-level entry and the space
+freed. The empty folder stays. Nothing can be restored.
+
+```bash
+python3 scripts/operator_door.py purge-experiment-folder flora-episode-benchmarks --wait
+```
+
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |
@@ -362,6 +386,7 @@ Both take effect on the host only after `upgrade-door` to a commit that has them
 | `door-upgrade` | deploy | `commit` on `origin/main` | `door-upgrade.sh`: that commit's `install.sh --upgrade`, rolled back on a failed health check |
 | `retire-scene-workspace` | operate | `scene_id`, optional `bucket`, `apply` (default `false`) | `door-retire-scene-workspace.sh`: the active release's `website_scene_workspace_retention retire` for that scene; without `apply` it only plans. Outcome `planned`, `retained` (code = first reason), `retired` or `failed`; the module's full result is `results/<id>.retirement.json` |
 | `restore-scene-workspace` | operate | `scene_id`, required `bucket` | `door-restore-scene-workspace.sh`: replays the retired receipt to the canonical workspace path, checks every byte and moves the historical receipt aside. Outcome `restored` or `failed`; the module's full result is `results/<id>.restore.json` |
+| `purge-experiment-folder` | operate | `folder` (`atlas-beta-dishwasher-20261021` or `flora-episode-benchmarks`), `apply` (default `false`) | `door-purge-experiment-folder.sh`: the door's own `experiment_purge.py`, as root with no network, writing only inside that folder on apply. Outcome `planned`, `emptied`, `already_empty`, `absent`, `refused` (code = first stop) or `failed`; the full receipt is `results/<id>.purge-experiment-folder.json` |
 | `provider-output-resume` | operate | `run` (a canary dispatch directory), `attempt` (1–999), `ingest` (default `false`) | `door-provider-output-resume.sh`: the active release's `provider_output_promotion resume --attempt-root <run>/allocator/attempts/attempt_NNN [--ingest]` for one streamed policy-canary attempt, run as `blueprint` with umask 0077 (the attempt tree is the service user's): promotion to B2, the gated cleanup, the staged-object absence proof and, with `ingest`, the needed members' ingestion, which short-circuits once materialized. It refuses, touching nothing, until the attempt's teardown manifest records `continuing_spend_from_this_run: false` (`provider_output_resume_attempt_not_torn_down`). Outcome `completed`, or `blocked` with the first blocker as its code; the module's summary is `results/<id>.provider-output-resume.json` |
 | `extend-scene-execution-window` | operate | `intent_id` (`scene-<64 hex>`), `intent_digest`, `expires_at` (UTC `YYYY-MM-DDTHH:MM:SSZ`), `authorization_reference` (names the owner's approval, ≤ 500 printable chars), `ack` = `extend-scene-execution-window`, `apply` | `door-extend-scene-execution-window.sh`: the active release's `task_evaluation_scene_execution_window_door`, as `blueprint`. It reads the capture's current rights from the WebApp and refuses a revoked intent, a digest mismatch, a withdrawn capture or revoked consent, and any expiry not after now, more than 7 days ahead, or more than 7 days past the intent's original expiry. Without `apply` it only plans. With `apply` it writes one sealed `authorized_via: operator_door` extension (door caller, door request id, the owner's reference, every execution bound unchanged) and sends it to the WebApp's signed internal endpoint, retrying a transport failure twice. An equal or earlier expiry is `already_covered`; with `apply` it re-sends the covering extension, and a plan never writes or POSTs. Outcome `planned`, `extended`, `already_covered`, `refused` (code) or `failed` (`webapp_notice_failed`); the full result is `results/<id>.scene-window.json` |
 | `extend-scene-execution-budget` | operate | `intent_id` (`scene-<64 hex>`), `owner_user_id`, `owner_organization_id`, `approved_by` (must be the owner user), `approval_evidence` (≤ 500 printable chars), `max_total_spend_usd` (0 < x ≤ 1000), `max_paid_attempts`, `apply`, `apply_ack` (the preview's `apply_ack` digest with `apply`, else empty), `ack` = `extend-scene-execution-budget` | `door-extend-scene-execution-budget.sh`: the active release's `task_evaluation_scene_execution_budget_door`, as `blueprint`, with no network and every secret hidden. Without `apply` it only previews the current and requested ceilings and their `apply_ack` digest. With `apply` and that digest it appends one owner grant through `extend_scene_execution_budget` (monotonic, bound to the intent's issuer and owner; the reference names the approving owner, the evidence, `channel=operator_door`, the door caller and request id). It refunds, settles and rewrites no hold. Outcome `planned`, `extended`, `refused` (code) or `failed`; the full result is `results/<id>.scene-budget.json` |
