@@ -54,6 +54,8 @@ CONTEXT_FRAMES_PER_REGION = 8
 #: (``atlas_gap_composite.well_observed``) and it contradicts them on at most this share of that part.
 #: Starting values chosen on 2026-11-18, not yet calibrated on a job's retained views: the tolerances
 #: themselves are ``atlas_gap_composite``'s, calibrated on capture-447ae4f4.
+#: Views of one region checked at once; the room step is one serial process on a 4-CPU worker.
+CHECK_WORKERS = 4
 MIN_CHECKED_FRACTION = 0.10
 MAX_CONTRADICTED_FRACTION = 0.10
 TARGET_GRID = (1280, 720)
@@ -175,7 +177,8 @@ def orbit_cameras(regions, frames, *, max_regions=MAX_REGIONS, max_views=MAX_VIE
                             "base_frame_id": base["frame_id"], "orbit_degrees": angle,
                             "distance": float(np.linalg.norm(offset)), "target_world_estimate": centroid.tolist(),
                             "region_extent": [float(v) for v in region["extent"]],
-                            "context_frame_ids": context_ids, "camera": camera,
+                            "context_frame_ids": context_ids,
+                            "seen_by_frame_ids": [frame["frame_id"] for frame in seen], "camera": camera,
                             "camera_location_observed_free": None, "collision_qualified": False})
             made += 1
         if not made:
@@ -208,7 +211,7 @@ def region_footprint(target, camera=None) -> np.ndarray:
 
 # --- the consistency check ---------------------------------------------------------------------------------------
 
-def check_view(view, references, footprint=None) -> dict:
+def check_view(view, references, footprint=None, rendered=None) -> dict:
     """Whether a generated view agrees with the filmed frames and their depth where they overlap.
 
     ``atlas_gap_composite.composite_view`` renders the references into the view and replaces, among the
@@ -220,7 +223,7 @@ def check_view(view, references, footprint=None) -> dict:
     from .atlas_gap_composite import composite_view
 
     shape = np.shape(view["depth"])
-    built, receipt = composite_view({**view, "keep_mask": np.zeros(shape, bool)}, references)
+    built, receipt = composite_view({**view, "keep_mask": np.zeros(shape, bool)}, references, rendered=rendered)
     total, well = receipt["total_pixel_count"], receipt["well_observed_pixel_count"]
     checked = well / total if total else 0.0
     contradicted = receipt["replaced_pixel_count"] / well if well else None
@@ -242,6 +245,63 @@ def check_view(view, references, footprint=None) -> dict:
                                              "replaced_pixel_count", "reference_frame_ids", "rgb_sha256",
                                              "depth_sha256")},
             "tolerances": "atlas_gap_composite.v2"}
+
+
+def _check_and_composite(view, references, footprint):
+    """``check_view`` and, for a passing view, its composite around the region: one render of the references."""
+    from .atlas_gap_composite import composite_view, render_observed
+
+    rendered = render_observed(references, {"intrinsics": view["intrinsics"], "extrinsics": view["extrinsics"]})
+    result = check_view(view, references, footprint, rendered=rendered)
+    if not result["passed"]:
+        return result, None
+    return result, composite_view({**view, "keep_mask": footprint}, references, rendered=rendered)
+
+
+def _judged(group, returned, native, stage: Path, root: Path, batch, by_id):
+    """Each returned view checked against its region's real frames, in ``CHECK_WORKERS`` threads; entries."""
+    from concurrent.futures import ThreadPoolExecutor
+    from PIL import Image
+    from .atlas_depth_splat import frame_arrays, write_exr_depth
+    from .atlas_gap_composite import observation_references
+
+    # At most CONTEXT_FRAMES_PER_REGION references a view, smoothed once before the threads share them.
+    references = observation_references([by_id[key] for key in group[0]["context_frame_ids"]])
+    for reference in references:
+        frame_arrays(reference, "depth")
+
+    def judge(item):
+        native_index, (view, target) = item
+        footprint = region_footprint(target, view)
+        entry = {"frame_id": target["camera_id"], "region_id": target["region_id"],
+                 "base_frame_id": target["base_frame_id"], "orbit_degrees": target["orbit_degrees"],
+                 "distance": target["distance"], "target_world_estimate": target["target_world_estimate"],
+                 "region_extent": target["region_extent"], "context_frame_ids": target["context_frame_ids"],
+                 "seen_by_frame_ids": target["seen_by_frame_ids"],
+                 "camera": {"intrinsics": view["intrinsics"], "extrinsics": view["extrinsics"]},
+                 "stage_relative_path": batch["stage_relative_path"], "native_frame_index": native_index,
+                 "native_result_digest": native["digest"], "region_pixel_count": int(footprint.sum())}
+        if not footprint.any():
+            entry["check"] = {"passed": False, "reason": "weak_region_not_in_view"}
+            return entry
+        if footprint.all():
+            entry["check"] = {"passed": False, "reason": "weak_region_fills_view"}
+            return entry
+        entry["check"], composite = _check_and_composite(view, references, footprint)
+        if composite is not None:
+            built, receipt = composite
+            out = root / "composite" / target["camera_id"]
+            out.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(np.asarray(built["rgb"], np.uint8)).save(out / "rgb.png")
+            write_exr_depth(out / "depth.exr", np.asarray(built["depth"], np.float32))
+            entry["composite"] = {"rgb_relative_path": str((out / "rgb.png").relative_to(root)),
+                                  "rgb_sha256": _sha256_file(out / "rgb.png"),
+                                  "depth_relative_path": str((out / "depth.exr").relative_to(root)),
+                                  "depth_sha256": _sha256_file(out / "depth.exr")}
+            entry["gap_composite"] = receipt
+        return entry
+    with ThreadPoolExecutor(max_workers=CHECK_WORKERS) as pool:
+        return list(pool.map(judge, enumerate(zip(returned, group, strict=True))))
 
 
 # --- generated views as frames -----------------------------------------------------------------------------------
@@ -276,19 +336,60 @@ def _native_pixels(stage: Path, index: int, key: str) -> np.ndarray:
     return np.ascontiguousarray(pixels[..., ::-1]) if key == "rgb" else pixels
 
 
-def splat_frame(view, stage: Path):
-    """A passing view as a refined-splat input frame: its region is the generated part (``keep_mask``)."""
+def reference_frame_ids(view, sent=None) -> list[str]:
+    """The real frames sent beside a view that overlap it, at most ``CONTEXT_FRAMES_PER_REGION``.
+
+    The frames its region's generation used, where they are sent too; else, with fewer than
+    ``atlas_gap_composite.MIN_VIEWS`` of them, the sent ``seen_by`` frames nearest the view's camera.
+    The whole-view review pairs the view among these alone, not every real frame.
+    """
+    from .atlas_gap_composite import MIN_VIEWS
+
+    if sent is None:
+        return list(view["context_frame_ids"])
+    real = {frame["frame_id"]: frame for frame in sent if frame.get("keep_mask") is None}
+    chosen = [key for key in view["context_frame_ids"] if key in real]
+    if len(chosen) < MIN_VIEWS:
+        position = np.asarray(view["camera"]["extrinsics"]["position"], float)
+        nearest = sorted((key for key in view["seen_by_frame_ids"] if key in real), key=lambda key: (
+            float(np.linalg.norm(np.asarray(real[key]["position"], float) - position)), key))
+        chosen = list(dict.fromkeys([*chosen, *nearest]))
+    return chosen[:CONTEXT_FRAMES_PER_REGION]
+
+
+def _composite_pixels(root: Path, view, key: str) -> np.ndarray:
+    from .atlas_depth_splat import read_exr_depth
+
+    composite = view["composite"]
+    path = root / composite[key + "_relative_path"]
+    if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or _sha256_file(path) != composite[
+            key + "_sha256"]:
+        raise ValueError("atlas_look_views_composite_changed")
+    if key == "depth":
+        return read_exr_depth(path)
+    from PIL import Image
+    return np.asarray(Image.open(path).convert("RGB"))
+
+
+def splat_frame(view, root: Path, sent=None):
+    """A passing view as a refined-splat input frame: its region is the generated part (``keep_mask``).
+
+    Its pixels are its composite, already corrected where it contradicts the real frames overlapping
+    it (``gap_composite``), so the splat path posts it as it is and renders nothing again.
+    """
     from .atlas_depth_splat import LazyFrame, _rotation_matrix
 
-    camera = view["camera"]
+    camera, stage = view["camera"], root / view["stage_relative_path"]
     fields = {"frame_id": view["frame_id"], "intrinsics": dict(camera["intrinsics"]),
               "extrinsics": dict(camera["extrinsics"]), "rotation": _rotation_matrix(camera["extrinsics"]["quaternion"]),
               "position": np.asarray(camera["extrinsics"]["position"], float),
-              "keep_mask": region_footprint(view, camera)}
+              "keep_mask": region_footprint(view, camera), "gap_composite": view["gap_composite"],
+              "overlapping_frame_ids": reference_frame_ids(view, sent)}
     index = view["native_frame_index"]
-    pixels = {key: (lambda key=key: _native_pixels(stage, index, key)) for key in ("rgb", "depth", "confidence")}
+    pixels = {"rgb": lambda: _composite_pixels(root, view, "rgb"), "depth": lambda: _composite_pixels(root, view, "depth"),
+              "confidence": lambda: _native_pixels(stage, index, "confidence")}
     return LazyFrame(fields, pixels, ["frame_id", "rgb", "depth", "confidence", "intrinsics", "extrinsics",
-                                      "rotation", "position", "keep_mask"])
+                                      "rotation", "position", "keep_mask", "gap_composite", "overlapping_frame_ids"])
 
 
 # --- the stage ---------------------------------------------------------------------------------------------------
@@ -304,7 +405,7 @@ def _seal(path: Path, value: dict) -> dict:
     return value
 
 
-def _retained(root: Path, pose) -> dict:
+def _retained(root: Path, pose, sent=None) -> dict:
     """The sealed record's passing views; nothing is bought or generated again."""
     record = json.loads((root / RECORD).read_text())
     if record.get("digest") != canonical_digest(record, digest_field="digest") or (root / RECORD).is_symlink():
@@ -312,8 +413,7 @@ def _retained(root: Path, pose) -> dict:
     if record.get("pose_result_digest") != pose["digest"]:
         return {"views": [], "record": record}
     passed = set(record.get("passed_view_ids") or [])
-    views = [splat_frame(row, root / row["stage_relative_path"]) for row in record.get("views") or []
-             if row["frame_id"] in passed]
+    views = [splat_frame(row, root, sent) for row in record.get("views") or [] if row["frame_id"] in passed]
     return {"views": views, "record": record}
 
 
@@ -333,10 +433,12 @@ def _record(root: Path, plan, *, status, regions_digest, pose, skipped, batches=
 
 
 def look_views_for_splat(*, frames, pose, output_root, policy, task_context, source_digest, configuration,
-                         task_runner, bought, check=None, max_polls=2) -> dict:
+                         task_runner, bought, check=None, max_polls=2, sent=None) -> dict:
     """``{"views": frames to send beside the real ones, "record": the sealed record or None}``, or processing.
 
     ``configuration`` is a callable returning the job's current allowance, read only when a map exists.
+    ``sent`` are the real frames the splat is sent; each view names those overlapping it
+    (``reference_frame_ids``).
     """
     from .atlas_pricing import headroom, render_cost, submitted
     from .atlas_scene_completion import load_generated_views
@@ -347,7 +449,7 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
     output_root = Path(output_root)
     root = output_root / ROOT
     if (root / RECORD).is_file():
-        return _retained(root, pose)
+        return _retained(root, pose, sent)
     if bought:
         return dict(NONE)
     sealed = json.loads((root / PLAN).read_text()) if (root / PLAN).is_file() else None
@@ -418,8 +520,9 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
             record = _record(root, plan, status="allowance_insufficient", regions_digest=regions_digest, pose=pose,
                              skipped=skipped, forecast=forecast)
             return {"views": [], "record": record}
-    batches, views = [], []
-    for index, (group, request, uploads, stage, quote) in enumerate(specs):
+    # Every region's request is sent (or polled) before any view is checked, so each view is checked once.
+    batches, completed = [], []
+    for group, request, uploads, stage, quote in specs:
         row = {"region_id": group[0]["region_id"], "stage_relative_path": str(stage.relative_to(root)),
                "request_digest": quote["request_digest"], "maximum_cost_usd": quote["maximum_cost_usd"]}
         if _provider_failed_and_exhausted(stage):
@@ -437,36 +540,23 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
             # Flagged and the job goes on: the region keeps its filmed views only.
             batches.append({**row, "status": "failed", "reason": str(exc)[:200]})
             continue
-        if state["status"] != "completed":
-            return {"status": "processing", "stage": "refined_splat_look_views",
-                    "operation_id": state.get("operation_id")}
+        batches.append({**row, "status": state["status"], "operation_id": state.get("operation_id")})
+        completed.append((group, stage, batches[-1]))
+    waiting = [row for row in batches if row["status"] not in ("completed", "failed")]
+    if waiting:
+        return {"status": "processing", "stage": "refined_splat_look_views", "operation_id": waiting[0]["operation_id"]}
+    views = []
+    for group, stage, row in completed:
+        row.pop("operation_id", None)
         native, returned, _ = load_generated_views(stage, [target["camera_id"] for target in group])
-        batches.append({**row, "status": "completed", "native_result_digest": native["digest"],
-                        "billing": native.get("billing")})
-        from .atlas_gap_composite import observation_references
-        references = observation_references([by_id[key] for key in group[0]["context_frame_ids"]])
-        for native_index, (view, target) in enumerate(zip(returned, group, strict=True)):
-            footprint = region_footprint(target, view)
-            entry = {"frame_id": target["camera_id"], "region_id": target["region_id"],
-                     "base_frame_id": target["base_frame_id"], "orbit_degrees": target["orbit_degrees"],
-                     "distance": target["distance"], "target_world_estimate": target["target_world_estimate"],
-                     "region_extent": target["region_extent"], "camera": {"intrinsics": view["intrinsics"],
-                                                                         "extrinsics": view["extrinsics"]},
-                     "stage_relative_path": row["stage_relative_path"], "native_frame_index": native_index,
-                     "native_result_digest": native["digest"], "region_pixel_count": int(footprint.sum())}
-            if not footprint.any():
-                entry["check"] = {"passed": False, "reason": "weak_region_not_in_view"}
-            elif footprint.all():
-                entry["check"] = {"passed": False, "reason": "weak_region_fills_view"}
-            else:
-                entry["check"] = check_view(view, references, footprint)
-            views.append(entry)
-        del returned, references
+        row.update(native_result_digest=native["digest"], billing=native.get("billing"))
+        views.extend(_judged(group, returned, native, stage, root, row, by_id))
+        del returned
     record = _record(root, plan, status="checked", regions_digest=regions_digest, pose=pose, skipped=skipped,
                      batches=batches, views=views,
                      bought_cost_usd=round(sum(row["maximum_cost_usd"] for row in batches
                                                if row["status"] == "completed"), 6))
-    return _retained(root, pose) if record["passed_view_ids"] else {"views": [], "record": record}
+    return _retained(root, pose, sent) if record["passed_view_ids"] else {"views": [], "record": record}
 
 
 def disclosure(look, native, output_root: Path) -> dict:

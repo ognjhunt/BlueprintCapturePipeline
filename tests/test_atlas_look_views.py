@@ -17,6 +17,7 @@ from blueprint_pipeline import atlas_depth_splat as depth
 from blueprint_pipeline import atlas_look_views as look
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_atlas_depth_splat import camera
+from blueprint_pipeline.atlas_gap_composite import _digest as composite_digest
 from tests.test_atlas_gap_composite import real_frames, scene
 
 CENTROID = [0.05, 0.0, -1.5]
@@ -84,7 +85,7 @@ def job(tmp_path, monkeypatch):
     """A website capture's Atlas root with its weak-region map; the check passes the views turned right."""
     capture = tmp_path / "capture"
     write_map(capture, [region()])
-    monkeypatch.setattr(look, "check_view", lambda view, references, footprint: (
+    monkeypatch.setattr(look, "check_view", lambda view, references, footprint, **_: (
         {"passed": True, "checked_fraction": .6, "contradicted_fraction": .01}
         if view["extrinsics"]["position"][0] > CENTROID[0] else
         {"passed": False, "reason": "contradicts_filmed_frames", "checked_fraction": .6,
@@ -337,3 +338,51 @@ def test_the_scene_takes_a_look_only_bound_to_its_checked_views(job):
         with pytest.raises(ValueError, match="atlas_look_views_not_bound"):
             _bound(job, **changes)
     assert look.bound_look_views(splat={}, source={}, appearance={}, job_dir=job) is None
+
+
+def test_each_view_is_composited_once_and_paired_only_against_the_real_frames_that_overlap_it(tmp_path, monkeypatch):
+    """The serial room step renders each view once, against at most CONTEXT_FRAMES_PER_REGION real frames."""
+    from blueprint_pipeline import atlas_gap_composite, atlas_native_splat, atlas_whole_view_review
+    frames = [scene(camera((x, y, 0)), f"real-{i}") for i, (x, y) in enumerate(
+        (x, y) for x in (0, .05, .1, .15, .2, .25) for y in (0, .1))]
+    capture = tmp_path / "capture"
+    write_map(capture, [region(seen_by=[f["frame_id"] for f in frames])])
+    monkeypatch.setattr(look, "check_view", lambda view, references, footprint, **_: {"passed": True})
+    rendered = []
+    real_render = atlas_gap_composite.render_observed
+    monkeypatch.setattr(atlas_gap_composite, "render_observed", lambda references, camera: rendered.append(
+        [ref["frame_id"] for ref in references]) or real_render(references, camera))
+    job = capture / "pipeline/atlas"
+    sent = frames[:10]  # The splat's selection left two of the real frames out.
+    value = look.look_views_for_splat(frames=frames, pose=POSE, output_root=job, policy=POLICY,
+        task_context={"context_digest": "t"}, source_digest="s", configuration=lambda: {"policy": POLICY},
+        task_runner=Atlas(), bought=False, sent=sent)
+    record = value["record"]
+    assert len(value["views"]) == 4 and len(frames) > look.CONTEXT_FRAMES_PER_REGION
+    # One render a view, against its region's frames only.
+    assert len(rendered) == 4 and all(len(ids) == look.CONTEXT_FRAMES_PER_REGION for ids in rendered)
+    assert all(ids == record["views"][0]["context_frame_ids"] for ids in rendered)
+    sent_ids = {f["frame_id"] for f in sent}
+    for view in value["views"]:
+        row = next(r for r in record["views"] if r["frame_id"] == view["frame_id"])
+        assert view["gap_composite"] == row["gap_composite"]
+        assert composite_digest(view["rgb"]) == row["gap_composite"]["rgb_sha256"]
+        assert view["overlapping_frame_ids"] == [key for key in row["context_frame_ids"] if key in sent_ids]
+    # The splat path posts the composited views as they are: nothing is rendered again.
+    merged = atlas_native_splat.composited_views([*sent, *value["views"]])
+    assert len(rendered) == 4 and sum(1 for _, view, _ in merged if view.get("gap_composite")) == 4
+    # The whole-view review pairs each view among the sent frames that overlap it only.
+    paired = []
+    real_overlap = atlas_whole_view_review._overlap
+    monkeypatch.setattr(atlas_whole_view_review, "_overlap", lambda real, view: paired.append(
+        (view["frame_id"], real["frame_id"])) or real_overlap(real, view))
+    review = atlas_whole_view_review.review_whole_views(views=merged, root=tmp_path / "review", task_context={},
+        policy={"maximum_review_cost_usd": 0}, source_video_digest="s")
+    assert review["status"] == "over_review_cap" and len(review["gap_composites"]) == 4
+    for view in value["views"]:
+        assert {real for key, real in paired if key == view["frame_id"]} == set(view["overlapping_frame_ids"])
+    # Fewer than three of its region's frames sent: the sent seen_by frames nearest its camera.
+    row = record["views"][0]
+    few = [f for f in frames if f["frame_id"] not in row["context_frame_ids"][1:]]
+    named = look.reference_frame_ids(row, few)
+    assert named[0] == row["context_frame_ids"][0] and set(named) == {f["frame_id"] for f in few}

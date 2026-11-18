@@ -619,7 +619,7 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     from .atlas_look_views import disclosure as look_disclosure, look_views_for_splat
     look = look_views_for_splat(frames=frames, pose=pose, output_root=output_root, policy=policy,
         task_context=task_context, source_digest=source_digest, bought=bought, check=check, max_polls=max_polls,
-        configuration=lambda: _current_configuration(task_context, source_digest, configuration),
+        sent=sent, configuration=lambda: _current_configuration(task_context, source_digest, configuration),
         task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw))
     if look.get("status") == "processing":
         return look

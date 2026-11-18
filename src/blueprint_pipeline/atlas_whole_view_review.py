@@ -113,7 +113,10 @@ def review_whole_views(*, views, root: Path, task_context, policy, source_video_
         value.update(candidate_basis=composites[0]["candidate_basis"], gap_composites=composites)
     pairs = {}
     for base, view in candidates:
-        ranked = sorted(((overlap, ref) for ref, real in whole
+        # A view that names the real frames overlapping it (``atlas_look_views``) is paired among those.
+        named = view.get("overlapping_frame_ids")
+        pool = whole if named is None else [(ref, real) for ref, real in whole if real["frame_id"] in set(named)]
+        ranked = sorted(((overlap, ref) for ref, real in pool
                          if (overlap := _overlap(real, view)) >= MINIMUM_OVERLAP), reverse=True)
         pairs[base] = [ref for _, ref in ranked[:REFERENCES_PER_VIEW]]
     for verdict in value["verdicts"]:
