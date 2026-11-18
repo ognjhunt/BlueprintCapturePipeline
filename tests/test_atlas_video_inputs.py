@@ -549,9 +549,9 @@ def test_a_forward_motion_splat_selection_reaches_its_target_instead_of_stalling
                                           "splat_frame_target": invalid})
 
 
-def test_dollars_bound_the_density_views_and_refuse_only_a_cover_they_cannot_pose(tmp_path, monkeypatch):
-    """The density views beyond the cover and distinct views are optional: the reviewed dollars bound how
-    many are added (the allowance check stays true), and only a cover they cannot pose refuses."""
+def test_dollars_bound_the_views_added_to_the_cover_and_never_refuse_them(tmp_path, monkeypatch):
+    """The views beyond the reviewed cover are bounded by the reviewed dollars (the allowance check stays
+    true): a selection is trimmed to what they pose, never refused for them."""
     path, review = _forward_motion_job(tmp_path, budget=.5)  # pays for 50 frames, not all 152
     _forward_motion(monkeypatch)
     inputs = video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "pose",
@@ -560,11 +560,10 @@ def test_dollars_bound_the_density_views_and_refuse_only_a_cover_they_cannot_pos
     plan = json.loads((tmp_path / "pose/atlas_view_selection.json").read_text())
     assert plan["frame_policy"]["splat_frame_target_met"] is False
     (tmp_path / "poor").mkdir()
-    path, review = _forward_motion_job(tmp_path / "poor", budget=.1)  # 10 frames: less than the cover needs
-    with pytest.raises(ValueError, match="atlas_selection_budget_below_accurate_inputs"):
-        video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "poor/pose",
-                                   splat_frame_target=512)
-    assert not (tmp_path / "poor/pose" / video.GEOMETRY_INPUTS_FILE).exists()
+    path, review = _forward_motion_job(tmp_path / "poor", budget=.1)  # 10 frames: the cover fits, little more
+    poor = video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "poor/pose",
+                                      splat_frame_target=512)
+    assert len(poor["frames"]) == 10  # trimmed to what the dollars pose, never refused (the old code refused it)
 
 
 def test_a_selection_retained_at_64_resumes_with_its_own_capacity(tmp_path, monkeypatch):
@@ -775,3 +774,70 @@ def test_a_retained_record_edited_after_the_fact_is_refused(tmp_path, monkeypatc
     _rewrite_retained(tmp_path / "pose", **edit)
     with pytest.raises(ValueError, match="atlas_retained_video_inputs_invalid"):
         video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
+
+
+def _every_view_distinct(monkeypatch):
+    """Each frame moves features 20 px from its neighbour and still overlaps 30 frames ahead: all distinct."""
+    from blueprint_pipeline import atlas_privacy_screen as screen
+    monkeypatch.setattr(video, "_features", lambda row, rotation: int(row["frame_id"]))
+    monkeypatch.setattr(video, "_overlap",
+                        lambda a, b: (200, 20.0 * abs(a - b)) if abs(a - b) <= 30 else (0, 0.0))
+    monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
+
+
+def test_the_reviewers_job_poses_every_distinct_view_and_holds_the_repose_per_view(tmp_path, monkeypatch):
+    """Review of 20c67e1eb: allowance $20, review cap $4, splat and mesh $5.50 leave $6.50. A $5.12 hold for a
+    512-view re-pose left $1.38 (138 views) and refused 150 distinct views the old $1.28 hold posed. The hold
+    is now one view price per view posed, so all of them are posed and their re-pose stays held."""
+    from blueprint_pipeline import website_atlas_windowed_repose as reposes
+    policy = {"pose_input_cost_usd": .01, "refined_splat_cost_usd": 5, "mesh_export_cost_usd": .5,
+              "rate_card_reference": "test", "reviewed_by": "test",
+              "reviewed_on": datetime.now(timezone.utc).date().isoformat()}
+    available = 20.0 - 2 * 4 - 5.5
+    term = reposes.decide_term(tmp_path / "job", policy=policy, purchased=False, available_usd=available,
+                               minimum_usd=.08)
+    assert term["enabled"] is True and reposes.held_back_usd(term) == 0
+    hold = reposes.held_back_per_view_usd(term)
+    assert hold == .01
+    (tmp_path / "job").mkdir(exist_ok=True)
+    path, review = _forward_motion_job(tmp_path, count=150, budget=available - reposes.held_back_usd(term))
+    _every_view_distinct(monkeypatch)
+    inputs = video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "pose",
+                                        splat_frame_target=512, repose_view_cost_usd=hold)
+    assert len(inputs["frames"]) == 150 and 150 * (.01 + hold) <= available
+    recorded = json.loads((tmp_path / "pose" / video.GEOMETRY_INPUTS_FILE).read_text())
+    assert recorded["binding"]["repose_view_cost_usd"] == hold
+    # The same job under the hold it replaced: $1.38 poses 138 views. The selection is trimmed, not refused.
+    (tmp_path / "old").mkdir()
+    path, review = _forward_motion_job(tmp_path / "old", count=150, budget=1.38)
+    trimmed = video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "old/pose",
+                                         splat_frame_target=512)
+    assert len(trimmed["frames"]) == 138
+
+
+def test_an_allowance_short_of_every_view_trims_the_filmed_set_deterministically(tmp_path, monkeypatch):
+    _every_view_distinct(monkeypatch)
+    runs = []
+    for name, priority in (("a", ()), ("b", ()), ("c", ("149", "148"))):
+        (tmp_path / name).mkdir()
+        path, review = _forward_motion_job(tmp_path / name, count=150, budget=1.0)  # 50 views posed and held
+        inputs = video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / name / "pose",
+                                            splat_frame_target=512, repose_view_cost_usd=.01,
+                                            priority_frame_ids=priority)
+        plan = json.loads((tmp_path / name / "pose/atlas_view_selection.json").read_text())
+        runs.append(([row["frame_id"] for row in inputs["frames"]], plan))
+    (first, plan), (again, _), (prioritised, _) = runs
+    assert len(first) == 50 and first == again  # deterministic
+    # The reviewed cover (its task and surrounding views) stays whole; the rest is named, not dropped silently.
+    assert {"0", "149"} <= set(first)
+    trimmed = [row["frame_id"] for row in plan["diagnostics"] if row["decision"] == "left_out_for_allowance"]
+    assert len(trimmed) == 100 and not set(trimmed) & set(first)
+    assert plan["frame_policy"]["splat_frame_target_met"] is False
+    # Views that saw a weak region of a map already made are kept before the others.
+    assert "148" in prioritised and "148" not in first
+    # Only a cover the dollars cannot pose at all still refuses.
+    (tmp_path / "poor").mkdir()
+    path, review = _forward_motion_job(tmp_path / "poor", count=150, budget=.01)
+    with pytest.raises(ValueError, match="atlas_selection_budget"):
+        video.prepare_video_inputs(survey_path=path, review=review, output_root=tmp_path / "poor/pose",
+                                   splat_frame_target=512, repose_view_cost_usd=.01)

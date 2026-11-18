@@ -476,7 +476,7 @@ def _job_edit_scope(output_root: Path, requested: str | None, *, default="requir
     return scope
 
 
-def _splat_input_options(pose_root, *, review, policy, edit_scope):
+def _splat_input_options(pose_root, *, review, policy, edit_scope, repose_view_cost_usd=0.0):
     """Keep historical inputs immutable; new refined-splat jobs pose denser real footage.
 
     A removal job that cleans every selected view keeps 16 to 30 of them: each is
@@ -484,7 +484,8 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
     so that selection keeps every distinct sharp view toward ``SPLAT_FRAME_TARGET`` (the provider's capacity), spread in
     time. Every new selection's added views also clear the clip's relative
     sharpness floor (``RELATIVE_SHARPNESS_FRACTION``). A retained selection (or
-    its inputs, before the plan is written) keeps the profile it recorded.
+    its inputs, before the plan is written) keeps the profile it recorded. A new refined-splat
+    selection holds ``repose_view_cost_usd`` back for each view it poses (the job's re-pose term).
     """
     from .atlas_video_inputs import GEOMETRY_INPUTS_FILE, RELATIVE_SHARPNESS_FRACTION, takes_reviewed_background
     from .website_atlas_pose import SPLAT_FRAME_TARGET
@@ -494,21 +495,25 @@ def _splat_input_options(pose_root, *, review, policy, edit_scope):
                     else json.loads(inputs.read_text()).get("binding", {}))
         dense, target = recorded.get("minimum_source_frames") == 16, recorded.get("splat_frame_target")
         sharpness = recorded.get("relative_sharpness_fraction")
+        hold = (json.loads(inputs.read_text()).get("binding", {}) if inputs.is_file() else {}).get(
+            "repose_view_cost_usd")
     else:
         splat = "refined_splat_cost_usd" in policy
         dense = splat and edit_scope == "all_selected_views" and takes_reviewed_background(review)
         target = SPLAT_FRAME_TARGET if splat and review.get("subject_origin") in PRESERVED_SCENE_ORIGINS else None
         sharpness = RELATIVE_SHARPNESS_FRACTION
+        hold = repose_view_cost_usd
     profile = {"relative_sharpness_fraction": sharpness} if sharpness else {}
     if dense:
         return {"minimum_frames": 16, "maximum_frames": 30, **profile}
-    return {**({"splat_frame_target": target} if target else {}), **profile}
+    return {**({"splat_frame_target": target} if target else {}), **profile,
+            **({"repose_view_cost_usd": hold} if target and hold else {})}
 
 
 REFINED_APPEARANCE, DRAFT_APPEARANCE = "atlas_refined_splat", "depth_fused_draft_fallback"
 
 
-def _splat_input_selection(*, frames, pose, draft, output_root, review, source_root, bought):
+def _splat_input_selection(*, frames, pose, draft, output_root, review, source_root, bought, source_pose=None):
     """The posed views the refined splat is sent, decided once before its purchase and recorded.
 
     ``atlas_splat_input_quality.select_splat_frames`` reads the draft's per-pair
@@ -540,7 +545,7 @@ def _splat_input_selection(*, frames, pose, draft, output_root, review, source_r
     # never cut as a no-parallax near-duplicate (owner, 2026-11-18).
     from .atlas_coverage_map import coverage_before_splat
     mapped = coverage_before_splat(frames=frames, pose=pose, output_root=output_root, source_root=source_root,
-                                   selection={"route_frame_ids": sorted(route)}) or {}
+                                   selection={"route_frame_ids": sorted(route)}, source_pose=source_pose) or {}
     weak = sorted({key for row in (mapped.get("regions") or []) if mapped.get("status") == "mapped"
                    for key in row.get("seen_by") or []})
     record = select_splat_frames(frames=frames, agreement=agreement, weak_region_frame_ids=weak,
@@ -646,7 +651,8 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
     root = output_root / "refined_splat"
     bought = any(_started(form_root) for _, form_root in _form_roots(root))
     selection = (_splat_input_selection(frames=frames, pose=pose, draft=draft, output_root=output_root,
-                                        review=review or {}, source_root=source_root, bought=bought)
+                                        review=review or {}, source_root=source_root, bought=bought,
+                                        source_pose=source_pose)
                  if source_root is not None else None)
     if selection is not None:
         from .atlas_coverage_map import coverage_before_splat  # $0, once per pose, before the purchase
@@ -1026,6 +1032,7 @@ def _windowed_repose(*, output_root, first_pose_root, source_root, review, sourc
                                survey=json.loads(survey_path.read_text()), pose_root=root)
     # The selection profile the first pose recorded: its splat target, sharpness floor and input bound.
     profile = _splat_input_options(first_pose_root, review=review, policy=policy, edit_scope="required_and_additional")
+    profile.pop("repose_view_cost_usd", None)  # The re-pose is what was held for; it holds nothing itself.
 
     def finish(outcome, ready=None):
         value = {"root": reposes.ROOT, "records": (WINDOW_FILE, reposes.OUTCOME_FILE),
@@ -1338,7 +1345,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # A new job's term for one windowed re-pose before its refined splat (owner 2026-11-09): decided
     # once before its first purchase, and its maximum held back from the selection. A job that bought
     # before this release has none and keeps the quote it was admitted under.
-    from .website_atlas_windowed_repose import decide_term, held_back_usd
+    from .website_atlas_windowed_repose import decide_term, held_back_per_view_usd, held_back_usd
     repose_term = decide_term(output_root, policy=held, purchased=reviews.exists() or selection_path.exists(),
                               available_usd=budget,
                               minimum_usd=2 * policy["pose_input_cost_usd"] + render_cost(policy, 2))
@@ -1411,7 +1418,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     pose_root.mkdir(exist_ok=True)
     inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root,
         exclude_transients=route == "geometry_only",
-        **_splat_input_options(pose_root, review=review, policy=held, edit_scope=edit_scope))
+        **_splat_input_options(pose_root, review=review, policy=held, edit_scope=edit_scope,
+                               repose_view_cost_usd=held_back_per_view_usd(repose_term)))
     if not selection_path.exists():
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})

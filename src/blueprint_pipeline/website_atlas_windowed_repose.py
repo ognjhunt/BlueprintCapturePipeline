@@ -44,6 +44,8 @@ from .decision_evidence_contracts import canonical_digest
 
 TERM_FILE = "windowed_repose.json"
 TERM_SCHEMA = "website_atlas_windowed_repose_term.v1"
+#: A term whose hold is one view price per view the selection poses (2026-11-18), not its whole maximum.
+HOLD_PER_POSED_VIEW = "per_posed_view"
 #: The re-pose's own pose root, beside the job's first (``pose``), so it shares the job's clean plate.
 ROOT = "pose-windowed"
 OUTCOME_FILE = "repose_outcome.json"
@@ -91,10 +93,14 @@ def decide_term(job_dir: Path, *, policy: Mapping[str, Any], purchased: bool, av
         return recorded
     price = float(policy["pose_input_cost_usd"])
     maximum = round(SPLAT_POSE_INPUT_CAPACITY * price, 6)
-    enabled = available_usd - maximum >= minimum_usd
+    # The re-pose poses at most the views the first pose posed, so the selection holds one price back
+    # for each view it poses (``atlas_video_inputs``, ``hold_basis``), never the provider's whole
+    # capacity: the term is on when the allowance can pose the least selection and hold it.
+    enabled = available_usd >= 2 * minimum_usd
     value = {"schema_version": TERM_SCHEMA, "owner_decision": OWNER_DECISION, "enabled": enabled,
              **({} if enabled else {"reason": "allowance_cannot_hold_back_the_repose"}),
              "per_view_cost_usd": price, "max_input_images": SPLAT_POSE_INPUT_CAPACITY,
+             "hold_basis": HOLD_PER_POSED_VIEW,
              # Conditional: the expected cost leaves it out, the maximum includes it.
              "expected_cost_usd": 0.0, "maximum_cost_usd": maximum if enabled else 0.0,
              "conditional_on": list(CONDITIONS),
@@ -106,8 +112,18 @@ def decide_term(job_dir: Path, *, policy: Mapping[str, Any], purchased: bool, av
 
 
 def held_back_usd(term: Mapping[str, Any] | None) -> float:
-    """What a job's selection budget holds back for its re-pose: the term's maximum, when enabled."""
-    return float(term["maximum_cost_usd"]) if term and term.get("enabled") else 0.0
+    """What a job's selection budget holds back up front for its re-pose: a term recorded before 2026-11-18
+    holds its whole maximum; a later one holds per posed view instead (``held_back_per_view_usd``)."""
+    if not term or not term.get("enabled") or term.get("hold_basis") == HOLD_PER_POSED_VIEW:
+        return 0.0
+    return float(term["maximum_cost_usd"])
+
+
+def held_back_per_view_usd(term: Mapping[str, Any] | None) -> float:
+    """The price the selection holds back for each view it poses, so the re-pose of those views stays affordable."""
+    if not term or not term.get("enabled") or term.get("hold_basis") != HOLD_PER_POSED_VIEW:
+        return 0.0
+    return float(term["per_view_cost_usd"])
 
 
 def read_outcome(job_dir: Path, binding: Mapping[str, Any]) -> dict[str, Any] | None:

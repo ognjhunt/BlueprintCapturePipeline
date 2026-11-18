@@ -334,9 +334,13 @@ def test_the_pipeline_reads_the_coverage_map_before_selecting_and_keeps_a_weak_r
     mapped = []
     monkeypatch.setattr(atlas_coverage_map, "coverage_before_splat", lambda **kw: mapped.append(kw) or {
         "status": "mapped", "regions": [{"id": "wr-000", "seen_by": [cut[0]]}]})
+    source_pose = {"status": "completed", "measurements_relative_path": "scene_measurements_reviewed.json"}
     record = pipeline._splat_input_selection(frames=_posed(value), pose=pose, draft=draft, output_root=tmp_path,
-                                             review=review, source_root=source_root, bought=False)
+                                             review=review, source_root=source_root, bought=False,
+                                             source_pose=source_pose)
+    # The adopted scale's source pose goes with it, so a scale-reviewed job is mapped once, not twice.
     assert mapped[0]["selection"] == {"route_frame_ids": sorted(value["route_frame_ids"])}
+    assert mapped[0]["source_pose"] == source_pose
     assert record["weak_region_frame_ids"] == [cut[0]]
     assert cut[0] in record["sent_frame_ids"] + record["heldout_frame_ids"]
     assert set(cut[1:]) <= {row["frame_id"] for row in record["left_out"]}

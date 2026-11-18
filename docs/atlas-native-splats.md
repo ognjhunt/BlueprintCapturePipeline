@@ -498,7 +498,11 @@ moving shot, a pan or tripod, an unreadable pose) buys nothing extra
   `windowed_repose.json` once, before its first paid review. It holds the owner's
   decision, the per-view price, the input bound (`SPLAT_POSE_INPUT_CAPACITY`,
   the provider's 512; 128 for terms recorded before 2026-11-18) and the most the
-  re-pose can cost (that bound x the per-view price, $5.12 at $0.01). That last figure counts toward the job's maximum but not its expected
+  re-pose can cost (that bound x the per-view price). A term recorded from
+  2026-11-18 (`hold_basis: per_posed_view`) is not held back up front: the
+  selection holds one view price for each view it poses, and trims what the
+  dollars cannot pose and hold, never refusing it; an earlier term holds its
+  maximum ($1.28) as before. That last figure counts toward the job's maximum but not its expected
   cost, and the term says what it is conditional on. The job's selection budget
   holds that maximum back, so the scene review's recorded `selection_budget` (the
   first pose's price review) leaves room for it. An allowance that cannot hold it
