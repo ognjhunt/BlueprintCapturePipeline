@@ -354,25 +354,66 @@ NOT_LOCATED = "task_target_not_located"
 #: The clean plate's flags that end the job as the room package, as filmed.
 ROOM_AS_FILMED = (NOT_FOUND, NOT_LOCATED)
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
-#: Compile's support search found no surface the object starts on (test job 4, 2026-11-17: the lamp's estimated
-#: box reached 23 cm into its round table and its corners past the table's edge, outside the search). The
-#: object cannot be placed in the room, so the room package ships, the codes flagged on its record.
-START_UNSUPPORTED = frozenset({"support_surface_not_found_under_subject",
-                               "website_synthetic_subject_start_unplaceable"})
+#: Owner direction 2026-11-17: accept every job, then decide what is needed. A preparation blocker that is no wall
+#: ships the room package, flagged, and buys nothing more (``goes_on``). These codes keep the job waiting all the
+#: same, because the room package would be wrong: the job's record or inputs are bad or unsafe to read (a new
+#: delivery or a fresh run answers them), or the room's own inputs are not ready yet (the earlier stage does).
+KEEP_HOLDING = frozenset({
+    "website_scene_preparation_pending", "website_scene_task_identity_mismatch",
+    "website_scene_removal_manifest_outside_capture", "website_scene_removal_plan_outside_capture",
+    "website_subject_origin_conflict", "website_synthetic_subject_binding_invalid", "website_base_scene_changed",
+    "website_scene_sponsorship_binding_invalid", "website_gemini_requires_reconciliation",
+    "website_gemini_receipt_invalid"})
+#: Intake validation (``task_evaluation_scene_intent_contracts``): the job's own request is not a valid one.
+KEEP_HOLDING_PREFIXES = ("scene_intake_",)
+#: Raised codes another run clears by itself (it holds the same paid call), waited on like an outage.
+TRANSIENT = frozenset({"website_gemini_request_in_progress"})
+#: Blockers that leave out Blueprint's success rule rather than the object or its destination.
+RULE_CODES = frozenset({"website_owner_success_criteria_translation_required"})
+#: For a job with a grant, the longest wait between two retries of an outage or a money wait
+#: (``website_gemini_receipts.MONEY_RECHECK_SECONDS``): the last run before the window ends falls within twice it.
+LAST_CALL_SECONDS = 2 * 3600
 
 
-def start_unsupported(blockers: Sequence[str], task_context: Mapping[str, Any]) -> bool:
-    """Whether compile's blockers leave the object with no surface to start on (``START_UNSUPPORTED``) and nothing
-    that reads as privacy, rights or money (``job_retry_policy.hard_stop_kind``, as the authoring admissions do).
-    A development test places such an object on its own authored surface instead (``website_development_test``)."""
-    from .job_retry_policy import hard_stop_kind
+def piece_of(code: str) -> str:
+    """The piece of the job a blocker leaves out, as the room package's README names it."""
+    return "destination" if "destination" in code else "success rule" if code in RULE_CODES else "object"
+
+
+def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float,
+            window_end: Any = lambda: None, error: BaseException | None = None) -> bool:
+    """Whether a preparation stopped on ``codes`` ships the room package (owner, 2026-11-17), or keeps waiting.
+
+    It waits on a wall (``hard_stops.is_wall``, or a code the retry policy reads as privacy, rights or money,
+    the authoring admissions among them, or as the owner's closing of the run:
+    ``website_preparation_retry.classify``), on the job's sentence still to come, on a stop only a new video
+    clears (``website_recapture_required``), on a code the room package would be wrong for (``KEEP_HOLDING``),
+    and in a development test, which places the object on its own surface. A raised failure the retry policy
+    retries until the job's deadline (an outage, a timeout) waits until the job's window, read when asked
+    (``window_end()``), ends within ``LAST_CALL_SECONDS``; a window that cannot be read keeps it waiting. Every
+    other blocker, a refusal decided by the job's inputs, ships at once.
+    """
+    from .hard_stops import is_wall
+    from .job_retry_policy import MONEY, PRIVACY_RIGHTS
     from .website_development_test import enabled
-    if not set(blockers) & START_UNSUPPORTED or any(hard_stop_kind(code) for code in blockers):
+    from .website_preparation_retry import AWAITING_JOB_SENTENCE, OUTAGE, OWNER_CLOSED, classify
+    from .website_recapture_required import CODES as RECAPTURE_CODES
+    codes = [str(code) for code in codes]
+    if (not codes or (error is not None and is_wall(error))
+            or any(classify(code) in {PRIVACY_RIGHTS, MONEY, OWNER_CLOSED, AWAITING_JOB_SENTENCE} for code in codes)
+            or any(code in RECAPTURE_CODES or code in KEEP_HOLDING or code.startswith(KEEP_HOLDING_PREFIXES)
+                   for code in codes)):
         return False
     try:
-        return not enabled(task_context["context_digest"])
+        if enabled(task_context["context_digest"]):
+            return False
     except (ValueError, KeyError):
         return False  # an unreadable test allowlist: the preparation is kept as before
+    if error is not None:
+        if str(error) in TRANSIENT or classify(f"{type(error).__name__}: {error}") == OUTAGE:
+            window = window_end()
+            return window is not None and window - now <= LAST_CALL_SECONDS
+    return True
 
 
 def sealed_rule_withheld(capture_root: Path | None) -> dict[str, Any] | None:
@@ -446,7 +487,8 @@ def planner_removals_applied(capture_root: Path) -> int:
 def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[str, Any],
                        source_geometry: Mapping[str, Any], removal: Mapping[str, Any], output_root: Path,
                        task_profile: str | None, task_masks: Mapping[str, Any] | None = None,
-                       objects_in_scan: bool = False, flags: Sequence[str] = (), taken_out: int = 0) -> dict[str, Any]:
+                       objects_in_scan: bool = False, flags: Sequence[str] = (), taken_out: int = 0,
+                       not_prepared: Sequence[Mapping[str, str]] = ()) -> dict[str, Any]:
     """The room package's half (``scene-package/``: the room's collision and look, the plan) and its sealed record.
 
     CPU only, buys nothing. A navigation job (``task_masks`` given) whose reading names exactly one goal mask gets
@@ -523,7 +565,9 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
               **({"goal_region": goal} if goal is not None else {}),
               "job_objects": {"count": count, "in_package": "part_of_room_scan" if objects_in_scan
                               else "taken_out_of_room_scan"} if count else None,
-              **({"flags": list(flags)} if flags else {}), PROBE_FIELD: PROBE_NOT_QUEUED,
+              **({"flags": list(flags)} if flags else {}),
+              **({"not_prepared": [dict(row) for row in not_prepared]} if not_prepared else {}),
+              PROBE_FIELD: PROBE_NOT_QUEUED,
               "robot_included": False, "simulator_run": False, "plan_digest": plan["plan_digest"],
               "inputs_digest": ""}
     record["inputs_digest"] = canonical_digest(record, digest_field="inputs_digest")
@@ -537,6 +581,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                                  allow_static_target_recovery: bool = False) -> dict[str, Any]:
     handoff_lease_checkpoint("website_scene_handoff_start")
     from .website_preparation_revision import workspace, bind_preparation
+    from .website_preparation_terminal import retained_window_end
     root = workspace(capture_root)
     root.mkdir(parents=True, exist_ok=True)
     handoff_path = capture_root / "pipeline" / "website_scene_preparation" / "handoff.json"
@@ -575,14 +620,17 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         return list(dict.fromkeys([*flags, *(atlas.get("flags") or [])]))
 
     def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
-                     flags: Sequence[str] = (), taken_out: int = 0) -> dict[str, Any]:
+                     flags: Sequence[str] = (), taken_out: int = 0,
+                     not_prepared: Sequence[str] = ()) -> dict[str, Any]:
         # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
+        # ``not_prepared``: the blockers it ships for, each with the piece of the job it leaves out (``piece_of``).
         result.pop("rule_withheld", None)
         flags = package_flags(flags)
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only or in_scan, flags=flags,
-                                    taken_out=taken_out)
+                                    taken_out=taken_out, not_prepared=[{"piece": piece_of(code), "code": code}
+                                                                       for code in dict.fromkeys(not_prepared)])
         result.update(status=ROOM_PACKAGE, blockers=[], job_disposition="accepted",
                       geometry_backend=atlas["source_geometry"]["geometry_backend"],
                       source_geometry_digest=atlas["source_geometry"]["digest"],
@@ -887,13 +935,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             raise
         if (preparation["status"] != "intake_ready" and not preparation.get("native_task_preparation_gap")
                 and ("rule_withheld" in result and not set(preparation["blockers"]) & REGISTRATION_REFUSALS
-                     or start_unsupported(preparation["blockers"], context))):
+                     or not geometry_only and goes_on(preparation["blockers"], task_context=context, now=now))):
             # Anything else that stops the object (no internal place, no support, a size the published figures
             # refute, an authoring admission unmet: nothing was spent or sent for it): the room package, as main
             # ships this job, the object left out and the reason a flag. A registration refusal is a blocker only
-            # in development-test mode, which places the object on its estimated frame instead. Any job whose
-            # object has no surface to start on ships the same room package (``start_unsupported``).
-            return room_package(None, flags=preparation["blockers"])
+            # in development-test mode, which places the object on its estimated frame instead. Any other job
+            # whose blockers are no wall ships the same room package (``goes_on``); a geometry-only job ends at its
+            # fit check instead.
+            return room_package(None, flags=preparation["blockers"], not_prepared=preparation["blockers"])
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
                 or (preparation.get("subject_excision") or {}).get("status") == "excised"):
@@ -946,24 +995,30 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     result["website_intake_outbox"] = enqueue_website_prepared_scene(
                         task_context=context, request=preparation["intake_request"])
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
+            if goes_on([*preparation["blockers"], str(exc)], task_context=context, now=now, error=exc,
+                       window_end=lambda: retained_window_end(capture_root, scene_id=descriptor["scene_id"],
+                                                              capture_id=descriptor["capture_id"])):
+                # The object's inputs cannot be made, and nothing the preparation holds is a wall: the room
+                # package, flagged (``goes_on``).
+                return room_package(None, flags=[str(exc)], not_prepared=[str(exc)])
             # Preserve finished CPU outputs when a later handoff is held.
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])
     except (ValueError, KeyError, TypeError, OSError) as exc:
-        from .hard_stops import is_wall
-        from .website_gemini_receipts import EXHAUSTED, CreditDepleted, last_money_recheck
-        from .website_preparation_terminal import retained_window_end
-        window = (retained_window_end(capture_root, scene_id=descriptor["scene_id"],
-                                      capture_id=descriptor["capture_id"]) if isinstance(exc, CreditDepleted) else None)
-        if room_ready and (str(exc) == EXHAUSTED and not is_wall(exc) or last_money_recheck(exc, now, window)):
-            # A Gemini call of this preparation (an object's assembly views, a mask's grounding) was sent the most
-            # times its bound allows and never answered; or Gemini answered that Blueprint's credits are depleted
-            # and the job's window, read now, ends before the money wait can ask again (until then that answer is
-            # a money wait: ``CreditDepleted``; a window that cannot be read keeps it waiting). The object cannot be
-            # built without that answer, so the job goes on as the room package, flagged, and buys nothing.
+        from .website_gemini_receipts import CreditDepleted, last_money_recheck
+
+        def window_end() -> float | None:
+            return retained_window_end(capture_root, scene_id=descriptor["scene_id"],
+                                       capture_id=descriptor["capture_id"])
+        if room_ready and (goes_on([str(exc)], task_context=metadata.get("site_task_context") or {}, now=now,
+                                   error=exc, window_end=window_end)
+                           or isinstance(exc, CreditDepleted) and last_money_recheck(exc, now, window_end())):
+            # A step of this preparation failed for no wall (``goes_on``): the job goes on as the room package,
+            # flagged, and buys nothing. Gemini's answer that Blueprint's credits are depleted is a money wait
+            # until the job's window, read now, ends before it can be asked again (``CreditDepleted``).
             try:
-                return room_package(None, flags=[str(exc)])
+                return room_package(None, flags=[str(exc)], not_prepared=[str(exc)])
             except (ValueError, KeyError, TypeError, OSError):
-                pass  # the room cannot be packaged either: the provider's code is kept, and the job retries
+                pass  # the room cannot be packaged either: the step's code is kept, and the job retries
         from .website_recapture_required import CODES as RECAPTURE_CODES, FIELD as RECAPTURE_FIELD, record
         stopped_context = metadata.get("site_task_context") or {}
         if (isinstance(exc, ValueError) and str(exc) in RECAPTURE_CODES

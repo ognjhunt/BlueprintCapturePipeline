@@ -164,7 +164,9 @@ def test_synthetic_subject_profile_ignores_its_supports_mechanism(tmp_path, monk
         assert gap["inferred_profile_id"] == "rigid_pick_place"
         assert holds_native_task_preparation(retained_hold(context, gap), context)
     else:
-        assert result["blockers"] == ["coverage_pending"] and calls == ["coverage"]
+        # The coverage step was reached; its refusal, no wall, ships the room package (``goes_on``).
+        assert result["status"] == "room_package_written" and calls == ["coverage"]
+        assert [call["flags"] for call in packaged] == [["coverage_pending"]]
         assert "native_task_preparation_gap" not in result
     assert "runtime_inputs" not in result
 
@@ -1101,28 +1103,58 @@ def test_job4_s_object_resting_within_the_window_still_builds_as_before(tmp_path
     assert not [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR]
 
 
+CONTEXT = {"context_digest": "sha256:" + "a" * 64}
+
+
 @pytest.mark.parametrize("blockers, development, expected", [
-    (["support_surface_not_found_under_subject"], False, True),
-    (["website_synthetic_subject_start_unplaceable"], False, True),
+    # Every compile blocker that is no wall ships at once: one per hold the preparation had.
+    *[([code], False, True) for code in (
+        "support_surface_not_found_under_subject", "website_synthetic_subject_start_unplaceable",
+        "website_registration_scale_conflicts_declared", "website_articulated_part_label_required",
+        "website_articulated_task_has_no_destination", "website_assembly_whole_object_coverage_required",
+        "task_destination_relation_required", "task_destination_interior_geometry_required",
+        "task_destination_surface_contact_required", "task_destination_overlaps_start",
+        "task_destination_pose_required", "authoring_frames_coverage_missing:front_view",
+        "website_object_spec_dimension_conflict", "website_assembly_builder_refused:x",
+        "website_owner_success_criteria_translation_required")],
     (["support_surface_not_found_under_subject", "website_assembly_whole_object_coverage_required"], False, True),
     # Any code that reads as privacy, rights or money keeps the preparation: the authoring admissions.
     *[(["support_surface_not_found_under_subject", code], False, False) for code in ADMISSIONS],
     # A development test places the object on its own authored surface.
     (["support_surface_not_found_under_subject"], True, False),
-    # Other codes are not this cause: they are kept as before.
-    (["task_destination_surface_contact_required"], False, False),
-    (["website_owner_success_criteria_translation_required"], False, False),
+    # The job's own request is not a valid one, or its inputs are not ready or unsafe: kept.
+    (["scene_intake_owner_invalid"], False, False), (["website_scene_preparation_pending"], False, False),
+    (["website_subject_origin_conflict"], False, False),
+    # A stop only a new video clears keeps its own hold.
+    (["website_registration_poor_fit"], False, False),
+    # A code that reads as money holds, though this one counts the builder's tokens (a keyword false positive).
+    (["authoring_frames_token_budget_exceeded"], False, False),
 ])
-def test_only_an_object_with_no_surface_to_start_on_and_no_wall_ships_the_room(monkeypatch, blockers, development,
-                                                                               expected):
+def test_one_rule_ships_every_blocker_that_is_no_wall(monkeypatch, blockers, development, expected):
     monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: development)
-    assert handoff.start_unsupported(blockers, {"context_digest": "sha256:" + "a" * 64}) is expected
+    assert handoff.goes_on(blockers, task_context=CONTEXT, now=0.0) is expected
 
 
 def test_an_unreadable_development_allowlist_keeps_the_preparation(monkeypatch):
     monkeypatch.setenv("BLUEPRINT_WEBSITE_DEVELOPMENT_TEST_TASK_DIGESTS", "not json")
-    assert handoff.start_unsupported(["support_surface_not_found_under_subject"],
-                                     {"context_digest": "sha256:" + "a" * 64}) is False
+    assert handoff.goes_on(["support_surface_not_found_under_subject"], task_context=CONTEXT, now=0.0) is False
+
+
+@pytest.mark.parametrize("error, transient", [
+    (TimeoutError("timed out"), True), (ValueError("website_control_preparation-spend_http_503:unavailable"), True),
+    (ValueError("website_gemini_request_in_progress"), True), (OSError(28, "No space left on device"), True),
+    (ValueError("website_gemini_unanswered_dispatches_exhausted"), False), (KeyError("frames"), False),
+    (ValueError("website_assembly_coverage_mask_resolution_mismatch"), False)])
+def test_a_raised_failure_retried_until_the_deadline_waits_for_the_window_end_and_a_refusal_ships_at_once(
+        monkeypatch, error, transient):
+    from blueprint_pipeline.hard_stops import MoneyStop, PrivacyRightsStop
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    code = str(error)
+    for window, ships in ((None, not transient), (3 * 3600.0, not transient), (2 * 3600.0, True), (60.0, True)):
+        assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=error,
+                               window_end=lambda window=window: window) is ships
+    for wall in (MoneyStop(code), PrivacyRightsStop(code)):  # a wall waits whatever the window
+        assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=wall, window_end=lambda: 0.0) is False
 
 
 @pytest.mark.parametrize("code", ["website_gemini_unanswered_dispatches_exhausted",
@@ -1159,7 +1191,8 @@ def test_the_room_package_of_an_object_with_no_surface_to_start_on_says_so(tmp_p
     the room as reconstructed, no rule, that the object was not placed and why, and that it was taken out."""
     from blueprint_pipeline import website_company_simulation as sim
     from tests.test_website_scene_handoff_navigation import _published, _record, _said, room_job
-    assert sim.OBJECT_NOT_PLACED_FLAGS == handoff.START_UNSUPPORTED
+    assert sim.OBJECT_NOT_PLACED_FLAGS == {"support_surface_not_found_under_subject",
+                                           "website_synthetic_subject_start_unplaceable"}
     monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
                         lambda **_: {"status": "ready"})
     for name in ("website_assembly_coverage.attach_assembly_coverage",
@@ -1175,3 +1208,89 @@ def test_the_room_package_of_an_object_with_no_surface_to_start_on_says_so(tmp_p
     _status, members = _published(job)
     assert _said(members["README.txt"]).endswith(f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.OBJECT_NOT_PLACED} "
                                                  f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+
+
+# --- Owner, 2026-11-17: accept every job; one rule at the handoff (``goes_on``) ----------------------------------
+
+def test_a_compile_blocker_ships_the_room_package_at_once_and_names_the_piece(tmp_path, monkeypatch, ready_atlas):
+    """``website_task_preparation``: a destination compile cannot find ships the room package now, flagged, with
+    the piece it leaves out recorded; nothing is bound, registered or chosen."""
+    kwargs, asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop=False)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", lambda **kw: compiled.append(kw) or {
+        "status": "needs_input", "blockers": ["task_destination_surface_contact_required"]})
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
+                        lambda *_, **__: pytest.fail("bound"))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written" and result["blockers"] == []
+    assert packaged[-1]["flags"] == ["task_destination_surface_contact_required"]
+    assert packaged[-1]["not_prepared"] == [{"piece": "destination", "code": "task_destination_surface_contact_required"}]
+
+
+def test_a_raised_refusal_ships_at_once_and_a_transient_failure_waits_for_the_window_end(
+        tmp_path, monkeypatch, ready_atlas):
+    """``website_scene_handoff``: a step's refusal (no wall) ships the room package now; a timeout waits, retried,
+    until the job's window, read when it fails, ends within two hours, then ships the same; a wall waits."""
+    from blueprint_pipeline.hard_stops import MoneyStop
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    packaged = room_recorder(monkeypatch)
+
+    def failing(error):
+        monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                            lambda **_: (_ for _ in ()).throw(error))
+        return handoff.prepare_website_scene_handoff(**kwargs)
+    result = failing(ValueError("website_assembly_coverage_mask_resolution_mismatch"))
+    assert result["status"] == "room_package_written"
+    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": "website_assembly_coverage_mask_resolution_mismatch"}]
+    shipped = len(packaged)
+    assert failing(TimeoutError("timed out"))["status"] == "awaiting_inputs"  # no grant: no window to read
+    _granted(tmp_path, kwargs, ends_in=3 * 86400)
+    assert failing(TimeoutError("timed out"))["status"] == "awaiting_inputs"
+    _granted(tmp_path, kwargs, ends_in=3600)
+    assert failing(TimeoutError("timed out"))["status"] == "room_package_written"
+    assert len(packaged) == shipped + 1 and packaged[-1]["flags"] == ["timed out"]
+    result = failing(MoneyStop("website_scene_preparation_budget_exhausted"))
+    assert result["status"] == "awaiting_inputs" and len(packaged) == shipped + 1
+
+
+def test_a_development_test_still_takes_its_own_path(tmp_path, monkeypatch, ready_atlas):
+    _sunk_into_its_table(monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: True)
+    kwargs, _asked, compiled, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", stop=False)
+    monkeypatch.setattr("blueprint_pipeline.website_preparation_revision.bind_preparation",
+                        lambda *_, **__: (_ for _ in ()).throw(_Compiled()))  # past the room package: its own path
+    with pytest.raises(_Compiled):
+        handoff.prepare_website_scene_handoff(**kwargs)
+    assert compiled[0]["blockers"] == ["support_surface_not_found_under_subject"] and packaged == []
+
+
+def test_a_room_record_of_a_job_with_nothing_left_out_is_unchanged(tmp_path, monkeypatch):
+    """Jobs that prepare: a room record with nothing left out carries no new field, so its bytes and digest are
+    main's (checked against main on 2026-11-18: this navigation job's handoff and record, and an intake-ready
+    job's floor, byte for byte)."""
+    from tests.test_website_scene_handoff_navigation import _record, room_job
+    _job, _context, result = room_job(tmp_path, monkeypatch)
+    assert "not_prepared" not in _record(result)
+
+
+def test_the_room_package_names_each_piece_it_could_not_prepare(tmp_path, monkeypatch):
+    """The README's one sentence per piece left out, with its codes and no reason of its own."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from tests.test_website_scene_handoff_navigation import _published, _said, room_job
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    for name in ("website_assembly_coverage.attach_assembly_coverage",
+                 "website_object_spec_research.attach_object_specs"):
+        monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: kw["task_masks"])
+    codes = ["task_destination_surface_contact_required", "website_owner_success_criteria_translation_required"]
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **_: {"status": "needs_input", "blockers": codes})
+    lamp = {"target_id": "cup-1", "task_effect": "manipulated", "semantic_label": "table lamp"}
+    job, _context, result = room_job(tmp_path, monkeypatch, family="rigid_pick_place", removal=[lamp],
+                                     all_targets=True, description="Move the lamp to the shelf")
+    assert result["status"] == "room_package_written"
+    _status, members = _published(job)
+    assert _said(members["README.txt"]).endswith(
+        f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} "
+        "Blueprint could not prepare the job's destination (task_destination_surface_contact_required). "
+        "Blueprint could not prepare the job's success rule (website_owner_success_criteria_translation_required). "
+        f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
