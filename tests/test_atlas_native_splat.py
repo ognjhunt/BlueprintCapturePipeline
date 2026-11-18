@@ -839,3 +839,27 @@ def test_a_fresh_attempt_resends_the_reviewed_request_and_never_buys_the_review_
     assert value["refined_splat"]["request_form"] == MINIMAL and len(reviewer.asked) == 1
     # A first attempt whose review admitted nothing has no request to resend with generated views.
     assert native.first_attempt_review(tmp_path / "never") is None
+
+
+@pytest.mark.parametrize("case", ["none_admitted", "over_review_cap", "whole_failed"])
+def test_the_real_frames_only_splat_after_generated_views_is_one_a_scene_kept_as_filmed_takes(tmp_path, reviewer,
+                                                                                                case):
+    """Review (genviews): with a generated view beside the filmed frames that the review did not admit, or
+    could not be bought, or whose reviewed-whole request failed, the minimal splat bought next carries no
+    review of views it never sent, so the scene source takes it as the filmed frames' own refinement."""
+    from blueprint_pipeline.website_atlas_scene_source import _captured_frames_refinement
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)), frame_id="look-1")], []
+    reviewer.admit = {"candidate-0002"} if case == "whole_failed" else set()
+    policy = {**splat_policy(), **({"maximum_review_cost_usd": 0.0001} if case == "over_review_cap" else {})}
+    done = native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=tmp_path / "refined_splat",
+        policy=policy, task_context=CONTEXT, task_runner=scripted_runner(
+            ["failed", "completed"] if case == "whole_failed" else ["completed"], calls))
+    assert done["refined_splat"]["request_form"] == "documented_minimal"
+    manifest = done["splat_manifest"]
+    assert "whole_view_review" not in manifest and [row["frame_id"] for row in manifest["frames"]] == ["0", "1"]
+    source = {"digest": POSE["digest"], "operation_receipt": {"input_usage": {"frames": [
+        {"frame_id": "0"}, {"frame_id": "1"}]}}}
+    assert _captured_frames_refinement(manifest, source)
+    if case == "whole_failed":
+        whole = json.loads((tmp_path / "refined_splat-whole/input_binding.json").read_text())
+        assert whole["whole_view_review"]["verdicts"][0]["admit_whole"] is True

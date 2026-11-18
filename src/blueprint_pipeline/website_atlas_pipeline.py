@@ -690,8 +690,10 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
         from .atlas_refined_splat_forms import MINIMAL, WHOLE
         from .atlas_refined_splat_retry import DRAFT_FINAL, WAIT_STAGE, next_refined_splat
         reviewed = first_attempt_review(root)
+        # Without an admitted generated view the attempt is the filmed frames alone, sent as that list.
+        resent = sent if reviewed else [frame for frame in sent if frame.get("keep_mask") is None]
         native = next_refined_splat(output_root=output_root, original_root=root, now=time.time(),
-            run_attempt=lambda base: run_native_splat(frames=sent, result=pose, draft=draft, output_root=base,
+            run_attempt=lambda base: run_native_splat(frames=resent, result=pose, draft=draft, output_root=base,
                 policy=policy, task_context=task_context, max_polls=max_polls,
                 forms=(WHOLE, MINIMAL) if reviewed else (MINIMAL,),
                 task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),

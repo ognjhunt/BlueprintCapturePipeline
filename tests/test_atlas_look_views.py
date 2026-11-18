@@ -36,7 +36,8 @@ def write_map(capture, regions, **fields):
     """The map as ``atlas_coverage_map.write_weak_regions`` seals it in the Atlas job root."""
     path = capture / look.WEAK_REGIONS_RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
-    record = {"schema_version": look.WEAK_REGIONS_SCHEMA, "status": "mapped", "regions": regions, **fields}
+    record = {"schema_version": look.WEAK_REGIONS_SCHEMA, "status": "mapped", "regions": regions,
+              "pose_result_digest": POSE["digest"], **fields}
     record["digest"] = canonical_digest(record, digest_field="digest")
     path.write_text(json.dumps(record))
     return path
@@ -56,7 +57,13 @@ class Atlas:
         if not submission.exists():
             self.purchases.append((output_root, price_review["maximum_cost_usd"]))
             submission.parent.mkdir(parents=True, exist_ok=True)
-            submission.write_text(json.dumps({"status": "submitted", "request_digest": price_review["request_digest"]}))
+            submission.write_text(json.dumps({"status": "submitted", "request_digest": price_review["request_digest"],
+                                              "binding": {"request_template": request, "uploads": uploads,
+                                                          "maximum_cost_usd": price_review["maximum_cost_usd"]}}))
+        else:
+            # The adapter's own rule on resume: the request and its reserved price are what was sent.
+            sent = json.loads(submission.read_text())["binding"]
+            assert request == sent["request_template"] and price_review["maximum_cost_usd"] == sent["maximum_cost_usd"]
         polled = sum(1 for root, _ in self.calls if root == output_root)
         if polled <= self.polls_before_done:
             return {"status": "processing", "operation_id": "op-" + output_root.name}
@@ -138,19 +145,20 @@ def test_regions_and_views_are_capped_in_the_maps_order_and_unposed_regions_are_
     assert look.orbit_angles([-30, 30]) == [-30, 30] and look.orbit_angles([0, 20]) == [-20, 20]
 
 
-def test_the_map_is_read_only_when_it_is_the_contract(tmp_path):
-    assert look.load_weak_regions(tmp_path) is None
+def test_the_map_is_read_by_the_coverage_maps_own_sealed_reader(tmp_path):
+    assert look._mapped_regions(tmp_path) == (None, None)
     path = write_map(tmp_path, [region(), {"id": "broken", "centroid": [0, 0]}])
-    assert [row["id"] for row in look.load_weak_regions(tmp_path)] == ["table"]
+    regions, mapped_pose = look._mapped_regions(tmp_path)
+    assert [row["id"] for row in regions] == ["table"] and mapped_pose == POSE["digest"]
     sealed = json.loads(path.read_text())
     for changed in ({**sealed, "regions": [region("edited")]},  # no longer the sealed record
-                    {**sealed, "status": "not_mapped"}, {**sealed, "schema_version": "other.v1"}):
+                    {**sealed, "status": "not_mapped"}):
         if changed.get("regions") == sealed["regions"]:
             changed["digest"] = canonical_digest(changed, digest_field="digest")
         path.write_text(json.dumps(changed))
-        assert look.load_weak_regions(tmp_path) is None
+        assert look._mapped_regions(tmp_path) == (None, None)
     path.write_text("{")
-    assert look.load_weak_regions(tmp_path) is None
+    assert look._mapped_regions(tmp_path) == (None, None)
 
 
 # --- the consistency check -------------------------------------------------------------------------------------
@@ -262,6 +270,9 @@ def test_money_the_allowance_and_walls_decide_before_anything_is_bought(job, mon
     elsewhere = job.parent.parent.parent / "fifth/pipeline/atlas"
     write_map(elsewhere.parent.parent, [region()], pose_result_digest="sha256:" + "b" * 64)
     assert run(elsewhere, atlas)["record"]["status"] == "weak_regions_pose_mismatch" and atlas.calls == []
+    unnamed = job.parent.parent.parent / "seventh/pipeline/atlas"
+    write_map(unnamed.parent.parent, [region()], pose_result_digest=None)  # The map must name its pose.
+    assert run(unnamed, atlas)["record"]["status"] == "weak_regions_pose_mismatch" and atlas.calls == []
     same = job.parent.parent.parent / "sixth/pipeline/atlas"
     write_map(same.parent.parent, [region()], pose_result_digest=POSE["digest"])
     assert run(same, Atlas())["record"]["status"] == "checked"
@@ -269,6 +280,59 @@ def test_money_the_allowance_and_walls_decide_before_anything_is_bought(job, mon
     write_map(unpriced.parent.parent, [region()])
     policy = {key: v for key, v in POLICY.items() if key != "rgbd_view_cost_usd"}
     assert run(unpriced, atlas, policy=policy)["record"]["status"] == "rgbd_view_price_unreviewed"
+
+
+def test_a_request_in_flight_is_polled_as_it_was_sent_when_the_price_changes(job):
+    """Review (genviews): a live paid operation is never abandoned; it is polled at the price it was reserved under."""
+    atlas = Atlas(polls_before_done=1)
+    assert run(job, atlas)["status"] == "processing" and len(atlas.purchases) == 1
+    dearer = {**POLICY, "rgbd_view_cost_usd": .07, "additional_rgbd_view_cost_usd": .02}
+    value = run(job, atlas, policy=dearer)  # The fake adapter asserts the request and price are as sent.
+    assert value["record"]["status"] == "checked" and len(atlas.purchases) == 1
+    assert value["record"]["batches"][0]["maximum_cost_usd"] == pytest.approx(.08)
+    # Its price withdrawn while it runs: still polled and settled, never left live.
+    other = job.parent.parent.parent / "withdrawn/pipeline/atlas"
+    write_map(other.parent.parent, [region()])
+    atlas = Atlas(polls_before_done=1)
+    assert run(other, atlas)["status"] == "processing"
+    unpriced = {key: v for key, v in POLICY.items() if key != "rgbd_view_cost_usd"}
+    assert run(other, atlas, policy=unpriced)["record"]["status"] == "checked" and len(atlas.purchases) == 1
+
+
+def test_an_error_that_is_no_wall_falls_back_to_the_real_frames_unless_a_request_is_live(job, monkeypatch):
+    from blueprint_pipeline import atlas_scene_completion
+
+    def mismatch(*_):
+        raise ValueError("atlas_depth_splat_grid_mismatch")
+    monkeypatch.setattr(atlas_scene_completion, "load_generated_views", mismatch)
+    value = run(job, Atlas())
+    assert value["views"] == [] and value["record"]["status"] == "failed"
+    assert value["record"]["reason"] == "atlas_depth_splat_grid_mismatch"
+    assert run(job, Atlas())["record"] == value["record"]  # Sealed: the splat goes on with its real frames.
+    # A request still live is not left behind: the error is raised, and the next tick polls it.
+    live = job.parent.parent.parent / "live/pipeline/atlas"
+    write_map(live.parent.parent, [region()])
+    atlas = Atlas(polls_before_done=5)
+    assert run(live, atlas)["status"] == "processing"
+    monkeypatch.setattr(look, "orbit_cameras", lambda *_: (_ for _ in ()).throw(IndexError("late")))
+    plan = live / look.ROOT / look.PLAN
+    plan.unlink()  # Forces a re-plan that fails, with the first request still live.
+    with pytest.raises(IndexError):
+        run(live, atlas)
+    assert not (live / look.ROOT / look.RECORD).exists()
+
+
+def test_a_checkpoint_stop_is_raised_as_it_is(job):
+    class Withdrawn(Exception):
+        pass
+
+    def check(_stage):
+        raise Withdrawn()
+    with pytest.raises(Withdrawn):
+        look.look_views_for_splat(frames=real_frames(), pose=POSE, output_root=job, policy=POLICY,
+            task_context={"context_digest": "t"}, source_digest="s", configuration=lambda: {"policy": POLICY},
+            task_runner=Atlas(), bought=False, check=check)
+    assert not (job / look.ROOT / look.RECORD).exists()
 
 
 # --- the splat input, the result and the scene -------------------------------------------------------------------

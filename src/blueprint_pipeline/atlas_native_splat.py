@@ -327,7 +327,10 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
         try:
             value = _run_form(form=form, root=root, frames=frames, result=result, draft=draft, policy=policy,
                               task_context=task_context, task_runner=task_runner, max_polls=max_polls,
-                              checkpoint=checkpoint, review=review, views=views if form == WHOLE else None,
+                              # The minimal form posts real frames only: the review of views it never sent is not
+                              # its own, and a scene kept as filmed takes only a splat that carries none.
+                              checkpoint=checkpoint, review=review if form == WHOLE else None,
+                              views=views if form == WHOLE else None,
                               input_selection_digest=input_selection_digest)
         except ValueError as exc:
             # The provider failed this form's last attempt; the next form follows. A wall is never a failed

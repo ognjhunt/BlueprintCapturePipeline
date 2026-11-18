@@ -65,7 +65,7 @@ PROMPT = ("The exact photographed room seen from a slightly different angle, wit
 NONE = {"views": [], "record": None}
 
 
-# --- the weak-region map (the other builder's contract, read here without importing it) ------------------------
+# --- the weak-region map (``atlas_coverage_map``, written before the splat) -------------------------------------
 
 def _finite(value, size=None) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float, list, tuple)):
@@ -82,24 +82,22 @@ def _usable(row) -> bool:
             and all(isinstance(key, str) for key in row["seen_by"]))
 
 
-def _weak_region_map(capture_root) -> dict | None:
-    """The sealed map ``atlas_coverage_map`` wrote before the splat, when it mapped; a changed one is none."""
-    from .atlas_coverage_map import read_weak_regions
+def _mapped_regions(capture_root: Path):
+    """``atlas_coverage_map``'s regions and the pose it mapped, read by its own sealed reader; (None, None) if none.
+
+    The reader checks the seal, the arrays' digest and that the map is ``mapped``; a map it refuses
+    gives no views, and the look keeps its filmed frames.
+    """
+    from .atlas_coverage_map import load_weak_regions, read_weak_regions
 
     try:
-        value = read_weak_regions(Path(capture_root) / WEAK_REGIONS_RELATIVE.parent)
+        regions = load_weak_regions(capture_root)
+        record = read_weak_regions(Path(capture_root) / WEAK_REGIONS_RELATIVE.parent) if regions else None
     except (OSError, ValueError, KeyError, TypeError):
-        return None  # Flagged by the map's own reader; the look keeps its filmed frames.
-    if (not isinstance(value, dict) or value.get("schema_version") != WEAK_REGIONS_SCHEMA
-            or value.get("status") != "mapped" or not isinstance(value.get("regions"), list)):
-        return None
-    return value
-
-
-def load_weak_regions(capture_root) -> list[dict] | None:
-    """The map's usable regions; None when there is no map or it does not read as ``atlas_weak_regions.v1``."""
-    value = _weak_region_map(capture_root)
-    return None if value is None else [row for row in value["regions"] if _usable(row)]
+        return None, None
+    if not regions or record is None:
+        return None, None
+    return [row for row in regions if _usable(row)], record.get("pose_result_digest")
 
 
 # --- cameras -----------------------------------------------------------------------------------------------------
@@ -432,19 +430,34 @@ def _record(root: Path, plan, *, status, regions_digest, pose, skipped, batches=
         "generated_content": True, "claim_ceiling": "development_only", **extra})
 
 
+class _Passthrough(Exception):
+    """A checkpoint's own exception (a withdrawal, the tick's budget), carried past the stage's fallback."""
+
+    def __init__(self, error: BaseException):
+        super().__init__(str(error))
+        self.error = error
+
+
+def _in_flight(root: Path) -> bool:
+    """Whether any request under ``root`` was sent and has neither a result nor a proven provider failure."""
+    from .atlas_native_splat import _provider_failed_and_exhausted
+    from .atlas_pricing import submitted
+
+    return any(submitted(stage) and not (stage / "result.json").is_file() and not _provider_failed_and_exhausted(stage)
+               for stage in sorted((root / "generated").glob("*")))
+
+
 def look_views_for_splat(*, frames, pose, output_root, policy, task_context, source_digest, configuration,
                          task_runner, bought, check=None, max_polls=2, sent=None) -> dict:
     """``{"views": frames to send beside the real ones, "record": the sealed record or None}``, or processing.
 
     ``configuration`` is a callable returning the job's current allowance, read only when a map exists.
     ``sent`` are the real frames the splat is sent; each view names those overlapping it
-    (``reference_frame_ids``).
+    (``reference_frame_ids``). A wall (money, privacy, rights) and a checkpoint's own stop are raised; any
+    other error is recorded and the splat goes on with its real frames, unless a request it sent is still
+    live, which is then raised so the next tick polls and settles it.
     """
-    from .atlas_pricing import headroom, render_cost, submitted
-    from .atlas_scene_completion import load_generated_views
-    from .atlas_scene_generate import prepare_rgbd_context
     from .hard_stops import is_wall
-    from .website_atlas_tasks import validate_task_request
 
     output_root = Path(output_root)
     root = output_root / ROOT
@@ -452,6 +465,37 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
         return _retained(root, pose, sent)
     if bought:
         return dict(NONE)
+
+    def checkpoint(stage):
+        if check is not None:
+            try:
+                check(stage)
+            except BaseException as exc:  # noqa: BLE001 - re-raised as it was, past the fallback below
+                raise _Passthrough(exc) from exc
+    try:
+        return _stage(frames=frames, pose=pose, output_root=output_root, root=root, policy=policy,
+                      task_context=task_context, source_digest=source_digest, configuration=configuration,
+                      task_runner=task_runner, checkpoint=checkpoint, max_polls=max_polls, sent=sent)
+    except _Passthrough as wrapped:
+        raise wrapped.error from None
+    except Exception as exc:  # noqa: BLE001 - only walls and live requests may hold the splat
+        if is_wall(exc) or _in_flight(root):
+            raise
+        root.mkdir(parents=True, exist_ok=True)
+        record = _record(root, None, status="failed", regions_digest=None, pose=pose, skipped=[],
+                         reason=(str(exc) if str(exc).startswith("atlas_") else type(exc).__name__)[:200])
+        return {"views": [], "record": record}
+
+
+def _stage(*, frames, pose, output_root, root, policy, task_context, source_digest, configuration, task_runner,
+           checkpoint, max_polls, sent):
+    from .atlas_native_splat import _provider_failed_and_exhausted
+    from .atlas_pricing import headroom, render_cost, submitted
+    from .atlas_scene_completion import load_generated_views
+    from .atlas_scene_generate import prepare_rgbd_context
+    from .hard_stops import is_wall
+    from .website_atlas_tasks import validate_task_request
+
     sealed = json.loads((root / PLAN).read_text()) if (root / PLAN).is_file() else None
     if sealed is not None:
         # The cameras were decided once: a later map never re-derives them into another purchase.
@@ -460,55 +504,65 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
         targets, skipped, regions_digest = sealed["targets"], sealed["skipped_regions"], sealed["weak_regions_digest"]
     else:
         capture_root = _capture_root(output_root)
-        regions = load_weak_regions(capture_root) if capture_root is not None else None
+        regions, mapped_pose = _mapped_regions(capture_root) if capture_root is not None else (None, None)
         if not regions:
             return dict(NONE)
         root.mkdir(parents=True, exist_ok=True)
         regions_digest = _sha256_file(capture_root / WEAK_REGIONS_RELATIVE)
-        named = (_weak_region_map(capture_root) or {}).get("pose_result_digest")
-        if named is not None and named != pose["digest"]:
-            # A map of another pose's world: its centroids are not in these cameras' frame.
+        if mapped_pose != pose["digest"]:
+            # A map that names no pose, or another pose's world: its centroids are not in these cameras' frame.
             record = _record(root, None, status="weak_regions_pose_mismatch", regions_digest=regions_digest,
-                             pose=pose, skipped=[], weak_regions_pose_result_digest=named)
+                             pose=pose, skipped=[], weak_regions_pose_result_digest=mapped_pose)
             return {"views": [], "record": record}
         targets, skipped = orbit_cameras(regions, frames)
-    if sealed is not None and sealed.get("pose_result_digest") != pose["digest"]:
-        record = _record(root, sealed, status="plan_changed", regions_digest=regions_digest, pose=pose,
-                         skipped=skipped)
-        return {"views": [], "record": record}
-    if not targets or "rgbd_view_cost_usd" not in policy:
-        record = _record(root, None, status="no_views" if not targets else "rgbd_view_price_unreviewed",
-                         regions_digest=regions_digest, pose=pose, skipped=skipped)
-        return {"views": [], "record": record}
+    # A plan sealed on another pose buys nothing more; what it sent is still polled and settled.
+    stale = sealed is not None and sealed.get("pose_result_digest") != pose["digest"]
+    priced = "rgbd_view_cost_usd" in policy
     by_id = {frame["frame_id"]: frame for frame in frames}
     groups = {}
     for target in targets:
         groups.setdefault(target["region_id"], []).append(target)
-    specs = []
+    review_record = {key: policy[key] for key in ("rate_card_reference", "reviewed_by", "reviewed_on") if key in policy}
+    specs, not_bought = [], []
     for index, group in enumerate(groups.values()):
-        context = [by_id[key] for key in group[0]["context_frame_ids"]]
-        contexts, uploads, _ = prepare_rgbd_context(frames=context, root=root / "context" / f"{index:02d}")
-        request = {"contextFrames": contexts, "targetCameras": [row["camera"] for row in group], "prompt": PROMPT,
-                   "enhancePrompt": False, "returnDepth": True}
-        validate_task_request("atlasGenerate", request)
-        quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "atlasGenerate",
-                 "request_digest": canonical_digest(request), "maximum_cost_usd": render_cost(policy, len(group)),
-                 **{key: policy[key] for key in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
-        specs.append((group, request, uploads, root / "generated" / f"{index:02d}", quote))
-    plan = {"schema_version": SCHEMA + ".plan", "weak_regions_digest": regions_digest,
-            "pose_result_digest": pose["digest"], "targets": targets, "skipped_regions": skipped,
-            "batches": [{"region_id": group[0]["region_id"], "frame_ids": [row["camera_id"] for row in group],
-                         "stage_relative_path": str(stage.relative_to(root)), "request_digest": quote["request_digest"],
-                         "maximum_cost_usd": quote["maximum_cost_usd"]} for group, _, _, stage, quote in specs]}
-    plan["digest"] = canonical_digest(plan, digest_field="digest")
-    if sealed is not None and sealed != plan:
-        # The filmed frames' photographs or depth changed under a sealed plan: nothing more is bought for it.
-        record = _record(root, plan, status="plan_changed", regions_digest=regions_digest, pose=pose,
-                         skipped=skipped)
-        return {"views": [], "record": record}
-    write_json(root / PLAN, plan)
-    from .atlas_native_splat import _provider_failed_and_exhausted
-
+        stage = root / "generated" / f"{index:02d}"
+        retained = _sent_binding(stage) if submitted(stage) else None
+        if retained is not None:
+            # A request already sent is polled exactly as it was sent, at the price it was reserved under,
+            # whatever the rate card or the frames say now: a paid operation is never abandoned.
+            request, uploads = retained["request_template"], retained["uploads"]
+            quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "atlasGenerate",
+                     "request_digest": canonical_digest(request), "maximum_cost_usd": retained["maximum_cost_usd"],
+                     **review_record}
+        elif stale or not priced:
+            not_bought.append({"region_id": group[0]["region_id"], "status": "not_bought",
+                               "reason": "plan_pose_changed" if stale else "rgbd_view_price_unreviewed"})
+            continue
+        else:
+            context = [by_id[key] for key in group[0]["context_frame_ids"]]
+            contexts, uploads, _ = prepare_rgbd_context(frames=context, root=root / "context" / f"{index:02d}")
+            request = {"contextFrames": contexts, "targetCameras": [row["camera"] for row in group],
+                       "prompt": PROMPT, "enhancePrompt": False, "returnDepth": True}
+            validate_task_request("atlasGenerate", request)
+            quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "atlasGenerate",
+                     "request_digest": canonical_digest(request), "maximum_cost_usd": render_cost(policy, len(group)),
+                     **review_record}
+        specs.append((group, request, uploads, stage, quote))
+    if sealed is None:
+        if not specs:
+            record = _record(root, None, status="no_views" if not targets else "rgbd_view_price_unreviewed",
+                             regions_digest=regions_digest, pose=pose, skipped=skipped)
+            return {"views": [], "record": record}
+        plan = {"schema_version": SCHEMA + ".plan", "weak_regions_digest": regions_digest,
+                "pose_result_digest": pose["digest"], "targets": targets, "skipped_regions": skipped,
+                "batches": [{"region_id": group[0]["region_id"], "frame_ids": [row["camera_id"] for row in group],
+                             "stage_relative_path": str(stage.relative_to(root)),
+                             "request_digest": quote["request_digest"], "maximum_cost_usd": quote["maximum_cost_usd"]}
+                            for group, _, _, stage, quote in specs]}
+        plan["digest"] = canonical_digest(plan, digest_field="digest")
+        write_json(root / PLAN, plan)
+    else:
+        plan = sealed
     pending = [quote["maximum_cost_usd"] for _, _, _, stage, quote in specs if not submitted(stage)]
     if pending:
         forecast = headroom(configuration(), stages={"look_view_batches": len(pending), "whole_view_review": 1},
@@ -517,9 +571,13 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
         if forecast is not None:
             write_json(root / "request-budget-preflight.json", forecast)
         if forecast is not None and not forecast["sufficient_for_known_calls"]:
-            record = _record(root, plan, status="allowance_insufficient", regions_digest=regions_digest, pose=pose,
-                             skipped=skipped, forecast=forecast)
-            return {"views": [], "record": record}
+            # Only requests not sent yet are dropped; any already sent are still polled and settled.
+            specs = [spec for spec in specs if submitted(spec[3])]
+            not_bought.append({"status": "not_bought", "reason": "allowance_insufficient", "forecast": forecast})
+            if not specs:
+                record = _record(root, plan, status="allowance_insufficient", regions_digest=regions_digest,
+                                 pose=pose, skipped=skipped, forecast=forecast)
+                return {"views": [], "record": record}
     # Every region's request is sent (or polled) before any view is checked, so each view is checked once.
     batches, completed = [], []
     for group, request, uploads, stage, quote in specs:
@@ -528,14 +586,14 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
         if _provider_failed_and_exhausted(stage):
             batches.append({**row, "status": "failed", "reason": "atlas_task_operation_failed"})
             continue
-        if check is not None and not submitted(stage):
-            check("refined_splat_look_views")
+        if not submitted(stage):
+            checkpoint("refined_splat_look_views")
         try:
             state = task_runner(task="atlasGenerate", request=request, uploads=uploads, output_root=stage,
                                 source_video_digest=source_digest, task_context=task_context, price_review=quote,
                                 max_polls=max_polls)
         except ValueError as exc:
-            if is_wall(exc):
+            if is_wall(exc) or _in_flight(root):
                 raise
             # Flagged and the job goes on: the region keeps its filmed views only.
             batches.append({**row, "status": "failed", "reason": str(exc)[:200]})
@@ -545,6 +603,11 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
     waiting = [row for row in batches if row["status"] not in ("completed", "failed")]
     if waiting:
         return {"status": "processing", "stage": "refined_splat_look_views", "operation_id": waiting[0]["operation_id"]}
+    bought_cost = round(sum(row["maximum_cost_usd"] for row in batches if row["status"] == "completed"), 6)
+    if stale:
+        record = _record(root, plan, status="plan_changed", regions_digest=regions_digest, pose=pose,
+                         skipped=skipped, batches=[*batches, *not_bought], bought_cost_usd=bought_cost)
+        return {"views": [], "record": record}
     views = []
     for group, stage, row in completed:
         row.pop("operation_id", None)
@@ -553,10 +616,21 @@ def look_views_for_splat(*, frames, pose, output_root, policy, task_context, sou
         views.extend(_judged(group, returned, native, stage, root, row, by_id))
         del returned
     record = _record(root, plan, status="checked", regions_digest=regions_digest, pose=pose, skipped=skipped,
-                     batches=batches, views=views,
-                     bought_cost_usd=round(sum(row["maximum_cost_usd"] for row in batches
-                                               if row["status"] == "completed"), 6))
+                     batches=[*batches, *not_bought], views=views, bought_cost_usd=bought_cost)
     return _retained(root, pose, sent) if record["passed_view_ids"] else {"views": [], "record": record}
+
+
+def _sent_binding(stage: Path) -> dict | None:
+    """The request, uploads and reserved price a stage's submission was sent with, or None if it names none."""
+    path = stage / "atlas_pose/submission.json"
+    try:
+        binding = json.loads(path.read_text()).get("binding") if path.is_file() and not path.is_symlink() else None
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(binding, dict) or not all(key in binding for key in ("request_template", "uploads",
+                                                                          "maximum_cost_usd")):
+        return None
+    return binding
 
 
 def disclosure(look, native, output_root: Path) -> dict:
