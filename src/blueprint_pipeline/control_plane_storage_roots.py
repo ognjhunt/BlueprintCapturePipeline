@@ -114,7 +114,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint/scene-retirement/journals", "evidence_hot", "root", "retirement and native process receipts; never reclaimed"),
     StorageRoot("/var/lib/blueprint/scene-retirement/journals.metadata", "evidence_hot", "root", "public lifecycle receipt metadata"),
     StorageRoot("/var/lib/blueprint/scene-retirement/consents", "evidence_hot", "root", "owner-bound immutable action authorization"),
-    StorageRoot("/mnt/blueprint-work/scene-retirement-runtime", "evidence_hot", "root", "protected installed executable snapshot; no GC authority"),
+    StorageRoot("/mnt/blueprint-work/scene-retirement-runtime", "evidence_hot", "root", "protected installed executable snapshot; no GC authority; its installer keeps the current and previous cohort (owner approval 2026-11-19)"),
     # --- evidence that live services read; never evicted or offloaded
     StorageRoot(f"{_CONTROL_PLANE}/agent-execution", "evidence_hot", "blueprint", "durable agent task and operation journals with inference budget evidence"),
     StorageRoot(f"{_CONTROL_PLANE}/beta-policy-screening", "evidence_hot", "blueprint",

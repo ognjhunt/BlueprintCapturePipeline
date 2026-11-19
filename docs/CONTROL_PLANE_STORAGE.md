@@ -1221,6 +1221,25 @@ live process names it. A folder whose intent is unknown, or every folder when in
 be read, stays. At most five a tick. The report is `scene_preparation_outputs`;
 `BLUEPRINT_CONTROL_PLANE_SCENE_PREPARATION_OFFLOAD=0` keeps it planning.
 
+## Scene-retirement runtime snapshots
+
+Every deploy's runtime installer (`scripts/install_scene_retirement_runtime.py`) copies
+a source generation (about 40 to 75 MB) under
+`/mnt/blueprint-work/scene-retirement-runtime/generations/` and a signed release copy
+(about 45 MB) under `scene-retirement-runtime-sdk-inputs/release-inputs/`. Nothing retired
+them: 296 of each by 2026-11-19, about 36 GB, growing about 0.6 GB a day. The owner approved
+on 2026-11-19: "Keep only the current and previous scene-retirement runtime snapshots."
+
+After a deployment's refresh, under the installer lock, `_prune_snapshots` keeps the source
+and SDK generations the new `CURRENT.json` names and the ones it replaced, this deploy's
+release copy and SDK input and the newest other of each, and removes the rest, oldest
+first, with their manifests or claims: at most 40 a deploy and never in the deploy's last
+two minutes. A process the bootstrap started reads `CURRENT.json` once and imports from that
+generation for its whole life, so nothing goes while a live
+`continuous_bootstrap.py` process started before the previous cohort was selected
+(`older_cohort_may_run`). The result's `snapshot_prune` says what went; a failure there never
+fails the deploy. The GC still has no authority over these roots.
+
 ## Owner-approved deletions
 
 `blueprint_pipeline.owner_approved_deletion` deletes exactly the paths an owner
