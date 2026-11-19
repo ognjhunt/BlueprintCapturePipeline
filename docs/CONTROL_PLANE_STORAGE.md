@@ -608,8 +608,10 @@ One tick runs ten phases in order:
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
    live queue references. Nothing is deleted. The unit runs the module from the
-   scene-retirement runtime's copy, which has no `.git`, after `cd -P` into the
-   active release, so the running commit is read from the working directory.
+   scene-retirement runtime's copy, which has no `.git`, and that bootstrap changes
+   to `/` before it runs the module, so the running commit is read from the
+   release the unit names (`BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO`, the
+   active release's link), else from the working directory.
    Until 2026-11-19 every tick skipped this phase as `running_commit_unknown`:
    32 pending scene-construction rows of old releases kept 32 release trees
    leased (`live_queue`) and two website workspaces `queue_referenced`.

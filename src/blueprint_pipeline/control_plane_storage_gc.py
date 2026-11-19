@@ -1845,9 +1845,9 @@ def _run_main(argv: list[str]) -> int:
         type=int,
         default=_env_int(RESIDUE_MAX_RUNS_ENV, DEFAULT_MAX_RUNS_PER_TICK),
     )
-    parser.add_argument(  # The unit runs this module from the scene-retirement runtime, not the release: ask its cwd.
+    parser.add_argument(  # Run from the scene-retirement runtime (cwd "/"): the release is the unit's REPO.
         "--running-commit",
-        default=str(os.getenv(RUNNING_COMMIT_ENV) or "").strip() or running_release_commit() or running_release_commit(Path.cwd()),
+        default=str(os.getenv(RUNNING_COMMIT_ENV) or "").strip() or running_release_commit() or running_release_commit(os.getenv("BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO") or Path.cwd()),
     )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--ack", default="")

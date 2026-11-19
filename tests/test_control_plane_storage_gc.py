@@ -893,11 +893,20 @@ def test_run_cli_takes_the_running_commit_from_the_release_it_runs_in(tmp_path, 
     monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
     monkeypatch.setattr(gc_module, "running_release_commit",
                         lambda path=None: identity.running_release_commit(path or tmp_path / "runtime" / "gc.py"))
-    monkeypatch.chdir(release)
+    # The bootstrap changes to "/" before it runs the module; the unit names the active release's link.
+    (tmp_path / "active").symlink_to(release)
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO", str(tmp_path / "active"))
+    monkeypatch.chdir("/")
 
     assert gc_main(["run"]) == 0
     stranded = json.loads(capsys.readouterr().out)["stranded_queue_rows"]
     assert stranded["running_commit"] == RUNNING_COMMIT and stranded["candidate_count"] == 1
+
+    # Without the unit's setting, the working directory is the fallback (a run by hand from the release).
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO")
+    monkeypatch.chdir(release)
+    assert gc_main(["run"]) == 0
+    assert json.loads(capsys.readouterr().out)["stranded_queue_rows"]["running_commit"] == RUNNING_COMMIT
 
 
 def _workspace(root: Path, name: str, *, age: float, now: float, with_bundle: bool = True) -> Path:
