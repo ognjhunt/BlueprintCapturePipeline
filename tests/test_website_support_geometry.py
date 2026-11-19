@@ -608,3 +608,93 @@ def test_a_place_at_the_surface_edge_gets_the_nearest_supported_footprint():
     assert supported_destination_near_place(plate(-.6, -.2, -.4, .4), start_min, start_max, corner, [.5, .3, .7],
                                             [.6, .4, .7], [-.6, -.4, .7], [.6, .4, .7], up=2, meters_per_unit=1,
                                             clearance=clearance) is None
+
+
+def _table_with_a_box(*, turned: bool = False):
+    """A 2 m table top at 0.7 m (6 cm triangles) with a closed 20 x 20 x 7 cm box standing on its middle.
+
+    ``turned``: rotated half a turn about x, so up is -z (a proper rotation: windings keep facing out)."""
+    top = plate().subdivide().subdivide().subdivide().subdivide().subdivide()
+    box = trimesh.creation.box(extents=[.2, .2, .07])
+    box.apply_translation([0, 0, .735])
+    mesh = trimesh.util.concatenate([top, box])
+    if turned:
+        mesh.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
+    return mesh
+
+
+def _table_points(*, turned: bool = False):
+    """The table's own observed points: its top, every 2 cm, except where the box hides it."""
+    xs = np.arange(-.99, .99, .02)
+    points = np.array([[x, y, .7] for x in xs for y in xs if max(abs(x), abs(y)) > .1])
+    return points * [1, -1, -1] if turned else points
+
+
+@pytest.mark.parametrize("turned", [False, True])
+def test_the_destination_is_the_surface_its_own_points_show_not_a_box_standing_on_it(turned):
+    # The synthetic set's seed 13: an 8.6 cm window around the table's observed top reaches the top of a 7 cm
+    # box standing on it, and the search took the box.
+    mesh, sign = _table_with_a_box(turned=turned), -1 if turned else 1
+    lower, upper = np.array([-.08, -.08, .72]), np.array([.08, .08, 1.2])
+    if turned:
+        lower, upper = lower * [1, -1, -1], upper * [1, -1, -1]
+        lower, upper = np.minimum(lower, upper), np.maximum(lower, upper)
+    options = dict(up=2, meters_per_unit=1, up_sign=sign, placement_residual_m=.086)
+    highest = support_under(mesh, lower, upper, **options)
+    assert highest is not None and highest["top_runtime_units"] == pytest.approx(sign * .77, abs=.002)
+    assert "surface_identity" not in highest  # without the target's points: the highest, as before
+    shown = support_under(mesh, lower, upper, shown_by=_table_points(turned=turned), **options)
+    assert shown is not None and shown["top_runtime_units"] == pytest.approx(sign * .7, abs=.002)
+    identity = shown["surface_identity"]
+    assert identity["chosen_by"] == "target_points" and identity["target_points"] == len(_table_points())
+    assert sorted(round(sign * row["top_runtime_units"], 2) for row in identity["surfaces"]) == [.7, .77]
+    assert identity["points_on_chosen"] == max(row["points_on_it"] for row in identity["surfaces"])
+
+
+def test_a_target_whose_points_show_the_highest_surface_keeps_it_and_one_surface_is_unchanged():
+    mesh = _table_with_a_box()
+    lower, upper = [-.08, -.08, .72], [.08, .08, 1.2]
+    # The box is the target (a tray to set things on): its own top is shown, and the search's choice stands.
+    tray = np.array([[x, y, .77] for x in np.arange(-.09, .1, .01) for y in np.arange(-.09, .1, .01)])
+    kept = support_under(mesh, lower, upper, up=2, meters_per_unit=1, placement_residual_m=.086, shown_by=tray)
+    assert kept["top_runtime_units"] == pytest.approx(.77, abs=.002)
+    assert kept["surface_identity"]["chosen_by"] == "search_rules"
+    # The default window does not reach the box from the table: one surface, nothing recorded, nothing changed.
+    alone = support_under(mesh, [.3, .3, .7], [.4, .4, .9], up=2, meters_per_unit=1, shown_by=_table_points())
+    assert alone == support_under(mesh, [.3, .3, .7], [.4, .4, .9], up=2, meters_per_unit=1)
+
+
+def test_compile_s_lookups_key_a_target_s_points_by_their_content():
+    from blueprint_pipeline.website_support_geometry import SupportLookups
+
+    calls = []
+
+    def look(mesh, lower, upper, **options):
+        calls.append(options.get("shown_by"))
+        return {"top_runtime_units": .7}
+
+    mesh, points = object(), _table_points()
+    lookups = SupportLookups(mesh, look)
+    for shown in (points, points.copy(), None):
+        lookups(mesh, [0, 0, 0], [1, 1, 1], up=2, meters_per_unit=1, shown_by=shown)
+    assert len(calls) == 2  # the same points looked up once; no points is another lookup
+
+
+def test_a_destination_s_own_points_are_its_lifted_masks_and_none_for_an_estimated_surface(monkeypatch):
+    from blueprint_pipeline import website_task_masks
+    from blueprint_pipeline.website_destination_overhang import destination_points
+
+    views = [np.array([[0.0, 1.0, 2.0]]), np.array([[1.0, 1.0, 1.0], [2.0, 0.0, 0.0]])]
+    monkeypatch.setattr(website_task_masks, "masked_view_points", lambda track, frames: views)
+    shift = np.eye(4)
+    shift[:3, 3] = [0, 0, 1]
+    row = {"track": {"observations": [{"source_frame_id": "f"}]}}
+    assert destination_points(row, [], shift).tolist() == [[0, 1, 3], [1, 1, 2], [2, 0, 1]]
+    assert destination_points({**row, "estimated_surface_runtime": [[0, 0, 0], [1, 1, 1]]}, [], shift) is None
+    assert destination_points({"track": {"observations": []}}, [], shift) is None
+
+    def unreadable(track, frames):
+        raise ValueError("task_target_geometry_changed")
+
+    monkeypatch.setattr(website_task_masks, "masked_view_points", unreadable)
+    assert destination_points(row, [], shift) is None

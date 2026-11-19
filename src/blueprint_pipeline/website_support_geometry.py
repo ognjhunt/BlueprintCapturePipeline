@@ -290,7 +290,8 @@ def search_window_m(placement_residual_m: float | None) -> float:
 
 def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
                   up: int, meters_per_unit: float, up_sign: int = 1,
-                  placement_residual_m: float | None = None) -> dict[str, Any] | None:
+                  placement_residual_m: float | None = None,
+                  shown_by: np.ndarray | None = None) -> dict[str, Any] | None:
     """Find a nearby, connected, nearly horizontal surface under the footprint.
 
     Probe the center, corners and edge midpoints; retain the actual face set for
@@ -305,6 +306,13 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
 
     The collider is read as its merged copy would be (``MergedCollider``), never
     copied: ``mesh`` is not changed.
+
+    ``shown_by`` is the target's own observed points (its masks lifted through the frames, in the
+    mesh's frame and units), for a surface named by a target: a destination. A wide window can reach
+    two surfaces under the footprint, a table's top and a box standing on it (the synthetic set's
+    seed 13: an 8.6 cm window, a 7 cm box), and the highest is not always the target. Of the surfaces
+    the window reaches, the one most of the target's points lie on is taken (``_shown_surface``);
+    with no points, or a tie, the highest, as before.
     """
     window_m = search_window_m(placement_residual_m)
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
@@ -312,18 +320,26 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
             or np.any(upper <= lower) or up not in {1, 2} or up_sign not in {-1, 1}
             or not np.isfinite(meters_per_unit) or meters_per_unit <= 0):
         raise ValueError("website_support_query_invalid")
+    shown = None
+    if shown_by is not None:
+        shown = np.asarray(shown_by, dtype=float).reshape(-1, 3)
+        shown = shown[np.isfinite(shown).all(axis=1)]
     if up_sign == -1:
         # Probe in an upright frame (the reflection of ``up``); keep output in the source frame.
         low, high = lower.copy(), upper.copy()
         low[up], high[up] = -upper[up], -lower[up]
+        if shown is not None:
+            shown = shown * np.where(np.arange(3) == up, -1.0, 1.0)
         result = _support(MergedCollider(mesh, up=up, flipped=True), low, high, up=up,
-                          meters_per_unit=meters_per_unit, window_m=window_m)
+                          meters_per_unit=meters_per_unit, window_m=window_m, shown=shown)
         if result is not None:
             result["top_runtime_units"] *= -1
             result["aabb_min"][up], result["aabb_max"][up] = -result["aabb_max"][up], -result["aabb_min"][up]
+            for row in (result.get("surface_identity") or {}).get("surfaces", []):
+                row["top_runtime_units"] *= -1
         return result
     return _support(MergedCollider(mesh, up=up), lower, upper, up=up, meters_per_unit=meters_per_unit,
-                    window_m=window_m)
+                    window_m=window_m, shown=shown)
 
 
 class SupportLookups:
@@ -339,12 +355,23 @@ class SupportLookups:
     def __call__(self, mesh: Any, lower: Sequence[float], upper: Sequence[float], **options: Any):
         if mesh is not self.collider:
             return self.look(mesh, lower, upper, **options)
-        # Rounded: a footprint rebuilt from snapped bounds differs only in its last bits.
+        # Rounded: a footprint rebuilt from snapped bounds differs only in its last bits. An array option (a
+        # target's own points) is keyed by its content.
         key = (np.round(np.asarray(lower, dtype=float), 9).tobytes(),
-               np.round(np.asarray(upper, dtype=float), 9).tobytes(), tuple(sorted(options.items())))
+               np.round(np.asarray(upper, dtype=float), 9).tobytes(),
+               tuple(sorted((name, _option_key(value)) for name, value in options.items())))
         if key not in self.found:
             self.found[key] = self.look(mesh, lower, upper, **options)
         return copy.deepcopy(self.found[key])
+
+
+def _option_key(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        import hashlib
+
+        array = np.ascontiguousarray(value)
+        return ("array", array.shape, str(array.dtype), hashlib.sha256(array.tobytes()).hexdigest())
+    return value
 
 
 #: How far below the object's estimated bottom the nearest surface under its footprint is looked for.
@@ -723,13 +750,101 @@ def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndar
 
 
 def _support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
-             meters_per_unit: float, window_m: float) -> dict[str, Any] | None:
+             meters_per_unit: float, window_m: float, shown: np.ndarray | None = None) -> dict[str, Any] | None:
     result = (_level_face_support(collider, lower, upper, up=up, meters_per_unit=meters_per_unit, window_m=window_m)
               or _fitted_support(collider, lower, upper, up=up, meters_per_unit=meters_per_unit, window_m=window_m))
+    if result is not None and shown is not None and len(shown):
+        result = _shown_surface(collider, lower, upper, result, shown, up=up, meters_per_unit=meters_per_unit,
+                                window_m=window_m)
     if result is not None:
         result.update(search_window_m=window_m, search_window_basis=(
             "registration_task_region_residual" if window_m > 0.03 else "default"))
     return result
+
+
+#: The surface a target's own points show (``support_under``'s ``shown_by``).
+SHOWN_SURFACE_BASIS = "most_of_the_target_s_own_points_lie_on_it"
+
+
+def _surface_bands(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
+                   meters_per_unit: float, window_m: float) -> list[float]:
+    """The heights of the surfaces a search under the footprint can reach, highest first.
+
+    The upward-facing gentle faces whose centres lie over the footprint within the window, in bands
+    of ``NEAREST_SUPPORT_BIN_M`` (heights closer than that are one surface), each named by its highest face.
+    """
+    plan = [axis for axis in range(3) if axis != up]
+    centres = collider.centres
+    within = np.abs(centres[:, up] - lower[up]) <= window_m / meters_per_unit
+    for axis in plan:
+        within &= (centres[:, axis] >= lower[axis]) & (centres[:, axis] <= upper[axis])
+    seed = np.flatnonzero(within)
+    if not len(seed):
+        return []
+    heights = np.sort(centres[seed[_facing_up(collider.triangles(collider.gentle[seed]), up)], up])[::-1]
+    bands: list[float] = []
+    for height in heights:
+        if not bands or bands[-1] - height > NEAREST_SUPPORT_BIN_M / meters_per_unit:
+            bands.append(float(height))
+    return bands
+
+
+def _distance_to(collider: MergedCollider, faces: Sequence[int], points: np.ndarray, *, up: int,
+                 meters_per_unit: float, window_m: float) -> np.ndarray:
+    """Each point's distance from the surface ``faces`` (its plane), where it lies over one of its faces in
+    plan within the search window of that plane; infinite elsewhere."""
+    distance = np.full(len(points), np.inf)
+    faces = np.asarray(faces, dtype=np.int64)
+    if not len(faces) or not len(points):
+        return distance
+    plan = [axis for axis in range(3) if axis != up]
+    triangles = collider.triangles(faces)
+    corners = triangles.reshape(-1, 3)
+    normal, middle, _ = _plane(corners, up)
+    offset = np.abs((points - middle) @ normal)
+    near = np.flatnonzero((offset <= window_m / meters_per_unit)
+                          & np.all((points[:, plan] >= corners[:, plan].min(axis=0))
+                                   & (points[:, plan] <= corners[:, plan].max(axis=0)), axis=1))
+    if len(near):
+        over = SupportOutline(triangles, np.zeros((0, 2, 3)), 0.0, up=up).covers(points[near][:, plan])
+        distance[near[over]] = offset[near[over]]
+    return distance
+
+
+def _shown_surface(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, found: dict[str, Any],
+                   shown: np.ndarray, *, up: int, meters_per_unit: float, window_m: float) -> dict[str, Any]:
+    """Of the surfaces the window reaches under the footprint, the one most of the target's own points lie on.
+
+    ``found`` is the surface the search took by its own rules (the highest it reaches); every other
+    surface the window reaches (``_surface_bands``) is fitted by ``_fitted_support``'s own rules, seeded
+    at its height. A surface standing on the target (a box on a table) carries only the few of the
+    target's points its own top covers; the target's top carries the rest. Each point counts for the surface
+    nearest it of those it lies over within the window. A tie keeps ``found``.
+    With other surfaces in reach, the choice and the counts are recorded (``surface_identity``).
+    """
+    options = dict(up=up, meters_per_unit=meters_per_unit, window_m=window_m)
+    band = NEAREST_SUPPORT_BIN_M / meters_per_unit
+    candidates = [found]
+    for height in _surface_bands(collider, lower, upper, **options):
+        if any(abs(height - float(row["top_runtime_units"])) <= band for row in candidates):
+            continue
+        other = _fitted_support(collider, lower, upper, seed_height=height, **options)
+        if other is not None and not any(same_support_surface(other, row) for row in candidates):
+            candidates.append(other)
+    if len(candidates) == 1:
+        return found
+    # Each point lies on the nearest surface it lies over (``_distance_to``); each surface counts its own.
+    distance = np.stack([_distance_to(collider, row["face_indices"], shown, **options) for row in candidates])
+    nearest = np.where(np.isfinite(distance).any(axis=0), np.argmin(distance, axis=0), -1)
+    counts = [int(np.count_nonzero(nearest == index)) for index in range(len(candidates))]
+    best = int(np.argmax(counts))  # the first of equals: the surface the search's own rules took
+    chosen = dict(candidates[best])
+    chosen["surface_identity"] = {
+        "basis": SHOWN_SURFACE_BASIS, "target_points": int(len(shown)), "points_on_chosen": counts[best],
+        "chosen_by": "target_points" if best else "search_rules",
+        "surfaces": [{"top_runtime_units": float(row["top_runtime_units"]), "basis": row["basis"],
+                      "points_on_it": count} for row, count in zip(candidates, counts)]}
+    return chosen
 
 
 def _level_face_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
@@ -851,11 +966,13 @@ def _grown_surface(collider: MergedCollider, seed: np.ndarray, *, up: int,
 
 
 def _fitted_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
-                    meters_per_unit: float, window_m: float = 0.03) -> dict[str, Any] | None:
+                    meters_per_unit: float, window_m: float = 0.03,
+                    seed_height: float | None = None) -> dict[str, Any] | None:
     """Fit the bumpy surface under the footprint, grow it over connected faces, and test it.
 
     Faces steeper than ``FITTED_MAX_FACE_TILT_DEGREES`` never join, so the fit works on the
     collider's gentle faces (``collider.gentle``, positions into it until the surface is grown).
+    ``seed_height``: seed on the band of that surface (``_surface_bands``) instead of the highest.
     """
     horizontal = [axis for axis in range(3) if axis != up]
     gentle, centres = collider.gentle, collider.centres
@@ -864,7 +981,10 @@ def _fitted_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarr
         within &= (centres[:, axis] >= lower[axis]) & (centres[:, axis] <= upper[axis])
     tolerance = window_m / meters_per_unit
     seed = np.flatnonzero(within & (np.abs(centres[:, up] - lower[up]) <= tolerance))
-    if window_m > 0.03 and len(seed):
+    if seed_height is not None:
+        heights = centres[seed, up]
+        seed = seed[(heights <= seed_height) & (heights >= seed_height - NEAREST_SUPPORT_BIN_M / meters_per_unit)]
+    elif window_m > 0.03 and len(seed):
         # A window wider than 3 cm can also reach a second surface under the
         # footprint, such as a counter's edge below its top (capture-447ae4f4:
         # 0.62-0.69 under a 0.72 top). Seed on the 3 cm band of the highest

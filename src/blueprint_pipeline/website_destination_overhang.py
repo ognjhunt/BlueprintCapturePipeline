@@ -297,6 +297,28 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
     return surface, Placement(spot, centre, start_centre, record, runtime_to_sim), placed
 
 
+def destination_points(row: Mapping[str, Any], frames: Sequence[Mapping[str, Any]], matrix: Any) -> np.ndarray | None:
+    """The destination's own observed points (its masks lifted through the frames), in the runtime frame.
+
+    Compile's destination lookups take them as ``support_under``'s ``shown_by``: of the surfaces the search
+    window reaches under the footprint, the destination is the one its own points lie on, not a box standing
+    on it. None without a tracked mask, without geometry, or for a surface estimated from its visible edges
+    (``website_unscanned_surface``): that surface is the destination's by construction, and the points of a
+    see-through shelf lie on what is behind it.
+    """
+    from .website_task_masks import masked_view_points
+
+    track = row.get("track")
+    if row.get("estimated_surface_runtime") or not isinstance(track, Mapping) or not track.get("observations"):
+        return None
+    try:
+        points = np.concatenate(masked_view_points(track, list(frames)))
+    except (KeyError, ValueError, OSError):
+        return None
+    matrix = np.asarray(matrix, dtype=float)
+    return points @ matrix[:3, :3].T + matrix[:3, 3]
+
+
 #: Spots one footprint apart tried outward from, nearest first, when clutter covers the grounded centre's window.
 CLUTTER_SEEDS = 24
 

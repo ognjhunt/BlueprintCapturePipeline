@@ -325,3 +325,26 @@ def test_the_objects_own_scan_where_it_starts_is_not_clutter():
     start = (np.array(own[0]), np.array(own[1]))
     if whole is not None:
         assert _clear(mesh, lower, upper, whole, start=start) == (whole, None, list((lower + upper) / 2))
+
+
+def test_compile_names_the_destination_s_surface_by_its_own_points_and_the_start_s_by_none(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_task_masks import masked_view_points
+    calls = []
+    real = preparation.support_under
+
+    def recording(mesh, lower, upper, **options):
+        calls.append(options.get("shown_by"))
+        return real(mesh, lower, upper, **options)
+
+    monkeypatch.setattr(preparation, "support_under", recording)
+    args = _arguments(tmp_path, onto_table=True)  # the cup moves to the other end of the table it stands on
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["destination"] is not None, value["blockers"]
+    table = args["task_masks"]["targets"][1]
+    lifted = np.concatenate(masked_view_points(table["track"], args["source_geometry"]["frames"]))
+    shown = [points for points in calls if points is not None]
+    assert shown and all(len(points) == len(lifted) for points in shown)  # the seal's lookup and the placement's
+    assert any(points is None for points in calls)  # the cup's own start is looked up as before
+    # In the collider's frame, as registration puts them (the room's source frame is OpenCV's, y down).
+    source = np.diag([1.0, -1.0, -1.0])
+    assert shown[0] == pytest.approx(lifted @ (RUNTIME_SCALE * source).T + RUNTIME_TRANSLATION)

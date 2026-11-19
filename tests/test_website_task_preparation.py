@@ -787,7 +787,7 @@ def test_a_destination_on_the_same_or_another_fitted_surface_is_bound(tmp_path, 
     args = _arguments(tmp_path)
     calls = []
 
-    def fitted(mesh, lower, upper, *, up, meters_per_unit, up_sign=1, placement_residual_m=None):
+    def fitted(mesh, lower, upper, *, up, meters_per_unit, up_sign=1, placement_residual_m=None, shown_by=None):
         start = 0 if not calls else shift
         calls.append(start)
         return {"top_runtime_units": float(lower[up]), "aabb_min": list(lower), "aabb_max": list(upper),
