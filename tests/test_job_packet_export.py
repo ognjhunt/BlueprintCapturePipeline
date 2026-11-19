@@ -521,6 +521,58 @@ def test_a_missing_video_is_said_plainly(tmp_path, job) -> None:
     assert "The video is not in this packet." in sheet and "Not in it: the video." in sheet
 
 
+def test_every_estimate_the_pipeline_records_has_a_plain_sentence() -> None:
+    from blueprint_pipeline.atlas_scene_estimates import CODES, TASK_OBJECT_BOX_FIT_FLAGS
+    assert CODES | TASK_OBJECT_BOX_FIT_FLAGS <= set(packet.ESTIMATE_SENTENCES)
+
+
+#: A preparation as test job 4's was (a table lamp to a glass wall shelf, 2026-11-18): every estimate it records.
+LAMP = {"subject": {"description": "table lamp", "aabb_min_xyz": [0.078, -0.3697, 0.539],
+                    "aabb_max_xyz": [0.476, 0.005, 1.208], "complete_object_dimensions": False},
+        "destination": {"relation": "on", "visible_label": "glass wall shelf", "position_world_m": [0.470, -1.211, 1.308]},
+        "registration": {"task_region": {"radius_m": 1.0, "trimmed_rmse_m": 0.075}},
+        "coordinate_frame": {"scale_authority": "atlas_reference_estimate", "physical_scale_measured": False,
+                             "placement_uncertainty_m": 0.075, "task_coordinates": "Z_up_estimated_meters"},
+        "authoring_inputs": {"metric_envelope": {"maximum_dimension_relative_error": 0.25}},
+        "physics": {"bounds": {"mass_kg": [0.999, 249.8]}},
+        "video_box_fit_check": {"flags": ["task_object_box_fit_offset", "task_object_box_fit_size"],
+                                "summary": {"median_size_ratio": {"x": 0.643, "y": 0.467}}},
+        "support_height_agreement": {"flags": ["scene_estimate:support_height_differs_from_picture"],
+                                     "start_task_plane_minus_picture_m": -0.0786,
+                                     "goal_task_plane_minus_picture_m": -0.0828}}
+
+
+def test_the_sheet_says_how_sure_each_estimate_is_and_names_every_estimate_the_preparation_records(tmp_path) -> None:
+    """Job 4's sheet gave the lamp's size bare and left four of the preparation's own estimates out."""
+    from blueprint_pipeline.atlas_scene_estimates import preparation_flags, preparation_record_flags
+    measured, estimated = packet._measured_and_estimated(LAMP, {"scene_estimates": []}, None)
+    assert estimated[0] == ("Scale: set by the 3D reconstruction's own estimate, not measured at the site. Sizes, "
+                            "heights and distances may be 0.75 to 1.33 times those given here (the scale band).")
+    assert ("Object size: 40 cm × 37 cm × 67 cm (30 cm × 28 cm × 50 cm to 53 cm × 50 cm × 89 cm across the scale "
+            "band), from the video; in the frames its outline measures 64 % and 47 % of the box along its sides "
+            "(median), so the box may be larger than the object.") in estimated
+    assert ("The object's box is fitted to the parts of it the frames show; Blueprint did not check that every side "
+            "of it was filmed.") in estimated
+    # Only where it starts: the check's goal figure compares the start's seat with another surface.
+    assert ("Surface height under the object: where it starts, the simulation seats it 8 cm below the surface the "
+            "reconstruction's picture shows there; not corrected.") in estimated
+    assert "Mass estimate: 0.999–250 kg, a prior from the object's size, not weighed." in estimated
+    flags = {"scene_estimate:placement_uncertainty", "scene_estimate:support_height_differs_from_picture",
+             "task_object_box_fit_offset", "task_object_box_fit_size"}
+    for code in flags:
+        assert f"`{code}`: {packet.ESTIMATE_SENTENCES[code]}" in estimated
+    assert not any("no plain sentence" in line for line in estimated)
+    # The record's own flags are the ones the publication reads beside the native records.
+    path = tmp_path / "preparation.json"
+    path.write_text(json.dumps(LAMP))
+    assert preparation_record_flags(LAMP) == preparation_flags(path) == flags
+    # Without a dimension prior or a fit table nothing is said about how far sizes may be off.
+    bare = {key: value for key, value in LAMP.items() if key != "authoring_inputs"}
+    lines = packet._measured_and_estimated(bare, None, None)[1]
+    assert "How far sizes may be off: not recorded." in lines[0]
+    assert next(line for line in lines if line.startswith("Object size")).startswith("Object size: 40 cm × 37 cm × 67 cm, ")
+
+
 def test_kind_of_job_falls_back_to_fixed_words() -> None:
     assert packet.kind_of_job(None, {}) == "a pick-up-and-put-down job"
     assert packet.kind_of_job(None, {"task_family": SENTENCE}) == "a pick-up-and-put-down job"
