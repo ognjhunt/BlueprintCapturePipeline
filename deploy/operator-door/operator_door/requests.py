@@ -19,6 +19,9 @@ branches (canary deploys) and candidate-code stage replays are deliberately not
 offered, because either would run unreviewed code as root. ``retire-scene-workspace``
 (``operate``) runs the active release's own retention module for one scene: a plan,
 or with ``apply`` a retirement that deletes nothing it cannot restore.
+``purge-experiment-folder`` (``operate``) runs the door's own ``experiment_purge`` for
+one owner-approved old experiment folder: a plan, or with ``apply`` its contents deleted
+for good once no process, mount or recent write touches it.
 ``provider-output-resume`` (``operate``) runs the active release's
 ``provider_output_promotion resume`` for one streamed policy-canary attempt,
 as the service user: promotion, the gated cleanup, the absence proof and, with
@@ -59,6 +62,7 @@ from typing import Any
 
 from .config import DoorConfig
 from .admitted_controls import DISPATCHER_HOLD_ONLY
+from .experiment_purge import FOLDERS as PURGE_FOLDERS
 from .hostinfo import UNIT_NAME
 from .secrets_guard import redact_lines
 
@@ -95,6 +99,9 @@ _SCOPES = {
     "retire-parked-delivery": "operate",
     # Starts one internal test job through the website's signed internal route; its spend passes every paid admission.
     "test-job": "operate",
+    # Plans, or with apply empties, one owner-approved old experiment folder named in
+    # experiment_purge.FOLDERS. It runs the door's own module; nothing can be restored.
+    "purge-experiment-folder": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -135,12 +142,21 @@ if DISPATCHER_HOLD_ONLY:
     # re-proves every retention check under the listener's ledger locks,
     # archives what Firebase Storage does not hold and writes a replayable
     # receipt before removing anything; restore puts a retired workspace back
-    # from that receipt. Neither starts compute or moves money.
+    # from that receipt. Neither starts compute or moves money. The owner
+    # approved (2026-11-18, answering "Build a door command that permanently
+    # deletes exactly these three old experiment folders on the host (after I
+    # verify nothing uses them): atlas-beta-dishwasher-20261021,
+    # flora-episode-benchmarks, g1-841757-development (~60 GB)?" with "Yes,
+    # delete those 3 (Recommended)") purging old experiment folders: a plan by
+    # default; an apply empties one folder named in experiment_purge.FOLDERS
+    # after proving no process, mount or recent write touches it, behind a
+    # receipt. g1-841757-development is not admitted: the G1 trial's shared
+    # inputs still point at it. It starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "extend-scene-execution-window", "extend-scene-execution-budget",
                            "confirm-owner-success-contract", "retire-parked-delivery", "test-job",
-                           "retire-scene-workspace", "restore-scene-workspace"}}
+                           "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TEST_JOB_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
 _TEST_JOB_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}")
@@ -439,6 +455,15 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                 raise RequestRefused("lane_scratch_ttl_invalid")
             normalized["ttl_seconds"] = ttl
         return normalized
+    if kind == "purge-experiment-folder":
+        _only(body, ("kind", "folder", "apply"))
+        folder = body.get("folder")
+        if not isinstance(folder, str) or folder not in PURGE_FOLDERS:
+            raise RequestRefused("purge_folder_not_approved")
+        apply = body.get("apply", False)
+        if not isinstance(apply, bool):
+            raise RequestRefused("apply_invalid")
+        return {"kind": kind, "folder": folder, "apply": apply}
     if kind == "retire-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket", "apply"))
         scene_id = body.get("scene_id")

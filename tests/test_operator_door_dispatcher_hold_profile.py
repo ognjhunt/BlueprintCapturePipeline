@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "retire-parked-delivery", "test-job", "retire-scene-workspace", "restore-scene-workspace"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "retire-parked-delivery", "test-job", "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}
 # The owner-approved, time-only scene window extension passes the fence.
 assert r.required_scope("extend-scene-execution-window") == "operate"
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")

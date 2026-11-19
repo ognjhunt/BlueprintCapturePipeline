@@ -18,6 +18,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py hold blueprint-scene-progression.timer --owner alice --reason "inspection" --for 2h
     python3 scripts/operator_door.py release-hold blueprint-scene-progression.timer
     python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
+    python3 scripts/operator_door.py purge-experiment-folder <folder> [--apply] --wait
     python3 scripts/operator_door.py legacy-owner-census --wait
     python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
         --approval-evidence "<owner approval>" [--apply] --wait
@@ -411,6 +412,9 @@ def _terminal(state: dict[str, Any]) -> bool | None:
         if kind == "selected-handoff" and outcome.get("status") == "completed":
             # This proves the bounded command returned, not downstream job completion.
             return type(outcome.get("exit_code")) is int and outcome["exit_code"] == 0
+        if kind == "purge-experiment-folder":
+            # Its own successes; an absent folder is one already removed, not a failure.
+            return outcome.get("status") in {"planned", "emptied", "already_empty", "absent"}
         return outcome.get("status") in _TERMINAL_OK
     status = result.get("status")
     if status == "done":
@@ -873,6 +877,13 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     retire.add_argument("--bucket")
     retire.add_argument("--apply", action="store_true")
     _add_wait(retire, 2 * 3600 + 600)
+    purge = commands.add_parser(
+        "purge-experiment-folder",
+        help="plan deleting one owner-approved old experiment folder; --apply deletes its contents for good",
+    )
+    purge.add_argument("folder", choices=("atlas-beta-dishwasher-20261021", "flora-episode-benchmarks"))
+    purge.add_argument("--apply", action="store_true")
+    _add_wait(purge, 2 * 3600 + 600)
     restore = commands.add_parser("restore-scene-workspace", help="restore a retired scene at its canonical path")
     restore.add_argument("scene_id")
     restore.add_argument("--bucket", required=True)
@@ -1046,6 +1057,8 @@ def run(args: argparse.Namespace) -> int:
         if args.bucket:
             body["bucket"] = args.bucket
         return _submit(body, args)
+    elif command == "purge-experiment-folder":
+        return _submit({"kind": "purge-experiment-folder", "folder": args.folder, "apply": args.apply}, args)
     elif command == "restore-scene-workspace":
         return _submit({"kind": "restore-scene-workspace", "scene_id": args.scene_id,
                         "bucket": args.bucket}, args)
