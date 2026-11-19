@@ -39,12 +39,12 @@ def _grid(x0, x1, z0, z1, y, cell=0.01):
 
 
 def _boxes(*boxes):
-    """Closed boxes ((low), (high)) in metres, as one vertex and face list."""
+    """Closed boxes ((low), (high)) in metres: each one's vertices and its own faces (``_mesh`` offsets them)."""
     vertices, faces = [], []
     for low, high in boxes:
         box = trimesh.creation.box(extents=np.subtract(high, low),
                                    transform=trimesh.transformations.translation_matrix(np.add(low, high) / 2))
-        faces.append(np.asarray(box.faces) + sum(len(part) for part in vertices))
+        faces.append(np.asarray(box.faces))
         vertices.append(np.asarray(box.vertices))
     return vertices, faces
 
@@ -348,3 +348,42 @@ def test_compile_names_the_destination_s_surface_by_its_own_points_and_the_start
     # In the collider's frame, as registration puts them (the room's source frame is OpenCV's, y down).
     source = np.diag([1.0, -1.0, -1.0])
     assert shown[0] == pytest.approx(lifted @ (RUNTIME_SCALE * source).T + RUNTIME_TRANSLATION)
+
+
+def test_an_object_wholly_inside_clutter_taller_and_wider_than_it_slides_out_of_it():
+    from blueprint_pipeline.website_support_geometry import support_under
+    # The synthetic set's seed 28: a 25 cm box on the table, wider than the object, its box within the clutter's
+    # sides and under its top, meeting none of its faces.
+    mesh = _mesh(0.3, boxes=[((0.2, TOP, 0.03), (0.4, TOP + 0.3, 0.27))])
+    lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
+    whole = support_under(mesh, lower, upper, up=1, meters_per_unit=1.0)
+    assert whole is not None  # the shelf's faces run on under the clutter, as a scan of stacked parts can leave them
+    spot = overhang._Spot(mesh, whole, lower, upper, up=1, up_sign=1, meters_per_unit=1.0, placement_residual_m=None,
+                          start=None, clearance=None)
+    box = spot.box(np.array([0.3, 0.15]))
+    near = spot.obstacles.triangles
+    near = near[(near.max(axis=1) >= box[0]).all(axis=1) & (near.min(axis=1) <= box[1]).all(axis=1)]
+    assert not overhang._crossing(near, *box).any() and spot.obstacles.enclosed(*box)  # no face met; enclosed
+    surface, placement, position = _clear(mesh, lower, upper, whole)
+    x, _ = _metres(position, mpu=1.0, up_sign=1)
+    assert surface is not None and placement is not None
+    assert x + 0.06 <= 0.2 + 1e-9 or x - 0.06 >= 0.4 - 1e-9  # out of the clutter, beside it on the shelf
+
+
+def test_the_inside_of_a_ring_and_a_scan_wound_inward_are_not_enclosing():
+    from blueprint_pipeline.website_support_geometry import support_under
+    lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
+    # Four walls around an open 20 cm square: met from inside on their fronts, the space between them is free.
+    ring = _mesh(0.3, boxes=[((0.18, TOP, 0.03), (0.2, TOP + 0.3, 0.27)), ((0.4, TOP, 0.03), (0.42, TOP + 0.3, 0.27)),
+                             ((0.2, TOP, 0.03), (0.4, TOP + 0.3, 0.05)), ((0.2, TOP, 0.25), (0.4, TOP + 0.3, 0.27))])
+    whole = support_under(ring, lower, upper, up=1, meters_per_unit=1.0)
+    assert whole is not None and _clear(ring, lower, upper, whole) == (whole, None, list((lower + upper) / 2))
+    # The same clutter as a closed box wound inward (an inconsistently wound scan): nothing reads as enclosed, the
+    # old path is kept.
+    inward = trimesh.creation.box(extents=[0.2, 0.3, 0.24],
+                                  transform=trimesh.transformations.translation_matrix([0.3, TOP + 0.15, 0.15]))
+    shelf = _mesh(0.3)
+    mesh = trimesh.Trimesh(vertices=np.concatenate([shelf.vertices, inward.vertices]), process=False,
+                           faces=np.concatenate([shelf.faces, np.asarray(inward.faces)[:, ::-1] + len(shelf.vertices)]))
+    whole = support_under(mesh, lower, upper, up=1, meters_per_unit=1.0)
+    assert whole is not None and _clear(mesh, lower, upper, whole) == (whole, None, list((lower + upper) / 2))

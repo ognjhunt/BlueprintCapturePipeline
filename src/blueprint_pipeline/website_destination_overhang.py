@@ -19,7 +19,8 @@ identity), and is judged only in that pose. A spot holds it when:
   ``SUPPORT_HEIGHT_TOLERANCE_M``) to the object's own height: a wall a shelf is cut at, or clutter on a table (its
   sides, however low). A near-level face within ``support_under``'s search window of the surface's top is that
   surface at the search's own resolution (test job 4: pieces of the glass shelf the scan did catch, 1 to 4 cm over
-  the estimate), never an obstacle; one farther up is;
+  the estimate), never an obstacle; one farther up is. Nor does a solid enclose the box, meeting none of its faces:
+  the box wholly inside clutter taller and wider than the object (``_Obstacles.enclosed``);
 - on the surface the object starts on, it stays clear of its start (``destination_clear_of_start``, with compile's
   own clearance).
 
@@ -108,10 +109,53 @@ class _Obstacles:
                 block = block[~inside]
             kept.append(block)
         self.triangles = np.concatenate(kept) if kept else np.zeros((0, 3, 3))
+        self.up, self.up_sign = up, up_sign
 
     def meet(self, low: np.ndarray, high: np.ndarray) -> bool:
+        """Whether geometry stands in the box: a face crosses it, or a solid encloses it (``enclosed``)."""
         near = (self.triangles.max(axis=1) >= low).all(axis=1) & (self.triangles.min(axis=1) <= high).all(axis=1)
-        return bool(_crossing(self.triangles[near], low, high).any()) if near.any() else False
+        if near.any() and _crossing(self.triangles[near], low, high).any():
+            return True
+        return self.enclosed(low, high)
+
+    def enclosed(self, low: np.ndarray, high: np.ndarray) -> bool:
+        """Whether the box lies inside a solid standing on the surface, touching none of its faces.
+
+        A box wholly inside clutter meets no face (the synthetic set's seed 28: a 25 cm box on the table, the
+        object's box within its sides and under its top). Seen from the box's centre at its base, every way
+        along the surface the nearest face is a face's back: it leaves the solid (its outward normal, by its
+        winding, points the way looked). A wall, a leg or the inside of a ring is met on its front and leaves
+        the box free; so does an open or inconsistently wound scan, which never reads as enclosed.
+        """
+        if not len(self.triangles):
+            return False
+        plan = [axis for axis in range(3) if axis != self.up]
+        origin = (low + high) / 2
+        origin[self.up] = low[self.up] if self.up_sign == 1 else high[self.up]
+        a, b, c = self.triangles[:, 0], self.triangles[:, 1], self.triangles[:, 2]
+        e1, e2 = b - a, c - a
+        normals = np.cross(e1, e2)
+        for axis in plan:
+            for sign in (1.0, -1.0):
+                direction = np.zeros(3)
+                direction[axis] = sign
+                # Moller-Trumbore, one ray against every triangle.
+                p = np.cross(direction, e2)
+                det = (e1 * p).sum(axis=1)
+                safe = np.abs(det) > 1e-18
+                inverse = np.divide(1.0, det, out=np.zeros_like(det), where=safe)
+                s = origin - a
+                u = (s * p).sum(axis=1) * inverse
+                q = np.cross(s, e1)
+                v = (direction * q).sum(axis=1) * inverse
+                t = (e2 * q).sum(axis=1) * inverse
+                hit = safe & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0)
+                if not hit.any():
+                    return False
+                nearest = np.flatnonzero(hit)[np.argmin(t[hit])]
+                if normals[nearest] @ direction <= 0:
+                    return False
+        return True
 
 
 class _Spot:
