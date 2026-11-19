@@ -40,9 +40,8 @@ The deploy tool `scripts/deploy_control_plane_commit.py` installs the units in `
                                                                                        9 launch-reconciler: provider-zero receipt ◀───────────────────────────── teardown
                                                                                       10 team-scene-packet (CPU)
                                                                                       11 rigid-robot-free-probe-runner ──▶ allocator ($1 cap) ──────────▶ robot-free probe [MONEY]
-                                                                                      12 beta-policy-screening ──▶ allocator ──────────────────────────▶ policy canary worker (Isaac Sim) [MONEY]
-                                 /api/internal/pipeline/beta-policy-screening-runs ◀── 13 publication
- 14 result page + email ◀──── taskEvaluationPolicyRuns → outcome email (Resend)
+                                 /api/internal/pipeline/beta-policy-screening-holds ◀── 12 scene-stage hold
+ 13 job page + email ◀──── scene outcome, company simulation package → email (Resend)
 ```
 
 | # | Step | Unit or route | Module | Reads | Writes (store) | External service | Gate |
@@ -58,11 +57,10 @@ The deploy tool `scripts/deploy_control_plane_commit.py` installs the units in `
 | 9 | Teardown proof | `blueprint-task-evaluation-launch-reconciler.timer` | `task_evaluation_launch_reconciler` (reads `pcp/gpu_spend_guard/latest.json`) | launch state, spend-guard inventory | provider-zero receipt, `pcp/task-evaluation-launch-reconciliation/latest.json`; launch progress to the WebApp (`task_evaluation_launch_webapp_sync`) | Vast (read) | provider-zero before a lease closes **[MONEY]** |
 | 10 | Completion and team half | inside scene progression (`task_evaluation_scene_preparation_completion`), then `blueprint-team-scene-packet.path` | `team_scene_packet_worker` → `team_scene_packet`; offer via `agent_execution_offer.publish_agent_execution_offer` | completed preparation | `pcp/team-scene-packets/{pending,…}`, `tei/team-scene-halves`, `tei/team-scene-profiles`; robot fit table (`website_robot_fit_*`) | WebApp (offer republish) | a site's unconfirmed standard success thresholds are assumed and marked so (`website_owner_success_assumption`); the site can still confirm (door `confirm-owner-success-contract` or the job page), which is recorded in the status (`confirmed_later`) and recompiles nothing; withdrawal deletes the site's halves, derived rows and packet records (`website_capture_withdrawal_team_scene`) **[PRIVACY]** |
 | 11 | Robot-free probe | `blueprint-rigid-robot-free-probe-runner.{path,timer}` | `rigid_robot_free_probe_runner` → allocator; `rigid_robot_free_probe_settlement`. A half the website compile writes records `robot_free_probe: not_queued` and queues none, and the scene stage holds no job for it (`team_scene_robot_absent`) | `pcp/rigid-robot-free-probes/pending` | `pcp/rigid-robot-free-probes/{jobs,done}`, `/mnt/blueprint-work/rigid-robot-free-probe-work` | Vast | $1.00 cap, $0.80/h, 1 h TTL, on the upstream ledger, settled after teardown **[MONEY]** |
-| 12 | Candidate screening | `blueprint-beta-policy-screening.timer` | `beta_policy_screening_worker` → `_coordinator` (ledger, `SITE_LIMIT`), `_plan` (catalog `config/beta_policy_candidates.v1.json`), `_launch` (allocator `gpu-canary --probe-kind …`), `_settlement`, `_holds`; bundle `native_task_arena_policy_canary_bundle`; on the GPU: `native_task_arena_policy_canary_worker` → `adp009d_isaac_episode_adapter` (live, despite the name) in NGC Isaac Sim 6.0.1 | `pcp/team-scene-packets`, catalog, `docs/experiments/policy_ranking_thesis_20260726/*.json` (OpenPI inventories, read at runtime) | `pcp/beta-policy-screening/{screening_ledger.v1.json,plans,selections,attempts,publications}`, `/mnt/blueprint-work/beta-policy-screening-work`; review videos | Vast, Hugging Face (public checkpoints), NGC | site allowance (`SITE_LIMIT`), per-candidate cap, job ceiling, settlement to measured cost **[MONEY]**; withdrawal deletes screening work (`website_capture_withdrawal_screening`) **[PRIVACY]** |
-| 13 | Publication | same worker (`publish_screening`, `deliver_publications`) | `beta_policy_screening_worker` + `webapp_sync` (signed Pipeline sync token) | publications queue | WebApp `POST /api/internal/pipeline/beta-policy-screening-runs` and `…-holds` (`server/routes/internal-beta-policy-screening.ts`) → `taskEvaluationPolicyRuns`, `captureTaskEvaluationRuns` | WebApp | contract parity: `SCREENING_SITE_LIMIT_USD` (`server/utils/betaPolicyScreeningContract.ts`) must equal `SITE_LIMIT` **[MONEY]** |
-| 14 | Result and email | job page `/capture-upload/:token` (`JobWorkspace` → `ManagedScreeningResults` → `PolicyScreeningCandidates`); owner workspace `/app/tasks/:taskId`; videos `GET /api/screening-practice-run-videos/…` (from the intake's `GET /api/live-pipeline/beta-screening-review-videos/<id>`) | WebApp `server/utils/screeningOutcomeNotifications.ts` → `captureOutbox` | `taskEvaluationPolicyRuns` | outbox `deliveryReceipts` | Resend | the email is cancelled on consent withdrawal (F-01) **[PRIVACY]**; practice-run cache drops lapsed jobs (#1220) |
+| 12 | Scene-stage holds | `blueprint-scene-stage-maintenance.timer` | `scene_stage_maintenance`, `scene_stage_holds` + `webapp_sync` (signed Pipeline sync token) | the job window and scene state | WebApp `POST /api/internal/pipeline/beta-policy-screening-holds` (`server/routes/internal-beta-policy-screening.ts`, the route keeps its old name) | WebApp | — (a held job says "held" in the hold's own sentence) |
+| 13 | Job page and email | job page `/capture-upload/:token` (`JobWorkspace`); owner workspace `/app/tasks/:taskId` | WebApp `server/utils/websiteSceneProgression.ts`, `server/utils/screeningOutcomeNotifications.ts` → `captureOutbox` | the scene outcome, a stored hold, the company simulation package | outbox `deliveryReceipts` | Resend | the email is cancelled on consent withdrawal (F-01) **[PRIVACY]** |
 
-The bounded estimate or "held" is decided in step 12 (`beta_policy_screening_result`, `scene_stage_holds`). A held job publishes a hold in step 13, not a run.
+Blueprint no longer runs robot software in the simulation. The early trial (the old steps "Candidate screening" and "Publication", `blueprint-beta-policy-screening.timer`) was dropped by the owner on 2026-11-14; its timer is retired and each release stops it on the host. Its stored records are still read by withdrawal deletion (`website_capture_withdrawal_screening`) and by the spend meter (`screening_retained_ledger`).
 
 ## Side flows
 
@@ -79,10 +77,8 @@ The bounded estimate or "held" is decided in step 12 (`beta_policy_screening_res
 | Deploys and host access | operator door: `blueprint-operator-door.service` (127.0.0.1:8767, Caddy `/api/live-pipeline/operator/*`), `-runner.path`, `-hold-sweep.timer` | `deploy/operator-door/operator_door`; client `scripts/operator_door.py`; deploy `scripts/deploy_control_plane_commit.py` | `/var/lib/blueprint-operator-door/requests/`, `pcp/deploy-receipts/` | D-08: one batched deploy a day from 15:00 UTC, parked by the door while work is in flight on the running release ([`AGENTS.md`](../AGENTS.md) "Beta Deploy Policy"); [`OPERATOR_DOOR.md`](OPERATOR_DOOR.md) |
 | Uptime | Render cron `blueprint-uptime-probe` (`scripts/ops/uptime-probe.mjs`, every 10 min) and WebApp `.github/workflows/uptime.yml` | — | Slack | probes WebApp `/health`, `/version.json`, worker health, door `/healthz` |
 | Provider output resume | door `provider-output-resume` | `provider_output_promotion` | canary dispatch root, B2 | promotes a staged provider archive before anything deletes it |
-| Embodiment preparation | door `public-embodiment-preparation` → `blueprint-embodiment-preparation.{path,timer}` | `deployment_embodiment_preparation_controller` | `pcp/embodiment-preparation/`, `/var/lib/blueprint/robot-models/batches/` | one sealed, funded grant per batch **[MONEY]** |
-| Agent runs (paused) | `blueprint-agent-run-dispatcher.timer` (founder stop since 2026-10-02, explicit release only) → `pcp/robot-eval-job-requests` (its consumer, the legacy `blueprint-pipeline-control-plane` loop, was retired on 2026-11-06, P-RT-06; resuming agent runs needs a new consumer) and `blueprint-team-evaluation-runner.path` | `agent_run_executor`; `team_candidate_quick10_launch` | `pcp/robot-eval-job-requests`, `pcp/team-evaluations` | do not release the hold without the founder |
 
-Lanes that are installed but switched off on purpose (configured controls, launch supervisor, terminal resource release, the Cloud Run team-scene lane, native G1 campaigns, SAM-3.1 execution) are listed with their reasons in the audit's "Dormant on purpose" table.
+Lanes that are installed but switched off on purpose (configured controls, launch supervisor, terminal resource release, the Cloud Run team-scene lane, SAM-3.1 execution) are listed with their reasons in the audit's "Dormant on purpose" table.
 
 ## WebApp side
 
@@ -102,7 +98,7 @@ Every ceiling, with the file that sets it, is in the "Spend limits" table of [`A
 - Atlas: World Labs (step 5);
 - upstream: SAM, Gemini, OpenAI and the rigid probe (steps 4 and 11);
 - scene: scene configuration and ARTISAN (step 8);
-- screening (step 12).
+- screening (the retired early trial; no new spend, its ledger is still read for spend already recorded).
 
 The WebApp's job ceiling (`server/utils/websiteJobCeiling.ts`) bounds all four.
 
@@ -115,6 +111,5 @@ One account-wide monthly limit (USD 300, `config/account_monthly_spend_limit.v1.
 | A job stopped; Vast credit; full disk; rollback | [`runbooks/beta-operations.md`](runbooks/beta-operations.md) |
 | What is happening right now | `python3 scripts/operator_door.py status`; [`launch-readiness/2026-11-beta-launch-tracker.md`](launch-readiness/2026-11-beta-launch-tracker.md) |
 | Storage classes and retention | [`CONTROL_PLANE_STORAGE.md`](CONTROL_PLANE_STORAGE.md) |
-| Screening catalog and candidates | [`runbooks/beta-policy-screening.md`](runbooks/beta-policy-screening.md), [`runbooks/beta-policy-catalog.md`](runbooks/beta-policy-catalog.md) |
 | Running a website scene from a cloud session | WebApp `docs/runbooks/cloud-scene-runs.md` |
 | What is dead, dormant or duplicated | [`audits/2026-11-simplification-audit.md`](audits/2026-11-simplification-audit.md) |

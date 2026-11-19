@@ -18,7 +18,6 @@ Its fixed command is `python -m blueprint_pipeline.policy_model_server`,
 listening on loopback port 8600 with HTTP access logs disabled. Loading the
 graph occurs inside this worker, after digest verification.
 
-`policy_model_packaging` builds a secret-clean context from the uploaded
-generation and a frozen task contract. The model service refuses model path
+The model service refuses model path
 carriers, non-finite state, wrong content type, extra routes and actions outside
 the declared limits. Packaging is distinct from execution qualification.

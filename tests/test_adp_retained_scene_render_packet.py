@@ -1312,8 +1312,7 @@ def test_a_run_inventories_its_evidence_in_the_shared_manifest_schema(
     regardless of what happened on the provider.
 
     It uses the shared `task_evaluation_artifact_manifest.v1`, not a lane-local
-    schema: `adp009d_live_readiness` and every future consumer validate that
-    one, and a second schema would mean each lane's evidence needed a reader
+    schema: every consumer validates that one, and a second schema would mean each lane's evidence needed a reader
     written for it."""
 
     from blueprint_pipeline.task_evaluation_artifact_manifest import (

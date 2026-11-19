@@ -7,15 +7,13 @@ other lanes remain compatibility unless a recorded blocker in it requires their
 smallest reusable component.
 
 Beta work builds the Pipeline's part of the job packet from retained job video:
-the simulation of the site with the job's object in it, the success rule and,
-where one exists, the early trial. Reuse
+the simulation of the site with the job's object in it and the success rule.
+Blueprint no longer runs robot software in the simulation (the early trial was
+dropped on 2026-11-14); a scripted run only checks the simulation. Reuse
 existing evidence and run the supported configurations or the smallest
-qualified test that resolves material uncertainty. Existing licensed Blueprint-managed
-execution and approved team-supplied endpoints remain valid. Preserve
-independent scoring and controlled observations. The early trial is supporting
-evidence, never the site's answer; responses of deployment companies cannot
-create scientific authority. Existing fixtures/scenes may exercise these seams
-only as `development_only`.
+qualified test that resolves material uncertainty. Responses of deployment
+companies cannot create scientific authority. Existing fixtures/scenes may
+exercise these seams only as `development_only`.
 
 Keep raw capture truth, canonical package truth, provider-preview projection,
 hosted-review projection, and gate snapshots separate. Compatibility fields with

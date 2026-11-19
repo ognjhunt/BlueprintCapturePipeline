@@ -741,8 +741,7 @@ def run_retained_scene_render_vast(
     # teardown manifest had been written next to the adapter result the whole
     # time, and nothing pointed at it. A teardown that is not referenced cannot
     # be checked, so provider-zero could never be verified from this lane.
-    # The shared manifest, not a lane-local one. `adp009d_live_readiness` and
-    # every future consumer validate `task_evaluation_artifact_manifest.v1`, so
+    # The shared manifest, not a lane-local one. Every consumer validates `task_evaluation_artifact_manifest.v1`, so
     # a second schema here would mean each lane's evidence had to be read by a
     # reader written for it. Roles also state what coverage is *required*
     # rather than sweeping whatever happens to be on disk.

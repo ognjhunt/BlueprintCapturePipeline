@@ -44,7 +44,6 @@ attempt completed. Production proof additionally requires:
 | `adp-usd-content-agents` | `build_content_agents_live_profile.py` |
 | `adp-usd-joint-agent` | `build_joint_agent_live_profile.py` |
 | `adp009b-exact-simready-isaac` | `build_simready_isaac_live_profile.py` |
-| `adp009d-franka-native-microcheck` | `build_adp009d_840313_live_profile.py` |
 | `semantic-sam31-source-tracks` | `build_sam31_source_tracks_live_profile.py` |
 | `semantic-teacher-image-edit` | `build_semantic_teacher_image_edit_live_profile.py` |
 | `task-evaluation-scene-configuration` | `build_task_evaluation_scene_configuration_live_profile.py` |

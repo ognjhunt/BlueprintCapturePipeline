@@ -374,26 +374,18 @@ def bind_live_profile_manifest_publication(
     profile_builder: str,
     immutable_inputs: Sequence[Mapping[str, Any]],
 ) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]]]:
-    """Resolve a pinned URI or fail-closed publication receipt into a URI.
+    """Resolve a fail-closed publication receipt into a URI.
 
-    Exact-commit raw GitHub inputs are immutable by construction. Every other
-    reference must be a local, self-digesting publication receipt; accepting a
-    bare generated URI would let an operator bypass provider readback.
+    Every reference must be a local, self-digesting publication receipt;
+    accepting a bare generated URI would let an operator bypass provider
+    readback.
     """
 
     normalized = str(reference or "").strip()
     publication_seam = LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS.get(profile_builder)
     if publication_seam is None:
         raise TaskEvaluationLaunchError("manifest_publication_profile_builder_unregistered")
-    pinned = re.fullmatch(
-        rf"https://raw\.githubusercontent\.com/[^/]+/[^/]+/{re.escape(source_commit)}/.+",
-        normalized,
-    )
     inputs = [dict(item) for item in immutable_inputs]
-    if publication_seam == "exact_commit_raw_github" and pinned:
-        return normalized, None, inputs
-    if publication_seam == "exact_commit_raw_github":
-        raise TaskEvaluationLaunchError("exact_commit_raw_github_manifest_required")
     receipt_path = Path(normalized).expanduser().resolve()
     if receipt_path.is_symlink() or not receipt_path.is_file():
         raise TaskEvaluationLaunchError("manifest_publication_receipt_required")
