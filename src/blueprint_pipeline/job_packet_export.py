@@ -86,6 +86,17 @@ UNMODELLED_KIND = "a kind of job Blueprint has no model for; the site's own word
 VIDEO_SUFFIXES = {".mov", ".mp4", ".m4v"}
 USD_SUFFIXES = {".usd", ".usda", ".usdc", ".usdz"}
 TASK_CONTEXT = "pipeline/website_task_context.json"
+#: The site's quick answers on its job page, as the Pipeline last read them (``website_site_job_facts``).
+SITE_JOB_FACTS = "pipeline/website_site_job_facts.json"
+#: How a site's quick answer is labelled wherever the sheet prints it: the site's own statement, never checked.
+SITE_ANSWER_LABEL = "the site's own answer on its job page: owner-stated, unverified"
+#: "What this packet does not show" for the job's rate while the site states none (no cycle time, no quick answer).
+UNSTATED_RATE = "How often the job runs, or how many an hour: not stated in the files this packet was made from."
+#: The same, for one of the two rate questions when the site answered only the other. The seam for Blueprint's own
+#: estimates: a question the site answered prints its answer (``site_answer_lines``) and is never replaced by an
+#: estimate; one it did not answer falls through to here.
+UNSTATED_FACTS = {"items_per_hour": "How many an hour: not stated in the files this packet was made from.",
+                  "hours_per_day": "How many hours a day the job runs: not stated in the files this packet was made from."}
 PREPARATION = "pipeline/website_scene_preparation"
 TAKEDOWN_DIRECTORY = "pipeline/consent_takedown"
 #: The consent files ``consent_takedown.read_consent_state`` reads, checked to be regular files first.
@@ -1477,6 +1488,38 @@ def _readme(*, files: list[str], preparation: Mapping[str, Any] | None, base_sce
     return "\n".join(lines)
 
 
+def site_answers(record: Mapping[str, Any] | None, *, pulled: bool) -> tuple[dict[str, Mapping[str, Any]], str | None]:
+    """The site's answers to its job page's quick questions, by key (``website_task_context_contracts.SITE_JOB_FACT_KEYS``),
+    and a line saying why there are none to read, when that is so.
+
+    ``record`` is ``pipeline/website_site_job_facts.json`` (``website_site_job_facts``). Only a real answer is the site's
+    statement: "Not sure" (code ``unsure``) states nothing and falls through, as an unanswered question does.
+    """
+    from .website_site_job_facts import RECORD_SCHEMA
+    from .website_task_context_contracts import SITE_JOB_FACT_KEYS, site_job_facts_valid
+    if not pulled or record is None:
+        return {}, "The site's answers to its job page's quick questions: not read for this packet."
+    facts = record.get("site_job_facts")
+    if record.get("schema_version") != RECORD_SCHEMA or not (facts is None or site_job_facts_valid(facts)):
+        return {}, "The site's answers to its job page's quick questions: could not be read."
+    answers = _mapping(_mapping(facts).get("answers"))
+    return {key: answers[key] for key in SITE_JOB_FACT_KEYS if key in answers and answers[key]["code"] != "unsure"}, None
+
+
+def site_answer_lines(answered: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """The answered questions, each with its label (``SITE_ANSWER_LABEL``), in the questions' order."""
+    return [f"{_cell(answer['label'])}: {_cell(answer['answer'])} ({SITE_ANSWER_LABEL})." for answer in answered.values()]
+
+
+def unstated_rate_lines(answered: Mapping[str, Any], cycle_time_stated: bool) -> list[str]:
+    """What the packet does not show of the job's rate: nothing when the site stated a cycle time, else each of the two
+    rate questions it did not answer (one line for both, as before, when it answered neither)."""
+    if cycle_time_stated:
+        return []
+    missing = [key for key in UNSTATED_FACTS if key not in answered]
+    return [UNSTATED_RATE] if len(missing) == len(UNSTATED_FACTS) else [UNSTATED_FACTS[key] for key in missing]
+
+
 def _status(*, video: bool, first_look: bool, reconstruction: bool, simulation: bool, rule: bool) -> str:
     present = [words for flag, words in ((True, "the site's description of the job"), (video, "the video, without sound"),
                                          (first_look, "the first look on paper"),
@@ -1527,6 +1570,7 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
         return record(capture_dir, capture_dir / relative, _read_json(capture_dir, capture_dir / relative))
 
     record(capture_dir, capture_dir / TASK_CONTEXT, context)
+    facts_record = capture_json(SITE_JOB_FACTS)
     handoff = capture_json(f"{PREPARATION}/handoff.json")
     preparation, prep_dir = _preparation(capture_dir, handoff, pull)
     base_scene = (capture_json((prep_dir / "base_scene.json").relative_to(capture_dir).as_posix())
@@ -1593,11 +1637,15 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
         ("Object make and model, as the site stated it", details.get("item_make_model")),
         *sorted(_mapping(own.get("operator_answers")).items())) if value not in (None, "")]
     sheet += [f"- {_cell(words)}: {_cell(value)}" for words, value in constraints]
+    answered, unread = site_answers(facts_record, pulled=pull.in_capture(SITE_JOB_FACTS))
+    sheet += [f"- {line}" for line in site_answer_lines(answered)]
     unresolved = own.get("unresolved")
     if isinstance(unresolved, list) and unresolved:
         sheet.append("- Still unanswered: " + ", ".join(_cell(item) for item in unresolved))
     if sheet[-1] == "":
         sheet.append("The site stated nothing beyond its description.")
+    if unread:
+        sheet.append(f"- {unread}")
     if prep:
         sheet += ["", "## The object and where it goes", ""]
         sheet += [f"- {line}" for line in object_lines(prep, base_scene, fit_table, handoff, criteria)]
@@ -1625,8 +1673,7 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
                                                                                else "."),
               "- No safety assessment of any robot at this site.",
               *(f"- {line}" for line in NOT_MEASURED),
-              *([] if stated.get("cycleTimeSeconds") not in (None, "") else
-                ["- How often the job runs, or how many an hour: not stated in the files this packet was made from."]),
+              *(f"- {line}" for line in unstated_rate_lines(answered, stated.get("cycleTimeSeconds") not in (None, ""))),
               ""]
     if any(removed):
         sheet[6] += " Contact details the site typed into its description or answers were removed."
