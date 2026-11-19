@@ -84,7 +84,8 @@ class _Obstacles:
     surface at the support search's resolution. Steep faces, and near-level ones farther up, are obstacles."""
 
     def __init__(self, mesh: Any, surface: Mapping[str, Any], low: np.ndarray, high: np.ndarray, *, up: int,
-                 up_sign: int, top: float, window: float):
+                 up_sign: int, top: float, window: float,
+                 itself: tuple[Sequence[float], Sequence[float]] | None = None):
         vertices, faces = np.asarray(mesh.vertices, dtype=float), np.asarray(mesh.faces, dtype=np.int64)
         own = np.zeros(len(faces), dtype=bool)
         own[np.asarray(surface.get("face_indices") or [], dtype=np.int64)] = True
@@ -99,7 +100,13 @@ class _Obstacles:
             lengths = np.linalg.norm(normals, axis=1)
             gentle = np.abs(normals[:, up]) >= level * np.maximum(lengths, 1e-300)
             above = (up_sign * block[:, :, up]).min(axis=1) - up_sign * top > window
-            kept.append(block[~gentle | above])
+            block = block[~gentle | above]
+            if itself is not None:
+                # The scan holds the object itself where it starts: its own faces are not in its way.
+                inside = ((block.min(axis=1) >= np.asarray(itself[0]) - window).all(axis=1)
+                          & (block.max(axis=1) <= np.asarray(itself[1]) + window).all(axis=1))
+                block = block[~inside]
+            kept.append(block)
         self.triangles = np.concatenate(kept) if kept else np.zeros((0, 3, 3))
 
     def meet(self, low: np.ndarray, high: np.ndarray) -> bool:
@@ -112,7 +119,8 @@ class _Spot:
 
     def __init__(self, mesh: Any, surface: Mapping[str, Any], lower: np.ndarray, upper: np.ndarray, *, up: int,
                  up_sign: int, meters_per_unit: float, placement_residual_m: float | None,
-                 start: tuple[Sequence[float], Sequence[float]] | None, clearance: float | None):
+                 start: tuple[Sequence[float], Sequence[float]] | None, clearance: float | None,
+                 itself: tuple[Sequence[float], Sequence[float]] | None = None):
         self.plan, self.up, self.mpu, self.start, self.clearance = _plan(up), up, meters_per_unit, start, clearance
         self.surface, self.half = surface, (upper - lower)[self.plan] / 2
         self.outline = support_outline(mesh, surface, up=up, meters_per_unit=meters_per_unit,
@@ -129,7 +137,7 @@ class _Spot:
             low[up], high[up] = self.layer
             low[self.plan], high[self.plan] = corners.min(axis=0) - reach, corners.max(axis=0) + reach
             self.obstacles = _Obstacles(mesh, surface, low, high, up=up, up_sign=up_sign, top=top,
-                                        window=search_window_m(placement_residual_m) / meters_per_unit)
+                                        window=search_window_m(placement_residual_m) / meters_per_unit, itself=itself)
         self.lattice_points = 0
 
     def box(self, centre: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -249,7 +257,9 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
                      up: int, meters_per_unit: float, up_sign: int = 1, placement_residual_m: float | None = None,
                      radius: float, runtime_to_sim: Any, start: tuple[Sequence[float], Sequence[float]],
                      start_support: Mapping[str, Any] | None, clearance: float,
-                     look: Callable[..., Any] = support_under) -> tuple[dict[str, Any] | None, Placement | None, list]:
+                     look: Callable[..., Any] = support_under,
+                     itself: tuple[Sequence[float], Sequence[float]] | None = None
+                     ) -> tuple[dict[str, Any] | None, Placement | None, list]:
     """The surface, the placement and the position to place on (``position`` with its plan centre slid where
     needed); (None, None, ``position``) when no spot holds the object. ``lower``/``upper`` are its footprint at
     ``position``, ``start`` its start box on ``start_support`` with compile's ``clearance``, ``radius`` the
@@ -266,9 +276,12 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
         return None, None, list(position)
     same = start_support is not None and same_support_surface(surface, dict(start_support))
     spot = _Spot(mesh, surface, lower, upper, up=up, up_sign=up_sign, meters_per_unit=meters_per_unit,
-                 placement_residual_m=placement_residual_m, start=start if same else None, clearance=clearance)
+                 placement_residual_m=placement_residual_m, start=start if same else None, clearance=clearance,
+                 itself=itself)
     if spot.outline is None:
-        return None, None, list(position)
+        # No outline to test a spot on: no spot is proven, but the surface is reported (compile keeps a whole
+        # footprint's own support then; an overhang has nothing to stand on).
+        return surface, None, list(position)
     share = spot.share(start_centre)
     if spot.holds(start_centre, share, radius):
         found = (start_centre, share, 1)
@@ -282,3 +295,50 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
         placed[axis] = float(centre[offset])
     record = spot.record(centre, found[1], start_centre, found[2])
     return surface, Placement(spot, centre, start_centre, record, runtime_to_sim), placed
+
+
+#: Spots one footprint apart tried outward from, nearest first, when clutter covers the grounded centre's window.
+CLUTTER_SEEDS = 24
+
+
+def placed_clear(mesh: Any, lower: Sequence[float], upper: Sequence[float], position: Sequence[float],
+                 whole: Mapping[str, Any] | None, *, start: tuple[Sequence[float], Sequence[float]],
+                 start_support: Mapping[str, Any] | None, **options: Any) -> tuple[Any, Placement | None, list]:
+    """Compile's destination on an "on" surface, given ``whole``: the support under the whole footprint, or None.
+
+    With no support under the whole footprint, the object may still hold with its centre over one, an overhang
+    flagged (``centre_supported``). With one, it can still hold something else there (clutter on a table): only
+    when other geometry (never the object's own scan where it starts, ``start``) stands in the object's box at
+    the grounded centre does it slide to the nearest spot that holds it; no such spot is the old stop. Otherwise,
+    and wherever no outline can be read to test it, it takes exactly the path it always took, and compile's own
+    relocation keeps it off its start."""
+    if whole is None:
+        return centre_supported(mesh, lower, upper, position, start=start, start_support=start_support, itself=start,
+                                **options)
+    lower, upper, grounded = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float), list(position)
+    plan = _plan(options["up"])
+    spot = _Spot(mesh, whole, lower, upper, up=options["up"], up_sign=options.get("up_sign", 1),
+                 meters_per_unit=options["meters_per_unit"], placement_residual_m=options.get("placement_residual_m"),
+                 start=None, clearance=None, itself=start)
+    centre = (lower + upper)[plan] / 2
+    if spot.outline is None or spot.obstacles is None or not spot.obstacles.meet(*spot.box(centre)):
+        return whole, None, grounded
+    found = spot.nearest(centre, options["radius"])
+    if found is None:
+        # Clutter can be wider than the object: try outward from spots one footprint apart over the surface, nearest
+        # first, each search bounded as ever, so the samples never grow with the surface (``CLUTTER_SEEDS`` at most).
+        corners = spot.outline.triangles.reshape(-1, 2)
+        axes = [np.arange(corners[:, i].min(), corners[:, i].max() + 1e-12, 2 * spot.half[i]) for i in range(2)]
+        seeds = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 2)
+        seeds = seeds[spot.outline.covers(seeds)] if len(seeds) else seeds
+        for seed in seeds[np.argsort(np.linalg.norm(seeds - centre, axis=1), kind="stable")][:CLUTTER_SEEDS]:
+            found = spot.nearest(seed, options["radius"])
+            if found is not None:
+                break
+    if found is None:
+        return None, None, grounded
+    placed = list(grounded)
+    for offset, axis in enumerate(plan):
+        placed[axis] = float(found[0][offset])
+    record = spot.record(found[0], found[1], centre, found[2])
+    return whole, Placement(spot, found[0], centre, record, options["runtime_to_sim"]), placed
