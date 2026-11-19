@@ -186,8 +186,44 @@ def _phone(run: str) -> bool:
     return True
 
 
+#: Street-shaped text the site typed, as the website removes it from the sentence a company reads
+#: (Blueprint-WebApp ``client/src/lib/contactRedaction.ts``, ``STREET`` and its three siblings): a number, up to
+#: four words and a street word, with an optional unit and postal code. The Pipeline never holds the site's typed
+#: address, so the shape is all it can go by. Street words that are also ordinary job words (Drive, Place, Court,
+#: St) count only after a capitalised name word ("Mill Place") or before a unit or postal code, and the middle
+#: words never include little joining words, so "pick 2 totes and place them" is untouched. A city, state and
+#: postal code right after the street go with it ("77 Quokka Lane, Springfield, IL 62704").
+_JOINING = (r"and|or|the|a|an|to|on|in|of|at|by|for|from|onto|into|then|up|down|per|with|each|every|boxes|cartons|"
+            r"totes|pallets|items|parts|bins|shifts|hours|minutes|kg|lb|cm|mm|m")
+#: A middle word: a letter, then letters, apostrophes, dots or hyphens; never a joining word (in any case where the
+#: street word may be in any case, as the website's case-blind pattern has it).
+_MIDDLE = r"(?!(?:{joining})\b)[^\W\d_](?:[^\W\d_]|['.-])*"
+_HOUSE = r"(?<![^\W_])\d{1,6}[A-Za-z]?\s+"
+_UNIT = r"(?:(?:[Uu]nit|[Ss]uite|[Ss]te|[Aa]pt|[Aa]partment)\b\.?\s*#?\s*|#\s*)[\w-]*\d[\w-]*"
+_POSTAL = r"\d{5}(?:-\d{4})?(?![^\W_])"
+_CITY_STATE_POSTAL = r"\s*,\s*[A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*){0,2}(?:\s*,?\s*[A-Z]{2})?\s*,?\s*" + _POSTAL
+#: A street word's abbreviation dot goes with it only before a comma ("Main St., Suite 3"), never a sentence's end.
+_TAIL = rf"(?:\.(?=\s*,))?(?:\s*,?\s*{_UNIT})?(?:{_CITY_STATE_POSTAL}|\s*,?\s*{_POSTAL})?"
+#: Lane, road and the like are ordinary words in a job ("move 2 trays along conveyor lane", "4 trays along service
+#: road"): they make a street only after a capitalised name ("77 Quokka Lane", "12 Main road"), or with a unit, a
+#: city or a postal code after them.
+_NAME = r"[A-ZÀ-ÖØ-Þ][\w'.-]*"
+_STREET_ANY = r"(?i:street|avenue|ave|road|rd|lane|boulevard|blvd|highway|hwy|parkway|pkwy)\b"
+_STREETS = (
+    re.compile(rf"{_HOUSE}(?:{_NAME}\s+){{1,3}}{_STREET_ANY}{_TAIL}"),
+    re.compile(rf"{_HOUSE}(?:{_MIDDLE.format(joining='(?i:' + _JOINING + ')')}\s+){{0,3}}{_STREET_ANY}"
+               rf"(?:\.(?=\s*,))?(?:\s*,?\s*{_UNIT}|{_CITY_STATE_POSTAL}|\s*,?\s*{_POSTAL})+"),
+    re.compile(rf"{_HOUSE}(?:{_MIDDLE.format(joining=_JOINING)}\s+){{0,3}}(?:Ln|Dr|Way|Ct|Pl|Square|Sq|Terrace)\b{_TAIL}"),
+    re.compile(rf"{_HOUSE}(?:{_MIDDLE.format(joining=_JOINING)}\s+){{0,2}}[A-ZÀ-ÖØ-Þ][\w'.-]*\s+(?:Drive|Place|Court|St)\b"
+               rf"{_TAIL}"),
+    re.compile(rf"{_HOUSE}(?:{_MIDDLE.format(joining=_JOINING)}\s+){{0,3}}(?:Drive|Place|Court|St)\b(?:\.(?=\s*,))?"
+               rf"(?:\s*,?\s*{_UNIT}|\s*,?\s*{_POSTAL})+"),
+)
+
+
 def redact_contacts(text: str) -> tuple[str, bool]:
-    """The text with every email address, web link and phone number replaced by ``[removed]``, and whether any was."""
+    """The text with every email address, web link, phone number and street address replaced by ``[removed]``, and
+    whether any was."""
     found = False
 
     def removed(_match: re.Match[str]) -> str:
@@ -196,6 +232,8 @@ def redact_contacts(text: str) -> tuple[str, bool]:
         return REMOVED
 
     text = _EMAIL.sub(removed, _LINK.sub(removed, text))
+    for street in _STREETS:
+        text = street.sub(removed, text)
 
     def phone(match: re.Match[str]) -> str:
         nonlocal found
