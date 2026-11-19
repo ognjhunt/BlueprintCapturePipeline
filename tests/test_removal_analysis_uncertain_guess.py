@@ -68,8 +68,11 @@ def test_only_the_region_revisions_completed_answer_is_reused(tmp_path, monkeypa
     context = {"capture_id": "walkthrough-capture-x", "purpose": "scene_preparation", "confirmed": False,
                "description": "Move one cardboard box from a shelf to an empty spot on the same shelf."}
     analysis.analyze_removal_targets(video_path=video, output_root=tmp_path / "r", task_context=context)
-    (region, _), (prior, _) = seen["earlier_requests"]
+    (rigidity, _), (region, _), (prior, _) = seen["earlier_requests"]
     accept = seen["accept_earlier"]
+    # The rigidity revision's answer stands whatever it said, as it did before the material was asked for.
+    assert accept(rigidity, {"status": "completed", "blockers": []})
+    assert accept(rigidity, {"status": "blocked", "blockers": ["task_target_requires_clarification:x"]})
     assert accept(region, {"status": "completed", "blockers": []})
     assert not accept(region, {"status": "blocked", "blockers": ["task_target_requires_clarification:x"]})
     assert not accept(prior, {"status": "completed", "blockers": []})

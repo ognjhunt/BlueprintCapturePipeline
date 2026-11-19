@@ -208,7 +208,7 @@ def test_the_analysis_answer_carries_its_classification_into_the_manifest(given,
 def test_the_classification_rides_the_existing_call_and_earlier_requests_stay_exact():
     target = RESPONSE_SCHEMA["properties"]["targets"]["items"]
     assert target["properties"]["rigidity"]["enum"] == ["rigid", "deformable", "unknown"]
-    assert target["required"][-2:] == ["rigidity", "rigidity_reason"]
+    assert target["required"][-4:-2] == ["rigidity", "rigidity_reason"]
     assert analysis.RIGIDITY_INSTRUCTION in analysis.PROMPT_INSTRUCTION
     # The schema and instruction every analysis since 2026-10-31 was bought under (origin/main).
     assert canonical_digest(REGION_RESPONSE_SCHEMA) == (
