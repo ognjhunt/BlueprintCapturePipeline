@@ -27,7 +27,10 @@ identity), and is judged only in that pose. A spot holds it when:
 The grounded centre is tried first and kept when it holds. Otherwise the object slides to the nearest spot that
 holds within one footprint of it, on the footprint grid's own lattice: the outline's cover read once there
 (``3 * (RESTING_OUTLINE_GRID_STEPS - 1) + 1`` points a side) and each spot's share summed from it, so the samples
-never grow with the surface.
+never grow with the surface. Where nothing within one footprint holds it (clutter or a gap wider than the object:
+the synthetic set's seed 43, a 32 x 21 cm box where a 21 cm object was to go), the same search runs outward from
+spots one footprint apart over the surface, nearest first, ``CLUTTER_SEEDS`` at most (``_Spot.across``), on a
+surface carrying the whole footprint and on one carrying only its centre alike.
 
 A named area and the places offered to the site are only ever ones that hold it (``Placement.admits`` wraps the
 sealer's admission). Wherever relocation, the named area or a site's stored choice finally puts it, it is read
@@ -50,6 +53,8 @@ from .website_support_geometry import (FITTED_MAX_FACE_TILT_DEGREES, REGION_EDGE
 from .website_surface_target_admission import WEBSITE_TARGET_TOLERANCE_M
 
 BASIS = "centre_and_disc_over_the_surface_box_clear"
+#: Spots one footprint apart tried outward from, nearest first, when nothing within one footprint holds the object.
+CLUTTER_SEEDS = 24
 
 
 def _plan(up: int) -> list[int]:
@@ -231,6 +236,23 @@ class _Spot:
                 return centres[index], float(shares[index]), tested
         return None
 
+    def across(self, around: np.ndarray, radius: float) -> tuple[np.ndarray, float, int] | None:
+        """``nearest``, and where nothing within one footprint of ``around`` holds the object (clutter or a gap wider
+        than it), the nearest from spots one footprint apart over the surface, nearest ``around`` first, each search
+        bounded as ever, so the samples never grow with the surface (``CLUTTER_SEEDS`` at most)."""
+        found = self.nearest(around, radius)
+        if found is not None or self.outline is None:
+            return found
+        corners = self.outline.triangles.reshape(-1, 2)
+        axes = [np.arange(corners[:, i].min(), corners[:, i].max() + 1e-12, 2 * self.half[i]) for i in range(2)]
+        seeds = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 2)
+        seeds = seeds[self.outline.covers(seeds)] if len(seeds) else seeds
+        for seed in seeds[np.argsort(np.linalg.norm(seeds - around, axis=1), kind="stable")][:CLUTTER_SEEDS]:
+            found = self.nearest(seed, radius)
+            if found is not None:
+                return found
+        return None
+
     def record(self, centre: np.ndarray, share: float, start: np.ndarray, tested: int) -> dict[str, Any] | None:
         """The record at ``centre``; None when nothing hangs over there."""
         points = _points(centre, self.half)
@@ -330,7 +352,7 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
     if spot.holds(start_centre, share, radius):
         found = (start_centre, share, 1)
     else:
-        found = spot.nearest(start_centre, radius)
+        found = spot.across(start_centre, radius)
         if found is None:
             return None, None, list(position)
     centre = found[0]
@@ -363,10 +385,6 @@ def destination_points(row: Mapping[str, Any], frames: Sequence[Mapping[str, Any
     return points @ matrix[:3, :3].T + matrix[:3, 3]
 
 
-#: Spots one footprint apart tried outward from, nearest first, when clutter covers the grounded centre's window.
-CLUTTER_SEEDS = 24
-
-
 def placed_clear(mesh: Any, lower: Sequence[float], upper: Sequence[float], position: Sequence[float],
                  whole: Mapping[str, Any] | None, *, start: tuple[Sequence[float], Sequence[float]],
                  start_support: Mapping[str, Any] | None, **options: Any) -> tuple[Any, Placement | None, list]:
@@ -389,18 +407,7 @@ def placed_clear(mesh: Any, lower: Sequence[float], upper: Sequence[float], posi
     centre = (lower + upper)[plan] / 2
     if spot.outline is None or spot.obstacles is None or not spot.obstacles.meet(*spot.box(centre)):
         return whole, None, grounded
-    found = spot.nearest(centre, options["radius"])
-    if found is None:
-        # Clutter can be wider than the object: try outward from spots one footprint apart over the surface, nearest
-        # first, each search bounded as ever, so the samples never grow with the surface (``CLUTTER_SEEDS`` at most).
-        corners = spot.outline.triangles.reshape(-1, 2)
-        axes = [np.arange(corners[:, i].min(), corners[:, i].max() + 1e-12, 2 * spot.half[i]) for i in range(2)]
-        seeds = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 2)
-        seeds = seeds[spot.outline.covers(seeds)] if len(seeds) else seeds
-        for seed in seeds[np.argsort(np.linalg.norm(seeds - centre, axis=1), kind="stable")][:CLUTTER_SEEDS]:
-            found = spot.nearest(seed, options["radius"])
-            if found is not None:
-                break
+    found = spot.across(centre, options["radius"])
     if found is None:
         return None, None, grounded
     placed = list(grounded)

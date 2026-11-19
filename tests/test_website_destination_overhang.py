@@ -409,3 +409,16 @@ def test_a_thin_shelf_s_underside_does_not_lower_its_top_into_its_own_edge(seed)
     assert surface is not None and placement is not None
     assert position[2] - 0.123 >= -0.6  # its box clear of the wall
     assert placement.record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE
+
+
+def test_clutter_wider_than_the_object_where_only_its_centre_is_carried_is_searched_past():
+    # The synthetic set's seed 43: a 32 x 21 cm box where a 21 cm object was to go, its footprint not wholly carried
+    # there. The overhang search looked only within one footprint; it now runs on outward, as on a whole surface.
+    mesh = _mesh(0.2, boxes=[((0.15, TOP, 0.0), (0.45, TOP + 0.1, 0.2))])
+    lower, upper = _footprint(0.3, 0.1, 0.12, 0.24)  # deeper than the shelf: no surface carries all of it
+    assert support_under(mesh, lower, upper, up=1, meters_per_unit=1.0) is None
+    surface, placement, position = _place(mesh, lower, upper)
+    assert surface is not None and placement is not None
+    x, _ = _metres(position, mpu=1.0, up_sign=1)
+    assert x + 0.06 <= 0.15 + 1e-9 or x - 0.06 >= 0.45 - 1e-9  # clear of the clutter, on the shelf
+    assert placement.record["slid_m"] >= 0.21 and placement.record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE
