@@ -409,3 +409,73 @@ def test_a_test_job_with_a_copy_shared_on_another_basis_stays_whole(tmp_path):
     scene, cloud = _shared_job(tmp_path, internal_test=True, basis="site_sharing_statement")
     assert not retention.internal_test_job(scene / "captures" / CAPTURE)
     assert f"shared_with_companies:{CAPTURE}" in _plan(tmp_path, cloud, context=_timer(tmp_path))["reasons"]
+
+
+# --- owner approval 2026-11-19: duplicate copies inside a finished job's scene preparation folder ---------------
+
+
+def _copies(capture: Path) -> dict[str, bytes]:
+    prep = capture / "pipeline" / "website_scene_preparation"
+    collision = _big(prep / "room_package" / "collision" / "abc" / "normalized_scene.usdc", b"collide")
+    same = {"room_package/collision/abc/normalized_scene.usdc": collision,
+            "room_package/half/scene-package/assets/scene_collision.usdc": collision,
+            "renewals/r1/collision/abc/normalized_scene.usdc": collision}
+    for relative, data in same.items():
+        (prep / relative).parent.mkdir(parents=True, exist_ok=True)
+        (prep / relative).write_bytes(data)
+    # Same size, other bytes; and the same bytes under another mode: both stay their own files.
+    _big(prep / "room_package" / "appearance" / "background.usdc", b"COLLIDE")
+    private = prep / "renewals" / "r2" / "normalized_scene.usdc"
+    private.parent.mkdir(parents=True)
+    private.write_bytes(collision)
+    private.chmod(0o600)
+    return {f"pipeline/website_scene_preparation/{relative}": data for relative, data in same.items()}
+
+
+def test_a_finished_jobs_duplicate_preparation_copies_become_links_to_the_first_once(tmp_path):
+    scene, capture, _files = _job(tmp_path)
+    same = _copies(capture)
+    context = _context(tmp_path, keep_shared_workspaces=True)
+    later = time.time() + 72 * HOUR
+
+    result = slimming.dedupe_scene_preparation(context=context, bucket=BUCKET, scene_id=SCENE, now=later,
+                                               process_checker=_idle)
+
+    assert (result["status"], result["linked_count"]) == ("deduped", 2) and result["freed_bytes"] == 2 * (MIB + 7)
+    kept = "pipeline/website_scene_preparation/renewals/r1/collision/abc/normalized_scene.usdc"  # first by path
+    inodes = {os.lstat(capture / name).st_ino for name in same}
+    assert inodes == {os.lstat(capture / kept).st_ino}
+    assert all((capture / name).read_bytes() == data for name, data in same.items())
+    prep = capture / "pipeline" / "website_scene_preparation"
+    assert os.lstat(prep / "room_package" / "appearance" / "background.usdc").st_nlink == 1
+    assert os.lstat(prep / "renewals" / "r2" / "normalized_scene.usdc").st_nlink == 1
+    receipt = json.loads((capture / "pipeline" / "workspace_dedupe.v1.json").read_text(encoding="utf-8"))
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
+    assert {row["path"] for row in receipt["linked"]} == set(same) - {kept}
+    assert all(row["linked_to"] == kept for row in receipt["linked"])
+    again = slimming.dedupe_scene_preparation(context=context, bucket=BUCKET, scene_id=SCENE, now=later,
+                                              process_checker=_idle)
+    assert again["reason"] == "already_deduped"
+
+
+def test_a_job_not_done_keeps_its_copies(tmp_path):
+    scene, capture, _files = _job(tmp_path, enqueued_at_epoch=time.time())  # its Atlas job may still reopen
+    same = _copies(capture)
+    result = slimming.dedupe_scene_preparation(context=_context(tmp_path, keep_shared_workspaces=True), bucket=BUCKET,
+                                               scene_id=SCENE, now=time.time() + 72 * HOUR, process_checker=_idle)
+    assert (result["status"], result["reason"]) == ("skipped", "scene_not_finished")
+    assert all(os.lstat(capture / name).st_nlink == 1 for name in same)
+    assert not (capture / "pipeline" / "workspace_dedupe.v1.json").exists()
+
+
+def test_the_timer_phase_links_copies_of_a_finished_job_with_nothing_left_to_slim(tmp_path):
+    scene, capture, files = _job(tmp_path)
+    for name in MEMBERS | {"pipeline/atlas/downloads/atlas-scene-1/splat/atlas_refined_splat.ply"}:
+        (capture / name).unlink()
+    _copies(capture)
+    report = slimming.slim_scene_workspaces(
+        storage_roots=[tmp_path / "pubsub-handoffs"], apply=True, enabled=True, now=time.time() + 72 * HOUR,
+        context_factory=lambda root: _context(tmp_path, keep_shared_workspaces=True),
+        stream_publisher=_publisher(MultipartClient()), process_checker=_idle)
+    assert (report["deduped_count"], report["dedupe_freed_bytes"]) == (1, 2 * (MIB + 7))
+    assert report["removed_bytes"] == report["dedupe_freed_bytes"]

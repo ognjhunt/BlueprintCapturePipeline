@@ -158,7 +158,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/remote-cpu-jobs", "ledger", "blueprint",
                 "remote CPU job leases held until provider zero, hand-offs, receipts, teardown and parity records"),
     # --- queues and scratch
-    StorageRoot(f"{_INPUTS}/completed-scene-preparation", "work", "blueprint", "mixed owner-scoped source preparation work and evidence; report only"),
+    StorageRoot(f"{_INPUTS}/completed-scene-preparation", "work", "blueprint", "mixed owner-scoped source preparation work and evidence; a finished intent's folder is offloaded behind a pointer (owner approval 2026-11-19)"),
     StorageRoot(f"{_INPUTS}/completed-scene-preparation-inputs", "work", "blueprint", "mixed owner-scoped materialized preparation work; report only"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),

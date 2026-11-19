@@ -52,6 +52,8 @@ ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
 ReadWritePaths=-/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls/scene-configuration-activations
 # Finished website scene workspaces are retired here, and their receipts written beside them.
 ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs
+# A finished scene intent's preparation output is offloaded behind a pointer (owner approval 2026-11-19).
+ReadWritePaths=-/var/lib/blueprint/task-evaluation-inputs/completed-scene-preparation
 ReadOnlyPaths=-/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
 TasksMax=512
 LimitNOFILE=4096

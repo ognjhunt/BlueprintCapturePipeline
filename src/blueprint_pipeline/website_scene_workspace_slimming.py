@@ -87,7 +87,7 @@ SLIM_ACK = "slim-scene-workspace"
 ARTIFACT_KIND = "website-scene-workspace-slim"
 #: Per capture, beside the listener's own ``pipeline/`` records.
 RECEIPT_PARTS = ("pipeline", "workspace_slim.v1.json")
-_RECEIPT_NAMES = re.compile(r"workspace_slim\.v1(\.restored-[0-9a-f]{16})?\.json")
+_RECEIPT_NAMES = re.compile(r"workspace_(slim\.v1(\.restored-[0-9a-f]{16})?|dedupe\.v1)\.json")
 #: The one folder of a capture whose bulky files may go: the Atlas stage's intermediates.
 SLIMMED_PARTS = ("pipeline", "atlas")
 MINIMUM_MEMBER_BYTES = 1024 * 1024
@@ -646,20 +646,143 @@ def slimming_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str
     return _truthy_setting(environ, SLIMMING_ENV, SLIMMING_INVALID, default=True)
 
 
+#: The owner approved on 2026-11-19 (relayed by the coordinating session) "remove duplicate copies inside each job's
+#: scene preparation folder". A finished job's ``pipeline/website_scene_preparation/`` keeps byte-identical copies
+#: (a room package's half beside the appearance and collision it was assembled from, a renewal beside the
+#: preparation it renewed): about 0.4 to 0.55 GB a job on 2026-11-19. Each extra copy becomes a hard link to the
+#: first, so every path still reads the same bytes and nothing needs archiving.
+PREPARATION_PARTS = ("pipeline", "website_scene_preparation")
+DEDUPE_RECEIPT_PARTS = ("pipeline", "workspace_dedupe.v1.json")
+DEDUPE_SCHEMA = "website_scene_workspace_dedupe.v1"
+
+
+def _duplicate_groups(capture_root: Path) -> list[list[tuple[str, os.stat_result, str]]]:
+    """Byte-identical copies under the capture's scene preparation folder, each group sorted by path: regular
+    files of at least ``MINIMUM_MEMBER_BYTES`` with one name, the same owner, group and mode. Only same-size files
+    are read."""
+
+    import hashlib
+
+    top = capture_root.joinpath(*PREPARATION_PARTS)
+    by_size: dict[int, list[tuple[str, os.stat_result]]] = {}
+    for directory, directories, names in os.walk(top):
+        directories[:] = sorted(name for name in directories if not (Path(directory) / name).is_symlink())
+        for name in sorted(names):
+            path = Path(directory) / name
+            info = os.lstat(path)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size >= MINIMUM_MEMBER_BYTES:
+                by_size.setdefault(info.st_size, []).append((path.relative_to(capture_root).as_posix(), info))
+    groups: dict[tuple[Any, ...], list[tuple[str, os.stat_result, str]]] = {}
+    for rows in by_size.values():
+        if len(rows) < 2:
+            continue
+        for relative, info in rows:
+            digest = hashlib.sha256()
+            with (capture_root / relative).open("rb") as stream:
+                for chunk in iter(lambda: stream.read(8 << 20), b""):
+                    digest.update(chunk)
+            key = (digest.hexdigest(), info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
+            groups.setdefault(key, []).append((relative, info, "sha256:" + digest.hexdigest()))
+    return [sorted(rows, key=lambda row: row[0]) for rows in groups.values() if len(rows) > 1]
+
+
+def _same_file(path: Path, info: os.stat_result, *, sole_name: bool) -> bool:
+    """Still the file that was read: device, inode, size and mtime; ``sole_name``, also still its only name (the
+    kept file gains a name with each copy linked to it)."""
+    try:
+        now = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISREG(now.st_mode) and (not sole_name or now.st_nlink == 1)
+            and (now.st_dev, now.st_ino, now.st_size, now.st_mtime_ns)
+            == (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
+
+
+def dedupe_scene_preparation(*, context: retention.RetentionContext, bucket: str, scene_id: str, now: float,
+                             process_checker: Callable[[Path], bool] | None = None) -> dict[str, Any]:
+    """Link each finished capture's duplicate scene preparation copies to the first, once per capture.
+
+    Under the storage-pin lock and the listener's capture locks the scene must pass every slimming check again
+    (``_scene_reasons``: done, idle, unpinned, unqueued, not withdrawn, its Atlas job ended). Each copy is checked
+    unchanged (device, inode, size, mtime) right before it is replaced, atomically, by a link to the kept file.
+    ``pipeline/workspace_dedupe.v1.json`` records what was linked (an empty list too), so a capture is read once.
+    The copies share one inode afterwards: a writer that rewrote one in place would change both, so this runs only
+    for a finished job, whose writers replace files rather than rewrite them.
+    """
+
+    bucket, scene_id = retention._identity(bucket, scene_id)
+    scene = retention.scene_path(context.storage_root, bucket, scene_id)
+    captures = retention._capture_ids(scene) or []
+    outcome: dict[str, Any] = {"status": "skipped", "freed_bytes": 0, "linked_count": 0}
+    pending = [capture_id for capture_id in captures
+               if not os.path.lexists((scene / "captures" / capture_id).joinpath(*DEDUPE_RECEIPT_PARTS))]
+    if not pending:
+        return {**outcome, "reason": "already_deduped"}
+    with storage_pin_guard(context.pins_root, exclusive=True):
+        with retention._CaptureLocks(scene, captures) as locks:
+            if locks.refusal is not None:
+                return {**outcome, "reason": locks.refusal}
+            reasons, _evaluation = _scene_reasons(context=context, bucket=bucket, scene_id=scene_id, scene=scene,
+                                                  now=float(now), index=None,
+                                                  process_checker=process_checker or retention._process_in_use)
+            if reasons:
+                return {**outcome, "reason": "scene_not_finished", "reasons": reasons[:5]}
+            for capture_id in pending:
+                capture_root = scene / "captures" / capture_id
+                linked: list[dict[str, Any]] = []
+                for group in _duplicate_groups(capture_root):
+                    kept, kept_info, digest = group[0]
+                    for relative, info, _digest in group[1:]:
+                        path = capture_root / relative
+                        if not (_same_file(capture_root / kept, kept_info, sole_name=False)
+                                and _same_file(path, info, sole_name=True)):
+                            continue
+                        temporary = path.with_name(f".{path.name}.dedupe-{secrets.token_hex(8)}")
+                        os.link(capture_root / kept, temporary)
+                        os.replace(temporary, path)
+                        linked.append({"path": relative, "linked_to": kept, "size_bytes": int(info.st_size),
+                                       "sha256": digest})
+                document = {"schema_version": DEDUPE_SCHEMA, "bucket": bucket, "scene_id": scene_id,
+                            "capture_id": capture_id, "deduped_at_epoch": float(now), "linked": linked,
+                            "freed_bytes": sum(row["size_bytes"] for row in linked), "receipt_digest": ""}
+                document["receipt_digest"] = canonical_digest(document, digest_field="receipt_digest")
+                _write_receipt(capture_root.joinpath(*DEDUPE_RECEIPT_PARTS), document)
+                outcome["freed_bytes"] += document["freed_bytes"]
+                outcome["linked_count"] += len(linked)
+    return {**outcome, "status": "deduped"}
+
+
 def slim_scene_workspaces(*, storage_roots: Sequence[str | Path], context_factory: Callable[[Path], Any],
                           apply: bool, enabled: bool, now: float,
                           stream_publisher: Callable[..., Any] | None = None,
                           process_checker: Callable[[Path], bool] | None = None,
                           max_slims: int = DEFAULT_MAX_SLIMS_PER_TICK, alert: str | None = None) -> dict[str, Any]:
     """Plan every scene workspace; slim at most ``max_slims`` scenes a tick when enabled (attempts, not successes,
-    since each publishes gigabytes). One scene's failure is recorded on its row and never stops the others."""
+    since each publishes gigabytes), and link a finished job's duplicate scene preparation copies
+    (``dedupe_scene_preparation``). One scene's failure is recorded on its row and never stops the others."""
 
     applying = bool(apply and enabled)
     report: dict[str, Any] = {"status": "applied" if applying else "dry_run", "enabled": bool(enabled),
                               "candidate_count": 0, "candidate_bytes": 0, "attempted_count": 0, "slimmed_count": 0,
                               "removed_bytes": 0, "archive_bytes": 0, "retained_counts": {}, "kept_bulky_counts": {},
-                              "published_archives": []}
+                              "published_archives": [], "deduped_count": 0, "dedupe_freed_bytes": 0}
     rows: list[dict[str, Any]] = []
+
+    def dedupe(context: Any, row: dict[str, Any], plan: Mapping[str, Any]) -> None:
+        if not applying or plan["reasons"]:
+            return
+        try:
+            result = dedupe_scene_preparation(context=context, bucket=row["bucket"], scene_id=row["scene_id"],
+                                              now=now, process_checker=process_checker)
+        except Exception as exc:  # noqa: BLE001 - linking copies never costs the scene its slim
+            row["dedupe"] = {"status": "error", "error": type(exc).__name__}
+            return
+        if result["status"] == "deduped":
+            report["deduped_count"] += 1
+            report["dedupe_freed_bytes"] += result["freed_bytes"]
+            report["removed_bytes"] += result["freed_bytes"]
+            row["dedupe"] = {key: result[key] for key in ("status", "freed_bytes", "linked_count")}
+
     for storage_root in storage_roots:
         context = context_factory(Path(storage_root))
         workspaces = retention.scene_workspaces(context.storage_root)
@@ -676,7 +799,9 @@ def slim_scene_workspaces(*, storage_roots: Sequence[str | Path], context_factor
                 if plan["status"] != "slimmable":
                     for prefix in sorted({reason.split(":", 1)[0] for reason in plan["reasons"]}):
                         report["retained_counts"][prefix] = report["retained_counts"].get(prefix, 0) + 1
-                    rows.append({**row, "status": plan["status"], "reasons": plan["reasons"][:5]})
+                    row.update(status=plan["status"], reasons=plan["reasons"][:5])
+                    dedupe(context, row, plan)
+                    rows.append(row)
                     continue
                 report["candidate_count"] += 1
                 report["candidate_bytes"] += plan["totals"]["member_bytes"]
@@ -699,15 +824,42 @@ def slim_scene_workspaces(*, storage_roots: Sequence[str | Path], context_factor
             if outcome["status"] == "slimmed":
                 report["slimmed_count"] += 1
             report["removed_bytes"] += int(outcome["freed_bytes"])
-            rows.append({**row, "status": outcome["status"], "freed_bytes": outcome["freed_bytes"],
-                         "captures": [{key: value for key, value in capture.items() if key != "published_archive"}
-                                      for capture in outcome["captures"]]})
+            row.update(status=outcome["status"], freed_bytes=outcome["freed_bytes"],
+                       captures=[{key: value for key, value in capture.items() if key != "published_archive"}
+                                 for capture in outcome["captures"]])
+            dedupe(context, row, plan)
+            rows.append(row)
     report["result_count"] = len(rows)
     report["error_count"] = sum(row["status"] == "error" for row in rows)
     report["results"] = rows[:_MAX_RESULTS]
     if alert:
         report["alerts"] = [alert]
     return report
+
+
+def finished_job_phases(report: dict[str, Any], isolated: Callable[..., None], *, storage_roots: Sequence[Path],
+                        pins_root: Path, queue_roots: Sequence[Path], intent_root: Path | None,
+                        binding_root: Path | None, apply: bool, now: float, enabled: bool, alert: str | None,
+                        stream_publisher: Callable[..., Any] | None = None,
+                        process_checker: Callable[[Path], bool] | None = None) -> None:
+    """The reclaim timer's phases for finished jobs, each isolated (``isolated`` is the tick's own): slimming
+    their workspaces (with the scene preparation's duplicate copies), then archiving their scene intents'
+    preparation output (``completed_scene_preparation_retention``)."""
+
+    from . import completed_scene_preparation_retention as preparation
+    from .website_scene_workspace_retention import timer_context_factory
+
+    factory = timer_context_factory(pins_root=pins_root, queue_roots=queue_roots, intent_root=intent_root,
+                                    binding_root=binding_root)
+    isolated(report, "scene_workspace_slimming", lambda: slim_scene_workspaces(
+        storage_roots=storage_roots, context_factory=factory, apply=apply, enabled=enabled, now=now,
+        stream_publisher=stream_publisher, process_checker=process_checker, alert=alert))
+    offload_enabled, offload_alert = preparation.setting()
+    isolated(report, "scene_preparation_outputs", lambda: preparation.offload_finished_intent_outputs(
+        roots=preparation.configured_roots(), pins_root=Path(pins_root), queue_roots=[Path(root) for root in queue_roots],
+        intent_root=Path(intent_root) if intent_root else None, binding_root=Path(binding_root) if binding_root else None,
+        apply=apply, enabled=offload_enabled, now=now, stream_publisher=stream_publisher,
+        process_checker=process_checker, alert=offload_alert))
 
 
 # --- command line ---------------------------------------------------------------------------------

@@ -1195,6 +1195,32 @@ It checks the archive's digest and every member's SHA-256, puts back what is mis
 (a member already there must have its recorded bytes) and sets the receipt aside as
 `workspace_slim.v1.restored-<hex>.json`.
 
+**Duplicate copies in the scene preparation folder** (owner approval 2026-11-19: "remove
+duplicate copies inside each job's scene preparation folder"). For a scene that passes every
+slimming check, each capture's `pipeline/website_scene_preparation/` copies that are byte for
+byte the same (a room package's half beside the appearance and collision it was assembled
+from, a renewal beside what it renewed; about 0.4 to 0.55 GB a job) become hard links to the
+first by path, each replaced atomically after a check that it is unchanged, under the
+storage-pin lock and the listener's capture locks. Only files of at least 1 MiB with one
+name and the same owner, group and mode are linked. Every path still reads the same bytes,
+so nothing is archived. `pipeline/workspace_dedupe.v1.json` records each link (an empty list
+too), and a capture is read once. The GC report counts `deduped_count` and
+`dedupe_freed_bytes` under `scene_workspace_slimming`.
+
+## Finished scene intents' preparation output
+
+`blueprint_pipeline.completed_scene_preparation_retention` (owner approval 2026-11-19: "Give
+`completed-scene-preparation` a cleanup rule"). `task-evaluation-inputs/completed-scene-preparation/<intent>/`
+is the scene factory's work for one intent: 21 GB in 17 intents on 2026-11-19, and nothing
+reclaimed it. The reclaim timer now offloads an intent's folder through the evidence
+offload (pack, publish with full readback, `<intent>.offloaded.v1.json`, then remove; the
+same `restore`, and withdrawal deletion reads these pointers by intent) only when its scene
+intent has finished (completed, revoked, or expired past the seven-day grace) with no
+unsettled attempt, nothing in it changed for seven days, and no queue message, live pin or
+live process names it. A folder whose intent is unknown, or every folder when intents cannot
+be read, stays. At most five a tick. The report is `scene_preparation_outputs`;
+`BLUEPRINT_CONTROL_PLANE_SCENE_PREPARATION_OFFLOAD=0` keeps it planning.
+
 ## Owner-approved deletions
 
 `blueprint_pipeline.owner_approved_deletion` deletes exactly the paths an owner
