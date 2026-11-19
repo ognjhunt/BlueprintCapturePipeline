@@ -546,6 +546,15 @@ def resting_surface_under(mesh: Any, lower: Sequence[float], upper: Sequence[flo
         raise ValueError("website_support_query_invalid")
     options = dict(up=up, meters_per_unit=meters_per_unit, window_m=search_window_m(placement_residual_m),
                    rise_m=float(rise_m), drop_m=float(drop_m))
+    # The object's points are the ones over its own footprint (its box, sized by its outlines across the frames,
+    # grown by the search window): a mask that ran over the table's edge in front of it is not the object, and
+    # its points, beside the object and below the top, would read as the object sunk into the table.
+    plan = [axis for axis in range(3) if axis != up]
+    grow = options["window_m"] / meters_per_unit
+    over_footprint = [view[np.all((view[:, plan] >= lower[plan] - grow) & (view[:, plan] <= upper[plan] + grow), axis=1)]
+                      for view in views]
+    if sum(len(view) for view in over_footprint) >= len(views):
+        views = [view for view in over_footprint if len(view)]
     if up_sign == -1:
         # Search in an upright frame (the reflection of ``up``); keep output in the source frame.
         low, high = lower.copy(), upper.copy()
@@ -677,6 +686,12 @@ def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndar
         # (the slab over this one, a table over the floor) leaves it no room.
         above = over[~np.isin(gentle[over], surface) & (centres[over, up] > top + FITTED_BAND_BOUNDS_M[0] / mpu)
                      & (centres[over, up] <= corrected_top)]
+        if len(above):
+            # The scan holds the object itself where it stands: its own faces lie on its observed points and
+            # leave room for it. A face farther than the search window from every one of them is something else.
+            from scipy.spatial import cKDTree
+            nearest, _ = cKDTree(np.concatenate(views)).query(centres[above], distance_upper_bound=window_m / mpu)
+            above = above[~np.isfinite(nearest)]
         occupied = (float(SupportOutline(collider.triangles(gentle[above]), np.zeros((0, 2, 3)), window_m / mpu, up=up)
                           .covers(samples).mean()) if len(above) else 0.0)
         row["occupied_share"] = occupied
