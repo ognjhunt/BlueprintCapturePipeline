@@ -71,11 +71,11 @@ MIN_POINTS = round(1 / QUANTILES[0])
 DIMENSION_RELATIVE_ERROR = 0.25
 BASIS = "object_points_agreeing_across_frames"
 #: The outline carve (``outline_hull``): the box is searched this share of its size beyond each side, on this many
-#: cells a side, and a cell is the object's when all but ``1 - HULL_AGREE_SHARE`` of the frames that see it put it
+#: cells a side (refined over at most ``HULL_PASSES`` passes), and a cell is the object's when all but ``1 - HULL_AGREE_SHARE`` of the frames that see it put it
 #: inside the object's mask (grown by ``AGREE_TOLERANCE_PX``). A simple majority is not enough: frames that all
 #: look from one side agree on cells far along their line of sight. The tenth left over tolerates a failed mask or
 #: an occluded view.
-HULL_MARGIN, HULL_STEPS, HULL_AGREE_SHARE = 0.5, 48, 0.9
+HULL_MARGIN, HULL_STEPS, HULL_AGREE_SHARE, HULL_PASSES = 0.5, 48, 0.9, 4
 HULL_BASIS = "object_outline_agreeing_across_frames"
 
 
@@ -232,6 +232,23 @@ def published_cross_check(object_spec: Mapping[str, Any] | None, dimensions_m: S
 
 def outline_hull(low: Sequence[float], high: Sequence[float], track: Mapping[str, Any],
                  frames: Sequence[Mapping[str, Any]], matrix: Any) -> dict[str, Any] | None:
+    """``_carve`` coarse to fine: each pass carves the last pass's bounds (grown by one of its cells) on a grid as
+    many cells a side, until a cell no longer shrinks by half or ``HULL_PASSES`` are done. A spilled box can be
+    ten times the object, so one grid over it leaves only a few cells inside the object itself."""
+    hull = _carve(low, high, track, frames, matrix, HULL_MARGIN)
+    for _ in range(HULL_PASSES - 1):
+        if hull is None:
+            return None
+        cell = np.asarray(hull["cell_runtime_units"])
+        finer = _carve(np.asarray(hull["minimum"]) - cell, np.asarray(hull["maximum"]) + cell, track, frames, matrix, 0.0)
+        if finer is None or max(finer["cell_runtime_units"]) > 0.5 * max(cell):
+            break
+        hull = finer
+    return hull
+
+
+def _carve(low: Sequence[float], high: Sequence[float], track: Mapping[str, Any],
+           frames: Sequence[Mapping[str, Any]], matrix: Any, margin: float) -> dict[str, Any] | None:
     """The bounds (runtime units) of what nearly every frame that sees it puts inside the object's mask.
 
     Every point of the object lies inside every view's outline of it, whatever the depth says; a band of table or
@@ -244,7 +261,8 @@ def outline_hull(low: Sequence[float], high: Sequence[float], track: Mapping[str
 
     low, high, matrix = np.asarray(low, dtype=float), np.asarray(high, dtype=float), np.asarray(matrix, dtype=float)
     size = np.maximum(high - low, 1e-9)
-    axes = [np.linspace(low[i] - size[i] * HULL_MARGIN, high[i] + size[i] * HULL_MARGIN, HULL_STEPS) for i in range(3)]
+    axes = [np.linspace(low[i] - size[i] * margin, high[i] + size[i] * margin, HULL_STEPS) for i in range(3)]
+    cell = np.array([axis[1] - axis[0] for axis in axes])
     cells = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
     inverse = np.linalg.inv(matrix)
     source = cells @ inverse[:3, :3].T + inverse[:3, 3]
@@ -284,8 +302,9 @@ def outline_hull(low: Sequence[float], high: Sequence[float], track: Mapping[str
     if not kept.any():
         return None
     held = cells[kept]
-    return {"minimum": held.min(axis=0).tolist(), "maximum": held.max(axis=0).tolist(), "cells": int(kept.sum()),
-            "views": views, "cell_runtime_units": (size * (1 + 2 * HULL_MARGIN) / (HULL_STEPS - 1)).tolist()}
+    # Each kept cell stands for its whole extent: the bounds reach half a cell past the outermost centres.
+    return {"minimum": (held.min(axis=0) - cell / 2).tolist(), "maximum": (held.max(axis=0) + cell / 2).tolist(),
+            "cells": int(kept.sum()), "views": views, "cell_runtime_units": cell.tolist()}
 
 
 def own_points_extent(subject_min: Sequence[float], subject_max: Sequence[float], target: Mapping[str, Any],
