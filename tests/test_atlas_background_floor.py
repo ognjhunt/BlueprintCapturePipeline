@@ -178,6 +178,9 @@ def _stopped(monkeypatch, automation):
     ({"status": "needs_input", "background": {"status": "needs_input", "reason": "atlas_removal_masks_empty"}},
      "atlas_removal_masks_empty"),
     ({"status": "quality_rejected", "background": {"status": "quality_rejected"}}, "atlas_background_review_required"),
+    # The job reached its spending cap before the room was cleaned (owner, 2026-11-19): as filmed, flagged.
+    ({"status": "needs_input", "background": {"status": "needs_input", "reason": "spending_cap_reached"}},
+     "spending_cap_reached"),
 ])
 def test_job_three_goes_on_as_filmed_when_its_object_cannot_be_taken_out(tmp_path, monkeypatch, automation, reason):
     # Its clean plate ended blocked (gap F), so the planner's removal stood (``job_object_rule.json``: not applied).

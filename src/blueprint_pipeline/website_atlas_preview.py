@@ -331,7 +331,9 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     if kind == PRIVACY_RIGHTS:
         return _transition(job, current, "failed", code, **detail)
     if kind == MONEY:
-        # Shown to the owner, who can raise the limit; the step's own admission is re-asked on each recheck.
+        # The account's month, or the job's spending cap, which nothing raises (owner, 2026-11-19): no paid call
+        # starts. The step's own admission is re-asked on each recheck, so a hold of this job that settles lower
+        # frees room; the job's deadline ends the wait, and the job's packet never waits on it.
         return _transition(job, current, "needs_input", code, **detail,
                            retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
     deterministic = find_deterministic_refusal(error)

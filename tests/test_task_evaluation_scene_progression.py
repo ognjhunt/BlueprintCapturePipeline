@@ -367,16 +367,17 @@ def test_catch_all_refusal_records_its_outcome_and_a_sealed_one_stops_new_execut
             raise ValueError(code)
         return source
 
-    monkeypatch.setattr(engine, "_source", refuse("scene_intake_spend_cap_exhausted"))
+    monkeypatch.setattr(engine, "_source", refuse("task_brief_missing"))
     waiting = engine.process_scene_intents(config_path=config)["results"][0]
-    assert (waiting["status"], waiting["blockers"]) == ("blocked", ["scene_intake_spend_cap_exhausted"])
-    assert outcome.read_outcome(directory, intent)["kind"] == "awaiting_spend_approval"
+    assert waiting["blockers"] == ["task_brief_missing"]
+    assert outcome.read_outcome(directory, intent)["kind"] == "awaiting_site"
     assert outcome.terminal_outcome(directory, intent) is None
-    monkeypatch.setattr(engine, "_source", refuse("scene_progression_retry_cap_exhausted"))
+    # At the job's spending cap no further paid call starts and nothing waits for an owner (2026-11-19).
+    monkeypatch.setattr(engine, "_source", refuse("scene_intake_spend_cap_exhausted"))
     ended = engine.process_scene_intents(config_path=config)["results"][0]
-    assert ended["blockers"] == ["scene_progression_retry_cap_exhausted"]
+    assert ended["blockers"] == ["scene_intake_spend_cap_exhausted"]
     sealed = outcome.terminal_outcome(directory, intent)
-    assert (sealed["kind"], sealed["reason_code"]) == ("setup_repair", "retry_cap_exhausted")
+    assert (sealed["kind"], sealed["reason_code"]) == ("spending_cap_reached", "spend_cap_reached")
     monkeypatch.setattr(engine, "_source", lambda *a, **kw: pytest.fail("a terminal outcome stops new execution"))
     assert engine.process_scene_intents(config_path=config)["results"][0] == ended
     status = intake.scene_intent_status(queue_root=directory.parent, intent_id=directory.name)

@@ -196,10 +196,9 @@ def _retained_pose_runner(*, output_root, **kwargs):
 EDIT_SCOPES = ("required_and_additional", "all_selected_views")
 
 
-#: The two refusals that mean the job's money ran out: the WebApp's answer to this job's reservation
-#: (its allowance, ceiling or safety limit; ``websiteSceneSponsorship.ts``) and the account's monthly
-#: limit (``account_monthly_spend.LIMIT_REACHED``). Every other code keeps the class it had.
-MONEY_REFUSALS = frozenset({"website_scene_preparation_budget_exhausted", "account_monthly_spend_limit_reached"})
+#: The refusal that means the account's month ran out (``account_monthly_spend.LIMIT_REACHED``): the job waits for
+#: the next month's money recheck. Every other code keeps the class it had.
+MONEY_REFUSALS = frozenset({"account_monthly_spend_limit_reached"})
 
 
 def measurement_plan(review):
@@ -680,13 +679,18 @@ def run_automation(
             # its answer, not input anyone can give: the job's own retry schedule handles it.
             raise
         if _reason(exc) in MONEY_REFUSALS:
-            # The job's money ran out: it waits on the job's money recheck, never ends here.
+            # The account's month ran out: it waits on the money recheck, never ends here.
             raise
         # Keep source reconstruction and usable size estimates even when consent,
         # budget, pixels, review, depth agreement or export blocks this candidate.
+        # At the job's spending cap nothing more is bought for the room and nothing
+        # waits (owner, 2026-11-19): the room stays as filmed, flagged
+        # ``spending_cap_reached`` (``website_atlas_pipeline.BACKGROUND_FLOOR_REASONS``).
+        from .hard_stops import JOB_SPEND_CAP
+        from .website_job_spend_cap import SPENDING_CAP_REACHED
         background = {
             "status": "needs_input",
-            "reason": str(exc),
+            "reason": SPENDING_CAP_REACHED if _reason(exc) == JOB_SPEND_CAP else str(exc),
             "retained_root": str(output_root / "background"),
         }
     value = {

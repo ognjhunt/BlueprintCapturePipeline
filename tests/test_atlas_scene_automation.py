@@ -1656,10 +1656,12 @@ def test_a_retained_plan_without_reference_names_keeps_its_measurement_binding()
 @pytest.mark.parametrize('error,raised', [('meta_sam_http_413', True), ('meta_sam_http_503', True),
                                           ('meta_sam_inline_clip_exceeds_request_ceiling', True),
                                           ('atlas_background_visual_review_rejected', False),
-                                          # A money refusal takes the job's 30-minute money recheck, not a terminal stop.
-                                          ('website_control_preparation-spend_http_409:'
-                                           'website_scene_preparation_budget_exhausted', True),
+                                          # The account's month: the money recheck, not a terminal stop.
                                           ('account_monthly_spend_limit_reached', True),
+                                          # The job's spending cap: no wait; the room stays as filmed, flagged
+                                          # (owner, 2026-11-19).
+                                          ('website_control_preparation-spend_http_409:'
+                                           'website_scene_preparation_budget_exhausted', False),
                                           # Codes that only read like money keep their class (review 2026-11-16).
                                           ('website_image_completion_budget_exhausted', False),
                                           ('website_image_completion_budget_missing', False),
@@ -1692,7 +1694,8 @@ def test_a_provider_answer_in_the_background_step_is_raised_not_held_for_input(t
             assert waited['state'] == 'needs_input' and waited['retry_at_epoch'] == 100 + preview.AUTHORITY_RECHECK_SECONDS
     else:
         result = worker.run_automation(**arguments)
-        assert result['status'] == 'needs_input' and result['background']['reason'] == error
+        flag = 'spending_cap_reached' if error.endswith('website_scene_preparation_budget_exhausted') else error
+        assert result['status'] == 'needs_input' and result['background']['reason'] == flag
 
 
 def _rounds_harness(tmp_path, monkeypatch, counts, *, passes_at=None, receipts=False, bought=None):

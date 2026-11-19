@@ -51,7 +51,7 @@ def _expected(reason_code: str | None):
 # --------------------------------------------------------------------- the one registry
 
 def test_registry_is_one_closed_vocabulary():
-    assert set(outcome.KINDS) == {"setup_repair", "awaiting_spend_approval", "awaiting_site", "withdrawn", "held"}
+    assert set(outcome.KINDS) == {"setup_repair", "spending_cap_reached", "awaiting_site", "withdrawn", "held"}
     for code, (kind, terminal, category) in outcome.REASONS.items():
         assert kind in outcome.KINDS and category in outcome.REASON_CATEGORIES and type(terminal) is bool, code
     assert set(outcome.BLOCKER_REASONS.values()) <= set(outcome.REASONS)
@@ -71,14 +71,17 @@ def test_only_privacy_rights_capability_spent_allowances_and_expiry_end_a_job():
         "task_infeasible", "no_candidate",
         # non-extendable allowances that ran out
         "retry_cap_exhausted", "submission_retry_cap_exhausted", "capacity_recovery_cap_exhausted",
-        "market_miss_recovery_cap_exhausted",
+        "market_miss_recovery_cap_exhausted", "attempt_cap_reached",
+        # the job's spending cap: nothing raises it and nothing waits for an owner (owner, 2026-11-19)
+        "spend_cap_reached", "job_ceiling_reached",
         # the execution window, the only give-up timer
         "authority_expired",
     }
-    for kind in ("withdrawn", "held"):
+    for kind in ("withdrawn", "held", "spending_cap_reached"):
         assert all(ended for (row_kind, ended, _category) in outcome.REASONS.values() if row_kind == kind)
-    for kind in ("awaiting_spend_approval", "awaiting_site"):
-        assert not any(ended for (row_kind, ended, _category) in outcome.REASONS.values() if row_kind == kind)
+    assert not any(ended for (row_kind, ended, _category) in outcome.REASONS.values() if row_kind == "awaiting_site")
+    # No reason waits for an owner's money approval any more.
+    assert all(category != "spend_approval" for (_kind, _ended, category) in outcome.REASONS.values())
     # A Blueprint fault stays fixable: a code fix and deploy can still re-drive it.
     for reason in ("pipeline_fault", "scene_configuration_failed", "policy_canary_blocked"):
         assert outcome.REASONS[reason] == ("setup_repair", False, "blueprint_fault")
@@ -124,7 +127,7 @@ SPENT_ALLOWANCES = [
     ("blocked", "policy_canary_blocked", ["provider_capacity_unavailable"], "policy_canary_blocked"),
     ("blocked", "policy_canary_preprovider_blocked", ["policy_canary_website_notification_pending"],
      "policy_canary_blocked"),
-    # (c) money or approval: awaiting_spend_approval, not terminal.
+    # (c) money: the job's spending cap, terminal (spending_cap_reached); the attempt count, terminal.
     ("blocked", "preparation", ["scene_intake_spend_cap_exhausted"], "spend_cap_reached"),
     ("blocked", "preparation", ["scene_intake_attempt_spend_exceeds_authorized_limit"], "spend_cap_reached"),
     ("blocked", "preparation", ["scene_intake_attempt_cap_exhausted"], "attempt_cap_reached"),
@@ -187,7 +190,7 @@ def test_a_privacy_or_rights_ending_outranks_every_other_reason():
     assert outcome.decide_outcome("needs_input", "source", capability) == _expected("source_kind_unsupported")
     spent = ["scene_intake_spend_cap_exhausted", "scene_progression_retry_cap_exhausted"]
     assert outcome.decide_outcome("blocked", "preparation", spent) == _expected("retry_cap_exhausted")
-    # Money waits for a person; a fault behind it waits for that person first.
+    # At the spending cap the job ends with what it has, ahead of a fault a fix could re-drive.
     money = ["scene_intake_spend_cap_exhausted"]
     assert outcome.decide_outcome("blocked", "scene_configuration_failed", money) == _expected(
         "spend_cap_reached")
@@ -202,7 +205,6 @@ def test_a_privacy_or_rights_ending_outranks_every_other_reason():
     ("blocked", "preparation", ["fixture_unknown_fault"]),
     ("blocked", "scene_configuration_failed", ["configuration_launch_failed"]),
     ("blocked", "policy_canary_blocked", ["provider_capacity_unavailable"]),
-    ("blocked", "preparation", ["scene_intake_spend_cap_exhausted"]),
     ("needs_input", "source", ["task_brief_missing"]),
     ("awaiting_execution", "paused", ["scene_intent_paused"]),
 ])
@@ -247,17 +249,17 @@ def test_a_terminal_outcome_is_written_once_and_never_rewritten(tmp_path):
 def test_a_non_terminal_outcome_follows_the_latest_decision(tmp_path):
     directory, intent = _intent(tmp_path)
     path = directory / outcome.FILENAME
-    first = outcome.record_outcome(directory, intent, _expected("spend_cap_reached"), now=T0 + 1)
-    assert first["kind"] == "awaiting_spend_approval" and first["terminal"] is False
+    first = outcome.record_outcome(directory, intent, _expected("site_consent_required"), now=T0 + 1)
+    assert first["kind"] == "awaiting_site" and first["terminal"] is False
     # The same decision keeps when it was first made.
-    assert outcome.record_outcome(directory, intent, _expected("spend_cap_reached"), now=T0 + 2) == first
+    assert outcome.record_outcome(directory, intent, _expected("site_consent_required"), now=T0 + 2) == first
     replaced = outcome.record_outcome(directory, intent, _expected("scene_configuration_failed"), now=T0 + 3)
     assert replaced["reason_code"] == "scene_configuration_failed" and replaced["decided_at_epoch"] == T0 + 3
     assert outcome.terminal_outcome(directory, intent) is None
     # A row that no longer waits on anything has no outcome.
     assert outcome.record_outcome(directory, intent, None, now=T0 + 4) is None
     assert not path.exists() and outcome.read_outcome(directory, intent) is None
-    outcome.record_outcome(directory, intent, _expected("attempt_cap_reached"), now=T0 + 5)
+    outcome.record_outcome(directory, intent, _expected("task_brief_required"), now=T0 + 5)
     ended = outcome.record_outcome(directory, intent, _expected("retry_cap_exhausted"), now=T0 + 6)
     assert outcome.terminal_outcome(directory, intent) == ended
 
@@ -342,10 +344,10 @@ def test_a_failure_retried_every_pass_keeps_one_decision_through_mid_pass_notes(
 
 def test_settling_clears_a_wait_once_the_row_moves_on_and_never_marks_completed(tmp_path):
     directory, intent = _intent(tmp_path)
-    progress = advance(directory, intent, None, status="blocked", phase="preparation", state={},
-                       blockers=["scene_intake_spend_cap_exhausted"], now=T0)
-    assert outcome.settle_outcome(directory, intent, progress, now=T0)["kind"] == "awaiting_spend_approval"
-    # Two days later the owner's extension lands and the row moves on.
+    progress = advance(directory, intent, None, status="needs_input", phase="source", state={},
+                       blockers=["task_brief_missing"], now=T0)
+    assert outcome.settle_outcome(directory, intent, progress, now=T0)["kind"] == "awaiting_site"
+    # Two days later the site writes its brief and the row moves on.
     progress = advance(directory, intent, progress, status="running", phase="source_preparation", state={},
                        now=T0 + 2 * DAY)
     assert outcome.settle_outcome(directory, intent, progress, now=T0 + 2 * DAY) is None
@@ -489,8 +491,8 @@ def test_status_omits_outcome_until_one_exists_then_reports_it_sealed(tmp_path):
 @pytest.mark.parametrize("authority", ["revocation", "expiry"])
 def test_status_reports_the_ending_revocation_or_expiry_already_decided(tmp_path, authority):
     directory, intent = _intent(tmp_path)
-    advance(directory, intent, None, status="blocked", phase="preparation", state={},
-            blockers=["scene_intake_spend_cap_exhausted"], now=T0 + 2)
+    advance(directory, intent, None, status="needs_input", phase="source", state={},
+            blockers=["task_brief_missing"], now=T0 + 2)
     outcome.settle_outcome(directory, intent, load_progression(directory, intent), now=T0 + 2)
     if authority == "revocation":
         intake.revoke_scene_intent(queue_root=tmp_path, intent_id=intent["intent_id"],
@@ -535,3 +537,42 @@ def test_status_refuses_a_corrupt_outcome(tmp_path):
     path.write_text(json.dumps({**value, "reason_code": "scene_configuration_failed"}))
     with pytest.raises(intake.SceneIntakeError, match="scene_intake_outcome_invalid"):
         intake.scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=T0 + 1)
+
+
+# --------------------------------------------------------------------- the spending cap (owner, 2026-11-19)
+
+def test_the_spending_cap_ends_the_job_flagged_and_waits_for_no_owner(tmp_path):
+    directory, intent = _intent(tmp_path)
+    progress = advance(directory, intent, None, status="blocked", phase="preparation", state={},
+                       blockers=["scene_intake_spend_cap_exhausted:scene-configuration-2"], now=T0)
+    ended = outcome.settle_outcome(directory, intent, progress, now=T0)
+    assert (ended["kind"], ended["terminal"], ended["reason_category"], ended["reason_code"]) == (
+        "spending_cap_reached", True, "spending_cap", "spend_cap_reached")
+    # The window ending later never rewrites it, and no later decision does either.
+    assert outcome.decide_outcome("blocked", "preparation", ["scene_intake_spend_cap_exhausted"], "expired") == (
+        _expected("spend_cap_reached"))
+    assert outcome.record_outcome(directory, intent, _expected("pipeline_fault"), now=T0 + DAY) == ended
+    status = intake.scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=T0 + 1)
+    assert status["outcome"] == ended
+
+
+def test_a_wait_for_an_owner_grant_recorded_before_the_switch_is_read_then_replaced(tmp_path):
+    # An in-flight job's outcome.json written by the release before 2026-11-19: a money wait.
+    directory, intent = _intent(tmp_path)
+    legacy = outcome.outcome_record(directory, intent, {"kind": "awaiting_spend_approval", "terminal": False,
+                                                        "reason_category": "spend_approval",
+                                                        "reason_code": "spend_cap_reached"}, now=T0)
+    (directory / outcome.FILENAME).write_text(json.dumps(legacy))
+    assert outcome.read_outcome(directory, intent) == legacy
+    assert outcome.terminal_outcome(directory, intent) is None
+    progress = advance(directory, intent, None, status="blocked", phase="preparation", state={},
+                       blockers=["scene_intake_spend_cap_exhausted"], now=T0 + 5)
+    ended = outcome.settle_outcome(directory, intent, progress, now=T0 + 5)
+    assert (ended["kind"], ended["terminal"], ended["decided_at_epoch"]) == ("spending_cap_reached", True, T0 + 5)
+    # A legacy shape on any other reason is still refused.
+    forged = outcome.outcome_record(directory, intent, {"kind": "awaiting_spend_approval", "terminal": False,
+                                                        "reason_category": "spend_approval",
+                                                        "reason_code": "pipeline_fault"}, now=T0)
+    (directory / outcome.FILENAME).write_text(json.dumps(forged))
+    with pytest.raises(outcome.SceneOutcomeError):
+        outcome.read_outcome(directory, intent)

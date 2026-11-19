@@ -358,8 +358,10 @@ def _kept(review):
 BACKGROUND_FLOOR_RECORD = "background_floor.json"
 #: Background stops that mean the object was not seen well enough to erase (default-deny: any other stop,
 #: money, a changed binding or an unsettled call, stays as it was). A review that never passed is one too.
+#: ``spending_cap_reached``: the job reached its spending cap before the room was cleaned (owner, 2026-11-19).
 BACKGROUND_FLOOR_REASONS = frozenset({"atlas_removal_visibility_incomplete",
-                                      "atlas_object_mask_view_coverage_incomplete", "atlas_removal_masks_empty"})
+                                      "atlas_object_mask_view_coverage_incomplete", "atlas_removal_masks_empty",
+                                      "spending_cap_reached"})
 
 
 def background_floor(output_root: Path, review, task_context, automation=None):
