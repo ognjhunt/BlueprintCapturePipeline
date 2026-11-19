@@ -1,0 +1,7 @@
+{
+  "schema_version": "blueprint.website_job_spend_cap.v1",
+  "per_job_cap_usd": "40",
+  "scope": "Everything one website job spends, across every paid provider and every retry. The account's monthly limit applies on top.",
+  "mirrors": ["Blueprint-WebApp/contracts/pipeline/website-job-spend-cap.v1.json"],
+  "decision": {"by": "owner", "on": "2026-11-19", "note": "One cap at $40: no owner grants and no automatic extensions."}
+}

@@ -701,21 +701,17 @@ def test_a_both_providers_grant_the_host_chose_openai_for_runs_as_today(tmp_path
     assert "replacement_authoring_text_provider" not in request
 
 
-def test_owner_grant_admits_the_articulated_quote_above_the_consented_ceiling(tmp_path, monkeypatch):
-    """$20 consent plus an owner-approved $35 grant admits the one $31 build."""
-    from blueprint_pipeline.task_evaluation_scene_execution_budget import ACK, extend_scene_execution_budget
+def test_an_owner_grant_recorded_before_the_switch_admits_nothing_above_the_sealed_figure(tmp_path, monkeypatch):
+    """$20 consent and an owner's $35 grant from before 2026-11-19: the one $31 build is no longer admitted."""
+    from tests.test_website_job_spend_cap import _owner_extension
     kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20,
                              authoring_backend="astra_cad_blender_v1")
-    intent = json.loads(Path(kwargs["task"]["scene_intent_authority"]["path"]).read_text())
-    extend_scene_execution_budget(queue_root=tmp_path / "intents", intent_id=accepted["intent_id"],
-        intent_digest=accepted["intent_digest"], owner=intent["request"]["owner"],
-        authenticated_client="blueprint-webapp", trusted_clients={"blueprint-webapp"}, max_total_spend_usd=35,
-        max_paid_attempts=intent["request"]["execution"]["max_paid_attempts"],
-        authorization_reference="owner_approval:test", ack=ACK)
-    materialize_website_submission(**kwargs)
-    request = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())
-    assert request["spend"]["hard_cap_usd"] == 31.0
-    assert intent["request"]["execution"]["max_total_spend_usd"] == 20
+    intent_path = Path(kwargs["task"]["scene_intent_authority"]["path"])
+    intent = json.loads(intent_path.read_text())
+    _owner_extension(intent_path.parent, intent, spend=35, issued=intent["accepted_at_epoch"])
+    with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
+        materialize_website_submission(**kwargs)
+    assert not kwargs["staging_root"].exists()
 
 
 def test_retry_is_sized_within_what_existing_holds_leave(tmp_path, monkeypatch):
@@ -725,19 +721,13 @@ def test_retry_is_sized_within_what_existing_holds_leave(tmp_path, monkeypatch):
     authoring) and reservation refused it, $26 against $25. Sized from what is
     left, it keeps the authoring pool and shrinks only compute: $20 fits.
     """
-    from blueprint_pipeline.task_evaluation_scene_execution_budget import ACK, extend_scene_execution_budget
     from blueprint_pipeline.task_evaluation_scene_intake import committed_spend_usd, reserve_scene_attempt
     monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
     monkeypatch.setenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", "15")
-    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20,
+    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=25,
                              authoring_backend="artisan_v1")
     intent_path = Path(kwargs["task"]["scene_intent_authority"]["path"])
     intent = json.loads(intent_path.read_text())
-    extend_scene_execution_budget(queue_root=tmp_path / "intents", intent_id=accepted["intent_id"],
-        intent_digest=accepted["intent_digest"], owner=intent["request"]["owner"],
-        authenticated_client="blueprint-webapp", trusted_clients={"blueprint-webapp"}, max_total_spend_usd=25,
-        max_paid_attempts=intent["request"]["execution"]["max_paid_attempts"],
-        authorization_reference="owner_approval:test", ack=ACK)
     # The $5 an earlier attempt still holds, counted the way reservation counts it.
     reserve_scene_attempt(queue_root=tmp_path / "intents", intent_id=accepted["intent_id"],
         attempt_id="earlier-gpu-attempt", source_commit="d" * 40, runtime_digest="sha256:" + "e" * 64,
@@ -752,18 +742,13 @@ def test_retry_is_sized_within_what_existing_holds_leave(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("holds", [5, 20])
-def test_a_grant_with_automatic_extension_sizes_each_attempt_at_its_full_allowance(tmp_path, monkeypatch, holds):
-    """Owner decision 2026-11-10: a shrunk compute cap finds no qualifying GPU offer.
+def test_a_grant_naming_automatic_extension_sizes_like_any_other(tmp_path, monkeypatch, holds):
+    """Owner decision 2026-11-19: nothing extends a job's budget, a grant issued with the old flag included.
 
-    A flagged grant (read from the job's retained source registration, stood in
-    for here) keeps the full $6 compute and $0.80/h offer cap; the reservation
-    extends the ceiling by the shortfall or the job waits. The same holds under
-    an unflagged grant still shrink compute (the tests above).
+    Its attempt is sized within what the holds leave; here that leaves no compute, so no attempt is built
+    and the job ends at its spending cap (``website_native_construction_budget_exceeds_authority``).
     """
     from blueprint_pipeline import website_preparation_authority
-    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
-        MAX_HOURLY_RATE_USD, MAX_PROVIDER_COMPUTE_SPEND_USD,
-    )
     from blueprint_pipeline.task_evaluation_scene_intake import reserve_scene_attempt
     monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
     monkeypatch.setenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", "15")
@@ -774,11 +759,9 @@ def test_a_grant_with_automatic_extension_sizes_each_attempt_at_its_full_allowan
         input_digest="sha256:" + "f" * 64, provider="vast", maximum_spend_usd=holds)
     monkeypatch.setattr(website_preparation_authority, "_retained_sources",
                         lambda **_: ({}, {"automatic_budget_extension": True}, None))
-    materialize_website_submission(**kwargs)
-    spend = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())["spend"]
-    assert spend["provider_compute_spend_cap_usd"] == MAX_PROVIDER_COMPUTE_SPEND_USD
-    assert spend["maximum_hourly_rate_usd"] == MAX_HOURLY_RATE_USD
-    assert spend["hard_cap_usd"] == MAX_PROVIDER_COMPUTE_SPEND_USD + 15
+    with pytest.raises(ValueError, match="website_native_construction_budget_exceeds_authority"):
+        materialize_website_submission(**kwargs)
+    assert not kwargs["staging_root"].exists()
 
 
 def test_no_attempt_is_built_when_existing_holds_leave_no_compute(tmp_path, monkeypatch):

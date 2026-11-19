@@ -253,7 +253,6 @@ def test_original_unbounded_reader_retains_digest_and_leaf_symlink_checks(tmp_pa
 
 
 def test_original_modules_reexport_the_same_readers():
-    from blueprint_pipeline import task_evaluation_scene_execution_budget as original_budget
     from blueprint_pipeline import task_evaluation_scene_execution_window as original_window
     from blueprint_pipeline import task_evaluation_scene_intake as original_intake
 
@@ -261,6 +260,6 @@ def test_original_modules_reexport_the_same_readers():
     assert original_intake._read is contracts._read
     assert original_intake.validate_request is contracts.validate_request
     assert original_intake._number is contracts._number
-    assert original_budget.effective_execution_budget is budget.effective_execution_budget
-    assert original_budget.validate_attempt_execution_budget is budget.validate_attempt_execution_budget
+    assert original_intake.effective_execution_budget is budget.effective_execution_budget
+    assert original_intake.validate_attempt_execution_budget is budget.validate_attempt_execution_budget
     assert original_window.effective_execution_expiry is window.effective_execution_expiry

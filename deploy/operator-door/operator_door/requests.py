@@ -30,10 +30,6 @@ as the service user: promotion, the gated cleanup, the absence proof and, with
 one owner-approved time-only extension of a sealed scene intent (at most 7 days)
 through the active release, then tells the WebApp. Spend caps, attempts,
 providers, task and rights are not request fields and cannot change.
-``extend-scene-execution-budget`` (``operate``) previews, or with ``apply`` and the
-preview's digest records, one owner-approved execution budget grant (the spend
-and attempt ceilings) for a sealed scene intent through the active release. It
-names the approving owner and the evidence; it refunds and settles nothing.
 ``confirm-owner-success-contract`` (``operate``) previews, or with ``apply`` and the
 preview's digest records, one owner confirmation that a published website job's
 success thresholds, exactly as built, are the owner's, through the active
@@ -92,7 +88,6 @@ _SCOPES = {
     # One owner-approved, time-only extension of a sealed scene intent's window.
     "extend-scene-execution-window": "operate",
     # One owner-approved spend/attempt ceiling grant for a sealed scene intent.
-    "extend-scene-execution-budget": "operate",
     # One owner confirmation of a published website job's built success thresholds.
     "confirm-owner-success-contract": "operate",
     # Retires one parked website preparation delivery on the owner's recorded approval.
@@ -154,7 +149,7 @@ if DISPATCHER_HOLD_ONLY:
     # inputs still point at it. It starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "extend-scene-execution-window", "extend-scene-execution-budget",
+                           "extend-scene-execution-window",
                            "confirm-owner-success-contract", "retire-parked-delivery", "test-job",
                            "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -186,7 +181,6 @@ _CANARY_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _INTENT_ID = re.compile(r"scene-[0-9a-f]{64}\Z")
 _UTC_SECOND = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 SCENE_WINDOW_ACK = "extend-scene-execution-window"
-SCENE_BUDGET_ACK = "extend-scene-execution-budget"
 OWNER_SUCCESS_ACK = "confirm-owner-success-contract"
 # An owner's user or organization id, as the sealed intent records it.
 _OWNER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z")
@@ -553,32 +547,8 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if body["ack"] != SCENE_WINDOW_ACK:
             raise RequestRefused("scene_window_unacknowledged")
         return {key: body[key] for key in sorted(fields)}
-    if kind == "extend-scene-execution-budget":
-        fields = {"kind", "intent_id", "owner_user_id", "owner_organization_id", "approved_by",
-                  "approval_evidence", "max_total_spend_usd", "max_paid_attempts", "apply", "apply_ack", "ack"}
-        spend, count = body.get("max_total_spend_usd"), body.get("max_paid_attempts")
-        if (set(body) != fields or not isinstance(body.get("intent_id"), str)
-                or not _INTENT_ID.fullmatch(body["intent_id"])
-                or not all(isinstance(body.get(key), str) and _OWNER_ID.fullmatch(body[key])
-                           for key in ("owner_user_id", "owner_organization_id", "approved_by"))
-                or type(body.get("apply")) is not bool):
-            raise RequestRefused("scene_budget_fields_invalid")
-        if (not isinstance(spend, (int, float)) or isinstance(spend, bool) or spend != spend
-                or not 0 < spend <= 1000 or type(count) is not int or not 1 <= count <= 1000):
-            raise RequestRefused("scene_budget_limits_invalid")
-        evidence = body.get("approval_evidence")
-        if (not isinstance(evidence, str) or evidence != evidence.strip()
-                or not 1 <= len(evidence) <= 500 or not evidence.isprintable()):
-            raise RequestRefused("scene_budget_approval_evidence_invalid")
-        if body["apply"] != bool(isinstance(body.get("apply_ack"), str) and _LEASE_DIGEST.fullmatch(body["apply_ack"])):
-            raise RequestRefused("scene_budget_apply_ack_invalid")
-        if not body["apply"] and body.get("apply_ack") != "":
-            raise RequestRefused("scene_budget_apply_ack_invalid")
-        if body["ack"] != SCENE_BUDGET_ACK:
-            raise RequestRefused("scene_budget_unacknowledged")
-        return {key: body[key] for key in sorted(fields)}
     if kind == "confirm-owner-success-contract":
-        # The budget grant's owner fields and acknowledgements; no threshold is a request field.
+        # The owner fields and acknowledgements; no threshold is a request field.
         fields = {"kind", "intent_id", "owner_user_id", "owner_organization_id", "approved_by",
                   "approval_evidence", "apply", "apply_ack", "ack"}
         if (set(body) != fields or not isinstance(body.get("intent_id"), str)

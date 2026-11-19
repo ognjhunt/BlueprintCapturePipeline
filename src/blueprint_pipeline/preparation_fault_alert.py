@@ -15,7 +15,7 @@ memory: it reads each ledger's ``status`` and ``last_error``.
 
 Run inside the stall alarm's tick (``control_plane_stall_alarm``). A persisting page repeats hourly
 there, so the row is emitted only for ``ANNOUNCE_SECONDS`` after the tick that first saw the stop, as
-``scene_budget_alert`` does.
+the stall alarm's other announced pages do.
 """
 from __future__ import annotations
 

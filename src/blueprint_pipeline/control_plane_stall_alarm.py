@@ -99,8 +99,6 @@ SCHEMA_VERSION = "control_plane_stall_check.v1"
 PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trigger_inactive_unheld",
                         "launch_activation_stuck", "atlas_preview_stalled", "team_scene_packet_stalled",
                         "rigid_probe_stalled",
-                        # Not a stall: a scene's ceiling passed a whole multiple of its grant (gates nothing).
-                        "scene_budget_doubled",
                         # Not a stall: a preparation stopped on Blueprint's own records, paged once
                         # (preparation_fault_alert).
                         "website_preparation_blueprint_fault",
@@ -172,10 +170,10 @@ _HOLD_WORDS = {
 }
 _HOLD_CODES = {
     "scene_intake_authority_expired": "execution_window",
-    # The intent's sealed execution budget is used up; only an owner budget
-    # extension continues the job (the WebApp's "Owner approval needed").
-    "scene_intake_spend_cap_exhausted": "money_approval",
-    "scene_intake_attempt_cap_exhausted": "money_approval",
+    # The intent's budget (the job's spending cap at most) or its paid attempts are used up. Nothing
+    # extends them (owner, 2026-11-19): the job ends with what it has (``spending_cap_reached``).
+    "scene_intake_spend_cap_exhausted": "spending_cap",
+    "scene_intake_attempt_cap_exhausted": "spending_cap",
 }
 
 # The four job stores below name a withdrawn capture in their own codes
@@ -1469,20 +1467,6 @@ def check_rigid_probes(
 # --------------------------------------------------------------------------- #
 
 
-def _check_scene_budgets(config: StallConfig, *, now: float, remembered: Any,
-                         memory_out: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    from .scene_budget_alert import check_scene_budgets
-    root = config.scene_intent_root
-    if root is None:
-        return {"status": "not_configured"}, []
-    try:
-        entries, _truncated = _scene_intent_entries(root)
-    except FileNotFoundError:
-        return {"status": "absent"}, []
-    return check_scene_budgets(root, [name for _mtime, name in entries[:MAX_INTENTS]], now=now,
-                               remembered=remembered, memory_out=memory_out)
-
-
 def _check_preparation_faults(config: StallConfig, *, now: float, remembered: Any,
                               memory_out: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     # Preparation ledgers sit beside the Atlas jobs, under the same capture roots.
@@ -1523,7 +1507,6 @@ def observe_stalls(
     prior_memory = prior_memory if isinstance(prior_memory, Mapping) else {}
     remembered = prior_memory.get("scene_progression")
     progression_memory: dict[str, Any] = {}
-    scene_budget_memory: dict[str, Any] = {}
     preparation_fault_memory: dict[str, Any] = {}
     budget = _Budget(deadline=monotonic() + DEADLINE_SECONDS, events=MAX_EVENT_READS, clock=monotonic)
     alerts: list[dict[str, Any]] = [_incomplete(error) for error in config.config_errors]
@@ -1555,8 +1538,6 @@ def observe_stalls(
             config, now=observed, budget=budget, holds=holds, windows=windows)),
         ("rigid_probes", lambda: check_rigid_probes(
             config, now=observed, budget=budget, holds=holds, windows=windows)),
-        ("scene_budget", lambda: _check_scene_budgets(
-            config, now=observed, remembered=prior_memory.get("scene_budget"), memory_out=scene_budget_memory)),
         ("preparation_faults", lambda: _check_preparation_faults(
             config, now=observed, remembered=prior_memory.get("preparation_fault"),
             memory_out=preparation_fault_memory)),
@@ -1586,7 +1567,7 @@ def observe_stalls(
         },
         "checks": checks,
         "memory": {"scene_progression": progression_memory,
-                   "scene_budget": scene_budget_memory, "preparation_fault": preparation_fault_memory},
+                   "preparation_fault": preparation_fault_memory},
         "alerts": alerts,
     }
 
@@ -1611,9 +1592,6 @@ def describe(alert: Mapping[str, Any]) -> str | None:
         why = f" [{blockers[0]}]" if blockers else ""
         return (f"scene progression unchanged {age} at {alert.get('status')}/{alert.get('phase')}{why}: "
                 f"{name}{tail}")
-    if code == "scene_budget_doubled":
-        from .scene_budget_alert import describe as describe_budget
-        return describe_budget(alert)
     if code in ("website_preparation_blueprint_fault", "website_atlas_look_draft_final"):
         from .preparation_fault_alert import describe as describe_fault
         return describe_fault(alert)

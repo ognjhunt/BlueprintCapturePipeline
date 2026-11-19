@@ -127,8 +127,8 @@ def test_a_handed_off_row_waits_out_a_downstream_run_before_paging(tmp_path: Pat
     ("awaiting_execution", "construction_prepared", [], "operator_pause"),
     ("blocked", "authority", ["scene_intake_authority_revoked"], "rights"),
     ("blocked", "authority", ["scene_intake_authority_expired"], "execution_window"),
-    ("blocked", "preparation", ["scene_intake_spend_cap_exhausted"], "money_approval"),
-    ("blocked", "preparation", ["scene_intake_attempt_cap_exhausted"], "money_approval"),
+    ("blocked", "preparation", ["scene_intake_spend_cap_exhausted"], "spending_cap"),
+    ("blocked", "preparation", ["scene_intake_attempt_cap_exhausted"], "spending_cap"),
     ("blocked", "source", ["capture_consent_missing"], "privacy"),
     ("blocked", "source", ["source_rights_reference_mismatch"], "rights"),
 ])
@@ -506,10 +506,10 @@ def test_unconfigured_roots_are_reported_as_incomplete(tmp_path: Path) -> None:
     result = stall.observe_stalls(config, now=NOW, unit_reader=lambda _units: {})
     assert set(result["checks"]) == {"scene_progression", "launch_leases", "launch_activations", "triggers",
                                      "atlas_preview", "team_scene_packets", "rigid_probes",
-                                     "scene_budget", "preparation_faults", "state_backup"}
+                                     "preparation_faults", "state_backup"}
     assert result["checks"]["launch_activations"] == {"status": "not_configured"}
     assert all(result["checks"][name] == {"status": "not_configured"}
-               for name in ("atlas_preview", "team_scene_packets", "rigid_probes", "scene_budget",
+               for name in ("atlas_preview", "team_scene_packets", "rigid_probes",
                             "preparation_faults", "state_backup"))
     assert [row["reason"] for row in result["alerts"]] == [
         "threshold_invalid:X", "scene_intent_root_unconfigured", "launch_roots_unconfigured",
