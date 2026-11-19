@@ -45,7 +45,7 @@ from .atlas_scene_estimates import OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_
 from .local_reconstruction_adapters import _sha256_file
 from .website_task_masks import resting_views
 from .website_task_placement_check import FLAG_SIZE, MINIMUM_USABLE_FRAMES, check_video_placement
-from .website_track_mask_codec import decode_track_mask
+from .website_track_mask_codec import decode_track_mask, mask_runs  # noqa: F401 - mask_runs for callers
 
 REVISION = "website_object_extent.v1"
 #: Depths ``EDGE_SPAN_PX`` either side of a pixel further apart than this share of their depth are a silhouette
@@ -268,6 +268,7 @@ def _carve(low: Sequence[float], high: Sequence[float], track: Mapping[str, Any]
     source = cells @ inverse[:3, :3].T + inverse[:3, 3]
     by_id = {str(frame.get("frame_id")): frame for frame in frames}
     seen, inside, views = np.zeros(len(cells), dtype=np.int32), np.zeros(len(cells), dtype=np.int32), 0
+    framing = np.zeros(len(cells), dtype=np.int32)
     for row in track.get("observations") or []:
         frame = by_id.get(str(row.get("source_frame_id")))
         if frame is None:
@@ -288,23 +289,57 @@ def _carve(low: Sequence[float], high: Sequence[float], track: Mapping[str, Any]
         scale_v = mask.shape[0] / float(frame.get("height") or mask.shape[0])
         front = points[:, 2] > 1e-9
         depth = np.where(front, points[:, 2], 1.0)
-        u = np.rint((intrinsics[0, 0] * points[:, 0] / depth + intrinsics[0, 2]) * scale_u).astype(np.int64)
-        v = np.rint((intrinsics[1, 1] * points[:, 1] / depth + intrinsics[1, 2]) * scale_v).astype(np.int64)
+        column, row_at = intrinsics[0, 0] * points[:, 0] / depth + intrinsics[0, 2], intrinsics[1, 1] * points[:, 1] / depth + intrinsics[1, 2]
+        u, v = np.rint(column * scale_u).astype(np.int64), np.rint(row_at * scale_v).astype(np.int64)
         framed = front & (u >= 0) & (u < mask.shape[1]) & (v >= 0) & (v < mask.shape[0])
         if not framed.any():
             continue
+        framing += framed
+        hit = np.zeros(len(cells), dtype=bool)
+        hit[framed] = mask[v[framed], u[framed]]
+        # A frame whose depth, at a cell's pixel outside the mask, shows something in front of the object (nearer
+        # than the object's own nearest depth in that frame) cannot see the cell: an occluder hides it, and the
+        # frame does not vote on it. The table under the object or the wall behind it is no nearer than the object,
+        # so a frame showing them still votes against a cell inside them (``DEPTH_TOLERANCE`` either way).
+        surface = _frame_depth(frame)
+        if surface is not None:
+            rows_in, columns_in = np.nonzero(mask)
+            own = surface[np.clip(np.rint(rows_in / scale_v).astype(np.int64), 0, surface.shape[0] - 1),
+                          np.clip(np.rint(columns_in / scale_u).astype(np.int64), 0, surface.shape[1] - 1)]
+            own = own[np.isfinite(own)]
+            if len(own):
+                nearest = float(np.quantile(own, 0.05))
+                du, dv = np.rint(column).astype(np.int64), np.rint(row_at).astype(np.int64)
+                ask = framed & ~hit & (du >= 0) & (du < surface.shape[1]) & (dv >= 0) & (dv < surface.shape[0])
+                there = np.full(len(cells), np.nan)
+                there[ask] = surface[dv[ask], du[ask]]
+                with np.errstate(invalid="ignore"):
+                    framed &= ~((there < nearest * (1 - DEPTH_TOLERANCE)) & (depth > there * (1 + DEPTH_TOLERANCE)))
         views += 1
         seen += framed
-        inside[framed] += mask[v[framed], u[framed]]
+        inside += hit & framed
     if views < MINIMUM_USABLE_FRAMES:
         return None
-    kept = (seen >= MINIMUM_USABLE_FRAMES) & (inside >= HULL_AGREE_SHARE * seen)
+    # A cell most frames cannot see lies inside something else (a table, a wall): a few spilled masks cannot make
+    # it the object's. One the object's own outline covers is seen wherever it is framed.
+    kept = ((seen >= MINIMUM_USABLE_FRAMES) & (seen >= AGREE_SHARE * framing) & (inside >= HULL_AGREE_SHARE * seen))
     if not kept.any():
         return None
     held = cells[kept]
     # Each kept cell stands for its whole extent: the bounds reach half a cell past the outermost centres.
     return {"minimum": (held.min(axis=0) - cell / 2).tolist(), "maximum": (held.max(axis=0) + cell / 2).tolist(),
             "cells": int(kept.sum()), "views": views, "cell_runtime_units": cell.tolist()}
+
+
+def _frame_depth(frame: Mapping[str, Any]) -> np.ndarray | None:
+    """A frame's depth (NaN where invalid), or None when its geometry is not at hand."""
+    try:
+        with np.load(str(frame["geometry_path"])) as geometry:
+            depth = np.asarray(geometry["depth_m"], dtype=np.float32)
+            valid = np.asarray(geometry["valid_mask"], dtype=bool) if "valid_mask" in geometry.files else depth > 0
+    except (KeyError, OSError, ValueError, TypeError):
+        return None
+    return np.where(valid, depth, np.nan)
 
 
 def own_points_extent(subject_min: Sequence[float], subject_max: Sequence[float], target: Mapping[str, Any],

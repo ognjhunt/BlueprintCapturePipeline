@@ -17,7 +17,7 @@ from blueprint_pipeline import website_object_extent as extent
 from blueprint_pipeline import website_task_preparation as preparation
 from blueprint_pipeline.atlas_scene_estimates import (OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_SIZE_FROM_ITS_POINTS,
                                                       preparation_flags)
-from blueprint_pipeline.website_task_masks import estimate_target_bounds
+from blueprint_pipeline.website_task_masks import estimate_target_bounds  # noqa: F401
 from tests.test_website_unscanned_surface import (CUP, FLIP, RUNTIME_SCALE, RUNTIME_TRANSLATION, SOURCE, _arguments,
                                                   _track, _views, exact_registration, no_model)
 
@@ -212,3 +212,29 @@ def test_too_few_frames_carve_nothing(tmp_path):
     track = {**target["track"], "observations": target["track"]["observations"][:1]}
     low, high = _raw(target, frames)
     assert extent.outline_hull(low, high, track, frames, _matrix()) is None
+
+
+def test_a_view_that_cannot_see_part_of_the_object_does_not_carve_it(tmp_path, monkeypatch):
+    """One view's mask misses part of the cup (an occluder in front, nearer in its depth there): that view cannot
+    see those cells and does not vote on them, so the carve keeps the cup whole."""
+    frames = _room(tmp_path)["source_geometry"]["frames"]
+    target = _cup()
+    low, high = _raw(target, frames)
+    observations = [dict(row) for row in target["track"]["observations"]]
+    mask = extent.decode_track_mask(observations[2])
+    columns = np.nonzero(mask.any(axis=0))[0]
+    hidden = np.zeros_like(mask)
+    hidden[:, columns[0]:(columns[0] + columns[-1]) // 2] = True  # its left half hidden in this view
+    observations[2]["runs"] = extent.mask_runs(mask & ~hidden)
+    real = extent._frame_depth
+
+    def nearer_there(frame):
+        depth = real(frame)
+        if frame["frame_id"] == observations[2]["source_frame_id"] and depth is not None:
+            depth = np.where(hidden, 0.1, depth)  # the occluder, 10 cm from the camera
+        return depth
+
+    monkeypatch.setattr(extent, "_frame_depth", nearer_there)
+    track = {**target["track"], "observations": observations}
+    hull = extent.outline_hull(low, high, track, frames, _matrix())
+    assert np.all(_dimensions(hull["minimum"], hull["maximum"]) >= CUP_SIZE - 0.005)
