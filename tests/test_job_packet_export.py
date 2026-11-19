@@ -1731,3 +1731,25 @@ def test_ordinary_job_words_like_lane_or_road_are_never_removed(text):
 def test_named_or_coded_streets_are_still_removed(text, kept):
     redacted, found = packet.redact_contacts(text)
     assert found and "[removed]" in redacted and kept in redacted
+
+
+def test_a_preparations_frame_ids_are_not_contact_details_but_a_number_in_a_printed_label_is(tmp_path, job) -> None:
+    """Every real preparation names its frames ``decoded-000000015``: job 4's sheet said the site's contact details
+    were removed when the site had typed none."""
+    inputs = job()
+    prep = inputs.capture_dir / PREP / "preparation.json"
+    _edit(prep, lambda value: value["authoring_inputs"].update(source_frames=[
+        {"frame_id": "decoded-000000015"}, {"frame_id": "decoded-000000027"}]))
+    _seal_first_look(inputs.capture_dir)
+    assert "Contact details" not in _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
+    _edit(prep, lambda value: value["subject"].update(description=f"tray, order line {PHONE}"))
+    _seal_first_look(inputs.capture_dir)
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path, "again")))
+    assert PHONE not in sheet and "- Object: tray, order line [removed]." in sheet
+    assert "Contact details the site typed into its description or answers were removed." in sheet.split("\n")[6]
+    # A street address in a printed label is removed and said, as #3648 removes one from the site's own words.
+    _edit(prep, lambda value: value["subject"].update(description="tray from 400 Elm Street Suite 5"))
+    _seal_first_look(inputs.capture_dir)
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path, "street")))
+    assert "Elm Street" not in sheet and "- Object: tray from [removed]." in sheet
+    assert "Contact details the site typed into its description or answers were removed." in sheet.split("\n")[6]

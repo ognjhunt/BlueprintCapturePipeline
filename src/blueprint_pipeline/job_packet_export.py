@@ -1562,8 +1562,14 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
     removed: list[bool] = []
     own = _redacted({key: context.get(key) for key in ("description", "success_criteria", "operator_task_details",
                                                        "operator_answers", "unresolved")}, removed)
-    prep = _redacted(prep, removed)
-    contract = _redacted(contract, removed)
+    # The records are redacted whole, but only the labels the sheet prints from them say whether anything the site
+    # typed was removed: every preparation's frame ids (``decoded-000000015``) read as phone numbers, so counting
+    # the whole record made every real job's sheet say contact details were removed.
+    printed = (_mapping(prep.get("subject")).get("description"), _mapping(prep.get("destination")).get("visible_label"),
+               _mapping(_mapping(_mapping(contract).get("criteria")).get("surface_target")).get("visible_label"))
+    removed += [redact_contacts(text)[1] for text in printed if isinstance(text, str)]
+    prep = _redacted(prep, [])
+    contract = _redacted(contract, [])
     criteria = _mapping(contract).get("criteria") if isinstance(contract, Mapping) else None
     description = str(own.get("description") or "").strip()
     sheet = ["# Job packet", "", f"Packet number: {number}", "", TERMS_LINE, "", "Status: " + _status(
