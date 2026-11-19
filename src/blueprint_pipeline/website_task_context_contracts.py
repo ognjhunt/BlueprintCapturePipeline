@@ -508,7 +508,8 @@ def validate_website_task_context(
             if number is not None and (isinstance(number, bool) or not isinstance(number, (int, float))
                     or not math.isfinite(number) or number < 0 or (key == "successRate" and number > 100)):
                 raise ValueError("website_task_context_success_criteria_invalid")
-    if "site_job_facts" in value and not site_job_facts_valid(value["site_job_facts"]):
+    # Absent or null: the site answered none; a successful read then clears any answers kept before.
+    if value.get("site_job_facts") is not None and not site_job_facts_valid(value["site_job_facts"]):
         raise ValueError("website_task_context_site_job_facts_invalid")
     items = value.get("task_items")
     if items is not None:

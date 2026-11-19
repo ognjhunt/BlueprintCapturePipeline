@@ -79,6 +79,17 @@ def test_the_task_context_accepts_the_answers_in_their_shape_and_refuses_any_oth
         validate_website_task_context(_context(site_job_facts={"answers": "free text"}), **kwargs)
 
 
+def test_a_null_answer_set_is_a_good_read_that_clears_the_answers_kept_before(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline import website_task_context as context
+    kwargs = {"request_id": "req-1", "scene_id": "site-req-1", "capture_id": "walkthrough-req-1", "purpose": "scene_preparation"}
+    assert validate_website_task_context(_context(site_job_facts=None), **kwargs)["site_job_facts"] is None
+    assert facts.record_site_job_facts(tmp_path, IDENTITY, 100.0, read=lambda identity: FACTS)["site_job_facts"] == FACTS
+    monkeypatch.setattr(context, "website_webapp_request", lambda **kwargs: _context(site_job_facts=None))
+    cleared = facts.record_site_job_facts(tmp_path, IDENTITY, 200.0)
+    assert cleared is not None and cleared["site_job_facts"] is None
+    assert json.loads(tmp_path.joinpath(*facts.RECORD_PATH).read_text())["site_job_facts"] is None
+
+
 def test_only_the_job_sheets_read_asks_for_the_answers(monkeypatch) -> None:
     from blueprint_pipeline import website_task_context as context
     sent = []
