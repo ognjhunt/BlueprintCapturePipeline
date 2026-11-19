@@ -324,7 +324,12 @@ def run_atlas_pipeline(*, output_root: Path, **options):
         result = None
         try:
             result = _run_atlas_pipeline(output_root=output_root, **options)
-            if (result.get("mesh_available") and not result.get('observed_scene_only')
+            completion = result.get("scene_completion") or {}
+            codes = [result.get("reason"), completion.get("reason"), (result.get("source_pose") or {}).get("reason"),
+                     *(result.get("blockers") or [])]
+            cap_reached = result.get("status") != "processing" and any(
+                isinstance(code, str) and _reason(ValueError(code)) == JOB_SPEND_CAP for code in codes)
+            if (not cap_reached and result.get("mesh_available") and not result.get('observed_scene_only')
                     and result.get("reason") != SPENDING_CAP_REACHED
                     and requires_task_semantic_analysis(options.get("task_context", {}))):
                 from .website_operation_coverage_review import clarify_operation_coverage
@@ -335,11 +340,7 @@ def run_atlas_pipeline(*, output_root: Path, **options):
             if _reason(exc) != JOB_SPEND_CAP:
                 raise
             return _retained_at_cap(output_root, options, result)
-        completion = result.get("scene_completion") or {}
-        codes = [result.get("reason"), completion.get("reason"), (result.get("source_pose") or {}).get("reason"),
-                 *(result.get("blockers") or [])]
-        if result.get("status") != "processing" and any(
-                isinstance(code, str) and _reason(ValueError(code)) == JOB_SPEND_CAP for code in codes):
+        if cap_reached:
             finished = result if completion.get("status") in (None, "completed") else None
             return _retained_at_cap(output_root, options, finished)
         return result
