@@ -573,6 +573,62 @@ def test_the_sheet_says_how_sure_each_estimate_is_and_names_every_estimate_the_p
     assert next(line for line in lines if line.startswith("Object size")).startswith("Object size: 40 cm × 37 cm × 67 cm, ")
 
 
+def test_the_sheet_says_where_the_object_starts_and_goes_how_high_and_how_much_room_there_is() -> None:
+    """Job 4's sheet gave the shelf as a bare point and said nothing of where the lamp starts or how high either is."""
+    handoff = {"task_object_rigidity": {"rigidity": "rigid", "source": "object_analysis", "reason": "PLANTREASON"}}
+    lines = packet.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, None, handoff, None)
+    assert lines == [
+        "Object: table lamp.",
+        "Rigid or soft: rigid: it keeps its shape when handled (Blueprint's model reading of the video; not checked).",
+        "Material, how fragile it is and how it should be held: not recorded.",
+        "Starts: the middle of its base at (0.277, -0.182, 0.539) m, about 54 cm above the floor (40 cm to 72 cm "
+        "across the scale band).",
+        "Goes to: glass wall shelf; centre (0.470, -1.211, 1.308) m; about 131 cm above the floor (98 cm to 174 cm "
+        "across the scale band).",
+        "Start to destination: about 1.30 m in a straight line (0.97 m to 1.73 m across the scale band), from the "
+        "middle of its base to the place point.",
+        "Positions are in the simulation's coordinates, in metres with z up; heights are above the scene's floor, "
+        "which Blueprint levelled to height 0. Each may also be off by about 8 cm, the registration residual near "
+        "the task."]
+    assert "PLANTREASON" not in "\n".join(lines)  # the model's own words about the object are not quoted
+    # With the fit table: its floor, its grasp rule beside the catalog's gripper, where a base stands, how wide.
+    table = {"inputs": {"scale_band": [0.75, 1.3333], "point_rule": {"grasp": packet.TOP_DOWN_GRASP},
+                        "tool": {"tool_id": "robotiq_2f85"}, "straight_line_m": [0.9, 1.6],
+                        "stations": {"positions_world_m": [[0.9, 0.1, 0.0], [0.9, -0.4, 0.0]]},
+                        "floor_height": {"floor_z_m": 0.01},
+                        "floor_search": {"result": {"floor_z_m": 0.01, "lower_half_m": 0.4, "upper_half_m": 0.45,
+                                                    "upper_hole_possible": True}}}}
+    lines = packet.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, table, {}, None)
+    assert ("Material, how fragile it is and how it should be held: not recorded. The first look on paper assumes a "
+            "robot takes it from above with a two-finger gripper that opens 85 mm (Robotiq 2F-85); whether that "
+            "gripper can hold it was not checked. The object's box is 37 cm across its narrowest side, wider than "
+            "that opening, so it would have to be held by a narrower part or with another tool.") in lines
+    assert any(line.startswith("Starts: ") and "about 53 cm above the floor" in line for line in lines)
+    assert not any(line.startswith("Start to destination") for line in lines)  # the table's carry line says it
+    assert any("heights are above the floor next to the task, as Blueprint's robot fit check found it." in line
+               for line in lines)
+    assert ("Room to stand: 2 clear spot(s) for a 30 cm square robot base were found next to the task.") in lines
+    assert ("Widest clear floor found next to the task: a square at least 60 cm wide; one wider than 120 cm was not "
+            "clear (or the scan has a gap there).") in lines
+    # Without a known floor a height is a bare coordinate, never a guess.
+    bare = packet.object_lines(LAMP, {}, None, None, None)
+    assert any("at height 0.54 in the scene's coordinates (where the floor is: not recorded)" in line for line in bare)
+    assert not any("above the floor" in line for line in bare)
+
+
+def test_the_sheet_says_what_nothing_in_the_packet_measured(tmp_path, job) -> None:
+    inputs = job()
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
+    for line in packet.NOT_MEASURED:
+        assert f"- {line}" in sheet
+    assert "How often the job runs" not in sheet  # the site gave a cycle time
+    _edit(_context_path(inputs), lambda value: _sealed(value["success_criteria"].pop("cycleTimeSeconds") and value,
+                                                       "context_digest"))
+    _seal_first_look(inputs.capture_dir)
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path, "again")))
+    assert "- How often the job runs, or how many an hour: not stated in the files this packet was made from." in sheet
+
+
 def test_kind_of_job_falls_back_to_fixed_words() -> None:
     assert packet.kind_of_job(None, {}) == "a pick-up-and-put-down job"
     assert packet.kind_of_job(None, {"task_family": SENTENCE}) == "a pick-up-and-put-down job"

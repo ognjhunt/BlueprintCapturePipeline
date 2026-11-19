@@ -131,6 +131,23 @@ ESTIMATE_SENTENCES = {
     "task_object_box_fit_offset": "In the frames, the centre of the box Blueprint fitted to the object is off the centre of the object's outline by more than the placement uncertainty. This is how well the box fits the object, not where it sits in the room.",
     "task_object_box_fit_size": "In the frames, the box Blueprint fitted to the object and the object's outline differ in size by more than 15 % along a side, as the object size line says: the size is less certain than the scale band alone suggests.",
 }
+#: Whether the job's object keeps its shape when handled (``task_profile_contracts.task_object_rigidity``, on the
+#: handoff as ``task_object_rigidity``), and which source said so: a model's reading, never a measurement.
+RIGIDITY_WORDS = {"rigid": "rigid: it keeps its shape when handled",
+                  "deformable": "soft: it does not keep its shape when handled",
+                  "unknown": "not known whether it keeps its shape when handled"}
+RIGIDITY_SOURCES = {"object_analysis": "Blueprint's model reading of the video",
+                    "label_word_backstop": "read from the object's name only"}
+#: The fit table's grasp rule (``website_robot_fit``: the object's top plus the tool's length, from above).
+TOP_DOWN_GRASP = "object_top_plus_tool_length_top_down"
+#: What a company must judge for itself: nothing in the files a packet is made from measures or asks these.
+NOT_MEASURED = (
+    "The way in: the route from the site's entrance to the job, its doorways, aisle widths, steps, ramps and floor "
+    "surface were not measured. The scene holds only what the video filmed.",
+    "The surroundings: lighting, how busy the area is and whether people work near the job were not assessed; "
+    "the video shows what it filmed.",
+    "The site's safety rules (guarding, speed limits, distances to keep from people, hours people are present) were "
+    "not asked.")
 #: What set the scene's scale (the preparation's ``coordinate_frame.scale_authority``), in plain words.
 SCALE_WORDS = {"atlas_reference_estimate": "the 3D reconstruction's own estimate",
                "registration_estimate": "fitting the video's geometry to the 3D reconstruction",
@@ -1004,6 +1021,116 @@ def _box_fit_words(prep: Mapping[str, Any]) -> str:
             "so the box may be larger than the object")
 
 
+def floor_height(base_scene: Mapping[str, Any] | None, fit_table: Mapping[str, Any] | None) -> tuple[float, str] | None:
+    """The floor's height in the scene's coordinates, and where it comes from; None when nothing recorded it.
+
+    The robot fit table's floor (the capability verdict's station, else its floor search) first; else 0 when the
+    base scene was levelled on its observed floor (``atlas_world_levelling``: ``ground_plane_offset_m`` is 0 only
+    then, and the preparation's coordinates keep that floor at height 0)."""
+    inputs = _mapping(_mapping(fit_table).get("inputs"))
+    for value in (_mapping(inputs.get("floor_height")).get("floor_z_m"),
+                  _mapping(_mapping(inputs.get("floor_search")).get("result")).get("floor_z_m")):
+        if _number(value) is not None:
+            return float(value), "the floor next to the task, as Blueprint's robot fit check found it"
+    if _number(_mapping(base_scene).get("ground_plane_offset_m")) == 0.0:
+        return 0.0, "the scene's floor, which Blueprint levelled to height 0"
+    return None
+
+
+def _height(z: float, floor: tuple[float, str] | None, band: tuple[float, float] | None) -> str:
+    """A point's height above the floor, across the scale band; its bare coordinate when the floor is unknown."""
+    if floor is None:
+        return f"at height {z:.2f} in the scene's coordinates (where the floor is: {NOT_RECORDED})"
+    above = z - floor[0]
+    if above <= 0:
+        return "at or below the floor's height"
+    return (f"about {_length(above)} above the floor"
+            + (f" ({_length(above * band[0])} to {_length(above * band[1])} across the scale band)" if band else ""))
+
+
+def _metres(value: float) -> str:
+    return f"{value:.2f} m"
+
+
+def _grasp_words(fit_table: Mapping[str, Any] | None, box: tuple[list[float], list[float]] | None) -> str:
+    """What the first look assumed about holding the object (the fit table's grasp rule and the catalog's tool),
+    beside the object's narrowest side; empty without a fit table that took it from above."""
+    inputs = _mapping(_mapping(fit_table).get("inputs"))
+    if _mapping(inputs.get("point_rule")).get("grasp") != TOP_DOWN_GRASP:
+        return ""
+    try:
+        from .robot_spec_catalog import figure_value, load_robot_spec_catalog
+        tool = load_robot_spec_catalog()["default_tool"]
+        stroke = _number(figure_value(tool, "stroke_m"))
+    except Exception:  # noqa: BLE001 - the line is informational; without the catalog it is left out
+        return ""
+    if tool.get("tool_id") != _mapping(inputs.get("tool")).get("tool_id") or stroke is None:
+        return ""
+    words = (f" The first look on paper assumes a robot takes it from above with a two-finger gripper that opens "
+             f"{stroke * 1000:.0f} mm ({_cell(tool.get('name'))}); whether that gripper can hold it was not checked.")
+    if box is not None:
+        narrowest = min(box[1][0] - box[0][0], box[1][1] - box[0][1])
+        if narrowest > stroke:
+            words += (f" The object's box is {_length(narrowest)} across its narrowest side, wider than that opening, "
+                      "so it would have to be held by a narrower part or with another tool.")
+    return words
+
+
+def object_lines(prep: Mapping[str, Any], base_scene: Mapping[str, Any] | None, fit_table: Mapping[str, Any] | None,
+                 handoff: Mapping[str, Any] | None, criteria: Mapping[str, Any] | None) -> list[str]:
+    """The object, where it starts and where it goes, with heights above the floor and the room next to the task:
+    every figure the preparation, the base scene and the fit table already hold, each with how sure it is."""
+    subject, destination = _mapping(prep.get("subject")), _mapping(prep.get("destination"))
+    target = _mapping(_mapping(criteria).get("surface_target"))
+    place = target.get("visible_label") or destination.get("visible_label")
+    centre = target.get("surface_position_world_m") or destination.get("position_world_m")
+    band, floor, box = scale_band(prep, fit_table), floor_height(base_scene, fit_table), _box(subject)
+    lines = [f"Object: {_cell(subject.get('description'))}."] if subject.get("description") else []
+    rigidity = _mapping(_mapping(handoff).get("task_object_rigidity"))
+    if rigidity.get("rigidity") in RIGIDITY_WORDS:
+        lines.append(f"Rigid or soft: {RIGIDITY_WORDS[rigidity['rigidity']]} "
+                     f"({RIGIDITY_SOURCES.get(rigidity.get('source'), 'its source is not recorded')}; not checked).")
+    lines.append("Material, how fragile it is and how it should be held: not recorded." + _grasp_words(fit_table, box))
+    start = None
+    if box is not None:
+        start = [(box[0][0] + box[1][0]) / 2, (box[0][1] + box[1][1]) / 2, box[0][2]]
+        lines.append(f"Starts: the middle of its base at {_point(start)}, {_height(start[2], floor, band)}.")
+    goal = ([float(v) for v in centre] if isinstance(centre, (list, tuple)) and len(centre) == 3
+            and all(_number(v) is not None for v in centre) else None)
+    if place or centre is not None:
+        lines.append("Goes to: " + "; ".join(item for item in (
+            _cell(place) if place else "", f"centre {_point(centre)}" if centre is not None else "",
+            f"within {_length(target.get('radius_m') or destination.get('radius_m'))}"
+            if (target.get("radius_m") or destination.get("radius_m")) is not None else "",
+            _height(goal[2], floor, band) if goal is not None else "") if item) + ".")
+    inputs = _mapping(_mapping(fit_table).get("inputs"))
+    if start is not None and goal is not None and inputs.get("straight_line_m") is None:
+        distance = math.dist(start, goal)
+        lines.append(f"Start to destination: about {_metres(distance)} in a straight line"
+                     + (f" ({_metres(distance * band[0])} to {_metres(distance * band[1])} across the scale band)"
+                        if band else "") + ", from the middle of its base to the place point.")
+    residual = _number(_mapping(prep.get("coordinate_frame")).get("placement_uncertainty_m"))
+    lines.append("Positions are in the simulation's coordinates, in metres with z up"
+                 + (f"; heights are above {floor[1]}" if floor else "") + "."
+                 + (f" Each may also be off by about {_length(residual)}, the registration residual near the task."
+                    if residual is not None and residual > 0 else ""))
+    stations = _mapping(inputs.get("stations")).get("positions_world_m")
+    if isinstance(stations, list):
+        from .team_scene_packet import STATION_FOOTPRINT_HALF_EXTENT_M
+        base = _length(2 * max(STATION_FOOTPRINT_HALF_EXTENT_M))
+        lines.append(f"Room to stand: {len(stations)} clear spot(s) for a {base} square robot base were found next "
+                     "to the task." if stations else f"Room to stand: no clear spot for a {base} square robot base was "
+                     "found next to the task; the scan may have gaps there.")
+    found = _mapping(_mapping(inputs.get("floor_search")).get("result"))
+    lower, upper = _number(found.get("lower_half_m")), _number(found.get("upper_half_m"))
+    if band is not None and lower is not None and lower > 0:
+        lines.append(f"Widest clear floor found next to the task: a square at least {_length(2 * lower * band[0])} "
+                     "wide" + ((f"; one wider than {_length(2 * upper * band[1])} was not clear"
+                                + (" (or the scan has a gap there)" if found.get("upper_hole_possible") else ""))
+                               if upper is not None else ", the widest searched") + ".")
+    return lines
+
+
 def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[str, Any] | None,
                             fit_table: Mapping[str, Any] | None) -> tuple[list[str], list[str]]:
     prep = preparation
@@ -1460,18 +1587,8 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
     if sheet[-1] == "":
         sheet.append("The site stated nothing beyond its description.")
     if prep:
-        subject, destination = _mapping(prep.get("subject")), _mapping(prep.get("destination"))
-        target = _mapping(_mapping(criteria).get("surface_target"))
-        place = target.get("visible_label") or destination.get("visible_label")
-        centre = target.get("surface_position_world_m") or destination.get("position_world_m")
         sheet += ["", "## The object and where it goes", ""]
-        if subject.get("description"):
-            sheet.append(f"- Object: {_cell(subject.get('description'))}.")
-        if place or centre is not None:
-            sheet.append("- Goes to: " + "; ".join(item for item in (
-                _cell(place) if place else "", f"centre {_point(centre)}" if centre is not None else "",
-                f"within {_length(target.get('radius_m') or destination.get('radius_m'))}"
-                if (target.get("radius_m") or destination.get("radius_m")) is not None else "") if item) + ".")
+        sheet += [f"- {line}" for line in object_lines(prep, base_scene, fit_table, handoff, criteria)]
         measured, estimated = _measured_and_estimated(prep, base_scene, fit_table)
         sheet += ["", "## Measured", ""] + [f"- {line}" for line in measured]
         sheet += ["", "## Estimated", ""] + [f"- {line}" for line in estimated]
@@ -1494,7 +1611,11 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
               "## What this packet does not show", "",
               "- No test at the site: everything here comes from one video" + (" and a simulation of it." if simulation
                                                                                else "."),
-              "- No safety assessment of any robot at this site.", ""]
+              "- No safety assessment of any robot at this site.",
+              *(f"- {line}" for line in NOT_MEASURED),
+              *([] if stated.get("cycleTimeSeconds") not in (None, "") else
+                ["- How often the job runs, or how many an hour: not stated in the files this packet was made from."]),
+              ""]
     if any(removed):
         sheet[6] += " Contact details the site typed into its description or answers were removed."
 
