@@ -26,6 +26,22 @@ PROMPT = (
     "without directions or instructions), reason. "
     "If the intended object is absent, obscured, or ambiguous, set visible false. "
 )
+#: Thinking tokens share the output limit (``website_assembly_coverage.CLASSIFIER_MAX_OUTPUT_TOKENS``). Test job
+#: itest-917ca852 (2026-11-19) sent this look twice at 2048 tokens and Gemini 3.8's default effort; each ran about
+#: 20 s and neither ended with STOP, so the drawer was never located. Why was not kept; thinking that used up the
+#: limit is the likely reason. A box and a short noun need little reasoning: low effort with room to spare, as the
+#: video analysis, ``website_build_choice`` and ``website_assembly_coverage`` already ask.
+MAX_OUTPUT_TOKENS = 8192
+THINKING_LEVEL = "low"
+#: The ceiling an older release sent this look with, at default effort and with no ``thinking_level`` in its binding.
+#: Its completed answer is reused as it stands, so a job grounded before keeps its noun and its masks
+#: (``retained_gemini_call``'s ``earlier_requests``); one with no answer is asked once more in the current form.
+EARLIER_MAX_OUTPUT_TOKENS = 2048
+#: The model's answer did not finish (no candidate, or a finish reason other than STOP). The answer is kept on the
+#: receipt with its reason, so a retry reads it again at $0 and never buys it again.
+INCOMPLETE = "website_task_grounding_incomplete"
+#: The model looked and was not sure, or gave no usable box or noun.
+UNCERTAIN = "website_task_grounding_uncertain"
 
 
 def validate_grounding(value: Mapping[str, Any], *, target: Mapping[str, Any], timestamp: float,
@@ -39,11 +55,40 @@ def validate_grounding(value: Mapping[str, Any], *, target: Mapping[str, Any], t
             or min(box[:2]) < 0 or min(box[2:]) <= 0 or box[0] + box[2] > 1 or box[1] + box[3] > 1
             or not isinstance(concept, str) or not 0 < len(concept.strip()) <= 200
             or not isinstance(reason, str) or not reason.strip()):
-        raise ValueError("website_task_grounding_uncertain")
+        raise ValueError(UNCERTAIN)
     return {**target, "segmentation_prompt": concept.strip(),
             "spatial_evidence": [{"timestamp_seconds": timestamp, "box_xywh_normalized": box}],
             "grounding": {"source_frame_id": frame_id, "image_digest": image_digest,
                           "confidence": confidence, "reason": reason, "basis": "model_exact_frame_observation"}}
+
+
+def grounding_answer(response: Any) -> dict[str, Any]:
+    """What the provider answered, kept as it is: every answer is retained, so a retry never buys another.
+
+    An answer that did not finish (no candidate, or a finish reason other than STOP) or is not JSON keeps no
+    observation, with why and the tokens it used, so the receipt says what happened instead of staying
+    ``submitting`` and being counted as spent and sent again.
+    """
+    candidates = getattr(response, "candidates", None) or []
+    reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+    reason = getattr(reason, "value", reason)
+    if reason == "STOP":
+        try:
+            return {"observation": json.loads(response.text)}
+        except (TypeError, ValueError):
+            pass
+    try:
+        text = response.text or ""
+    except (AttributeError, TypeError, ValueError):
+        text = ""
+    usage = getattr(response, "usage_metadata", None)
+    return {"observation": None,
+            "finish_reason": ("STOP_unparseable" if reason == "STOP" else
+                              "no_candidates" if not candidates else str(reason)),
+            "partial_output": text[:2000],
+            "token_usage": {key: getattr(usage, key) for key in (
+                "prompt_token_count", "candidates_token_count", "thoughts_token_count", "total_token_count")
+                if isinstance(getattr(usage, key, None), int)}}
 
 
 def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[str, Any]],
@@ -123,12 +168,18 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
         )
     binding = {"kind": "exact_frame_task_grounding", "model": DEFAULT_MODEL, "prompt": prompt,
                "source_video_digest": video["sha256"], "frame": dict(frame), "image_digest": image_digest,
-               "max_output_tokens": 2048, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
+               "max_output_tokens": MAX_OUTPUT_TOKENS, "thinking_level": THINKING_LEVEL,
+               "media_resolution": "MEDIA_RESOLUTION_HIGH"}
     if crop_path is not None:
         binding["concept_recovery"] = {"failed_prompt": failed_segmentation_prompt,
                                       "also_rejected": list(also_rejected),
                                       "failure_kind": "matched_part" if matched_only_part else "no_instance",
                                       "crop_box_pixels": crop_box, "crop_digest": _sha256_file(crop_path)}
+    input_tokens = len(prompt.encode()) + 3168 * (2 if crop_path else 1)
+    earlier = {**{key: value for key, value in binding.items() if key != "thinking_level"},
+               "max_output_tokens": EARLIER_MAX_OUTPUT_TOKENS}
+    earlier_cost = gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens,
+                                max_output_tokens=EARLIER_MAX_OUTPUT_TOKENS)
 
     def preflight():
         if not _api_key()[0]:
@@ -146,17 +197,22 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
             handoff_lease_checkpoint("gemini_task_target_grounding")
             response = client.models.generate_content(model=DEFAULT_MODEL,
                 contents=contents,
-                config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048,
+                config=types.GenerateContentConfig(response_mime_type="application/json",
+                                                   max_output_tokens=MAX_OUTPUT_TOKENS,
+                                                   thinking_config=types.ThinkingConfig(thinking_level=THINKING_LEVEL),
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
-        if not response.candidates or response.candidates[0].finish_reason != "STOP":
-            raise ValueError("website_task_grounding_incomplete")
-        # Retain uncertain answers too; a retry must not buy another answer.
-        return {"observation": json.loads(response.text)}
+        return grounding_answer(response)
 
     result = retained_gemini_call(output_root=output_root / "receipts", binding=binding, task_context=task_context,
-        maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=len(prompt.encode()) + 3168 * (2 if crop_path else 1),
-                                     max_output_tokens=2048), preflight=preflight, invoke=invoke)
-    grounded = validate_grounding(result["observation"], target=target, timestamp=frame["decoded_pts_seconds"],
+        maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens,
+                                     max_output_tokens=MAX_OUTPUT_TOKENS), preflight=preflight, invoke=invoke,
+        earlier_requests=[(earlier, earlier_cost)])
+    observation = result.get("observation")
+    if observation is None:
+        raise ValueError(INCOMPLETE)
+    if not isinstance(observation, Mapping):
+        raise ValueError(UNCERTAIN)
+    grounded = validate_grounding(observation, target=target, timestamp=frame["decoded_pts_seconds"],
                                   frame_id=frame["source_frame_id"], image_digest=image_digest)
     grounded["grounding"]["source_image_path"] = str(image_path)
     return grounded
