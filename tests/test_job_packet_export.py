@@ -521,6 +521,115 @@ def test_a_missing_video_is_said_plainly(tmp_path, job) -> None:
     assert "The video is not in this packet." in sheet and "Not in it: the video." in sheet
 
 
+def test_every_estimate_the_pipeline_records_has_a_plain_sentence() -> None:
+    from blueprint_pipeline.atlas_scene_estimates import CODES, TASK_OBJECT_BOX_FIT_FLAGS
+    assert CODES | TASK_OBJECT_BOX_FIT_FLAGS <= set(packet.ESTIMATE_SENTENCES)
+
+
+#: A preparation as test job 4's was (a table lamp to a glass wall shelf, 2026-11-18): every estimate it records.
+LAMP = {"subject": {"description": "table lamp", "aabb_min_xyz": [0.078, -0.3697, 0.539],
+                    "aabb_max_xyz": [0.476, 0.005, 1.208], "complete_object_dimensions": False},
+        "destination": {"relation": "on", "visible_label": "glass wall shelf", "position_world_m": [0.470, -1.211, 1.308]},
+        "registration": {"task_region": {"radius_m": 1.0, "trimmed_rmse_m": 0.075}},
+        "coordinate_frame": {"scale_authority": "atlas_reference_estimate", "physical_scale_measured": False,
+                             "placement_uncertainty_m": 0.075, "task_coordinates": "Z_up_estimated_meters"},
+        "authoring_inputs": {"metric_envelope": {"maximum_dimension_relative_error": 0.25}},
+        "physics": {"bounds": {"mass_kg": [0.999, 249.8]}},
+        "video_box_fit_check": {"flags": ["task_object_box_fit_offset", "task_object_box_fit_size"],
+                                "summary": {"median_size_ratio": {"x": 0.643, "y": 0.467}}},
+        "support_height_agreement": {"flags": ["scene_estimate:support_height_differs_from_picture"],
+                                     "start_task_plane_minus_picture_m": -0.0786,
+                                     "goal_task_plane_minus_picture_m": -0.0828}}
+
+
+def test_the_sheet_says_how_sure_each_estimate_is_and_names_every_estimate_the_preparation_records(tmp_path) -> None:
+    """Job 4's sheet gave the lamp's size bare and left four of the preparation's own estimates out."""
+    from blueprint_pipeline.atlas_scene_estimates import preparation_flags, preparation_record_flags
+    measured, estimated = packet._measured_and_estimated(LAMP, {"scene_estimates": []}, None)
+    assert estimated[0] == ("Scale: set by the 3D reconstruction's own estimate, not measured at the site. Sizes, "
+                            "heights and distances may be 0.75 to 1.33 times those given here (the scale band).")
+    assert ("Object size: 40 cm × 37 cm × 67 cm (30 cm × 28 cm × 50 cm to 53 cm × 50 cm × 89 cm across the scale "
+            "band), from the video; in the frames its outline measures 64 % and 47 % of the box along its sides "
+            "(median), so the box may be larger than the object.") in estimated
+    assert ("The object's box is fitted to the parts of it the frames show; Blueprint did not check that every side "
+            "of it was filmed.") in estimated
+    # Only where it starts: the check's goal figure compares the start's seat with another surface.
+    assert ("Surface height under the object: where it starts, the simulation seats it 8 cm below the surface the "
+            "reconstruction's picture shows there; not corrected.") in estimated
+    assert "Mass estimate: 0.999–250 kg, a prior from the object's size, not weighed." in estimated
+    flags = {"scene_estimate:placement_uncertainty", "scene_estimate:support_height_differs_from_picture",
+             "task_object_box_fit_offset", "task_object_box_fit_size"}
+    for code in flags:
+        assert f"`{code}`: {packet.ESTIMATE_SENTENCES[code]}" in estimated
+    assert not any("no plain sentence" in line for line in estimated)
+    # The record's own flags are the ones the publication reads beside the native records.
+    path = tmp_path / "preparation.json"
+    path.write_text(json.dumps(LAMP))
+    assert preparation_record_flags(LAMP) == preparation_flags(path) == flags
+    # Without a dimension prior or a fit table nothing is said about how far sizes may be off.
+    bare = {key: value for key, value in LAMP.items() if key != "authoring_inputs"}
+    lines = packet._measured_and_estimated(bare, None, None)[1]
+    assert "How far sizes may be off: not recorded." in lines[0]
+    assert next(line for line in lines if line.startswith("Object size")).startswith("Object size: 40 cm × 37 cm × 67 cm, ")
+
+
+def test_the_sheet_says_where_the_object_starts_and_goes_how_high_and_how_much_room_there_is() -> None:
+    """Job 4's sheet gave the shelf as a bare point and said nothing of where the lamp starts or how high either is."""
+    handoff = {"task_object_rigidity": {"rigidity": "rigid", "source": "object_analysis", "reason": "PLANTREASON"}}
+    lines = packet.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, None, handoff, None)
+    assert lines == [
+        "Object: table lamp.",
+        "Rigid or soft: rigid: it keeps its shape when handled (Blueprint's model reading of the video; not checked).",
+        "Material, how fragile it is and how it should be held: not recorded.",
+        "Starts: the middle of its base at (0.277, -0.182, 0.539) m, about 54 cm above the floor (40 cm to 72 cm "
+        "across the scale band).",
+        "Goes to: glass wall shelf; centre (0.470, -1.211, 1.308) m; about 131 cm above the floor (98 cm to 174 cm "
+        "across the scale band).",
+        "Start to destination: about 1.30 m in a straight line (0.97 m to 1.73 m across the scale band), from the "
+        "middle of its base to the place point.",
+        "Positions are in the simulation's coordinates, in metres with z up; heights are above the scene's floor, "
+        "which Blueprint levelled to height 0. Each may also be off by about 8 cm, the registration residual near "
+        "the task."]
+    assert "PLANTREASON" not in "\n".join(lines)  # the model's own words about the object are not quoted
+    # With the fit table: its floor, its grasp rule beside the catalog's gripper, where a base stands, how wide.
+    table = {"inputs": {"scale_band": [0.75, 1.3333], "point_rule": {"grasp": packet.TOP_DOWN_GRASP},
+                        "tool": {"tool_id": "robotiq_2f85"}, "straight_line_m": [0.9, 1.6],
+                        "stations": {"positions_world_m": [[0.9, 0.1, 0.0], [0.9, -0.4, 0.0]]},
+                        "floor_height": {"floor_z_m": 0.01},
+                        "floor_search": {"result": {"floor_z_m": 0.01, "lower_half_m": 0.4, "upper_half_m": 0.45,
+                                                    "upper_hole_possible": True,
+                                                    "searches": [{"half_extent_m": 0.45, "clear": False}]}}}}
+    lines = packet.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, table, {}, None)
+    assert ("Material, how fragile it is and how it should be held: not recorded. The first look on paper assumes a "
+            "robot takes it from above with a two-finger gripper that opens 85 mm (Robotiq 2F-85); whether that "
+            "gripper can hold it was not checked. The object's box is 37 cm across its narrowest side, wider than "
+            "that opening, so it would have to be held by a narrower part or with another tool.") in lines
+    assert any(line.startswith("Starts: ") and "about 53 cm above the floor" in line for line in lines)
+    assert not any(line.startswith("Start to destination") for line in lines)  # the table's carry line says it
+    assert any("heights are above the floor next to the task, as Blueprint's robot fit check found it." in line
+               for line in lines)
+    assert ("Room to stand: 2 clear spot(s) for a 30 cm square robot base were found next to the task.") in lines
+    assert ("Widest clear floor found next to the task: a square at least 60 cm wide; one wider than 120 cm was not "
+            "clear (or the scan has a gap there).") in lines
+    # Without a known floor a height is a bare coordinate, never a guess.
+    bare = packet.object_lines(LAMP, {}, None, None, None)
+    assert any("at height 0.54 in the scene's coordinates (where the floor is: not recorded)" in line for line in bare)
+    assert not any("above the floor" in line for line in bare)
+
+
+def test_the_sheet_says_what_nothing_in_the_packet_measured(tmp_path, job) -> None:
+    inputs = job()
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
+    for line in packet.NOT_MEASURED:
+        assert f"- {line}" in sheet
+    assert "How often the job runs" not in sheet  # the site gave a cycle time
+    _edit(_context_path(inputs), lambda value: _sealed(value["success_criteria"].pop("cycleTimeSeconds") and value,
+                                                       "context_digest"))
+    _seal_first_look(inputs.capture_dir)
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path, "again")))
+    assert "- How often the job runs, or how many an hour: not stated in the files this packet was made from." in sheet
+
+
 def test_kind_of_job_falls_back_to_fixed_words() -> None:
     assert packet.kind_of_job(None, {}) == "a pick-up-and-put-down job"
     assert packet.kind_of_job(None, {"task_family": SENTENCE}) == "a pick-up-and-put-down job"
@@ -1623,6 +1732,42 @@ def test_ordinary_job_words_like_lane_or_road_are_never_removed(text):
 def test_named_or_coded_streets_are_still_removed(text, kept):
     redacted, found = packet.redact_contacts(text)
     assert found and "[removed]" in redacted and kept in redacted
+
+
+def test_a_preparations_frame_ids_are_not_contact_details_but_a_number_in_a_printed_label_is(tmp_path, job) -> None:
+    """Every real preparation names its frames ``decoded-000000015``: job 4's sheet said the site's contact details
+    were removed when the site had typed none."""
+    inputs = job()
+    prep = inputs.capture_dir / PREP / "preparation.json"
+    _edit(prep, lambda value: value["authoring_inputs"].update(source_frames=[
+        {"frame_id": "decoded-000000015"}, {"frame_id": "decoded-000000027"}]))
+    _seal_first_look(inputs.capture_dir)
+    assert "Contact details" not in _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
+    _edit(prep, lambda value: value["subject"].update(description=f"tray, order line {PHONE}"))
+    _seal_first_look(inputs.capture_dir)
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path, "again")))
+    assert PHONE not in sheet and "- Object: tray, order line [removed]." in sheet
+    assert "Contact details the site typed into its description or answers were removed." in sheet.split("\n")[6]
+    # A street address in a printed label is removed and said, as #3648 removes one from the site's own words.
+    _edit(prep, lambda value: value["subject"].update(description="tray from 400 Elm Street Suite 5"))
+    _seal_first_look(inputs.capture_dir)
+    sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path, "street")))
+    assert "Elm Street" not in sheet and "- Object: tray from [removed]." in sheet
+    assert "Contact details the site typed into its description or answers were removed." in sheet.split("\n")[6]
+
+
+
+
+def test_a_floor_search_the_time_budget_stopped_claims_nothing_about_wider_floor():
+    """Review of #3650: an upper bound no search failed at is the search's limit, not a measured restriction."""
+    table = {"inputs": {"scale_band": [0.75, 1.3333], "floor_height": {"floor_z_m": 0.01},
+                        "floor_search": {"result": {"floor_z_m": 0.01, "lower_half_m": 0.4, "upper_half_m": 0.9,
+                                                    "budget_exhausted": True, "searches": []}}}}
+    lines = packet.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, table, {}, None)
+    widest = [line for line in lines if line.startswith("Widest clear floor")]
+    assert widest == ["Widest clear floor found next to the task: a square at least 60 cm wide; wider floor was not "
+                      "assessed."]
+    assert not any("was not clear" in line for line in lines)
 
 # --- money: no price, and none of Blueprint's own spend, reaches the packet ----------------------------------------
 

@@ -57,7 +57,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-__all__ = ["CODES", "FIELD", "analysis_guess_flags", "base_scene_flags", "capture_scene_flags", "scene_estimates"]
+__all__ = ["CODES", "FIELD", "analysis_guess_flags", "base_scene_flags", "capture_scene_flags", "preparation_flags",
+           "preparation_record_flags", "scene_estimates"]
 
 FIELD = "scene_estimates"
 LEVEL, APPEARANCE, FLOOR = "scene_estimate:level", "scene_estimate:splat_view_dependence_dropped", "scene_estimate:floor"
@@ -181,11 +182,30 @@ def capture_scene_flags(capture_root: Path) -> list[str]:
 
 
 def preparation_flags(path: Path) -> set[str]:
-    """The estimate codes the preparation's own choices recorded (``destination_choice``)."""
+    """The estimate codes the preparation's own choices recorded (``preparation_record_flags``), and those of the
+    paper robot fit and the capability verdict beside it (``native/``)."""
     try:
         value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
     except (OSError, ValueError):
         return set()
+    if not isinstance(value, Mapping):
+        return set()
+    codes = preparation_record_flags(value)
+    fit = _robot_fit_none(path.parent / "native" / "robot_fit_precheck.json")
+    codes |= {fit} if fit else set()
+    try:
+        verdict = json.loads((path.parent / "native" / "capability_verdict.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        verdict = {}
+    if isinstance(verdict, Mapping) and verdict.get("status") == "abstained":
+        codes.add(CAPABILITY_UNASSESSED)
+    return codes
+
+
+def preparation_record_flags(value: Mapping[str, Any]) -> set[str]:
+    """The estimate codes the preparation record itself carries (``destination_choice``, the registration's
+    ambiguity and residual, the box-fit and support-height checks, the support guess, the destination surface,
+    the object's extent and overhang). Pure: the job packet reads these from the record it pulled."""
     if not isinstance(value, Mapping):
         return set()
     choice = value.get("destination_choice")
@@ -209,16 +229,7 @@ def preparation_flags(path: Path) -> set[str]:
     flags += [code for code in (extent.get("flag"), _mapping(extent.get("published_cross_check")).get("flag"),
                                 _mapping(value.get("destination_overhang")).get("flag"))
               if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG)]
-    codes = {code for code in flags if code in CODES} | (box_fit & TASK_OBJECT_BOX_FIT_FLAGS)
-    fit = _robot_fit_none(path.parent / "native" / "robot_fit_precheck.json")
-    codes |= {fit} if fit else set()
-    try:
-        verdict = json.loads((path.parent / "native" / "capability_verdict.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        verdict = {}
-    if isinstance(verdict, Mapping) and verdict.get("status") == "abstained":
-        codes.add(CAPABILITY_UNASSESSED)
-    return codes
+    return {code for code in flags if code in CODES} | (box_fit & TASK_OBJECT_BOX_FIT_FLAGS)
 
 
 def _robot_fit_none(path: Path) -> str | None:
