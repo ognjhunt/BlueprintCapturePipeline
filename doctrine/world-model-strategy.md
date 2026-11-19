@@ -7,11 +7,8 @@ All backend and infrastructure choices serve the one active program: the
 packet the unit of the product. The simulation of
 the site is how a job becomes testable without a visit; it is a means, not the
 product. Reuse capture, reconstruction and site-package paths to build it.
-Blueprint's own test of openly available robot software is an early trial
-inside the packet, never the site's answer. It covers every kind of robot
-body: arms, mobile manipulators, wheeled humanoids and humanoids. Hardening the
-automatic test for every kind of job, several objects or unattended scale is
-paused.
+Blueprint runs no robot software in the simulation: the owner dropped the
+early trial on 2026-11-14.
 
 World models, classical simulators, reconstruction systems, 3DGS renderers,
 SimReady tools, analytic geometry, learned evaluators, and physical evidence are

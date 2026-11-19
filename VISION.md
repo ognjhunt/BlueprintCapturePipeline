@@ -17,8 +17,7 @@ The **free beta** horizon is **real jobs turned into job packets that
 deployment companies answer**. A site films one recurring job once. Blueprint
 turns the video into a job packet: the site's own sentence for the job, the
 video with its rights recorded, a first look on paper, a simulation of the
-site with the job's object in it, the success rule, and, where one exists, an
-early trial of openly available robot software. Sharing is the service:
+site with the job's object in it, and the success rule. Sharing is the service:
 Blueprint shares it with the deployment companies it has approved and shows
 the site their responses. The site and a deployment company agree any work directly.
 
