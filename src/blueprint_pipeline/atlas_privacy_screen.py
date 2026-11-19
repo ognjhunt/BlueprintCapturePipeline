@@ -40,10 +40,12 @@ FACE_MARGIN = 0.35
 MAXIMUM_DETECTION_SIDE = 4096
 
 #: Privacy Policy versions whose footage is not face-blurred (owner decision 2026-11-17).
-#: The website publishes exactly one of these two, named for the UTC day its change
-#: deploys; the other will never appear in a sealed grant. A later Privacy Policy
-#: version must be added here deliberately when it is written, or its footage is blurred.
-NO_FACE_BLUR_PRIVACY_VERSIONS = frozenset({"2026-11-17.1", "2026-11-18.1"})
+#: The website names a version for the UTC day its change deploys, so each change lists
+#: both days it could land on; the unused one never appears in a sealed grant. 2026-11-17
+#: (or -18) stopped blurring; 2026-11-19 (or -20) removed the early trial (owner,
+#: 2026-11-19) and keeps no blurring. A later Privacy Policy version must be added here
+#: deliberately when it is written, or its footage is blurred.
+NO_FACE_BLUR_PRIVACY_VERSIONS = frozenset({"2026-11-17.1", "2026-11-18.1", "2026-11-19.1", "2026-11-20.1"})
 NO_FACE_BLUR_METHOD = "no_face_blur"
 #: The grant the capture's delivery retained beside its pipeline (``website_task_evidence``).
 GRANT_FILE = "website_scene_sponsorship.json"

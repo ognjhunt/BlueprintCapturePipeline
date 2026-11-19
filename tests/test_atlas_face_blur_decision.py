@@ -61,7 +61,7 @@ def test_a_listed_version_skips_the_blur_and_names_why(tmp_path, version):
 
 
 def test_the_listed_set_is_exactly_the_two_candidate_versions():
-    assert privacy.NO_FACE_BLUR_PRIVACY_VERSIONS == frozenset({"2026-11-17.1", "2026-11-18.1"})
+    assert privacy.NO_FACE_BLUR_PRIVACY_VERSIONS == frozenset({"2026-11-17.1", "2026-11-18.1", "2026-11-19.1", "2026-11-20.1"})
 
 
 @pytest.mark.parametrize("version", ["absent", None, "", "2026-11-13.1", "2026-11-12.2", "2026-11-25.1",
