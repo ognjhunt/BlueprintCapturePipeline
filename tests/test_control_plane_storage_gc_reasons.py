@@ -32,6 +32,7 @@ REAL_PROCESS_REFERENCE = retention.process_reference
 _SWITCHES = {
     "BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD": "evidence_offload",
     "BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT": "scene_workspace_retirement",
+    "BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_SLIMMING": "scene_workspace_slimming",
     "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION": "replay_cache_retention",
     "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH": "replay_cache_shared_scratch",
     "BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS": "extended_pin_proofs",
@@ -321,8 +322,8 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert (summary["status"], summary["observed_at_epoch"]) == ("applied", report["observed_at_epoch"])
     assert summary["source_report_digest"] == report["report_digest"]
     assert summary["opt_in"] == {
-        "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False,
-        "replay_cache_shared_scratch": False, "extended_pin_proofs": False, "lane_scratch": False,
+        "evidence_offload": False, "scene_workspace_retirement": False, "scene_workspace_slimming": False,
+        "replay_cache_retention": False, "replay_cache_shared_scratch": False, "extended_pin_proofs": False, "lane_scratch": False,
         "result_residue_offload": False}
     # Both the report-only lane scratch phase and the residue offload phase reach the summary.
     assert summary["phases"]["lane_scratch"]["mode"] == "report_only"
@@ -442,8 +443,8 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     assert "run-1" not in json.dumps(summary)
     # A report written before the tick recorded its opt-ins does not claim they were off.
     assert summary["opt_in"] == {
-        "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None,
-        "replay_cache_shared_scratch": None, "extended_pin_proofs": None, "lane_scratch": None,
+        "evidence_offload": None, "scene_workspace_retirement": None, "scene_workspace_slimming": None,
+        "replay_cache_retention": None, "replay_cache_shared_scratch": None, "extended_pin_proofs": None, "lane_scratch": None,
         "result_residue_offload": None}
 
 

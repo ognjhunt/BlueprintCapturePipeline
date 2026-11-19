@@ -43,7 +43,7 @@ def test_default_gc_does_not_collect_processes_or_add_new_output(tmp_path, monke
 @pytest.mark.slow
 def test_cli_forwards_one_explicit_target_and_ordinary_default(tmp_path, monkeypatch):
     captured = []
-    monkeypatch.setattr(gc, 'running_release_commit', lambda: '')
+    monkeypatch.setattr(gc, 'running_release_commit', lambda *args: '')
     monkeypatch.setattr(gc, 'run_storage_gc', lambda **options: captured.append(options) or {})
     assert gc.main(['run', '--pins-root', str(tmp_path), '--lane-reference-target', '/mnt/blueprint-work/lanes/g1/pair']) == 0
     assert captured[-1]['lane_reference_target'] == '/mnt/blueprint-work/lanes/g1/pair'
@@ -58,7 +58,7 @@ def test_cli_forwards_one_explicit_target_and_ordinary_default(tmp_path, monkeyp
     ['--lane-reference-t', '/private-secret', '--hot-window-seconds', 'secret-invalid'],
 ])
 def test_selected_report_cli_parse_errors_never_echo_raw_arguments(arguments, capsys, monkeypatch):
-    monkeypatch.setattr(gc, 'running_release_commit', lambda: '')
+    monkeypatch.setattr(gc, 'running_release_commit', lambda *args: '')
     assert gc.main(['run', *arguments]) == 2
     captured = capsys.readouterr()
     assert captured.err == ''
@@ -68,7 +68,7 @@ def test_selected_report_cli_parse_errors_never_echo_raw_arguments(arguments, ca
 
 @pytest.mark.slow
 def test_ordinary_gc_parser_keeps_its_existing_error_behavior(capsys, monkeypatch):
-    monkeypatch.setattr(gc, 'running_release_commit', lambda: '')
+    monkeypatch.setattr(gc, 'running_release_commit', lambda *args: '')
     with pytest.raises(SystemExit) as error:
         gc.main(['run', '--unknown-ordinary'])
     assert error.value.code == 2

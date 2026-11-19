@@ -245,11 +245,11 @@ PHASES = (
     "workspace_bundles",
     "settled_activation_bundles",
     "replay_caches",
-    "scene_workspaces", "lane_scratch", "registered_experiments",
+    "scene_workspaces", "scene_workspace_slimming", "lane_scratch", "registered_experiments",
 )
 OPT_INS = (
-    "evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "replay_cache_shared_scratch",
-    "extended_pin_proofs", "lane_scratch", "result_residue_offload",
+    "evidence_offload", "scene_workspace_retirement", "scene_workspace_slimming", "replay_cache_retention",
+    "replay_cache_shared_scratch", "extended_pin_proofs", "lane_scratch", "result_residue_offload",
 )
 _REMOVED_KEYS = ("removed_bytes", "offloaded_bytes", "retired_bytes")
 _MAX_REASONS = 50

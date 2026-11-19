@@ -1300,6 +1300,8 @@ def run_storage_gc(
     scene_binding_root: str | Path | None = None,
     scene_workspace_retirement_enabled: bool = False,
     scene_workspace_retirement_alert: str | None = None,
+    scene_workspace_slimming_enabled: bool = False,
+    scene_workspace_slimming_alert: str | None = None,
     scene_cloud_factory: Callable[[], Any] | None = None,
     scene_stream_publisher: Callable[..., Any] | None = None,
     scene_process_checker: Callable[[Path], bool] | None = None,
@@ -1349,6 +1351,7 @@ def run_storage_gc(
             "evidence_offload": bool(offload_enabled),
             "result_residue_offload": bool(result_residue_offload_enabled),
             "scene_workspace_retirement": bool(scene_workspace_retirement_enabled),
+            "scene_workspace_slimming": bool(scene_workspace_slimming_enabled),
             "replay_cache_retention": bool(replay_cache_retention_enabled),
             "replay_cache_shared_scratch": bool(replay_cache_shared_scratch_enabled),
             "extended_pin_proofs": bool(extended_pin_proofs_enabled),
@@ -1356,7 +1359,7 @@ def run_storage_gc(
         },
         "skipped_roots": [],
     }
-    alerts = [alert for alert in (scene_workspace_retirement_alert, replay_cache_retention_alert,
+    alerts = [alert for alert in (scene_workspace_retirement_alert, scene_workspace_slimming_alert, replay_cache_retention_alert,
                                   replay_cache_shared_scratch_alert, extended_pin_proofs_alert) if alert]
     if alerts:
         report["alerts"] = alerts
@@ -1569,36 +1572,37 @@ def run_storage_gc(
     report["skipped_roots"].extend(absent)
     if scene_present:
         def scene_phase() -> Any:
-            from .website_scene_workspace_retention import GcsCloudInventory, RetentionContext, scene_queue_roots
+            from .website_scene_workspace_retention import GcsCloudInventory, timer_context_factory
 
             for root in scene_present:
                 classifier(str(root), expected="work", code="control_plane_storage_gc_scene_workspace_root_class")
-            intent_root = Path(scene_intent_root) if scene_intent_root else None
-            if scene_binding_root:
-                binding_root: Path | None = Path(scene_binding_root)
-            else:
-                binding_root = None if intent_root is None else intent_root.parent / "website-source-bindings"
-            scene_queues = scene_queue_roots(queue_roots, intent_root)
-            cache_root = Path(scene_inventory_cache_root) if scene_inventory_cache_root else None
-
-            def context_factory(storage_root: Path) -> Any:
-                # Without an intent root the reference index is unreadable, so nothing retires.
-                return RetentionContext(storage_root=storage_root, pins_root=Path(pins_root),
-                                        queue_roots=scene_queues, intent_root=intent_root,
-                                        binding_root=binding_root,
-                                        inventory_cache_root=cache_root or storage_root / ".scene-workspace-inventory")
-
             return retire_scene_workspaces(
-                storage_roots=scene_present, context_factory=context_factory, apply=apply,
-                enabled=scene_workspace_retirement_enabled, now=observed_at,
-                cloud_factory=scene_cloud_factory or GcsCloudInventory,
+                storage_roots=scene_present, apply=apply, enabled=scene_workspace_retirement_enabled,
+                context_factory=timer_context_factory(
+                    pins_root=pins_root, queue_roots=queue_roots, intent_root=scene_intent_root,
+                    binding_root=scene_binding_root, inventory_cache_root=scene_inventory_cache_root),
+                now=observed_at, cloud_factory=scene_cloud_factory or GcsCloudInventory,
                 stream_publisher=scene_stream_publisher, process_checker=scene_process_checker,
-                hash_budget_bytes=scene_hash_budget_bytes, inventory_cache_root=cache_root,
+                hash_budget_bytes=scene_hash_budget_bytes,
+                inventory_cache_root=Path(scene_inventory_cache_root) if scene_inventory_cache_root else None,
             )
 
         _isolated(report, "scene_workspaces", scene_phase)
         if scene_workspace_retirement_alert and isinstance(report.get("scene_workspaces"), dict):
             report["scene_workspaces"]["alerts"] = [scene_workspace_retirement_alert]
+
+        def slim_phase() -> Any:
+            # What the phase above keeps still loses its bulky Atlas files; what sharing reads stays.
+            from .website_scene_workspace_retention import timer_context_factory
+            from .website_scene_workspace_slimming import slim_scene_workspaces
+            return slim_scene_workspaces(
+                storage_roots=scene_present, apply=apply, enabled=scene_workspace_slimming_enabled, now=observed_at,
+                context_factory=timer_context_factory(pins_root=pins_root, queue_roots=queue_roots,
+                                                      intent_root=scene_intent_root, binding_root=scene_binding_root),
+                stream_publisher=scene_stream_publisher, process_checker=scene_process_checker,
+                alert=scene_workspace_slimming_alert)
+
+        _isolated(report, "scene_workspace_slimming", slim_phase)
     def lane_phase() -> Any:
         try:
             if (lane_scratch_alert or not isinstance(lane_scratch_roots, Sequence)
@@ -1841,9 +1845,9 @@ def _run_main(argv: list[str]) -> int:
         type=int,
         default=_env_int(RESIDUE_MAX_RUNS_ENV, DEFAULT_MAX_RUNS_PER_TICK),
     )
-    parser.add_argument(
+    parser.add_argument(  # Run from the scene-retirement runtime (cwd "/"): the release is the unit's REPO.
         "--running-commit",
-        default=str(os.getenv(RUNNING_COMMIT_ENV) or "").strip() or running_release_commit(),
+        default=str(os.getenv(RUNNING_COMMIT_ENV) or "").strip() or running_release_commit() or running_release_commit(os.getenv("BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO") or Path.cwd()),
     )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--ack", default="")
@@ -1856,11 +1860,13 @@ def _run_main(argv: list[str]) -> int:
     if residue_alert:
         print(f"storage_gc_alert:{residue_alert}", file=sys.stderr)
     retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
+    from .website_scene_workspace_slimming import slimming_setting
+    slimming_enabled, slimming_alert = slimming_setting()
     replay_enabled, replay_alert = replay_cache_retention_setting()
     shared_enabled, shared_alert = replay_cache_shared_scratch_setting()
     extended_enabled, extended_alert = extended_pin_proofs_setting()
     lane_roots, lane_enabled, lane_alert = _lane_settings(args)
-    for alert in (retirement_alert, replay_alert, shared_alert, extended_alert, lane_alert):
+    for alert in (retirement_alert, slimming_alert, replay_alert, shared_alert, extended_alert, lane_alert):
         if alert:
             print(f"storage_gc_alert:{alert}", file=sys.stderr)
     report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
@@ -1902,6 +1908,8 @@ def _run_main(argv: list[str]) -> int:
         **open_job_queue_roots_from_env(),  # an open website job's scene run stays on the host
         scene_workspace_retirement_enabled=retirement_enabled,
         scene_workspace_retirement_alert=retirement_alert,
+        scene_workspace_slimming_enabled=slimming_enabled,
+        scene_workspace_slimming_alert=slimming_alert,
         replay_parent_roots=args.replay_parent_root or _split_env(REPLAY_PARENT_ROOTS_ENV),
         replay_cache_retention_enabled=replay_enabled,
         replay_cache_retention_alert=replay_alert,
