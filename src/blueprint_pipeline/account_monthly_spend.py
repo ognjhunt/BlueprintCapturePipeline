@@ -302,7 +302,8 @@ def persist_provider_observation(observation: Mapping[str, Any], *, environ: Map
         providers = observation.get("providers")
         if root is None or not isinstance(providers, Mapping):
             return False
-        keep = ("status", "blockers", "month", "month_to_date_usd", "held_usd", "complete", "attempts", "charges")
+        keep = ("status", "blockers", "month", "month_to_date_usd", "held_usd", "complete", "attempts", "charges",
+                "job_charges", "job_charges_complete")
         value = {"schema_version": OBSERVATION_SCHEMA, "observed_at_epoch": observation.get("observed_at_epoch"),
                  "providers": {name: {key: row[key] for key in keep if key in row}
                                for name, row in providers.items()
@@ -323,14 +324,24 @@ def read_provider_observation(environ: Mapping[str, str] | None = None) -> dict[
         return None
 
 
-def current_world_labs(observation: Mapping[str, Any] | None, *, now: float) -> dict[str, Any] | None:
-    """The retained World Labs reading, with its Atlas charges, when it is this month's."""
-
+def _current(observation: Mapping[str, Any] | None, name: str, *, now: float) -> dict[str, Any] | None:
     if not isinstance(observation, Mapping) or observation.get("schema_version") != OBSERVATION_SCHEMA:
         return None
     providers = observation.get("providers") if isinstance(observation.get("providers"), Mapping) else {}
-    row = providers.get("world_labs")
+    row = providers.get(name)
     return dict(row) if isinstance(row, Mapping) and row.get("month") == month_of(now) else None
+
+
+def current_world_labs(observation: Mapping[str, Any] | None, *, now: float) -> dict[str, Any] | None:
+    """The retained World Labs reading, with its Atlas charges, when it is this month's."""
+
+    return _current(observation, "world_labs", now=now)
+
+
+def current_openai(observation: Mapping[str, Any] | None, *, now: float) -> dict[str, Any] | None:
+    """The retained OpenAI reading, with the calls each job settled (``job_charges``), when it is this month's."""
+
+    return _current(observation, "openai", now=now)
 
 
 # ----------------------------- the report -----------------------------
@@ -517,7 +528,8 @@ __all__ = [
     "ACCOUNT_PAGE_CODES", "ACCOUNT_WARN_CODES", "CONFIG_ENV", "CONFIG_INVALID", "INSTALLED_CONFIG_PATH",
     "LIMIT_NOT_CONFIGURED", "LIMIT_REACHED", "POLICY_SCHEMA", "REPORT_INVALID", "REPORT_SCHEMA", "REPORT_STALE",
     "ROOT_ENV", "SHIPPED_CONFIG_PATH", "UNAVAILABLE", "account_alerts", "admission_blockers", "cap_status",
-    "configured_policy", "describe", "effective_limit", "limit_required", "load_policy", "observe_account_spend",
+    "configured_policy", "current_openai", "current_world_labs", "describe", "effective_limit", "limit_required",
+    "load_policy", "observe_account_spend",
     "persist_provider_observation", "read_provider_observation", "read_report", "summary",
 ]
 

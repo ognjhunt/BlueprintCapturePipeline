@@ -430,7 +430,8 @@ def refresh_report(*, now: float | None = None, environ: Mapping[str, str] | Non
     observation = read_provider_observation(env)
     readings = collect_readings(now=moment, environ=env, observation=observation,
                                 billing_export_path=billing_export_path, audit_root=audit_root)
-    meter = collect_meter_view(now=moment, world_labs=_account.current_world_labs(observation, now=moment), environ=env)
+    meter = collect_meter_view(now=moment, world_labs=_account.current_world_labs(observation, now=moment),
+                               openai=_account.current_openai(observation, now=moment), environ=env)
     destination = report_path(policy, env)
     previous = None
     if destination is not None:

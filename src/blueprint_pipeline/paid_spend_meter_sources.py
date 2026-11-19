@@ -2,8 +2,8 @@
 
 The chokepoint imports ``paid_spend_meter`` on every paid admission, so the
 readers of existing ledgers live here: the beta screening ledger and the
-journal, folded with the Atlas attempts the capacity tick observed. Reads
-only.
+journal, folded with the Atlas attempts and the jobs' OpenAI settlements the
+capacity tick observed. Reads only.
 
     python -m blueprint_pipeline.paid_spend_meter_sources [--job <request id>]
 """
@@ -31,6 +31,7 @@ from .paid_spend_meter import (
     meter_root,
     meter_view,
     money,
+    openai_rows,
     public_view,
     read_journal,
 )
@@ -133,8 +134,13 @@ def screening_rows(queue_root: Path | None) -> tuple[list[dict[str, Any]], list[
 
 
 def collect_meter_view(*, now: float, world_labs: Mapping[str, Any] | None = None,
+                       openai: Mapping[str, Any] | None = None,
                        environ: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """The meter for this month from every source this host records."""
+    """The meter for this month from every source this host records.
+
+    ``openai`` is the capacity tick's OpenAI reading; its ``job_charges`` put each job's settled OpenAI calls
+    in the meter. A reading without them (an older tick) shows no per-job OpenAI, as before.
+    """
 
     env = os.environ if environ is None else environ
     events, journal_gaps = read_journal(meter_root(env))
@@ -145,21 +151,26 @@ def collect_meter_view(*, now: float, world_labs: Mapping[str, Any] | None = Non
         gaps.append("paid_spend_meter_atlas_attempts_unobserved")
     elif world_labs.get("complete") is not True:
         gaps.append("paid_spend_meter_atlas_attempts_partial")
-    return meter_view([*journal_rows(events), *screening, *atlas_rows(world_labs)], now=now, gaps=gaps)
+    if openai is not None and openai.get("job_charges_complete") is False:
+        gaps.append("paid_spend_meter_openai_settlements_partial")
+    return meter_view([*journal_rows(events), *screening, *atlas_rows(world_labs), *openai_rows(openai)],
+                      now=now, gaps=gaps)
 
 
 def main(argv: list[str] | None = None, *, now: float | None = None) -> int:
     import argparse
 
-    from .account_monthly_spend import current_world_labs, read_provider_observation
+    from .account_monthly_spend import current_openai, current_world_labs, read_provider_observation
 
     parser = argparse.ArgumentParser(description="Print this month's per-job metered spend (reads only).")
     parser.add_argument("--job", default=None, help="show one job (WebApp request id)")
     args = parser.parse_args(argv)
     moment = time.time() if now is None else float(now)
     # The Atlas attempts come from the capacity tick's retained World Labs reading, as the account report reads them.
-    world_labs = current_world_labs(read_provider_observation(), now=moment)
-    view = public_view(collect_meter_view(now=moment, world_labs=world_labs))
+    observation = read_provider_observation()
+    world_labs = current_world_labs(observation, now=moment)
+    view = public_view(collect_meter_view(now=moment, world_labs=world_labs,
+                                          openai=current_openai(observation, now=moment)))
     if args.job:
         view["jobs"] = [row for row in view["jobs"] if row["job_id"] == job_key(args.job)]
     print(json.dumps(view, indent=2, sort_keys=True))

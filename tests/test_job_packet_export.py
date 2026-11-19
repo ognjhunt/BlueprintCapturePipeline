@@ -1768,3 +1768,64 @@ def test_a_floor_search_the_time_budget_stopped_claims_nothing_about_wider_floor
     assert widest == ["Widest clear floor found next to the task: a square at least 60 cm wide; wider floor was not "
                       "assessed."]
     assert not any("was not clear" in line for line in lines)
+
+# --- money: no price, and none of Blueprint's own spend, reaches the packet ----------------------------------------
+
+#: Blueprint's own spend, as its records carry it, and a vendor's list price as the robot catalog's notes quote one.
+#: Internal spend tracking is Blueprint's control, never a figure for a company; the packet states no price at all.
+SPEND = {"reserved_cost_usd": 37.25, "max_spend_usd": 61.5, "spend": {"provider": "PLANTSPENDPROVIDER", "usd": 12.75},
+         "budget_note": "Scene budget $40, PLANTSPENDNOTE"}
+LIST_PRICE = "From $10,999 (vendor list price, PLANTLISTPRICE)"
+
+
+def test_no_price_and_none_of_blueprints_spend_reaches_the_packet(tmp_path, job) -> None:
+    from tests.money_copy import price_findings
+
+    inputs = job()
+    capture = inputs.capture_dir
+    _edit(capture / "pipeline_job_ledger.json", lambda value: value.update(SPEND))
+    _edit(capture / PREP / "base_scene.json", lambda value: value.update(SPEND))
+    _edit(inputs.team_scene_dir / "team_scene_inputs.v1.json", lambda value: value.update(SPEND))
+    _edit(inputs.configured_scene_dir / "configured_scene_revision.v1.json", lambda value: value.update(SPEND))
+    prep = json.loads((capture / PREP / "preparation.json").read_text())
+    prep.pop("digest", None)
+    _write(capture / PREP / "preparation.json", {**prep, **SPEND})
+    _seal_first_look(capture, rows=[{**row, "notes": LIST_PRICE, "price_usd": 10999} for row in _fit_rows()],
+                     table_change=lambda table: table.update(SPEND))
+    manifest = build_job_packet(inputs, output_root=_out(tmp_path), now=NOW, operator="op")
+    folder = Path(manifest["packet_dir"])
+    texts = {path.relative_to(folder).as_posix(): path.read_text(encoding="utf-8")
+             for path in sorted(folder.rglob("*")) if path.is_file() and path.suffix in {".md", ".json", ".usda", ".txt"}}
+    assert {"JOB_SHEET.md", "README.md", "manifest.json", "files/task/success_rule.json"} <= set(texts)
+    for name, text in texts.items():
+        assert price_findings(text) == [], name
+    blob = _all_bytes(folder).decode("latin-1")
+    for planted in ("37.25", "61.5", "12.75", "10999", "10,999", "PLANTSPENDPROVIDER", "PLANTSPENDNOTE", "PLANTLISTPRICE",
+                    "reserved_cost", "max_spend", "price_usd"):
+        assert planted not in blob, planted
+    # The words Blueprint itself writes into every packet carry no price either.
+    assert price_findings(TERMS_LINE) == []
+    for words in (packet.ESTIMATE_SENTENCES, packet.VERDICT_WORDS, packet.BODY_WORDS):
+        assert all(price_findings(text) == [] for text in words.values())
+
+
+@pytest.mark.parametrize(("text", "rule"), [
+    ("Each introduction is $250.", "an amount of money"), ("Introductions cost USD 30.", "an amount of money"),
+    ("20 dollars a job.", "an amount of money"), ("Billed per month.", "a rate"),
+    ("Pay at checkout.", "a payment element"), ("A small fee applies.", "a fee or a price"),
+    ("reserved_cost_usd: 4.0", "a spend field"),
+])
+def test_the_price_reading_finds_a_price(text, rule) -> None:
+    from tests.money_copy import price_findings
+
+    assert [finding.split(":")[0] for finding in price_findings(text)] == [rule]
+
+
+@pytest.mark.parametrize("text", [
+    "OpenUSD for NVIDIA Isaac Sim 6.0.1.", "#usda 1.0", "files/simulation/scene.usda", "There is no fee and no checkout.",
+    "Carry distance: 0.43-0.76 m", "0.4-1.8 kg", "Some surrounding views were left out to keep within the frame budget.",
+])
+def test_the_price_reading_leaves_ordinary_words_alone(text) -> None:
+    from tests.money_copy import price_findings
+
+    assert price_findings(text) == []
