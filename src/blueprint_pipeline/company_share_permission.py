@@ -241,6 +241,12 @@ def record_live(root: Path, identity: Mapping[str, str], check_rights: Callable[
         value.update(internal_test_label=previous.get("internal_test_label"),
                      internal_test_granted_at_epoch=previous["internal_test_granted_at_epoch"])
     write_json(check_path(root), value)
+    # The site's quick answers for the job sheet, read beside the live rights of a job that is shared
+    # (``website_site_job_facts``). Only with the website's own reader (a test's reader makes no other call), and
+    # after the rights are recorded: that read binds nothing, and its failure changes nothing here.
+    if check_rights is live_rights and outcome in ("covers_sharing", "internal_test"):
+        from .website_site_job_facts import record_site_job_facts
+        record_site_job_facts(root, identity, now)
     return value
 
 

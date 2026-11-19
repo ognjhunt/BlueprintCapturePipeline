@@ -164,7 +164,8 @@ def _absent(prefix: str = "") -> list[str]:
     capture = f"{prefix}{CAPTURE_REL}"
     return [f"{prefix}scenes/{SITE}/website_withdrawal", f"{capture}/pipeline/consent_takedown",
             f"{capture}/raw/rights_consent.json", f"{capture}/rights_consent.json",
-            f"{capture}/pipeline_job_terminal_receipt.json", f"{capture}/{PREP}/revisions"]
+            f"{capture}/pipeline_job_terminal_receipt.json", f"{capture}/{PREP}/revisions",
+            f"{capture}/pipeline/website_site_job_facts.json"]
 
 
 def _pull_record(root: Path, buckets: list[str], absent: list[str]) -> Path:
@@ -1829,3 +1830,102 @@ def test_the_price_reading_leaves_ordinary_words_alone(text) -> None:
     from tests.money_copy import price_findings
 
     assert price_findings(text) == []
+# --- the site's quick answers on its job page: its own statements, never checked ---------------------------
+
+def _facts_record(answers: dict | None) -> dict:
+    facts = None if answers is None else {"basis": "owner_stated_unverified", "updated_at": "2026-11-19T10:00:00.000Z",
+                                          "answers": answers}
+    return {"schema_version": "website_site_job_facts_record.v1", "read_at_epoch": 1_795_000_000, "site_job_facts": facts}
+
+
+def _fact(code: str, answer: str, label: str, question: str) -> dict:
+    return {"code": code, "answer": answer, "label": label, "question": question}
+
+
+PER_HOUR = _fact("60_300", "60 to 300", "How many an hour", "How many an hour?")
+HOURS = _fact("two_shifts", "Two shifts", "Hours a day", "How many hours a day does this job run?")
+WEIGHT = _fact("5_15kg", "5 to 15 kg (11 to 33 lb)", "Weight", "How heavy is the item?")
+NOT_SURE_WHEN = _fact("unsure", "Not sure", "When", "When would you want this?")
+LABEL = "(the site's own answer on its job page: owner-stated, unverified)"
+
+
+def _with_facts(inputs: JobInputs, record) -> None:
+    _write(inputs.capture_dir / packet.SITE_JOB_FACTS, record)
+    _present(inputs, packet.SITE_JOB_FACTS)
+
+
+def _section(sheet: str, heading: str) -> list[str]:
+    lines = sheet.split("\n")
+    start = lines.index(heading)
+    end = next((index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")), len(lines))
+    return [line for line in lines[start + 1:end] if line]
+
+
+def _no_cycle_time(inputs: JobInputs) -> None:
+    """The site gave no cycle time, as `test_the_sheet_says_what_nothing_in_the_packet_measured` has it."""
+    _edit(_context_path(inputs), lambda value: _sealed(value["success_criteria"].pop("cycleTimeSeconds") and value,
+                                                       "context_digest"))
+
+
+def _sheet_with(tmp_path, job, record, *, cycle_time: bool = False) -> str:
+    inputs = job()
+    if not cycle_time:
+        _no_cycle_time(inputs)
+        _seal_first_look(inputs.capture_dir)
+    if record != "absent":
+        _with_facts(inputs, record)
+    return _sheet(build_job_packet(inputs, output_root=_out(tmp_path)))
+
+
+def test_an_answered_rate_replaces_its_not_stated_line_and_is_labelled_as_the_sites_unchecked_statement(tmp_path, job):
+    sheet = _sheet_with(tmp_path, job, _facts_record({"hours_per_day": HOURS, "items_per_hour": PER_HOUR,
+                                                      "item_weight": WEIGHT, "wanted_by": NOT_SURE_WHEN}))
+    told = _section(sheet, "## Constraints and what the site told us")
+    # In the questions' order; "Not sure" states nothing, so it is not printed as an answer.
+    assert told[-3:] == [f"- Weight: 5 to 15 kg (11 to 33 lb) {LABEL}.", f"- How many an hour: 60 to 300 {LABEL}.",
+                         f"- Hours a day: Two shifts {LABEL}."]
+    not_shown = _section(sheet, "## What this packet does not show")
+    assert not any("How many an hour" in line or "How often" in line or "hours a day" in line for line in not_shown)
+
+
+@pytest.mark.parametrize(("answers", "unstated"), [
+    ({"items_per_hour": PER_HOUR}, ["- " + packet.UNSTATED_FACTS["hours_per_day"]]),
+    ({"hours_per_day": HOURS}, ["- " + packet.UNSTATED_FACTS["items_per_hour"]]),
+    ({"items_per_hour": {**PER_HOUR, "code": "unsure", "answer": "Not sure"}}, ["- " + packet.UNSTATED_RATE]),
+    ({}, ["- " + packet.UNSTATED_RATE]),
+    (None, ["- " + packet.UNSTATED_RATE]),
+])
+def test_a_question_the_site_did_not_answer_falls_through_to_its_not_stated_line(tmp_path, job, answers, unstated):
+    not_shown = _section(_sheet_with(tmp_path, job, _facts_record(answers)), "## What this packet does not show")
+    assert [line for line in not_shown if "not stated in the files" in line] == unstated
+
+
+def test_a_stated_cycle_time_still_needs_no_rate_line(tmp_path, job):
+    not_shown = _section(_sheet_with(tmp_path, job, _facts_record({"items_per_hour": PER_HOUR}), cycle_time=True),
+                         "## What this packet does not show")
+    assert not any("not stated in the files" in line for line in not_shown)
+
+
+@pytest.mark.parametrize(("record", "line"), [
+    ("absent", "- The site's answers to its job page's quick questions: not read for this packet."),
+    ({**_facts_record({"items_per_hour": PER_HOUR}), "schema_version": "other"},
+     "- The site's answers to its job page's quick questions: could not be read."),
+    (_facts_record({"items_per_hour": {"code": "x", "answer": "60 to 300"}}),
+     "- The site's answers to its job page's quick questions: could not be read."),
+    (_facts_record({"favourite_colour": WEIGHT}), "- The site's answers to its job page's quick questions: could not be read."),
+])
+def test_a_packet_is_never_held_for_the_answers_and_says_plainly_when_it_has_none_to_read(tmp_path, job, record, line):
+    sheet = _sheet_with(tmp_path, job, record)
+    assert _section(sheet, "## Constraints and what the site told us")[-1] == line
+    assert "- " + packet.UNSTATED_RATE in _section(sheet, "## What this packet does not show")
+
+
+def test_the_answers_are_an_input_like_any_other(tmp_path, job):
+    inputs = job()
+    _with_facts(inputs, _facts_record({"items_per_hour": PER_HOUR}))
+    record = json.loads(Path(build_job_packet(inputs, output_root=_out(tmp_path))["operator_record"]).read_text())
+    assert any(name.endswith("website_site_job_facts.json") for name in record["input_sha256"])
+    inputs = job(root=tmp_path / "unpulled")
+    _record(inputs, lambda value: value["absent_on_host"].remove(f"{CAPTURE_REL}/{packet.SITE_JOB_FACTS}"))
+    refusal = _refusal(inputs, tmp_path / "unpulled")
+    assert refusal.code == "job_packet_input_not_pulled" and packet.SITE_JOB_FACTS in str(refusal)

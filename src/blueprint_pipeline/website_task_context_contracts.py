@@ -436,6 +436,26 @@ def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Ma
         return False
 
 
+#: The site's quick answers on its job page, as the website sends them on a read that asks (``site_job_facts``): the
+#: site's own statements, never checked. Each key is one question; only the questions the site answered are present.
+SITE_JOB_FACT_KEYS = ("item_weight", "item_size_longest_side", "items_per_hour", "hours_per_day", "wanted_by")
+SITE_JOB_FACTS_BASIS = "owner_stated_unverified"
+_FACT_TEXT = re.compile(r"[^\x00-\x1f]{1,200}")
+
+
+def site_job_facts_valid(value: Any) -> bool:
+    """``{basis: "owner_stated_unverified", updated_at: str | None, answers: {<key>: {code, answer, label, question}}}``."""
+    if not isinstance(value, Mapping) or set(value) != {"basis", "updated_at", "answers"}:
+        return False
+    if value["basis"] != SITE_JOB_FACTS_BASIS or not (value["updated_at"] is None or isinstance(value["updated_at"], str)):
+        return False
+    answers = value["answers"]
+    return isinstance(answers, Mapping) and all(
+        key in SITE_JOB_FACT_KEYS and isinstance(answer, Mapping) and set(answer) == {"code", "answer", "label", "question"}
+        and all(isinstance(answer[field], str) and _FACT_TEXT.fullmatch(answer[field]) for field in answer)
+        for key, answer in answers.items())
+
+
 def validate_website_task_context(
     value: Mapping[str, Any], *, request_id: str, scene_id: str, capture_id: str,
     purpose: str | None = None,
@@ -488,6 +508,8 @@ def validate_website_task_context(
             if number is not None and (isinstance(number, bool) or not isinstance(number, (int, float))
                     or not math.isfinite(number) or number < 0 or (key == "successRate" and number > 100)):
                 raise ValueError("website_task_context_success_criteria_invalid")
+    if "site_job_facts" in value and not site_job_facts_valid(value["site_job_facts"]):
+        raise ValueError("website_task_context_site_job_facts_invalid")
     items = value.get("task_items")
     if items is not None:
         if not isinstance(items, list) or len(items) > 100:

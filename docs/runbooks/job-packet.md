@@ -39,6 +39,8 @@ For the root and each bucket `b`, the withdrawal folder:
 From the capture `<b>/scenes/site-<request>/captures/<capture>/`, each of:
 
 - `pipeline/website_task_context.json`
+- `pipeline/website_site_job_facts.json` (the site's quick answers on its job page, as the Pipeline last read
+  them; the sheet prints them as the site's own, unchecked statements, and says plainly when there are none)
 - `pipeline_job_ledger.json`
 - `pipeline_job_terminal_receipt.json`
 - `raw/rights_consent.json`, `rights_consent.json`, `raw/manifest.json`, `capture_descriptor.json`
