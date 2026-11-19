@@ -414,6 +414,33 @@ def test_simulation_packages_of_the_job_are_found_by_name_and_deleted_with_the_l
     assert not (directory / company_simulation.MANIFEST_FILE).exists()
 
 
+def test_slimmed_atlas_archives_of_the_job_are_found_by_name_and_deleted(world):
+    # A finished job's slimmed Atlas files (website_scene_workspace_slimming) sit in the store under the
+    # capture's name, as its clip does: every version of the walkthrough's and a supplement's goes, also once
+    # the workspace is gone. Other jobs' archives stay.
+    child = "supplement-" + "b" * 40
+    mine = [_uri("website-scene-workspace-slim", "7", "walkthrough-req1.tar"),
+            _uri("website-scene-workspace-slim", "8", f"req1-{child}.tar")]
+    others = [_uri("website-scene-workspace-slim", "9", "walkthrough-req2.tar"),
+              _uri("website-scene-workspace-slim", "a", f"req11-{child}.tar")]
+    for uri in [*mine, *others]:
+        world["store"].put(uri, b"synthetic archive", versions=2, marker=True)
+    plan = _plan(world)
+    assert plan["unresolved"] == []
+    found = {row["uri"] for row in plan["objects"]}
+    assert set(mine) <= found and not set(others) & found
+    receipt = _apply(world, plan)
+    assert all(not world["store"].present(uri) for uri in mine)
+    assert all(world["store"].present(uri) for uri in others)
+    assert set(mine) <= {row["uri"] for row in receipt["deleted"]["objects"]}
+
+
+def test_slimmed_atlas_archives_cannot_be_ruled_out_without_the_object_store(world):
+    plan = _plan(world, object_store=None)
+    assert {"prefix": f"{PREFIX}/website-scene-workspace-slim/sha256/",
+            "reason": "website_withdrawal_deletion_object_store_unconfigured"} in plan["unresolved"]
+
+
 def test_simulation_packages_cannot_be_ruled_out_without_the_object_store(world):
     plan = _plan(world, object_store=None)
     assert {"prefix": f"{PREFIX}/website-company-simulation/sha256/",

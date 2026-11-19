@@ -593,7 +593,7 @@ owner can inspect every tick with `python3 scripts/operator_door.py cat
 scans report content for secrets.
 
 **Every switch is on by default** (owner decision 2026-09-30): evidence offload,
-result residue offload, scene workspace retirement, replay cache retention, shared
+result residue offload, scene workspace retirement and slimming, replay cache retention, shared
 replay scratch and the extended pin proofs. Unset or empty means on. `0`, `false` or
 `no` in `/etc/blueprint/pipeline-control-plane.env` is the operator's opt-out for
 that one switch, and the phase then only plans. Any other value also keeps the
@@ -603,7 +603,7 @@ No switch follows another. Only the default changed: every proof, pin, lease,
 receipt, live-reader check, lock and budget each phase checks before it removes
 anything is unchanged. Lane scratch stays report-only and off.
 
-One tick runs nine phases in order:
+One tick runs ten phases in order:
 
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
@@ -658,9 +658,14 @@ One tick runs nine phases in order:
    semantic-pretraining workspace that has been idle and unpinned for six hours
    is removed behind a sealed marker.
 9. **Scene workspaces** are retired only after terminal, acknowledgement,
-   reference, and remote-copy checks pass. This phase only plans when
+   reference, and remote-copy checks pass, and never while a capture is shared
+   with deployment companies (`shared_with_companies`). This phase only plans when
    `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=0` is set; its
    detailed contract is below.
+10. **Scene workspace slimming**: a finished job's bulky Atlas intermediates are
+   archived and removed, and everything sharing and the site read stays. This
+   phase only plans when `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_SLIMMING=0` is
+   set; see [Scene workspace slimming](#scene-workspace-slimming).
 
 Between the workspace bundles and the scene workspaces the tick also runs the
 replay cache phase, described next.
@@ -1093,6 +1098,14 @@ covers every payload, as its ledger would. A present invalid or unreadable recei
 raises an alert signal and leaves the message retryable
 (`retirement_lookup_failed_retryable`) rather than restaging.
 
+**Shared jobs stay whole on the timer.** The company clip and simulation routes
+serve only while the capture's folder exists to be checked, and the rights re-check
+writes there, so a retired job's sharing stops. The timer therefore keeps a workspace
+while any capture's `company_clip.json` or `company_simulation.json` names a stored
+copy not taken back (`shared_with_companies`; an unreadable manifest counts as
+shared) and slims it instead. A retirement by hand through the door
+(`retire-scene-workspace`) is the owner's call for that job and is not held.
+
 **Where it runs.** The reclaim timer plans every scene workspace in
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS` (intents from
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT`; registrations from
@@ -1116,6 +1129,49 @@ files from ordinary completed captures go to the existing private artifact store
 until the owner approves a revocation and deletion lifecycle for those derivatives.
 An owner can approve deleting such a scene through an owner-approved deletion
 (next section); retirement itself never archives them.
+
+## Scene workspace slimming
+
+`blueprint_pipeline.website_scene_workspace_slimming` (2026-11-19). On the work volume
+a website job's workspace was 4 to 26 GB, and 62 to 80% of it was each capture's
+`pipeline/atlas/` intermediates: World Labs downloads and their unpacked copies,
+preserved completions, pose and survey frames, splat and mesh copies. Slimming moves
+those to the private artifact store and leaves the rest in place, so a shared job keeps
+being shared.
+
+**What stays.** Everything outside each capture's `pipeline/atlas/`. Inside it: every
+record (`.json`, `.jsonl` and other text), every file under 1 MiB, every hard-linked
+file, the scene preview's own sources (`website_scene_preview`), and every file that
+anything staying names by path, closed over what those name in turn (the residue
+offload's search; USD layers are searched whole). The module docstring lists the
+readers of a finished job's folder this rests on.
+
+**When.** The scene passes every retirement check except the acknowledgement proof
+(the ledger and output commit stay, so a redelivery is answered "already processed")
+and sharing. An authority-ended or withdrawn capture keeps everything. Each capture's
+Atlas job must have ended with no retry or step, finished its provider cleanup and be
+past its seven-day window (`MAXIMUM_JOB_SECONDS`): until then it may reopen by itself and
+reuse what it bought (`atlas_job_window_open`, `atlas_provider_cleanup_pending`,
+`atlas_job_open`).
+
+**How.** Per capture the members are packed as one tar and published under kind
+`website-scene-workspace-slim`, named for the capture as its clip is
+(`walkthrough-<id>.tar`), with a full readback; withdrawal deletion finds every version
+by that name. Then, under the storage-pin lock and the listener's capture locks, every
+check and each member's identity is proven again, `pipeline/workspace_slim.v1.json`
+is written and only then are the members removed. At most five scenes a tick. A capture
+is slimmed once. The report is `scene_workspace_slimming` in the GC report and summary:
+`removed_bytes`, `retained_counts`, `kept_bulky_counts`.
+
+**Restore**, before any stage is re-run by hand on the job:
+
+```bash
+python -m blueprint_pipeline.website_scene_workspace_slimming restore --capture-root <capture>
+```
+
+It checks the archive's digest and every member's SHA-256, puts back what is missing
+(a member already there must have its recorded bytes) and sets the receipt aside as
+`workspace_slim.v1.restored-<hex>.json`.
 
 ## Owner-approved deletions
 

@@ -242,6 +242,34 @@ class RetentionContext:
     #: queue file, registration or intent is appended here ({"path", "code"}) and skipped, instead of
     #: protecting every scene. None, the default everywhere else, keeps the fail-closed reading.
     unreadable_references: list[dict[str, str]] | None = None
+    #: The reclaim timer's setting: a workspace whose capture is shared with deployment companies now is kept
+    #: (``shared_with_companies``), since the company routes and the rights re-check read it and a retired job's
+    #: sharing stops. A retirement by hand through the operator door (the owner's decision for that job) leaves
+    #: it off. The timer slims such a workspace instead (``website_scene_workspace_slimming``).
+    keep_shared_workspaces: bool = False
+
+
+def timer_context_factory(*, pins_root: str | Path, queue_roots: Sequence[str | Path],
+                          intent_root: str | Path | None, binding_root: str | Path | None = None,
+                          inventory_cache_root: str | Path | None = None) -> Callable[[Path], RetentionContext]:
+    """The reclaim timer's context for each spool root.
+
+    Without an intent root the reference index is unreadable, so nothing retires. Registrations are read from
+    ``binding_root``, else ``<intent root parent>/website-source-bindings``. The timer keeps a workspace that is
+    shared with companies now (``keep_shared_workspaces``): their routes need it, and it is slimmed instead.
+    """
+
+    intent = Path(intent_root) if intent_root else None
+    binding = Path(binding_root) if binding_root else None if intent is None else intent.parent / "website-source-bindings"
+    queues = scene_queue_roots(queue_roots, intent)
+    cache = Path(inventory_cache_root) if inventory_cache_root else None
+
+    def factory(storage_root: Path) -> RetentionContext:
+        return RetentionContext(storage_root=storage_root, pins_root=Path(pins_root), queue_roots=queues,
+                                intent_root=intent, binding_root=binding, keep_shared_workspaces=True,
+                                inventory_cache_root=cache or storage_root / ".scene-workspace-inventory")
+
+    return factory
 
 
 def _identity(bucket: Any, scene_id: Any) -> tuple[str, str]:
@@ -749,6 +777,33 @@ def _capture_ids(scene: Path) -> list[str] | None:
     return ids
 
 
+#: The two things a deployment company receives from a website capture, each with its manifest in the capture
+#: (``website_company_clip``, ``website_company_simulation``). Their routes serve only while the capture's folder
+#: exists to be checked, and the rights re-check writes beside the clip's manifest.
+COMPANY_SHARE_MANIFESTS = (("pipeline", "company_clip", "company_clip.json"),
+                           ("pipeline", "company_simulation", "company_simulation.json"))
+
+
+def shared_with_companies(capture_root: Path) -> bool:
+    """A company can read something of this capture now: a manifest names a stored copy that was not taken back
+    (the copy out, or one a company may still read while a newer one is delivered). A manifest that exists and
+    cannot be read counts as shared: nothing is retired on doubt."""
+
+    from .company_share_permission import SUPERSEDED, hidden
+
+    for parts in COMPANY_SHARE_MANIFESTS:
+        state, manifest, _ = _load_json(Path(capture_root).joinpath(*parts))
+        if state == "absent":
+            continue
+        if state != "ok" or manifest is None:
+            return True
+        superseded = manifest.get(SUPERSEDED)
+        for record in (manifest.get("archive"), *(superseded if isinstance(superseded, list) else ())):
+            if isinstance(record, Mapping) and isinstance(record.get("uri"), str) and not hidden(record):
+                return True
+    return False
+
+
 def _is_website_capture(capture_root: Path) -> bool:
     """The lane the listener gave this capture: ``is_website_capture_manifest`` on its raw manifest."""
 
@@ -812,6 +867,8 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
         if (row["ledger_status"] == TERMINAL_AUTHORITY_STATUS and not capture_reasons
                 and not context.allow_authority_ended_archive):
             reasons.append("authority_ended_capture_kept_local")
+        if context.keep_shared_workspaces and shared_with_companies(scene / "captures" / capture_id):
+            reasons.append(f"shared_with_companies:{capture_id}")
     idle_seconds = now - walk.newest_mtime
     if idle_seconds < context.minimum_idle_seconds:
         reasons.append("recently_active")
