@@ -326,8 +326,10 @@ class _Walk:
 #: The sharing-rights re-check rewrites this record every few hours (``company_share_permission``): it is a check
 #: on the job, not work in it, so it never makes a workspace recently active. The owner approved (2026-11-19,
 #: "Retire library-aisle anyway") this, knowing a retired job's sharing stops until it is restored. It is still
-#: archived like any other file.
+#: archived like any other file. Its writer replaces the record atomically, which also changes its directory's
+#: mtime; that directory's own mtime is not counted either (every file in it still is).
 _RECHECK_RECORD = "/".join((*permission_check_directory, permission_check_file))
+_RECHECK_DIRECTORY = "/".join(permission_check_directory)
 
 
 def _walk(scene: Path) -> _Walk:
@@ -358,7 +360,8 @@ def _walk(scene: Path) -> _Walk:
             except OSError:
                 unsafe.append(relative)
                 continue
-            if not (relative.startswith("captures/") and relative.split("/", 2)[-1] == _RECHECK_RECORD):
+            inside_capture = relative.split("/", 2)[-1] if relative.startswith("captures/") else None
+            if inside_capture not in {_RECHECK_RECORD, _RECHECK_DIRECTORY}:
                 newest = max(newest, info.st_mtime)
             if stat.S_ISDIR(info.st_mode):
                 allocated += _allocated(info)

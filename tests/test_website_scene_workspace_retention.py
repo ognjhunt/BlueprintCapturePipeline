@@ -434,11 +434,19 @@ def test_a_recently_touched_scene_is_retained(tmp_path):
 
 def test_the_sharing_recheck_record_alone_does_not_make_a_scene_recently_active(tmp_path):
     scene, cloud = _scene(tmp_path)
+    from blueprint_pipeline.common import write_json
+
     record = scene / "captures" / CAPTURE / "pipeline" / "company_clip" / "statement_check.json"
     record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text("{}", encoding="utf-8")
+    # The real writer replaces the record atomically, which also touches its directory.
+    write_json(record, {"checked_at_epoch": 1})
+    for path in (record, record.parent):
+        stamp = path.stat().st_mtime
+        assert stamp > time.time() - 600
+    # A recheck "now" (just before the planner's clock): only the record and its directory changed.
     later = time.time() + 72 * HOUR - 60
     os.utime(record, (later, later))
+    os.utime(record.parent, (later, later))
     assert "recently_active" not in _plan(tmp_path, cloud)["reasons"]
     # Anything else written as recently still is.
     other = record.parent / "company_clip.lock"
