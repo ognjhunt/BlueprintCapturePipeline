@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import math
 import weakref
+from statistics import NormalDist
 from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 import numpy as np
@@ -454,6 +455,9 @@ CONTACT_MIN_FRAME_SHARE = 1 / 3
 #: than the window, and that quantile lies within the window of it (job 4's lamp: 1% fell below the
 #: table, its mask's bleed; a plane through the middle of an object has far more below it).
 CONTACT_MAX_BELOW_SHARE = 0.05
+#: The depth noise a job's own data shows, read from the support's own observed points about a candidate surface's
+#: plane: a normal spread's median absolute deviation is this share of its standard deviation (``_surface_noise``).
+MAD_PER_STANDARD_DEVIATION = NormalDist().inv_cdf(0.75)
 
 
 def object_outline(points: np.ndarray, lower: Sequence[float], upper: Sequence[float], *, up: int) -> np.ndarray:
@@ -533,7 +537,8 @@ def _inside_outline(outline: np.ndarray, points: np.ndarray) -> np.ndarray:
 def resting_surface_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
                           views: Sequence[np.ndarray], up: int, meters_per_unit: float, up_sign: int = 1,
                           placement_residual_m: float | None = None, rise_m: float,
-                          drop_m: float = NEAREST_SUPPORT_MAX_DROP_M) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+                          drop_m: float = NEAREST_SUPPORT_MAX_DROP_M, surface_points: np.ndarray | None = None
+                          ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """The surface the object visibly rests on, judged by its own outline and its own points.
 
     For when ``support_under`` finds none at the object's estimated bottom (internal test job 4,
@@ -554,7 +559,13 @@ def resting_surface_under(mesh: Any, lower: Sequence[float], upper: Sequence[flo
     - Room: no other face lies across that share of the outline in the space the corrected box fills.
     - Contact: the object's lowest points sit at the surface's plane (``CONTACT_MAX_BELOW_SHARE``)
       and at least ``CONTACT_MIN_FRAME_SHARE`` of its frames show points there, within the search
-      window (``search_window_m``).
+      window (``search_window_m``) and the depth noise the job's own data shows there. Only points
+      over the surface count: a mask spilled onto the support's side, past its edge, is not the
+      object sunk into it (the synthetic set's seed 10). ``surface_points`` are the support's own
+      observed points (its masks lifted through the frames); their spread about the plane is the
+      noise (``_surface_noise``), and the tolerance grows by the share of it a resting object's
+      lowest points may read below the plane (seed 35: 1.5% depth noise, its lowest points 3.2 cm
+      under a 3 cm window). Without them the tolerance is the window, as before.
     - Preference: the surface whose plane lies nearest the box's bottom, of those that pass.
 
     Returns ``(support, record)``: the support as ``support_under`` gives one (``OUTLINE_BASIS``,
@@ -573,6 +584,9 @@ def resting_surface_under(mesh: Any, lower: Sequence[float], upper: Sequence[flo
         raise ValueError("website_support_query_invalid")
     options = dict(up=up, meters_per_unit=meters_per_unit, window_m=search_window_m(placement_residual_m),
                    rise_m=float(rise_m), drop_m=float(drop_m))
+    if surface_points is not None:
+        surface_points = np.asarray(surface_points, dtype=float).reshape(-1, 3)
+        surface_points = surface_points[np.isfinite(surface_points).all(axis=1)]
     # The object's points are the ones over its own footprint (its box, sized by its outlines across the frames,
     # grown by the search window): a mask that ran over the table's edge in front of it is not the object, and
     # its points, beside the object and below the top, would read as the object sunk into the table.
@@ -586,18 +600,42 @@ def resting_surface_under(mesh: Any, lower: Sequence[float], upper: Sequence[flo
         # Search in an upright frame (the reflection of ``up``); keep output in the source frame.
         low, high = lower.copy(), upper.copy()
         low[up], high[up] = -upper[up], -lower[up]
-        reflected = [view * np.where(np.arange(3) == up, -1.0, 1.0) for view in views]
-        support, record = _resting_upright(MergedCollider(mesh, up=up, flipped=True), low, high, reflected, **options)
+        flip = np.where(np.arange(3) == up, -1.0, 1.0)
+        reflected = [view * flip for view in views]
+        support, record = _resting_upright(MergedCollider(mesh, up=up, flipped=True), low, high, reflected,
+                                           surface_points=None if surface_points is None else surface_points * flip,
+                                           **options)
         if support is not None:
             support["top_runtime_units"] *= -1
             support["aabb_min"][up], support["aabb_max"][up] = -support["aabb_max"][up], -support["aabb_min"][up]
         return support, record
-    return _resting_upright(MergedCollider(mesh, up=up), lower, upper, views, **options)
+    return _resting_upright(MergedCollider(mesh, up=up), lower, upper, views, surface_points=surface_points, **options)
+
+
+def _surface_noise(outline: SupportOutline, points: np.ndarray | None, plane: Any, *, up: int, window: float,
+                   needed: int) -> tuple[float, int] | None:
+    """The spread of the support's own points about a surface's plane: ``(standard deviation, points)``.
+
+    The points over the surface within the window of its plane (the window is what the search calls this
+    surface), their spread a robust one (``MAD_PER_STANDARD_DEVIATION``) so the support's sides and what
+    stands on it do not count. None without at least ``needed`` such points (one per view of the object).
+    """
+    if points is None or not len(points):
+        return None
+    plan = [axis for axis in range(3) if axis != up]
+    corners = outline.triangles.reshape(-1, 2)
+    inside = np.all((points[:, plan] >= corners.min(axis=0)) & (points[:, plan] <= corners.max(axis=0)), axis=1)
+    offsets = points[inside, up] - plane(points[inside][:, plan])
+    near = np.abs(offsets) <= window
+    offsets = offsets[near][outline.covers(points[inside][near][:, plan])]
+    if len(offsets) < needed:
+        return None
+    return float(np.median(np.abs(offsets - np.median(offsets)))) / MAD_PER_STANDARD_DEVIATION, int(len(offsets))
 
 
 def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, views: list[np.ndarray], *,
-                     up: int, meters_per_unit: float, window_m: float, rise_m: float,
-                     drop_m: float) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+                     up: int, meters_per_unit: float, window_m: float, rise_m: float, drop_m: float,
+                     surface_points: np.ndarray | None = None) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """``resting_surface_under`` with ``up`` upright. Heights in the record are metres above the box's bottom."""
     plan = [axis for axis in range(3) if axis != up]
     mpu, bottom = meters_per_unit, float(lower[up])
@@ -614,6 +652,8 @@ def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndar
     if not len(samples):
         samples = outline.mean(axis=0, keepdims=True)
     centre = samples.mean(axis=0)
+    seen = np.concatenate(views)[:, plan]
+    reach = (seen.min(axis=0), seen.max(axis=0))  # in plan, where the object's own points were read
     floor_limit, top_limit = bottom - drop_m / mpu, bottom + rise_m / mpu
     record: dict[str, Any] = {
         "outline": {"basis": "box_rectangle" if corners_only else "convex_hull_of_observed_points",
@@ -725,14 +765,36 @@ def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndar
         if occupied >= RESTING_OUTLINE_MIN_SHARE:
             row["refused"] = "no_room_above_it"
             continue
-        # Contact: the object's lowest points sit at the plane (all but ``CONTACT_MAX_BELOW_SHARE`` of its
-        # points at or above it, within the window), and a third of its frames show points there.
-        offsets = [view[:, up] - plane(view[:, plan]) for view in views]
-        lowest = float(np.quantile(np.concatenate(offsets), CONTACT_MAX_BELOW_SHARE)) * mpu
-        touching = sum(float(np.mean(np.abs(offset) * mpu <= window_m)) >= CONTACT_MIN_POINT_SHARE
+        # Contact: the object's lowest points over the surface sit at the plane (all but ``CONTACT_MAX_BELOW_SHARE``
+        # of them at or above it, within the tolerance), and a third of its frames show points there. The
+        # tolerance is the window grown by the noise the support's own points show about this plane: a point
+        # lying on it reads that far below it at the same share (the normal quantile).
+        # Read over the part of the surface under the object's own points (its footprint, grown by the window).
+        nearby = []
+        for block in _row_blocks(len(surface)):
+            extent = collider.triangles(surface[block])[:, :, plan]
+            nearby.append(surface[block][np.all((extent.max(axis=1) >= reach[0]) & (extent.min(axis=1) <= reach[1]),
+                                                axis=1)])
+        whole = SupportOutline(collider.triangles(_joined(nearby)), np.zeros((0, 2, 3)), window_m / mpu, up=up)
+        noise = _surface_noise(whole, surface_points, plane, up=up, window=window_m / mpu, needed=len(views))
+        spread = 0.0 if noise is None else noise[0] * mpu
+        tolerance = window_m + NormalDist().inv_cdf(1 - CONTACT_MAX_BELOW_SHARE) * spread
+        row["contact_tolerance"] = contact = {
+            "window_m": window_m, "tolerance_m": tolerance,
+            "basis": "window" if noise is None else "window_and_support_points_spread_about_the_plane",
+            **({} if noise is None else {"noise_standard_deviation_m": spread, "support_points": noise[1]})}
+        over = [view[whole.covers(view[:, plan])] for view in views]
+        offsets = [view[:, up] - plane(view[:, plan]) for view in over]
+        counted = np.concatenate(offsets)
+        contact["object_points_over_the_surface_share"] = float(len(counted) / sum(len(view) for view in views))
+        if not len(counted):
+            row["refused"] = "no_contact_in_the_frames"
+            continue
+        lowest = float(np.quantile(counted, CONTACT_MAX_BELOW_SHARE)) * mpu
+        touching = sum(len(offset) and float(np.mean(np.abs(offset) * mpu <= tolerance)) >= CONTACT_MIN_POINT_SHARE
                        for offset in offsets)
         row.update(lowest_points_from_plane_m=lowest, contact_frames=int(touching), frames=len(views))
-        if abs(lowest) > window_m or touching < needed:
+        if abs(lowest) > tolerance or touching < needed:
             row["refused"] = "no_contact_in_the_frames"
             continue
         row["chosen"] = True
@@ -745,7 +807,7 @@ def _resting_upright(collider: MergedCollider, lower: np.ndarray, upper: np.ndar
         return {"top_runtime_units": top, "aabb_min": low, "aabb_max": high, "face_indices": surface.tolist(),
                 "basis": OUTLINE_BASIS, "fit_rms_m": rms * mpu, "fit_tilt_degrees": tilt, "outline_share": share,
                 "lowest_points_from_plane_m": lowest, "contact_frames": int(touching), "frames": len(views),
-                "resting_correction": correction, "physical_measurement": False}, record
+                "contact_tolerance": contact, "resting_correction": correction, "physical_measurement": False}, record
     return None, record
 
 
