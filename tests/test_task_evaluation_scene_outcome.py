@@ -559,10 +559,11 @@ def test_the_spending_cap_ends_the_job_flagged_and_waits_for_no_owner(tmp_path):
 def test_a_wait_for_an_owner_grant_recorded_before_the_switch_is_read_then_replaced(tmp_path):
     # An in-flight job's outcome.json written by the release before 2026-11-19: a money wait.
     directory, intent = _intent(tmp_path)
+    path = directory / outcome.FILENAME
     legacy = outcome.outcome_record(directory, intent, {"kind": "awaiting_spend_approval", "terminal": False,
                                                         "reason_category": "spend_approval",
                                                         "reason_code": "spend_cap_reached"}, now=T0)
-    (directory / outcome.FILENAME).write_text(json.dumps(legacy))
+    path.write_text(json.dumps(legacy))
     assert outcome.read_outcome(directory, intent) == legacy
     assert outcome.terminal_outcome(directory, intent) is None
     progress = advance(directory, intent, None, status="blocked", phase="preparation", state={},
@@ -573,6 +574,7 @@ def test_a_wait_for_an_owner_grant_recorded_before_the_switch_is_read_then_repla
     forged = outcome.outcome_record(directory, intent, {"kind": "awaiting_spend_approval", "terminal": False,
                                                         "reason_category": "spend_approval",
                                                         "reason_code": "pipeline_fault"}, now=T0)
-    (directory / outcome.FILENAME).write_text(json.dumps(forged))
+    path.chmod(0o640)
+    path.write_text(json.dumps(forged))
     with pytest.raises(outcome.SceneOutcomeError):
         outcome.read_outcome(directory, intent)
