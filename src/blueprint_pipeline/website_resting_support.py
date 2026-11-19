@@ -24,7 +24,9 @@ decides as before. It reads the object's own points, one array per frame
   (``target_role`` ``support``), plus the search window. Down: ``NEAREST_SUPPORT_MAX_DROP_M``, as before.
 - **Footprint, room, contact, preference.** ``website_support_geometry.resting_surface_under``: the
   object's own outline over an upward-facing surface (an area-overlap threshold), room above it, its
-  lowest points at the surface in its frames, nearest its lowest observed points.
+  lowest points over the surface at it in its frames, nearest its lowest observed points. Contact is
+  read within the search window grown by the depth noise the named support's own points show about
+  the surface (their spread about its plane), so noisy depth does not refuse the table it stands on.
 - **Correction.** Within the search window of the box's bottom, the whole box moves onto the surface,
   its height kept, as every support snap moves it. Farther up, the box's points below a surface it
   rests on cannot be the object, so its bottom rises to the surface and its observed top stays; a
@@ -118,6 +120,21 @@ def visible_rest(*, subject_min: Sequence[float], subject_max: Sequence[float], 
             "basis": "named_support_visible_bounds"}
 
 
+def _support_points(targets: Sequence[Mapping[str, Any]], target_id: Any, frames: Sequence[Mapping[str, Any]],
+                    matrix: np.ndarray) -> np.ndarray | None:
+    """The named support's own observed points (its masks lifted through the frames), in the runtime frame."""
+    from .website_task_masks import masked_view_points
+
+    row = next((row for row in targets if row.get("target_id") == target_id), None)
+    track = None if row is None else row.get("track")
+    if not isinstance(track, Mapping) or not track.get("observations"):
+        return None
+    try:
+        return _in_frame(np.concatenate(masked_view_points(track, list(frames))), matrix)
+    except (KeyError, ValueError, OSError):
+        return None
+
+
 def visible_resting_support(*, collider: Any, subject_min: Sequence[float], subject_max: Sequence[float],
                             track: Mapping[str, Any], frames: Sequence[Mapping[str, Any]], matrix: Any,
                             runtime_to_sim: Any, targets: Sequence[Mapping[str, Any]], up: int, up_sign: int,
@@ -145,15 +162,20 @@ def visible_resting_support(*, collider: Any, subject_min: Sequence[float], subj
     rest = visible_rest(subject_min=low, subject_max=high, targets=targets, matrix=matrix, up=up, up_sign=up_sign,
                         meters_per_unit=meters_per_unit)
     rise_m = uncertainty["rise_m"]
+    surface_points = None
     if rest is not None:
         rest["bound_m"] = rest["top_above_lowest_observed_points_m"] + uncertainty["search_window_m"]
         rise_m = max(0.0, min(rise_m, rest["bound_m"]))
+        # The support's own points: how far a point lying on it scatters in this job's depth (the contact test).
+        surface_points = _support_points(targets, rest["target_id"], frames, matrix)
+        rest["support_points"] = 0 if surface_points is None else int(len(surface_points))
     record.update(estimate_uncertainty=uncertainty, visible_rest=rest,
                   range_m={"up": rise_m, "down": NEAREST_SUPPORT_MAX_DROP_M})
     try:
         support, search = resting_surface_under(collider, low, high, views=views, up=up,
                                                 meters_per_unit=meters_per_unit, up_sign=up_sign,
-                                                placement_residual_m=placement_residual_m, rise_m=rise_m)
+                                                placement_residual_m=placement_residual_m, rise_m=rise_m,
+                                                surface_points=surface_points)
     except Exception as exc:  # noqa: BLE001 - a search that cannot run keeps today's code, recorded
         record.update(status="not_searched", reason=type(exc).__name__ + ":" + str(exc)[:200])
         return None, record, low, high

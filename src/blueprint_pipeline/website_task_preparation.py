@@ -18,6 +18,7 @@ import io
 import json
 import math
 import re
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -741,16 +742,16 @@ def _named_destination_place(removal_manifest: Mapping[str, Any], row: Mapping[s
 def _seal_placement_collider(*, collider: Any, base_scene: Mapping[str, Any], placed: Any,
                              destination_rows: Sequence[Mapping[str, Any]], matrix: np.ndarray, up: int,
                              up_sign: int, meters_per_unit: float, placement_residual_m: float | None,
-                             articulated: bool, output_root: Path,
-                             named_position: Sequence[float] | None = None) -> tuple[Any, Mapping[str, Any], Any, Any]:
+                             articulated: bool, output_root: Path, named_position: Sequence[float] | None = None,
+                             destination: Mapping[str, Any] | None = None) -> tuple[Any, Mapping[str, Any], Any, Any]:
     """Flatten the surfaces the subject starts and ends on, and seal that collider in the base scene.
 
     The supports are looked up on the base scene's collider exactly as placement
     looks them up (website_collider_conditioning): the destination at the
     centre of a place the task named on it (``named_position``), else where the
-    whole destination is grounded. A conditioned collider is
-    written and bound in ``base_scene.json`` before ``collision_mesh_digest`` is,
-    and every later lookup, admission, native bind and relocation reads it.
+    whole destination is grounded, its own points naming its surface (``destination``, ``shown_by``).
+    A conditioned collider is written and bound in ``base_scene.json`` before ``collision_mesh_digest``
+    is, and every later lookup, admission, native bind and relocation reads it.
     Returns the collider, base scene and lookups to place on, and the record
     (None when nothing applied). Geometry never blocks: a surface that cannot
     be flattened safely leaves the raw collider, and the record says why.
@@ -768,7 +769,7 @@ def _seal_placement_collider(*, collider: Any, base_scene: Mapping[str, Any], pl
             for position in ([] if named_position is None else [named_position]) + [grounded]:
                 footprint = footprint_at(subject_min, subject_max, position, up=up, up_sign=up_sign)
                 found = lookup(collider, *footprint, up=up, meters_per_unit=meters_per_unit, up_sign=up_sign,
-                               placement_residual_m=placement_residual_m)
+                               placement_residual_m=placement_residual_m, **(destination or {}))
                 if found is not None:
                     placements.append({"role": "destination_support", "support": found, "footprint": footprint})
                     break
@@ -1288,9 +1289,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 collider=collider, base_scene=base_scene, rows=destination_rows, frames=source_geometry["frames"],
                 matrix=matrix, subject=None if synthetic is not None else (subject_min, subject_max), up=up,
                 up_sign=up_sign, meters_per_unit=mpu, placement_residual_m=residual, output_root=output_root)
+        from .website_destination_overhang import destination_points  # its own points name its surface
+        points = destination_points(destination_rows[0], source_geometry["frames"], matrix) if len(destination_rows) == 1 else None
+        shown = {} if points is None else {"shown_by": points}
         # The surfaces the subject starts and ends on are flattened before anything rests
         # on them: every lookup below reads the collider that is sealed and digest-bound.
-        collider, base_scene, collider_conditioning, lookup = _seal_placement_collider(
+        collider, base_scene, collider_conditioning, lookup = _seal_placement_collider(destination=shown,
             collider=collider, base_scene=base_scene, placed=placed, destination_rows=destination_rows,
             matrix=matrix, up=up, up_sign=up_sign, meters_per_unit=mpu, placement_residual_m=residual,
             articulated=articulated, output_root=output_root,
@@ -1409,8 +1413,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             # triangles, not the destination mask's enclosing box.
             # The destination is placed by the same registration as the subject.
             destination_min, destination_max = footprint_at(subject_min, subject_max, position, up=up, up_sign=up_sign)
-            destination_support = lookup(collider, destination_min, destination_max,
-                                         up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
+            look = partial(lookup, **shown)  # the destination's own points name its surface
+            destination_support = look(collider, destination_min, destination_max,
+                                       up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
             if destination_support is None and region_bounds is not None:
                 # A place at an edge or corner can leave the footprint's own centre
                 # unsupported. The region only refines the destination: take the
@@ -1428,13 +1433,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 destination_min, destination_max = footprint_at(subject_min, subject_max, position, up=up,
                                                                 up_sign=up_sign)
                 if near is None:
-                    destination_support = lookup(collider, destination_min, destination_max, up=up,
-                                                 meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
+                    destination_support = look(collider, destination_min, destination_max, up=up,
+                                               meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
             from .website_destination_overhang import placed_clear  # clutter, an overhang, never its own scan
             destination_support, overhang, position = placed_clear(collider, destination_min, destination_max,
                 position, destination_support, up=up, meters_per_unit=mpu, up_sign=up_sign,
                 placement_residual_m=residual, radius=radius, runtime_to_sim=runtime_to_sim,
-                start=(subject_min, subject_max), start_support=support, clearance=clearance, look=lookup)
+                start=(subject_min, subject_max), start_support=support, clearance=clearance, look=look)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:

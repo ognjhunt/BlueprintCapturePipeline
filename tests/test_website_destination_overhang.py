@@ -39,12 +39,12 @@ def _grid(x0, x1, z0, z1, y, cell=0.01):
 
 
 def _boxes(*boxes):
-    """Closed boxes ((low), (high)) in metres, as one vertex and face list."""
+    """Closed boxes ((low), (high)) in metres: each one's vertices and its own faces (``_mesh`` offsets them)."""
     vertices, faces = [], []
     for low, high in boxes:
         box = trimesh.creation.box(extents=np.subtract(high, low),
                                    transform=trimesh.transformations.translation_matrix(np.add(low, high) / 2))
-        faces.append(np.asarray(box.faces) + sum(len(part) for part in vertices))
+        faces.append(np.asarray(box.faces))
         vertices.append(np.asarray(box.vertices))
     return vertices, faces
 
@@ -325,3 +325,100 @@ def test_the_objects_own_scan_where_it_starts_is_not_clutter():
     start = (np.array(own[0]), np.array(own[1]))
     if whole is not None:
         assert _clear(mesh, lower, upper, whole, start=start) == (whole, None, list((lower + upper) / 2))
+
+
+def test_compile_names_the_destination_s_surface_by_its_own_points_and_the_start_s_by_none(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_task_masks import masked_view_points
+    calls = []
+    real = preparation.support_under
+
+    def recording(mesh, lower, upper, **options):
+        calls.append(options.get("shown_by"))
+        return real(mesh, lower, upper, **options)
+
+    monkeypatch.setattr(preparation, "support_under", recording)
+    args = _arguments(tmp_path, onto_table=True)  # the cup moves to the other end of the table it stands on
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["destination"] is not None, value["blockers"]
+    table = args["task_masks"]["targets"][1]
+    lifted = np.concatenate(masked_view_points(table["track"], args["source_geometry"]["frames"]))
+    shown = [points for points in calls if points is not None]
+    assert shown and all(len(points) == len(lifted) for points in shown)  # the seal's lookup and the placement's
+    assert any(points is None for points in calls)  # the cup's own start is looked up as before
+    # In the collider's frame, as registration puts them (the room's source frame is OpenCV's, y down).
+    source = np.diag([1.0, -1.0, -1.0])
+    assert shown[0] == pytest.approx(lifted @ (RUNTIME_SCALE * source).T + RUNTIME_TRANSLATION)
+
+
+def test_an_object_wholly_inside_clutter_taller_and_wider_than_it_slides_out_of_it():
+    from blueprint_pipeline.website_support_geometry import support_under
+    # The synthetic set's seed 28: a 25 cm box on the table, wider than the object, its box within the clutter's
+    # sides and under its top, meeting none of its faces.
+    mesh = _mesh(0.3, boxes=[((0.2, TOP, 0.03), (0.4, TOP + 0.3, 0.27))])
+    lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
+    whole = support_under(mesh, lower, upper, up=1, meters_per_unit=1.0)
+    assert whole is not None  # the shelf's faces run on under the clutter, as a scan of stacked parts can leave them
+    spot = overhang._Spot(mesh, whole, lower, upper, up=1, up_sign=1, meters_per_unit=1.0, placement_residual_m=None,
+                          start=None, clearance=None)
+    box = spot.box(np.array([0.3, 0.15]))
+    near = spot.obstacles.triangles
+    near = near[(near.max(axis=1) >= box[0]).all(axis=1) & (near.min(axis=1) <= box[1]).all(axis=1)]
+    assert not overhang._crossing(near, *box).any() and spot.obstacles.enclosed(*box)  # no face met; enclosed
+    surface, placement, position = _clear(mesh, lower, upper, whole)
+    x, _ = _metres(position, mpu=1.0, up_sign=1)
+    assert surface is not None and placement is not None
+    assert x + 0.06 <= 0.2 + 1e-9 or x - 0.06 >= 0.4 - 1e-9  # out of the clutter, beside it on the shelf
+
+
+def test_the_inside_of_a_ring_and_a_scan_wound_inward_are_not_enclosing():
+    from blueprint_pipeline.website_support_geometry import support_under
+    lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
+    # Four walls around an open 20 cm square: met from inside on their fronts, the space between them is free.
+    ring = _mesh(0.3, boxes=[((0.18, TOP, 0.03), (0.2, TOP + 0.3, 0.27)), ((0.4, TOP, 0.03), (0.42, TOP + 0.3, 0.27)),
+                             ((0.2, TOP, 0.03), (0.4, TOP + 0.3, 0.05)), ((0.2, TOP, 0.25), (0.4, TOP + 0.3, 0.27))])
+    whole = support_under(ring, lower, upper, up=1, meters_per_unit=1.0)
+    assert whole is not None and _clear(ring, lower, upper, whole) == (whole, None, list((lower + upper) / 2))
+    # The same clutter as a closed box wound inward (an inconsistently wound scan): nothing reads as enclosed, the
+    # old path is kept.
+    inward = trimesh.creation.box(extents=[0.2, 0.3, 0.24],
+                                  transform=trimesh.transformations.translation_matrix([0.3, TOP + 0.15, 0.15]))
+    shelf = _mesh(0.3)
+    mesh = trimesh.Trimesh(vertices=np.concatenate([shelf.vertices, inward.vertices]), process=False,
+                           faces=np.concatenate([shelf.faces, np.asarray(inward.faces)[:, ::-1] + len(shelf.vertices)]))
+    whole = support_under(mesh, lower, upper, up=1, meters_per_unit=1.0)
+    assert whole is not None and _clear(mesh, lower, upper, whole) == (whole, None, list((lower + upper) / 2))
+
+
+@pytest.mark.parametrize("seed", [0, 4])
+def test_a_thin_shelf_s_underside_does_not_lower_its_top_into_its_own_edge(seed):
+    # The synthetic set's seed 41: a 12 mm shelf on a wall, scanned bumpy (2 mm). Its fit grew across the edge over
+    # its underside, read the top 5 mm low, and the shelf's own edge then stood in a 26 cm object's box everywhere.
+    rng = np.random.default_rng(seed)
+    shelf = trimesh.creation.box(extents=[0.84, 0.012, 0.188],
+                                 transform=trimesh.transformations.translation_matrix([0.7, 1.205, -0.506]))
+    wall = trimesh.creation.box(extents=[3, 3, 0.1], transform=trimesh.transformations.translation_matrix([0.7, 1.5, -0.65]))
+    mesh = trimesh.util.concatenate([shelf, wall]).subdivide_to_size(0.1)
+    mesh = trimesh.Trimesh(vertices=mesh.vertices + rng.normal(0, 0.002, mesh.vertices.shape), faces=mesh.faces,
+                           process=False)
+    core = support_under(mesh, [0.65, 1.215, -0.553], [0.75, 1.44, -0.453], up=1, meters_per_unit=1.0)
+    normals = mesh.face_normals[core["face_indices"]][:, 1]
+    assert (normals < 0).any()  # the fit still reaches the underside ...
+    assert core["top_runtime_units"] == pytest.approx(1.211, abs=0.005)  # ... but reads the top from the top
+    lower, upper = np.array([0.572, 1.215, -0.626]), np.array([0.829, 1.44, -0.380])  # deeper than the shelf, into the wall
+    surface, placement, position = _place(mesh, lower, upper)
+    assert surface is not None and placement is not None
+    assert position[2] - 0.123 >= -0.6  # its box clear of the wall
+    assert placement.record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE
+
+
+def test_clutter_wider_than_the_object_where_only_its_centre_is_carried_is_searched_past():
+    # The synthetic set's seed 43: a 32 x 21 cm box where a 21 cm object was to go, its footprint not wholly carried
+    # there. The overhang search looked only within one footprint; it now runs on outward, as on a whole surface.
+    mesh = _mesh(0.2, boxes=[((0.15, TOP, 0.0), (0.45, TOP + 0.1, 0.2))])
+    lower, upper = _footprint(0.3, 0.1, 0.12, 0.24)  # deeper than the shelf: no surface carries all of it
+    assert support_under(mesh, lower, upper, up=1, meters_per_unit=1.0) is None
+    surface, placement, position = _place(mesh, lower, upper)
+    assert surface is not None and placement is not None
+    x, _ = _metres(position, mpu=1.0, up_sign=1)
+    assert x + 0.06 <= 0.15 + 1e-9 or x - 0.06 >= 0.45 - 1e-9  # clear of the clutter, on the shelf
+    assert placement.record["slid_m"] >= 0.21 and placement.record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE

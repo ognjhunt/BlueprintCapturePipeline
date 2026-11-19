@@ -426,3 +426,98 @@ def test_the_object_outline_is_its_points_hull_not_its_box():
     area = 0.5 * (np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))  # positive: counter-clockwise
     assert area == pytest.approx(math.pi * 0.01, rel=0.01)
     assert len(object_outline(disc[:2], [-0.1, -0.1, -0.01], [0.1, 0.1, 0.01], up=2)) == 4  # the box's rectangle
+
+
+def _slab(top: float = 0.6, half: float = 0.3) -> trimesh.Trimesh:
+    """A closed 3 cm table top, ``half`` each way about the origin, its top at ``top``."""
+    return trimesh.creation.box(extents=[2 * half, 2 * half, 0.03], transform=trimesh.transformations.translation_matrix(
+        [0, 0, top - 0.015])).subdivide().subdivide().subdivide()
+
+
+def test_noisy_depth_reads_the_table_the_object_stands_on_from_the_support_s_own_spread():
+    # The synthetic set's seed 35: 1.5% depth noise put the object's lowest points 3.2 cm under the table it
+    # stands on, past the 3 cm window, and the table was refused. The table's own points show that noise.
+    rng, sigma = np.random.default_rng(35), 0.02
+    views = []
+    for _ in range(6):
+        spill = np.c_[rng.uniform(-0.06, 0.06, (800, 2)), 0.6 + rng.normal(0, sigma, 800)]  # its mask on the table
+        body = np.c_[rng.uniform(-0.04, 0.04, (200, 2)), 0.6 + rng.uniform(0, 0.1, 200) + rng.normal(0, sigma, 200)]
+        views.append(np.concatenate([spill, body]))
+    table = np.c_[rng.uniform(-0.28, 0.28, (4000, 2)), 0.6 + rng.normal(0, sigma, 4000)]
+    table = table[np.abs(table[:, :2]).max(axis=1) > 0.04]  # the object hides the table under it
+    low, high = _box(views)
+    options = dict(views=views, up=2, meters_per_unit=1.0, rise_m=0.05)
+    before, record = resting_surface_under(_slab(), low, high, **options)
+    assert before is None and record["candidates"][0]["refused"] == "no_contact_in_the_frames"
+    assert record["candidates"][0]["lowest_points_from_plane_m"] < -0.03  # past the window, from noise alone
+    support, record = resting_surface_under(_slab(), low, high, surface_points=table, **options)
+    assert support is not None and support["top_runtime_units"] == pytest.approx(0.6, abs=0.005)
+    contact = support["contact_tolerance"]
+    assert contact["basis"] == "window_and_support_points_spread_about_the_plane" and contact["window_m"] == 0.03
+    # The spread read within the window of the plane, robustly: a little under the noise's own, never above it.
+    assert 0.7 * sigma <= contact["noise_standard_deviation_m"] <= sigma
+    assert contact["tolerance_m"] == pytest.approx(0.03 + 1.6449 * contact["noise_standard_deviation_m"], abs=1e-4)
+    assert abs(support["lowest_points_from_plane_m"]) <= contact["tolerance_m"]
+    json.dumps(record, allow_nan=False)
+
+
+def test_a_plane_through_the_object_stays_no_contact_with_the_noise_measured():
+    rng = np.random.default_rng(5)
+    shelf = trimesh.creation.box(extents=[0.6, 0.6, 0.02],
+                                 transform=trimesh.transformations.translation_matrix([0, 0, 0.99])).subdivide().subdivide()
+    views = [np.c_[rng.uniform(-0.05, 0.05, (500, 2)), rng.uniform(0.80, 1.20, 500)] for _ in range(6)]
+    shelf_points = np.c_[rng.uniform(-0.28, 0.28, (3000, 2)), 1.0 + rng.normal(0, 0.005, 3000)]
+    low, high = _box(views)
+    support, record = resting_surface_under(shelf, low, high, views=views, up=2, meters_per_unit=1.0,
+                                            placement_residual_m=RESIDUAL_M, rise_m=0.3, surface_points=shelf_points)
+    assert support is None
+    row = record["candidates"][0]
+    assert row["refused"] == "no_contact_in_the_frames" and row["lowest_points_from_plane_m"] < -0.15
+    assert RESIDUAL_M < row["contact_tolerance"]["tolerance_m"] < RESIDUAL_M + 0.01  # 5 mm noise grows it a little
+
+
+def test_a_mask_spilled_down_the_table_s_side_is_not_the_object_sunk_into_it():
+    # The synthetic set's seed 10: no depth noise, but the object's mask ran over the table's front edge and down
+    # its side, 2 to 7 cm under the top just past the edge. Those points are beside the table, not in it.
+    rng = np.random.default_rng(10)
+    views = []
+    for _ in range(6):
+        body = np.c_[rng.uniform(-0.04, 0.04, 500), 0.22 + rng.uniform(-0.04, 0.04, 500), rng.uniform(0.6, 0.72, 500)]
+        spill = np.c_[rng.uniform(-0.06, 0.06, 300), rng.uniform(0.16, 0.3, 300), np.full(300, 0.6)]
+        side = np.c_[rng.uniform(-0.06, 0.06, 150), np.full(150, 0.302), rng.uniform(0.53, 0.58, 150)]
+        views.append(np.concatenate([body, spill, side]))
+    low, high = _box(views)
+    assert high[1] > 0.3 and low[2] < 0.55  # the box reaches past the edge and below the top
+    options = dict(views=views, up=2, meters_per_unit=1.0, rise_m=0.1)
+    support, record = resting_surface_under(_slab(), low, high, **options)
+    assert support is not None and support["top_runtime_units"] == pytest.approx(0.6, abs=0.005)
+    contact = support["contact_tolerance"]
+    assert contact["basis"] == "window" and contact["tolerance_m"] == 0.03  # no support points: the window
+    assert contact["object_points_over_the_surface_share"] <= 1 - 150 / 1100  # the side's points are not read
+    assert support["lowest_points_from_plane_m"] == pytest.approx(0.0, abs=0.005)
+
+
+def test_compile_s_search_reads_the_noise_from_the_named_support_s_own_points(monkeypatch):
+    rng = np.random.default_rng(4)
+    angle, radius = rng.uniform(0, 2 * np.pi, 3000), TABLE_RADIUS_M * np.sqrt(rng.uniform(0, 1, 3000))
+    table_points = np.c_[TABLE_CENTRE + np.c_[np.cos(angle), np.sin(angle)] * radius[:, None],
+                         TABLE_TOP_M + rng.normal(0, 0.004, 3000)]
+    lamp, table_track = {"observations": []}, {"observations": [{"source_frame_id": "t"}]}
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.masked_view_points",
+                        lambda track, frames: _lamp_views() if track is lamp else [table_points[:1500], table_points[1500:]])
+    monkeypatch.setattr("blueprint_pipeline.website_task_placement_check.check_video_placement",
+                        lambda **_: RECORDED_BOX_FIT)
+    low, high = _box(_lamp_views())
+    table = {"target_id": "bedside_table", "target_role": "support", "track": table_track,
+             "estimated_visible_bounds": {"minimum": [0.02, -0.38, 0.36], "maximum": [0.48, 0.08, low[2] + 0.259]}}
+    support, record, _, _ = resting.visible_resting_support(
+        collider=_room(), subject_min=low.tolist(), subject_max=high.tolist(), track=lamp, frames=[],
+        matrix=np.eye(4), runtime_to_sim=np.eye(4), targets=[table], up=2, up_sign=1, meters_per_unit=1.0,
+        placement_residual_m=RESIDUAL_M)
+    assert record["visible_rest"]["support_points"] == 3000
+    assert support is not None, json.dumps({k: v for k, v in record.items() if k != "search"}, default=float)
+    contact = support["contact_tolerance"]
+    assert support["top_runtime_units"] == pytest.approx(TABLE_TOP_M, abs=0.005)
+    assert contact["basis"] == "window_and_support_points_spread_about_the_plane"
+    assert contact["noise_standard_deviation_m"] == pytest.approx(0.004, abs=0.001)
+    assert contact["tolerance_m"] == pytest.approx(RESIDUAL_M + 1.6449 * contact["noise_standard_deviation_m"], abs=1e-4)
