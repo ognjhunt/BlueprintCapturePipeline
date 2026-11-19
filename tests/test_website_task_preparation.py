@@ -1378,9 +1378,11 @@ def test_without_a_region_the_existing_fixture_compiles_to_the_same_preparation(
     assert value["video_box_fit_check"]["stops_preparation"] is False
     # So is the record of how the destination was chosen (2026-11-12): no field of the output changes.
     assert value["destination_choice"]["basis"] in {"grounded_centre", "start_surface_farthest_spot"}
+    # And Blueprint's estimates of what the site did not say (2026-11-19): records beside it, never a change to it.
+    assert value["weight_estimate"]["status"] == "not_estimated" and "operations_estimate" not in value
     assert canonical_digest(_rounded({key: item for key, item in value.items()
                                       if key not in {"digest", "video_box_fit_check", "support_height_agreement",
-                                                     "destination_choice"}})) == (
+                                                     "destination_choice", "weight_estimate"}})) == (
         "sha256:54f20485d07a2fbf87311e1c5791f8cefc7d1675ba41a0c8ac06ad9e76938d43")
 
 

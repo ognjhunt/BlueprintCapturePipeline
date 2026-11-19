@@ -11,7 +11,9 @@ fails only if it fails even at the optimistic end, passes only if it passes at t
 and is otherwise ``unknown``. The scene's scale may be off by the preparation's dimension prior f
 (25%), taken as the band [1 - f, 1 / (1 - f)]: 0.75-1.33x, the band within which preparation admits
 the registration scale. The object weighs the owner's stated weight +-10% when the text parses
-cleanly, else the preparation's estimated range widened by the band cubed (mass scales with volume).
+cleanly, else Blueprint's weight estimate (``website_job_estimates``: published, or from the object's
+size and material across the band), else the preparation's prior widened by the band cubed (mass scales
+with volume).
 
 - ``stance``: a clear floor station exists: the verdict's own stations, or one ``ground_stance``
   search made the same way (``carry_station_search``) when the verdict stopped early or never
@@ -586,11 +588,21 @@ def _mass(preparation: Mapping[str, Any], band: Sequence[float]) -> tuple[list[f
     if stated is not None:
         band = OWNER_WEIGHT_RELATIVE_BAND
         return [stated * (1 - band), stated * (1 + band)], "owner_stated", record
+    def usable(value: Any) -> bool:
+        return (isinstance(value, list) and len(value) == 2
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in value)
+                and 0 <= value[0] <= value[1])
+
+    best = preparation.get("weight_estimate") or {}
+    if best.get("status") == "estimated" and usable(best.get("range_kg")):
+        # Blueprint's best estimate (``website_job_estimates``): a physics one already spans the scale band.
+        low, high = best["range_kg"]
+        record.update(mass_estimate_basis=best.get("basis"), mass_estimate_kg=[_r(low), _r(high)],
+                      mass_widened_by=None)
+        return [float(low), float(high)], "estimated", record
     physics = preparation.get("physics") or {}
     estimate = (physics.get("bounds") or {}).get("mass_kg")
-    if (isinstance(estimate, list) and len(estimate) == 2
-            and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in estimate)
-            and 0 <= estimate[0] <= estimate[1]):
+    if usable(estimate):
         record.update(mass_estimate_basis=physics.get("basis"), mass_estimate_kg=[_r(v) for v in estimate],
                       mass_widened_by="scale_band_cubed")
         return [float(estimate[0]) * band[0] ** 3, float(estimate[1]) * band[1] ** 3], "estimated", record

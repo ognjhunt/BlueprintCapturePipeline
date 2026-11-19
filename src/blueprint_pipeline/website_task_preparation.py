@@ -1980,6 +1980,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         from .website_support_height_agreement import preparation_record
         value["support_height_agreement"] = _flag_only_record(lambda: preparation_record(
             value, base_scene=base_scene, masks=task_masks, frames=source_geometry["frames"]))
+    from .website_job_estimates import preparation_estimates  # what a company needs and the site did not say
+    value.update(preparation_estimates(subject=value["subject"], entry=subject_entry, removal_manifest=removal_manifest,
+        target=None if synthetic is not None else subject_target, relative_error=DIMENSION_RELATIVE_ERROR, designed=synthetic))
     value["digest"] = canonical_digest(value, digest_field="digest")
     write_json(output_root / "preparation.json", value)
     (output_root / "thumbnail.b64").write_text(thumbnail["png_base64"])

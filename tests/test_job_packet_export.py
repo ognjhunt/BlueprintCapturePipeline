@@ -557,7 +557,9 @@ def test_the_sheet_says_how_sure_each_estimate_is_and_names_every_estimate_the_p
     # Only where it starts: the check's goal figure compares the start's seat with another surface.
     assert ("Surface height under the object: where it starts, the simulation seats it 8 cm below the surface the "
             "reconstruction's picture shows there; not corrected.") in estimated
-    assert "Mass estimate: 0.999–250 kg, a prior from the object's size, not weighed." in estimated
+    # Job 4 was prepared before Blueprint estimated weights: it says so, beside the simulation's wide prior.
+    assert ("Weight: not estimated: this job was prepared before Blueprint estimated weights. The simulation uses a "
+            "wide prior from its size alone: 1 to 250 kg.") in estimated
     flags = {"scene_estimate:placement_uncertainty", "scene_estimate:support_height_differs_from_picture",
              "task_object_box_fit_offset", "task_object_box_fit_size"}
     for code in flags:
@@ -748,8 +750,8 @@ OLD_TABLE_LINES = [
     "Counts: fits on published figures: 1, does not fit: 1", "",
     "Checked against published specifications and the scene's estimated geometry: reach, payload. It is not a test "
     "of any robot.", "Cycle time was not checked: the site gave no target.",
-    "Payload is unknown for 1 of the 2 robots listed: the object was not weighed, and its mass is estimated from the "
-    "video only (the paper check allows 0.4–1.8 kg)."]
+    "Payload is unknown for 1 of the 2 robots listed: the object was not weighed, and its mass is an estimate, as "
+    "the weight line above says (the paper check allows 0.4–1.8 kg)."]
 PLANTED = "Call Dana on 415 555 0199"
 
 
