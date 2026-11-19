@@ -30,17 +30,14 @@ World Labs, and the spend limits and admissions below. In build, Pipeline
 first: a website job's room step ships the room as filmed, flagged, for
 anything else, and a stuck job retries by itself.
 
-Blueprint's own test of openly available robot software (a robot together
-with its learned, camera-driven policy) stays as supporting evidence inside the
-packet, labelled an early trial of openly available robot software. It is not
-the site's answer and does not predict what a deployment company's own robot
-would do. A zero is a valid result. A scripted run only checks this
-simulation, never a contender. The trial covers every kind of robot body:
-arms, mobile manipulators, wheeled humanoids and humanoids.
-
-Paused (keep the code, start no new work): hardening the automatic test for
-any kind of job, for several objects and for unattended scale, and standing
-re-tests of every robot on every open job.
+Blueprint no longer runs robot software in the simulation. The owner dropped
+the early trial of openly available robot software on 2026-11-14: its timer is
+retired, no release arms it, and the job packet has no trial section. A
+scripted run only checks this simulation; it is never a result for any robot.
+The trial's stored records stay only where withdrawal deletion and money
+accounting still read them (`screening_retained_ledger`,
+`website_capture_withdrawal_screening`). Some trial code is still imported by
+live modules and is removed as those imports are cut; do not build on it.
 
 Shared doctrine is generated from `doctrine/` (see `doctrine/README.md`).
 
@@ -143,15 +140,13 @@ Decision D-08 (2026-11-02, delegated by the owner): every Pipeline deploy
 retires and rebuilds each in-flight website attempt, so deploys are batched.
 
 - Deploy `main` once a day, in the window that opens at 15:00 UTC.
-- The door holds a deploy itself while a website or screening job has work in
-  flight on the running release (it parks, never touching the job): a paid
-  stage until it ends or for 285 min at most, work that is not paid yet for
-  60 min at most. Request the deploy; if it parks, `door status`
-  `deploy_activation_hold` (`stages`, `bound`) says why. This needs the installed door
-  upgraded (`install.sh --upgrade` as root, `docs/OPERATOR_DOOR.md`); until
-  then, also skip the window while `door status` shows a held
-  `paid_launch_locks` entry or beta-screening candidates `launching` or
-  `running`.
+- The door holds a deploy itself while a website job has work in flight on the
+  running release (it parks, never touching the job): a paid stage until it
+  ends or for 285 min at most, work that is not paid yet for 60 min at most.
+  Request the deploy; if it parks, `door status` `deploy_activation_hold`
+  (`stages`, `bound`) says why. This needs the installed door upgraded
+  (`install.sh --upgrade` as root, `docs/OPERATOR_DOOR.md`); until then, also
+  skip the window while `door status` shows a held `paid_launch_locks` entry.
 - Outside the window, deploy only a fix for money, privacy, rights or a stuck
   paid stage, and name which in the request.
 - Before you deploy, read `door status` (`deploys.recent_receipts`) and
