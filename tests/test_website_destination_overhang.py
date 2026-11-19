@@ -387,3 +387,25 @@ def test_the_inside_of_a_ring_and_a_scan_wound_inward_are_not_enclosing():
                            faces=np.concatenate([shelf.faces, np.asarray(inward.faces)[:, ::-1] + len(shelf.vertices)]))
     whole = support_under(mesh, lower, upper, up=1, meters_per_unit=1.0)
     assert whole is not None and _clear(mesh, lower, upper, whole) == (whole, None, list((lower + upper) / 2))
+
+
+@pytest.mark.parametrize("seed", [0, 4])
+def test_a_thin_shelf_s_underside_does_not_lower_its_top_into_its_own_edge(seed):
+    # The synthetic set's seed 41: a 12 mm shelf on a wall, scanned bumpy (2 mm). Its fit grew across the edge over
+    # its underside, read the top 5 mm low, and the shelf's own edge then stood in a 26 cm object's box everywhere.
+    rng = np.random.default_rng(seed)
+    shelf = trimesh.creation.box(extents=[0.84, 0.012, 0.188],
+                                 transform=trimesh.transformations.translation_matrix([0.7, 1.205, -0.506]))
+    wall = trimesh.creation.box(extents=[3, 3, 0.1], transform=trimesh.transformations.translation_matrix([0.7, 1.5, -0.65]))
+    mesh = trimesh.util.concatenate([shelf, wall]).subdivide_to_size(0.1)
+    mesh = trimesh.Trimesh(vertices=mesh.vertices + rng.normal(0, 0.002, mesh.vertices.shape), faces=mesh.faces,
+                           process=False)
+    core = support_under(mesh, [0.65, 1.215, -0.553], [0.75, 1.44, -0.453], up=1, meters_per_unit=1.0)
+    normals = mesh.face_normals[core["face_indices"]][:, 1]
+    assert (normals < 0).any()  # the fit still reaches the underside ...
+    assert core["top_runtime_units"] == pytest.approx(1.211, abs=0.005)  # ... but reads the top from the top
+    lower, upper = np.array([0.572, 1.215, -0.626]), np.array([0.829, 1.44, -0.380])  # deeper than the shelf, into the wall
+    surface, placement, position = _place(mesh, lower, upper)
+    assert surface is not None and placement is not None
+    assert position[2] - 0.123 >= -0.6  # its box clear of the wall
+    assert placement.record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE

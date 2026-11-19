@@ -1098,10 +1098,15 @@ def _fitted_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarr
             return None
         return float(distance.min()), corners[near][:, up]
 
+    # Only a face whose outward side looks up can carry anything: a thin slab's underside, grown into the fit
+    # across its edge, read the top 4 mm under a 12 mm shelf's own (the synthetic set's seed 41), and its edge then
+    # stood in the object's way. Under each probe the upward faces give its height; where none does (a scan wound
+    # inconsistently), every face, as before.
+    facing = _facing_up(triangles, up)
     contacts, gaps = [], []
     for x in np.linspace(lower[horizontal[0]], upper[horizontal[0]], 3):
         for y in np.linspace(lower[horizontal[1]], upper[horizontal[1]], 3):
-            heights, nearby = [], None
+            heights, upward, nearby = [], [], None
             for dx in spread:
                 for dy in spread:
                     offset = np.array([x + dx, y + dy]) - a
@@ -1117,8 +1122,10 @@ def _fitted_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarr
                         gap, nearby = found
                         gaps.append({"probe_runtime_units": [float(x), float(y)], "gap_m": gap * meters_per_unit})
                     heights.extend((za + u * (zb - za) + v * (zc - za))[inside])
+                    upward.extend((za + u * (zb - za) + v * (zc - za))[inside & facing])
             if not heights:
                 heights = nearby.tolist()
+            heights = upward or heights
             plane = middle[up] - (normal[horizontal[0]] * (x - middle[horizontal[0]])
                                   + normal[horizontal[1]] * (y - middle[horizontal[1]])) / normal[up]
             contacts.append(float(np.median(heights)))
