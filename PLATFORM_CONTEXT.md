@@ -51,7 +51,6 @@ The job packet has one format for every job:
    published specifications and a cited track record.
 4. The simulation of the site, with the job's object in it.
 5. The success rule: what counts as the job done.
-6. Where one exists, the result and a clip of Blueprint's own early trial.
 
 A packet is not held for the simulation: it goes when the video and the first
 look exist, and says plainly what is not finished.
@@ -75,19 +74,15 @@ interested the site decides which of them to meet; there is no limit on how
 many. After an introduction both sides are asked, at 14, 45 and 90 days, what
 happened; the answer is recorded on the job.
 
-Blueprint's own trial of openly available robot software stays as supporting
-evidence inside the packet. It is labelled **an early trial of openly
-available robot software**. It is not the site's answer, and it does not
-predict what a deployment company's own robot would do. A zero is a valid
-result of the trial. A scripted run only checks Blueprint's own simulation.
-The trial covers every kind of robot body: arms, mobile manipulators, wheeled
-humanoids and humanoids.
+Blueprint runs no robot software in the simulation: the owner dropped the
+early trial on 2026-11-14, and the packet has no trial section. A scripted run
+only checks Blueprint's own simulation.
 
 Sharing is the service. A site that sends a job agrees once, in the statement
 it accepts (recording statement `2026-11-12.v4` or later), that Blueprint
 shares the job with the deployment companies it has approved: the site's
 description, its video without its sound, the simulation built from it, the
-success rule, the first look and any early trial. There is no share button, no
+success rule and the first look. There is no share button, no
 share setting and no pause. A job under an older statement is not shown to any
 company until its site accepts the current one.
 
@@ -131,7 +126,7 @@ makers) is in `VISION.md` under "Long-term business model". It is for later
 and changes nothing that is charged or said today.
 
 Words to use: "deployment company" (not vendor, integrator or OEM), "job
-packet", "first look", "simulation of your site", "early trial", "responses".
+packet", "first look", "simulation of your site", "responses".
 
 The beta is free for sites. Blueprint pays for preparation and evaluation
 inside a fixed per-site budget. No job is refused by task kind. The historical
@@ -175,8 +170,8 @@ readiness check unless it protects privacy, rights or money.
 - Don't make things up: no invented results, figures, customers, readiness,
   approvals or responses. Unknown stays unknown. A page, an email or a packet
   says only what is true.
-- The first look on paper and the early trial's result are bounded estimates.
-  They never certify physical performance or safety. A stated accuracy carries
+- The first look on paper is a bounded estimate. It never certifies physical
+  performance or safety. A stated accuracy carries
   its source and its conditions.
 <!-- SHARED_PLATFORM_CONTEXT_END -->
 
