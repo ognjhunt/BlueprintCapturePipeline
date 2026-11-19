@@ -230,6 +230,10 @@ def _members(scene: Path, files: Sequence[tuple[str, os.stat_result]], capture_i
     """Each not yet slimmed capture's members, and how many bulky Atlas files stay for each reason."""
 
     listed = {relative: info for relative, info in files}
+    if not any((capture := _in_atlas(relative, capture_ids)) is not None and capture not in done
+               and stat.S_ISREG(info.st_mode) and info.st_size >= MINIMUM_MEMBER_BYTES
+               and PurePosixPath(relative).suffix.lower() not in RECORD_SUFFIXES for relative, info in files):
+        return {}, {}  # nothing bulky left to search for: the reference search (USD layers read whole) is skipped
     documents = [relative for relative in listed
                  if _in_atlas(relative, capture_ids) is None
                  and not (relative.count("/") == 3 and relative.split("/")[2] == "pipeline"

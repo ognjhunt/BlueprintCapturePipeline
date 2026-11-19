@@ -307,3 +307,12 @@ def test_one_reclaim_tick_keeps_a_shared_job_whole_and_slims_it(tmp_path):
     assert build_storage_gc_summary(report)["phases"]["scene_workspace_slimming"]["removed_or_offloaded_bytes"] \
         == slim["removed_bytes"]
     assert (capture / "pipeline" / "company_clip" / "company_clip.json").is_file()
+
+
+def test_a_job_with_no_bulky_atlas_file_left_is_not_searched_every_tick(tmp_path, monkeypatch):
+    scene, capture, _files = _job(tmp_path)
+    for name in MEMBERS | {"pipeline/atlas/downloads/atlas-scene-1/splat/atlas_refined_splat.ply"}:
+        (capture / name).unlink()
+    monkeypatch.setattr(slimming, "_named", lambda *_args: pytest.fail("searched with nothing to slim"))
+    plan = _slim_plan(tmp_path)
+    assert plan["status"] == "nothing_to_slim" and plan["captures"][0]["members"] == []
