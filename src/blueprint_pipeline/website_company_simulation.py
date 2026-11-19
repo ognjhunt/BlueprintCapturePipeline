@@ -185,6 +185,30 @@ GENERATED_LOOK_AND_COLLISION_NOTE = ("The room's look, and the scan the collisio
 #: Either, for a package built without the appearance file (``LOOK_LEFT_OUT``).
 GENERATED_NO_LOOK_NOTE = ("The collision file was made from a scan that holds a generated estimate of a surface the "
                           "video did not show; that estimate was not filmed.")
+#: The destination's surface did not show in the scan and was estimated from its visible edges, then added to the
+#: collision file only (``website_unscanned_surface``; read from the base scene the job's scene handoff recorded).
+SURFACE_ESTIMATED_NOTE = ("The destination shelf or surface the job's object is placed on did not show in the scan "
+                          "(glass and other see-through or shiny surfaces often do not); it was estimated from its "
+                          "visible edges in the video. That estimate is in the collision file, not in the look.")
+#: The same, for a package built without the appearance file (``LOOK_LEFT_OUT``).
+SURFACE_ESTIMATED_NO_LOOK_NOTE = ("The destination shelf or surface the job's object is placed on did not show in "
+                                  "the scan (glass and other see-through or shiny surfaces often do not); it was "
+                                  "estimated from its visible edges in the video. That estimate is in the collision "
+                                  "file.")
+#: The job's object was sized from its own points across the frames, its masks' spill left out (``website_object_extent``,
+#: read from the preparation the job's scene handoff names). A room package holds no object and says nothing of it.
+SIZE_FROM_ITS_POINTS_NOTE = ("The job's object's size was estimated from the video's points of the object that the "
+                             "frames agree on: points its masks also took in from what lies under or behind it were "
+                             "left out.")
+#: No surface at the destination holds the object's whole footprint: its centre is over the surface, part of it over
+#: the edge (``website_destination_overhang``, read with the size notes; only when something does hang over). Never
+#: in a room package.
+DESTINATION_OVERHANG_NOTE = ("The job's object's footprint is larger than the supported part of the surface where it "
+                             "is placed: its centre is over the surface and part of its footprint hangs over the "
+                             "edge.")
+#: The object's exact model has a published size that disagrees with the video's estimate; the file keeps the estimate.
+SIZE_DISAGREES_WITH_PUBLISHED_NOTE = ("The published size of the job's object's exact model disagrees with the size "
+                                      "estimated from the video; the object's file keeps the video's estimate.")
 #: The look's refined splat also holds generated views (``atlas_look_views``, ``look_views``): never for a package
 #: built without the appearance file.
 GENERATED_VIEWS_LOOK_NOTE = ("Parts of the room's look were made from generated views of areas the video saw from "
@@ -563,6 +587,41 @@ def look_views(capture_root: Path) -> bool:
     return isinstance(provenance, Mapping) and provenance.get("generated_views_in") == GENERATED_VIEWS_IN_LOOK
 
 
+def size_notes(capture_root: Path) -> dict[str, bool]:
+    """What the preparation the job's scene handoff names says of the object's size (``subject_extent``) and where it
+    rests: read from its own points, an exact model's published size that disagrees, and a destination it
+    overhangs (``destination_overhang``). Empty when none, so its package says what it said before."""
+    root = Path(capture_root)
+    preparation = root / "pipeline" / "website_scene_preparation" / "preparation.json"
+    named = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json").get("preparation_path")
+    if isinstance(named, str):
+        candidate = Path(named) if Path(named).is_absolute() else root / named
+        preparation = candidate if _inside(root, candidate) is not None else preparation
+    extent = _read(preparation).get("subject_extent")
+    extent = extent if isinstance(extent, Mapping) else {}
+    check = extent.get("published_cross_check") if isinstance(extent.get("published_cross_check"), Mapping) else {}
+    overhang = _read(preparation).get("destination_overhang")
+    return {**({"size_from_its_points": True} if extent.get("status") == "from_its_own_points" else {}),
+            **({"size_disagrees_with_published": True} if check.get("status") == "disagrees" else {}),
+            **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {})}
+
+
+def surface_estimated(capture_root: Path) -> bool:
+    """Whether the base scene the job's scene handoff recorded holds a destination surface the scan did not show,
+    estimated from its visible edges (``scene_estimate:destination_surface_estimated``). The handoff is sealed by
+    its digest; a base scene without the row is False, so its package says what it said before."""
+    from .atlas_scene_estimates import DESTINATION_SURFACE_ESTIMATED
+    root = Path(capture_root)
+    handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
+    path = handoff.get("base_scene_path")
+    if not isinstance(path, str) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
+        return False
+    base = _inside(root, Path(path))
+    rows = (_read(base) if base is not None else {}).get("scene_estimates")
+    return any(isinstance(row, Mapping) and row.get("code") == DESTINATION_SURFACE_ESTIMATED
+               for row in (rows if isinstance(rows, list) else []))
+
+
 def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None,
           generated: str | None = None, look: bool = False, capture: Path | None = None) -> dict[str, Any] | None:
     """The half's plan and shipped files; a row that cannot be placed is kept as ``refusal`` naming its role. The
@@ -584,6 +643,9 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
                                   "refusal": None, **notes,
                                   **({"generated_patch": generated} if generated else {}),
                                   **({"look_views": True} if look else {}),
+                                  **({"surface_estimated": True} if capture is not None
+                                     and surface_estimated(capture) else {}),
+                                  **(size_notes(capture) if capture is not None and "room" not in notes else {}),
                                   "physics_check": physics_check(
                                       packet, plan, rule_withheld="rule_withheld" in notes)}
         try:
@@ -755,7 +817,8 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         # Only a wording that differs from the packages before it names a new revision.
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room",
-                                        "generated_patch", "look_views") if source.get(key)},
+                                        "generated_patch", "look_views", "surface_estimated", "size_from_its_points",
+                                        "size_disagrees_with_published", "destination_overhang") if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
                                           for prim, row in sorted(source["files"].items())
@@ -1167,6 +1230,11 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([GENERATED_NO_LOOK_NOTE if source.get("look_left_out")
                 else GENERATED_COLLISION_ONLY_NOTE if source["generated_patch"] == COLLISION_ONLY
                 else GENERATED_LOOK_AND_COLLISION_NOTE] if source.get("generated_patch") else []),
+             *([SURFACE_ESTIMATED_NO_LOOK_NOTE if source.get("look_left_out") else SURFACE_ESTIMATED_NOTE]
+               if source.get("surface_estimated") else []),
+             *([SIZE_FROM_ITS_POINTS_NOTE] if source.get("size_from_its_points") else []),
+             *([SIZE_DISAGREES_WITH_PUBLISHED_NOTE] if source.get("size_disagrees_with_published") else []),
+             *([DESTINATION_OVERHANG_NOTE] if source.get("destination_overhang") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
                if source.get("support_not_held") and not withheld else []),
              *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,

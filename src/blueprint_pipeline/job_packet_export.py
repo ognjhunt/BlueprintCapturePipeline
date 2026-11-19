@@ -57,7 +57,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .atlas_scene_estimates import SUPPORT_GUESSED
+from .atlas_scene_estimates import (DESTINATION_OVERHANG, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED,
+                                    OBJECT_SIZE_FROM_ITS_POINTS, SUPPORT_GUESSED)
 from .sharing_statement import OWNED_CAPTURES_PATH, SHARING_STATEMENT_VERSIONS, covers_sharing, owned_captures
 from .site_roots import is_bucket
 
@@ -114,6 +115,10 @@ ESTIMATE_SENTENCES = {
     "scene_estimate:task_views_left_out": "Some views of the task area were too blurred or did not connect to the others and were left out; the object's start position comes from the views that were kept.",
     "scene_estimate:surroundings_not_connected": "Only the task area was filmed in views that connect. Any of the room around it in the simulation was not filmed; it is generated from the surrounding footage.",
     SUPPORT_GUESSED: "No surface lay at the object's estimated bottom: Blueprint chose the surface it rests on from the video (the one its frames show it touching, else the nearest under it) and corrected where it rests onto that surface, as the object size line says.",
+    DESTINATION_OVERHANG: "No surface at the destination holds the object's whole footprint: it is placed with its centre over the surface and part of its footprint over the edge, as the overhang line says.",
+    OBJECT_SIZE_FROM_ITS_POINTS: "The object's masks also took in what lies under or behind it in some frames: Blueprint estimated its size from the video's points of the object that the frames agree on, as the object size line says.",
+    OBJECT_SIZE_DISAGREES_WITH_PUBLISHED: "The published size of the object's exact model disagrees with the size estimated from the video; the simulation keeps the video's estimate.",
+    "scene_estimate:destination_surface_estimated": "The destination shelf or surface did not show in the scan (glass and other see-through or shiny surfaces often do not); it was estimated from its visible edges in the video and is in the collision file, not in the look.",
 }
 KIND_WORDS = {"articulated": "open or close one moving part of a fixture (a door, drawer or lid)",
               "container": "put one object into a container",
@@ -862,6 +867,16 @@ def done_sentence(contract: Mapping[str, Any] | None, *, object_name: str | None
             + _site_answer_words(assumption, _mapping(contract.get("provenance"))))
 
 
+def _size_words(prep: Mapping[str, Any]) -> str:
+    """Whose points the object's size was read from, when its masks spilled (``website_object_extent``)."""
+    extent = _mapping(prep.get("subject_extent"))
+    before = _mapping(extent.get("before")).get("dimensions_m")
+    if extent.get("status") != "from_its_own_points" or not isinstance(before, list) or len(before) != 3:
+        return ""
+    return (" (from its own points that the frames agree on; points its masks also took in from what lies under or "
+            "behind it were left out, which made it " + " × ".join(_length(value) for value in before) + ")")
+
+
 def _resting_words(prep: Mapping[str, Any]) -> str:
     """How Blueprint set the object down when no surface lay at its estimated bottom; empty when one did."""
     guess = _mapping(_mapping(prep.get("support")).get("guess"))
@@ -901,7 +916,12 @@ def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[
     if (isinstance(low, list) and isinstance(high, list) and len(low) == len(high) == 3
             and all(_number(v) is not None for v in (*low, *high)) and all(a <= b for a, b in zip(low, high, strict=True))):
         estimated.append("Object size: " + " × ".join(_length(b - a) for a, b in zip(low, high, strict=True))
-                         + ", from the video" + _resting_words(prep) + ".")
+                         + ", from the video" + _size_words(prep) + _resting_words(prep) + ".")
+    overhang = _mapping(prep.get("destination_overhang"))
+    reach = _number(overhang.get("largest_overhang_m"))
+    if overhang.get("flag") == DESTINATION_OVERHANG and reach is not None and reach > 0:
+        estimated.append("The object's footprint is larger than the supported part of the surface at that spot: "
+                         f"about {reach * 100:.1f} cm hangs over its edge; its centre is over the surface.")
     bounds = _mapping(_mapping(prep.get("physics")).get("bounds"))
     if "mass_kg" in bounds:
         estimated.append(f"Mass used in the simulation: {_range(bounds.get('mass_kg'), 'kg')}, a prior from the object's "
@@ -917,6 +937,10 @@ def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[
              if isinstance(row, Mapping) and isinstance(row.get("code"), str)}
     if _mapping(_mapping(prep.get("support")).get("guess")).get("flag") == SUPPORT_GUESSED:
         codes.add(SUPPORT_GUESSED)  # the preparation's own estimate (``atlas_scene_estimates.preparation_flags``)
+    extent = _mapping(prep.get("subject_extent"))
+    codes |= {code for code in (extent.get("flag"), _mapping(extent.get("published_cross_check")).get("flag"),
+                                _mapping(prep.get("destination_overhang")).get("flag"))
+              if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG)}
     for code in sorted(codes):
         estimated.append(f"`{code}`: {ESTIMATE_SENTENCES.get(code, 'an estimate the scene rests on (no plain sentence recorded for this code).')}")
     if not codes:

@@ -12,6 +12,7 @@ production density (6.5 M triangles) on an 8.3 GB host with no swap (#3339).
 """
 from __future__ import annotations
 
+import copy
 import math
 import weakref
 from typing import Any, Iterator, Mapping, NamedTuple, Sequence
@@ -323,6 +324,27 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
         return result
     return _support(MergedCollider(mesh, up=up), lower, upper, up=up, meters_per_unit=meters_per_unit,
                     window_m=window_m)
+
+
+class SupportLookups:
+    """``look`` (``support_under``, or the caller's own) on one collider, each footprint looked up once.
+
+    The collider conditioning (``website_task_preparation``) looks up the start and destination supports
+    first; when it leaves the collider as it was, placement reuses those lookups.
+    """
+
+    def __init__(self, collider: Any, look: Any = None):
+        self.collider, self.found, self.look = collider, {}, look or support_under
+
+    def __call__(self, mesh: Any, lower: Sequence[float], upper: Sequence[float], **options: Any):
+        if mesh is not self.collider:
+            return self.look(mesh, lower, upper, **options)
+        # Rounded: a footprint rebuilt from snapped bounds differs only in its last bits.
+        key = (np.round(np.asarray(lower, dtype=float), 9).tobytes(),
+               np.round(np.asarray(upper, dtype=float), 9).tobytes(), tuple(sorted(options.items())))
+        if key not in self.found:
+            self.found[key] = self.look(mesh, lower, upper, **options)
+        return copy.deepcopy(self.found[key])
 
 
 #: How far below the object's estimated bottom the nearest surface under its footprint is looked for.

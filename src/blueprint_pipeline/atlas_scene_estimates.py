@@ -34,6 +34,17 @@ Codes, each ``scene_estimate:<kind>``:
 - ``task_review_estimated``: the scene review proposed its selection while naming what it could
   not see (a support or destination only partly filmed, the object's origin, the scene's state);
   those parts are estimates.
+- ``destination_surface_estimated``: the destination's surface did not show in the scan (glass and
+  other see-through or shiny surfaces often do not); it was estimated from its visible edges in the
+  frames and added to the collider only (``website_unscanned_surface``).
+- ``object_size_from_its_points``: the object's box did not fit its masks; its size was read again
+  from its own points that the frames agree on, its masks' spill onto what is under or behind it
+  left out (``website_object_extent``).
+- ``object_size_disagrees_with_published``: the exact model's published size disagrees with the
+  box beyond the estimate's stated error; the box is the video's, never the published figure.
+- ``destination_overhang``: no surface holds the object's whole footprint at its destination; it is
+  set down with its centre and at least half its footprint over the surface, the rest over the
+  edge (``website_destination_overhang``).
 
 Pure apart from reading the retained JSON records named. Records written before these estimates
 existed carry none of their fields and give no code.
@@ -75,6 +86,17 @@ SUPPORT_HEIGHT = "scene_estimate:support_height_differs_from_picture"
 #: one under its footprint (``website_support_geometry.nearest_support_under``), moved by the recorded drop,
 #: or on the surface it visibly rests on, its bottom corrected onto it (``website_resting_support``).
 SUPPORT_GUESSED = "scene_estimate:support_guessed"
+#: The destination's surface did not show in the scan; its top was estimated from its visible edges in the
+#: frames and added to the collider, never the look (``website_unscanned_surface``).
+DESTINATION_SURFACE_ESTIMATED = "scene_estimate:destination_surface_estimated"
+#: The object's size was read again from its own points across the frames, its masks' spill onto the table, wall
+#: or room behind it left out (``website_object_extent``).
+OBJECT_SIZE_FROM_ITS_POINTS = "scene_estimate:object_size_from_its_points"
+#: The exact model's published size disagrees with the box beyond its stated error: a cross-check, never the size.
+OBJECT_SIZE_DISAGREES_WITH_PUBLISHED = "scene_estimate:object_size_disagrees_with_published"
+#: The object's footprint is larger than the supported part of its destination surface: set down with its centre
+#: over it, part of its footprint over the edge (``website_destination_overhang``).
+DESTINATION_OVERHANG = "scene_estimate:destination_overhang"
 #: No catalog robot fits the job on paper (``website_robot_fit_precheck``): a note on the job, never a stop.
 #: Carried as ``scene_estimate:robot_fit_none:<cause>``, the cause that refused the most candidates.
 ROBOT_FIT_NONE = "scene_estimate:robot_fit_none"
@@ -87,7 +109,8 @@ PLACEMENT_UNCERTAINTY_FLOOR_M = 0.05
 CODES = frozenset({LEVEL, APPEARANCE, FLOOR, COLLIDER, CITATIONS, SURROUNDING, TASK_OBJECT_GUESSED,
                    TARGET_ROLE_KEPT, TASK_REVIEW_ESTIMATED, DESTINATION_GUESSED, DESTINATION_NEAR_START,
                    REGISTRATION_AMBIGUOUS, PLACEMENT_UNCERTAINTY, SUPPORT_HEIGHT, SUPPORT_GUESSED,
-                   TASK_VIEWS_DROPPED, SURROUNDINGS_GENERATED})
+                   TASK_VIEWS_DROPPED, SURROUNDINGS_GENERATED, DESTINATION_SURFACE_ESTIMATED,
+                   OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -180,6 +203,12 @@ def preparation_flags(path: Path) -> set[str]:
         flags.append(SUPPORT_HEIGHT)
     if _mapping(_mapping(value.get("support")).get("guess")).get("flag") == SUPPORT_GUESSED:
         flags.append(SUPPORT_GUESSED)
+    if _mapping(value.get("destination_surface_estimate")).get("flag") == DESTINATION_SURFACE_ESTIMATED:
+        flags.append(DESTINATION_SURFACE_ESTIMATED)
+    extent = _mapping(value.get("subject_extent"))
+    flags += [code for code in (extent.get("flag"), _mapping(extent.get("published_cross_check")).get("flag"),
+                                _mapping(value.get("destination_overhang")).get("flag"))
+              if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG)]
     codes = {code for code in flags if code in CODES} | (box_fit & TASK_OBJECT_BOX_FIT_FLAGS)
     fit = _robot_fit_none(path.parent / "native" / "robot_fit_precheck.json")
     codes |= {fit} if fit else set()

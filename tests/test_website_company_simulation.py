@@ -2325,6 +2325,72 @@ def test_generated_views_in_the_look_are_named_in_one_sentence_only_when_the_loo
         assert sim.GENERATED_VIEWS_LOOK_NOTE not in " ".join(archive.read("README.txt").decode().split())
 
 
+@pytest.mark.parametrize("where", [None, "estimated", "unsealed", "other_code"])
+def test_an_estimated_destination_surface_is_named_in_one_sentence_only_when_the_scan_holds_it(job, tmp_path, where):
+    """A destination surface the scan did not show (glass) is estimated from its visible edges and added to the
+    collider only (``website_unscanned_surface``). The README says so in one sentence when the base scene the handoff
+    sealed records it; otherwise the package is unchanged, at the same revision."""
+    from blueprint_pipeline.atlas_scene_estimates import DESTINATION_SURFACE_ESTIMATED
+    before = sim.simulation_source(job.capture, queue_root=job.queue)
+    preparation = job.capture / "pipeline" / "website_scene_preparation"
+    if where is not None:
+        code = DESTINATION_SURFACE_ESTIMATED if where != "other_code" else "scene_estimate:floor"
+        _write(preparation / "base_scene.json", {"scene_estimates": [{"code": code, "source": "test", "evidence": {}}]})
+        handoff = {"status": "intake_ready", "base_scene_path": str(preparation / "base_scene.json")}
+        handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+        if where == "unsealed":
+            handoff["digest"] = "sha256:" + "0" * 64
+        _write(preparation / "handoff.json", handoff)
+    expected = where == "estimated"
+    assert sim.surface_estimated(job.capture) is expected
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert bool(source.get("surface_estimated")) is expected
+    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not expected)
+    sim.build_package(source, tmp_path / "package.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "package.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    assert (sim.SURFACE_ESTIMATED_NOTE in readme) is expected and sim.SURFACE_ESTIMATED_NO_LOOK_NOTE not in readme
+    assert readme.count("estimated from its visible edges") == (1 if expected else 0)
+    if expected:
+        assert "glass" in sim.SURFACE_ESTIMATED_NOTE and "does not show in the scan" not in readme
+        assert "not show in the scan" in readme and "not in the look" in readme
+    # A package built without the look names the collision file alone.
+    sim.build_package(sim.without_look(source), tmp_path / "bare.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "bare.zip") as archive:
+        bare = " ".join(archive.read("README.txt").decode().split())
+    assert (sim.SURFACE_ESTIMATED_NO_LOOK_NOTE in bare) is expected and sim.SURFACE_ESTIMATED_NOTE not in bare
+
+
+@pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees", "overhang"])
+def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_it_was(job, tmp_path, extent):
+    """The object's size read again from its own points, its masks' spill left out (``website_object_extent``):
+    the README says so in one sentence, and says when the exact model's published size disagrees with it, and when
+    it overhangs its destination (``website_destination_overhang``). A job whose box fit its masks and whose
+    destination holds it records nothing and its package is unchanged, at the same revision."""
+    before = sim.simulation_source(job.capture, queue_root=job.queue)
+    preparation = job.capture / "pipeline" / "website_scene_preparation"
+    if extent is not None:
+        record = {"status": "kept" if extent in ("kept", "overhang") else "from_its_own_points",
+                  **({"published_cross_check": {"status": "disagrees"}} if extent == "disagrees" else {})}
+        _write(preparation / "preparation.json", {"subject_extent": record, **(
+            {"destination_overhang": {"flag": "scene_estimate:destination_overhang"}} if extent == "overhang" else {})})
+        handoff = {"status": "intake_ready", "preparation_path": str(preparation / "preparation.json")}
+        handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+        _write(preparation / "handoff.json", handoff)
+    expected = {"size_from_its_points": extent in ("from_its_own_points", "disagrees"),
+                "size_disagrees_with_published": extent == "disagrees", "destination_overhang": extent == "overhang"}
+    assert sim.size_notes(job.capture) == {key: True for key, value in expected.items() if value}
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not any(expected.values()))
+    sim.build_package(source, tmp_path / "package.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "package.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    assert (sim.SIZE_FROM_ITS_POINTS_NOTE in readme) is expected["size_from_its_points"]
+    assert (sim.SIZE_DISAGREES_WITH_PUBLISHED_NOTE in readme) is expected["size_disagrees_with_published"]
+    assert readme.count("points of the object") == (1 if expected["size_from_its_points"] else 0)
+    assert (sim.DESTINATION_OVERHANG_NOTE in readme) is expected["destination_overhang"]
+
+
 # --- a look written again from its source splat, and its PLY ------------------------------------------------------
 
 #: The website look's frame (``website_native_appearance``): a levelled Y-up world, scaled and turned to Z-up, in

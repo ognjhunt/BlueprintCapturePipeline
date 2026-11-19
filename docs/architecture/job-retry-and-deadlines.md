@@ -208,7 +208,19 @@ retry: the same video and release give the same answer. Two changes answer it.
   that connects to no other, or a blurry one that is not the anchor, is left out the same way
   (`scene_estimate:task_views_left_out`), and
   a room no surrounding view connects to leaves the task area's views as the scene
-  (`scene_estimate:surroundings_not_connected`). Each estimate is named on the
+  (`scene_estimate:surroundings_not_connected`). Since 2026-11-18 a job's destination surface the scan
+  does not show (glass and other see-through or shiny surfaces often do not) is estimated from its visible edges in
+  the frames, checked across them, and added to the collider only
+  (`scene_estimate:destination_surface_estimated`, `website_unscanned_surface`); one the frames do not
+  agree on stops as before. A job object whose box does not fit its own masks is sized again from its
+  points the frames agree on, its masks' spill onto what lies under or behind it left out
+  (`scene_estimate:object_size_from_its_points`, `website_object_extent`); an exact model's published
+  size only cross-checks it (`scene_estimate:object_size_disagrees_with_published`). An object no
+  destination surface holds whole is set down, in the pose it is placed in, with its centre, the scorer's
+  disc and at least half its footprint over one surface and no other geometry in its box (slid along the
+  surface when there is), read again where it finally lands, the overhang recorded
+  (`scene_estimate:destination_overhang`, `website_destination_overhang`); otherwise it stops as before.
+  Each estimate is named on the
   base scene (`atlas_scene_estimates`), copied into the screening plan, and published in v3
   `scene_feasibility.flags`; the website names each in its own sentence. Counts and intervals are
   shown as measured: no estimate adjusts them.
