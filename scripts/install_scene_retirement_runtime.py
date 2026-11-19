@@ -17,6 +17,7 @@ import hashlib
 import json
 import math
 import selectors
+import shutil
 import signal
 import importlib.util
 import os
@@ -867,8 +868,10 @@ def _generation(kind, rows, sources, deadline):
         _partial_tree(generation, rows, sources, deadline)
     else:
         # The exact selected digest is the only generation examined. Prior
-        # immutable generations may still be executing; neither enumerate nor
-        # delete them and do not impose a permanent deploy-count ceiling.
+        # immutable generations may still be executing; selection never
+        # enumerates or deletes them. After a deployment's refresh,
+        # _prune_snapshots keeps only the current and previous cohort, and only
+        # once no live process can run an older one (owner approval 2026-11-19).
         if parent.exists():
             fd = _open(parent, directory=True)
             os.close(fd)
@@ -901,10 +904,12 @@ def refresh(source, dependencies, *, expected_current, _deadline=None):
             _require(_selector(old_raw) == expected_current)
             old = json.loads(old_raw)
             old_sdk = _RUNTIME_ROOT / 'dependencies'
+            old_runtime = _RUNTIME_ROOT
             if selected_path == current_path:
                 _require(type(old) is dict and old.get('schema') == 'scene-retirement-runtime-cohort.v1'
                          and set(old) == {'schema', 'runtime_root', 'dependencies_root', 'source_digest', 'dependency_digest', 'bootstrap', 'previous'})
                 old_sdk = Path(old['dependencies_root'])
+                old_runtime = Path(old['runtime_root'])
                 _require(old_sdk == _RUNTIME_ROOT / 'dependencies'
                          or old_sdk.parent == _RUNTIME_ROOT / 'sdk-generations'
                          and re.fullmatch('[0-9a-f]{64}', old_sdk.name))
@@ -948,10 +953,95 @@ def refresh(source, dependencies, *, expected_current, _deadline=None):
             _require(len(raw) <= 4096)
             _record(current_path, raw, deadline, previous=old_info if selected_path == current_path else None)
             return {'status': 'refreshed', 'runtime_root': str(runtime), 'dependencies_root': str(sdk),
-                    'current': _selector(raw), 'authority_issued': False, 'cleanup_enabled': False}
+                    'current': _selector(raw), 'authority_issued': False, 'cleanup_enabled': False,
+                    'previous_runtime_root': str(old_runtime), 'previous_dependencies_root': str(old_sdk),
+                    'previous_selected_at_epoch': old_info.st_mtime}
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(_ERROR) from exc
 
+
+
+#: The owner approved on 2026-11-19 (relayed by the coordinating session): "Keep only the current and previous
+#: scene-retirement runtime snapshots." Every deploy left a source generation (about 40 to 75 MB) and a signed
+#: release copy (about 45 MB) that nothing retired: 296 of each by 2026-11-19, about 36 GB, growing about 0.6 GB a
+#: day. After a refresh, generations, SDK generations, release copies and SDK inputs other than the current and
+#: previous ones go, oldest first, at most this many a deploy, and never inside the deploy's last minutes.
+_PRUNE_PER_RUN = 40
+_PRUNE_RESERVE_SECONDS = 120
+
+
+def _older_cohort_may_run(selected_at):
+    """A live process started from the installed bootstrap before the previous cohort was selected may still run
+    an older one: it reads CURRENT.json once and imports from that generation for its whole life. Anything that
+    cannot be read answers yes."""
+    try:
+        with open('/proc/stat', 'rb') as handle:
+            boot = next(int(line.split()[1]) for line in handle if line.startswith(b'btime '))
+        ticks = os.sysconf('SC_CLK_TCK')
+        for name in os.listdir('/proc'):
+            if not name.isdigit():
+                continue
+            try:
+                with open(f'/proc/{name}/cmdline', 'rb') as handle:
+                    arguments = handle.read().split(b'\0')
+                if not any(argument.endswith(b'continuous_bootstrap.py') for argument in arguments):
+                    continue
+                with open(f'/proc/{name}/stat', 'rb') as handle:
+                    fields = handle.read().rsplit(b')', 1)[1].split()
+            except FileNotFoundError:
+                continue  # it ended meanwhile
+            if boot + int(fields[19]) / ticks < selected_at:
+                return True
+        return False
+    except (OSError, ValueError, StopIteration, IndexError):
+        return True
+
+
+def _prune_snapshots(refreshed, *, source_commit, sdk_input, deadline):
+    """Keep the current and previous cohort; remove other snapshots, oldest first. A report, never an error.
+
+    Kept: the source generation and SDK generation the new CURRENT names and the ones it replaced, this deploy's
+    signed release copy and SDK input and the newest other of each. Nothing goes while a runtime process may run a
+    cohort older than the previous one (``_older_cohort_may_run``). Every removal is a real root-owned directory
+    directly in its fixed parent, never a link; its manifest or claim goes after it.
+    """
+    report = {'status': 'skipped', 'removed': [], 'removed_count': 0, 'remaining_count': 0}
+    try:
+        if _older_cohort_may_run(float(refreshed['previous_selected_at_epoch'])):
+            return {**report, 'reason': 'older_cohort_may_run'}
+        sdk = _sdk_root()
+        rows = []
+        for parent, kept, record in ((_RUNTIME_ROOT / 'generations',
+                                      {refreshed['runtime_root'], refreshed['previous_runtime_root']}, 'source-'),
+                                     (_RUNTIME_ROOT / 'sdk-generations',
+                                      {refreshed['dependencies_root'], refreshed['previous_dependencies_root']}, 'sdk-')):
+            for name in sorted(os.listdir(parent)) if parent.is_dir() else ():
+                if re.fullmatch('[0-9a-f]{64}', name) and str(parent / name) not in kept:
+                    rows.append((parent / name, _RUNTIME_ROOT / 'manifests' / (record + name + '.json')))
+        for parent, current, pattern, record in (
+                (sdk / 'release-inputs', source_commit, '[0-9a-f]{40}', lambda name: sdk / 'release-inputs' / (name + '.claim.json')),
+                (sdk / 'sdk-inputs', Path(sdk_input).name, '[0-9a-f]{64}', lambda name: sdk / 'manifests' / ('sdk-input-' + name + '.json'))):
+            others = sorted((name for name in (os.listdir(parent) if parent.is_dir() else ())
+                             if re.fullmatch(pattern, name) and name != current),
+                            key=lambda name: (parent / name).lstat().st_mtime_ns)
+            rows.extend((parent / name, record(name)) for name in others[:-1])  # the newest other is the previous
+        rows.sort(key=lambda row: row[0].lstat().st_mtime_ns)
+        for path, record in rows[:_PRUNE_PER_RUN]:
+            if deadline - time.monotonic() < _PRUNE_RESERVE_SECONDS:
+                break
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != _OWNER:
+                continue
+            shutil.rmtree(path)
+            if record.is_file() and not record.is_symlink():
+                record.unlink()
+            report['removed'].append(str(path))
+        report.update(status='pruned', removed_count=len(report['removed']),
+                      remaining_count=len(rows) - len(report['removed']))
+        report['removed'] = report['removed'][:50]
+        return report
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {**report, 'status': 'failed', 'reason': type(exc).__name__}
 
 
 def _sdk_root():
@@ -1814,6 +1904,15 @@ def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_chec
     _require(time.monotonic() <= deadline)
     phase('publish_installer')
     _publish_installer(protected_source, deadline)
+    if result['status'] == 'refreshed':
+        # Pruning reports; it never fails the deploy that already selected its cohort.
+        try:
+            with _installation_lock():
+                prune = _prune_snapshots(result, source_commit=source_commit, sdk_input=sdk['dependencies_root'],
+                                         deadline=deadline)
+        except (OSError, ValueError):
+            prune = {'status': 'failed', 'reason': 'installation_lock'}
+        result = result | {'snapshot_prune': prune}
     return result | {'source_commit': source_commit, 'sdk_packages': sdk['packages'],
                      'system_python_abi': sdk['system_python_abi']}
 

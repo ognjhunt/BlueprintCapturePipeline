@@ -1591,18 +1591,15 @@ def run_storage_gc(
         if scene_workspace_retirement_alert and isinstance(report.get("scene_workspaces"), dict):
             report["scene_workspaces"]["alerts"] = [scene_workspace_retirement_alert]
 
-        def slim_phase() -> Any:
-            # What the phase above keeps still loses its bulky Atlas files; what sharing reads stays.
-            from .website_scene_workspace_retention import timer_context_factory
-            from .website_scene_workspace_slimming import slim_scene_workspaces
-            return slim_scene_workspaces(
-                storage_roots=scene_present, apply=apply, enabled=scene_workspace_slimming_enabled, now=observed_at,
-                context_factory=timer_context_factory(pins_root=pins_root, queue_roots=queue_roots,
-                                                      intent_root=scene_intent_root, binding_root=scene_binding_root),
-                stream_publisher=scene_stream_publisher, process_checker=scene_process_checker,
-                alert=scene_workspace_slimming_alert)
+        def finished_jobs() -> None:  # Finished jobs' bulky files go behind archives; what sharing reads stays.
+            from .website_scene_workspace_slimming import finished_job_phases
+            finished_job_phases(report, _isolated, storage_roots=scene_present, pins_root=pins_root,
+                                queue_roots=queue_roots, intent_root=scene_intent_root, binding_root=scene_binding_root,
+                                apply=apply, now=observed_at, enabled=scene_workspace_slimming_enabled,
+                                alert=scene_workspace_slimming_alert, stream_publisher=scene_stream_publisher,
+                                process_checker=scene_process_checker)
 
-        _isolated(report, "scene_workspace_slimming", slim_phase)
+        _isolated(report, "finished_job_phases", finished_jobs)
     def lane_phase() -> Any:
         try:
             if (lane_scratch_alert or not isinstance(lane_scratch_roots, Sequence)

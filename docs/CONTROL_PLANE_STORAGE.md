@@ -1113,6 +1113,15 @@ copy not taken back (`shared_with_companies`; an unreadable manifest counts as
 shared) and slims it instead. A retirement by hand through the door
 (`retire-scene-workspace`) is the owner's call for that job and is not held.
 
+**Internal test jobs retire once done** (owner approval 2026-11-19: "Let the timer fully
+retire our own internal test jobs once done, ending their test sharing. Real site jobs
+stay protected and are never retired while shared."). A capture whose task context kept at
+submission is `internal_test.v1` with its label and footage, and whose every shared copy was
+shared as an internal test (`internal_test_job`), is not held as `shared_with_companies`
+on the timer, and, completed, needs no acknowledgement proof: its receipt answers any
+redelivery, as for every retired completed capture. Its test sharing ends (the routes fail
+closed without the folder); a restore brings it back. Every other check still applies.
+
 **Where it runs.** The reclaim timer plans every scene workspace in
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS` (intents from
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT`; registrations from
@@ -1186,6 +1195,61 @@ It checks the archive's digest and every member's SHA-256, puts back what is mis
 (a member already there must have its recorded bytes) and sets the receipt aside as
 `workspace_slim.v1.restored-<hex>.json`.
 
+**Duplicate copies in the scene preparation folder** (owner approval 2026-11-19: "remove
+duplicate copies inside each job's scene preparation folder"). For a scene that passes every
+slimming check, each capture's `pipeline/website_scene_preparation/` copies that are byte for
+byte the same (a room package's half beside the appearance and collision it was assembled
+from, a renewal beside what it renewed; about 0.4 to 0.55 GB a job) become hard links to the
+first by path, each replaced atomically after a check that it is unchanged, under the
+storage-pin lock and the listener's capture locks. Only files of at least 1 MiB with one
+name and the same owner, group and mode are linked. Every path still reads the same bytes,
+so nothing is archived. `pipeline/workspace_dedupe.v1.json` records each link (an empty list
+too), and a capture is read once. The GC report counts `deduped_count` and
+`dedupe_freed_bytes` under `scene_workspace_slimming`.
+
+## Finished scene intents' preparation output
+
+`blueprint_pipeline.completed_scene_preparation_retention` (owner approval 2026-11-19: "Give
+`completed-scene-preparation` a cleanup rule"). `task-evaluation-inputs/completed-scene-preparation/<intent>/`
+is the scene factory's work for one intent: 21 GB in 17 intents on 2026-11-19, nothing reclaimed it, and
+99.7% of a measured intent was materialized files of at least 1 MiB.
+
+Spend accounting reopens settlement records here by the path a receipt holds
+(`validated_cancellation` -> `validate_terminal_settlement` -> the retirement and ownership
+records, the factory record and its submission request), so a folder is never moved whole.
+Only its bulk no record names goes: files of at least 1 MiB that are not records, have one
+name and are not named by anything left in the folder or in the intent's own directory under
+the intent root, closed over what those name. Every record stays where its receipts say.
+
+It acts only when the scene intent has finished (completed, revoked, or expired past the
+seven-day grace) with no unsettled attempt, the folder has been idle for seven days, and no
+queue message, live pin or live process names it. An unknown intent, or every intent when
+intents cannot be read, keeps everything. The bulk is packed, published with full readback,
+and recorded in the folder at `artifacts/result_delivery/remote_artifacts/scene-preparation-bulk.json`
+(where withdrawal deletion reads a run's remote copies) before anything is removed; if a
+withdrawal deleted the folder during the upload, the upload is taken back. At most five a
+tick; `restore_folder` puts it back. The report is `scene_preparation_outputs`;
+`BLUEPRINT_CONTROL_PLANE_SCENE_PREPARATION_OFFLOAD=0` keeps it planning.
+
+## Scene-retirement runtime snapshots
+
+Every deploy's runtime installer (`scripts/install_scene_retirement_runtime.py`) copies
+a source generation (about 40 to 75 MB) under
+`/mnt/blueprint-work/scene-retirement-runtime/generations/` and a signed release copy
+(about 45 MB) under `scene-retirement-runtime-sdk-inputs/release-inputs/`. Nothing retired
+them: 296 of each by 2026-11-19, about 36 GB, growing about 0.6 GB a day. The owner approved
+on 2026-11-19: "Keep only the current and previous scene-retirement runtime snapshots."
+
+After a deployment's refresh, under the installer lock, `_prune_snapshots` keeps the source
+and SDK generations the new `CURRENT.json` names and the ones it replaced, this deploy's
+release copy and SDK input and the newest other of each, and removes the rest, oldest
+first, with their manifests or claims: at most 40 a deploy and never in the deploy's last
+two minutes. A process the bootstrap started reads `CURRENT.json` once and imports from that
+generation for its whole life, so nothing goes while a live
+`continuous_bootstrap.py` process started before the previous cohort was selected
+(`older_cohort_may_run`). The result's `snapshot_prune` says what went; a failure there never
+fails the deploy. The GC still has no authority over these roots.
+
 ## Owner-approved deletions
 
 `blueprint_pipeline.owner_approved_deletion` deletes exactly the paths an owner
@@ -1243,6 +1307,13 @@ and lists each path with what was recorded about it at approval time:
   status wake-up rewrites a delivery file in it). Leases, missing locks, pins,
   queues, processes and open intents still keep it. Only the local working copy
   goes: the raw upload in Firebase Storage and copies elsewhere stay.
+
+On 2026-11-19 the owner approved deleting, through this path, the six website scene
+workspaces the reclaim timer kept only because their capture's authority ended
+(`authority_ended_capture_kept_local: 6`, about 11.9 GB): manifest
+`2026-11-19-authority-ended-scenes`, each capture's terminal code, time and payload
+digest read from its ledger through the door. It includes the one workspace the
+2026-11-04 manifest skipped; that manifest stays held.
 
 Nothing runs it on a timer. An operator starts two oneshot units by hand:
 

@@ -1541,3 +1541,116 @@ def test_installer_cli_retains_earlier_caller_deadline_for_every_mode(tmp_path, 
     options += ['--source-commit', 'a'*40] if selection == '--locked-sdk' else [str(deps)]
     assert module.main(options) == 0
     assert observed == [150.0]
+
+
+# --- owner approval 2026-11-19: keep only the current and previous runtime snapshots ---------------------------
+
+
+def _cohorts(module, source, deps, count):
+    """``count`` refreshes after the initial install, each a new source generation; the last refresh's result."""
+    import time
+    module.prepare(source, deps)
+    current = _runtime_selector(module._BOOT_ROOT / "installation.json")
+    result = None
+    for index in range(count):
+        (source / "src/blueprint_pipeline/__init__.py").write_bytes(f"# generation {index}\n".encode())
+        result = module.refresh(source, deps, expected_current=current)
+        current = result["current"]
+        time.sleep(0.01)  # distinct directory mtimes, oldest first
+    return result
+
+
+def _release_inputs(module, names):
+    import time
+    paths = []
+    for name in names:
+        path = module._sdk_root() / "release-inputs" / name
+        path.mkdir(parents=True)
+        (path.parent / (name + ".claim.json")).write_text("{}")
+        paths.append(path)
+        time.sleep(0.01)
+    return paths
+
+
+def test_a_deploy_keeps_the_current_and_previous_snapshots_and_removes_the_rest_oldest_first(tmp_path, monkeypatch):
+    import time
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "_older_cohort_may_run", lambda _selected_at: False)
+    result = _cohorts(module, source, deps, 4)
+    generations = module._RUNTIME_ROOT / "generations"
+    assert len(list(generations.iterdir())) == 4 and result["previous_runtime_root"] != result["runtime_root"]
+    old_releases = _release_inputs(module, ["a" * 40, "b" * 40, "c" * 40])
+    current_release = _release_inputs(module, ["d" * 40])[0]
+
+    report = module._prune_snapshots(result, source_commit="d" * 40, sdk_input=str(deps),
+                                     deadline=time.monotonic() + 900)
+
+    assert report["status"] == "pruned" and report["remaining_count"] == 0
+    assert sorted(str(path) for path in generations.iterdir()) == sorted(
+        [result["runtime_root"], result["previous_runtime_root"]])
+    manifests = {path.name for path in (module._RUNTIME_ROOT / "manifests").iterdir()}
+    assert manifests == {f"source-{Path(root).name}.json"
+                         for root in (result["runtime_root"], result["previous_runtime_root"])}
+    # This deploy's signed release copy and the newest other stay; the two older ones and their claims go.
+    assert [path.exists() for path in (*old_releases, current_release)] == [False, False, True, True]
+    assert not (old_releases[0].parent / ("a" * 40 + ".claim.json")).exists()
+    assert (old_releases[2].parent / ("c" * 40 + ".claim.json")).exists()
+    # Oldest first: the two retired generations (made first), then the two older release copies.
+    assert [Path(path).parent.name for path in report["removed"]] == ["generations"] * 2 + ["release-inputs"] * 2
+    assert [Path(path).name for path in report["removed"][2:]] == ["a" * 40, "b" * 40]
+
+
+def test_nothing_goes_while_an_older_cohort_may_run_or_inside_the_deploys_last_minutes(tmp_path, monkeypatch):
+    import time
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    result = _cohorts(module, source, deps, 3)
+    monkeypatch.setattr(module, "_older_cohort_may_run", lambda _selected_at: True)
+    held = module._prune_snapshots(result, source_commit="d" * 40, sdk_input=str(deps),
+                                   deadline=time.monotonic() + 900)
+    assert (held["status"], held["reason"]) == ("skipped", "older_cohort_may_run")
+    monkeypatch.setattr(module, "_older_cohort_may_run", lambda _selected_at: False)
+    late = module._prune_snapshots(result, source_commit="d" * 40, sdk_input=str(deps),
+                                   deadline=time.monotonic() + 60)
+    assert (late["removed_count"], late["remaining_count"]) == (0, 1)
+    assert len(list((module._RUNTIME_ROOT / "generations").iterdir())) == 3
+
+
+def test_a_live_bootstrap_started_before_the_previous_selection_is_seen(tmp_path):
+    import subprocess
+    import time
+    spec = importlib.util.spec_from_file_location('runtime_install_probe', SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    bootstrap = tmp_path / "continuous_bootstrap.py"
+    bootstrap.write_text("import time\ntime.sleep(30)\n")
+    process = subprocess.Popen([sys.executable, str(bootstrap)])
+    try:
+        time.sleep(0.5)
+        assert module._older_cohort_may_run(time.time() + 60) is True
+    finally:
+        process.kill()
+        process.wait()
+    assert module._older_cohort_may_run(time.time() - 3600 * 24 * 365) is False
+
+
+def test_a_deployment_refresh_reports_its_prune_and_a_held_lock_never_fails_it(tmp_path, monkeypatch):
+    import subprocess
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture', '-c',
+                    'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'], check=True)
+    commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
+    assert module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent)['status'] == 'prepared'
+    monkeypatch.setattr(module, '_older_cohort_may_run', lambda _selected_at: False)
+    refreshed = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent)
+    assert refreshed['status'] == 'refreshed' and refreshed['snapshot_prune']['status'] == 'pruned'
+    assert refreshed['cleanup_enabled'] is False and refreshed['authority_issued'] is False
+
+    def held():
+        raise ValueError('scene_retirement_runtime_unproven')
+    monkeypatch.setattr(module, '_installation_lock', held)
+    monkeypatch.setattr(module, 'refresh', lambda *_args, **_kwargs: dict(refreshed))
+    again = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent)
+    assert again['snapshot_prune'] == {'status': 'failed', 'reason': 'installation_lock'}

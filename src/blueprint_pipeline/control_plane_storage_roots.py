@@ -114,7 +114,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint/scene-retirement/journals", "evidence_hot", "root", "retirement and native process receipts; never reclaimed"),
     StorageRoot("/var/lib/blueprint/scene-retirement/journals.metadata", "evidence_hot", "root", "public lifecycle receipt metadata"),
     StorageRoot("/var/lib/blueprint/scene-retirement/consents", "evidence_hot", "root", "owner-bound immutable action authorization"),
-    StorageRoot("/mnt/blueprint-work/scene-retirement-runtime", "evidence_hot", "root", "protected installed executable snapshot; no GC authority"),
+    StorageRoot("/mnt/blueprint-work/scene-retirement-runtime", "evidence_hot", "root", "protected installed executable snapshot; no GC authority; its installer keeps the current and previous cohort (owner approval 2026-11-19)"),
     # --- evidence that live services read; never evicted or offloaded
     StorageRoot(f"{_CONTROL_PLANE}/agent-execution", "evidence_hot", "blueprint", "durable agent task and operation journals with inference budget evidence"),
     StorageRoot(f"{_CONTROL_PLANE}/beta-policy-screening", "evidence_hot", "blueprint",
@@ -158,7 +158,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/remote-cpu-jobs", "ledger", "blueprint",
                 "remote CPU job leases held until provider zero, hand-offs, receipts, teardown and parity records"),
     # --- queues and scratch
-    StorageRoot(f"{_INPUTS}/completed-scene-preparation", "work", "blueprint", "mixed owner-scoped source preparation work and evidence; report only"),
+    StorageRoot(f"{_INPUTS}/completed-scene-preparation", "work", "blueprint", "mixed owner-scoped source preparation work and evidence; a finished intent's folder is offloaded behind a pointer (owner approval 2026-11-19)"),
     StorageRoot(f"{_INPUTS}/completed-scene-preparation-inputs", "work", "blueprint", "mixed owner-scoped materialized preparation work; report only"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),

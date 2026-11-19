@@ -245,7 +245,8 @@ PHASES = (
     "workspace_bundles",
     "settled_activation_bundles",
     "replay_caches",
-    "scene_workspaces", "scene_workspace_slimming", "lane_scratch", "registered_experiments",
+    "scene_workspaces", "scene_workspace_slimming", "scene_preparation_outputs", "lane_scratch",
+    "registered_experiments",
 )
 OPT_INS = (
     "evidence_offload", "scene_workspace_retirement", "scene_workspace_slimming", "replay_cache_retention",
