@@ -145,11 +145,10 @@ def _is_receipt_driven(path: Path) -> bool:
     """Does this lane's profile come from a bundle receipt?
 
     Most do: a receipt names the archive, and resolving it against *this* host
-    is what keeps an authoring path out of allocator argv. One lane
-    (`adp009d_840313`) is driven by a preflight request and release evidence
-    instead, so the receipt-residency half of the skeleton has nothing to act
-    on there. It still shares the control surface, which is the half that
-    decides whether a run is provable.
+    is what keeps an authoring path out of allocator argv. A lane driven by a
+    preflight request instead has nothing for the receipt-residency half of
+    the skeleton to act on, and still shares the control surface, which is the
+    half that decides whether a run is provable.
 
     Read from the CLI rather than by matching source text, so a comment that
     happens to mention receipts does not change which contract a lane is held

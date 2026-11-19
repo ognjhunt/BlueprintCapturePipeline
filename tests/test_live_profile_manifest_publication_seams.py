@@ -32,29 +32,19 @@ def test_every_website_reachable_builder_has_digest_safe_publication() -> None:
             LIVE_REACHABILITY.read_text(encoding="utf-8"),
         )
     )
-    assert len(documented) == 9
+    assert len(documented) == 8
     assert documented == set(LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS)
-    assert {
-        builder
-        for builder, seam in LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS.items()
-        if seam == "exact_commit_raw_github"
-    } == {"build_adp009d_840313_live_profile.py"}
     assert set(LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS.values()) == {
-        "exact_commit_raw_github",
         "content_addressed_full_readback",
     }
     for builder in documented:
         source = REPO_ROOT / "scripts" / builder
         assert source.is_file()
         source_text = source.read_text(encoding="utf-8")
-        if LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS[builder] == "exact_commit_raw_github":
-            assert "RAW_GITHUB_ROOT" in source_text
-            assert 'source_uri = f"{RAW_GITHUB_ROOT}/{source_commit}/' in source_text
-        else:
-            # Shared builders bind this filename in LaneLiveProfileSpec; the
-            # two custom builders pass it directly to the same helper.
-            assert f'profile_builder="{builder}"' in source_text
-            assert "Local digest-bound content-addressed publication receipt" in source_text
+        # Shared builders bind this filename in LaneLiveProfileSpec; the
+        # two custom builders pass it directly to the same helper.
+        assert f'profile_builder="{builder}"' in source_text
+        assert "Local digest-bound content-addressed publication receipt" in source_text
 
 
 @pytest.mark.parametrize(
@@ -299,20 +289,3 @@ def test_generated_and_exact_commit_publication_paths_are_fail_closed(
                 profile_builder="build_retained_scene_render_live_profile.py",
                 immutable_inputs=inputs,
             )
-
-    exact = f"https://raw.githubusercontent.com/example/repo/{commit}/request.json"
-    assert bind_live_profile_manifest_publication(
-        reference=exact,
-        source_commit=commit,
-        run_spec_digest=digest,
-        profile_builder="build_adp009d_840313_live_profile.py",
-        immutable_inputs=inputs,
-    )[0] == exact
-    with pytest.raises(TaskEvaluationLaunchError, match="exact_commit_raw_github"):
-        bind_live_profile_manifest_publication(
-            reference=exact.replace(commit, "2" * 40),
-            source_commit=commit,
-            run_spec_digest=digest,
-            profile_builder="build_adp009d_840313_live_profile.py",
-            immutable_inputs=inputs,
-        )

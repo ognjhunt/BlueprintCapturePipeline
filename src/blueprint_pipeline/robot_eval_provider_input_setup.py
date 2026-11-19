@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 from urllib.parse import urlparse
 
-from .adp009d_live_readiness import LEGACY_LIVE_PROFILE_BUILDER
 from .common import ensure_dir, parse_gs_uri, read_json_any, utc_now_iso
 from .decision_evidence_contracts import canonical_digest
 
@@ -51,7 +50,6 @@ FILE_ENV_VAR_ALIASES: Mapping[str, tuple[str, ...]] = {
 # manifest URI. Generated manifests for these builders share this one
 # content-addressed, full-byte-readback publication contract.
 LIVE_PROFILE_MANIFEST_PUBLICATION_SEAMS = {
-    LEGACY_LIVE_PROFILE_BUILDER: "exact_commit_raw_github",
     "build_content_agents_live_profile.py": "content_addressed_full_readback",
     "build_gaussian_excision_live_profile.py": "content_addressed_full_readback",
     "build_joint_agent_live_profile.py": "content_addressed_full_readback",
