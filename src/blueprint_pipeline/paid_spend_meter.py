@@ -7,7 +7,7 @@ it and shown, and one account-wide monthly limit
 reads and reports; it never admits, refuses, reserves or releases anything.
 
 A meter row is one paid admission and, once known, its settlement. Rows come
-from three places. Two of them already record admissions and settlements per
+from four places. Two of them already record admissions and settlements per
 job, so they are read where they are, not copied:
 
 ``paid_resource_admission`` (journal)
@@ -27,6 +27,11 @@ job, so they are read where they are, not copied:
     Each Atlas attempt that ``provider_spend_alerts.observe_world_labs_spend``
     counts: a completed operation at its reviewed price, one whose outcome is
     unknown held at that price (``atlas_spend_settlement``).
+``openai_settlement`` (the OpenAI settlements each job keeps)
+    The OpenAI calls of a job's Atlas stage (planners, reviews, image edits)
+    that ``provider_spend_alerts.observe_openai_job_settlements`` finds settled
+    with the WebApp, summed per job at their settled cost. The account still
+    counts OpenAI from the organization's bill; these rows say which job spent it.
 
 A website job is keyed by its WebApp request id: the Pipeline names the
 job's scene and screening site ``site-<request id>``.
@@ -64,6 +69,7 @@ UNATTRIBUTED = "unattributed"
 SOURCE_JOURNAL = "paid_resource_admission"
 SOURCE_SCREENING = "beta_policy_screening"
 SOURCE_ATLAS = "atlas"
+SOURCE_OPENAI = "openai_settlement"
 MAX_JOURNAL_FILE_BYTES = 16 * 1024 * 1024
 MAX_LEDGER_BYTES = 32 * 1024 * 1024
 #: Optional on a held row: the last moment its attempt could be billed, from the attempt's own record.
@@ -336,6 +342,23 @@ def atlas_rows(world_labs: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     return rows
 
 
+def openai_rows(openai: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Each job's settled OpenAI calls as ``observe_openai_job_settlements`` summed them, one row per job."""
+
+    rows = []
+    for charge in (openai or {}).get("job_charges") or []:
+        if not isinstance(charge, Mapping):
+            continue
+        price, at = money(charge.get("usd")), _epoch(charge.get("at_epoch"))
+        if price is None or at is None:
+            continue
+        rows.append({"source": SOURCE_OPENAI, "job_id": job_key(charge.get("job_id")),
+                     "meter_key": str(charge.get("attempt") or f"openai:{at}"),
+                     "resource_class": "openai_api_candidate", "provider": "openai",
+                     "held_usd": None, "settled_usd": price, "settled_at_epoch": at, "status": "settled"})
+    return rows
+
+
 def _zero() -> dict[str, Decimal]:
     return {"settled_usd": Decimal(0), "held_usd": Decimal(0)}
 
@@ -446,7 +469,8 @@ def public_view(view: Mapping[str, Any], *, max_jobs: int | None = None) -> dict
 
 __all__ = [
     "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV", "METER_ROOT_ENV", "RESOURCE_CLASS_PROVIDERS",
-    "BILLABLE_UNTIL_FIELD", "UNATTRIBUTED", "VIEW_SCHEMA", "atlas_rows", "hold_counts_in_month", "job_key",
+    "BILLABLE_UNTIL_FIELD", "SOURCE_OPENAI", "UNATTRIBUTED", "VIEW_SCHEMA", "atlas_rows", "openai_rows",
+    "hold_counts_in_month", "job_key",
     "journal_rows", "meter_chokepoint_admission", "meter_root", "meter_view", "month_of", "month_start",
     "public_view", "read_journal",
     "record_admission", "record_event", "record_settlement",

@@ -369,6 +369,63 @@ def test_world_labs_never_follows_a_symlinked_attempt(tmp_path):
     assert (row["spend_24h_usd"], row["attempts"]) == (0.0, 0)
 
 
+# --- OpenAI per job (the settlements each job keeps) ------------------------------------------
+
+
+def _settlement(path: Path, *, usd, binding, at, provider="openai", status="settled"):
+    """The WebApp's settlement receipt for one call, as the job keeps it beside the call."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"task_context_digest": "sha256:" + "c" * 64, "allocation_binding_digest": binding,
+                                "provider": provider, "completed_request_count": 1,
+                                "provider_charge_amount_usd": usd, "actual_cost_usd": usd, "status": status}))
+    os.utime(path, (at, at))
+
+
+def test_openai_job_settlements_are_read_per_job_from_the_receipts_each_job_keeps(tmp_path):
+    root = tmp_path / "handoffs"
+    atlas, other = _job(root), _job(root, "b")
+    _settlement(atlas / "scene_planner/p1.settlement.json", usd=0.12, binding="sha256:p1", at=NOW - 3600)
+    _settlement(atlas / "automation/background/selected_editor/0/e1/settlement.json", usd=1.5,
+                binding="sha256:e1", at=NOW - 1800)
+    _settlement(atlas / "scene_planner/old.settlement.json", usd=9.0, binding="sha256:old",
+                at=MONTH_START - DAY)                                                  # last month
+    _settlement(atlas / "review/g.settlement.json", usd=3.0, binding="sha256:g", at=NOW - 60,
+                provider="google")                                                     # not OpenAI's
+    _settlement(atlas / "splat/atlas_pose/world_labs_settlement.json", usd=5.0, binding="sha256:w",
+                at=NOW - 60)                                                           # World Labs' own
+    _settlement(other / "repairs/r1/settlement.json", usd=0.1, binding="sha256:r1", at=NOW - 600)
+    _settlement(other / "repairs-copy/r1/settlement.json", usd=0.1, binding="sha256:r1", at=NOW - 500)
+    result = _observe(tmp_path, Transport(_page(_month(today=2.0))), env={spend.ATLAS_STORAGE_ROOT_ENV: str(root)})
+    row = result["providers"]["openai"]
+    # The organization's bill is still the reading; the rows only say which job spent it.
+    assert row["status"] == "observed" and row["day_usd"]["2026-11-20"] == 2.0
+    assert row["job_charges_complete"] is True and row["job_charges_blockers"] == []
+    # One row per job: its calls summed, a receipt kept twice for one call counted once, at the latest settlement.
+    assert row["job_charges"] == [
+        {"job_id": "site-capture-a", "usd": 1.62, "calls": 2, "at_epoch": NOW - 1800,
+         "attempt": "openai_settlements:site-capture-a"},
+        {"job_id": "site-capture-b", "usd": 0.1, "calls": 1, "at_epoch": NOW - 600,
+         "attempt": "openai_settlements:site-capture-b"}]
+    assert "job_charges" not in spend.summary_projection(result)["providers"]["openai"]
+
+
+def test_an_unreadable_openai_settlement_makes_the_job_rows_a_lower_bound(tmp_path):
+    root = tmp_path / "handoffs"
+    _settlement(_job(root) / "scene_planner/p1.settlement.json", usd=0.12, binding="sha256:p1", at=NOW - 60)
+    broken = _job(root) / "scene_planner/p2.settlement.json"
+    broken.write_text("{not json")
+    os.utime(broken, (NOW - 60, NOW - 60))
+    row = spend.observe_openai_job_settlements(now=NOW, storage_root=root)
+    assert row["job_charges_complete"] is False
+    assert row["job_charges_blockers"] == ["openai_job_settlement_unreadable"]
+    assert [c["usd"] for c in row["job_charges"]] == [0.12]
+    missing = spend.observe_openai_job_settlements(now=NOW, storage_root=tmp_path / "absent")
+    assert missing == {"job_charges": [], "job_charges_complete": False,
+                       "job_charges_blockers": ["openai_job_settlement_root_unreadable"]}
+    cut = spend.observe_openai_job_settlements(now=NOW, storage_root=root, max_directories=0)
+    assert cut["job_charges_complete"] is False and "openai_job_settlement_scan_incomplete" in cut["job_charges_blockers"]
+
+
 # --- Lines and wiring -------------------------------------------------------------------------
 
 

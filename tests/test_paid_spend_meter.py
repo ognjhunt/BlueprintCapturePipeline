@@ -214,6 +214,33 @@ def test_per_job_metering_sums_match_the_totals(tmp_path):
     assert jobs["req-1"]["by_source"]["atlas"]["settled_usd"] == 5.5
 
 
+def test_each_jobs_settled_openai_calls_are_metered_against_it(tmp_path):
+    openai = {"month": "2026-11", "month_to_date_usd": 80.0, "job_charges_complete": True, "job_charges": [
+        {"at_epoch": NOW - 900, "usd": 1.661576, "calls": 17, "job_id": "site-req-1",
+         "attempt": "openai_settlements:site-req-1"},
+        {"at_epoch": NOW - 800, "usd": 0.3, "calls": 1, "job_id": "site-req-2", "attempt": "openai_settlements:site-req-2"},
+        {"at_epoch": LAST_MONTH, "usd": 4.0, "calls": 2, "job_id": "site-req-3", "attempt": "openai_settlements:old"},
+        {"at_epoch": NOW - 700, "usd": "not a number", "job_id": "site-req-4", "attempt": "openai_settlements:bad"},
+    ]}
+    env = {meter.METER_ROOT_ENV: str(tmp_path / "m")}
+    view = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []}, openai=openai, environ=env)
+    assert view["gaps"] == []
+    jobs = {row["job_id"]: row for row in view["jobs"]}
+    assert jobs["req-1"]["by_provider_settled_usd"] == {"openai": 1.661576}
+    assert jobs["req-1"]["by_source"][meter.SOURCE_OPENAI] == {"settled_usd": 1.661576, "held_usd": 0.0}
+    # Settled spend only: an OpenAI call is never a hold, and a row from last month counts in last month.
+    assert jobs["req-2"]["settled_usd"] == 0.3 and view["totals"]["held_usd"] == 0.0
+    assert set(jobs) == {"req-1", "req-2"}
+    assert view["_exact"]["by_provider_settled_usd"]["openai"] == Decimal("1.961576")
+    partial = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []},
+                                         openai={**openai, "job_charges_complete": False}, environ=env)
+    assert partial["gaps"] == ["paid_spend_meter_openai_settlements_partial"]
+    # An older reading without per-job rows shows no OpenAI per job, as before, and names no gap.
+    older = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []},
+                                       openai={"month": "2026-11", "month_to_date_usd": 80.0}, environ=env)
+    assert older["gaps"] == [] and older["jobs"] == []
+
+
 def test_job_key_reads_the_website_request_id():
     assert meter.job_key("site-abc123") == "abc123"
     assert meter.job_key("abc123") == "abc123"
