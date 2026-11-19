@@ -432,6 +432,21 @@ def test_a_recently_touched_scene_is_retained(tmp_path):
     assert _plan(tmp_path, cloud, age=HOUR)["reasons"] == ["recently_active"]
 
 
+def test_the_sharing_recheck_record_alone_does_not_make_a_scene_recently_active(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    record = scene / "captures" / CAPTURE / "pipeline" / "company_clip" / "statement_check.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("{}", encoding="utf-8")
+    later = time.time() + 72 * HOUR - 60
+    os.utime(record, (later, later))
+    assert "recently_active" not in _plan(tmp_path, cloud)["reasons"]
+    # Anything else written as recently still is.
+    other = record.parent / "company_clip.lock"
+    other.write_text("", encoding="utf-8")
+    os.utime(other, (later, later))
+    assert _plan(tmp_path, cloud)["reasons"] == ["recently_active"]
+
+
 def test_not_retired_while_pinned(tmp_path):
     scene, cloud = _scene(tmp_path)
     context = _context(tmp_path)

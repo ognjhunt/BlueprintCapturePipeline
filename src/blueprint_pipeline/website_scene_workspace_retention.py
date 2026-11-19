@@ -54,6 +54,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from .company_share_permission import CHECK_DIRECTORY as permission_check_directory
+from .company_share_permission import STATEMENT_CHECK_FILE as permission_check_file
 from .completed_replay_cache_retention import active_reference
 from .capture_delivery_ledger import ended_producer_delivery_keys
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
@@ -321,6 +323,13 @@ class _Walk:
     allocated_bytes: int
 
 
+#: The sharing-rights re-check rewrites this record every few hours (``company_share_permission``): it is a check
+#: on the job, not work in it, so it never makes a workspace recently active. The owner approved (2026-11-19,
+#: "Retire library-aisle anyway") this, knowing a retired job's sharing stops until it is restored. It is still
+#: archived like any other file.
+_RECHECK_RECORD = "/".join((*permission_check_directory, permission_check_file))
+
+
 def _walk(scene: Path) -> _Walk:
     """Every regular file (relative POSIX path, lstat) without following a link.
 
@@ -349,7 +358,8 @@ def _walk(scene: Path) -> _Walk:
             except OSError:
                 unsafe.append(relative)
                 continue
-            newest = max(newest, info.st_mtime)
+            if not (relative.startswith("captures/") and relative.split("/", 2)[-1] == _RECHECK_RECORD):
+                newest = max(newest, info.st_mtime)
             if stat.S_ISDIR(info.st_mode):
                 allocated += _allocated(info)
                 pending.append((Path(entry.path), relative))
