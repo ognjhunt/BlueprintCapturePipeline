@@ -3,8 +3,8 @@
 The compiled scene's USD files are separate assets; where each sits lives only in the scene plan
 (``native_task_arena_scene_plan.v1.json``, written by ``native_task_arena_packet``), and the runtime places each
 row's asset at its ``pose_world`` (``native_task_arena_runtime``: the pose describes the USD namespace). The plan
-is a record and never leaves. So both the simulation package for deployment companies
-(``website_company_simulation``) and the offline job packet (``job_packet_export``) write ``scene.usda`` with this
+is a record and never leaves. So the simulation package for deployment companies
+(``website_company_simulation``) writes ``scene.usda`` with this
 module: one stage with a neutral prim for each row (``/World/Room``, ``/World/Object``, ...; a role this module
 does not know becomes ``/World/Part_01`` and so on, a repeated role ``/World/Object_02``), carrying the plan's
 position, orientation, scale and visibility, in metres with the plan's up axis. The up axis is the plan's lift

@@ -5,15 +5,15 @@
 #   src/blueprint_pipeline/website_job_estimates.py
 #   src/blueprint_pipeline/website_task_preparation.py
 #   src/blueprint_pipeline/website_robot_fit.py
-#   src/blueprint_pipeline/job_packet_export.py
+#   src/blueprint_pipeline/website_packet_facts.py
 """Where a site never states a fact a deployment company needs, the packet gives Blueprint's best honest estimate.
 
 Owner decision 2026-11-19. The video analysis Blueprint already buys (one Gemini call per job) also reads what each
 object is mostly made of and how much of its box that fills, and estimates how often a site like the one filmed runs
 the job. No new call, and an analysis bought before these were asked for is never bought again. The preparation
 turns them into the object's weight (a published weight first, else its size × fill × material density) and keeps
-the job's operations estimate; the robot fit and the job sheet read both, labelled as estimates with their basis,
-and the site's own answers replace them wherever it gave them.
+the job's operations estimate; the robot fit and the company's job page read both, labelled as estimates with their
+basis, and the site's own answers replace them wherever it gave them (the website holds the answers).
 """
 from __future__ import annotations
 
@@ -241,95 +241,61 @@ def test_the_robot_fit_weighs_the_object_by_the_estimate_unless_the_site_stated_
     assert _mass(older, band)[0] == [pytest.approx(0.421875), pytest.approx(250 / 0.421875)]
 
 
-# --- the job sheet's words ---------------------------------------------------------------------------------------
+# --- the company's job page's words ---------------------------------------------------------------------------------------
 
 PRIOR = {"physics": {"bounds": {"mass_kg": [0.999, 250.0]}}}
 
 
-def test_the_sheet_gives_the_estimate_with_its_range_its_basis_and_that_it_was_not_weighed():
+def test_the_weight_line_gives_the_estimate_with_its_range_its_basis_and_that_it_was_not_weighed():
     estimate = estimates.weight_estimate(dimensions_m=LAMP_BOX, relative_error=0.25, entry=METAL)
-    assert estimates.weight_line({**PRIOR, "weight_estimate": estimate}, site_stated=False) == (
+    assert estimates.weight_line({**PRIOR, "weight_estimate": estimate}) == (
         "Weight: about 3.1 kg (0.34 to 28 kg). Blueprint's estimate from its size in the video, across the scale "
         "band, and its likely material: mostly metal, filling 0.3 to 1.5 % of its box for a typical object of its "
         "kind, as Blueprint's video analysis read it. An estimate, not weighed. The simulation uses a wider prior "
         "from its size alone: 1 to 250 kg.")
     published = estimates.weight_estimate(dimensions_m=LAMP_BOX, relative_error=0.25, entry={},
                                           target={"target_id": "table_lamp"}, object_spec=_spec())
-    assert estimates.weight_line({**PRIOR, "weight_estimate": published}, site_stated=False) == (
+    assert estimates.weight_line({**PRIOR, "weight_estimate": published}) == (
         "Weight: about 4.2 kg (3.8 to 4.6 kg), the weight its maker publishes for the exact model, give or take "
         "10 %. An estimate, not weighed.")
 
 
-def test_the_sheet_says_in_plain_words_when_there_is_no_estimate():
-    assert estimates.weight_line(PRIOR, site_stated=False) == (
+def test_the_weight_line_says_in_plain_words_when_there_is_no_estimate():
+    assert estimates.weight_line(PRIOR) == (
         "Weight: not estimated: this job was prepared before Blueprint estimated weights. The simulation uses a "
         "wide prior from its size alone: 1 to 250 kg.")
     missing = {**PRIOR, "weight_estimate": {"status": "not_estimated", "reason": "no_material_reading"}}
-    assert estimates.weight_line(missing, site_stated=False).startswith(
+    assert estimates.weight_line(missing).startswith(
         "Weight: not estimated: no weight is published for its exact model, and Blueprint's video analysis did not "
         "read what it is made of")
-    assert estimates.weight_line(missing, site_stated=True) == (
-        "Weight: the site's own answer, above (not checked); Blueprint made no estimate of its own.")
-    assert estimates.weight_line({}, site_stated=False) is None  # nothing is built, nothing is weighed
+    assert estimates.weight_line({}) is None  # nothing is built, nothing is weighed
 
 
 RATES = {"operations_estimate": {**OPERATIONS, "source": "video_analysis_estimate"}}
 
 
-def test_how_often_the_job_runs_is_blueprints_labelled_estimate_only_where_the_site_did_not_answer():
-    lines, covered = estimates.operations_lines(RATES, set())
-    assert lines == [
-        "How many an hour: 1 to 4 (Blueprint's estimate; the site did not say).",
-        "How many hours a day the job runs: 0.5 to 2 (Blueprint's estimate; the site did not say).",
-        "How many days a week it runs: 5 to 7 (Blueprint's estimate; the site did not say).",
-        "What that estimate rests on: A hotel room's housekeeping moves a lamp now and then while turning the room. "
-        "Blueprint's video analysis made it from the job's words and the place filmed; nobody at the site checked it."]
-    assert covered == {"items_per_hour", "hours_per_day"}
-    lines, covered = estimates.operations_lines(RATES, {"items_per_hour"})
-    assert not any(line.startswith("How many an hour") for line in lines) and covered == {"hours_per_day"}
-    assert estimates.operations_lines({"subject": {}}, set()) == ([], set())  # no estimate: "not stated" stands
+def test_how_often_the_job_runs_is_blueprints_labelled_estimate_naming_the_question_each_line_answers():
+    assert estimates.operations_lines(RATES) == [
+        ("How many an hour: 1 to 4 (Blueprint's estimate; the site did not say).", "items_per_hour"),
+        ("How many hours a day the job runs: 0.5 to 2 (Blueprint's estimate; the site did not say).", "hours_per_day"),
+        ("How many days a week it runs: 5 to 7 (Blueprint's estimate; the site did not say).", None),
+        ("What that estimate rests on: A hotel room's housekeeping moves a lamp now and then while turning the room. "
+         "Blueprint's video analysis made it from the job's words and the place filmed; nobody at the site checked "
+         "it.", None)]
+    assert estimates.operations_lines({"subject": {}}) == []  # no estimate: the page says the site did not state it
 
 
-def _packet_sheet(tmp_path, name, *, prep_change=None, answers=None):
-    from blueprint_pipeline.job_packet_export import build_job_packet
-    from tests import test_job_packet_export as packet
-    inputs = packet._job(tmp_path / name, packet._clip(tmp_path / f"{name}.mp4").read_bytes(), simulation=False)
-    packet._no_cycle_time(inputs)
-    # The site typed no weight: what it states comes only from its quick answers below.
-    packet._edit(packet._context_path(inputs), lambda value: packet._sealed(
-        value.get("operator_task_details", {}).pop("item_weight", None) and value or value, "context_digest"))
-    if prep_change is not None:
-        packet._edit(inputs.capture_dir / packet.PREP / "preparation.json", prep_change)
-    packet._seal_first_look(inputs.capture_dir)
-    if answers is not None:
-        packet._with_facts(inputs, packet._facts_record(answers))
-    out = tmp_path / f"{name}-out"
-    out.mkdir()
-    sheet = packet._sheet(build_job_packet(inputs, output_root=out, now=packet.NOW, operator="op"))
-    return packet._section(sheet, "## Estimated"), packet._section(sheet, "## What this packet does not show"), sheet
-
-
-def test_the_job_sheet_fills_the_unstated_seam_with_labelled_estimates_and_keeps_the_sites_answers(tmp_path):
-    from tests import test_job_packet_export as packet
+def test_the_company_page_facts_carry_the_labelled_estimates_each_naming_the_question_it_answers():
+    from blueprint_pipeline.website_packet_facts import measured_and_estimated
     estimate = estimates.weight_estimate(dimensions_m=LAMP_BOX, relative_error=0.25, entry=METAL)
-
-    def prepared(value):
-        value.update(weight_estimate=estimate, operations_estimate=RATES["operations_estimate"])
-    estimated, not_shown, sheet = _packet_sheet(tmp_path, "a", prep_change=prepared)
-    assert any(line.startswith("- Weight: about 3.1 kg (0.34 to 28 kg). Blueprint's estimate") for line in estimated)
-    assert "- How many an hour: 1 to 4 (Blueprint's estimate; the site did not say)." in estimated
-    assert "Mass estimate:" not in sheet
-    # Both rate questions are estimated: neither "not stated" line is left.
-    assert not any("not stated in the files" in line for line in not_shown)
-    # The site answered the weight and the rate: its answers stand, and no estimate of the same thing is printed.
-    estimated, not_shown, sheet = _packet_sheet(tmp_path, "b", prep_change=prepared, answers={
-        "item_weight": packet.WEIGHT, "items_per_hour": packet.PER_HOUR})
-    assert f"- Weight: 5 to 15 kg (11 to 33 lb) {packet.LABEL}." in sheet
-    assert "- Weight: the site's own answer, above (not checked); Blueprint made no estimate of its own." in estimated
-    assert not any(line.startswith("- How many an hour:") for line in estimated)
-    assert "- How many hours a day the job runs: 0.5 to 2 (Blueprint's estimate; the site did not say)." in estimated
-    assert not any("not stated in the files" in line for line in not_shown)
-    # No estimate (an analysis bought before it was asked for): the seam says the site did not state it, as before.
-    estimated, not_shown, _sheet = _packet_sheet(tmp_path, "c")
-    assert "- " + packet.packet.UNSTATED_RATE in not_shown
-    assert any(line.startswith("- Weight: not estimated: this job was prepared before") for line in estimated)
+    prep = {**PRIOR, "weight_estimate": estimate, "operations_estimate": RATES["operations_estimate"]}
+    estimated = measured_and_estimated(prep, None, None)[1]
+    weight = next(row for row in estimated if row["text"].startswith("Weight: "))
+    assert weight["answers"] == "item_weight" and weight["text"].startswith("Weight: about 3.1 kg (0.34 to 28 kg).")
+    assert {"text": "How many an hour: 1 to 4 (Blueprint's estimate; the site did not say).",
+            "answers": "items_per_hour"} in estimated
+    assert not any("Mass estimate:" in row["text"] for row in estimated)
+    # No estimate (an analysis bought before it was asked for): no rate line, and the weight says why in plain words.
+    estimated = measured_and_estimated(PRIOR, None, None)[1]
+    assert not any(row["text"].startswith("How many") for row in estimated)
+    assert any(row["text"].startswith("Weight: not estimated: this job was prepared before") for row in estimated)

@@ -6,7 +6,7 @@ job 4's lamp masks took in the round table under it in 3 of 33 frames. No provid
 """
 # Covers: src/blueprint_pipeline/website_object_extent.py
 # Covers: src/blueprint_pipeline/website_task_preparation.py
-# Covers: src/blueprint_pipeline/job_packet_export.py
+# Covers: src/blueprint_pipeline/website_packet_facts.py
 from __future__ import annotations
 
 import numpy as np
@@ -133,12 +133,12 @@ def test_an_exact_model_s_published_size_is_a_cross_check_flagged_never_used(tmp
 @pytest.mark.parametrize("spilled", [(), (0, 3)])
 def test_compile_keeps_identical_boxes_without_spill_and_says_where_a_spilled_size_came_from(tmp_path, monkeypatch,
                                                                                              spilled):
-    from blueprint_pipeline import job_packet_export as packet
+    from blueprint_pipeline.website_packet_facts import measured_and_estimated
     args = _room(tmp_path / "with", spilled)
     value = preparation.compile_website_scene_preparation(**args)
     monkeypatch.setattr(extent, "own_points_extent", lambda low, high, *_: (list(low), list(high), {}))
     without = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "without"})
-    line = next(text for text in packet._measured_and_estimated(value, None, None)[1] if text.startswith("Object size"))
+    line = next(row["text"] for row in measured_and_estimated(value, None, None)[1] if row["text"].startswith("Object size"))
     if not spilled:
         assert "subject_extent" not in value and value["subject"] == without["subject"]
         assert "own points" not in line

@@ -41,10 +41,11 @@ def capture_root(tmp_path: Path, scene_id: str = "site-req1", capture_id: str = 
 
 
 def write_fit_table(root: Path, *, route: str = "full", rows=ROWS, context: str = CONTEXT,
-                    handoff: dict | None = None) -> dict:
+                    handoff: dict | None = None, preparation: dict | None = None) -> dict:
     """A handoff with its preparation and fit table, as the scene handoff leaves them."""
     work = root / "pipeline" / "website_scene_preparation"
-    preparation = {"schema_version": "website_scene_preparation.v1", "binding": {"task_context_digest": context}}
+    preparation = {**(preparation or {}), "schema_version": "website_scene_preparation.v1",
+                   "binding": {"task_context_digest": context}}
     preparation["digest"] = canonical_digest(preparation, digest_field="digest")
     write_json(work / "preparation.json", preparation)
     table = {"schema_version": "website_robot_fit_table.v1", "preparation_digest": preparation["digest"],

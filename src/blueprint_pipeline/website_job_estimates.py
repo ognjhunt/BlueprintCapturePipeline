@@ -5,7 +5,7 @@ Blueprint's best honest estimate, not a useless range or a blank. It is worked o
 an estimate with its basis and its uncertainty, and never presented as measured. No new paid call: every input is
 something the pipeline already reads or buys.
 
-The object's weight (``weight_estimate``: the preparation writes it, the robot fit and the job sheet read it):
+The object's weight (``weight_estimate``: the preparation writes it, the robot fit and the company's job page read it):
 
 1. ``published_exact_model``: the net weight the maker publishes for the exact model, where the pipeline already
    researched the object (``website_object_spec_research``), ±10 % (``website_articulated_mass``);
@@ -16,19 +16,20 @@ The object's weight (``weight_estimate``: the preparation writes it, the robot f
    frames (``clean_plate_removal_analysis_gemini``, revision r4: the same call, a few more words of answer); the
    densities are handbook ranges. The best figure is the box at the middle of the band × the geometric middle of the
    share and of the density; the range takes every factor at its lowest, then at its highest.
-4. Otherwise it is not estimated, and the sheet says why in plain words.
+4. Otherwise it is not estimated, and the company's job page says why in plain words.
 
 How often the job runs (``operations_estimate``): the video analysis's own estimate from the job's words and the
 place filmed (how many an hour while it runs, hours a day, days a week, each a range, and its basis).
 
-The site's own quick answers on its job page (``website_site_job_facts``) come first: where the site answered how
-heavy the object is, how big, how many an hour or how many hours a day, the job sheet prints its answer and not
-Blueprint's estimate of the same thing (``job_packet_export.UNSTATED_FACTS`` is the seam an estimate fills).
+The site's own quick answers on its job page come first: each line here names the question it answers, and where the
+site answered how heavy the object is, how big, how many an hour or how many hours a day, the company's job page shows
+the site's answer and not Blueprint's estimate of the same thing (``website_packet_facts``; the website holds the
+answers).
 """
 from __future__ import annotations
 
 import math
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 PUBLISHED = "published_exact_model"
@@ -43,7 +44,7 @@ MATERIAL_DENSITY_KG_M3 = {
     "metal": (2700.0, 7900.0), "wood": (400.0, 900.0), "plastic": (900.0, 1400.0), "glass": (2400.0, 2600.0),
     "ceramic": (2000.0, 2500.0), "stone": (2200.0, 2800.0), "paper": (700.0, 1200.0), "fabric": (1100.0, 1550.0),
     "foam": (20.0, 200.0), "rubber": (900.0, 1500.0), "food": (200.0, 1200.0), "liquid": (850.0, 1300.0)}
-#: Why a weight was not estimated, in the sheet's words.
+#: Why a weight was not estimated, in plain words.
 NOT_ESTIMATED_WORDS = {
     "no_material_reading": ("no weight is published for its exact model, and Blueprint's video analysis did not "
                             "read what it is made of (a job analysed before Blueprint asked has no reading)"),
@@ -53,7 +54,7 @@ NOT_ESTIMATED_WORDS = {
 }
 OPERATIONS = ("per_hour", "hours_per_day", "days_per_week")
 OPERATION_BOUNDS = {"per_hour": math.inf, "hours_per_day": 24.0, "days_per_week": 7.0}
-#: The site's quick question (``website_task_context_contracts.SITE_JOB_FACT_KEYS``) each estimate answers, and each
+#: The site's quick question (as ``website_packet_facts`` names it to the website) each estimate answers, and each
 #: line's words. A question the site answered keeps its answer; nothing here replaces it.
 SITE_QUESTION = {"per_hour": "items_per_hour", "hours_per_day": "hours_per_day"}
 OPERATION_LABELS = {"per_hour": "How many an hour", "hours_per_day": "How many hours a day the job runs",
@@ -150,7 +151,7 @@ def preparation_estimates(*, subject: Mapping[str, Any], entry: Mapping[str, Any
     return {"weight_estimate": weight, **({"operations_estimate": operations} if operations else {})}
 
 
-# --- the job sheet's words ------------------------------------------------------------------------------------
+# --- the company's job page's words ------------------------------------------------------------------------------------
 
 def _figure(value: float) -> str:
     """Two significant figures, never in exponent form."""
@@ -164,16 +165,14 @@ def _span(low: float, high: float, unit: str = "") -> str:
     return words + (f" {unit}" if unit else "")
 
 
-def weight_line(preparation: Mapping[str, Any], *, site_stated: bool) -> str | None:
-    """The sheet's weight line; None for a preparation that weighs nothing (a job no object is built for)."""
+def weight_line(preparation: Mapping[str, Any]) -> str | None:
+    """The weight line; None for a preparation that weighs nothing (a job no object is built for)."""
     estimate = preparation.get("weight_estimate")
     prior = ((preparation.get("physics") or {}).get("bounds") or {}).get("mass_kg")
     prior = _pair(prior, low=-1e-9, high=math.inf)
     if not isinstance(estimate, Mapping) and prior is None:
         return None
     simulation = f" The simulation uses a {{}} prior from its size alone: {_span(*prior, 'kg')}." if prior else ""
-    if site_stated:
-        return "Weight: the site's own answer, above (not checked); Blueprint made no estimate of its own."
     if not isinstance(estimate, Mapping):
         return "Weight: not estimated: this job was prepared before Blueprint estimated weights." + simulation.format("wide")
     if estimate.get("status") != "estimated":
@@ -193,19 +192,16 @@ def weight_line(preparation: Mapping[str, Any], *, site_stated: bool) -> str | N
             "video analysis read it. An estimate, not weighed." + simulation.format("wider"))
 
 
-def operations_lines(preparation: Mapping[str, Any] | None,
-                     answered: Collection[str]) -> tuple[list[str], set[str]]:
-    """Blueprint's estimate of how often the job runs, for each figure the site did not answer (``answered``: the
-    site's quick-question keys it answered), with its basis; and the site's questions those lines answer. Nothing
-    when the analysis gave no estimate: the sheet then says the site did not state it."""
+def operations_lines(preparation: Mapping[str, Any] | None) -> list[tuple[str, str | None]]:
+    """Blueprint's estimate of how often the job runs, each line with the site's quick question it answers (None for
+    one the job page does not ask), then its basis. Nothing when the analysis gave no estimate."""
     estimate = operations_estimate((preparation or {}).get("operations_estimate"))
-    keys = [key for key in OPERATIONS if SITE_QUESTION.get(key) not in answered]
-    if estimate is None or not keys:
-        return [], set()
-    lines = [f"{OPERATION_LABELS[key]}: {_span(*estimate[key])} ({ESTIMATE_LABEL})." for key in keys]
-    lines.append(f"What that estimate rests on: {estimate['basis'].rstrip('.')}. Blueprint's video analysis made it "
-                 "from the job's words and the place filmed; nobody at the site checked it.")
-    return lines, {SITE_QUESTION[key] for key in keys if key in SITE_QUESTION}
+    if estimate is None:
+        return []
+    return [*((f"{OPERATION_LABELS[key]}: {_span(*estimate[key])} ({ESTIMATE_LABEL}).", SITE_QUESTION.get(key))
+              for key in OPERATIONS),
+            (f"What that estimate rests on: {estimate['basis'].rstrip('.')}. Blueprint's video analysis made it from "
+             "the job's words and the place filmed; nobody at the site checked it.", None)]
 
 
 __all__ = ["CLAIM", "DESIGNED", "MATERIAL_DENSITY_KG_M3", "PHYSICS", "PUBLISHED",

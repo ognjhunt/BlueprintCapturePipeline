@@ -1,6 +1,6 @@
 {
   "schema_version": "blueprint_owned_captures.v1",
-  "purpose": "Captures whose video belongs to Blueprint itself, so a job packet may be made from them with the owner's recorded approval (src/blueprint_pipeline/job_packet_export.py). A capture id is added only in a reviewed change, with the evidence of ownership.",
+  "purpose": "Captures whose video belongs to Blueprint itself, so its company clip and simulation package may be shared with the owner's recorded approval (src/blueprint_pipeline/sharing_statement.py). A capture id is added only in a reviewed change, with the evidence of ownership.",
   "captures": [
     {
       "capture_id": "walkthrough-capture-39ecdc97-1b37-4e7c-8db5-d6208f7f62c5",

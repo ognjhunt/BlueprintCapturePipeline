@@ -159,7 +159,7 @@ def test_v1_receipt_is_unchanged_and_v2_separates_capacity(website_capture, upda
     ("3", "website_preparation_status.v3"), ("4", "website_preparation_status.v4"),
     ("5", "website_preparation_status.v5"), ("6", "website_preparation_status.v6"),
     ("7", "website_preparation_status.v7"), ("8", "website_preparation_status.v8"),
-    ("9", "website_preparation_status.v8"),
+    ("9", "website_preparation_status.v9"), ("10", "website_preparation_status.v9"),
     ("two", "website_preparation_status.v1"),
     ("02", "website_preparation_status.v1"), ("9" * 40, "website_preparation_status.v1")])
 def test_status_version_is_opt_in_and_capped_at_newest_known(header, expected):
