@@ -60,11 +60,13 @@ def _export(path: Path, totals: dict, *, generated: float) -> Path:
     return path
 
 
-def _observation(root: Path, *, openai: float, observed: float = NOW - 300) -> None:
+def _observation(root: Path, *, openai: float, observed: float = NOW - 300, openai_jobs: list | None = None) -> None:
     root.mkdir(parents=True, exist_ok=True)
+    jobs = {} if openai_jobs is None else {"job_charges": openai_jobs, "job_charges_complete": True}
     (root / account.OBSERVATION_FILENAME).write_text(json.dumps({
         "schema_version": account.OBSERVATION_SCHEMA, "observed_at_epoch": observed, "providers": {
-            "openai": {"status": "observed", "blockers": [], "month": "2026-11", "month_to_date_usd": openai},
+            "openai": {"status": "observed", "blockers": [], "month": "2026-11", "month_to_date_usd": openai,
+                       **jobs},
             "world_labs": {"status": "observed", "blockers": [], "month": "2026-11", "month_to_date_usd": 7.2,
                            "complete": True, "charges": [
                                {"at_epoch": NOW - 1000, "usd": 5.5, "held": False, "job_id": "site-req-1",
@@ -190,6 +192,21 @@ def test_the_month_counts_reconciled_billing_plus_held_reservations(host):
     assert os.stat(report["report_path"]).st_mode & 0o777 == 0o644
     jobs = {row["job_id"]: row for row in report["meter"]["jobs"]}
     assert jobs["req-1"]["metered_usd"] == round(1.25 + 8.0 + 5.5, 6)
+
+
+def test_jobs_openai_calls_show_per_job_while_the_bill_stays_the_count(host):
+    _observation(host["root"], openai=40.0, openai_jobs=[
+        {"at_epoch": NOW - 1000, "usd": 1.5, "calls": 16, "job_id": "site-req-1",
+         "attempt": "openai_settlements:site-req-1"},
+        {"at_epoch": NOW - 900, "usd": 0.25, "calls": 2, "job_id": "site-req-9",
+         "attempt": "openai_settlements:site-req-9"}])
+    report = report_module.refresh_report(now=NOW)
+    openai = report["providers"]["openai"]
+    assert (openai["reconciled_month_usd"], openai["metered_settled_usd"], openai["counted_usd"]) == (40.0, 1.75, 40.0)
+    assert report["spend_usd"] == 117.2 and report["counted_usd"] == 127.2
+    jobs = {row["job_id"]: row for row in report["meter"]["jobs"]}
+    assert jobs["req-9"]["by_provider_settled_usd"] == {"openai": 0.25}
+    assert jobs["req-1"]["by_provider_settled_usd"]["openai"] == 1.5
 
 
 def test_without_a_receipt_before_the_month_the_first_one_of_the_month_stands_in(tmp_path):
@@ -404,9 +421,12 @@ def test_an_invalid_config_pages(tmp_path, monkeypatch):
 
 def test_the_capacity_check_leaves_its_readings_for_the_guard(tmp_path, monkeypatch):
     monkeypatch.setenv(account.ROOT_ENV, str(tmp_path / "account"))
+    charges = [{"at_epoch": NOW - 60, "usd": 0.5, "calls": 3, "job_id": "site-req-1",
+                "attempt": "openai_settlements:site-req-1"}]
     observation = {"observed_at_epoch": NOW, "providers": {
         "openai": {"status": "observed", "blockers": [], "month": "2026-11", "month_to_date_usd": 3.0,
-                   "day_usd": {"2026-11-20": 1.0}},
+                   "day_usd": {"2026-11-20": 1.0}, "job_charges": charges, "job_charges_complete": True,
+                   "job_charges_blockers": []},
         "world_labs": {"status": "observed", "blockers": [], "month": "2026-11", "month_to_date_usd": 1.0,
                        "charges": [], "complete": True},
         "gcp": {"observed_cost_usd": 5.0}}}
@@ -414,6 +434,7 @@ def test_the_capacity_check_leaves_its_readings_for_the_guard(tmp_path, monkeypa
     written = json.loads((tmp_path / "account" / account.OBSERVATION_FILENAME).read_text())
     assert set(written["providers"]) == {"openai", "world_labs"}
     assert "day_usd" not in written["providers"]["openai"]
+    assert account.current_openai(written, now=NOW + 60)["job_charges"] == charges
     assert os.stat(tmp_path / "account" / account.OBSERVATION_FILENAME).st_mode & 0o777 == 0o644
     assert report_module.observation_readings(written, now=NOW + 60)["openai"] == {
         "status": "observed", "month_usd": Decimal("3.0"), "observed_at": "2026-11-20T16:00:00+00:00"}

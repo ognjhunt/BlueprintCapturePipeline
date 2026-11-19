@@ -346,6 +346,101 @@ def observe_world_labs_spend(*, now: float, storage_root: Path, deadline_seconds
             "charges": month}
 
 
+#: The WebApp's settlement receipt for an OpenAI call a website job made, as the job keeps it beside the call:
+#: ``<call>.settlement.json`` (planner, repair plan, research) or ``<request>/settlement.json`` (image edits).
+#: ``world_labs_settlement.json`` is a World Labs attempt's and is read above.
+_OPENAI_SETTLEMENT_SUFFIX = "settlement.json"
+_WORLD_LABS_SETTLEMENT = "world_labs_settlement.json"
+
+
+def _openai_settlement(path: Path, *, since: float) -> dict[str, Any] | None:
+    """One OpenAI call's settled cost, from the settlement receipt its job keeps; None for none this window.
+
+    Raises ValueError when a receipt written in the window cannot be read or priced.
+    """
+
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    # Written once, when the WebApp settled the call: its time is the settlement's.
+    if not stat.S_ISREG(info.st_mode) or info.st_mtime < since:
+        return None
+    receipt = _small_json(path)
+    if receipt is None:
+        raise ValueError("openai_job_settlement_unreadable")
+    if receipt.get("provider") != "openai" or receipt.get("status") != "settled":
+        return None
+    cost, binding = _number(receipt.get("actual_cost_usd")), receipt.get("allocation_binding_digest")
+    if cost is None or cost < 0 or not isinstance(binding, str) or not binding:
+        raise ValueError("openai_job_settlement_unreadable")
+    return {"at_epoch": info.st_mtime, "usd": cost, "job_id": _atlas_job_id(path.parent), "attempt": "openai:" + binding}
+
+
+def observe_openai_job_settlements(*, now: float, storage_root: Path, deadline_seconds: float = SCAN_DEADLINE_SECONDS,
+                                   max_directories: int = SCAN_MAX_DIRECTORIES,
+                                   clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    """What each website job's OpenAI calls settled this UTC month, one row per job, from the receipts it keeps.
+
+    Every planner, review and image-edit call of a job's Atlas stage is settled with the WebApp, and the job
+    keeps that settlement beside the call. A row sums one job's calls (``calls``, the latest settlement's time
+    as ``at_epoch``), so the retained observation stays small however many calls a job makes. These rows put
+    each job's OpenAI cost in the per-job meter (``paid_spend_meter.openai_rows``); the account still counts
+    OpenAI from the organization's bill. A walk cut short or a receipt that cannot be read makes the rows a
+    lower bound (``job_charges_complete``).
+    """
+
+    month_start = _month_start(now)
+    blockers: set[str] = set()
+    root = Path(storage_root)
+    try:
+        if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+            return {"job_charges": [], "job_charges_complete": False,
+                    "job_charges_blockers": ["openai_job_settlement_root_unreadable"]}
+        base = root.resolve(strict=True)
+        jobs = sorted(path for path in root.glob(ATLAS_JOB_GLOB)
+                      if not path.is_symlink() and path.is_dir() and path.resolve().is_relative_to(base))
+    except OSError:
+        return {"job_charges": [], "job_charges_complete": False,
+                "job_charges_blockers": ["openai_job_settlement_root_unreadable"]}
+
+    def unreadable(_error: OSError) -> None:
+        blockers.add("openai_job_settlement_scan_incomplete")
+
+    deadline = clock() + deadline_seconds
+    visited, cut_short, charges = 0, False, {}
+    for atlas in jobs:
+        for directory, subdirectories, files in os.walk(atlas, onerror=unreadable, followlinks=False):
+            subdirectories.sort()
+            visited += 1
+            if visited > max_directories or clock() > deadline:
+                cut_short = True
+                break
+            for name in sorted(files):
+                if not name.endswith(_OPENAI_SETTLEMENT_SUFFIX) or name == _WORLD_LABS_SETTLEMENT:
+                    continue
+                try:
+                    charge = _openai_settlement(Path(directory) / name, since=month_start)
+                except ValueError as exc:
+                    blockers.add(str(exc))
+                    continue
+                if charge is not None:
+                    # One call settles once; a receipt kept twice for one job counts once.
+                    charges.setdefault((charge["job_id"], charge["attempt"]), charge)
+        if cut_short:
+            blockers.add("openai_job_settlement_scan_incomplete")
+            break
+    jobs_rows: dict[str, dict[str, Any]] = {}
+    for (job_id, _attempt), charge in sorted(charges.items(), key=lambda item: (str(item[0][0]), item[0][1])):
+        row = jobs_rows.setdefault(str(job_id), {"job_id": job_id, "usd": 0.0, "calls": 0, "at_epoch": 0.0,
+                                                 "attempt": f"openai_settlements:{job_id}"})
+        row["usd"] += charge["usd"]
+        row["calls"] += 1
+        row["at_epoch"] = max(row["at_epoch"], charge["at_epoch"])
+    return {"job_charges": [{**row, "usd": round(row["usd"], 6)} for _key, row in sorted(jobs_rows.items())],
+            "job_charges_complete": not blockers, "job_charges_blockers": sorted(blockers)}
+
+
 def observe_gcp_spend(*, now: float, config_path: str | None) -> dict[str, Any]:
     """The budget guard's month cost and effective limit, read from its own report."""
 
@@ -454,11 +549,13 @@ def observe_provider_spend(now: float, *, environ: Mapping[str, str] | None = No
 
     env = os.environ if environ is None else environ
     lines, alerts = lines_from_environment(env)
+    atlas_root = Path(str(env.get(ATLAS_STORAGE_ROOT_ENV) or DEFAULT_ATLAS_STORAGE_ROOT))
+    openai = observe_openai_spend(now=now, admin_key_file=env.get(OPENAI_ADMIN_KEY_FILE_ENV), transport=openai_transport)
+    # Per job, for the meter: the bill above is the organization's, these rows are what each job settled.
+    openai.update(observe_openai_job_settlements(now=now, storage_root=atlas_root))
     providers = {
-        "openai": observe_openai_spend(now=now, admin_key_file=env.get(OPENAI_ADMIN_KEY_FILE_ENV),
-                                       transport=openai_transport),
-        "world_labs": observe_world_labs_spend(
-            now=now, storage_root=Path(str(env.get(ATLAS_STORAGE_ROOT_ENV) or DEFAULT_ATLAS_STORAGE_ROOT))),
+        "openai": openai,
+        "world_labs": observe_world_labs_spend(now=now, storage_root=atlas_root),
         "gcp": observe_gcp_spend(now=now, config_path=env.get(GCP_BUDGET_CONFIG_ENV)),
         "account": observe_account_spend(now=now, environ=env),
     }
@@ -532,6 +629,7 @@ __all__ = [
     "describe",
     "lines_from_environment",
     "observe_gcp_spend",
+    "observe_openai_job_settlements",
     "observe_openai_spend",
     "observe_provider_spend",
     "observe_world_labs_spend",
