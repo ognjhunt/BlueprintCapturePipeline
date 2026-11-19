@@ -247,6 +247,12 @@ class RetentionContext:
     #: sharing stops. A retirement by hand through the operator door (the owner's decision for that job) leaves
     #: it off. The timer slims such a workspace instead (``website_scene_workspace_slimming``).
     keep_shared_workspaces: bool = False
+    #: The reclaim timer's setting. The owner approved on 2026-11-19 ("Let the timer fully retire our own internal
+    #: test jobs once done, ending their test sharing. Real site jobs stay protected and are never retired while
+    #: shared."): a capture submitted as Blueprint's own internal test job (``internal_test_job``) is retired whole
+    #: once done although shared as a test, and, completed, without waiting for Pub/Sub's retention to prove its
+    #: acknowledgement (its receipt answers any redelivery, as for every retired completed capture).
+    retire_internal_test_jobs: bool = False
 
 
 def timer_context_factory(*, pins_root: str | Path, queue_roots: Sequence[str | Path],
@@ -256,7 +262,9 @@ def timer_context_factory(*, pins_root: str | Path, queue_roots: Sequence[str | 
 
     Without an intent root the reference index is unreadable, so nothing retires. Registrations are read from
     ``binding_root``, else ``<intent root parent>/website-source-bindings``. The timer keeps a workspace that is
-    shared with companies now (``keep_shared_workspaces``): their routes need it, and it is slimmed instead.
+    shared with companies now (``keep_shared_workspaces``): their routes need it, and it is slimmed instead. It
+    retires Blueprint's own internal test jobs once done all the same (``retire_internal_test_jobs``, owner
+    approval 2026-11-19).
     """
 
     intent = Path(intent_root) if intent_root else None
@@ -267,6 +275,7 @@ def timer_context_factory(*, pins_root: str | Path, queue_roots: Sequence[str | 
     def factory(storage_root: Path) -> RetentionContext:
         return RetentionContext(storage_root=storage_root, pins_root=Path(pins_root), queue_roots=queues,
                                 intent_root=intent, binding_root=binding, keep_shared_workspaces=True,
+                                retire_internal_test_jobs=True,
                                 inventory_cache_root=cache or storage_root / ".scene-workspace-inventory")
 
     return factory
@@ -804,6 +813,31 @@ def shared_with_companies(capture_root: Path) -> bool:
     return False
 
 
+def internal_test_job(capture_root: Path) -> bool:
+    """Blueprint's own internal test job: the task context kept at submission is an internal test's
+    (``internal_test.v1`` with its label and footage), and every copy shared with companies was shared as one.
+    A site's job never is: its context names the site's statement."""
+
+    from .company_share_permission import SUPERSEDED, hidden, recorded_internal_test
+
+    if not recorded_internal_test(capture_root):
+        return False
+    for parts in COMPANY_SHARE_MANIFESTS:
+        state, manifest, _ = _load_json(Path(capture_root).joinpath(*parts))
+        if state == "absent":
+            continue
+        if state != "ok" or manifest is None:
+            return False
+        superseded = manifest.get(SUPERSEDED)
+        live = [record for record in (manifest.get("archive"), *(superseded if isinstance(superseded, list) else ()))
+                if isinstance(record, Mapping) and isinstance(record.get("uri"), str) and not hidden(record)]
+        basis = (manifest.get("permission") or {}).get("permission_basis") if isinstance(
+            manifest.get("permission"), Mapping) else None
+        if live and basis != "internal_test":
+            return False
+    return True
+
+
 def _is_website_capture(capture_root: Path) -> bool:
     """The lane the listener gave this capture: ``is_website_capture_manifest`` on its raw manifest."""
 
@@ -863,11 +897,16 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
         row, capture_reasons = _capture(scene / "captures" / capture_id, scene_id=scene_id, capture_id=capture_id,
                                         now=now, ack_retention_seconds=context.ack_retention_seconds)
         captures.append(row)
+        test_job = context.retire_internal_test_jobs and internal_test_job(scene / "captures" / capture_id)
+        if test_job and row["ledger_status"] == "completed":
+            capture_reasons = [reason for reason in capture_reasons
+                               if reason != f"acknowledgement_unproven:{capture_id}"]
         reasons.extend(capture_reasons)
         if (row["ledger_status"] == TERMINAL_AUTHORITY_STATUS and not capture_reasons
                 and not context.allow_authority_ended_archive):
             reasons.append("authority_ended_capture_kept_local")
-        if context.keep_shared_workspaces and shared_with_companies(scene / "captures" / capture_id):
+        if (context.keep_shared_workspaces and not test_job
+                and shared_with_companies(scene / "captures" / capture_id)):
             reasons.append(f"shared_with_companies:{capture_id}")
     idle_seconds = now - walk.newest_mtime
     if idle_seconds < context.minimum_idle_seconds:

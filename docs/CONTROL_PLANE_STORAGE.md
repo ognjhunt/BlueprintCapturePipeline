@@ -1113,6 +1113,15 @@ copy not taken back (`shared_with_companies`; an unreadable manifest counts as
 shared) and slims it instead. A retirement by hand through the door
 (`retire-scene-workspace`) is the owner's call for that job and is not held.
 
+**Internal test jobs retire once done** (owner approval 2026-11-19: "Let the timer fully
+retire our own internal test jobs once done, ending their test sharing. Real site jobs
+stay protected and are never retired while shared."). A capture whose task context kept at
+submission is `internal_test.v1` with its label and footage, and whose every shared copy was
+shared as an internal test (`internal_test_job`), is not held as `shared_with_companies`
+on the timer, and, completed, needs no acknowledgement proof: its receipt answers any
+redelivery, as for every retired completed capture. Its test sharing ends (the routes fail
+closed without the folder); a restore brings it back. Every other check still applies.
+
 **Where it runs.** The reclaim timer plans every scene workspace in
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS` (intents from
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT`; registrations from

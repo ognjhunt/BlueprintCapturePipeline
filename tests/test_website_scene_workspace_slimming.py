@@ -361,3 +361,51 @@ def test_the_fence_is_held_for_the_whole_upload(tmp_path):
 
     assert _slim(tmp_path, plan, MultipartClient(), stream_publisher=publisher)["status"] == "slimmed"
     assert attempts == [1]
+
+
+# --- owner approval 2026-11-19: the timer retires Blueprint's own internal test jobs once done -----------------
+
+
+def _timer(tmp_path: Path) -> retention.RetentionContext:
+    return retention.timer_context_factory(pins_root=tmp_path / "pins", queue_roots=[tmp_path / "queue"],
+                                           intent_root=tmp_path / "intents",
+                                           binding_root=tmp_path / "bindings")(tmp_path / "pubsub-handoffs")
+
+
+def _shared_job(tmp_path: Path, *, internal_test: bool, basis: str = "internal_test") -> tuple[Path, FakeCloud]:
+    """A finished, unacknowledged job whose clip is out: an internal test job's, or a site's."""
+
+    scene, cloud = _scene(tmp_path, ack=False)
+    _context(tmp_path)  # the pins, queue, intent and binding roots
+    capture = scene / "captures" / CAPTURE
+    rights = ({"statement_version": "internal_test.v1"} if internal_test
+              else {"statement_version": "2026-11-12.v4"})
+    marker = {"label": "nav-doorway-96", "footage_id": "reference-job"}
+    _json(capture / "pipeline" / "website_task_context.json",
+          {"capture_rights": rights, **({"internal_test": marker} if internal_test else {})})
+    _json(capture / "pipeline" / "company_clip" / "company_clip.json", {
+        "schema_version": "website_company_clip_manifest.v1", "permission": {"permission_basis": basis},
+        "archive": {"uri": "s3://artifacts/website-company-clip/walkthrough-1.mp4", "digest": "sha256:" + "a" * 64}})
+    return scene, cloud
+
+
+def test_the_timer_retires_a_done_internal_test_job_although_shared_and_unacknowledged(tmp_path):
+    scene, cloud = _shared_job(tmp_path, internal_test=True)
+    assert retention.internal_test_job(scene / "captures" / CAPTURE)
+    plan = _plan(tmp_path, cloud, context=_timer(tmp_path))
+    assert plan["status"] == "retirable" and plan["reasons"] == []
+    # Retirement by hand keeps the existing acknowledgement proof.
+    assert _plan(tmp_path, cloud)["reasons"] == [f"acknowledgement_unproven:{CAPTURE}"]
+
+
+def test_a_site_job_stays_whole_while_shared_whatever_its_files_say(tmp_path):
+    scene, cloud = _shared_job(tmp_path, internal_test=False, basis="site_sharing_statement")
+    assert not retention.internal_test_job(scene / "captures" / CAPTURE)
+    assert _plan(tmp_path, cloud, context=_timer(tmp_path))["reasons"] == [
+        f"acknowledgement_unproven:{CAPTURE}", f"shared_with_companies:{CAPTURE}"]
+
+
+def test_a_test_job_with_a_copy_shared_on_another_basis_stays_whole(tmp_path):
+    scene, cloud = _shared_job(tmp_path, internal_test=True, basis="site_sharing_statement")
+    assert not retention.internal_test_job(scene / "captures" / CAPTURE)
+    assert f"shared_with_companies:{CAPTURE}" in _plan(tmp_path, cloud, context=_timer(tmp_path))["reasons"]
