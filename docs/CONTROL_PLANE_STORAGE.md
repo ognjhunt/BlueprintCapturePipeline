@@ -1244,6 +1244,13 @@ and lists each path with what was recorded about it at approval time:
   queues, processes and open intents still keep it. Only the local working copy
   goes: the raw upload in Firebase Storage and copies elsewhere stay.
 
+On 2026-11-19 the owner approved deleting, through this path, the six website scene
+workspaces the reclaim timer kept only because their capture's authority ended
+(`authority_ended_capture_kept_local: 6`, about 11.9 GB): manifest
+`2026-11-19-authority-ended-scenes`, each capture's terminal code, time and payload
+digest read from its ledger through the door. It includes the one workspace the
+2026-11-04 manifest skipped; that manifest stays held.
+
 Nothing runs it on a timer. An operator starts two oneshot units by hand:
 
 1. `blueprint-owner-approved-deletion-plan.service` checks every path of every

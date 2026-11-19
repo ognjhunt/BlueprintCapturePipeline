@@ -10,6 +10,7 @@
 #   deploy/owner-approved-deletions/held/2026-11-04-controlled-policy-integration.json
 #   deploy/owner-approved-deletions/held/2026-11-12-old-development-folders.json
 #   deploy/owner-approved-deletions/2026-11-12-host-work-volume.json
+#   deploy/owner-approved-deletions/2026-11-19-authority-ended-scenes.json
 #   deploy/owner-approved-deletions/held/2026-11-12-host-work-volume-reserve.json
 #   scripts/measure_owner_approved_deletion_folders.py
 #   deploy/systemd/blueprint-owner-approved-deletion-plan.service
@@ -19,6 +20,7 @@
 from __future__ import annotations
 
 import functools
+import datetime as _dt
 import json
 import os
 import time
@@ -415,7 +417,7 @@ def test_the_shipped_manifests_validate_and_never_name_the_live_capture():
     assert not (REPO_ROOT / "deploy/owner-approved-deletions/2026-11-04-authority-ended-scenes.json").exists()
     assert (REPO_ROOT / "deploy/owner-approved-deletions/held/2026-11-04-authority-ended-scenes.json").is_file()
     # Applied manifests are held aside too (held/README.md): a run deletes only what this release's plan names.
-    assert [path.stem for path in manifests] == ["2026-11-12-host-work-volume"]
+    assert [path.stem for path in manifests] == ["2026-11-12-host-work-volume", "2026-11-19-authority-ended-scenes"]
     held = REPO_ROOT / "deploy" / "owner-approved-deletions" / "held"
     applied = [held / f"{name}.json" for name in (
         "2026-11-04-arena-scratch", "2026-11-04-controlled-policy-integration", "2026-11-12-old-development-folders")]
@@ -430,6 +432,30 @@ def test_the_shipped_manifests_validate_and_never_name_the_live_capture():
                 limit = (1790812800 if "controlled-policy" in entry["path"] or path.stem.startswith("2026-11-12")
                          else 1788307200)
                 assert entry["newest_mtime_epoch"] < limit, entry["path"]
+
+
+def test_the_2026_11_19_manifest_lists_exactly_the_six_authority_ended_workspaces_as_recorded():
+    # Owner approval of 2026-11-19: the six workspaces the storage GC kept only because their capture's
+    # authority ended (authority_ended_capture_kept_local: 6), through this privacy deletion path.
+    manifest, _ = oad.load_manifest(REPO_ROOT / "deploy" / "owner-approved-deletions"
+                                    / "2026-11-19-authority-ended-scenes.json")
+    assert manifest["approved_at"] == "2026-11-19T00:00:00Z" and manifest["expires_at"] == "2026-12-03T00:00:00Z"
+    assert "the privacy deletion path (the deletion manifest and its record)" in manifest["approval_evidence"]
+    scenes = sorted(Path(entry["path"]).name for entry in manifest["entries"])
+    assert scenes == [f"site-capture-{prefix}" for prefix in (
+        "00a25d9f-bc03-462a-af2b-3093f8312eda", "05d7f712-f93c-46c0-ae6c-ee7910069f7d",
+        "4b60431e-fec5-4668-a22f-411310a75ece", "98a79ce3-1227-44e9-ac05-ed6ed8df6fa2",
+        "c33427c3-0475-468e-bb12-6877f316c1f8", "cd43cdc3-b3f1-435c-b789-80484f304dbd")]
+    for entry in manifest["entries"]:
+        assert entry["class"] == oad.SCENE
+        assert Path(entry["path"]).parent == Path("/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes")
+        (capture,) = entry["captures"]
+        assert capture["capture_id"] == "walkthrough-" + Path(entry["path"]).name.removeprefix("site-")
+        assert capture["terminal_code"] in ("consent_expired", "website_run_closed_by_owner")
+        # Ended more than seven days before the approval was recorded relayed (2026-11-19), as the plan requires.
+        ended = _dt.datetime.fromisoformat(capture["terminal_at"]).timestamp()
+        assert ended < oad._instant(manifest["approved_at"], "x") + DAY - 7 * DAY
+        assert "447ae4f4" not in json.dumps(entry)
 
 
 def test_a_manifest_held_aside_is_never_planned_or_applied(tmp_path, monkeypatch):
@@ -1506,7 +1532,7 @@ def test_the_real_held_manifests_are_neither_planned_nor_applied(tmp_path, monke
     for action in (["plan"], ["apply", "--ack", oad.APPLY_ACK]):
         assert oad.main([*action, "--manifest-dir", str(directory), "--report-root", str(tmp_path / "reports"),
                          "--pins-root", str(tmp_path / "pins"), "--intent-root", str(tmp_path / "intents")]) == 0
-    assert seen == ["2026-11-12-host-work-volume.json"] * 2
+    assert seen == ["2026-11-12-host-work-volume.json", "2026-11-19-authority-ended-scenes.json"] * 2
     assert all(not (directory / path.name).exists() for path in (directory / "held").glob("*.json"))
 
 

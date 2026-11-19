@@ -1,0 +1,82 @@
+{
+ "schema_version": "owner_approved_deletion_manifest.v1",
+ "manifest_id": "2026-11-19-authority-ended-scenes",
+ "approved_by": "owner",
+ "approval_evidence": "Owner, 2026-11-19, relayed by the coordinating session (time of day not recorded): approved the proposal \"Delete the six authority-ended workspaces through a deletion manifest (privacy): about 11.6 GB\" as \"Delete the six authority-ended workspaces through the privacy deletion path (the deletion manifest and its record).\" The six are the storage GC's retained_counts authority_ended_capture_kept_local: 6 of 2026-11-19 (about 11.9 GB measured through the door), each capture's ledger terminal_authority_ended more than seven days ago, never capture-447ae4f4. Lost: those local working copies; the raw uploads in Firebase Storage stay.",
+ "approved_at": "2026-11-19T00:00:00Z",
+ "expires_at": "2026-12-03T00:00:00Z",
+ "entries": [
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-00a25d9f-bc03-462a-af2b-3093f8312eda",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-00a25d9f-bc03-462a-af2b-3093f8312eda",
+     "terminal_code": "website_run_closed_by_owner",
+     "terminal_at": "2026-11-12T13:41:03.634115+00:00",
+     "terminal_payload_sha256": "a83f6a1eb0a7ee7a2227b47c865bd923d2141bd44d71ae705bcada8d3b3cbe9c"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-05d7f712-f93c-46c0-ae6c-ee7910069f7d",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-05d7f712-f93c-46c0-ae6c-ee7910069f7d",
+     "terminal_code": "website_run_closed_by_owner",
+     "terminal_at": "2026-11-12T13:43:04.830916+00:00",
+     "terminal_payload_sha256": "3e2152a8e66541e96f667bde83739ad66f15980a0d6da096c066991ebb31dac7"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-4b60431e-fec5-4668-a22f-411310a75ece",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-4b60431e-fec5-4668-a22f-411310a75ece",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-11-11T04:03:54.280800+00:00",
+     "terminal_payload_sha256": "10caad5f5119f703484303ba10522cb7e696823e65614d27dbfd1aeafbc519c3"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-98a79ce3-1227-44e9-ac05-ed6ed8df6fa2",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-98a79ce3-1227-44e9-ac05-ed6ed8df6fa2",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-11-11T04:08:41.799229+00:00",
+     "terminal_payload_sha256": "53e6787eb86e148b019e43dcdf1743607a02e81eda3253779a2dc4c8b922f8c2"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-c33427c3-0475-468e-bb12-6877f316c1f8",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-c33427c3-0475-468e-bb12-6877f316c1f8",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-11-11T04:03:59.847141+00:00",
+     "terminal_payload_sha256": "bedca61661bc2da88e4302168e401317349b450b27564d8e817d2dc642c8bd7f"
+    }
+   ]
+  },
+  {
+   "class": "authority_ended_scene_workspace",
+   "path": "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/site-capture-cd43cdc3-b3f1-435c-b789-80484f304dbd",
+   "captures": [
+    {
+     "capture_id": "walkthrough-capture-cd43cdc3-b3f1-435c-b789-80484f304dbd",
+     "terminal_code": "consent_expired",
+     "terminal_at": "2026-10-12T19:29:44.201948+00:00",
+     "terminal_payload_sha256": "ea34ff31ccf99860cb835cb946d4b3026ad9dc8f8e7652cd6e986ba34859adba"
+    }
+   ]
+  }
+ ]
+}
