@@ -597,7 +597,8 @@ def test_the_sheet_says_where_the_object_starts_and_goes_how_high_and_how_much_r
                         "stations": {"positions_world_m": [[0.9, 0.1, 0.0], [0.9, -0.4, 0.0]]},
                         "floor_height": {"floor_z_m": 0.01},
                         "floor_search": {"result": {"floor_z_m": 0.01, "lower_half_m": 0.4, "upper_half_m": 0.45,
-                                                    "upper_hole_possible": True}}}}
+                                                    "upper_hole_possible": True,
+                                                    "searches": [{"half_extent_m": 0.45, "clear": False}]}}}}
     lines = packet.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, table, {}, None)
     assert ("Material, how fragile it is and how it should be held: not recorded. The first look on paper assumes a "
             "robot takes it from above with a two-finger gripper that opens 85 mm (Robotiq 2F-85); whether that "
@@ -1753,3 +1754,17 @@ def test_a_preparations_frame_ids_are_not_contact_details_but_a_number_in_a_prin
     sheet = _sheet(build_job_packet(inputs, output_root=_out(tmp_path, "street")))
     assert "Elm Street" not in sheet and "- Object: tray from [removed]." in sheet
     assert "Contact details the site typed into its description or answers were removed." in sheet.split("\n")[6]
+
+
+
+
+def test_a_floor_search_the_time_budget_stopped_claims_nothing_about_wider_floor():
+    """Review of #3650: an upper bound no search failed at is the search's limit, not a measured restriction."""
+    table = {"inputs": {"scale_band": [0.75, 1.3333], "floor_height": {"floor_z_m": 0.01},
+                        "floor_search": {"result": {"floor_z_m": 0.01, "lower_half_m": 0.4, "upper_half_m": 0.9,
+                                                    "budget_exhausted": True, "searches": []}}}}
+    lines = packet.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, table, {}, None)
+    widest = [line for line in lines if line.startswith("Widest clear floor")]
+    assert widest == ["Widest clear floor found next to the task: a square at least 60 cm wide; wider floor was not "
+                      "assessed."]
+    assert not any("was not clear" in line for line in lines)

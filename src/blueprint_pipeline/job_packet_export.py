@@ -1123,11 +1123,17 @@ def object_lines(prep: Mapping[str, Any], base_scene: Mapping[str, Any] | None, 
                      "found next to the task; the scan may have gaps there.")
     found = _mapping(_mapping(inputs.get("floor_search")).get("result"))
     lower, upper = _number(found.get("lower_half_m")), _number(found.get("upper_half_m"))
+    # A wider square was "not clear" only when a search at that width ran and failed; a search the time budget
+    # stopped first established nothing about it.
+    refused = upper is not None and any(
+        isinstance(row, Mapping) and row.get("clear") is False and _number(row.get("half_extent_m")) == upper
+        for row in found.get("searches") or [])
     if band is not None and lower is not None and lower > 0:
         lines.append(f"Widest clear floor found next to the task: a square at least {_length(2 * lower * band[0])} "
                      "wide" + ((f"; one wider than {_length(2 * upper * band[1])} was not clear"
                                 + (" (or the scan has a gap there)" if found.get("upper_hole_possible") else ""))
-                               if upper is not None else ", the widest searched") + ".")
+                               if refused else ", the widest searched" if upper is None
+                               else "; wider floor was not assessed") + ".")
     return lines
 
 
