@@ -45,7 +45,7 @@ from .atlas_scene_estimates import OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_
 from .local_reconstruction_adapters import _sha256_file
 from .website_task_masks import resting_views
 from .website_task_placement_check import FLAG_SIZE, MINIMUM_USABLE_FRAMES, check_video_placement
-from .website_track_mask_codec import decode_track_mask
+from .website_track_mask_codec import decode_track_mask, mask_runs  # noqa: F401 - mask_runs for callers
 
 REVISION = "website_object_extent.v1"
 #: Depths ``EDGE_SPAN_PX`` either side of a pixel further apart than this share of their depth are a silhouette
@@ -70,6 +70,13 @@ MIN_POINTS = round(1 / QUANTILES[0])
 #: The preparation's stated relative error of an estimated dimension (``website_task_preparation``).
 DIMENSION_RELATIVE_ERROR = 0.25
 BASIS = "object_points_agreeing_across_frames"
+#: The outline carve (``outline_hull``): the box is searched this share of its size beyond each side, on this many
+#: cells a side (refined over at most ``HULL_PASSES`` passes), and a cell is the object's when all but ``1 - HULL_AGREE_SHARE`` of the frames that see it put it
+#: inside the object's mask (grown by ``AGREE_TOLERANCE_PX``). A simple majority is not enough: frames that all
+#: look from one side agree on cells far along their line of sight. The tenth left over tolerates a failed mask or
+#: an occluded view.
+HULL_MARGIN, HULL_STEPS, HULL_AGREE_SHARE, HULL_PASSES = 0.5, 48, 0.9, 4
+HULL_BASIS = "object_outline_agreeing_across_frames"
 
 
 def _frame_points(observation: Mapping[str, Any], frame: Mapping[str, Any]
@@ -223,6 +230,118 @@ def published_cross_check(object_spec: Mapping[str, Any] | None, dimensions_m: S
             **({} if agrees else {"flag": OBJECT_SIZE_DISAGREES_WITH_PUBLISHED})}
 
 
+def outline_hull(low: Sequence[float], high: Sequence[float], track: Mapping[str, Any],
+                 frames: Sequence[Mapping[str, Any]], matrix: Any) -> dict[str, Any] | None:
+    """``_carve`` coarse to fine: each pass carves the last pass's bounds (grown by one of its cells) on a grid as
+    many cells a side, until a cell no longer shrinks by half or ``HULL_PASSES`` are done. A spilled box can be
+    ten times the object, so one grid over it leaves only a few cells inside the object itself."""
+    hull = _carve(low, high, track, frames, matrix, HULL_MARGIN)
+    for _ in range(HULL_PASSES - 1):
+        if hull is None:
+            return None
+        cell = np.asarray(hull["cell_runtime_units"])
+        finer = _carve(np.asarray(hull["minimum"]) - cell, np.asarray(hull["maximum"]) + cell, track, frames, matrix, 0.0)
+        if finer is None or max(finer["cell_runtime_units"]) > 0.5 * max(cell):
+            break
+        hull = finer
+    return hull
+
+
+def _carve(low: Sequence[float], high: Sequence[float], track: Mapping[str, Any],
+           frames: Sequence[Mapping[str, Any]], matrix: Any, margin: float) -> dict[str, Any] | None:
+    """The bounds (runtime units) of what nearly every frame that sees it puts inside the object's mask.
+
+    Every point of the object lies inside every view's outline of it, whatever the depth says; a band of table or
+    wall one mask took in lies outside the other views' outlines. So the cells inside ``low..high`` grown by
+    ``HULL_MARGIN`` that at least ``HULL_AGREE_SHARE`` of the frames seeing them put inside the mask bound the
+    object from above, free of depth noise and of spill. Along the cameras' line of sight a carve cannot close in
+    (a video from one side never sees behind the object): there it bounds no tighter than the mask's own box. None
+    with fewer than ``MINIMUM_USABLE_FRAMES`` frames, or nothing kept."""
+    from scipy.ndimage import binary_dilation
+
+    low, high, matrix = np.asarray(low, dtype=float), np.asarray(high, dtype=float), np.asarray(matrix, dtype=float)
+    size = np.maximum(high - low, 1e-9)
+    axes = [np.linspace(low[i] - size[i] * margin, high[i] + size[i] * margin, HULL_STEPS) for i in range(3)]
+    cell = np.array([axis[1] - axis[0] for axis in axes])
+    cells = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    inverse = np.linalg.inv(matrix)
+    source = cells @ inverse[:3, :3].T + inverse[:3, 3]
+    by_id = {str(frame.get("frame_id")): frame for frame in frames}
+    seen, inside, views = np.zeros(len(cells), dtype=np.int32), np.zeros(len(cells), dtype=np.int32), 0
+    framing = np.zeros(len(cells), dtype=np.int32)
+    for row in track.get("observations") or []:
+        frame = by_id.get(str(row.get("source_frame_id")))
+        if frame is None:
+            continue
+        mask = decode_track_mask(row)
+        if not mask.any():
+            continue
+        mask = binary_dilation(mask, iterations=AGREE_TOLERANCE_PX) if AGREE_TOLERANCE_PX else mask
+        if frame.get("intrinsics") is None or (frame.get("camera_from_world") is None
+                                                  and frame.get("world_from_camera") is None):
+            continue
+        camera = (np.asarray(frame["camera_from_world"], dtype=float) if frame.get("camera_from_world") is not None
+                  else np.linalg.inv(np.asarray(frame["world_from_camera"], dtype=float)))
+        points = source @ camera[:3, :3].T + camera[:3, 3]
+        intrinsics = np.asarray(frame["intrinsics"], dtype=float)
+        # Masks may be stored at another resolution than the frame's geometry.
+        scale_u = mask.shape[1] / float(frame.get("width") or mask.shape[1])
+        scale_v = mask.shape[0] / float(frame.get("height") or mask.shape[0])
+        front = points[:, 2] > 1e-9
+        depth = np.where(front, points[:, 2], 1.0)
+        column, row_at = intrinsics[0, 0] * points[:, 0] / depth + intrinsics[0, 2], intrinsics[1, 1] * points[:, 1] / depth + intrinsics[1, 2]
+        u, v = np.rint(column * scale_u).astype(np.int64), np.rint(row_at * scale_v).astype(np.int64)
+        framed = front & (u >= 0) & (u < mask.shape[1]) & (v >= 0) & (v < mask.shape[0])
+        if not framed.any():
+            continue
+        framing += framed
+        hit = np.zeros(len(cells), dtype=bool)
+        hit[framed] = mask[v[framed], u[framed]]
+        # A frame whose depth, at a cell's pixel outside the mask, shows something in front of the object (nearer
+        # than the object's own nearest depth in that frame) cannot see the cell: an occluder hides it, and the
+        # frame does not vote on it. The table under the object or the wall behind it is no nearer than the object,
+        # so a frame showing them still votes against a cell inside them (``DEPTH_TOLERANCE`` either way).
+        surface = _frame_depth(frame)
+        if surface is not None:
+            rows_in, columns_in = np.nonzero(mask)
+            own = surface[np.clip(np.rint(rows_in / scale_v).astype(np.int64), 0, surface.shape[0] - 1),
+                          np.clip(np.rint(columns_in / scale_u).astype(np.int64), 0, surface.shape[1] - 1)]
+            own = own[np.isfinite(own)]
+            if len(own):
+                nearest = float(np.quantile(own, 0.05))
+                du, dv = np.rint(column).astype(np.int64), np.rint(row_at).astype(np.int64)
+                ask = framed & ~hit & (du >= 0) & (du < surface.shape[1]) & (dv >= 0) & (dv < surface.shape[0])
+                there = np.full(len(cells), np.nan)
+                there[ask] = surface[dv[ask], du[ask]]
+                with np.errstate(invalid="ignore"):
+                    framed &= ~((there < nearest * (1 - DEPTH_TOLERANCE)) & (depth > there * (1 + DEPTH_TOLERANCE)))
+        views += 1
+        seen += framed
+        inside += hit & framed
+    if views < MINIMUM_USABLE_FRAMES:
+        return None
+    # A cell most frames cannot see lies inside something else (a table, a wall): a few spilled masks cannot make
+    # it the object's. One the object's own outline covers is seen wherever it is framed.
+    kept = ((seen >= MINIMUM_USABLE_FRAMES) & (seen >= AGREE_SHARE * framing) & (inside >= HULL_AGREE_SHARE * seen))
+    if not kept.any():
+        return None
+    held = cells[kept]
+    # Each kept cell stands for its whole extent: the bounds reach half a cell past the outermost centres.
+    return {"minimum": (held.min(axis=0) - cell / 2).tolist(), "maximum": (held.max(axis=0) + cell / 2).tolist(),
+            "cells": int(kept.sum()), "views": views, "cell_runtime_units": cell.tolist()}
+
+
+def _frame_depth(frame: Mapping[str, Any]) -> np.ndarray | None:
+    """A frame's depth (NaN where invalid), or None when its geometry is not at hand."""
+    try:
+        with np.load(str(frame["geometry_path"])) as geometry:
+            depth = np.asarray(geometry["depth_m"], dtype=np.float32)
+            valid = np.asarray(geometry["valid_mask"], dtype=bool) if "valid_mask" in geometry.files else depth > 0
+    except (KeyError, OSError, ValueError, TypeError):
+        return None
+    return np.where(valid, depth, np.nan)
+
+
 def own_points_extent(subject_min: Sequence[float], subject_max: Sequence[float], target: Mapping[str, Any],
                       frames: Sequence[Mapping[str, Any]], matrix: Any, runtime_to_sim: Any,
                       placement_uncertainty_m: float | None) -> tuple[list[float], list[float], dict[str, Any]]:
@@ -235,10 +354,28 @@ def own_points_extent(subject_min: Sequence[float], subject_max: Sequence[float]
     masks = {row["source_frame_id"]: decode_track_mask(row) for row in track.get("observations") or []}
     options = {"frames": frames, "masks": masks, "matrix": matrix, "runtime_to_sim": runtime_to_sim,
                "placement_uncertainty_m": placement_uncertainty_m}
+    hull = outline_hull(low, high, track, frames, matrix)
+    if hull is not None:
+        # Both boxes bound the object from above: it lies in their overlap. On an axis where they do not
+        # overlap the outline carve, read free of depth, is kept.
+        new_low = [max(a, b) for a, b in zip(low, hull["minimum"])]
+        new_high = [min(a, b) for a, b in zip(high, hull["maximum"])]
+        for axis in range(3):
+            if new_high[axis] <= new_low[axis]:
+                new_low[axis], new_high[axis] = hull["minimum"][axis], hull["maximum"][axis]
+        moved = max(max(abs(a - b) for a, b in zip(new_low, low)), max(abs(a - b) for a, b in zip(new_high, high)))
+        if moved > max(hull["cell_runtime_units"]):
+            record = {"schema_version": REVISION, "basis": HULL_BASIS, "searched_because": "always",
+                      "before": _box(low, high, runtime_to_sim), "outline_hull": {**hull, **_box(
+                          hull["minimum"], hull["maximum"], runtime_to_sim)}, "after": _box(new_low, new_high, runtime_to_sim),
+                      "status": "from_its_own_points", "flag": OBJECT_SIZE_FROM_ITS_POINTS, "physical_measurement": False}
+            low, high = new_low, new_high
     before = _fit(low, high, **options)
     if FLAG_SIZE in before["flags"]:
+        carved = record.get("outline_hull") and record
         record = {"schema_version": REVISION, "basis": BASIS, "searched_because": FLAG_SIZE,
-                  "before": {**_box(low, high, runtime_to_sim), "box_fit": before}, "physical_measurement": False}
+                  "before": {**_box(low, high, runtime_to_sim), "box_fit": before}, "physical_measurement": False,
+                  **({"outline_carve": carved} if carved else {})}
         kept, rows = own_points(track, frames)
         record["frames"] = rows
         views = [points for points in kept if len(points)]
@@ -259,6 +396,9 @@ def own_points_extent(subject_min: Sequence[float], subject_max: Sequence[float]
             else:
                 record.update(status="from_its_own_points", flag=OBJECT_SIZE_FROM_ITS_POINTS)
                 low, high = new_low, new_high
+    if record.get("outline_carve") and record.get("status") == "kept":
+        # The points' read was not adopted, but the outline carve before it was: that size is in use, flagged.
+        record.update(status="from_its_own_points", flag=OBJECT_SIZE_FROM_ITS_POINTS, points_read=record.pop("reason", None))
     check = published_cross_check(target.get("object_spec"), _box(low, high, runtime_to_sim)["dimensions_m"])
     if check is not None:
         record = {**(record or {"schema_version": REVISION}), "published_cross_check": check}

@@ -281,3 +281,47 @@ def test_compile_places_the_wide_cup_on_the_shallow_shelf_clear_of_the_wall_and_
     assert (back >= wall) if wall < final[1] else (back <= wall)
     line = f"about {record['largest_overhang_m'] * 100:.1f} cm hangs over its edge"
     assert any(line in text for text in packet._measured_and_estimated(value, None, None)[1])
+
+
+def _clear(mesh, lower, upper, whole, *, start=ELSEWHERE):
+    from blueprint_pipeline.website_support_geometry import support_under
+    return overhang.placed_clear(mesh, lower, upper, list((lower + upper) / 2), whole, up=1, meters_per_unit=1.0,
+                                 up_sign=1, radius=website_target_radius(meters_per_unit=1.0), runtime_to_sim=np.eye(4),
+                                 start=start, start_support=None, clearance=0.0, look=support_under)
+
+
+def test_clutter_on_a_wholly_supported_surface_slides_the_object_clear_of_it():
+    from blueprint_pipeline.website_support_geometry import support_under
+    # A book where the object was to go, on a 30 cm deep, 60 cm long shelf.
+    mesh = _mesh(0.3, boxes=[((0.22, TOP, 0.05), (0.38, TOP + 0.04, 0.25))])
+    lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
+    whole = support_under(mesh, lower, upper, up=1, meters_per_unit=1.0)
+    assert whole is not None  # the shelf is under the whole footprint: only the book stands in the way
+    surface, placement, position = _clear(mesh, lower, upper, whole)
+    x, _ = _metres(position, mpu=1.0, up_sign=1)
+    assert surface is not None and placement is not None
+    assert x + 0.06 <= 0.22 + 1e-9 or x - 0.06 >= 0.38 - 1e-9  # its box no longer meets the book
+
+
+def test_a_clear_wholly_supported_spot_takes_the_old_path_and_clutter_everywhere_is_the_old_stop():
+    from blueprint_pipeline.website_support_geometry import support_under
+    lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
+    clear = _mesh(0.3)
+    whole = support_under(clear, lower, upper, up=1, meters_per_unit=1.0)
+    assert _clear(clear, lower, upper, whole) == (whole, None, list((lower + upper) / 2))
+    full = _mesh(0.3, boxes=[((0.0, TOP, 0.0), (0.6, TOP + 0.05, 0.3))])
+    whole = support_under(full, lower, upper, up=1, meters_per_unit=1.0)
+    if whole is not None:
+        assert _clear(full, lower, upper, whole)[:2] == (None, None)
+
+
+def test_the_objects_own_scan_where_it_starts_is_not_clutter():
+    from blueprint_pipeline.website_support_geometry import support_under
+    # The object is scanned where it stands on this shelf; its grounded place overlaps that scan.
+    own = ((0.24, TOP, 0.09), (0.36, TOP + 0.2, 0.21))
+    mesh = _mesh(0.3, boxes=[own])
+    lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
+    whole = support_under(mesh, lower, upper, up=1, meters_per_unit=1.0)
+    start = (np.array(own[0]), np.array(own[1]))
+    if whole is not None:
+        assert _clear(mesh, lower, upper, whole, start=start) == (whole, None, list((lower + upper) / 2))

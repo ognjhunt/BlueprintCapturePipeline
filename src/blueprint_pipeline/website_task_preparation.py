@@ -1434,12 +1434,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 if near is None:
                     destination_support = lookup(collider, destination_min, destination_max, up=up,
                                                  meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
-            if destination_support is None:  # no surface under the whole footprint: its centre over one, flagged
-                from .website_destination_overhang import centre_supported
-                destination_support, overhang, position = centre_supported(collider, destination_min, destination_max,
-                    position, up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual, radius=radius,
-                    runtime_to_sim=runtime_to_sim, start=(subject_min, subject_max), start_support=support,
-                    clearance=clearance, look=lookup)
+            from .website_destination_overhang import placed_clear  # clutter, an overhang, never its own scan
+            destination_support, overhang, position = placed_clear(collider, destination_min, destination_max,
+                position, destination_support, up=up, meters_per_unit=mpu, up_sign=up_sign,
+                placement_residual_m=residual, radius=radius, runtime_to_sim=runtime_to_sim,
+                start=(subject_min, subject_max), start_support=support, clearance=clearance, look=lookup)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:

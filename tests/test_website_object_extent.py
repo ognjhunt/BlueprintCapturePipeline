@@ -17,7 +17,7 @@ from blueprint_pipeline import website_object_extent as extent
 from blueprint_pipeline import website_task_preparation as preparation
 from blueprint_pipeline.atlas_scene_estimates import (OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_SIZE_FROM_ITS_POINTS,
                                                       preparation_flags)
-from blueprint_pipeline.website_task_masks import estimate_target_bounds
+from blueprint_pipeline.website_task_masks import estimate_target_bounds  # noqa: F401
 from tests.test_website_unscanned_surface import (CUP, FLIP, RUNTIME_SCALE, RUNTIME_TRANSLATION, SOURCE, _arguments,
                                                   _track, _views, exact_registration, no_model)
 
@@ -166,6 +166,7 @@ def test_a_size_the_frames_cannot_measure_or_too_few_views_keep_the_old_box(tmp_
     target = _cup(spilled=(0, 3))
     low, high = _raw(target, frames)
     real_fit, fits = extent._fit, []
+    monkeypatch.setattr(extent, "outline_hull", lambda *args, **kwargs: None)  # the points read alone, as tested here
 
     def unmeasured(*args, **kwargs):  # the new box too small in every frame for the check to measure its size
         fits.append(1)
@@ -187,3 +188,53 @@ def test_a_size_the_frames_cannot_measure_or_too_few_views_keep_the_old_box(tmp_
     kept_low, kept_high, record = extent.own_points_extent(low, high, target, frames, _matrix(), RUNTIME_TO_SIM, 0.01)
     assert (kept_low, kept_high) == (list(low), list(high))
     assert record["subject_extent"]["reason"] == "too_few_views_or_points_of_the_object"
+
+
+@pytest.mark.parametrize("spilled", [(), (0, 3), (0, 1, 3)])
+def test_the_outline_carve_bounds_the_object_from_above_and_cuts_the_spill(tmp_path, spilled):
+    """Every point of the cup lies inside every view's outline, so the carve never cuts it; a band of table or wall
+    a few masks took in lies outside the others' outlines, so it is carved away. Masks only: depth plays no part."""
+    frames = _room(tmp_path)["source_geometry"]["frames"]
+    target = _cup(spilled=spilled)
+    low, high = _raw(target, frames)
+    hull = extent.outline_hull(low, high, target["track"], frames, _matrix())
+    carved = _dimensions(hull["minimum"], hull["maximum"])
+    assert np.all(carved >= CUP_SIZE - 0.005), carved  # never below the object, within a cell
+    # The spill is gone; along the six views' lines of sight (about 45 degrees apart) a carve stays loose.
+    assert np.all(carved <= CUP_SIZE + 0.15), carved
+    if spilled:
+        assert np.all(carved < _dimensions(low, high))
+
+
+def test_too_few_frames_carve_nothing(tmp_path):
+    frames = _room(tmp_path)["source_geometry"]["frames"]
+    target = _cup()
+    track = {**target["track"], "observations": target["track"]["observations"][:1]}
+    low, high = _raw(target, frames)
+    assert extent.outline_hull(low, high, track, frames, _matrix()) is None
+
+
+def test_a_view_that_cannot_see_part_of_the_object_does_not_carve_it(tmp_path, monkeypatch):
+    """One view's mask misses part of the cup (an occluder in front, nearer in its depth there): that view cannot
+    see those cells and does not vote on them, so the carve keeps the cup whole."""
+    frames = _room(tmp_path)["source_geometry"]["frames"]
+    target = _cup()
+    low, high = _raw(target, frames)
+    observations = [dict(row) for row in target["track"]["observations"]]
+    mask = extent.decode_track_mask(observations[2])
+    columns = np.nonzero(mask.any(axis=0))[0]
+    hidden = np.zeros_like(mask)
+    hidden[:, columns[0]:(columns[0] + columns[-1]) // 2] = True  # its left half hidden in this view
+    observations[2]["runs"] = extent.mask_runs(mask & ~hidden)
+    real = extent._frame_depth
+
+    def nearer_there(frame):
+        depth = real(frame)
+        if frame["frame_id"] == observations[2]["source_frame_id"] and depth is not None:
+            depth = np.where(hidden, 0.1, depth)  # the occluder, 10 cm from the camera
+        return depth
+
+    monkeypatch.setattr(extent, "_frame_depth", nearer_there)
+    track = {**target["track"], "observations": observations}
+    hull = extent.outline_hull(low, high, track, frames, _matrix())
+    assert np.all(_dimensions(hull["minimum"], hull["maximum"]) >= CUP_SIZE - 0.005)
