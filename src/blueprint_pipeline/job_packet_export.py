@@ -204,9 +204,15 @@ _POSTAL = r"\d{5}(?:-\d{4})?(?![^\W_])"
 _CITY_STATE_POSTAL = r"\s*,\s*[A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*){0,2}(?:\s*,?\s*[A-Z]{2})?\s*,?\s*" + _POSTAL
 #: A street word's abbreviation dot goes with it only before a comma ("Main St., Suite 3"), never a sentence's end.
 _TAIL = rf"(?:\.(?=\s*,))?(?:\s*,?\s*{_UNIT})?(?:{_CITY_STATE_POSTAL}|\s*,?\s*{_POSTAL})?"
+#: Lane, road and the like are ordinary words in a job ("move 2 trays along conveyor lane", "4 trays along service
+#: road"): they make a street only after a capitalised name ("77 Quokka Lane", "12 Main road"), or with a unit, a
+#: city or a postal code after them.
+_NAME = r"[A-ZÀ-ÖØ-Þ][\w'.-]*"
+_STREET_ANY = r"(?i:street|avenue|ave|road|rd|lane|boulevard|blvd|highway|hwy|parkway|pkwy)\b"
 _STREETS = (
-    re.compile(rf"{_HOUSE}(?:{_MIDDLE.format(joining='(?i:' + _JOINING + ')')}\s+){{0,3}}"
-               rf"(?i:street|avenue|ave|road|rd|lane|boulevard|blvd|highway|hwy|parkway|pkwy)\b{_TAIL}"),
+    re.compile(rf"{_HOUSE}(?:{_NAME}\s+){{1,3}}{_STREET_ANY}{_TAIL}"),
+    re.compile(rf"{_HOUSE}(?:{_MIDDLE.format(joining='(?i:' + _JOINING + ')')}\s+){{0,3}}{_STREET_ANY}"
+               rf"(?:\.(?=\s*,))?(?:\s*,?\s*{_UNIT}|{_CITY_STATE_POSTAL}|\s*,?\s*{_POSTAL})+"),
     re.compile(rf"{_HOUSE}(?:{_MIDDLE.format(joining=_JOINING)}\s+){{0,3}}(?:Ln|Dr|Way|Ct|Pl|Square|Sq|Terrace)\b{_TAIL}"),
     re.compile(rf"{_HOUSE}(?:{_MIDDLE.format(joining=_JOINING)}\s+){{0,2}}[A-ZÀ-ÖØ-Þ][\w'.-]*\s+(?:Drive|Place|Court|St)\b"
                rf"{_TAIL}"),

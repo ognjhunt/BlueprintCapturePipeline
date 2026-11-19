@@ -1607,3 +1607,19 @@ def test_contact_details_in_the_sites_words_never_reach_the_sheet(tmp_path, job)
 
 def test_nothing_is_said_about_contact_details_when_none_were_typed(tmp_path, job) -> None:
     assert "Contact details" not in _sheet(build_job_packet(job(), output_root=_out(tmp_path)))
+
+
+@pytest.mark.parametrize("text", ["Move 2 trays along conveyor lane.", "Carry 4 trays along service road.",
+                                  "Push 3 carts down the loading lane to bay 2.", "Stack 6 boxes by the access road gate."])
+def test_ordinary_job_words_like_lane_or_road_are_never_removed(text):
+    """Lane, road and the like are job words; only a capitalised name before them, or a unit, city or postal code
+    after them, makes a street (review of #3648)."""
+    assert packet.redact_contacts(text) == (text, False)
+
+
+@pytest.mark.parametrize(("text", "kept"), [("Pick up at 12 Main road and drop at bay 3", "and drop at bay 3"),
+                                            ("Deliver to 400 Elm Street Suite 5", "Deliver to"),
+                                            ("from 9 service road, 62704 please", "please")])
+def test_named_or_coded_streets_are_still_removed(text, kept):
+    redacted, found = packet.redact_contacts(text)
+    assert found and "[removed]" in redacted and kept in redacted
