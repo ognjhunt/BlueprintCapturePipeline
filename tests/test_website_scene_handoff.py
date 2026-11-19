@@ -1071,8 +1071,9 @@ def test_credits_out_ships_the_room_package_only_near_the_window_end_read_when_t
 
 
 def test_a_wall_or_another_code_at_the_same_step_is_never_the_room_package(tmp_path, monkeypatch, ready_atlas):
-    """Only a provider's bound, or credits out at the window's end, sends the job on: a money wall raised there, or
-    any other code, keeps ``awaiting_inputs`` as before, and a room that cannot be packaged keeps the code."""
+    """Only a provider's bound, credits out at the window's end, or the job's spending cap sends the job on: another
+    money wall raised there, or any other code, keeps ``awaiting_inputs`` as before, and a room that cannot be
+    packaged keeps the code."""
     from blueprint_pipeline.hard_stops import MoneyStop
     from blueprint_pipeline.website_gemini_receipts import EXHAUSTED
     kwargs = inputs(tmp_path)
@@ -1080,7 +1081,7 @@ def test_a_wall_or_another_code_at_the_same_step_is_never_the_room_package(tmp_p
     monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
                         lambda **_: {"status": "ready"})
     packaged = room_recorder(monkeypatch)
-    for error in (MoneyStop(EXHAUSTED), MoneyStop("website_scene_preparation_budget_exhausted"),
+    for error in (MoneyStop(EXHAUSTED), MoneyStop("account_monthly_spend_limit_reached"),
                   ValueError("website_gemini_request_in_progress")):
         monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
                             lambda error=error, **_: (_ for _ in ()).throw(error))
@@ -1164,7 +1165,9 @@ CONTEXT = {"context_digest": "sha256:" + "a" * 64}
     (["website_registration_poor_fit"], False, False),
     # A dollar budget reads as money and holds.
     (["website_native_construction_budget_exceeds_authority"], False, False),
-    (["website_scene_preparation_budget_exhausted"], False, False),
+    # The job's spending cap ships at once (owner, 2026-11-19), except a development test, which holds anything.
+    (["website_scene_preparation_budget_exhausted"], False, True),
+    (["website_scene_preparation_budget_exhausted"], True, False),
 ])
 def test_one_rule_ships_every_blocker_that_is_no_wall(monkeypatch, blockers, development, expected):
     monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: development)
@@ -1196,6 +1199,28 @@ def test_a_holding_code_after_the_website_s_operation_still_holds(monkeypatch, c
     monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
     assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=ValueError(code),
                            window_end=lambda: 0.0) is False
+
+
+def test_at_the_jobs_spending_cap_the_job_ships_what_it_has_flagged_and_waits_for_no_one(monkeypatch):
+    """One cap at $40 per job (owner, 2026-11-19): the refusal stopped the purchase; nothing waits for a grant."""
+    from blueprint_pipeline.hard_stops import MoneyStop, PrivacyRightsStop
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    code = "website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"
+    for window in (None, 3 * 86400.0):
+        assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, error=MoneyStop(code),
+                               window_end=lambda window=window: window) is True
+    assert handoff.shipped_code(code) == "spending_cap_reached"
+    assert handoff.shipped_code("website_scene_preparation_budget_exhausted") == "spending_cap_reached"
+    assert handoff.shipped_code("support_surface_not_found_under_subject") == "support_surface_not_found_under_subject"
+    # The account's monthly limit is still a wait, and a privacy wall beside the cap still holds.
+    account = "account_monthly_spend_limit_reached"
+    assert handoff.goes_on([account], task_context=CONTEXT, now=0.0, error=MoneyStop(account),
+                           window_end=lambda: None) is False
+    revoked = "website_control_preparation-spend_http_409:source_revoked"
+    assert handoff.goes_on([code, revoked], task_context=CONTEXT, now=0.0, error=PrivacyRightsStop(revoked),
+                           window_end=lambda: None) is False
+    # Another operation's refusal at the cap (the scene intake) ships the same way.
+    assert handoff.spending_cap_code("website_control_prepared-scene_http_409:website_scene_preparation_budget_exhausted")
 
 
 @pytest.mark.parametrize("code", ["website_assembly_coverage_key_missing", "website_task_grounding_key_missing",
@@ -1323,8 +1348,14 @@ def test_a_raised_refusal_ships_at_once_and_a_transient_failure_waits_for_the_wi
     _granted(tmp_path, kwargs, ends_in=3600)
     assert failing(TimeoutError("timed out"))["status"] == "room_package_written"
     assert len(packaged) == shipped + 1 and packaged[-1]["flags"] == ["timed out"]
-    result = failing(MoneyStop("website_scene_preparation_budget_exhausted"))
+    # A wall waits: the account's monthly limit.
+    result = failing(MoneyStop("account_monthly_spend_limit_reached"))
     assert result["status"] == "awaiting_inputs" and len(packaged) == shipped + 1
+    # The job's spending cap waits for no one (owner, 2026-11-19): the room package ships now, plainly flagged.
+    result = failing(MoneyStop("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"))
+    assert result["status"] == "room_package_written" and len(packaged) == shipped + 2
+    assert packaged[-1]["flags"] == ["spending_cap_reached"]
+    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": "spending_cap_reached"}]
 
 
 def test_a_development_test_still_takes_its_own_path(tmp_path, monkeypatch, ready_atlas):
@@ -1458,6 +1489,46 @@ def test_a_failed_prepared_scene_write_never_ships_the_room_package(tmp_path, mo
         result = handoff.prepare_website_scene_handoff(**kwargs)
         assert result["status"] == "awaiting_inputs"
         assert [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR] == []
+
+
+@pytest.mark.parametrize("prior_state", [None, "sending", "sent"])
+def test_prepared_scene_cap_refusal_ships_only_without_an_earlier_send(tmp_path, monkeypatch, ready_atlas, prior_state):
+    def refuse(**_):
+        raise ValueError("website_control_prepared-scene_http_409:website_scene_preparation_budget_exhausted")
+
+    kwargs, _compiled, packaged = _to_the_outbox(tmp_path, monkeypatch, refuse)
+    _granted(tmp_path, kwargs, ends_in=3 * 86400)
+    path = tmp_path / "pipeline/website_scene_preparation" / handoff.OUTBOX_MARKER
+    if prior_state is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, {"state": prior_state})
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    packages = [row for row in packaged if row["output_root"].name != handoff.ROOM_FLOOR]
+    assert json.loads(path.read_text())["state"] == (prior_state or "refused")
+    if prior_state is None:
+        assert result["status"] == handoff.ROOM_PACKAGE
+        assert "spending_cap_reached" in packages[0]["flags"]
+    else:
+        assert result["runtime_inputs"]["status"] == "awaiting_inputs"
+        assert not packages
+
+
+def test_capped_atlas_result_ships_the_retained_room_before_native_preparation(tmp_path, monkeypatch, ready_atlas):
+    ready_atlas["flags"] = ["spending_cap_reached"]
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    _granted(tmp_path, kwargs, ends_in=3 * 86400)
+    packaged = room_recorder(monkeypatch)
+
+    def unexpected(**_):
+        pytest.fail("The capped job tried to prepare a separate object")
+
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", unexpected)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == handoff.ROOM_PACKAGE
+    [room] = packaged
+    assert "spending_cap_reached" in room["flags"]
+    assert "spending_cap_reached" in room["not_prepared"][0]["code"]
+    assert "website_intake_outbox" not in result
 
 
 def test_an_earlier_release_s_outbox_receipt_is_kept_across_held_runs(tmp_path, monkeypatch, ready_atlas):

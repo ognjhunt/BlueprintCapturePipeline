@@ -121,8 +121,9 @@ and changes nothing that is charged or said today.
 Words to use: "deployment company" (not vendor, integrator or OEM), "job
 packet", "first look", "simulation of your site", "responses".
 
-The beta is free for sites. Blueprint pays for preparation and evaluation
-inside a fixed per-site budget. No job is refused by task kind. The historical
+The beta is free for sites. Blueprint pays for preparing each job, inside one
+fixed spending cap per job; at the cap the job ships what it has, flagged. No
+job is refused by task kind. The historical
 program identifier `free-beta-evaluated-pilot` stays readable on existing beta
 records.
 

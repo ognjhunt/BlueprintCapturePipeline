@@ -12,7 +12,7 @@ ACK = 'restrict-existing-intent-to-scene-preparation'
 
 def preparation_only(*, directory, intent):
     from . import task_evaluation_scene_intake as intake
-    from .task_evaluation_scene_execution_budget import _safe
+    from .task_evaluation_scene_execution_budget_evidence import _safe
     path = Path(directory) / FILE
     _safe(path)
     if path.exists():
@@ -32,7 +32,7 @@ def preparation_only(*, directory, intent):
 def restrict_to_scene_preparation(*, queue_root, intent_id, intent_digest, owner,
         authenticated_client, trusted_clients, authorization_reference, ack, now=None):
     from . import task_evaluation_scene_intake as intake
-    from .task_evaluation_scene_execution_budget import _safe
+    from .task_evaluation_scene_execution_budget_evidence import _safe
     intake._require(ack == ACK and authenticated_client in trusted_clients
         and intake._identifier(intent_id) and isinstance(authorization_reference, str)
         and bool(authorization_reference.strip()), 'scope_restriction_not_authorized')

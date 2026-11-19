@@ -380,6 +380,8 @@ KEEP_HOLDING_PREFIXES = ("scene_intake_",)
 #: release's receipt on the handoff is kept here too (``keep_outbox_receipt``), so held runs never lose it.
 OUTBOX_MARKER = "prepared_scene_outbox.json"
 #: The website's typed refusals of the write that commit nothing: a 4xx other than a conflict with an entry.
+# Unlike other conflicts, this exact prepared-scene refusal is returned before an outbox insert.
+_PREPARED_SCENE_CAP_REFUSAL = "website_control_prepared-scene_http_409:website_scene_preparation_budget_exhausted"
 _REFUSED_WRITE = re.compile(r"website_control_prepared-scene_http_4(?!09)[0-9]{2}(:|$)")
 
 
@@ -486,6 +488,19 @@ def defect(error: BaseException) -> bool:
                 or classify(f"{type(error).__name__}: {error}") == OUTAGE)
 
 
+def spending_cap_code(code: str) -> bool:
+    """Whether ``code`` is the website's refusal at the job's spending cap (``hard_stops.JOB_SPEND_CAP``), bare or
+    as a website control answer (``website_control_<operation>_http_409:<code>``)."""
+    from .hard_stops import JOB_SPEND_CAP
+    return code == JOB_SPEND_CAP or code.endswith(f"_http_409:{JOB_SPEND_CAP}")
+
+
+def shipped_code(code: str) -> str:
+    """The code a room package ships for: the plain ``spending_cap_reached`` at the cap, else ``code``."""
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
+    return SPENDING_CAP_REACHED if spending_cap_code(code) else code
+
+
 def blocker_code(error: BaseException) -> str:
     """The code a raised failure is recorded under: its own, or ``DEFECT`` with its type."""
     return f"{DEFECT}:{type(error).__name__}" if defect(error) else str(error)
@@ -495,7 +510,9 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
             window_end: Any = lambda: None, error: BaseException | None = None) -> bool:
     """Whether a preparation stopped on ``codes`` ships the room package (owner, 2026-11-17), or keeps waiting.
 
-    It holds on a wall (``hard_stops.is_wall``, or a code the retry policy reads as privacy, rights or money, the
+    At the job's spending cap it never holds (owner, 2026-11-19): the refusal already stopped the purchase, so the
+    job ships what it has, flagged ``spending_cap_reached`` (``shipped_code``), and waits for no one. Otherwise
+    it holds on a wall (``hard_stops.is_wall``, or a code the retry policy reads as privacy, rights or money, the
     authoring admissions among them, or as the owner's closing of the run: ``website_preparation_retry.classify``),
     on the job's sentence still to come, on a stop only a new video clears (``website_recapture_required``), on a
     code the room package would be wrong for (``keeps_holding``, any segment), and in a development test, which
@@ -512,7 +529,8 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
     from .website_preparation_retry import AWAITING_JOB_SENTENCE, OWNER_CLOSED, classify
     from .website_recapture_required import CODES as RECAPTURE_CODES
     codes = [str(code) for code in codes]
-    if (not codes or (error is not None and is_wall(error))
+    at_cap = bool(codes) and all(spending_cap_code(code) for code in codes)
+    if not at_cap and (not codes or (error is not None and is_wall(error))
             or any(not code.startswith(REQUEST_SIZE_CODES)
                    and classify(code) in {PRIVACY_RIGHTS, MONEY, OWNER_CLOSED, AWAITING_JOB_SENTENCE} for code in codes)
             or any(keeps_holding(code) or any(part in RECAPTURE_CODES for part in code.split(":"))
@@ -523,6 +541,8 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
             return False
     except (ValueError, KeyError):
         return False  # an unreadable test allowlist: the preparation is kept as before
+    if at_cap:
+        return True
     if all(ships_at_once(code) for code in codes) and (error is None or not defect(error)):
         return True
     window = window_end()
@@ -832,12 +852,15 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         try:
             receipt = enqueue_website_prepared_scene(task_context=context, request=request)
         except ValueError as exc:
-            if _REFUSED_WRITE.search(str(exc)):
+            cap_refused = str(exc) == _PREPARED_SCENE_CAP_REFUSAL
+            if cap_refused or _REFUSED_WRITE.search(str(exc)):
                 # This send committed nothing, but an earlier one that may have (or did) still may be forwarding into
                 # paid preparation: its evidence stands, and only a marker with none behind it settles ``refused``.
                 write_json(_outbox_marker(capture_root),
                            {**prior, "later_refusal": str(exc)[:200]} if prior is not None
                            else {**marker, "state": "refused", "code": str(exc)[:200]})
+                if cap_refused and prior is None:
+                    dispatching = False  # The settled refusal permits the room package.
             raise
         write_json(_outbox_marker(capture_root), {**marker, "state": "sent", "outbox_id": receipt.get("id")})
         return receipt
@@ -892,6 +915,11 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         in_scan = (bool((atlas.get("job_object_rule") or {}).get("background_not_cleaned"))
                    and any(row.get("task_effect") == "manipulated" for row in removal.get("entries") or []))
         room_ready = True  # from here a room package can be written (``room_package``)
+        from .website_job_spend_cap import SPENDING_CAP_REACHED
+        if SPENDING_CAP_REACHED in (atlas.get("flags") or []):
+            if not may_fall_back():
+                raise ValueError(SPENDING_CAP_REACHED)
+            return room_package(context.get("task_family"), not_prepared=[SPENDING_CAP_REACHED])
         if in_scan:
             return room_package(context.get("task_family"))
         from .website_task_semantics import load_task_semantics
@@ -1178,7 +1206,8 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # in development-test mode, which places the object on its estimated frame instead. Any other job
             # whose blockers are no wall ships the same room package (``goes_on``); a geometry-only job ends at its
             # fit check instead.
-            return room_package(None, flags=preparation["blockers"], not_prepared=preparation["blockers"])
+            shipped = [shipped_code(str(code)) for code in preparation["blockers"]]
+            return room_package(None, flags=shipped, not_prepared=shipped)
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
                 or (preparation.get("subject_excision") or {}).get("status") == "excised"):
@@ -1235,7 +1264,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                                            error=exc, window_end=window_end):
                 # The object's inputs cannot be made, and nothing the preparation holds is a wall: the room
                 # package, flagged (``goes_on``).
-                return room_package(None, flags=[code], not_prepared=[code])
+                return room_package(None, flags=[shipped_code(code)], not_prepared=[shipped_code(code)])
             # Preserve finished CPU outputs when a later handoff is held.
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[code],
                 **({"defect": f"{type(exc).__name__}: {exc}"[:500]} if code != str(exc) else {}))
@@ -1250,7 +1279,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # flagged, and buys nothing. Gemini's answer that Blueprint's credits are depleted is a money wait
             # until the job's window, read now, ends before it can be asked again (``CreditDepleted``).
             try:
-                return room_package(None, flags=[code], not_prepared=[code])
+                return room_package(None, flags=[shipped_code(code)], not_prepared=[shipped_code(code)])
             except (ValueError, KeyError, TypeError, OSError):
                 pass  # the room cannot be packaged either: the step's code is kept, and the job retries
         if code != str(exc):

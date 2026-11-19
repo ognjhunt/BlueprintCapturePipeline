@@ -283,6 +283,34 @@ def test_the_windowed_retry_poses_only_the_window_and_its_stop_is_final(tmp_path
     assert pipeline._run_splat_rebuild(**_runner(job_dir)) == value
 
 
+@pytest.mark.parametrize("returned", [False, True])
+def test_a_capped_rebuild_keeps_the_parent_archive_pose_and_mesh(tmp_path, monkeypatch, returned):
+    from blueprint_pipeline import atlas_video_inputs, website_atlas_pipeline as pipeline
+    job_dir, job, parent = _ready_job(tmp_path)
+    request = rebuilds.request_rebuild(job_dir, job, at_epoch=1)
+    (job_dir / "selection_binding.json").write_text(json.dumps({"survey_relative_path": "survey.json", "review": {}}))
+    monkeypatch.setattr(atlas_video_inputs, "prepare_video_inputs", lambda **_: {})
+    calls = []
+    refusal = "website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"
+
+    def refuse(**_):
+        calls.append(refusal)
+        if returned:
+            return {"status": "needs_input", "stage": "source_pose", "reason": refusal}
+        raise ValueError(refusal)
+
+    monkeypatch.setattr(pipeline, "_preserved_scene", refuse)
+    for _ in range(2):
+        result = pipeline._run_splat_rebuild(**_runner(job_dir))
+        assert result["reason"] == "spending_cap_reached"
+        assert result["digest"] == canonical_digest(result, digest_field="digest")
+        assert {key: result[key] for key in parent if key not in {"reason", "blockers", "digest"}} == {
+            key: parent[key] for key in parent if key not in {"reason", "blockers", "digest"}}
+        assert result == json.loads((job_dir / "result.json").read_text())
+    assert calls == [refusal]
+    assert json.loads((job_dir / request["root"] / "parent_result.json").read_text()) == parent
+
+
 @pytest.mark.parametrize("shape", ["clean", "tripod", "unreadable"])
 def test_a_retry_with_no_usable_window_stops_by_name_and_buys_nothing(tmp_path, monkeypatch, shape):
     from blueprint_pipeline import atlas_video_inputs, website_atlas_pipeline as pipeline

@@ -1724,8 +1724,6 @@ def test_money_credit_spend_and_stall_pages_are_unchanged():
         "trigger_inactive_unheld",
         # 2026-11-10: the four job stores nothing watched page on the same route.
         "atlas_preview_stalled", "team_scene_packet_stalled", "rigid_probe_stalled",
-        # 2026-11-10: a scene ceiling passed a whole multiple of its grant (warn early; gates nothing).
-        "scene_budget_doubled",
         # 2026-11-10: a preparation stopped on a mismatch inside Blueprint's own records (ours to fix).
         "website_preparation_blueprint_fault",
         # 2026-11-18: a website job's look is the depth-fused draft for good (no refined splat could be had).

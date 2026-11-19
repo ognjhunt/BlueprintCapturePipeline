@@ -198,6 +198,51 @@ def test_job_three_goes_on_as_filmed_when_its_object_cannot_be_taken_out(tmp_pat
     assert posed[1]["review"] == consumed
 
 
+@pytest.mark.parametrize("has_pose,has_room", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("raised", [False, True])
+def test_spend_cap_uses_only_retained_room_evidence(tmp_path, monkeypatch, has_pose, has_room, raised):
+    from blueprint_pipeline import atlas_depth_splat, atlas_result_bundle, atlas_source_pose_inputs
+    root, run, _automated, posed = _job(tmp_path, monkeypatch, _review(), clean_plate=("blocked", []))
+    calls = _stopped(monkeypatch, {"status": "needs_input", "background": {"reason": "spending_cap_reached"}})
+    source = root / "pose/full-view-source-v1"
+    source.mkdir(parents=True)
+    if raised:
+        from blueprint_pipeline import paid_resource_allocator
+        from blueprint_pipeline.atlas_video_inputs import GEOMETRY_INPUTS_FILE
+        from blueprint_pipeline.hard_stops import MoneyStop
+        (source.parent / GEOMETRY_INPUTS_FILE).write_text(json.dumps(
+            {"binding": {"source_video_digest": _sha256_file(tmp_path / "source.mov")}}))
+
+        def refuse(**kwargs):
+            calls.append(kwargs)
+            raise MoneyStop("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
+
+        monkeypatch.setattr(paid_resource_allocator, "run_sponsored_website_atlas_automation", refuse)
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda _: (source, {}))
+    pose = {"digest": "pose", "operation": {"id": "retained"}}
+    if has_room:
+        scale = {"status": "estimated", "meters_per_unit_estimate": 1, "binding": {"pose_digest": "pose"}}
+        scale["digest"] = canonical_digest(scale, digest_field="digest")
+        (source / "scene_measurements.json").write_text(json.dumps(scale))
+        monkeypatch.setattr(atlas_result_bundle, "find_retained_mesh_root", lambda **_: root / "mesh")
+        monkeypatch.setattr(atlas_result_bundle, "retained_mesh_for_splat", lambda **_: {})
+    if has_pose:
+        (source / "atlas_posed_rgbd_result.json").write_text(json.dumps(pose))
+        monkeypatch.setattr(atlas_depth_splat, "load_posed_rgbd", lambda _: (pose, []))
+        monkeypatch.setattr(atlas_depth_splat, "write_depth_splat",
+                            lambda **_: {"splat_kind": "depth_fused_draft", "digest": "draft"})
+        monkeypatch.setattr(atlas_result_bundle, "export_pose_bundle", lambda **_: {"zip_path": "retained.zip"})
+    for _ in range(2):
+        result = run()
+        assert result["reason"] == "spending_cap_reached"
+        assert bool(result.get("download")) is has_pose
+        assert bool(result.get("mesh_available")) is has_room
+        if has_room:
+            assert result["source_pose"]["status"] == "completed"
+            assert result["source_pose"]["pose_relative_path"] == "pose/full-view-source-v1"
+        assert not posed and len(calls) == 1
+
+
 @pytest.mark.parametrize("automation", [
     {"status": "needs_input", "background": {"status": "needs_input", "reason":
         "website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"}},

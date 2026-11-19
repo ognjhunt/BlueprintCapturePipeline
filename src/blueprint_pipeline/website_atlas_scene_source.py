@@ -33,6 +33,7 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest
 from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, preserves_capture
 from .local_reconstruction_adapters import _sha256_file
+from .website_job_spend_cap import SPENDING_CAP_REACHED
 
 PROVIDER = "world_labs_atlas"
 SCALE_AUTHORITY = "atlas_reference_estimate"
@@ -260,7 +261,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     if job.get("state") in {None, "processing"}:
         return {"status": "pending", "reason": "website_atlas_job_processing", "stage": job.get("stage")}
     if job.get("state") != "ready":
-        return {"status": "needs_input", "reason": f"website_atlas_job_{job.get('state')}",
+        return {"status": "needs_input", "reason": (SPENDING_CAP_REACHED if job.get("reason") == SPENDING_CAP_REACHED
+                                                  else f"website_atlas_job_{job.get('state')}"),
                 "job_reason": job.get("reason")}
     result = _read(job_dir / "result.json")
     if result.get("digest") != canonical_digest(result, digest_field="digest") or result["digest"] != job.get("result_digest"):
@@ -331,9 +333,14 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         if (result.get("automation") or {}).get("status") != "completed" or background.get("status") != "completed":
             return {"status": "needs_input", "reason": "website_atlas_background_unavailable",
                     "job_reason": background.get("reason")}
+    source_pose = result.get("source_pose") or {}
+    if result.get("reason") == SPENDING_CAP_REACHED:
+        if not background.get("mesh_available") or source_pose.get("status") != "completed":
+            return {"status": "needs_input", "reason": SPENDING_CAP_REACHED,
+                    "observed_scene_available": result.get("splat_available") is True, "simulation_qualified": False}
+        flags.append(SPENDING_CAP_REACHED)
     if not background.get("mesh_available"):
         return {"status": "needs_input", "reason": "website_atlas_background_mesh_unavailable"}
-    source_pose = result.get("source_pose") or {}
     if source_pose.get("status") != "completed":
         return {"status": "needs_input", "reason": "website_atlas_source_pose_unavailable",
                 "job_reason": source_pose.get("reason")}

@@ -276,14 +276,8 @@ def _test_job_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[
             f"BindReadOnlyPaths={secrets}/pipeline_sync_token")
 
 
-def _scene_budget_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-            "DOOR_SERVICE_USER": "blueprint",
-            "DOOR_SCENE_BUDGET_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
-
-
-def _scene_budget_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
-    """Writes one grant under the scene intents and its result; no network, every secret hidden."""
+def _owner_success_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """Writes one confirmation under the scene intents and its result; no network, every secret hidden."""
     return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
             "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
             "PrivateNetwork=yes",
@@ -428,17 +422,12 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         "blueprint-operator-door-scene-window", "door-extend-scene-execution-window.sh", "5min",
         lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
         _scene_window_environment, _scene_window_properties),
-    # Named by a hash of the intent id; the caller text never reaches a unit name.
-    "extend-scene-execution-budget": _LaunchSpec(
-        "blueprint-operator-door-scene-budget", "door-extend-scene-execution-budget.sh", "5min",
-        lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
-        _scene_budget_environment, _scene_budget_properties),
     # Named by a hash of the intent id; the caller text never reaches a unit name. It writes one
-    # confirmation under the scene intents and its result: the budget grant's sandbox.
+    # confirmation under the scene intents and its result.
     "confirm-owner-success-contract": _LaunchSpec(
         "blueprint-operator-door-owner-success", "door-confirm-owner-success-contract.sh", "5min",
         lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
-        _owner_success_environment, _scene_budget_properties),
+        _owner_success_environment, _owner_success_properties),
     # Named by a hash of the capture and the mode; the approval text never reaches a unit name.
     "retire-parked-delivery": _LaunchSpec(
         "blueprint-operator-door-parked-delivery", "door-retire-parked-delivery.sh", "5min",
@@ -580,7 +569,6 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
         **(extra or {}),
     }
     callers = {"extend-scene-execution-window": "scene_window_caller_invalid",
-               "extend-scene-execution-budget": "scene_budget_caller_invalid",
                "confirm-owner-success-contract": "owner_success_caller_invalid",
                "retire-parked-delivery": "parked_delivery_caller_invalid"}
     if request["kind"] in callers:

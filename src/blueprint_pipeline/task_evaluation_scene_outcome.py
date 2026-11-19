@@ -12,9 +12,11 @@ outcome from a single registry:
     Terminal when a non-extendable retry or recovery allowance ran out, or the
     execution window expired (``authority_expired``: Blueprint sponsors the
     window, so it is never the site's fault).
-``awaiting_spend_approval``
-    A spend or attempt cap or the job's dollar ceiling waits for the owner's money
-    approval. Not terminal.
+``spending_cap_reached``
+    The job reached its spending cap (``website_job_spend_cap``, owner decision
+    2026-11-19): the scene's budget or the job's cap leaves no room for the next
+    paid attempt. Terminal: no further paid call starts, nothing waits for an
+    owner, and the job keeps what it already has, flagged.
 ``awaiting_site``
     The site has to act (renew a consent, write a task brief). Not terminal.
 ``withdrawn``
@@ -51,8 +53,8 @@ from .validation_file_digests import note_consulted
 SCHEMA_VERSION = "task_evaluation_scene_intent_outcome.v1"
 FILENAME = "outcome.json"
 
-KINDS = ("setup_repair", "awaiting_spend_approval", "awaiting_site", "withdrawn", "held")
-REASON_CATEGORIES = ("blueprint_fault", "authority_expired", "spend_approval", "site_action",
+KINDS = ("setup_repair", "spending_cap_reached", "awaiting_site", "withdrawn", "held")
+REASON_CATEGORIES = ("blueprint_fault", "authority_expired", "spending_cap", "site_action",
                      "privacy_rights", "capability_limit")
 
 #: The closed reason vocabulary: reason_code -> (kind, terminal, reason_category).
@@ -68,10 +70,11 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     "market_miss_recovery_cap_exhausted": ("setup_repair", True, "blueprint_fault"),
     # (g) The execution window is Blueprint's sponsorship, and the give-up timer.
     "authority_expired": ("setup_repair", True, "authority_expired"),
-    # (c) Money: only the owner's budget extension or ceiling raise continues these.
-    "spend_cap_reached": ("awaiting_spend_approval", False, "spend_approval"),
-    "attempt_cap_reached": ("awaiting_spend_approval", False, "spend_approval"),
-    "job_ceiling_reached": ("awaiting_spend_approval", False, "spend_approval"),
+    # The paid-attempt count is a runaway retry limit, never extended (owner, 2026-11-19).
+    "attempt_cap_reached": ("setup_repair", True, "blueprint_fault"),
+    # (c) Money: the job's spending cap. Nothing raises it; the job ends with what it has.
+    "spend_cap_reached": ("spending_cap_reached", True, "spending_cap"),
+    "job_ceiling_reached": ("spending_cap_reached", True, "spending_cap"),
     # (d) The site has to act.
     "site_consent_required": ("awaiting_site", False, "site_action"),
     "task_brief_required": ("awaiting_site", False, "site_action"),
@@ -97,11 +100,11 @@ BLOCKER_REASONS: dict[str, str] = {
     "scene_intake_attempt_spend_exceeds_authorized_limit": "spend_cap_reached",
     "scene_intake_attempt_cap_exhausted": "attempt_cap_reached",
     # website_native_submission, sizing the next attempt: the scene's cap less
-    # what earlier attempts still hold leaves no room for it, and the grant does
-    # not extend by itself (all three raise sites are this money check).
+    # what earlier attempts still hold leaves no room for it (all three raise
+    # sites are this money check).
     "website_native_construction_budget_exceeds_authority": "spend_cap_reached",
-    # The website job's dollar ceiling (WebApp #1168): the screening plan and the
-    # WebApp's 409 refusal of preparation spend past it.
+    # The website job's spending cap (WebApp ``websiteJobCeiling.ts``): the screening plan and the
+    # WebApp's 409 refusal of spend past it.
     "beta_screening_job_ceiling_exceeded": "job_ceiling_reached",
     "website_job_ceiling_insufficient": "job_ceiling_reached",
     "website_scene_preparation_budget_exhausted": "job_ceiling_reached",
@@ -168,7 +171,11 @@ PROGRESS_MARKER_PHASES = frozenset({"source_preparation", "factory", "publicatio
 _DECISION_FIELDS = ("kind", "terminal", "reason_category", "reason_code")
 _RECORD_FIELDS = frozenset({"schema_version", "intent_id", "intent_digest", *_DECISION_FIELDS,
                             "decided_at_epoch", "outcome_digest"})
-_KIND_RANK = {"withdrawn": 0, "held": 1, "awaiting_spend_approval": 3, "awaiting_site": 4}
+_KIND_RANK = {"withdrawn": 0, "held": 1, "spending_cap_reached": 3, "awaiting_site": 4}
+#: The wait every money reason had before 2026-11-19 (an owner's grant). A retained record of it is still
+#: read, never written: the next progression pass replaces it, as any non-terminal outcome.
+_LEGACY_MONEY_WAIT = ("awaiting_spend_approval", False, "spend_approval")
+_LEGACY_MONEY_REASONS = frozenset({"spend_cap_reached", "attempt_cap_reached", "job_ceiling_reached"})
 _MAX_RECORD_BYTES = 64 * 1024
 
 
@@ -304,7 +311,9 @@ def read_outcome(directory: str | Path, intent: Mapping[str, Any]) -> dict[str, 
             and value["schema_version"] == SCHEMA_VERSION
             and value["intent_id"] == intent["intent_id"] and value["intent_digest"] == intent["intent_digest"]
             and isinstance(reason, str) and reason in REASONS and type(value["terminal"]) is bool
-            and (value["kind"], value["terminal"], value["reason_category"]) == REASONS[reason]
+            and ((value["kind"], value["terminal"], value["reason_category"]) == REASONS[reason]
+                 or reason in _LEGACY_MONEY_REASONS
+                 and (value["kind"], value["terminal"], value["reason_category"]) == _LEGACY_MONEY_WAIT)
             and _finite(value["decided_at_epoch"])
             and value["outcome_digest"] == cross_runtime_canonical_digest(value, digest_field="outcome_digest")):
         raise SceneOutcomeError("scene_outcome_record_invalid")

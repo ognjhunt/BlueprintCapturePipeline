@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract", "retire-parked-delivery", "test-job", "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "extend-scene-execution-window", "confirm-owner-success-contract", "retire-parked-delivery", "test-job", "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}
 # The owner-approved, time-only scene window extension passes the fence.
 assert r.required_scope("extend-scene-execution-window") == "operate"
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
@@ -43,16 +43,18 @@ window = {"kind":"extend-scene-execution-window", "intent_id":"scene-"+"a"*64, "
           "expires_at":"2026-11-07T10:30:00Z", "authorization_reference":"owner approval fixture",
           "ack":"extend-scene-execution-window", "apply":False}
 assert r.validate_request(window) == window
-# So does the owner-approved scene budget grant, as preview and as apply.
-assert r.required_scope("extend-scene-execution-budget") == "operate"
-assert r.validate_request_id("20261101T000000Z-extend-scene-execution-budget-0123abcd")
+# The owner's scene budget grant is gone (one cap at $40 per job, 2026-11-19): refused before any unit runs.
+assert "extend-scene-execution-budget" not in r._SCOPES
 budget = {"kind":"extend-scene-execution-budget", "intent_id":"scene-"+"a"*64, "owner_user_id":"owner-uid",
           "owner_organization_id":"user:owner-uid", "approved_by":"owner-uid", "approval_evidence":"owner approval fixture",
           "max_total_spend_usd":25, "max_paid_attempts":16, "apply":False, "apply_ack":"",
           "ack":"extend-scene-execution-budget"}
-assert r.validate_request(budget) == budget
-applied = {**budget, "apply":True, "apply_ack":"sha256:"+"c"*64}
-assert r.validate_request(applied) == applied
+try:
+    r.validate_request(budget)
+except r.RequestRefused:
+    pass
+else:
+    raise AssertionError("an owner budget grant was accepted")
 # So does the owner's confirmation of a website job's built success thresholds, as preview and as apply.
 assert r.required_scope("confirm-owner-success-contract") == "operate"
 assert r.validate_request_id("20261103T000000Z-confirm-owner-success-contract-0123abcd")

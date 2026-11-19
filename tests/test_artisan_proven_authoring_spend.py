@@ -23,6 +23,7 @@ import pytest
 
 from blueprint_pipeline import task_evaluation_terminal_scene_attempt_settlement as settlement
 from blueprint_pipeline import task_evaluation_unentered_authoring_budget as budget
+from blueprint_pipeline import website_job_spend_cap
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.openai_official_cost_gate import OpenAIOfficialCostRunGate
 from blueprint_pipeline.task_evaluation_retained_controls_evidence import validated_cancellation
@@ -509,8 +510,16 @@ def _capture_447(site):
     return rows
 
 
-def test_capture_447_holds_total_the_proven_bound(site, monkeypatch):
-    rows = _capture_447(site)
+@pytest.fixture
+def capture_447_rows(site, monkeypatch):
+    # Recreate reservations admitted under the old ceiling, then restore the current cap.
+    with monkeypatch.context() as legacy:
+        legacy.setattr(website_job_spend_cap, "per_job_cap_usd", lambda: Decimal("70"))
+        return _capture_447(site)
+
+
+def test_capture_447_holds_total_the_proven_bound(site, monkeypatch, capture_447_rows):
+    rows = capture_447_rows
     holds = {name: _hold(site, path) for name, path in rows.items()}
     assert {name: (hold["basis"], hold["retained_spend_usd"]) for name, hold in holds.items()} == {
         "pre_gate": ("native_allowance_with_unentered_authoring", 5.0),
@@ -525,24 +534,20 @@ def test_capture_447_holds_total_the_proven_bound(site, monkeypatch):
     assert sum(Decimal(str(hold["retained_spend_usd"])) for hold in holds.values()) == proven
     assert committed_spend_usd(site["directory"], site["intent"]) == proven
 
-    # Reservation counts the same bound: what is left of the $70 fits, a cent more does not.
+    # The $62.26 in retained holds is above the current $40 cap, even with $7.74 left on the old grant.
     with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
         reserve_scene_attempt(queue_root=site["root"], intent_id=site["intent"]["intent_id"],
-                              attempt_id="scene-configuration-next-over", source_commit=COMMIT,
+                              attempt_id="scene-configuration-next", source_commit=COMMIT,
                               runtime_digest="sha256:" + "e" * 64, input_digest="sha256:" + "f" * 64,
-                              provider="vast", maximum_spend_usd=7.75, now=300)
-    assert reserve_scene_attempt(queue_root=site["root"], intent_id=site["intent"]["intent_id"],
-                                 attempt_id="scene-configuration-next", source_commit=COMMIT,
-                                 runtime_digest="sha256:" + "e" * 64, input_digest="sha256:" + "f" * 64,
-                                 provider="vast", maximum_spend_usd=7.74, now=300)["status"] == "reserved"
+                              provider="vast", maximum_spend_usd=7.74, now=300)
 
     # Without the proofs the same settled rows would hold every maximum but the pre-gate one.
     monkeypatch.setattr(budget, "artisan_proven_authoring_spend", lambda result, request: None)
     assert sum(Decimal(str(_hold(site, path)["retained_spend_usd"])) for path in rows.values()) == Decimal("82.24")
 
 
-def test_shared_sibling_budget_and_spend_ledger_read_the_proven_holds(site):
-    rows = _capture_447(site)
+def test_shared_sibling_budget_and_spend_ledger_read_the_proven_holds(site, capture_447_rows):
+    rows = capture_447_rows
     # A corrected derivative of the same capture is a sibling intent: it counts these holds too.
     corrected = _preparation_request()
     corrected["task"]["subject"][revision_field] = {"capture_id": corrected["submission_id"],
@@ -610,11 +615,16 @@ def test_a_failed_cpu_prestage_keeps_only_its_proven_authoring_spend(site, monke
     assert hold["evidence"]["compute_allowance_kept"] is False and hold["evidence"]["compute_allowance_usd"] == 6.0
     assert hold["evidence"]["output_archive"]["path"].endswith("/cpu_prestage_output.zip")
     assert committed_spend_usd(site["directory"], site["intent"]) == Decimal("13.76")
-    # The restart's next $31 attempt now fits beside it.
+    # The restart can use the $26.24 left after settlement.
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        reserve_scene_attempt(queue_root=site["root"], intent_id=site["intent"]["intent_id"],
+                              attempt_id="scene-configuration-restart", source_commit=COMMIT,
+                              runtime_digest="sha256:" + "e" * 64, input_digest="sha256:" + "f" * 64,
+                              provider="vast", maximum_spend_usd=26.25, now=300)
     assert reserve_scene_attempt(queue_root=site["root"], intent_id=site["intent"]["intent_id"],
                                  attempt_id="scene-configuration-restart", source_commit=COMMIT,
                                  runtime_digest="sha256:" + "e" * 64, input_digest="sha256:" + "f" * 64,
-                                 provider="vast", maximum_spend_usd=31.0, now=300)["status"] == "reserved"
+                                 provider="vast", maximum_spend_usd=26.24, now=300)["status"] == "reserved"
     monkeypatch.setattr(budget, "artisan_proven_authoring_spend", lambda result, request: None)
     assert _hold(site, row)["retained_spend_usd"] == 31.0
 

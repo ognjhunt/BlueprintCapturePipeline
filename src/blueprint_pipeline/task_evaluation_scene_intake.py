@@ -219,6 +219,23 @@ def committed_spend_usd(directory: str | Path, intent: Mapping[str, Any]) -> Dec
     return sum((Decimal(str(row["maximum_spend_usd"])) for row in live), settled)
 
 
+def scene_spend_budget(intent: Mapping[str, Any]) -> dict[str, Any]:
+    """The budget every new reservation of ``intent`` is checked against (owner decision 2026-11-19).
+
+    It is what the intent's grant sealed (``request.execution``), never above the job's spending cap
+    (``website_job_spend_cap``). Nothing raises it: owner grants and automatic extensions are gone.
+    Their records from before (``execution-budget-extensions/``, ``standing-budget-extensions/``) stay
+    on disk, and an attempt reserved under one still validates against it
+    (``validate_attempt_execution_budget``), but they add nothing to a new reservation. So an in-flight
+    intent whose holds already pass its sealed figure reserves nothing more, and its outcome is
+    ``spending_cap_reached``.
+    """
+    from .website_job_spend_cap import per_job_cap_usd
+    execution = intent["request"]["execution"]
+    return {"max_total_spend_usd": min(Decimal(str(execution["max_total_spend_usd"])), per_job_cap_usd()),
+            "max_paid_attempts": execution["max_paid_attempts"]}
+
+
 @scene_participant('queue_root')
 def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id: str,
                           source_commit: str, runtime_digest: str, input_digest: str,
@@ -227,7 +244,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                           recovery_from_attempt_id: str | None = None,
                           recovery_evidence: dict[str, Any] | None = None,
                           visual_review_authority: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Debit maximum exposure before dispatch; retries never reset the owner's cap."""
+    """Debit maximum exposure before dispatch; retries never reset the cap (``scene_spend_budget``)."""
     _require(_identifier(intent_id) and _identifier(attempt_id), "attempt_id_invalid")
     _require(_COMMIT.fullmatch(source_commit) is not None and _DIGEST.fullmatch(runtime_digest) is not None
              and _DIGEST.fullmatch(input_digest) is not None, "attempt_identity_invalid")
@@ -252,16 +269,9 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             except (ValueError, OSError, KeyError, TypeError):
                 raise SceneIntakeError("scene_intake_preparation_authority_invalid") from None
         execution = intent["request"]["execution"]
-        from . import scene_budget_standing_extension as standing
-        # The owner's ceiling, raised by any standing-policy extension (never lowered).
-        budget = standing.effective_scene_budget(directory, intent)
         _require(not (directory / "revoked.json").exists(), "authority_revoked")
         _require(moment < effective_execution_expiry(directory, intent), "authority_expired")
         _require(provider in execution["allowed_providers"], "provider_not_authorized")
-        # A flagged grant may extend to fit this attempt; the spend check below decides.
-        _require(maximum_spend_usd <= budget["max_total_spend_usd"]
-                 or standing.granted_authority(intent["request"], root, moment) is not None,
-                 "attempt_spend_exceeds_authorized_limit")
         attempts = directory / "attempts"
         _require(not attempts.is_symlink(), "record_unsafe")
         attempts.mkdir(mode=0o750, exist_ok=True)
@@ -342,6 +352,9 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             _require(all(existing.get(k) == v for k, v in body.items())
                      and ("recovery" in existing) == ("recovery" in body), "attempt_immutable_conflict")
             return existing
+        # Only new debits use the new cap. Retained rows are checked against the authority they were sealed with.
+        budget = scene_spend_budget(intent)
+        _require(Decimal(str(maximum_spend_usd)) <= budget["max_total_spend_usd"], "attempt_spend_exceeds_authorized_limit")
         rows = [_read(p, "attempt_digest") for p in attempts.glob("*.json")]
         if visual_review_authority is not None:
             _require(not any((row.get('visual_review_correction') or {}).get('authority_digest')
@@ -382,17 +395,10 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
                      <= budget["max_paid_attempts"], "attempt_cap_exhausted")
         for row in rows:
             validate_attempt_execution_budget(directory, intent, row)
+        # What the intent already spent or holds (every retry included) plus this attempt's quote.
         exposure = sum((Decimal(str(row["maximum_spend_usd"])) for row in rows), settled_exposure)
         required = exposure + Decimal(str(maximum_spend_usd))
-        if required > Decimal(str(budget["max_total_spend_usd"])):
-            # Every attempt check above passed: a flagged job may extend by the shortfall
-            # when the account would admit it; otherwise it waits exactly as before.
-            budget = standing.extend_for_shortfall(root=root, directory=directory, intent=intent, budget=budget,
-                                                   required_usd=required, attempt_id=attempt_id,
-                                                   now=moment) or budget
-        _require(required <= Decimal(str(budget["max_total_spend_usd"])), "spend_cap_exhausted")
-        if budget["extension_digest"] is not None:
-            body[ATTEMPT_GRANT_FIELD] = budget["extension_digest"]
+        _require(required <= budget["max_total_spend_usd"], "spend_cap_exhausted")
         result = _seal({**body, "reserved_at_epoch": moment}, "attempt_digest")
         validate_attempt_execution_budget(directory, intent, result)
         write_exclusive(path, result)
@@ -570,6 +576,7 @@ __all__ = [
     'effective_execution_expiry',
     'reserve_scene_attempt',
     'revoke_scene_intent',
+    'scene_spend_budget',
     'scene_intent_status',
     'stage_scene_intent',
     'validate_attempt_execution_budget',

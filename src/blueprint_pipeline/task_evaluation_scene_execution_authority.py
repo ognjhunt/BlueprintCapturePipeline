@@ -70,7 +70,7 @@ def scene_execution_authority_blockers(
             return ['scene_execution_owner_scope_excludes_robot_controls']
     except (ValueError, OSError, KeyError, TypeError):
         return ['scene_execution_owner_scope_restriction_invalid']
-    from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
+    from .task_evaluation_scene_execution_budget_evidence import validate_attempt_execution_budget
     try:
         validate_attempt_execution_budget(directory, intent, attempt)
     except (ValueError, OSError, KeyError, TypeError):

@@ -411,12 +411,15 @@ def test_a_scene_kept_as_filmed_still_exports_its_room_when_a_wall_follows_the_b
 
 
 def test_the_reviewed_background_path_still_delivers_when_a_wall_follows_the_bought_pose(tmp_path, monkeypatch):
-    """The cleaned-background route keeps main's outcome: the source pose is held, the background is delivered."""
+    """A capped source pose leaves the completed background available with a spend flag."""
     from blueprint_pipeline import atlas_video_inputs as inputs_module
     from blueprint_pipeline import paid_resource_allocator as allocator
     from blueprint_pipeline import website_atlas_pipeline as pipeline
     from blueprint_pipeline import website_atlas_pose as pose_api
+    from blueprint_pipeline import website_operation_coverage_review as coverage
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    monkeypatch.setattr(pipeline, "requires_task_semantic_analysis", lambda _: True)
+    monkeypatch.setattr(coverage, "clarify_operation_coverage", lambda **_: pytest.fail("review requested after cap"))
     results = []
     for name, error in (("typed", WALL_AFTER_POSE), ("plain", ValueError(str(WALL_AFTER_POSE)))):
         root = tmp_path / name / "job"
@@ -438,13 +441,16 @@ def test_the_reviewed_background_path_still_delivers_when_a_wall_follows_the_bou
                             lambda **_: {"frames": [{"frame_id": "a"}, {"frame_id": "b"}]})
         monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw: {
             "status": "completed", "measurements": {"status": "relative_sizes_only"},
-            "background": {"status": "completed", "splat_manifest_digest": "splat", "mesh_available": True}})
+            "background": {"status": "completed", "splat_manifest_digest": "splat", "mesh_available": True,
+                           "download": {"zip_path": "scene.zip"}}})
         _, bought = _paid_pose_then(monkeypatch, root / "pose", error)
         result = pipeline.run_atlas_pipeline(source_video=video, output_root=root, checkpoint=lambda *_a, **_k: None,
                                              task_context={"capture_id": "c", "context_digest": "task"})
         assert bought == ["pose"] and result["source_pose"] == {"status": "needs_input",
                                                                 "reason": str(WALL_AFTER_POSE)}
         assert result["splat_available"] is True
+        assert result["download"] == {"zip_path": "scene.zip"}
+        assert result["reason"] == "spending_cap_reached"
         results.append(json.loads(json.dumps(result).replace(str(tmp_path / name), "<run>")))
     assert results[0] == results[1]
 

@@ -28,6 +28,7 @@ from .atlas_pricing import admitted_final_outputs, render_cost, final_output_cos
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .atlas_preparation_context import requires_task_semantic_analysis
+from .website_job_spend_cap import SPENDING_CAP_REACHED
 
 
 #: Who read the rate card, and when. Renewing it re-confirms the same prices.
@@ -315,17 +316,76 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
 
 
 def run_atlas_pipeline(*, output_root: Path, **options):
+    from .atlas_preparation_job_control import _reason
+    from .hard_stops import JOB_SPEND_CAP
     output_root.mkdir(parents=True, exist_ok=True)
     with (output_root / "controller.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        result = _run_atlas_pipeline(output_root=output_root, **options)
-        if (result.get("mesh_available") and not result.get('observed_scene_only')
-                and requires_task_semantic_analysis(options.get("task_context", {}))):
-            from .website_operation_coverage_review import clarify_operation_coverage
-            clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
-                source_video_digest=result["source_video_digest"], experimental=options.get("experimental", False),
-                invoker=options.get("invoker"), checkpoint=options.get("checkpoint"))
+        result = None
+        try:
+            result = _run_atlas_pipeline(output_root=output_root, **options)
+            completion = result.get("scene_completion") or {}
+            codes = [result.get("reason"), completion.get("reason"), (result.get("source_pose") or {}).get("reason"),
+                     *(result.get("blockers") or [])]
+            cap_reached = result.get("status") != "processing" and any(
+                isinstance(code, str) and _reason(ValueError(code)) == JOB_SPEND_CAP for code in codes)
+            if (not cap_reached and result.get("mesh_available") and not result.get('observed_scene_only')
+                    and result.get("reason") != SPENDING_CAP_REACHED
+                    and requires_task_semantic_analysis(options.get("task_context", {}))):
+                from .website_operation_coverage_review import clarify_operation_coverage
+                clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
+                    source_video_digest=result["source_video_digest"], experimental=options.get("experimental", False),
+                    invoker=options.get("invoker"), checkpoint=options.get("checkpoint"))
+        except ValueError as exc:
+            if _reason(exc) != JOB_SPEND_CAP:
+                raise
+            return _retained_at_cap(output_root, options, result)
+        if cap_reached:
+            finished = result if completion.get("status") in (None, "completed") else None
+            return _retained_at_cap(output_root, options, finished)
         return result
+
+
+def _retained_at_cap(output_root: Path, options, finished=None):
+    """Close the job using only its verified room evidence, whichever purchase reached the cap."""
+    if finished and finished.get("download"):
+        # The room was already exported before an optional follow-up purchase.
+        result = {**finished, "reason": SPENDING_CAP_REACHED,
+                  "blockers": list(dict.fromkeys([SPENDING_CAP_REACHED, *finished.get("blockers", [])]))}
+        result["digest"] = canonical_digest(result, digest_field="digest")
+        write_json(output_root / "result.json", result)
+        return result
+    from . import atlas_splat_rebuild as rebuilds
+    from .atlas_video_inputs import GEOMETRY_INPUTS_FILE
+    from .hard_stops import is_wall
+    stopped = {"status": "needs_input", "stage": "preparation", "reason": SPENDING_CAP_REACHED,
+               "blockers": [SPENDING_CAP_REACHED]}
+    pose_root = output_root / "pose"
+    context = options["task_context"]
+    try:
+        source_digest = _sha256_file(Path(options["source_video"]))
+        if options.get("refinement_feedback") is None and (output_root / rebuilds.REQUEST_FILE).is_file():
+            request, root, parent = rebuilds.load_request(output_root)
+            if (parent.get("download") and parent.get("source_video_digest") == source_digest
+                    and parent.get("task_context_digest") == context.get("context_digest")):
+                return rebuilds.record_cap_stop(output_root, root, request, parent)
+            return stopped
+        review = json.loads((output_root / "atlas_scene_review.json").read_text())
+        inputs = json.loads((pose_root / GEOMETRY_INPUTS_FILE).read_text())
+        if inputs.get("binding", {}).get("source_video_digest") != source_digest:
+            return stopped
+        room = background_floor(output_root, review, context,
+                                {"status": "needs_input", "background": {"reason": SPENDING_CAP_REACHED}})
+        if room is None:
+            return stopped
+        return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=room,
+            policy={}, task_context=context, source_digest=source_digest,
+            configuration=None, check=None, experimental=False, max_polls=0, model=None, spend_capped=True)
+    except (OSError, ValueError, KeyError) as exc:
+        if is_wall(exc):
+            raise
+        # No usable room was retained. The site's video and first look still stand.
+        return stopped
 
 
 def _preparation_running(capture_root: Path) -> bool:
@@ -358,8 +418,10 @@ def _kept(review):
 BACKGROUND_FLOOR_RECORD = "background_floor.json"
 #: Background stops that mean the object was not seen well enough to erase (default-deny: any other stop,
 #: money, a changed binding or an unsettled call, stays as it was). A review that never passed is one too.
+#: ``spending_cap_reached``: the job reached its spending cap before the room was cleaned (owner, 2026-11-19).
 BACKGROUND_FLOOR_REASONS = frozenset({"atlas_removal_visibility_incomplete",
-                                      "atlas_object_mask_view_coverage_incomplete", "atlas_removal_masks_empty"})
+                                      "atlas_object_mask_view_coverage_incomplete", "atlas_removal_masks_empty",
+                                      SPENDING_CAP_REACHED})
 
 
 def background_floor(output_root: Path, review, task_context, automation=None):
@@ -750,7 +812,7 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
                      source_digest, configuration, check, experimental, max_polls, model,
                      source_survey_path=None, reconstruction_only=False, task_evidence_limitation=None,
-                     geometry_only=False, rebuild=False):
+                     geometry_only=False, rebuild=False, spend_capped=False):
     """Reconstruct an environment-preserving task from full-view observations.
 
     Selection and scale still use the production agents and validators. Missing
@@ -781,12 +843,17 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         raise ValueError("atlas_synthetic_subject_requires_preserved_capture"
                          if review.get("subject_origin") == "synthetic_design"
                          else "atlas_scene_requires_preserved_capture")
-    source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
-        task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
-        configuration=configuration, **({'allow_scale_review': False} if reconstruction_only else {}))
-    if source_pose["status"] == "processing":
-        return source_pose
-    source_root, _ = prepare_source_pose(pose_root)
+    if spend_capped:
+        # Only already posed source views are usable here. All later paid stages require a completed source pose.
+        source_root, _ = prepare_source_pose(pose_root)
+        source_pose = {"status": "needs_input", "reason": SPENDING_CAP_REACHED}
+    else:
+        source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
+            task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
+            configuration=configuration, **({'allow_scale_review': False} if reconstruction_only else {}))
+        if source_pose["status"] == "processing":
+            return source_pose
+        source_root, _ = prepare_source_pose(pose_root)
     if source_survey_path is not None:
         # The gallery must also hold the task-source views this source pose was given.
         from .atlas_source_gap_evidence import with_task_source_views
@@ -810,7 +877,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         return {"status": "needs_input", "stage": "source_pose",
                 "reason": "atlas_splat_rebuild_pose_refinement_not_accepted"}
     repose = None
-    if not (rebuild or geometry_only or reconstruction_only) and "refined_splat_cost_usd" in policy:
+    if not (rebuild or geometry_only or reconstruction_only or spend_capped) and "refined_splat_cost_usd" in policy:
         # A new job's one windowed re-pose before its refined splat (``website_atlas_windowed_repose``).
         repose = _windowed_repose(output_root=output_root, first_pose_root=pose_root, source_root=source_root,
             review=review, source_pose=source_pose, policy=policy, task_context=task_context,
@@ -822,6 +889,18 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             pose_root, inputs, review = repose["pose_root"], repose["inputs"], repose["review"]
             source_pose, source_root = repose["source_pose"], repose["source_root"]
     pose, frames = load_posed_rgbd(source_root)
+    if spend_capped:
+        measurement = source_root / "scene_measurements.json"
+        if measurement.is_file() and not measurement.is_symlink():
+            retained = json.loads(measurement.read_text())
+            if (retained.get("status") == "estimated" and retained.get("meters_per_unit_estimate")
+                    and retained.get("binding", {}).get("pose_digest") == pose["digest"]
+                    and retained.get("digest") == canonical_digest(retained, digest_field="digest")):
+                source_pose = {"status": "completed", "result_digest": pose["digest"],
+                    "operation_id": pose["operation"]["id"], "pose_relative_path": str(source_root.relative_to(output_root)),
+                    "measurements_relative_path": measurement.name, "scene_measurements_digest": retained["digest"],
+                    "meters_per_unit_estimate": retained["meters_per_unit_estimate"],
+                    "scale_status": retained.get("scale_status")}
     splat_root = output_root / "splat"
     manifest = splat_root / "atlas_depth_splat_manifest.json"
     splat = (json.loads(manifest.read_text()) if manifest.is_file()
@@ -829,13 +908,24 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     draft = splat  # The captured frames' own draft: a refined-splat request never sees generated geometry.
     blockers = ["metric_scene_registration_unproven"]
     mesh_root = None
+    if spend_capped and source_pose["status"] == "completed":
+        from .atlas_result_bundle import find_retained_mesh_root, retained_mesh_for_splat
+        binding = {"splat_root": splat_root, "source_video_digest": source_digest,
+                   "task_context_digest": task_context["context_digest"]}
+        mesh_root = find_retained_mesh_root(output_root=output_root, **binding)
+        if mesh_root is not None:
+            retained_mesh_for_splat(mesh_root=mesh_root, **binding)
+    if spend_capped:
+        blockers.insert(0, SPENDING_CAP_REACHED)
     completion = None
     generated_roots, completion_paths = [], []
     completion_stopped = False
     admitted_completion = False
     # A scale/authority refusal may still leave useful retained observations.
     # Export those locally, but never continue purchasing after that refusal.
-    if source_pose["status"] != "completed":
+    if spend_capped:
+        pass  # Only the retained pose, scale and room mesh may contribute.
+    elif source_pose["status"] != "completed":
         blockers.append(source_pose.get("reason", "atlas_source_pose_unavailable"))
     elif not reconstruction_only and "mesh_export_cost_usd" not in policy:
         blockers.append("atlas_mesh_export_price_unreviewed")
@@ -882,7 +972,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     # splat as the look and goes into the collision shape only (owner, 2026-11-17).
     appearance = None
     collision_root, collision_splat = splat_root, splat
-    if (not reconstruction_only and not geometry_only and source_pose['status'] == 'completed'
+    if (not spend_capped and not reconstruction_only and not geometry_only and source_pose['status'] == 'completed'
             and not completion_stopped and 'refined_splat_cost_usd' in policy):
         appearance = _preserved_appearance(frames=frames, pose=pose, draft=draft, output_root=output_root,
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
@@ -901,7 +991,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         return {'status': 'needs_input', 'stage': 'source_pose' if source_pose['status'] != 'completed'
                 else 'refined_splat', 'reason': source_pose.get('reason') if source_pose['status'] != 'completed'
                 else 'atlas_splat_rebuild_refined_splat_unpriced'}
-    if (not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
+    if (not spend_capped and not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
             and not completion_stopped):
         mesh_destination = (output_root / 'preserved_completion/mesh' / collision_splat['digest'][7:23]
                             if admitted_completion
@@ -989,6 +1079,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                if collision_only else {})}
     if job_object_rule:
         result["job_object_rule"] = job_object_rule
+    if spend_capped:
+        result["reason"] = SPENDING_CAP_REACHED
     if geometry_only:
         # A captured subject stays where it was filmed; a robot check reading this must cut it out first.
         result.update(atlas_route="geometry_only",
@@ -1133,7 +1225,9 @@ def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configurat
     the window derives. With no usable window it stops by name before buying anything.
     """
     from . import atlas_splat_rebuild as rebuilds
+    from .atlas_preparation_job_control import _reason
     from .atlas_video_inputs import prepare_video_inputs
+    from .hard_stops import JOB_SPEND_CAP
 
     request, root, parent = rebuilds.load_request(job_dir)
     finished = rebuilds.retained_outcome(job_dir, root, parent)
@@ -1173,11 +1267,15 @@ def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configurat
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
             check=check, experimental=experimental, max_polls=max_polls, model=parent.get("model"), rebuild=True)
     except ValueError as exc:
+        if _reason(exc) == JOB_SPEND_CAP:
+            return rebuilds.record_cap_stop(job_dir, root, request, parent)
         if not str(exc).startswith(rebuilds.STOP_PREFIXES):
             raise
         result = {"status": "needs_input", "reason": str(exc).partition(":")[0]}
     if result.get("status") == "processing":
         return result
+    if _reason(ValueError(result.get("reason") or "")) == JOB_SPEND_CAP:
+        return rebuilds.record_cap_stop(job_dir, root, request, parent, stage=result.get("stage", "splat_rebuild"))
     if not result.get("download") or (result.get("appearance") or {}).get("basis") != REFINED_APPEARANCE:
         return rebuilds.record_stop(root, request, parent, result)
     return rebuilds.publish(job_dir, root, request, parent, result, window=window)
@@ -1440,6 +1538,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         return {"status": "processing", "stage": "clean_plate_wait"}
 
     def as_filmed(review):
+        spend_capped = (review.get("job_object_rule") or {}).get("background_not_cleaned") == SPENDING_CAP_REACHED
         # A preserved origin, or a job whose object stays in the scan and shows nobody: the scene as filmed.
         from .atlas_source_gap_evidence import combine_source_surveys
         source_survey = combine_source_surveys(survey_paths=[
@@ -1448,9 +1547,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             output=output_root / 'capture_source_survey.json')
         return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
             policy=policy, task_context=task_context, source_digest=source_digest,
-            configuration=_current_configuration(task_context, source_digest, config), check=check,
-            experimental=experimental, max_polls=max_polls, model=receipt["model"],
-            source_survey_path=source_survey)
+            configuration=config if spend_capped else _current_configuration(task_context, source_digest, config),
+            check=check, experimental=experimental, max_polls=max_polls, model=receipt["model"],
+            source_survey_path=source_survey, spend_capped=spend_capped)
     review = background_floor(output_root, review, task_context) or review
     if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS or "job_object_rule" in review:
         return as_filmed(review)

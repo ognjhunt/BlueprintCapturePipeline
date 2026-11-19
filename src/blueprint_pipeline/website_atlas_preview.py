@@ -330,8 +330,12 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     kind = hard_stop_kind(code)
     if kind == PRIVACY_RIGHTS:
         return _transition(job, current, "failed", code, **detail)
+    from .hard_stops import JOB_SPEND_CAP
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
+    if code == JOB_SPEND_CAP:
+        return _transition(job, current, "failed", SPENDING_CAP_REACHED, **detail)
     if kind == MONEY:
-        # Shown to the owner, who can raise the limit; the step's own admission is re-asked on each recheck.
+        # An account-wide money wait can clear when the month turns or a hold settles.
         return _transition(job, current, "needs_input", code, **detail,
                            retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
     deterministic = find_deterministic_refusal(error)
@@ -421,7 +425,9 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
     archive, incomplete-completion refusal and teardown lifecycle. This helper
     issues no grant and never constructs a website source for another upload.
     """
+    from .hard_stops import JOB_SPEND_CAP
     from .website_atlas_pipeline import run_atlas_pipeline
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
     current = int(now())
     if job["state"] == "needs_input" and "deterministic_refusal" in job:
         if deterministic_unchanged(job["deterministic_refusal"]):
@@ -447,6 +453,9 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
                                stage='preserved_scene_completion', result_digest=result.get('digest'))
         if not result.get("download"):
             blockers = result.get('blockers') or []
+            if result.get("reason") == SPENDING_CAP_REACHED or any(
+                    _reason(ValueError(code)) == JOB_SPEND_CAP for code in (result.get("reason"), *blockers) if code):
+                return _transition(job, current, "failed", SPENDING_CAP_REACHED, stage=result.get("stage", "preparation"))
             from .job_retry_policy import provider_answer, request_cannot_succeed
             answers = [str(row) for row in blockers
                        if provider_answer(str(row)) is not None or request_cannot_succeed(str(row))]
@@ -480,7 +489,8 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
     # The adopted refined-splat form; a minimal one that left gap views out may be upgraded once. A look that
     # is the draft for good names why (``preparation_fault_alert`` pages it once).
     fallback = (result.get("appearance") or {}).get("fallback_reason")
-    return _transition(job, current, "ready", None, stage="archived", archive=archive, transient_failures=0,
+    cap_reason = SPENDING_CAP_REACHED if result.get("reason") == SPENDING_CAP_REACHED else None
+    return _transition(job, current, "ready", cap_reason, stage="archived", archive=archive, transient_failures=0,
                        result_digest=result["digest"], splat_available=bool(result.get("splat_available")),
                        mesh_available=bool(result.get("mesh_available")), refined_splat=result.get("refined_splat"),
                        **({"look_fallback": fallback if isinstance(fallback, str) else None}

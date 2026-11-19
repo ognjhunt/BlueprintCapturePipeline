@@ -27,7 +27,7 @@ from typing import Any
 
 from .job_retry_policy import MONEY, OWNER_CLOSED_CODE, PRIVACY_RIGHTS
 
-__all__ = ["WEBAPP_MONEY", "WEBAPP_PRIVACY_RIGHTS", "HardStop", "MoneyStop", "PrivacyRightsStop", "is_wall",
+__all__ = ["JOB_SPEND_CAP", "WEBAPP_MONEY", "WEBAPP_PRIVACY_RIGHTS", "HardStop", "MoneyStop", "PrivacyRightsStop", "is_wall",
            "wall_kind", "webapp_refusal"]
 
 
@@ -52,8 +52,11 @@ WEBAPP_PRIVACY_RIGHTS = frozenset({
     OWNER_CLOSED_CODE, "website_atlas_source_consent_required", "website_atlas_consent_expired",
     "website_atlas_planner_consent_required", "provider_terms_not_configured_or_changed",
     "website_atlas_authorization_invalid", "website_atlas_source_owner_mismatch", "consent_expired"})
-#: The job's own allowance, ceiling or safety limit (``websiteSceneSponsorship.ts``).
-WEBAPP_MONEY = frozenset({"website_scene_preparation_budget_exhausted"})
+#: The website's refusal at the job's spending cap (``website_job_spend_cap``; WebApp ``websiteJobCeiling.ts``). It is a
+#: wall: the paid call it answers does not start. Nothing waits on it (owner, 2026-11-19): the job goes on without
+#: that piece, flagged ``spending_cap_reached`` (``website_scene_handoff.goes_on``).
+JOB_SPEND_CAP = "website_scene_preparation_budget_exhausted"
+WEBAPP_MONEY = frozenset({JOB_SPEND_CAP})
 
 
 def webapp_refusal(message: str, code: Any) -> ValueError:
