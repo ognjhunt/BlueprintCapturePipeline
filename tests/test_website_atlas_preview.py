@@ -225,7 +225,6 @@ def test_source_reconstruction_refusal_keeps_its_own_stage_and_reason(monkeypatc
 
 
 @pytest.mark.parametrize('blocker', [
-    'website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted',
     'atlas_completion_request_budget_insufficient:required=6,remaining=2',
     'atlas_completion_visual_review_required',
 ])
@@ -1348,11 +1347,20 @@ def test_two_alternating_refusals_cannot_retry_without_bound(monkeypatch, site):
     assert len(world.runs) == 2 * preview.MAXIMUM_REFUSAL_RETRIES + 1
 
 
-@pytest.mark.parametrize("refusal", [
-    ValueError("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"),
-    ValueError("account_monthly_spend_limit_reached"),
-])
-def test_a_money_refusal_waits_as_needs_input_shown_to_the_owner_and_re_asked_until_expiry(monkeypatch, site, refusal):
+@pytest.mark.parametrize("returned", [False, True])
+def test_atlas_job_cap_ends_without_rescheduling_any_paid_step(monkeypatch, site, returned):
+    _enqueue(site)
+    refusal = "website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"
+    world = World(monkeypatch, site, [
+        {"status": "needs_input", "blockers": [refusal]} if returned else ValueError(refusal)])
+    assert world.advance() == "failed"
+    job = _job(site)
+    assert (job["reason"], job["retry_at_epoch"]) == ("spending_cap_reached", None)
+    assert world.pushed[-1]["reason"] == "spending_cap_reached"
+
+
+def test_a_money_refusal_waits_as_needs_input_shown_to_the_owner_and_re_asked_until_expiry(monkeypatch, site):
+    refusal = ValueError("account_monthly_spend_limit_reached")
     _enqueue(site)
     world = World(monkeypatch, site, [refusal] * 3 + [{"status": "processing", "stage": "plan"}] + [refusal] * 2)
     ended = []

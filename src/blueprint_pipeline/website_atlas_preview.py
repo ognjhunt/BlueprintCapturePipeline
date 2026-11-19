@@ -330,10 +330,12 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     kind = hard_stop_kind(code)
     if kind == PRIVACY_RIGHTS:
         return _transition(job, current, "failed", code, **detail)
+    from .hard_stops import JOB_SPEND_CAP
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
+    if code == JOB_SPEND_CAP:
+        return _transition(job, current, "failed", SPENDING_CAP_REACHED, **detail)
     if kind == MONEY:
-        # The account's month, or the job's spending cap, which nothing raises (owner, 2026-11-19): no paid call
-        # starts. The step's own admission is re-asked on each recheck, so a hold of this job that settles lower
-        # frees room; the job's deadline ends the wait, and the job's packet never waits on it.
+        # An account-wide money wait can clear when the month turns or a hold settles.
         return _transition(job, current, "needs_input", code, **detail,
                            retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
     deterministic = find_deterministic_refusal(error)
@@ -423,6 +425,7 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
     archive, incomplete-completion refusal and teardown lifecycle. This helper
     issues no grant and never constructs a website source for another upload.
     """
+    from .hard_stops import JOB_SPEND_CAP
     from .website_atlas_pipeline import run_atlas_pipeline
     from .website_job_spend_cap import SPENDING_CAP_REACHED
     current = int(now())
@@ -449,9 +452,10 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
             return _transition(job, current, 'needs_input', reason,
                                stage='preserved_scene_completion', result_digest=result.get('digest'))
         if not result.get("download"):
-            if result.get("reason") == SPENDING_CAP_REACHED:
-                return _transition(job, current, "failed", SPENDING_CAP_REACHED, stage=result["stage"])
             blockers = result.get('blockers') or []
+            if result.get("reason") == SPENDING_CAP_REACHED or any(
+                    _reason(ValueError(code)) == JOB_SPEND_CAP for code in (result.get("reason"), *blockers) if code):
+                return _transition(job, current, "failed", SPENDING_CAP_REACHED, stage=result.get("stage", "preparation"))
             from .job_retry_policy import provider_answer, request_cannot_succeed
             answers = [str(row) for row in blockers
                        if provider_answer(str(row)) is not None or request_cannot_succeed(str(row))]

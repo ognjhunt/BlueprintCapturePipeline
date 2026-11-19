@@ -316,18 +316,67 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
 
 
 def run_atlas_pipeline(*, output_root: Path, **options):
+    from .atlas_preparation_job_control import _reason
+    from .hard_stops import JOB_SPEND_CAP
     output_root.mkdir(parents=True, exist_ok=True)
     with (output_root / "controller.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        result = _run_atlas_pipeline(output_root=output_root, **options)
-        if (result.get("mesh_available") and not result.get('observed_scene_only')
-                and result.get("reason") != SPENDING_CAP_REACHED
-                and requires_task_semantic_analysis(options.get("task_context", {}))):
-            from .website_operation_coverage_review import clarify_operation_coverage
-            clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
-                source_video_digest=result["source_video_digest"], experimental=options.get("experimental", False),
-                invoker=options.get("invoker"), checkpoint=options.get("checkpoint"))
+        result = None
+        try:
+            result = _run_atlas_pipeline(output_root=output_root, **options)
+            if (result.get("mesh_available") and not result.get('observed_scene_only')
+                    and result.get("reason") != SPENDING_CAP_REACHED
+                    and requires_task_semantic_analysis(options.get("task_context", {}))):
+                from .website_operation_coverage_review import clarify_operation_coverage
+                clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
+                    source_video_digest=result["source_video_digest"], experimental=options.get("experimental", False),
+                    invoker=options.get("invoker"), checkpoint=options.get("checkpoint"))
+        except ValueError as exc:
+            if _reason(exc) != JOB_SPEND_CAP:
+                raise
+            return _retained_at_cap(output_root, options, result)
+        completion = result.get("scene_completion") or {}
+        codes = [result.get("reason"), completion.get("reason"), (result.get("source_pose") or {}).get("reason"),
+                 *(result.get("blockers") or [])]
+        if any(isinstance(code, str) and _reason(ValueError(code)) == JOB_SPEND_CAP for code in codes):
+            finished = result if completion.get("status") in (None, "completed") else None
+            return _retained_at_cap(output_root, options, finished)
         return result
+
+
+def _retained_at_cap(output_root: Path, options, finished=None):
+    """Close the job using only its verified room evidence, whichever purchase reached the cap."""
+    if finished and finished.get("download"):
+        # The room was already exported before an optional follow-up purchase.
+        result = {**finished, "reason": SPENDING_CAP_REACHED,
+                  "blockers": list(dict.fromkeys([SPENDING_CAP_REACHED, *finished.get("blockers", [])]))}
+        result["digest"] = canonical_digest(result, digest_field="digest")
+        write_json(output_root / "result.json", result)
+        return result
+    from .atlas_video_inputs import GEOMETRY_INPUTS_FILE
+    from .hard_stops import is_wall
+    stopped = {"status": "needs_input", "stage": "preparation", "reason": SPENDING_CAP_REACHED,
+               "blockers": [SPENDING_CAP_REACHED]}
+    pose_root = output_root / "pose"
+    context = options["task_context"]
+    try:
+        review = json.loads((output_root / "atlas_scene_review.json").read_text())
+        inputs = json.loads((pose_root / GEOMETRY_INPUTS_FILE).read_text())
+        source_digest = _sha256_file(Path(options["source_video"]))
+        if inputs.get("binding", {}).get("source_video_digest") != source_digest:
+            return stopped
+        room = background_floor(output_root, review, context,
+                                {"status": "needs_input", "background": {"reason": SPENDING_CAP_REACHED}})
+        if room is None:
+            return stopped
+        return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=room,
+            policy={}, task_context=context, source_digest=source_digest,
+            configuration=None, check=None, experimental=False, max_polls=0, model=None, spend_capped=True)
+    except (OSError, ValueError, KeyError) as exc:
+        if is_wall(exc):
+            raise
+        # No usable room was retained. The site's video and first look still stand.
+        return stopped
 
 
 def _preparation_running(capture_root: Path) -> bool:

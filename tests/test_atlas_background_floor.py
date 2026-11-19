@@ -199,12 +199,25 @@ def test_job_three_goes_on_as_filmed_when_its_object_cannot_be_taken_out(tmp_pat
 
 
 @pytest.mark.parametrize("has_pose,has_room", [(False, False), (True, False), (True, True)])
-def test_background_spend_cap_uses_only_retained_room_evidence(tmp_path, monkeypatch, has_pose, has_room):
+@pytest.mark.parametrize("raised", [False, True])
+def test_spend_cap_uses_only_retained_room_evidence(tmp_path, monkeypatch, has_pose, has_room, raised):
     from blueprint_pipeline import atlas_depth_splat, atlas_result_bundle, atlas_source_pose_inputs
     root, run, _automated, posed = _job(tmp_path, monkeypatch, _review(), clean_plate=("blocked", []))
     calls = _stopped(monkeypatch, {"status": "needs_input", "background": {"reason": "spending_cap_reached"}})
     source = root / "pose/full-view-source-v1"
     source.mkdir(parents=True)
+    if raised:
+        from blueprint_pipeline import paid_resource_allocator
+        from blueprint_pipeline.atlas_video_inputs import GEOMETRY_INPUTS_FILE
+        from blueprint_pipeline.hard_stops import MoneyStop
+        (source.parent / GEOMETRY_INPUTS_FILE).write_text(json.dumps(
+            {"binding": {"source_video_digest": _sha256_file(tmp_path / "source.mov")}}))
+
+        def refuse(**kwargs):
+            calls.append(kwargs)
+            raise MoneyStop("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
+
+        monkeypatch.setattr(paid_resource_allocator, "run_sponsored_website_atlas_automation", refuse)
     monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda _: (source, {}))
     pose = {"digest": "pose", "operation": {"id": "retained"}}
     if has_room:
