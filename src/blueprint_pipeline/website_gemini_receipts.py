@@ -234,7 +234,8 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
     Every Gemini call of website preparation goes through here. ``earlier_requests`` are
     superseded ``(binding, maximum_cost_usd)`` forms of this same decision: one already bought
     is reused as it stands. A dispatch with no recorded answer is counted as spent and sent
-    again under one new reservation, at most twice (``_dispatch_chain``); a 429 or 503 answer, Gemini's
+    again under one new reservation, at most twice (``_dispatch_chain``), per form: an earlier form whose bound is
+    spent leaves this form to be bought under its own; a 429 or 503 answer, Gemini's
     credits-depleted 402 (raised as ``CreditDepleted``, a money wait), or a run stopped before its
     dispatch, reuses its own reservation, unless an earlier turn of the same dispatch was answered
     (``LaterTurnFailed``, raised by a multi-turn ``invoke``): then it is counted as spent. An earlier form's
@@ -259,7 +260,15 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
             for earlier_binding, earlier_cost in earlier_requests:
                 _, earlier = _request(binding=earlier_binding, task_context=task_context,
                                       maximum_cost_usd=earlier_cost, source_video_digest=source_video_digest)
-                retained = _dispatch_chain(output_root, earlier)[0]
+                try:
+                    retained = _dispatch_chain(output_root, earlier)[0]
+                except ValueError as exc:
+                    if str(exc) != EXHAUSTED:
+                        raise
+                    # The earlier form spent its own bound of unanswered sends and holds no answer. Nothing more
+                    # is sent in that form; this form is another request, bought under its own reservation and
+                    # its own bound, as for an earlier form with fewer unanswered sends.
+                    retained = None
                 if retained is not None and (accept_earlier is None or accept_earlier(earlier_binding, retained)):
                     return retained
         preflight()

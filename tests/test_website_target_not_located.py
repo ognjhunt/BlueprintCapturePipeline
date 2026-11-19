@@ -87,12 +87,19 @@ def _ambiguous():
     return TaskTargetAmbiguous(DRAWER["target_id"])
 
 
+GROUNDING_CODES = ["website_task_grounding_uncertain", "website_task_grounding_incomplete",
+                   "website_task_grounding_frame_missing", "website_task_grounding_anchor_missing",
+                   "website_gemini_unanswered_dispatches_exhausted"]
+
+
 @pytest.mark.parametrize("failure", [
     {"masks_fail": ValueError("task_target_spatial_anchor_invalid")},
     {"masks_fail": ValueError("task_target_spatial_anchor_missing")},
     {"masks_fail": ValueError("task_target_has_no_estimated_geometry")},
-    {"masks_fail": "ambiguous"}],
-    ids=["anchor_invalid", "anchor_missing", "no_estimated_geometry", "ambiguous_left_over"])
+    {"masks_fail": "ambiguous"},
+    # The exact-frame look the segmenter falls back on (test job itest-917ca852, 19 Nov).
+    *({"masks_fail": ValueError(code)} for code in GROUNDING_CODES)],
+    ids=["anchor_invalid", "anchor_missing", "no_estimated_geometry", "ambiguous_left_over", *GROUNDING_CODES])
 def test_an_object_that_cannot_be_outlined_goes_on_with_nothing_removed(tmp_path, monkeypatch, failure):
     failure = {key: (_ambiguous() if value == "ambiguous" else value) for key, value in failure.items()}
     capture, result = _clean_plate(tmp_path, monkeypatch, targets=[DRAWER],
@@ -106,15 +113,26 @@ def test_an_object_that_cannot_be_outlined_goes_on_with_nothing_removed(tmp_path
     assert [row["disposition"] for row in plan["targets"]] == ["keep"] and plan["flags"] == [NOT_LOCATED]
 
 
-@pytest.mark.parametrize("case", ["a_person_to_mask", "money", "another_refusal", "no_source_frames", "no_tracks"])
+@pytest.mark.parametrize("case", ["a_person_to_mask", "money", "another_refusal", "no_source_frames", "no_tracks",
+                                  "look_in_progress", "look_key_missing", "look_video_changed", "look_unreserved",
+                                  "look_credit_depleted", "person_and_unfinished_look"])
 def test_privacy_money_and_other_refusals_still_stop(tmp_path, monkeypatch, case):
     from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
-    targets = [DRAWER, PERSON] if case == "a_person_to_mask" else [DRAWER]
+    from blueprint_pipeline.website_gemini_receipts import CreditDepleted
+    targets = [DRAWER, PERSON] if case in {"a_person_to_mask", "person_and_unfinished_look"} else [DRAWER]
     failure = {"a_person_to_mask": {"masks_fail": ValueError("task_target_spatial_anchor_invalid")},
                "money": {"masks_fail": PaidResourceAdmissionBlocked(["paid_resource_budget_exhausted"])},
                "another_refusal": {"masks_fail": ValueError("website_sam31_retained_tracks_changed")},
                "no_tracks": {"masks_fail": ValueError("website_sam31_tracks_unavailable")},
-               "no_source_frames": {"frames_fail": ValueError("website_video_undecodable")}}[case]
+               "no_source_frames": {"frames_fail": ValueError("website_video_undecodable")},
+               # The look another run holds, a configuration fault, a changed input, a send with no reservation
+               # on record and Gemini's credits running out are no answer about the object: they still stop.
+               "look_in_progress": {"masks_fail": ValueError("website_gemini_request_in_progress")},
+               "look_key_missing": {"masks_fail": ValueError("website_task_grounding_key_missing")},
+               "look_video_changed": {"masks_fail": ValueError("website_task_grounding_video_changed")},
+               "look_unreserved": {"masks_fail": ValueError("website_gemini_unanswered_call_spend_unreserved")},
+               "look_credit_depleted": {"masks_fail": CreditDepleted()},
+               "person_and_unfinished_look": {"masks_fail": ValueError("website_task_grounding_incomplete")}}[case]
     if case == "money":
         # Money stops by its type, whatever its code says, even if a code of its ever looked like a localisation.
         from blueprint_pipeline import clean_plate_stage as stage
@@ -242,3 +260,83 @@ def test_the_planner_removals_the_atlas_job_sealed_are_counted(tmp_path, monkeyp
     _status, members = _published(job)
     assert _said(members["README.txt"]).endswith(
         f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.NOT_LOCATED} {sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+
+
+@pytest.mark.parametrize("look", ["unfinished", "refined_noun"])
+def test_job_917_the_segmenter_finds_nothing_for_the_analysis_noun_and_the_job_still_goes_on(
+        tmp_path, monkeypatch, look):
+    """Test job itest-917ca852 (19 Nov), its real path: the video segmenter found no track for the analysis noun,
+    so the clean plate fell back on one exact-frame look (``website_task_grounding``). Its answer never finished and
+    the job stopped at the clean plate with nothing shipped. Now an unfinished look is kept, read again at $0, and
+    the job goes on flagged ``task_target_not_located``; a finished look's own noun is proved on its one frame and
+    then outlines the object through the whole video. Only Gemini, SAM, ffmpeg and the website's reservations are
+    faked; the clean plate, the task masks, the look and its receipts are the real ones."""
+    import hashlib
+
+    from PIL import Image
+
+    from blueprint_pipeline import clean_plate_stage as stage
+    from blueprint_pipeline import website_task_grounding as grounding
+    from blueprint_pipeline import website_task_masks as task_masks
+    from blueprint_pipeline.clean_plate_removal_analysis_gemini import build_removal_plan
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    from tests.test_clean_plate_stage import _make_capture
+    from tests.test_website_task_grounding import Provider, answer
+    capture = _make_capture(tmp_path)
+    context = {key: value for key, value in _context().items() if key != "context_digest"} | {
+        "confirmed_at": "2026-11-19T00:00:00Z", "description": "Open the top drawer under the hob."}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    box = [0.5, 0.7, 0.3, 0.3]
+    target = {**DRAWER, "segmentation_prompt": "cabinet unit with drawers",
+              "spatial_evidence": [{"timestamp_seconds": 3.5, "box_xywh_normalized": box}]}
+    plan = build_removal_plan(targets=[target], status="completed", blockers=[], model="test", processing="agentic")
+    plan.update(input_video_sha256=hashlib.sha256(b"RAWVIDEO").hexdigest(), task_context_sha256=hashlib.sha256(
+        json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+    monkeypatch.setattr(stage, "analyze_removal_targets", lambda **_: json.loads(json.dumps(plan)))
+    geometry = {"digest": "sha256:geometry", "geometry_available": False, "binding": {"source_video_digest": "video"},
+                "frames": [{"frame_id": "f7", "timestamp_seconds": 3.5, "width": 20, "height": 20}]}
+    monkeypatch.setattr(stage, "prepare_website_source_frames", lambda **_: geometry)
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"continuous clip")
+    monkeypatch.setattr(task_masks, "prepare_continuous_video", lambda **_: (
+        [{"source_frame_id": "f7", "model_frame_index": 7, "decoded_pts_seconds": 3.5, "width": 20, "height": 20}],
+        {"path": str(clip), "sha256": _sha256_file(clip)}))
+    monkeypatch.setattr(grounding.subprocess, "run",
+                        lambda args, **_: Image.new("RGB", (20, 20), "black").save(args[-1]))
+    segmented = []
+
+    def sam(*, prompts, video_artifact=None, **_):
+        concept, label = prompts[0]["text"], prompts[0]["output_label"]
+        segmented.append((concept, video_artifact is not None))
+        if concept != "black drawer cabinet":
+            return {"tracks": []}  # the analysis noun: no track anywhere in the clip, as on the host
+        runs = [{"start": row * 20 + 10, "length": 6} for row in range(14, 20)]
+        return {"tracks": [{"track_id": f"{label}-0", "label": label,
+                            "observations": [{"source_frame_id": "f7", "width": 20, "height": 20, "runs": runs}]}]}
+    monkeypatch.setattr(task_masks, "run_meta_sam31", sam)
+    provider = Provider(monkeypatch, answer("MAX_TOKENS", text="") if look == "unfinished" else answer(
+        text=json.dumps({"visible": True, "confidence": 0.9, "box_xywh_normalized": box,
+                         "segmentation_prompt": "black drawer cabinet", "reason": "the drawers under the hob"})))
+
+    def run():
+        return stage.run_clean_plate_stage(capture_root=capture, website_source_video=capture / "raw/walkthrough.mp4",
+                                           task_context=context, privacy_processing={"status": "pending_website_review"})
+    first, second = run(), run()
+    # One look bought, under one reservation; the second run reads it again.
+    assert len(provider.sent) == 1 and len(provider.reservations) == 1
+    if look == "unfinished":
+        for result in (first, second):
+            assert (result["status"], result["blockers"], result["flags"]) == ("noop", [], [NOT_LOCATED])
+            assert result["task_masks"] is None and result["movable_removal_count"] == 0
+        assert segmented == [("cabinet unit with drawers", True)] * 2
+    else:
+        for result in (first, second):
+            assert (result["status"], result["blockers"]) == ("objects_removed", [])
+            [selected] = result["task_masks"]["targets"]
+            assert selected["segmentation_prompt"] == "black drawer cabinet"
+            assert selected["grounding"]["source_frame_id"] == "f7"
+        # Per run: the analysis noun on the clip, the look's noun on its one frame, then on the clip.
+        assert segmented == [("cabinet unit with drawers", True), ("black drawer cabinet", False),
+                             ("black drawer cabinet", True)] * 2

@@ -827,3 +827,31 @@ def _gemini_sdk(monkeypatch):
     monkeypatch.setattr(google, "genai", genai, raising=False)
     monkeypatch.setitem(sys.modules, "google.genai", genai)
     monkeypatch.setitem(sys.modules, "google.genai.types", genai.types)
+
+
+def test_an_earlier_form_whose_unanswered_bound_is_spent_leaves_this_form_bought_once(tmp_path, monkeypatch):
+    """The bound of unanswered sends is per request. An earlier form that spent it holds no answer and is never sent
+    again; this form, another request, is bought under its own reservation (job itest-917ca852's look, 19 Nov)."""
+    args, calls = setup_call(tmp_path, monkeypatch)
+    earlier = {"source": "video-one", "prompt": "task", "max_output_tokens": 2048}
+
+    def timeout():
+        calls.append(("invoke", None))
+        raise TimeoutError("no answer")
+    for _ in range(4):
+        with pytest.raises((TimeoutError, ValueError)):
+            module.retained_gemini_call(**{**args, "binding": earlier, "invoke": timeout})
+    assert [row[0] for row in calls] == ["reserve", "invoke"] * 3
+    current = {**args, "binding": {**earlier, "max_output_tokens": 8192, "thinking_level": "low"},
+               "earlier_requests": [(earlier, args["maximum_cost_usd"])]}
+    assert module.retained_gemini_call(**current) == {"status": "completed", "targets": ["box"]}
+    assert module.retained_gemini_call(**current) == {"status": "completed", "targets": ["box"]}
+    assert [row[0] for row in calls] == ["reserve", "invoke"] * 4
+    # Any other refusal of the earlier form's records still stops before anything is bought.
+    stem = module._request(binding=earlier, task_context=context(), maximum_cost_usd=args["maximum_cost_usd"],
+                           source_video_digest=None)[1][7:]
+    (tmp_path / f"{stem}.json").write_text(json.dumps({"status": "submitting", "request_digest": "sha256:other"}))
+    other = {**current, "binding": {**current["binding"], "prompt": "another task"}}
+    with pytest.raises(ValueError, match=module.UNRESERVED):
+        module.retained_gemini_call(**other)
+    assert len(calls) == 8

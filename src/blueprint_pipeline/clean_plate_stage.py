@@ -50,9 +50,17 @@ FLOORED_FROM = "analysis_before_not_located"
 #: The task-target localisation refusals of ``website_task_masks`` that say only that the object could not be
 #: located: none is about privacy, rights or money. (``website_sam31_tracks_unavailable`` is not one: on the local
 #: provider it also stands for frame and checkpoint integrity refusals, and that result is retained.)
+#: The exact-frame look the segmenter falls back on (``website_task_grounding``) ends the same way when it says the
+#: object is not visible or it is unsure, when its answer did not finish (kept, read again at $0), when no frame or
+#: anchor is there to look in, and when that look's bound of unanswered sends is spent and nothing more may be sent
+#: (``website_gemini_receipts.EXHAUSTED``; each send was admitted on the job's money first). Test job itest-917ca852,
+#: 19 Nov: the look's answer never finished and the job stopped at the clean plate, never shipping the room.
 LOCALISATION_CODES = frozenset({
     "task_target_spatial_anchor_missing", "task_target_spatial_anchor_invalid",
     "website_task_targets_resolve_to_same_instance", "task_target_has_no_estimated_geometry",
+    "website_task_grounding_uncertain", "website_task_grounding_incomplete",
+    "website_task_grounding_frame_missing", "website_task_grounding_anchor_missing",
+    "website_gemini_unanswered_dispatches_exhausted",
 })
 
 
