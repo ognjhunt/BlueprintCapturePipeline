@@ -915,6 +915,11 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         in_scan = (bool((atlas.get("job_object_rule") or {}).get("background_not_cleaned"))
                    and any(row.get("task_effect") == "manipulated" for row in removal.get("entries") or []))
         room_ready = True  # from here a room package can be written (``room_package``)
+        from .website_job_spend_cap import SPENDING_CAP_REACHED
+        if SPENDING_CAP_REACHED in (atlas.get("flags") or []):
+            if not may_fall_back():
+                raise ValueError(SPENDING_CAP_REACHED)
+            return room_package(context.get("task_family"), not_prepared=[SPENDING_CAP_REACHED])
         if in_scan:
             return room_package(context.get("task_family"))
         from .website_task_semantics import load_task_semantics

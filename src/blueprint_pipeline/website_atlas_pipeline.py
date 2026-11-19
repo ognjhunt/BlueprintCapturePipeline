@@ -321,6 +321,7 @@ def run_atlas_pipeline(*, output_root: Path, **options):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = _run_atlas_pipeline(output_root=output_root, **options)
         if (result.get("mesh_available") and not result.get('observed_scene_only')
+                and result.get("reason") != SPENDING_CAP_REACHED
                 and requires_task_semantic_analysis(options.get("task_context", {}))):
             from .website_operation_coverage_review import clarify_operation_coverage
             clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
@@ -830,6 +831,18 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             pose_root, inputs, review = repose["pose_root"], repose["inputs"], repose["review"]
             source_pose, source_root = repose["source_pose"], repose["source_root"]
     pose, frames = load_posed_rgbd(source_root)
+    if spend_capped:
+        measurement = source_root / "scene_measurements.json"
+        if measurement.is_file() and not measurement.is_symlink():
+            retained = json.loads(measurement.read_text())
+            if (retained.get("status") == "estimated" and retained.get("meters_per_unit_estimate")
+                    and retained.get("binding", {}).get("pose_digest") == pose["digest"]
+                    and retained.get("digest") == canonical_digest(retained, digest_field="digest")):
+                source_pose = {"status": "completed", "result_digest": pose["digest"],
+                    "operation_id": pose["operation"]["id"], "pose_relative_path": str(source_root.relative_to(output_root)),
+                    "measurements_relative_path": measurement.name, "scene_measurements_digest": retained["digest"],
+                    "meters_per_unit_estimate": retained["meters_per_unit_estimate"],
+                    "scale_status": retained.get("scale_status")}
     splat_root = output_root / "splat"
     manifest = splat_root / "atlas_depth_splat_manifest.json"
     splat = (json.loads(manifest.read_text()) if manifest.is_file()
@@ -837,13 +850,24 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     draft = splat  # The captured frames' own draft: a refined-splat request never sees generated geometry.
     blockers = ["metric_scene_registration_unproven"]
     mesh_root = None
+    if spend_capped and source_pose["status"] == "completed":
+        from .atlas_result_bundle import find_retained_mesh_root, retained_mesh_for_splat
+        binding = {"splat_root": splat_root, "source_video_digest": source_digest,
+                   "task_context_digest": task_context["context_digest"]}
+        mesh_root = find_retained_mesh_root(output_root=output_root, **binding)
+        if mesh_root is not None:
+            retained_mesh_for_splat(mesh_root=mesh_root, **binding)
+    if spend_capped:
+        blockers.insert(0, SPENDING_CAP_REACHED)
     completion = None
     generated_roots, completion_paths = [], []
     completion_stopped = False
     admitted_completion = False
     # A scale/authority refusal may still leave useful retained observations.
     # Export those locally, but never continue purchasing after that refusal.
-    if source_pose["status"] != "completed":
+    if spend_capped:
+        pass  # Only the retained pose, scale and room mesh may contribute.
+    elif source_pose["status"] != "completed":
         blockers.append(source_pose.get("reason", "atlas_source_pose_unavailable"))
     elif not reconstruction_only and "mesh_export_cost_usd" not in policy:
         blockers.append("atlas_mesh_export_price_unreviewed")
@@ -890,7 +914,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     # splat as the look and goes into the collision shape only (owner, 2026-11-17).
     appearance = None
     collision_root, collision_splat = splat_root, splat
-    if (not reconstruction_only and not geometry_only and source_pose['status'] == 'completed'
+    if (not spend_capped and not reconstruction_only and not geometry_only and source_pose['status'] == 'completed'
             and not completion_stopped and 'refined_splat_cost_usd' in policy):
         appearance = _preserved_appearance(frames=frames, pose=pose, draft=draft, output_root=output_root,
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
@@ -909,7 +933,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         return {'status': 'needs_input', 'stage': 'source_pose' if source_pose['status'] != 'completed'
                 else 'refined_splat', 'reason': source_pose.get('reason') if source_pose['status'] != 'completed'
                 else 'atlas_splat_rebuild_refined_splat_unpriced'}
-    if (not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
+    if (not spend_capped and not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
             and not completion_stopped):
         mesh_destination = (output_root / 'preserved_completion/mesh' / collision_splat['digest'][7:23]
                             if admitted_completion

@@ -198,17 +198,24 @@ def test_job_three_goes_on_as_filmed_when_its_object_cannot_be_taken_out(tmp_pat
     assert posed[1]["review"] == consumed
 
 
-@pytest.mark.parametrize("has_pose", [False, True])
-def test_background_spend_cap_only_uses_retained_source_pose(tmp_path, monkeypatch, has_pose):
+@pytest.mark.parametrize("has_pose,has_room", [(False, False), (True, False), (True, True)])
+def test_background_spend_cap_uses_only_retained_room_evidence(tmp_path, monkeypatch, has_pose, has_room):
     from blueprint_pipeline import atlas_depth_splat, atlas_result_bundle, atlas_source_pose_inputs
     root, run, _automated, posed = _job(tmp_path, monkeypatch, _review(), clean_plate=("blocked", []))
     calls = _stopped(monkeypatch, {"status": "needs_input", "background": {"reason": "spending_cap_reached"}})
     source = root / "pose/full-view-source-v1"
     source.mkdir(parents=True)
     monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda _: (source, {}))
+    pose = {"digest": "pose", "operation": {"id": "retained"}}
+    if has_room:
+        scale = {"status": "estimated", "meters_per_unit_estimate": 1, "binding": {"pose_digest": "pose"}}
+        scale["digest"] = canonical_digest(scale, digest_field="digest")
+        (source / "scene_measurements.json").write_text(json.dumps(scale))
+        monkeypatch.setattr(atlas_result_bundle, "find_retained_mesh_root", lambda **_: root / "mesh")
+        monkeypatch.setattr(atlas_result_bundle, "retained_mesh_for_splat", lambda **_: {})
     if has_pose:
-        (source / "atlas_posed_rgbd_result.json").write_text("{}")
-        monkeypatch.setattr(atlas_depth_splat, "load_posed_rgbd", lambda _: ({}, []))
+        (source / "atlas_posed_rgbd_result.json").write_text(json.dumps(pose))
+        monkeypatch.setattr(atlas_depth_splat, "load_posed_rgbd", lambda _: (pose, []))
         monkeypatch.setattr(atlas_depth_splat, "write_depth_splat",
                             lambda **_: {"splat_kind": "depth_fused_draft", "digest": "draft"})
         monkeypatch.setattr(atlas_result_bundle, "export_pose_bundle", lambda **_: {"zip_path": "retained.zip"})
@@ -216,6 +223,10 @@ def test_background_spend_cap_only_uses_retained_source_pose(tmp_path, monkeypat
         result = run()
         assert result["reason"] == "spending_cap_reached"
         assert bool(result.get("download")) is has_pose
+        assert bool(result.get("mesh_available")) is has_room
+        if has_room:
+            assert result["source_pose"]["status"] == "completed"
+            assert result["source_pose"]["pose_relative_path"] == "pose/full-view-source-v1"
         assert not posed and len(calls) == 1
 
 

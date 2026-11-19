@@ -1513,6 +1513,24 @@ def test_prepared_scene_cap_refusal_ships_only_without_an_earlier_send(tmp_path,
         assert not packages
 
 
+def test_capped_atlas_result_ships_the_retained_room_before_native_preparation(tmp_path, monkeypatch, ready_atlas):
+    ready_atlas["flags"] = ["spending_cap_reached"]
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    _granted(tmp_path, kwargs, ends_in=3 * 86400)
+    packaged = room_recorder(monkeypatch)
+
+    def unexpected(**_):
+        pytest.fail("The capped job tried to prepare a separate object")
+
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", unexpected)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == handoff.ROOM_PACKAGE
+    [room] = packaged
+    assert "spending_cap_reached" in room["flags"]
+    assert "spending_cap_reached" in room["not_prepared"][0]["code"]
+    assert "website_intake_outbox" not in result
+
+
 def test_an_earlier_release_s_outbox_receipt_is_kept_across_held_runs(tmp_path, monkeypatch, ready_atlas):
     """A job that sent its prepared scene on an earlier release: its handoff's receipt is kept as the marker before
     a held run rewrites the handoff, so no later run takes the fallback either."""
