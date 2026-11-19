@@ -338,7 +338,8 @@ def run_atlas_pipeline(*, output_root: Path, **options):
         completion = result.get("scene_completion") or {}
         codes = [result.get("reason"), completion.get("reason"), (result.get("source_pose") or {}).get("reason"),
                  *(result.get("blockers") or [])]
-        if any(isinstance(code, str) and _reason(ValueError(code)) == JOB_SPEND_CAP for code in codes):
+        if result.get("status") != "processing" and any(
+                isinstance(code, str) and _reason(ValueError(code)) == JOB_SPEND_CAP for code in codes):
             finished = result if completion.get("status") in (None, "completed") else None
             return _retained_at_cap(output_root, options, finished)
         return result

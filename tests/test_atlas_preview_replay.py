@@ -146,9 +146,9 @@ def test_a_purchase_over_the_snapshot_allowance_is_refused_as_webapp_refuses_it(
         "kind": "refusal", "stage": "independent_review", "code": "website_scene_preparation_budget_exhausted",
         "exception": "ValueError: website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"}
     assert report["would_buy"] == [] and report["refused_spend"][0]["maximum_cost_usd"] == .5
-    # A money refusal waits as needs_input with its own code, re-checked on the timer.
-    assert report["final_job"]["state"] == "needs_input" and report["snapshot_sources"]["configuration"] == str(snapshot)
-    assert report["final_job"]["reason"] == "website_scene_preparation_budget_exhausted"
+    # The job cap closes preparation, with the original refusal retained in the replay evidence.
+    assert report["final_job"]["state"] == "failed" and report["snapshot_sources"]["configuration"] == str(snapshot)
+    assert report["final_job"]["reason"] == "spending_cap_reached"
 
 
 def test_the_real_controller_reaches_its_first_purchase_the_scene_review(site):
