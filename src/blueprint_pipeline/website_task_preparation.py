@@ -1438,7 +1438,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 from .website_destination_overhang import centre_supported
                 destination_support, overhang, position = centre_supported(collider, destination_min, destination_max,
                     position, up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual, radius=radius,
-                    look=lookup)
+                    runtime_to_sim=runtime_to_sim, start=(subject_min, subject_max), start_support=support,
+                    clearance=clearance, look=lookup)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
@@ -1511,6 +1512,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             from .website_destination_area import NAMED_REGION, choose_destination
             admitted = sealer_admits(support=sim_support, subject_min=sim_min, subject_max=sim_max,
                                      registration=registration, size_tolerance=size_tolerance, outline=region_outline)
+            admitted = admitted if overhang is None else overhang.admits(admitted)  # only places that hold it
             destination, destination_choice = choose_destination(
                 destination=destination, subject_min=sim_min, subject_max=sim_max, support_min=sim_support[0],
                 support_max=sim_support[1], region=region_record, relocation=relocation, admit=admitted,
@@ -1523,11 +1525,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             if destination_choice["basis"] in {NAMED_REGION, SITE_CHOICE}:
                 relocation = None
         if overhang is not None:  # read again where relocation, a named area or the site's choice finally put it
-            from .website_destination_overhang import settled
-            overhang, held = settled(collider, overhang, subject_min, subject_max, np.linalg.solve(runtime_to_sim, [
-                *destination["position_world_m"], 1.0])[:3], up=up, meters_per_unit=mpu, up_sign=up_sign,
-                placement_residual_m=residual, radius=radius)
-            blockers += held
+            destination, destination_choice = overhang.settle(destination, destination_choice)
         if support is not None and len(blockers) == blockers_before:
             # A destination held above keeps its own code. Otherwise the region
             # evaluation will seal goes through the same admission, from the same
@@ -1932,7 +1930,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination, **searched,
-        **surface_estimate, **subject_extent, **({"destination_overhang": overhang} if overhang else {}),
+        **surface_estimate, **subject_extent, **({"destination_overhang": overhang.record} if overhang and overhang.record else {}),
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
         **({"destination_choice": destination_choice} if destination_choice is not None and not rule_withheld else {}),

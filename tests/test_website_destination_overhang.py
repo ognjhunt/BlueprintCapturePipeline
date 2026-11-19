@@ -16,8 +16,9 @@ import trimesh
 from blueprint_pipeline import website_destination_overhang as overhang
 from blueprint_pipeline import website_task_preparation as preparation
 from blueprint_pipeline.atlas_scene_estimates import DESTINATION_OVERHANG
-from blueprint_pipeline.website_support_geometry import RESTING_OUTLINE_MIN_SHARE, support_under
-from blueprint_pipeline.website_surface_target_admission import website_target_radius
+from blueprint_pipeline.website_support_geometry import (RESTING_OUTLINE_GRID_STEPS, RESTING_OUTLINE_MIN_SHARE,
+                                                       destination_clear_of_start, support_under)
+from blueprint_pipeline.website_surface_target_admission import website_target_radius, website_target_reach
 from tests.test_website_unscanned_surface import (FLIP, RUNTIME_SCALE, RUNTIME_TRANSLATION, _arguments,
                                                   exact_registration, no_model)
 
@@ -26,8 +27,9 @@ TOP, HEIGHT = 1.0, 0.45
 FRAMES = [(1.0, 1), (2.0, 1), (1.0, -1)]  # (metres per unit, up sign)
 
 
-def _grid(x0, x1, z0, z1, y):
-    xs, zs = np.linspace(x0, x1, int(round((x1 - x0) / 0.01)) + 1), np.linspace(z0, z1, int(round((z1 - z0) / 0.01)) + 1)
+def _grid(x0, x1, z0, z1, y, cell=0.01):
+    xs = np.linspace(x0, x1, int(round((x1 - x0) / cell)) + 1)
+    zs = np.linspace(z0, z1, int(round((z1 - z0) / cell)) + 1)
     points = np.array([[x, y, z] for x in xs for z in zs])
     faces = [[i * len(zs) + j, i * len(zs) + j + 1, (i + 1) * len(zs) + j] for i in range(len(xs) - 1)
              for j in range(len(zs) - 1)]
@@ -36,19 +38,33 @@ def _grid(x0, x1, z0, z1, y):
     return points, np.array(faces)
 
 
-def _mesh(depth: float, *, mpu: float = 1.0, up_sign: int = 1, wall: bool = False, lid: bool = False):
-    """A level shelf ``depth`` deep (z 0 to depth) and 0.6 m long at ``TOP`` m over a floor, in metres turned into
-    runtime units; ``wall``: a wall at z = 0 behind it; ``lid``: a second shelf 10 cm above it."""
-    parts = [_grid(0.0, 0.6, 0.0, depth, TOP), (np.array([[-2.0, 0, -2], [2, 0, -2], [2, 0, 2], [-2, 0, 2]]),
-                                                np.array([[0, 2, 1], [0, 3, 2]]))]
+def _boxes(*boxes):
+    """Closed boxes ((low), (high)) in metres, as one vertex and face list."""
+    vertices, faces = [], []
+    for low, high in boxes:
+        box = trimesh.creation.box(extents=np.subtract(high, low),
+                                   transform=trimesh.transformations.translation_matrix(np.add(low, high) / 2))
+        faces.append(np.asarray(box.faces) + sum(len(part) for part in vertices))
+        vertices.append(np.asarray(box.vertices))
+    return vertices, faces
+
+
+def _mesh(depth: float, *, mpu: float = 1.0, up_sign: int = 1, wall: bool = False, lid: bool = False,
+          length: float = 0.6, cell: float = 0.01, boxes=()):
+    """A level shelf ``depth`` deep (z 0 to depth) and ``length`` long at ``TOP`` m over a floor, in metres turned
+    into runtime units; ``wall``: a wall at z = 0 behind it; ``lid``: a second shelf 10 cm above it; ``boxes``:
+    things standing on it."""
+    parts = [_grid(0.0, length, 0.0, depth, TOP, cell),
+             (np.array([[-2.0, 0, -2], [4, 0, -2], [4, 0, 4], [-2, 0, 4]]), np.array([[0, 2, 1], [0, 3, 2]]))]
     if wall:
         parts.append((np.array([[-1.0, 0, 0], [1.6, 0, 0], [1.6, 2.5, 0], [-1, 2.5, 0]]), np.array([[0, 1, 2], [0, 2, 3]])))
     if lid:
-        parts.append(_grid(0.0, 0.6, 0.0, depth, TOP + 0.1))
+        parts.append(_grid(0.0, length, 0.0, depth, TOP + 0.1, cell))
+    parts += list(zip(*_boxes(*boxes))) if boxes else []
     vertices, faces, offset = [], [], 0
     for points, triangles in parts:
         vertices.append(points)
-        faces.append(triangles + offset)
+        faces.append(np.asarray(triangles) + offset)
         offset += len(points)
     vertices, faces = np.concatenate(vertices) / mpu, np.concatenate(faces)
     if up_sign == -1:  # turned over about x: a proper rotation, up is -Y
@@ -56,19 +72,26 @@ def _mesh(depth: float, *, mpu: float = 1.0, up_sign: int = 1, wall: bool = Fals
     return trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
 
 
-def _footprint(x: float, z: float, size_x: float, size_z: float, *, mpu: float = 1.0, up_sign: int = 1):
+def _footprint(x: float, z: float, size_x: float, size_z: float, *, mpu: float = 1.0, up_sign: int = 1,
+               height: float = HEIGHT):
     """The footprint at (x, z) on the shelf, its bottom on its top, as compile's ``footprint_at`` gives it."""
     lower = np.array([x - size_x / 2, TOP, z - size_z / 2]) / mpu
-    upper = np.array([x + size_x / 2, TOP + HEIGHT, z + size_z / 2]) / mpu
+    upper = np.array([x + size_x / 2, TOP + height, z + size_z / 2]) / mpu
     if up_sign == -1:
         lower, upper = lower @ FLIP.T, upper @ FLIP.T
         lower, upper = np.minimum(lower, upper), np.maximum(lower, upper)
     return lower, upper
 
 
-def _place(mesh, lower, upper, *, mpu=1.0, up_sign=1):
+#: The object starts on another surface far away, unless a test says otherwise.
+ELSEWHERE = (np.array([-1.0, 0.0, -1.0]), np.array([-0.9, 0.1, -0.9]))
+
+
+def _place(mesh, lower, upper, *, mpu=1.0, up_sign=1, start=ELSEWHERE, start_support=None, clearance=0.0):
     return overhang.centre_supported(mesh, lower, upper, list((lower + upper) / 2), up=1, meters_per_unit=mpu,
-                                     up_sign=up_sign, radius=website_target_radius(meters_per_unit=mpu))
+                                     up_sign=up_sign, radius=website_target_radius(meters_per_unit=mpu),
+                                     runtime_to_sim=np.eye(4), start=start, start_support=start_support,
+                                     clearance=clearance)
 
 
 def _shelf_share(centre_x: float, centre_z: float, size_x: float, size_z: float, depth: float) -> float:
@@ -91,12 +114,13 @@ def test_a_footprint_a_little_deeper_than_the_shelf_rests_with_its_centre_over_i
     mesh = _mesh(0.16, mpu=mpu, up_sign=up_sign)
     lower, upper = _footprint(0.3, 0.08, 0.21, 0.18, mpu=mpu, up_sign=up_sign)
     assert support_under(mesh, lower, upper, up=1, meters_per_unit=mpu, up_sign=up_sign) is None
-    surface, record, position = _place(mesh, lower, upper, mpu=mpu, up_sign=up_sign)
+    surface, placement, position = _place(mesh, lower, upper, mpu=mpu, up_sign=up_sign)
+    record = placement.record
     assert surface is not None and surface["top_runtime_units"] * mpu * up_sign == pytest.approx(TOP)
     assert record["flag"] == DESTINATION_OVERHANG and record["orientation"] == "as_placed"
     assert record["supported_share"] == pytest.approx(0.16 / 0.18, abs=0.03)
     assert record["largest_overhang_m"] == pytest.approx(0.01, abs=0.002) and record["slid_m"] == 0.0
-    assert record["footprint_m"] == pytest.approx([0.18, 0.21])
+    assert record["footprint_m"] == pytest.approx([0.18, 0.21]) and record["lattice_points"] == 0
     # The pose actually placed holds the required share of the real shelf.
     x, z = _metres(position, mpu=mpu, up_sign=up_sign)
     assert _shelf_share(x, z, 0.21, 0.18, 0.16) >= RESTING_OUTLINE_MIN_SHARE
@@ -121,7 +145,8 @@ def test_a_centre_off_the_edge_stays_blocked():
 def test_a_box_into_the_wall_slides_along_the_shelf_until_it_clears(mpu, up_sign):
     mesh = _mesh(0.16, mpu=mpu, up_sign=up_sign, wall=True)
     lower, upper = _footprint(0.3, 0.08, 0.21, 0.18, mpu=mpu, up_sign=up_sign)  # 1 cm of it inside the wall
-    surface, record, position = _place(mesh, lower, upper, mpu=mpu, up_sign=up_sign)
+    surface, placement, position = _place(mesh, lower, upper, mpu=mpu, up_sign=up_sign)
+    record = placement.record
     assert surface is not None and record["slid_m"] >= 0.01 - 1e-9
     x, z = _metres(position, mpu=mpu, up_sign=up_sign)
     assert z - 0.09 >= -1e-9  # its back face clears the wall at z = 0
@@ -135,20 +160,78 @@ def test_no_room_above_the_shelf_stays_blocked():
     assert _place(mesh, lower, upper)[:2] == (None, None)
 
 
-def test_the_placement_is_read_again_where_relocation_or_a_choice_puts_it():
+def test_low_clutter_moves_a_short_object_and_the_box_stops_at_its_own_height():
+    # A 1 cm book where a 3 cm tall object would go: found from 5 mm above the shelf, never one window up.
+    book = ((0.27, TOP, 0.05), (0.33, TOP + 0.01, 0.11))
+    mesh = _mesh(0.16, boxes=[book])
+    lower, upper = _footprint(0.3, 0.08, 0.21, 0.18, height=0.03)
+    _, placement, position = _place(mesh, lower, upper)
+    x, z = _metres(position, mpu=1.0, up_sign=1)
+    assert placement.record["slid_m"] > 0 and (x - 0.105 >= 0.33 - 1e-9 or x + 0.105 <= 0.27 + 1e-9)
+    # A lid 10 cm up is no obstacle for a 3 cm object: its box ends at its own height.
+    lidded = _mesh(0.16, lid=True)
+    assert _place(lidded, lower, upper)[1] is not None
+
+
+def test_the_search_is_bounded_on_a_large_surface_and_skipped_where_the_grounded_centre_holds(monkeypatch):
+    # Review: a 3 m plate with a 5 cm object sampled the whole plate at 1/32 of the object (2.9 GB).
+    block = ((1.505, TOP, 1.505), (1.515, TOP + 0.02, 1.515))  # in its box, between the lookup's probes
+    plate = _mesh(3.0, length=3.0, cell=0.05, boxes=[block])
+    lower, upper = _footprint(1.5, 1.5, 0.05, 0.05)
+    _, placement, position = _place(plate, lower, upper)
+    side = 3 * (RESTING_OUTLINE_GRID_STEPS - 1) + 1
+    assert placement.spot.lattice_points == side * side  # one footprint each way, whatever the plate's size
+    assert np.hypot(position[0] - 1.5, position[2] - 1.5) <= 0.05 + 1e-9
+    clear = _mesh(3.0, length=3.0, cell=0.05)
+    monkeypatch.setattr(overhang._Spot, "nearest", lambda *_: pytest.fail("the grounded centre held"))
+    _, placement, position = _place(clear, lower, upper)
+    assert placement.spot.lattice_points == 0 and position[0] == pytest.approx(1.5)
+    assert placement.record is None  # nothing hangs over: no flag
+
+
+def test_a_slide_on_the_start_s_own_surface_stays_clear_of_the_start():
+    block = ((0.29, TOP, 0.07), (0.31, TOP + 0.02, 0.09))
+    plate = _mesh(0.6, length=0.6, boxes=[block])
+    lower, upper = _footprint(0.3, 0.08, 0.05, 0.05)
+    start = _footprint(0.36, 0.08, 0.05, 0.05)  # its start right beside the grounded centre
+    start_support = support_under(plate, *_footprint(0.45, 0.4, 0.05, 0.05), up=1, meters_per_unit=1.0)
+    clearance = website_target_reach(*start, relative_error=0.0, up=1, meters_per_unit=1.0)
+    _, placement, position = _place(plate, lower, upper, start=start, start_support=start_support,
+                                    clearance=clearance)
+    assert destination_clear_of_start(*start, position, up=1, clearance=clearance)
+
+
+def _placed_on_the_shelf():
     mesh = _mesh(0.16)
-    lower, upper = _footprint(0.3, 0.08, 0.21, 0.18)
-    radius = website_target_radius(meters_per_unit=1.0)
-    _, record, position = _place(mesh, lower, upper)
-    same, codes = overhang.settled(mesh, record, lower, upper, position, up=1, meters_per_unit=1.0, radius=radius)
-    assert codes == [] and same["supported_share"] == pytest.approx(record["supported_share"])
-    assert same["moved_after_placement_m"] == 0.0
-    off = [position[0], position[1], 0.15]  # moved to the front edge: its disc and most of it off the shelf
-    assert overhang.settled(mesh, record, lower, upper, off, up=1, meters_per_unit=1.0, radius=radius) == (
-        None, [overhang.STOP])
-    small_lower, small_upper = _footprint(0.3, 0.08, 0.12, 0.12)  # wholly over the shelf there: no flag, no record
-    assert overhang.settled(mesh, record, small_lower, small_upper, position, up=1, meters_per_unit=1.0,
-                            radius=radius) == (None, [])
+    lower, upper = _footprint(0.3, 0.10, 0.21, 0.14)  # 1 cm over the front edge, its disc on the shelf
+    surface, placement, position = _place(mesh, lower, upper)
+    assert placement.record["largest_overhang_m"] == pytest.approx(0.01, abs=0.002)
+    return placement, position
+
+
+def test_named_areas_and_offered_places_are_only_ones_that_hold_it_with_their_own_disc():
+    placement, position = _placed_on_the_shelf()
+    admits = placement.admits(lambda sealed: True)
+    assert admits({"position_world_m": list(position)})
+    assert not admits({"position_world_m": [position[0], position[1], 0.15]})  # its disc off the front edge
+    assert not admits({"position_world_m": list(position), "radius_m": 0.09})  # a named area wider than the shelf
+
+
+def test_where_it_finally_lands_is_read_again_and_a_place_that_cannot_hold_it_never_stops_the_job():
+    placement, position = _placed_on_the_shelf()
+    destination, choice = placement.settle({"position_world_m": list(position)}, {"basis": "grounded_centre"})
+    assert destination["position_world_m"] == list(position) and placement.record["moved_after_placement_m"] == 0
+    inside = [position[0], position[1], 0.08]  # all of it over the shelf there: no flag, no record
+    destination, _ = placement.settle({"position_world_m": inside}, {"basis": "site_choice"})
+    assert placement.record is None and destination["position_world_m"] == inside
+    # The site's stored choice, where its disc is off the edge: the nearest spot that holds it, recorded.
+    off = {"position_world_m": [0.45, position[1], 0.15], "radius_m": 0.05}
+    destination, choice = placement.settle(off, {"basis": "site_choice", "position_world_m": off["position_world_m"]})
+    record = placement.record
+    assert record is None or (record["chosen_place_held"] is False and record["moved_to_hold_the_object_m"] > 0)
+    held = destination["position_world_m"]
+    assert held != off["position_world_m"] and choice["position_world_m"] == held and "radius_m" not in destination
+    assert placement.admits(lambda sealed: True)({"position_world_m": held})
 
 
 def test_the_packet_prints_the_measured_overhang_and_nothing_at_none():
@@ -176,6 +259,7 @@ def test_compile_places_the_wide_cup_on_the_shallow_shelf_clear_of_the_wall_and_
     assert "task_destination_surface_contact_required" not in value["blockers"], value["blockers"]
     record = value["destination_overhang"]
     assert record["flag"] == DESTINATION_OVERHANG and record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE
+    assert record["lattice_points"] == (3 * (RESTING_OUTLINE_GRID_STEPS - 1) + 1) ** 2  # it slid: a bounded search
     assert record["largest_overhang_m"] > 0 and record["slid_m"] > 0  # the room's wall stood in its box
     # Read again where the destination's choice settled it: the position the rule scores is the one judged.
     assert record["moved_after_placement_m"] == 0.0 and value["destination_choice"]["basis"]
