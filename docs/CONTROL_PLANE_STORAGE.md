@@ -1159,7 +1159,13 @@ past its seven-day window (`MAXIMUM_JOB_SECONDS`): until then it may reopen by i
 reuse what it bought (`atlas_job_window_open`, `atlas_provider_cleanup_pending`,
 `atlas_job_open`).
 
-**How.** Per capture the members are packed as one tar and published under kind
+**How.** Slimming holds each capture's Atlas preview lock (`pipeline/atlas/preview.lock`)
+from start to end, the lock withdrawal deletion holds from its listing of the site's stored
+copies to their deletion. A withdrawal acknowledged before the check uploads nothing
+(`capture_withdrawn`); a deletion started during the upload refuses with
+`atlas_preview_busy` and, run again after it, finds the archive by name. A held or missing
+lock skips the scene (`atlas_preview_busy`, `atlas_preview_lock_missing`). Per capture the
+members are packed as one tar and published under kind
 `website-scene-workspace-slim`, named for the capture as its clip is
 (`walkthrough-<id>.tar`), with a full readback; withdrawal deletion finds every version
 by that name. Then, under the storage-pin lock and the listener's capture locks, every

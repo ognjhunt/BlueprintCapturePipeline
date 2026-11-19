@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -858,3 +859,66 @@ def test_a_withdrawal_lists_and_deletes_a_killed_restores_staging_with_the_run(w
     assert str(staging) in row["leftovers"]
     _apply(world, plan, cloud_storage=gcs)
     assert not run.exists() and not staging.exists()
+
+
+def test_a_withdrawal_during_a_slimming_upload_leaves_no_slim_archive_once_deletion_completes(world, monkeypatch):
+    # Codex P1 on #3651: a withdrawal that lands while slimming uploads a capture's Atlas files must not list the
+    # site's archives before that one is visible and then report deletion complete. Slimming holds the Atlas
+    # preview lock this deletion holds, across its withdrawal check and the upload; the deletion that meets it
+    # refuses (atlas_preview_busy), and the one after it finds the archive by name and deletes it.
+    import hashlib
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+    from blueprint_pipeline import website_scene_workspace_slimming as slimming
+    from blueprint_pipeline.task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
+
+    capture, store, site = world["capture"], world["store"], world["site"]
+    _write(capture / "pipeline/atlas/preview.lock", b"")
+    _write(capture / "pipeline/atlas/pose/frame.png", b"f" * (1 << 20))
+    _write(capture / ".pipeline_job_ledger.json.lock", b"")
+    tombstone = site / "website_withdrawal" / "tombstone.json"
+    acknowledged = tombstone.read_bytes()
+    tombstone.unlink()  # the site has not withdrawn yet when slimming starts
+
+    def finished_job(*, scene, **_kwargs):  # the job's retention checks pass (covered by the slimming tests)
+        walk = retention._walk(scene)
+        return retention._Evaluation([], walk.files, [], ["walkthrough-req1"], 0.0, walk.allocated_bytes)
+
+    monkeypatch.setattr(retention, "_evaluate", finished_job)
+    context = retention.RetentionContext(storage_root=site.parents[2], pins_root=site.parents[3] / "pins",
+                                         queue_roots=(), intent_root=None, binding_root=None)
+    plan = slimming.plan_scene_workspace_slim(context=context, bucket="source-bucket", scene_id="site-req1",
+                                              now=time.time(), process_checker=lambda _path: False)
+    assert [row["relative_path"] for row in plan["captures"][0]["members"]] == ["pipeline/atlas/pose/frame.png"]
+    met: list[str] = []
+    uploaded: list[str] = []
+
+    def upload_while_the_site_withdraws(*, write_stream, digest, size_bytes, filename, artifact_kind):
+        data = io.BytesIO()
+        write_stream(data)
+        # Mid-upload: the site withdraws and its deletion runs. It must not get past the fence.
+        _write(tombstone, acknowledged)
+        with pytest.raises(deletion.WithdrawalDeletionError) as refused:
+            _apply(world, _plan(world))
+        met.append(str(refused.value))
+        uri = (f"s3://{BUCKET}/{LARGE_ARTIFACT_KEY_PREFIX}/{artifact_kind}/sha256/"
+               f"{hashlib.sha256(data.getvalue()).hexdigest()}/{filename}")
+        store.put(uri, data.getvalue())  # the upload completes and is visible
+        uploaded.append(uri)
+        return {"uri": uri, "digest": digest, "size_bytes": size_bytes,
+                "full_byte_service_account_readback_passed": True}
+
+    result = slimming.apply_scene_workspace_slim(plan, context=context, ack=slimming.SLIM_ACK, now=time.time(),
+                                                 stream_publisher=upload_while_the_site_withdraws,
+                                                 process_checker=lambda _path: False)
+
+    assert met == ["website_withdrawal_deletion_atlas_preview_busy"] and store.present(uploaded[0])
+    # The withdrawal seen under the listener's locks: nothing local is removed, and the archive is reported.
+    (outcome,) = result["captures"]
+    assert outcome["status"] == "skipped" and outcome["published_archive"]["uri"] == uploaded[0]
+    assert (capture / "pipeline/atlas/pose/frame.png").is_file()
+    # Once slimming is done the deletion runs: its listing finds the archive by name, and nothing survives it.
+    plan = _plan(world)
+    assert uploaded[0] in {row["uri"] for row in plan["objects"]}
+    receipt = _apply(world, plan)
+    assert not store.present(uploaded[0])
+    assert uploaded[0] in {row["uri"] for row in receipt["deleted"]["objects"]}

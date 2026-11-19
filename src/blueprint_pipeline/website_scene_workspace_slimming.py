@@ -40,9 +40,13 @@ have ended, hold no retry or step, have finished its provider cleanup, and be pa
 (``MAXIMUM_JOB_SECONDS`` from enqueue): until then a job may reopen by itself and reuse what it bought, and nothing
 bought may be missing then (money).
 
-**How.** Per capture, the members are packed as one tar and published to the private artifact store under a name
-for the capture (``archive_filename``, as the company clip is named, so withdrawal deletion finds every version by
-name) with a full readback; no listener lock is held for the upload. Then, under the storage-pin lock and the
+**How.** Every capture's Atlas preview lock is held from start to end, the lock withdrawal deletion holds from
+its listing of the site's stored copies to their deletion (``_hold_withdrawal_fence``): a withdrawal either landed
+before the check below and nothing is uploaded, or deletes after the archive is in the store, where it finds it.
+Per capture, a withdrawn site (its tombstone) uploads nothing; otherwise the members are packed as one tar and
+published to the private artifact store under a name for the capture (``archive_filename``, as the company clip is
+named, so withdrawal deletion finds every version by name) with a full readback; no listener lock is held for the
+upload. Then, under the storage-pin lock and the
 listener's capture locks, every check is proven again and every member's identity (device, inode, size, mtime) is
 checked; the receipt ``pipeline/workspace_slim.v1.json`` (the archive, each member's SHA-256) is written beside it
 and only then are the members removed. ``restore`` puts each member back after checking the archive's digest and
@@ -53,6 +57,7 @@ receipt leaves the members not yet removed in place.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import posixpath
@@ -64,6 +69,7 @@ import sys
 import tarfile
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -418,27 +424,80 @@ def _prune_empty_directories(top: Path) -> None:
                 pass
 
 
+def _hold_withdrawal_fence(stack: ExitStack, scene: Path, capture_ids: Sequence[str]) -> str | None:
+    """Take each capture's Atlas preview lock without waiting; a refusal code, or None once all are held.
+
+    Withdrawal deletion holds these same locks (``website_capture_withdrawal_deletion.apply_withdrawal_deletion``)
+    from its listing of the site's stored copies to their deletion. Holding them across the withdrawal check, the
+    upload and the removal means a deletion either finishes before this check (whose tombstone it sees) or starts
+    after the archive is visible in the store (its listing finds it by name): it never lists the site's archives
+    while one is being uploaded. The lock file is opened, never created: one this unit made would be root's.
+    """
+
+    from .website_atlas_preview_store import LOCK_FILE
+
+    for capture_id in sorted(capture_ids):
+        path = scene / "captures" / capture_id / "pipeline" / "atlas" / LOCK_FILE
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return "atlas_preview_lock_missing"
+        except OSError:
+            return "atlas_preview_lock_unsafe"
+        lock = stack.enter_context(os.fdopen(descriptor, "rb"))
+        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+            return "atlas_preview_lock_unsafe"
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "atlas_preview_busy"
+    return None
+
+
+def _withdrawn(scene: Path, capture_root: Path) -> bool:
+    """The site's withdrawal tombstone is there (valid or not: nothing is uploaded on doubt), or consent is revoked."""
+
+    from .website_atlas_preview_store import capture_withdrawn
+
+    return os.path.lexists(scene / "website_withdrawal" / "tombstone.json") or capture_withdrawn(capture_root)
+
+
 def apply_scene_workspace_slim(plan: Mapping[str, Any], *, context: retention.RetentionContext, ack: str,
                                now: float, index: Any = None,
                                stream_publisher: Callable[..., Mapping[str, Any]] | None = None,
                                process_checker: Callable[[Path], bool] | None = None) -> dict[str, Any]:
-    """Archive each capture's planned members with readback, prove everything again under the locks, write the
-    receipt and only then remove them."""
+    """Under the withdrawal fence (``_hold_withdrawal_fence``): check each capture is not withdrawn, archive its
+    planned members with readback, prove everything again under the listener's locks, write the receipt and only
+    then remove them."""
 
+    bucket, scene_id, scene = _authorized(plan, ack, context)
+    base = {"bucket": bucket, "scene_id": scene_id, "source_plan_digest": plan["plan_digest"]}
+    participating = [capture for capture in plan["captures"] if capture["members"] and not capture["already_slimmed"]]
+    with ExitStack() as fence:
+        refusal = _hold_withdrawal_fence(fence, scene, [capture["capture_id"] for capture in participating])
+        if refusal is not None:
+            return {**base, "status": "skipped", "reason": refusal, "freed_bytes": 0, "captures": []}
+        return _apply_fenced(plan, participating, context=context, scene=scene, base=base, now=float(now),
+                             publisher=stream_publisher, checker=process_checker or retention._process_in_use)
+
+
+def _apply_fenced(plan: Mapping[str, Any], participating: Sequence[Mapping[str, Any]], *,
+                  context: retention.RetentionContext, scene: Path, base: Mapping[str, Any], now: float,
+                  publisher: Callable[..., Mapping[str, Any]] | None,
+                  checker: Callable[[Path], bool]) -> dict[str, Any]:
     from .company_share_permission import capture_identity
     from .task_evaluation_configured_scene_object_store import publish_configured_scene_stream
 
-    bucket, scene_id, scene = _authorized(plan, ack, context)
-    publisher = stream_publisher or publish_configured_scene_stream
-    checker = process_checker or retention._process_in_use
-    observed_at = float(now)
-    base = {"bucket": bucket, "scene_id": scene_id, "source_plan_digest": plan["plan_digest"]}
+    publisher = publisher or publish_configured_scene_stream
+    bucket, scene_id = base["bucket"], base["scene_id"]
     archives: dict[str, dict[str, Any]] = {}
     outcomes: list[dict[str, Any]] = []
-    for capture in plan["captures"]:
-        if not capture["members"] or capture["already_slimmed"]:
-            continue
+    for capture in participating:
         capture_root = scene / "captures" / capture["capture_id"]
+        if _withdrawn(scene, capture_root):
+            # Withdrawal deletion owns the site now: nothing of it is uploaded.
+            outcomes.append({"capture_id": capture["capture_id"], "status": "skipped", "reason": "capture_withdrawn"})
+            continue
         try:
             identity = capture_identity(capture_root)
         except ValueError:
@@ -457,9 +516,9 @@ def apply_scene_workspace_slim(plan: Mapping[str, Any], *, context: retention.Re
             with retention._CaptureLocks(scene, [row["capture_id"] for row in plan["captures"]]) as locks:
                 reasons, _evaluation = ((["capture_locks:" + locks.refusal], None) if locks.refusal is not None
                                         else _scene_reasons(context=context, bucket=bucket, scene_id=scene_id,
-                                                            scene=scene, now=observed_at, index=None,
+                                                            scene=scene, now=now, index=None,
                                                             process_checker=checker))
-                for capture in plan["captures"]:
+                for capture in participating:
                     archive = archives.get(capture["capture_id"])
                     if archive is None:
                         continue
@@ -475,7 +534,7 @@ def apply_scene_workspace_slim(plan: Mapping[str, Any], *, context: retention.Re
                                          "reason": "candidate_changed", "published_archive": published})
                         continue
                     document = {"schema_version": RECEIPT_SCHEMA, **base, "capture_id": capture["capture_id"],
-                                "slimmed_at_epoch": observed_at, "slimmed_parts": list(SLIMMED_PARTS),
+                                "slimmed_at_epoch": now, "slimmed_parts": list(SLIMMED_PARTS),
                                 "archive": archive, "evidence_deleted": False, "receipt_digest": ""}
                     document["receipt_digest"] = canonical_digest(document, digest_field="receipt_digest")
                     try:

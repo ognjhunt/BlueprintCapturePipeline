@@ -59,6 +59,7 @@ def _atlas_job(capture: Path, **overrides) -> None:
     job = {"state": "ready", "enqueued_at_epoch": time.time() - 6 * DAY, "retry_at_epoch": None,
            "provider_cleanup": {"state": "complete"}, **overrides}
     _json(capture / "pipeline" / "atlas" / "preview_job.json", job)
+    (capture / "pipeline" / "atlas" / "preview.lock").touch()  # the Atlas timer's job lock, made on its first step
 
 
 def _job(tmp_path: Path, *, shared: bool = True, ack: bool = True, **job) -> tuple[Path, Path, dict[str, bytes]]:
@@ -316,3 +317,47 @@ def test_a_job_with_no_bulky_atlas_file_left_is_not_searched_every_tick(tmp_path
     monkeypatch.setattr(slimming, "_named", lambda *_args: pytest.fail("searched with nothing to slim"))
     plan = _slim_plan(tmp_path)
     assert plan["status"] == "nothing_to_slim" and plan["captures"][0]["members"] == []
+
+
+def test_a_held_or_missing_atlas_preview_lock_uploads_nothing(tmp_path):
+    # Withdrawal deletion holds each capture's Atlas preview lock from its listing to its deletion.
+    import fcntl
+    scene, capture, files = _job(tmp_path)
+    plan = _slim_plan(tmp_path)
+    never = lambda **_kwargs: pytest.fail("uploaded while the fence was not held")  # noqa: E731
+    with (capture / "pipeline" / "atlas" / "preview.lock").open("rb") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = _slim(tmp_path, plan, MultipartClient(), stream_publisher=never)
+    assert (result["status"], result["reason"], result["captures"]) == ("skipped", "atlas_preview_busy", [])
+    (capture / "pipeline" / "atlas" / "preview.lock").unlink()
+    result = _slim(tmp_path, plan, MultipartClient(), stream_publisher=never)
+    assert (result["status"], result["reason"]) == ("skipped", "atlas_preview_lock_missing")
+    assert all((capture / name).exists() for name in MEMBERS)
+
+
+def test_a_withdrawal_acknowledged_before_the_upload_uploads_nothing(tmp_path):
+    scene, capture, files = _job(tmp_path)
+    plan = _slim_plan(tmp_path)
+    _json(scene / "website_withdrawal" / "tombstone.json", {"schema_version": "website_capture_withdrawal_tombstone.v1"})
+    result = _slim(tmp_path, plan, MultipartClient(), stream_publisher=lambda **_kwargs: pytest.fail("uploaded"))
+    assert result["status"] == "skipped"
+    assert result["captures"] == [{"capture_id": CAPTURE, "status": "skipped", "reason": "capture_withdrawn"}]
+    assert all((capture / name).exists() for name in MEMBERS)
+
+
+def test_the_fence_is_held_for_the_whole_upload(tmp_path):
+    import fcntl
+    scene, capture, files = _job(tmp_path)
+    plan = _slim_plan(tmp_path)
+    publish = _publisher(MultipartClient())
+    attempts = []
+
+    def publisher(**kwargs):
+        with (capture / "pipeline" / "atlas" / "preview.lock").open("rb") as lock:
+            with pytest.raises(BlockingIOError):  # what withdrawal deletion meets: atlas_preview_busy
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        attempts.append(1)
+        return publish(**kwargs)
+
+    assert _slim(tmp_path, plan, MultipartClient(), stream_publisher=publisher)["status"] == "slimmed"
+    assert attempts == [1]
