@@ -10,11 +10,10 @@ The provider runaway guards stay.
 
 | Stage | Scope | Status |
 |---|---|---|
-| 1 | Add the meter, the account limit, its report and its alerts. Remove nothing. | Built (this change). |
-| 2 | Remove the per-job reservations, grants and confirmations listed under [Stage 2](#stage-2-inventory-and-plan). | Planned here, not built. |
+| 1 | Add the meter, the account limit, its report and its alerts. Remove nothing. | Built. |
+| 2 | Remove the per-job reservations, grants and confirmations listed under [Stage 2](#stage-2-inventory-and-plan). | Replaced by [One cap at $40](#one-cap-at-40-2026-11-19) (owner decision 2026-11-19): one per-job cap, no grants, no extensions. The meter-only items (journal `held_usd`, `record_settlement`) stay planned. |
 
-Until stage 2, both systems apply at once. A paid admission must pass every
-existing per-job cap, grant and reservation, the provider guards, and now the
+A paid admission must pass the job's one cap, the provider guards and the
 account limit.
 
 ## The model
@@ -370,7 +369,13 @@ not touch them.
 6. Keep every runaway guard listed as *Keep* above. Revisit the $5,000 cohort
    stop with the owner.
 
-## Scene ceiling as an expected budget (2026-11-10)
+## Scene ceiling as an expected budget (2026-11-10, superseded)
+
+Superseded on 2026-11-19 by [One cap at $40](#one-cap-at-40-2026-11-19): the
+standing extension, its `standing-budget-extensions/` writer and the
+`scene_budget_doubled` page are removed. Records already written stay on disk,
+read by nothing. Settling at the bill is unchanged. The text below is the
+2026-11-10 decision, for history.
 
 Owner decision 2026-11-10. A website scene's spend ceiling is its expected
 budget. The account monthly limit is the one hard money stop.
@@ -401,3 +406,105 @@ budget. The account monthly limit is the one hard money stop.
 - **Early warning.** `scene_budget_doubled` pages once per job per whole
   multiple of the grant's original figure (`scene_budget_alert`, in the stall
   tick). It gates nothing.
+
+## One cap at $40 (2026-11-19)
+
+Owner decision 2026-11-19, "One cap at $40". It replaces the per-job money
+machinery: the four per-job ledgers as separate stops, the sponsorship's
+dollar figures, the Atlas grant and authorization figures, the automatic
+extensions, the held-in-full extensions and the owner's grants.
+
+### The rule
+
+- **One number.** A website job may spend at most $40 in total, across every
+  paid provider (Gemini, Meta SAM, World Labs, OpenAI including ARTISAN, Vast)
+  and every retry. The account's monthly limit still applies on top.
+- **One source.** `per_job_cap_usd` in `config/website_job_spend_cap.v1.json`
+  (`website_job_spend_cap.py`). Blueprint-WebApp mirrors it byte for byte in
+  `contracts/pipeline/website-job-spend-cap.v1.json`; a test in each repo and
+  `npm run pipeline:website-job-spend-cap:verify` pin the copies together. A
+  file that is missing or does not validate refuses (money fails closed).
+  Changing the figure is an owner money decision in both files.
+- **Before each paid call** the job's recorded spend, plus what its calls in
+  flight hold, plus this call's quote must fit under $40. Where:
+  - every preparation call (Gemini, SAM, OpenAI planner and reviews, World Labs,
+    Vast renders and probes) reserves its quote on the job's WebApp ledger
+    (`reserveWebsitePreparationSpend`), which counts every ledger of the job
+    (`websiteJobSpend`) and refuses past the cap;
+  - a scene intake holds its sealed construction allowance on the same ledger,
+    admitted only if it fits; the Pipeline then holds each scene attempt to that
+    allowance, never above $40 (`scene_spend_budget`), every retry counted;
+  - every paid launch still passes `require_paid_resource_admission` (the
+    account limit, GCP, the provider guards).
+- **Release.** A preparation row counts its settled cost once its call ends
+  (`preparation-settlement`), else its quote. A scene attempt counts its
+  measured or retained hold once settled (`budget_retained_hold`). A scene
+  intake's allowance is held while it can still start an attempt and is
+  released down to what its attempts hold once it ends, a terminal outcome
+  included.
+- **At the cap** no further paid call starts. The job ships what it already
+  has, plainly flagged, and keeps going without the paid parts; it waits for no
+  one:
+  - a preparation step refused at the cap ships the room package flagged
+    `spending_cap_reached` (`website_scene_handoff.goes_on`, `shipped_code`);
+  - the Atlas room's clean-up refused at the cap keeps the room as filmed,
+    flagged `spending_cap_reached` (`atlas_scene_automation`,
+    `BACKGROUND_FLOOR_REASONS`);
+  - a scene intent whose budget leaves no room ends with the terminal outcome
+    `spending_cap_reached` (`task_evaluation_scene_outcome`); the site reads
+    "We reached our spending cap for this job, so we stopped building the
+    simulation of your site." No figure is stated.
+  The account's monthly limit stays a wait: the next month frees it.
+- **Nothing raises it.** Removed: `scene_budget_standing_extension`,
+  `task_evaluation_scene_execution_budget` (the owner's grant writer) and
+  `door extend-scene-execution-budget`, `scene_budget_alert`; in the WebApp the
+  automatic extension, the $100 safety limit, the owner's upstream spend and
+  Atlas figure amendments and their scripts.
+- **Kept:** the account's monthly limit, paid admission, the provider and
+  runaway guards (per-call and per-attempt caps, ARTISAN's $12 per object, the
+  paid-attempt and request counts), the intake abuse caps, one billable event
+  per introduction, and no price stated anywhere.
+
+### A job in flight across the switch
+
+- **Its past spend counts.** Every preparation row, scene attempt hold and
+  screening publication it has is read exactly as before and counts against the
+  $40. Nothing is reset, refunded or rewritten.
+- **Its grants raise nothing.** Owner grants (`execution-budget-extensions/`)
+  and standing extensions (`standing-budget-extensions/`) stay on disk, and an
+  attempt reserved under an owner grant still validates against it
+  (`validate_attempt_execution_budget`), so status reads and settlement work as
+  before. A new reservation is checked only against the intent's sealed figure,
+  never above $40. The status still reports the owner chain under
+  `effective_execution_budget`, so the WebApp keeps counting its larger figure
+  while the intent is open (it only counts more).
+- **A job already past $40** (capture-447: $52.23 kept of a $70 ceiling) starts
+  no further paid call. Its next scene reservation is refused
+  (`spend_cap_exhausted`), its outcome becomes `spending_cap_reached`, and its
+  next preparation reservation is refused and ships flagged.
+- **A job under $40** keeps going, inside $40 and no further, whatever its
+  grant names (a grant with `automatic_budget_extension: true` still validates
+  and changes nothing).
+- **A stored outcome** of the old wait (`awaiting_spend_approval`) is still
+  read, never written: the next progression pass replaces it.
+- **Money history stays readable.** Ledgers, settlements, receipts, extension
+  records and stored alerts are kept; stored safety-limit and over-budget
+  alerts are still reported once.
+
+### Known edges
+
+- **Order inside the $40.** Preparation (Atlas, SAM, Gemini, planner) spends
+  first; the scene intake then needs its whole construction allowance to fit.
+  The Atlas grant's own figure stays the planning share the Pipeline buys Atlas
+  inside (never more than the job has left), which leaves room for the object.
+  If preparation holds too much at intake time, the intake is refused and the
+  job ships without the object, flagged.
+- **A scene attempt inside the allowance is not checked against the WebApp
+  ledger per attempt.** The intake's whole allowance is held there instead, so
+  the total stays under $40.
+- **The WebApp's own agent runs** (the first look, brief reading, footage
+  review) are not on this ledger: they run before the packet factory spends
+  and are bounded by the agent runtime's rolling guards.
+- **Shrunk compute.** Near the cap a scene attempt's compute shrinks to what is
+  left (`spend_block`); below about $4 no GPU offer qualifies and the attempt
+  waits for capacity until the job's window ends.
