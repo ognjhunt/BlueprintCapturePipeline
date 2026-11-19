@@ -354,6 +354,7 @@ def _retained_at_cap(output_root: Path, options, finished=None):
         result["digest"] = canonical_digest(result, digest_field="digest")
         write_json(output_root / "result.json", result)
         return result
+    from . import atlas_splat_rebuild as rebuilds
     from .atlas_video_inputs import GEOMETRY_INPUTS_FILE
     from .hard_stops import is_wall
     stopped = {"status": "needs_input", "stage": "preparation", "reason": SPENDING_CAP_REACHED,
@@ -361,9 +362,15 @@ def _retained_at_cap(output_root: Path, options, finished=None):
     pose_root = output_root / "pose"
     context = options["task_context"]
     try:
+        source_digest = _sha256_file(Path(options["source_video"]))
+        if options.get("refinement_feedback") is None and (output_root / rebuilds.REQUEST_FILE).is_file():
+            request, root, parent = rebuilds.load_request(output_root)
+            if (parent.get("download") and parent.get("source_video_digest") == source_digest
+                    and parent.get("task_context_digest") == context.get("context_digest")):
+                return rebuilds.record_cap_stop(output_root, root, request, parent)
+            return stopped
         review = json.loads((output_root / "atlas_scene_review.json").read_text())
         inputs = json.loads((pose_root / GEOMETRY_INPUTS_FILE).read_text())
-        source_digest = _sha256_file(Path(options["source_video"]))
         if inputs.get("binding", {}).get("source_video_digest") != source_digest:
             return stopped
         room = background_floor(output_root, review, context,
@@ -1217,7 +1224,9 @@ def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configurat
     the window derives. With no usable window it stops by name before buying anything.
     """
     from . import atlas_splat_rebuild as rebuilds
+    from .atlas_preparation_job_control import _reason
     from .atlas_video_inputs import prepare_video_inputs
+    from .hard_stops import JOB_SPEND_CAP
 
     request, root, parent = rebuilds.load_request(job_dir)
     finished = rebuilds.retained_outcome(job_dir, root, parent)
@@ -1257,11 +1266,15 @@ def _run_splat_rebuild(*, job_dir, task_context, policy, held_policy, configurat
             policy=policy, task_context=task_context, source_digest=source_digest, configuration=configuration,
             check=check, experimental=experimental, max_polls=max_polls, model=parent.get("model"), rebuild=True)
     except ValueError as exc:
+        if _reason(exc) == JOB_SPEND_CAP:
+            return rebuilds.record_cap_stop(job_dir, root, request, parent)
         if not str(exc).startswith(rebuilds.STOP_PREFIXES):
             raise
         result = {"status": "needs_input", "reason": str(exc).partition(":")[0]}
     if result.get("status") == "processing":
         return result
+    if _reason(ValueError(result.get("reason") or "")) == JOB_SPEND_CAP:
+        return rebuilds.record_cap_stop(job_dir, root, request, parent, stage=result.get("stage", "splat_rebuild"))
     if not result.get("download") or (result.get("appearance") or {}).get("basis") != REFINED_APPEARANCE:
         return rebuilds.record_stop(root, request, parent, result)
     return rebuilds.publish(job_dir, root, request, parent, result, window=window)

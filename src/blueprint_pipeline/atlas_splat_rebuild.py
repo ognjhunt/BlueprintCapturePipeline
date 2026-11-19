@@ -57,6 +57,7 @@ from typing import Any, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_job_spend_cap import SPENDING_CAP_REACHED
 
 REQUEST_FILE = "splat_rebuild_request.json"
 ROOT = "splat-rebuild"
@@ -281,7 +282,31 @@ def retained_outcome(job_dir: Path, root: Path, parent: Mapping[str, Any]) -> di
     path = root / OUTCOME_FILE
     if not path.is_file():
         return None
-    return _read(Path(job_dir) / "result.json") if _read(path).get("status") == "published" else dict(parent)
+    outcome = _read(path)
+    if outcome.get("status") == "published":
+        return _read(Path(job_dir) / "result.json")
+    if outcome.get("reason") == SPENDING_CAP_REACHED:
+        result = _capped_parent(parent)
+        if _read(Path(job_dir) / "result.json") != result:
+            raise ValueError("atlas_splat_rebuild_parent_changed")
+        return result
+    return dict(parent)
+
+
+def _capped_parent(parent: Mapping[str, Any]) -> dict[str, Any]:
+    result = {**parent, "reason": SPENDING_CAP_REACHED,
+              "blockers": list(dict.fromkeys([SPENDING_CAP_REACHED, *parent.get("blockers", [])]))}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    return result
+
+
+def record_cap_stop(job_dir: Path, root: Path, request: Mapping[str, Any], parent: Mapping[str, Any],
+                    *, stage: str = "splat_rebuild") -> dict[str, Any]:
+    """Close a rebuild at the cap with its bound parent and the same archive, pose and room mesh."""
+    result = _capped_parent(parent)
+    write_json(job_dir / "result.json", result)
+    record_stop(root, request, parent, {"stage": stage, "reason": SPENDING_CAP_REACHED})
+    return result
 
 
 def record_stop(root: Path, request: Mapping[str, Any], parent: Mapping[str, Any], result: Mapping[str, Any]) -> dict:
