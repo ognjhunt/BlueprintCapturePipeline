@@ -1592,8 +1592,7 @@ def run_storage_gc(
             report["scene_workspaces"]["alerts"] = [scene_workspace_retirement_alert]
 
         def slim_phase() -> Any:
-            # What the phase above keeps (shared with companies, acknowledgement unproven) still loses its bulky
-            # Atlas intermediates behind an archive; what sharing reads stays (website_scene_workspace_slimming).
+            # What the phase above keeps still loses its bulky Atlas files; what sharing reads stays.
             from .website_scene_workspace_retention import timer_context_factory
             from .website_scene_workspace_slimming import slim_scene_workspaces
             return slim_scene_workspaces(
@@ -1846,9 +1845,9 @@ def _run_main(argv: list[str]) -> int:
         type=int,
         default=_env_int(RESIDUE_MAX_RUNS_ENV, DEFAULT_MAX_RUNS_PER_TICK),
     )
-    parser.add_argument(
+    parser.add_argument(  # The unit runs this module from the scene-retirement runtime, not the release: ask its cwd.
         "--running-commit",
-        default=str(os.getenv(RUNNING_COMMIT_ENV) or "").strip() or running_release_commit(),
+        default=str(os.getenv(RUNNING_COMMIT_ENV) or "").strip() or running_release_commit() or running_release_commit(Path.cwd()),
     )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--ack", default="")

@@ -143,7 +143,7 @@ def test_lane_cli_flag_is_strict_and_report_only(tmp_path, monkeypatch, capsys, 
         captured.update(kwargs)
         return {"status": "dry_run"}
     monkeypatch.setattr(gc_module, "run_storage_gc", fake)
-    monkeypatch.setattr(gc_module, "running_release_commit", lambda: "")
+    monkeypatch.setattr(gc_module, "running_release_commit", lambda *_args: "")
     assert gc_main(["run", "--pins-root", str(tmp_path), "--lane-scratch-root", "/mnt/blueprint-work/lanes"]) == 0
     assert captured["lane_scratch_enabled"] is expected
     assert captured["lane_scratch_roots"] == (() if invalid else ("/mnt/blueprint-work/lanes",))
@@ -155,7 +155,7 @@ def test_lane_cli_flag_is_strict_and_report_only(tmp_path, monkeypatch, capsys, 
 def test_lane_cli_root_count_is_bounded_before_collection(tmp_path, monkeypatch, source):
     captured = {}
     monkeypatch.setattr(gc_module, "run_storage_gc", lambda **kwargs: captured.update(kwargs) or {})
-    monkeypatch.setattr(gc_module, "running_release_commit", lambda: "")
+    monkeypatch.setattr(gc_module, "running_release_commit", lambda *_args: "")
     arguments = ["run", "--pins-root", str(tmp_path)]
     if source == "argv":
         arguments += [item for _ in range(3) for item in ("--lane-scratch-root", "/mnt/blueprint-work/lanes")]
@@ -865,12 +865,39 @@ def test_run_cli_wires_windows_scratch_and_running_commit_from_the_unit_environm
     assert report["scratch_directories"]["minimum_age_seconds"] == 7 * 86400
 
     monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_GC_RUNNING_COMMIT")
-    monkeypatch.setattr(gc_module, "running_release_commit", lambda: "")
+    monkeypatch.setattr(gc_module, "running_release_commit", lambda *_args: "")
     assert gc_main(["run"]) == 0
     assert json.loads(capsys.readouterr().out)["stranded_queue_rows"] == {
         "status": "skipped",
         "reason": "running_commit_unknown",
     }
+
+
+def test_run_cli_takes_the_running_commit_from_the_release_it_runs_in(tmp_path, monkeypatch, capsys) -> None:
+    # The unit runs this module from the scene-retirement runtime's own copy, which has no .git, after
+    # `cd -P` into the active release worktree: the release it runs in is the working directory's.
+    from blueprint_pipeline import task_evaluation_release_identity as identity
+
+    queue = tmp_path / "queue"
+    _queue_row(queue, "pending", "stale", commit=STALE_COMMIT)
+    release = tmp_path / "releases" / RUNNING_COMMIT
+    (tmp_path / "source.git" / "worktrees" / RUNNING_COMMIT).mkdir(parents=True)
+    (tmp_path / "source.git" / "worktrees" / RUNNING_COMMIT / "HEAD").write_text(RUNNING_COMMIT + "\n")
+    release.mkdir(parents=True)
+    (release / ".git").write_text(f"gitdir: {tmp_path / 'source.git' / 'worktrees' / RUNNING_COMMIT}\n")
+    for name in ("CONTENT_STORE_ROOTS", "DERIVED_ROOTS", "EVIDENCE_ROOTS", "SCRATCH_ROOTS"):
+        monkeypatch.setenv(f"BLUEPRINT_CONTROL_PLANE_GC_{name}", "")
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS", str(queue))
+    monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_GC_RUNNING_COMMIT", raising=False)
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT", str(tmp_path / "pins"))
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+    monkeypatch.setattr(gc_module, "running_release_commit",
+                        lambda path=None: identity.running_release_commit(path or tmp_path / "runtime" / "gc.py"))
+    monkeypatch.chdir(release)
+
+    assert gc_main(["run"]) == 0
+    stranded = json.loads(capsys.readouterr().out)["stranded_queue_rows"]
+    assert stranded["running_commit"] == RUNNING_COMMIT and stranded["candidate_count"] == 1
 
 
 def _workspace(root: Path, name: str, *, age: float, now: float, with_bundle: bool = True) -> Path:
