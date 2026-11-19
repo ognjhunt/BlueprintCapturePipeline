@@ -1546,6 +1546,49 @@ def test_ordinary_numbers_stay(text) -> None:
     assert packet.redact_contacts(text) == (text, False)
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Stack cartons at our dock, 77 Quokka Lane, Springfield IL 62704.", "Stack cartons at our dock, [removed]."),
+    ("Dock at 77 Quokka Lane, Springfield, IL 62704, every day.", "Dock at [removed], every day."),
+    ("We are at 1200 N Main St, Suite 300.", "We are at [removed]."),
+    ("We are at 1200 N Main St., Suite 300, by the dock.", "We are at [removed], by the dock."),
+    ("We work at 5 Mill Place.", "We work at [removed]."),
+    ("Ship from 9 Court, Unit 4 daily.", "Ship from [removed] daily."),
+    ("Trays come from 12 harbour road 90210 on Mondays.", "Trays come from [removed] on Mondays."),
+    ("Back door of 4 Rue de Lyon Way.", "Back door of [removed]."),
+])
+def test_a_street_address_the_site_typed_is_removed(text, expected) -> None:
+    # The website removes street-shaped text from the sentence a company reads (contactRedaction.ts); the packet,
+    # which carries the same sentence by hand, removes it too. The Pipeline never holds the typed address.
+    assert packet.redact_contacts(text) == (expected, True)
+
+
+@pytest.mark.parametrize("text", [
+    "Pick 2 totes and place them on shelf 3.", "10 Drive units on 3 pallets, 15 Court files, 5 St Bernards.",
+    "Carry 3 boxes down the road to bay 2.", "Move 3 cartons onto the lane.", "Load 40 parts per hour, 1 Place each.",
+    "Stack 12 kg cartons onto the pallet, 2 shifts, 24/7.",
+])
+def test_ordinary_job_words_beside_numbers_are_not_a_street(text) -> None:
+    assert packet.redact_contacts(text) == (text, False)
+
+
+def test_a_street_address_in_the_sites_words_never_reaches_the_packet(tmp_path, job) -> None:
+    inputs = job()
+    street = "77 PLANTQUOKKA Lane, Springfield, IL 62704"
+
+    def plant(value):
+        value["description"] = f"{SENTENCE} at {street}."
+        value["operator_answers"] = {"where": f"Back room of {street}"}
+        value["success_criteria"]["successDefinition"] = "Tray on the shelf at 1200 N PLANTMAIN St, Suite 300"
+    _edit(_context_path(inputs), plant)
+    result = build_job_packet(inputs, output_root=_out(tmp_path))
+    everything = _all_bytes(Path(result["packet_dir"]))
+    for value in (b"PLANTQUOKKA", b"PLANTMAIN", b"62704", b"Suite 300"):
+        assert value not in everything
+    sheet = _sheet(result)
+    assert f"> {SENTENCE} at [removed]." in sheet and "Back room of [removed]" in sheet
+    assert "Contact details the site typed into its description or answers were removed." in sheet.split("\n")[6]
+
+
 def test_contact_details_in_the_sites_words_never_reach_the_sheet(tmp_path, job) -> None:
     inputs = job()
 
