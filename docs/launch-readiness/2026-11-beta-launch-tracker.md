@@ -185,6 +185,13 @@ Intended design: every upload is written to one record before it is sent, and st
 - **Still running:** `blueprint-scene-stage-maintenance.timer` (first run on this release at 03:40:51Z, clean, nothing to deliver), the intake, scene progression, the scripted check's runner, the Atlas preview timer, withdrawal deletion and the spend guard.
 - **Not checked:** no website job has passed through scene configuration, the scene packet or the scripted check on this release.
 
+## Simplification rollout on 2026-11-19
+
+- **WebApp.** At 22:43:37Z Render verified the website and worker both live at `42187f7bcc758e3e4f07d3f9146c15f01640e10f`. The public version, liveness, readiness, worker heartbeat, and outbox checks passed. [WebApp #1325](https://github.com/ognjhunt/Blueprint-WebApp/pull/1325) · [Render verification](https://github.com/ognjhunt/Blueprint-WebApp/actions/runs/44630947834)
+- **Pipeline.** The host was running `1e6283d28d51aa3c3b937b4b5c9ccbc9dc2eb321` with clear deploy and work queues. Main CI attested `5c91221acad4733df26bbe604302d3f528195d95`. The 23:04:26Z request `20261119T230426Z-deploy-4477e4ef` used D-08's money-fix exception to enforce the job spending cap. The normal activation check cleared the deploy, and the host verified the target commit at 23:16:44Z. The release includes the website's single packet delivery path and the spend cap. [Pipeline #3661](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3661) · [Pipeline #3660](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3660) · [Main CI and attestation](https://github.com/ognjhunt/BlueprintCapturePipeline/actions/runs/44629973077)
+- **Spending and delivery.** Full 3D objects are the default. The $40 job cap applies to Pipeline preparation and simulation alongside the $300 monthly account cap. WebApp first-look and brief-reading calls are outside the job cap. A capped job keeps its usable scene and records `spending_cap_reached`.
+- **Operator Door and host health.** Request `20261119T231704Z-door-upgrade-5f0b51b1` upgraded the door at 23:17:24Z. Authentication and `/healthz` passed, the retired budget extension disappeared from the request list, and Pipeline intake was running. The existing `runpod_inventory_query_failed` spend-guard blocker and critical capacity status were observed after release. The periodic preflight was refreshing its summary for the new release.
+
 ## Library-aisle navigation run (2026-11-06)
 
 The next production job, driven by a cloud session: a navigation task, chosen as the forcing case for "any job" (owner direction 2026-11-06). Its 14-step evidence matrix and the task-kind gate inventory live in WebApp `docs/library-aisle-navigation-e2e.md` on the session branch.
