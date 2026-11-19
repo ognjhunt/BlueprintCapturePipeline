@@ -55,6 +55,11 @@ with volume).
 - ``access`` (mobile bases and humanoids): the route from the site's entrance is not checked; it is
   the ``route_clear`` condition.
 
+The catalog's default tool stands in for whatever a fixed arm carries: its mass counts against the
+rated payload and its length lifts the grasp and place points. No check uses its opening (``stroke_m``,
+recorded only): whether any gripper can hold the object is not judged here, and the job sheet gives the
+object's sizes instead of naming a gripper (owner decision 2026-11-19).
+
 Job geometry with a non-finite coordinate is refused before any check: every row is ``unknown`` with
 the one cause ``job_geometry_not_finite``.
 
