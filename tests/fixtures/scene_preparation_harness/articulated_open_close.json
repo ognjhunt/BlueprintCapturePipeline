@@ -1,0 +1,183 @@
+{
+ "activation_request": {
+  "activation_id": "website-<hex>-0662bb89-20260919t120000z-<hex>-activation-auto",
+  "authorization": {
+   "authorized_by": "owner-1",
+   "profile_revision": "scene-<hex>",
+   "reference": "scene-intent:sha256:<hex>"
+  },
+  "expected_production_commit": "<hex>",
+  "lane": "task_evaluation_scene_configuration",
+  "lineage": [
+   "initial_provider_zero",
+   "kind",
+   "project_spend_reconciliation"
+  ],
+  "preparation": {
+   "preparation_id": "website-<hex>-0662bb89-20260919t120000z-<hex>-preparation",
+   "request_digest": "sha256:<hex>"
+  },
+  "release_window": [
+   "digest",
+   "size_bytes",
+   "uri"
+  ],
+  "requested_mutations": {
+   "catalog_synchronization": true,
+   "profile_publication": true,
+   "standing_authorization": true
+  },
+  "schema_version": "task_evaluation_launch_activation_request.v1",
+  "team_namespace": "website-<hex>"
+ },
+ "attempts": [
+  {
+   "attempt_id": "scene-configuration-<hex>",
+   "counts_as_paid_attempt": true,
+   "maximum_spend_usd": 31.0,
+   "provider": "vast",
+   "status": "reserved"
+  },
+  {
+   "attempt_id": "source-<hex>",
+   "counts_as_paid_attempt": null,
+   "maximum_spend_usd": 0,
+   "provider": "control_plane",
+   "status": "preparation_only"
+  }
+ ],
+ "hard_stop": null,
+ "intent": {
+  "strategy": "articulated_open_close"
+ },
+ "launch_submissions": [
+  {
+   "profile_digest": "sha256:<hex>",
+   "rights": {
+    "evidence": {
+     "digest": "sha256:<hex>",
+     "uri": "s3://blueprint/task-evaluation/production-inputs/ns/evaluation_run_spec.json"
+    },
+    "scope": "recorded-owner-rights"
+   },
+   "spend": {
+    "max_spend_usd": 11.0
+   }
+  }
+ ],
+ "outcome": null,
+ "preparation_request": {
+  "hard_cap_usd": 31.0,
+  "normalised_digest": "sha256:<hex>",
+  "preparation_id": "website-<hex>-0662bb89-20260919t120000z-<hex>-preparation",
+  "scene_id": "site-req1",
+  "task_id": "website-<hex>"
+ },
+ "preparation_result": {
+  "configuration_render_inputs_result_digest": "sha256:<hex>",
+  "construction_recipe_digest": "sha256:<hex>",
+  "run_mode": "scene_configuration",
+  "status": "queued_for_production_scene_configuration"
+ },
+ "reconciler": {
+  "rows": [
+   {
+    "blockers": [],
+    "provider_zero_confirmed": true,
+    "status": "provider_zero_confirmed"
+   },
+   {
+    "blockers": [],
+    "provider_zero_confirmed": null,
+    "status": "webapp_sync_succeeded"
+   }
+  ],
+  "status": "passed"
+ },
+ "status": {
+  "blockers": [],
+  "phase": "scene_prepared",
+  "status": "completed"
+ },
+ "task_kind": "articulated_open_close",
+ "team_scene_requests": 1,
+ "ticks": [
+  {
+   "passes": [
+    [
+     {
+      "blockers": [],
+      "phase": "source_preparation",
+      "status": "running"
+     }
+    ],
+    [
+     {
+      "blockers": [],
+      "phase": "scene_configuration",
+      "status": "awaiting_execution"
+     }
+    ]
+   ],
+   "progression": {
+    "blockers": [],
+    "phase": "scene_configuration",
+    "status": "awaiting_execution"
+   },
+   "worker": [
+    {
+     "blockers": null,
+     "status": "queued_for_production_scene_configuration"
+    }
+   ]
+  },
+  {
+   "passes": [
+    [
+     {
+      "blockers": [],
+      "phase": "scene_configuration",
+      "status": "awaiting_execution"
+     }
+    ],
+    [
+     {
+      "blockers": [],
+      "phase": "scene_configuration",
+      "status": "awaiting_execution"
+     }
+    ]
+   ],
+   "progression": {
+    "blockers": [],
+    "phase": "scene_configuration",
+    "status": "awaiting_execution"
+   },
+   "worker": []
+  },
+  {
+   "passes": [
+    [
+     {
+      "blockers": [],
+      "phase": "scene_prepared",
+      "status": "completed"
+     }
+    ],
+    [
+     {
+      "blockers": [],
+      "phase": "scene_prepared",
+      "status": "completed"
+     }
+    ]
+   ],
+   "progression": {
+    "blockers": [],
+    "phase": "scene_prepared",
+    "status": "completed"
+   },
+   "worker": []
+  }
+ ]
+}

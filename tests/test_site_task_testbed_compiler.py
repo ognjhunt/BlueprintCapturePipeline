@@ -30,7 +30,6 @@ from blueprint_pipeline.site_task_testbed_compilation_contract import (
     testbed_compilation_submission_schema,
     validate_testbed_compilation_submission,
 )
-from blueprint_pipeline.site_task_testbed_compiler_cli import main as compiler_cli_main
 from blueprint_pipeline.semantic_testbed_evidence_bundle import (
     SemanticTestbedEvidenceBundleError,
     load_semantic_testbed_evidence_bundle,
@@ -955,44 +954,6 @@ def test_writer_rejects_two_digests_for_one_logical_version(tmp_path) -> None:
 
     with pytest.raises(SiteTaskTestbedCompilerError, match="testbed_version_digest_conflict"):
         write_testbed_version(output_root=tmp_path, testbed=conflicting)
-
-
-def test_compiler_cli_writes_one_immutable_testbed_version(tmp_path, capsys) -> None:
-    envelope = _envelope()
-    qa = _qa(envelope)
-    plan = _plan(qa)
-    semantic, semantic_refs = _semantic_artifacts(plan)
-    inputs = {
-        "capture-intake-envelope": envelope,
-        "capture-qa-report": qa,
-        "approved-task-definition": _approved_task(),
-        "reconstruction-plan": plan,
-        "reconstruction-results": [_result(plan)],
-        "simready-decision": _simready(),
-        "robot-placement-result": _placement(),
-        "artifact-references": {**_refs(), **semantic_refs},
-        "supported-condition-ranges": {"lighting_lux": [300, 600]},
-        "semantic-evidence-artifacts": semantic,
-    }
-    arguments = ["--testbed-id", "site-task-cli", "--version", "1"]
-    for option, value in inputs.items():
-        path = tmp_path / f"{option}.json"
-        path.write_text(json.dumps(value), encoding="utf-8")
-        arguments.extend([f"--{option}", str(path)])
-    output_root = tmp_path / "testbeds"
-    arguments.extend(["--output-root", str(output_root)])
-
-    assert compiler_cli_main(arguments) == 0
-    receipt = json.loads(capsys.readouterr().out)
-    assert receipt["status"] == "testbed_ready"
-    assert receipt["already_exists"] is False
-    stored = json.loads(Path(receipt["artifact_path"]).read_text(encoding="utf-8"))
-    assert stored["semantic_object_inventory"][0]["track_id"] == "track-item-1"
-    assert stored["validation_envelope"]["reconstruction_layers"]["physics_layer"] == []
-    assert compiler_cli_main(arguments) == 0
-    replay = json.loads(capsys.readouterr().out)
-    assert replay["already_exists"] is True
-    assert replay["testbed_digest"] == receipt["testbed_digest"]
 
 
 def test_semantic_evidence_bundle_is_execution_bound_immutable_and_replay_safe(

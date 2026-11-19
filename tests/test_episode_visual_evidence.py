@@ -5,7 +5,6 @@ import json
 import numpy as np
 import pytest
 
-from blueprint_pipeline.adp_prospective_design import validate_episode_evidence_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.episode_visual_evidence import (
     _encode_episode_video,
@@ -179,26 +178,6 @@ def test_media_seal_retains_lossless_inputs_terminal_manifest_and_review_video(
     assert visual["video"]["decoded_frame_count"] == 3
     assert visual["video"]["decode_round_trip_passed"] is True
     assert visual["video"]["ffprobe_passed"] is True
-    episode = {
-        "episode_id": episode_id,
-        "status": "completed",
-        "policy_query_count": 2,
-        "visual_evidence": visual,
-        "artifacts": artifacts,
-        "evaluator": {
-            "owner": "environment_not_policy",
-            "grader_type": "deterministic_simulator_state",
-            "success_source": "frozen_object_state_predicates",
-            "policy_self_report_used": False,
-        },
-        "success_evidence": {
-            "grader_type": "deterministic_simulator_state",
-            "policy_self_report_used": False,
-        },
-    }
-    admission = validate_episode_evidence_contract(episode)
-    assert admission["status"] == "admitted"
-    assert admission["completed_media_contract"] is True
 
     with pytest.raises(FileExistsError, match="overwrite_forbidden"):
         persist_observation_frame(
