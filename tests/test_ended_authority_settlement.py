@@ -237,3 +237,41 @@ def test_progression_settles_before_it_stops_at_the_authority_gate(site):
     assert progress["state"]["terminal_settlements"]["ended_authority"] == {
         "status": "settled", "retired_attempt_id": "source-current", "settled_rows": 1}
     assert validated_cancellation(directory, json.loads(row_path.read_text())) is not None
+
+
+def test_archiving_a_finished_intents_preparation_bulk_keeps_every_settlement_readable(site):
+    # Codex P1 on #3654: spend accounting reopens settlement records in the factory output by the path a receipt
+    # holds. The preparation cleanup (completed_scene_preparation_retention) archives only bulk no record names;
+    # every record stays where the receipts say, so validated_cancellation and committed_spend_usd still hold.
+    import functools
+    import time
+
+    from blueprint_pipeline import completed_scene_preparation_retention as preparation
+    from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
+    from tests.test_control_plane_evidence_streaming import MultipartClient
+
+    _terminal_attempt(site, "pregate", _request("pregate", authoring=15.0, total=20.0), _pre_gate_refusal)
+    state, row_path = _current_attempt(site)
+    now = _end(site, "revoked")
+    _guard(site, now)
+    assert _settle(site, state, now)["status"] == "settled"
+    receipt = validated_cancellation(site["directory"], json.loads(row_path.read_text()))
+    spend = committed_spend_usd(site["directory"], site["intent"])
+    folder = site["tmp"] / "factory-output" / site["intent"]["intent_id"]
+    bulk = folder / state["attempt_id"] / "materialized" / "scene.usdc"
+    bulk.parent.mkdir(parents=True)
+    bulk.write_bytes(b"u" * (2 * 1024 * 1024))
+
+    report = preparation.offload_finished_intent_outputs(
+        roots=[folder.parent], pins_root=site["tmp"] / "pins", queue_roots=[site["queue"]],
+        intent_root=site["root"], binding_root=site["tmp"] / "bindings", apply=True, enabled=True,
+        now=time.time() + 8 * 86400, classifier=lambda *_args, **_kwargs: None,
+        stream_publisher=functools.partial(store.publish_configured_scene_stream, client=MultipartClient(),
+                                           bucket="blueprint-task-evaluation-artifacts-test"),
+        process_checker=lambda _path: False, retract=lambda uri: pytest.fail(uri))
+
+    assert report["offloaded_count"] == 1 and not bulk.exists() and preparation.record_path(folder).is_file()
+    assert Path(receipt["retirement_record"]["path"]).is_file()
+    assert validated_cancellation(site["directory"], json.loads(row_path.read_text())) == receipt
+    settlement.validate_terminal_settlement(receipt=receipt, attempt=json.loads(row_path.read_text()))
+    assert committed_spend_usd(site["directory"], site["intent"]) == spend

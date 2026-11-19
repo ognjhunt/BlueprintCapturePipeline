@@ -1211,14 +1211,24 @@ too), and a capture is read once. The GC report counts `deduped_count` and
 
 `blueprint_pipeline.completed_scene_preparation_retention` (owner approval 2026-11-19: "Give
 `completed-scene-preparation` a cleanup rule"). `task-evaluation-inputs/completed-scene-preparation/<intent>/`
-is the scene factory's work for one intent: 21 GB in 17 intents on 2026-11-19, and nothing
-reclaimed it. The reclaim timer now offloads an intent's folder through the evidence
-offload (pack, publish with full readback, `<intent>.offloaded.v1.json`, then remove; the
-same `restore`, and withdrawal deletion reads these pointers by intent) only when its scene
-intent has finished (completed, revoked, or expired past the seven-day grace) with no
-unsettled attempt, nothing in it changed for seven days, and no queue message, live pin or
-live process names it. A folder whose intent is unknown, or every folder when intents cannot
-be read, stays. At most five a tick. The report is `scene_preparation_outputs`;
+is the scene factory's work for one intent: 21 GB in 17 intents on 2026-11-19, nothing reclaimed it, and
+99.7% of a measured intent was materialized files of at least 1 MiB.
+
+Spend accounting reopens settlement records here by the path a receipt holds
+(`validated_cancellation` -> `validate_terminal_settlement` -> the retirement and ownership
+records, the factory record and its submission request), so a folder is never moved whole.
+Only its bulk no record names goes: files of at least 1 MiB that are not records, have one
+name and are not named by anything left in the folder or in the intent's own directory under
+the intent root, closed over what those name. Every record stays where its receipts say.
+
+It acts only when the scene intent has finished (completed, revoked, or expired past the
+seven-day grace) with no unsettled attempt, the folder has been idle for seven days, and no
+queue message, live pin or live process names it. An unknown intent, or every intent when
+intents cannot be read, keeps everything. The bulk is packed, published with full readback,
+and recorded in the folder at `artifacts/result_delivery/remote_artifacts/scene-preparation-bulk.json`
+(where withdrawal deletion reads a run's remote copies) before anything is removed; if a
+withdrawal deleted the folder during the upload, the upload is taken back. At most five a
+tick; `restore_folder` puts it back. The report is `scene_preparation_outputs`;
 `BLUEPRINT_CONTROL_PLANE_SCENE_PREPARATION_OFFLOAD=0` keeps it planning.
 
 ## Scene-retirement runtime snapshots

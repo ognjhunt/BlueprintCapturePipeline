@@ -359,7 +359,8 @@ def _pack(capture_root: Path, rows: Sequence[Mapping[str, Any]], stream: Any) ->
 
 
 def _archive(capture_root: Path, rows: Sequence[Mapping[str, Any]], *, filename: str,
-             publisher: Callable[..., Mapping[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
+             publisher: Callable[..., Mapping[str, Any]],
+             artifact_kind: str = ARTIFACT_KIND) -> tuple[dict[str, Any] | None, str | None]:
     """Stream exactly the planned members to the artifact store and prove the remote bytes."""
 
     sink = _HashingSink()
@@ -373,7 +374,7 @@ def _archive(capture_root: Path, rows: Sequence[Mapping[str, Any]], *, filename:
     digest, size = "sha256:" + sink.digest.hexdigest(), sink.size
     try:
         reference = dict(publisher(write_stream=lambda stream: _pack(capture_root, rows, stream), digest=digest,
-                                   size_bytes=size, filename=filename, artifact_kind=ARTIFACT_KIND))
+                                   size_bytes=size, filename=filename, artifact_kind=artifact_kind))
     except Exception:  # noqa: BLE001 - any publication failure keeps every local byte
         return None, "archive_readback_failed"
     if (reference.get("digest") != digest or reference.get("size_bytes") != size
