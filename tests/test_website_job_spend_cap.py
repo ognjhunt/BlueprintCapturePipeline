@@ -129,6 +129,7 @@ def test_an_in_flight_job_across_the_switch_keeps_its_history_and_its_past_spend
     with pytest.raises(intake.SceneIntakeError, match="spend_cap_exhausted"):
         _reserve(tmp_path, accepted, "after-1", 0.5, now=104)
     # The idempotent re-read of an attempt reserved before the switch still validates against its grant.
+    assert _reserve(tmp_path, accepted, "before-2", 30, provider="openai", now=104) == bound
     assert json.loads((directory / "attempts" / "before-2.json").read_text()) == bound
     with pytest.raises(intake.SceneIntakeError, match="spend_cap_exhausted"):
         _reserve(tmp_path, accepted, "after-2", 0.01, now=105)

@@ -269,11 +269,9 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             except (ValueError, OSError, KeyError, TypeError):
                 raise SceneIntakeError("scene_intake_preparation_authority_invalid") from None
         execution = intent["request"]["execution"]
-        budget = scene_spend_budget(intent)
         _require(not (directory / "revoked.json").exists(), "authority_revoked")
         _require(moment < effective_execution_expiry(directory, intent), "authority_expired")
         _require(provider in execution["allowed_providers"], "provider_not_authorized")
-        _require(Decimal(str(maximum_spend_usd)) <= budget["max_total_spend_usd"], "attempt_spend_exceeds_authorized_limit")
         attempts = directory / "attempts"
         _require(not attempts.is_symlink(), "record_unsafe")
         attempts.mkdir(mode=0o750, exist_ok=True)
@@ -354,6 +352,9 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             _require(all(existing.get(k) == v for k, v in body.items())
                      and ("recovery" in existing) == ("recovery" in body), "attempt_immutable_conflict")
             return existing
+        # Only new debits use the new cap. Retained rows are checked against the authority they were sealed with.
+        budget = scene_spend_budget(intent)
+        _require(Decimal(str(maximum_spend_usd)) <= budget["max_total_spend_usd"], "attempt_spend_exceeds_authorized_limit")
         rows = [_read(p, "attempt_digest") for p in attempts.glob("*.json")]
         if visual_review_authority is not None:
             _require(not any((row.get('visual_review_correction') or {}).get('authority_digest')

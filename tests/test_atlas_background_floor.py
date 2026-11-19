@@ -178,9 +178,6 @@ def _stopped(monkeypatch, automation):
     ({"status": "needs_input", "background": {"status": "needs_input", "reason": "atlas_removal_masks_empty"}},
      "atlas_removal_masks_empty"),
     ({"status": "quality_rejected", "background": {"status": "quality_rejected"}}, "atlas_background_review_required"),
-    # The job reached its spending cap before the room was cleaned (owner, 2026-11-19): as filmed, flagged.
-    ({"status": "needs_input", "background": {"status": "needs_input", "reason": "spending_cap_reached"}},
-     "spending_cap_reached"),
 ])
 def test_job_three_goes_on_as_filmed_when_its_object_cannot_be_taken_out(tmp_path, monkeypatch, automation, reason):
     # Its clean plate ended blocked (gap F), so the planner's removal stood (``job_object_rule.json``: not applied).
@@ -199,6 +196,27 @@ def test_job_three_goes_on_as_filmed_when_its_object_cannot_be_taken_out(tmp_pat
     # A later step reads the decision and never runs the editor again.
     assert run() == {"status": "processing", "stage": "source_pose"} and len(calls) == 1 and len(posed) == 2
     assert posed[1]["review"] == consumed
+
+
+@pytest.mark.parametrize("has_pose", [False, True])
+def test_background_spend_cap_only_uses_retained_source_pose(tmp_path, monkeypatch, has_pose):
+    from blueprint_pipeline import atlas_depth_splat, atlas_result_bundle, atlas_source_pose_inputs
+    root, run, _automated, posed = _job(tmp_path, monkeypatch, _review(), clean_plate=("blocked", []))
+    calls = _stopped(monkeypatch, {"status": "needs_input", "background": {"reason": "spending_cap_reached"}})
+    source = root / "pose/full-view-source-v1"
+    source.mkdir(parents=True)
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda _: (source, {}))
+    if has_pose:
+        (source / "atlas_posed_rgbd_result.json").write_text("{}")
+        monkeypatch.setattr(atlas_depth_splat, "load_posed_rgbd", lambda _: ({}, []))
+        monkeypatch.setattr(atlas_depth_splat, "write_depth_splat",
+                            lambda **_: {"splat_kind": "depth_fused_draft", "digest": "draft"})
+        monkeypatch.setattr(atlas_result_bundle, "export_pose_bundle", lambda **_: {"zip_path": "retained.zip"})
+    for _ in range(2):
+        result = run()
+        assert result["reason"] == "spending_cap_reached"
+        assert bool(result.get("download")) is has_pose
+        assert not posed and len(calls) == 1
 
 
 @pytest.mark.parametrize("automation", [

@@ -28,6 +28,7 @@ from .atlas_pricing import admitted_final_outputs, render_cost, final_output_cos
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .atlas_preparation_context import requires_task_semantic_analysis
+from .website_job_spend_cap import SPENDING_CAP_REACHED
 
 
 #: Who read the rate card, and when. Renewing it re-confirms the same prices.
@@ -361,7 +362,7 @@ BACKGROUND_FLOOR_RECORD = "background_floor.json"
 #: ``spending_cap_reached``: the job reached its spending cap before the room was cleaned (owner, 2026-11-19).
 BACKGROUND_FLOOR_REASONS = frozenset({"atlas_removal_visibility_incomplete",
                                       "atlas_object_mask_view_coverage_incomplete", "atlas_removal_masks_empty",
-                                      "spending_cap_reached"})
+                                      SPENDING_CAP_REACHED})
 
 
 def background_floor(output_root: Path, review, task_context, automation=None):
@@ -752,7 +753,7 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
                      source_digest, configuration, check, experimental, max_polls, model,
                      source_survey_path=None, reconstruction_only=False, task_evidence_limitation=None,
-                     geometry_only=False, rebuild=False):
+                     geometry_only=False, rebuild=False, spend_capped=False):
     """Reconstruct an environment-preserving task from full-view observations.
 
     Selection and scale still use the production agents and validators. Missing
@@ -783,12 +784,17 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         raise ValueError("atlas_synthetic_subject_requires_preserved_capture"
                          if review.get("subject_origin") == "synthetic_design"
                          else "atlas_scene_requires_preserved_capture")
-    source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
-        task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
-        configuration=configuration, **({'allow_scale_review': False} if reconstruction_only else {}))
-    if source_pose["status"] == "processing":
-        return source_pose
-    source_root, _ = prepare_source_pose(pose_root)
+    if spend_capped:
+        # Only already posed source views are usable here. All later paid stages require a completed source pose.
+        source_root, _ = prepare_source_pose(pose_root)
+        source_pose = {"status": "needs_input", "reason": SPENDING_CAP_REACHED}
+    else:
+        source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
+            task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
+            configuration=configuration, **({'allow_scale_review': False} if reconstruction_only else {}))
+        if source_pose["status"] == "processing":
+            return source_pose
+        source_root, _ = prepare_source_pose(pose_root)
     if source_survey_path is not None:
         # The gallery must also hold the task-source views this source pose was given.
         from .atlas_source_gap_evidence import with_task_source_views
@@ -812,7 +818,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         return {"status": "needs_input", "stage": "source_pose",
                 "reason": "atlas_splat_rebuild_pose_refinement_not_accepted"}
     repose = None
-    if not (rebuild or geometry_only or reconstruction_only) and "refined_splat_cost_usd" in policy:
+    if not (rebuild or geometry_only or reconstruction_only or spend_capped) and "refined_splat_cost_usd" in policy:
         # A new job's one windowed re-pose before its refined splat (``website_atlas_windowed_repose``).
         repose = _windowed_repose(output_root=output_root, first_pose_root=pose_root, source_root=source_root,
             review=review, source_pose=source_pose, policy=policy, task_context=task_context,
@@ -991,6 +997,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                if collision_only else {})}
     if job_object_rule:
         result["job_object_rule"] = job_object_rule
+    if spend_capped:
+        result["reason"] = SPENDING_CAP_REACHED
     if geometry_only:
         # A captured subject stays where it was filmed; a robot check reading this must cut it out first.
         result.update(atlas_route="geometry_only",
@@ -1442,6 +1450,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         return {"status": "processing", "stage": "clean_plate_wait"}
 
     def as_filmed(review):
+        spend_capped = (review.get("job_object_rule") or {}).get("background_not_cleaned") == SPENDING_CAP_REACHED
         # A preserved origin, or a job whose object stays in the scan and shows nobody: the scene as filmed.
         from .atlas_source_gap_evidence import combine_source_surveys
         source_survey = combine_source_surveys(survey_paths=[
@@ -1450,9 +1459,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             output=output_root / 'capture_source_survey.json')
         return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
             policy=policy, task_context=task_context, source_digest=source_digest,
-            configuration=_current_configuration(task_context, source_digest, config), check=check,
-            experimental=experimental, max_polls=max_polls, model=receipt["model"],
-            source_survey_path=source_survey)
+            configuration=config if spend_capped else _current_configuration(task_context, source_digest, config),
+            check=check, experimental=experimental, max_polls=max_polls, model=receipt["model"],
+            source_survey_path=source_survey, spend_capped=spend_capped)
     review = background_floor(output_root, review, task_context) or review
     if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS or "job_object_rule" in review:
         return as_filmed(review)

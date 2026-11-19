@@ -380,6 +380,8 @@ KEEP_HOLDING_PREFIXES = ("scene_intake_",)
 #: release's receipt on the handoff is kept here too (``keep_outbox_receipt``), so held runs never lose it.
 OUTBOX_MARKER = "prepared_scene_outbox.json"
 #: The website's typed refusals of the write that commit nothing: a 4xx other than a conflict with an entry.
+# Unlike other conflicts, this exact prepared-scene refusal is returned before an outbox insert.
+_PREPARED_SCENE_CAP_REFUSAL = "website_control_prepared-scene_http_409:website_scene_preparation_budget_exhausted"
 _REFUSED_WRITE = re.compile(r"website_control_prepared-scene_http_4(?!09)[0-9]{2}(:|$)")
 
 
@@ -850,12 +852,15 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         try:
             receipt = enqueue_website_prepared_scene(task_context=context, request=request)
         except ValueError as exc:
-            if _REFUSED_WRITE.search(str(exc)):
+            cap_refused = str(exc) == _PREPARED_SCENE_CAP_REFUSAL
+            if cap_refused or _REFUSED_WRITE.search(str(exc)):
                 # This send committed nothing, but an earlier one that may have (or did) still may be forwarding into
                 # paid preparation: its evidence stands, and only a marker with none behind it settles ``refused``.
                 write_json(_outbox_marker(capture_root),
                            {**prior, "later_refusal": str(exc)[:200]} if prior is not None
                            else {**marker, "state": "refused", "code": str(exc)[:200]})
+                if cap_refused and prior is None:
+                    dispatching = False  # The settled refusal permits the room package.
             raise
         write_json(_outbox_marker(capture_root), {**marker, "state": "sent", "outbox_id": receipt.get("id")})
         return receipt

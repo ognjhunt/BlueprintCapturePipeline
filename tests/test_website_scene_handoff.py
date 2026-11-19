@@ -1491,6 +1491,28 @@ def test_a_failed_prepared_scene_write_never_ships_the_room_package(tmp_path, mo
         assert [call for call in packaged if call["output_root"].name != handoff.ROOM_FLOOR] == []
 
 
+@pytest.mark.parametrize("prior_state", [None, "sending", "sent"])
+def test_prepared_scene_cap_refusal_ships_only_without_an_earlier_send(tmp_path, monkeypatch, ready_atlas, prior_state):
+    def refuse(**_):
+        raise ValueError("website_control_prepared-scene_http_409:website_scene_preparation_budget_exhausted")
+
+    kwargs, _compiled, packaged = _to_the_outbox(tmp_path, monkeypatch, refuse)
+    _granted(tmp_path, kwargs, ends_in=3 * 86400)
+    path = tmp_path / "pipeline/website_scene_preparation" / handoff.OUTBOX_MARKER
+    if prior_state is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, {"state": prior_state})
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    packages = [row for row in packaged if row["output_root"].name != handoff.ROOM_FLOOR]
+    assert json.loads(path.read_text())["state"] == (prior_state or "refused")
+    if prior_state is None:
+        assert result["status"] == handoff.ROOM_PACKAGE
+        assert "spending_cap_reached" in packages[0]["flags"]
+    else:
+        assert result["runtime_inputs"]["status"] == "awaiting_inputs"
+        assert not packages
+
+
 def test_an_earlier_release_s_outbox_receipt_is_kept_across_held_runs(tmp_path, monkeypatch, ready_atlas):
     """A job that sent its prepared scene on an earlier release: its handoff's receipt is kept as the marker before
     a held run rewrites the handoff, so no later run takes the fallback either."""
