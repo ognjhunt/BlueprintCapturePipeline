@@ -2879,3 +2879,24 @@ def test_a_stop_right_after_the_delivery_is_written_still_retires_the_old_copies
     monkeypatch.undo()
     assert world.publish()["status"] == "current" and world.retracted == [old["uri"]]
     assert [row["retracted"] for row in _manifest(job)[sim.permission.SUPERSEDED]] == [True]
+
+
+# --- money: no price, and none of Blueprint's own spend, reaches the company's package ------------------------------
+
+def test_no_price_and_none_of_blueprints_spend_reaches_the_package(job, tmp_path):
+    from tests.money_copy import price_findings
+
+    spend = {"reserved_cost_usd": 37.25, "max_spend_usd": 61.5, "spend": {"usd": 12.75, "note": "Scene budget $40 PLANTSPEND"}}
+    for path in (job.packet / sim.PLAN_FILE, job.scene / "team_scene_inputs.v1.json",
+                 job.queue / "status/31e12dca983b8837295ac911c44dee68.json"):
+        _write(path, {**json.loads(path.read_text()), **spend})
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    with zipfile.ZipFile(_package(job)) as archive:
+        texts = {name: archive.read(name).decode("utf-8") for name in archive.namelist()
+                 if name.endswith((".txt", ".json", ".usda"))}
+    assert {"README.txt", "success_rule.json", "scene.usda"} <= set(texts)
+    for name, text in [*texts.items(), ("the record the WebApp shows the company", json.dumps(world.delivered[0]))]:
+        assert price_findings(text) == [], name
+    _assert_absent_from_zip(job, [b"37.25", b"61.5", b"12.75", b"PLANTSPEND", b"reserved_cost", b"max_spend"])
+    assert not {"37.25", "61.5", "12.75", "PLANTSPEND"} & set(re.findall(r"[\w.]+", json.dumps(world.delivered[0])))
