@@ -637,11 +637,15 @@ def test_changed_base_scene_bytes_are_refused(tmp_path):
         _compile(tmp_path, swap)
 
 
+#: A test gripper that declares its opening and grip force (85 mm, 20-235 N). Preparation itself screens no gripper.
+REFERENCE_GRIPPER = {"model": "test_two_finger", "full_stroke_m": 0.085, "grip_force_n": {"lower": 20.0, "upper": 235.0}}
+
+
 def test_physics_screen_escalates_the_smallest_missing_measurement():
-    heavy = preparation.screen_physics([0.3, 0.3, 0.3], gripper=preparation.GRIPPER)
+    heavy = preparation.screen_physics([0.3, 0.3, 0.3], gripper=REFERENCE_GRIPPER)
     assert heavy["sensitivity"] == "blocked_by_estimate"
     assert heavy["measurement_escalation"]["property"] == "smallest_dimension_m"
-    medium = preparation.screen_physics([0.06, 0.06, 0.6], gripper=preparation.GRIPPER)
+    medium = preparation.screen_physics([0.06, 0.06, 0.6], gripper=REFERENCE_GRIPPER)
     assert medium["sensitivity"] == "outcome_depends_on_estimate"
     assert medium["measurement_escalation"]["property"] == "mass_kg"
     assert all(row["basis"] == "estimated" for row in [medium])
@@ -662,8 +666,8 @@ def test_a_registered_bodys_gripper_is_screened_on_its_own_opening_and_its_hold_
     wide = preparation.screen_physics([0.1, 0.1, 0.1], gripper=tool)
     assert wide["sensitivity"] == "blocked_by_estimate"
     assert wide["measurement_escalation"]["property"] == "smallest_dimension_m"
-    # The Robotiq reference's verdict on the narrow object is unchanged.
-    assert preparation.screen_physics([0.06, 0.06, 0.6], gripper=preparation.GRIPPER)["sensitivity"] == (
+    # A gripper that declares its grip force has its hold assessed on the narrow object.
+    assert preparation.screen_physics([0.06, 0.06, 0.6], gripper=REFERENCE_GRIPPER)["sensitivity"] == (
         "outcome_depends_on_estimate")
     assert preparation.embodiment_grippers({**body, "gripper": None}) == []
 
@@ -1378,9 +1382,11 @@ def test_without_a_region_the_existing_fixture_compiles_to_the_same_preparation(
     assert value["video_box_fit_check"]["stops_preparation"] is False
     # So is the record of how the destination was chosen (2026-11-12): no field of the output changes.
     assert value["destination_choice"]["basis"] in {"grounded_centre", "start_surface_farthest_spot"}
+    # And Blueprint's estimates of what the site did not say (2026-11-19): records beside it, never a change to it.
+    assert value["weight_estimate"]["status"] == "not_estimated" and "operations_estimate" not in value
     assert canonical_digest(_rounded({key: item for key, item in value.items()
                                       if key not in {"digest", "video_box_fit_check", "support_height_agreement",
-                                                     "destination_choice"}})) == (
+                                                     "destination_choice", "weight_estimate"}})) == (
         "sha256:54f20485d07a2fbf87311e1c5791f8cefc7d1675ba41a0c8ac06ad9e76938d43")
 
 

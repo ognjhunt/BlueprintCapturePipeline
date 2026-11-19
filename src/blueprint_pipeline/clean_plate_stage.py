@@ -237,6 +237,8 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
                 # The analysis's rigidity reading, when it gave one; older manifests are unchanged.
                 **({"rigidity": target["rigidity"], "rigidity_reason": target.get("rigidity_reason") or ""}
                    if target.get("rigidity") in ("rigid", "deformable", "unknown") else {}),
+                # Its material and fill, when it gave them (``website_job_estimates``); older manifests are unchanged.
+                **({key: target[key] for key in ("material", "solid_fraction")} if "material" in target else {}),
                 "spatial_evidence": target.get("spatial_evidence", []),
                 # Filled by the deferred fill machinery / rebuild chain:
                 "mask_track_ref": None,
@@ -264,6 +266,8 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
         **({"synthetic_subject": dict(plan["synthetic_subject"])} if plan.get("synthetic_subject") else {}),
         # The place on the destination surface the task names, when it names one.
         **({"destination_region": dict(plan["destination_region"])} if plan.get("destination_region") else {}),
+        # How often a site like this one runs the job, the analysis's estimate, when it gave one.
+        **({"operations_estimate": dict(plan["operations_estimate"])} if plan.get("operations_estimate") else {}),
     }
 
 

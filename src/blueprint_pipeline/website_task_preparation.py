@@ -26,7 +26,6 @@ from PIL import Image
 from scipy.spatial import cKDTree
 
 from . import task_evaluation_scene_intake as intake
-from .adp009d_newton_gripper_drive import FULL_STROKE_M
 from .clean_plate_removal_response_schema import region_evidence
 from .core.handoff_lease import guarded_handoff_write_json as write_json
 from .decision_evidence_contracts import canonical_digest
@@ -68,9 +67,6 @@ def _front_normal_undetermined(*values: Any) -> ValueError:
 CLAIM_CEILING = "development_only"
 _UP_INDEX = {"Y": 1, "-Y": 1, "Z": 2}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-# Robotiq 2F-85 datasheet: 85 mm stroke, 20-235 N grip force. Reference only.
-GRIPPER = {"model": "robotiq_2f85", "full_stroke_m": FULL_STROKE_M,
-           "grip_force_n": {"lower": 20.0, "upper": 235.0}}
 SUCCESS = {"control_frequency_hz": 15, "maximum_episode_seconds": 24.0, "minimum_lift_m": 0.05,
            "pregrasp_clearance_m": 0.1, "minimum_planar_displacement_m": 0.1,
            "maximum_final_planar_target_error_m": 0.05, "maximum_retries": 0, "maximum_regrasps": 0}
@@ -1980,6 +1976,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         from .website_support_height_agreement import preparation_record
         value["support_height_agreement"] = _flag_only_record(lambda: preparation_record(
             value, base_scene=base_scene, masks=task_masks, frames=source_geometry["frames"]))
+    from .website_job_estimates import preparation_estimates  # what a company needs and the site did not say
+    value.update(preparation_estimates(subject=value["subject"], entry=subject_entry, removal_manifest=removal_manifest,
+        target=None if synthetic is not None else subject_target, relative_error=DIMENSION_RELATIVE_ERROR, designed=synthetic))
     value["digest"] = canonical_digest(value, digest_field="digest")
     write_json(output_root / "preparation.json", value)
     (output_root / "thumbnail.b64").write_text(thumbnail["png_base64"])

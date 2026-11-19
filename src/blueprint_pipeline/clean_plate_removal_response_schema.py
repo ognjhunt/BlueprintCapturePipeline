@@ -34,6 +34,19 @@ _region_properties = dict(_properties)
 _properties = {**_region_properties,
                "rigidity": {"type": "string", "enum": ["rigid", "deformable", "unknown"]},
                "rigidity_reason": {"type": "string"}}
+#: What most of each object's weight is made of, and the share of its box that material fills for a typical
+#: object of its kind (2026-11-19): with the box from the video, Blueprint's weight estimate when no weight is
+#: published (``website_job_estimates``). ``_rigidity_properties`` is every target field before them.
+MATERIALS = ("metal", "wood", "plastic", "glass", "ceramic", "stone", "paper", "fabric", "foam", "rubber",
+             "food", "liquid", "unknown")
+_range = {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": 0}}
+_rigidity_properties = dict(_properties)
+_properties = {**_rigidity_properties,
+               "material": {"type": "string", "enum": list(MATERIALS)},
+               "solid_fraction": {**_range, "items": {"type": "number", "minimum": 0, "maximum": 1}}}
+#: Optional: how often a site like the one filmed runs this job, the analysis's estimate from the job's words and
+#: the place (2026-11-19). Never a fact about the site: the site's own answers replace it where it gave them.
+_operations = {"per_hour": _range, "hours_per_day": _range, "days_per_week": _range, "basis": {"type": "string"}}
 #: A task that adds a new object absent from the video (a synthetic ball) names
 #: its design and the observed support it starts on; nothing visible stands in.
 SYNTHETIC_SHAPES = ("sphere", "box", "cylinder")
@@ -52,7 +65,7 @@ _region = {
 }
 
 
-def _response_schema(properties: Mapping[str, Any]) -> dict[str, Any]:
+def _response_schema(properties: Mapping[str, Any], *, operations: bool = False) -> dict[str, Any]:
     return {
         "type": "object", "required": ["targets"], "properties": {
             "targets": {"type": "array", "items": {
@@ -60,11 +73,16 @@ def _response_schema(properties: Mapping[str, Any]) -> dict[str, Any]:
             }},
             "synthetic_subject": {"type": "object", "properties": _synthetic, "required": list(_synthetic)},
             "destination_region": {"type": "object", "properties": _region, "required": list(_region)},
+            **({"operations_estimate": {"type": "object", "properties": _operations, "required": list(_operations)}}
+               if operations else {}),
         },
     }
 
 
-RESPONSE_SCHEMA = _response_schema(_properties)
+RESPONSE_SCHEMA = _response_schema(_properties, operations=True)
+#: The response schema before the material and the operations estimate (2026-11-03 to 2026-11-19). An
+#: analysis bought under it is still the capture's answer, without them.
+RIGIDITY_RESPONSE_SCHEMA = _response_schema(_rigidity_properties)
 #: The response schema before ``rigidity`` existed (2026-10-31 to 2026-11-03). A completed
 #: analysis bought under it is still the capture's answer, without a classification.
 REGION_RESPONSE_SCHEMA = _response_schema(_region_properties)

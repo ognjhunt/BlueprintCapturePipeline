@@ -557,7 +557,9 @@ def test_the_sheet_says_how_sure_each_estimate_is_and_names_every_estimate_the_p
     # Only where it starts: the check's goal figure compares the start's seat with another surface.
     assert ("Surface height under the object: where it starts, the simulation seats it 8 cm below the surface the "
             "reconstruction's picture shows there; not corrected.") in estimated
-    assert "Mass estimate: 0.999–250 kg, a prior from the object's size, not weighed." in estimated
+    # Job 4 was prepared before Blueprint estimated weights: it says so, beside the simulation's wide prior.
+    assert ("Weight: not estimated: this job was prepared before Blueprint estimated weights. The simulation uses a "
+            "wide prior from its size alone: 1 to 250 kg.") in estimated
     flags = {"scene_estimate:placement_uncertainty", "scene_estimate:support_height_differs_from_picture",
              "task_object_box_fit_offset", "task_object_box_fit_size"}
     for code in flags:
@@ -582,6 +584,10 @@ def test_the_sheet_says_where_the_object_starts_and_goes_how_high_and_how_much_r
         "Object: table lamp.",
         "Rigid or soft: rigid: it keeps its shape when handled (Blueprint's model reading of the video; not checked).",
         "Material, how fragile it is and how it should be held: not recorded.",
+        "Sizes that matter for holding it, from the video: 37 cm across the narrower side of its footprint, 40 cm "
+        "across the wider, 67 cm tall; its longest side about 67 cm (Blueprint's estimate; the site did not say). "
+        "Each may be 0.75 to 1.33 times that (the scale band). No particular gripper or hand was checked against "
+        "them.",
         "Starts: the middle of its base at (0.277, -0.182, 0.539) m, about 54 cm above the floor (40 cm to 72 cm "
         "across the scale band).",
         "Goes to: glass wall shelf; centre (0.470, -1.211, 1.308) m; about 131 cm above the floor (98 cm to 174 cm "
@@ -592,8 +598,8 @@ def test_the_sheet_says_where_the_object_starts_and_goes_how_high_and_how_much_r
         "which Blueprint levelled to height 0. Each may also be off by about 8 cm, the registration residual near "
         "the task."]
     assert "PLANTREASON" not in "\n".join(lines)  # the model's own words about the object are not quoted
-    # With the fit table: its floor, its grasp rule beside the catalog's gripper, where a base stands, how wide.
-    table = {"inputs": {"scale_band": [0.75, 1.3333], "point_rule": {"grasp": packet.TOP_DOWN_GRASP},
+    # With the fit table: its floor, where a base stands, how wide; never whether one particular gripper fits.
+    table = {"inputs": {"scale_band": [0.75, 1.3333], "point_rule": {"grasp": "object_top_plus_tool_length_top_down"},
                         "tool": {"tool_id": "robotiq_2f85"}, "straight_line_m": [0.9, 1.6],
                         "stations": {"positions_world_m": [[0.9, 0.1, 0.0], [0.9, -0.4, 0.0]]},
                         "floor_height": {"floor_z_m": 0.01},
@@ -601,10 +607,17 @@ def test_the_sheet_says_where_the_object_starts_and_goes_how_high_and_how_much_r
                                                     "upper_hole_possible": True,
                                                     "searches": [{"half_extent_m": 0.45, "clear": False}]}}}}
     lines = packet.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, table, {}, None)
-    assert ("Material, how fragile it is and how it should be held: not recorded. The first look on paper assumes a "
-            "robot takes it from above with a two-finger gripper that opens 85 mm (Robotiq 2F-85); whether that "
-            "gripper can hold it was not checked. The object's box is 37 cm across its narrowest side, wider than "
-            "that opening, so it would have to be held by a narrower part or with another tool.") in lines
+    assert "Material, how fragile it is and how it should be held: not recorded." in lines
+    assert not any("85 mm" in line or "Robotiq" in line or "two-finger" in line for line in lines)
+    assert any(line.startswith("Sizes that matter for holding it, from the video: 37 cm across the narrower")
+               for line in lines)
+    # The site answered how big it is: its answer stands, and Blueprint's longest side is not printed.
+    answered = packet.object_lines(LAMP, {}, None, None, None, size_answered=True)
+    assert any("its longest side: the site's own answer, above." in line for line in answered)
+    assert not any("its longest side about" in line for line in answered)
+    # A material the video analysis read is named, as its reading.
+    read = packet.object_lines({**LAMP, "weight_estimate": {"material": "metal"}}, {}, None, None, None)
+    assert read[1].startswith("Material: mostly metal, as Blueprint's video analysis read it (not checked);")
     assert any(line.startswith("Starts: ") and "about 53 cm above the floor" in line for line in lines)
     assert not any(line.startswith("Start to destination") for line in lines)  # the table's carry line says it
     assert any("heights are above the floor next to the task, as Blueprint's robot fit check found it." in line
@@ -748,8 +761,8 @@ OLD_TABLE_LINES = [
     "Counts: fits on published figures: 1, does not fit: 1", "",
     "Checked against published specifications and the scene's estimated geometry: reach, payload. It is not a test "
     "of any robot.", "Cycle time was not checked: the site gave no target.",
-    "Payload is unknown for 1 of the 2 robots listed: the object was not weighed, and its mass is estimated from the "
-    "video only (the paper check allows 0.4–1.8 kg)."]
+    "Payload is unknown for 1 of the 2 robots listed: the object was not weighed, and its mass is an estimate, as "
+    "the weight line above says (the paper check allows 0.4–1.8 kg)."]
 PLANTED = "Call Dana on 415 555 0199"
 
 

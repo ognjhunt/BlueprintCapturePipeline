@@ -44,8 +44,9 @@ from typing import Any, Mapping, Optional, Sequence
 from .capture_audio_minimization import AudioRemovalError, audio_free_upload_copy
 from .common import sha256_file, utc_now_iso
 from .core.handoff_lease import HandoffLeaseError, handoff_lease_checkpoint
-from .clean_plate_removal_response_schema import (PRIOR_RESPONSE_SCHEMA, REGION_RESPONSE_SCHEMA, RESPONSE_SCHEMA,
-                                                  SYNTHETIC_SHAPES, region_evidence, validate_destination_region)
+from .clean_plate_removal_response_schema import (MATERIALS, PRIOR_RESPONSE_SCHEMA, REGION_RESPONSE_SCHEMA,
+                                                  RESPONSE_SCHEMA, RIGIDITY_RESPONSE_SCHEMA, SYNTHETIC_SHAPES,
+                                                  region_evidence, validate_destination_region)
 from .website_task_context_contracts import TASK_NOT_NAMED, admits_scene_preparation, task_named
 
 GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS"
@@ -117,6 +118,19 @@ RIGIDITY_INSTRUCTION = (
     "bends, folds, drapes, sags, stretches or squashes; unknown when the video does not show which. "
     "Give 'rigidity_reason': the short visible evidence for it, such as its material or how it hangs, "
     "folds or rests. "
+)
+#: What a deployment company needs and a site rarely states (owner decision 2026-11-19): what each object is
+#: mostly made of and how much of its box that fills, for Blueprint's weight estimate, and how often a site like
+#: this one runs the job. Estimates, labelled so (``website_job_estimates``); the same call, no new one.
+ESTIMATE_INSTRUCTION = (
+    "Also give 'material' for each target: what most of its weight is made of, one of the listed materials, "
+    "or unknown when the video does not show it. Give 'solid_fraction': two numbers above 0 and at most 1, the "
+    "lowest and highest share of the object's bounding box that this material fills for a typical object of its "
+    "kind: near 1 for a solid block, small for a hollow shell, a thin frame or a container holding mostly air. "
+    "Also return the key 'operations_estimate', your estimate of how often a site like the one filmed runs this "
+    "job, from the job's words and the place you see: per_hour (lowest and highest number of times an hour the "
+    "job is done while it runs), hours_per_day (lowest and highest), days_per_week (lowest and highest), and "
+    "basis: one sentence on what the estimate rests on. These are estimates, never facts about this site. "
 )
 PROMPT_INSTRUCTION = (
     "You are analyzing a walkthrough video of a work environment to plan which "
@@ -193,7 +207,7 @@ PROMPT_INSTRUCTION = (
     "(rebuild_and_compose or none), 'spatial_evidence' (a list of "
     "{timestamp_seconds, box_xywh_normalized:[x,y,w,h]} entries time-localizing the "
     "target), and 'confidence' in [0,1]. "
-    + RIGIDITY_INSTRUCTION +
+    + RIGIDITY_INSTRUCTION + ESTIMATE_INSTRUCTION +
     "Always mark a person as remove. Mark a "
     "movable task-object as remove with rebuild_and_compose. Keep fixed clutter that "
     "is genuinely part of the environment (disposition keep, rebuild_intent none). "
@@ -202,21 +216,26 @@ PROMPT_INSTRUCTION = (
     "who is not visibly present."
 )
 PROMPT_TEMPLATE_SHA256 = hashlib.sha256(PROMPT_INSTRUCTION.encode("utf-8")).hexdigest()
+#: The instruction before the material and the operations estimate (2026-11-03 to 2026-11-19). An analysis
+#: bought under it stays the capture's answer, without them, and is never bought again.
+RIGIDITY_PROMPT_INSTRUCTION = PROMPT_INSTRUCTION.replace(ESTIMATE_INSTRUCTION, "", 1)
 #: The instruction before rigidity (2026-10-31 to 2026-11-03). An analysis bought under it
 #: stays the capture's answer, unclassified, and is never bought again.
-REGION_PROMPT_INSTRUCTION = PROMPT_INSTRUCTION.replace(RIGIDITY_INSTRUCTION, "", 1)
+REGION_PROMPT_INSTRUCTION = RIGIDITY_PROMPT_INSTRUCTION.replace(RIGIDITY_INSTRUCTION, "", 1)
 #: The instruction before the destination region (2026-10-31). An analysis bought
 #: under it stays the capture's answer, region-free, and is never bought again.
 PRIOR_PROMPT_INSTRUCTION = REGION_PROMPT_INSTRUCTION.replace(DESTINATION_REGION_INSTRUCTION, "", 1)
 #: Each revision of the instruction by name. A plan records the one it was bought under
 #: (``prompt_revision``); a plan bought before names existed is known by its template digest.
-PROMPT_REVISION = "removal_analysis.r3"
+PROMPT_REVISION = "removal_analysis.r4"
+RIGIDITY_PROMPT_REVISION = "removal_analysis.r3"
 REGION_PROMPT_REVISION = "removal_analysis.r2"
 PRIOR_PROMPT_REVISION = "removal_analysis.r1"
 #: Any instruction older than these (before the choice rule): its digest is not one of them.
 OLDER_PROMPT_REVISION = "removal_analysis.r0"
 PROMPT_REVISIONS = {
     PROMPT_TEMPLATE_SHA256: PROMPT_REVISION,
+    hashlib.sha256(RIGIDITY_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): RIGIDITY_PROMPT_REVISION,
     hashlib.sha256(REGION_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): REGION_PROMPT_REVISION,
     hashlib.sha256(PRIOR_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): PRIOR_PROMPT_REVISION,
     # Bought on 2026-10-29 (capture-98a79ce3, capture-f88f1bd0) under wording of the same revision: its
@@ -236,14 +255,16 @@ def analysis_revision(plan: Mapping[str, Any]) -> str:
 def binds_current_job(plan: Mapping[str, Any]) -> bool:
     """Whether a retained analysis still decides the job, so it is never bought again.
 
-    One bought under the current revision always does. One bought under the destination-region
+    One bought under the current revision always does, and so does one bought under the rigidity revision: it
+    lacks only the material and the operations estimate, which the job packet then says it does not have. One
+    bought under the destination-region
     revision does when it completed: it was asked for the instance choice and the named place, and
     lacks only the rigidity class, which the label backstop covers. Anything older, or an older one
     that ended blocked, is bought once more under the current revision (capture-c33427c3: a box the
     task let the analysis choose was left uncertain under an instruction without the choice rule).
     """
     revision = analysis_revision(plan)
-    return revision == PROMPT_REVISION or (
+    return revision in (PROMPT_REVISION, RIGIDITY_PROMPT_REVISION) or (
         revision == REGION_PROMPT_REVISION and plan.get("status") == "completed" and not plan.get("blockers"))
 
 
@@ -337,6 +358,30 @@ def _normalize_spatial_evidence(value: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _ordered_pair(value: Any, *, low: float = 0.0, high: float = math.inf) -> bool:
+    """Two finite numbers, the first above ``low``, at most the second, and the second at most ``high``."""
+    return (isinstance(value, list) and len(value) == 2
+            and all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) for v in value)
+            and low < value[0] <= value[1] <= high)
+
+
+def _fraction(value: Any) -> bool:
+    return _ordered_pair(value, high=1.0)
+
+
+def parse_operations_estimate(text: str) -> Optional[dict[str, Any]]:
+    """How often a site like the one filmed runs the job, as the analysis estimated it; None when it gave no
+    well-formed one. Never a fact about the site, and never a reason to repair or hold: it only informs."""
+    data = _response_json(text)
+    raw = data.get("operations_estimate") if isinstance(data, Mapping) else None
+    if (not isinstance(raw, Mapping) or not _string(raw.get("basis"))
+            or not all(_ordered_pair(raw.get(key), low=-1e-9, high=bound)
+                       for key, bound in (("per_hour", math.inf), ("hours_per_day", 24.0), ("days_per_week", 7.0)))):
+        return None
+    return {**{key: [float(v) for v in raw[key]] for key in ("per_hour", "hours_per_day", "days_per_week")},
+            "basis": _string(raw["basis"])[:300], "source": "video_analysis_estimate"}
+
+
 def _normalize_target(raw: Mapping[str, Any], index: int) -> Optional[dict[str, Any]]:
     if not isinstance(raw, Mapping):
         return None
@@ -378,6 +423,9 @@ def _normalize_target(raw: Mapping[str, Any], index: int) -> Optional[dict[str, 
         **({"rigidity": _string(raw.get("rigidity")).lower(),
             "rigidity_reason": _string(raw.get("rigidity_reason"))[:300]}
            if _string(raw.get("rigidity")).lower() in RIGIDITY_CLASSES else {}),
+        # Kept only as given and well formed: no reading is no estimate (``website_job_estimates``).
+        **({"material": raw["material"], "solid_fraction": [float(v) for v in raw["solid_fraction"]]}
+           if raw.get("material") in MATERIALS and _fraction(raw.get("solid_fraction")) else {}),
     }
 
 
@@ -579,6 +627,7 @@ def build_removal_plan(
     synthetic_subject: Optional[Mapping[str, Any]] = None,
     destination_region: Optional[Mapping[str, Any]] = None,
     destination_region_refusal: Optional[str] = None,
+    operations_estimate: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble a ``clean_plate_removal_plan.v1`` record."""
 
@@ -613,6 +662,7 @@ def build_removal_plan(
         **({"destination_region": dict(destination_region)} if destination_region is not None else {}),
         **({"destination_region_refusal": destination_region_refusal}
            if destination_region_refusal is not None else {}),
+        **({"operations_estimate": dict(operations_estimate)} if operations_estimate is not None else {}),
         # People removal is never authorized here; the privacy pipeline owns it.
         "authority_boundary": {
             "authorizes_person_pixel_removal": False,
@@ -857,6 +907,7 @@ def _invoke_agentic_video(
     genai: Any,
     types: Any,
     prompt: str = PROMPT_INSTRUCTION,
+    schema: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Run the explicitly selected mode; require tool traces only for agentic."""
     if processing not in {"static", "agentic"}:
@@ -889,7 +940,8 @@ def _invoke_agentic_video(
             model=model, store=False,
             input=[{"type": "video", "uri": uploaded.uri, "mime_type": mime_type, "processing": ({"type": "static", "fps": STATIC_FPS} if processing == "static" else "agentic")},
                    {"type": "text", "text": prompt}],
-            response_format={"type": "text", "mime_type": "application/json", "schema": RESPONSE_SCHEMA},
+            response_format={"type": "text", "mime_type": "application/json",
+                             "schema": RESPONSE_SCHEMA if schema is None else schema},
             generation_config={"max_output_tokens": 8192, "thinking_level": "low"},
             timeout=300.0,
         )
@@ -1106,6 +1158,7 @@ def _analyze_removal_targets(
         synthetic_subject=synthetic,
         destination_region=region,
         destination_region_refusal=region_refusal,
+        operations_estimate=parse_operations_estimate(accepted_text),
         status="blocked" if decision_blockers else "completed",
         blockers=decision_blockers,
         model=model_name,
@@ -1186,20 +1239,22 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
             raise ValueError("website_gemini_source_changed")
         return result
 
-    # The same decision bought before rigidity was asked for is reused as it stands (unclassified),
-    # by its exact request, when it completed. One bought before the destination region was asked
-    # for, or one that ended blocked, is bought once more under this revision (``binds_current_job``).
+    # The same decision bought before the material and the operations estimate were asked for is reused as it
+    # stands, by its exact request. One bought before rigidity is reused (unclassified) when it completed. One
+    # bought before the destination region was asked for, or a region one that ended blocked, is bought once
+    # more under this revision (``binds_current_job``).
+    rigidity_form = request(RIGIDITY_PROMPT_INSTRUCTION, RIGIDITY_RESPONSE_SCHEMA)
     region_form = request(REGION_PROMPT_INSTRUCTION, REGION_RESPONSE_SCHEMA)
     prior_form = request(PRIOR_PROMPT_INSTRUCTION, PRIOR_RESPONSE_SCHEMA)
 
     def still_decides(earlier_binding: Mapping[str, Any], result: Mapping[str, Any]) -> bool:
-        # Only the region revision's completed answer is reused (``binds_current_job``).
-        return earlier_binding is region_form[0] and binds_current_job(
-            {**dict(result), "prompt_revision": REGION_PROMPT_REVISION})
+        revision = {id(rigidity_form[0]): RIGIDITY_PROMPT_REVISION,
+                    id(region_form[0]): REGION_PROMPT_REVISION}.get(id(earlier_binding))
+        return revision is not None and binds_current_job({**dict(result), "prompt_revision": revision})
 
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
         maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke, accept_earlier=still_decides,
-        earlier_requests=[region_form, prior_form])
+        earlier_requests=[rigidity_form, region_form, prior_form])
 
 
 #: The analysis asked again, only for the movable furniture around the support, and only once the site owner
@@ -1221,6 +1276,8 @@ OBSTACLE_PROMPT_INSTRUCTION = (
     "JSON only: an object with the key 'targets' whose value is a list."
 )
 OBSTACLE_MAX_OUTPUT_TOKENS = 4096
+#: The furniture analysis keeps the schema it was approved under: it asks for no material or operations estimate.
+OBSTACLE_RESPONSE_SCHEMA = RIGIDITY_RESPONSE_SCHEMA
 
 
 def movable_obstacle_request(*, source_digest: str, duration_seconds: float, processing: str,
@@ -1246,9 +1303,9 @@ def movable_obstacle_request(*, source_digest: str, duration_seconds: float, pro
     binding = {"kind": "movable_obstacle_analysis", "model": model_name, "processing": processing,
                "duration_seconds": duration_seconds, "fps": STATIC_FPS if processing == "static" else None,
                "source_digest": source_digest, "prompt": prompt, "max_output_tokens": OBSTACLE_MAX_OUTPUT_TOKENS,
-               "thinking_level": "low", "response_schema": RESPONSE_SCHEMA, "validation_repair_turns": 0}
+               "thinking_level": "low", "response_schema": OBSTACLE_RESPONSE_SCHEMA, "validation_repair_turns": 0}
     input_tokens = (math.ceil(duration_seconds) * (258 * STATIC_FPS + 32 + 64) + len(prompt.encode())
-                    + len(json.dumps(RESPONSE_SCHEMA)) + 4096 if processing == "static" else 1_048_576)
+                    + len(json.dumps(OBSTACLE_RESPONSE_SCHEMA)) + 4096 if processing == "static" else 1_048_576)
     return binding, gemini_quote(model=model_name, input_tokens=input_tokens,
                                  max_output_tokens=OBSTACLE_MAX_OUTPUT_TOKENS)
 
@@ -1283,7 +1340,8 @@ def analyze_movable_obstacles(*, video_path: str | Path, task_context: Mapping[s
 
         analysis = _invoke_agentic_video(api_key=_api_key()[0], model=str(binding["model"]),
                                          processing=str(binding["processing"]), video_path=path, genai=genai,
-                                         types=types, prompt=str(binding["prompt"]))
+                                         types=types, prompt=str(binding["prompt"]),
+                                         schema=binding["response_schema"])
         try:
             targets = parse_removal_plan_response(analysis["text"], strict=True,
                                                   task_description=_string(task_context.get("description")))

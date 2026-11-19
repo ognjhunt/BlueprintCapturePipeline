@@ -149,8 +149,6 @@ RIGIDITY_WORDS = {"rigid": "rigid: it keeps its shape when handled",
                   "unknown": "not known whether it keeps its shape when handled"}
 RIGIDITY_SOURCES = {"object_analysis": "Blueprint's model reading of the video",
                     "label_word_backstop": "read from the object's name only"}
-#: The fit table's grasp rule (``website_robot_fit``: the object's top plus the tool's length, from above).
-TOP_DOWN_GRASP = "object_top_plus_tool_length_top_down"
 #: What a company must judge for itself: nothing in the files a packet is made from measures or asks these.
 NOT_MEASURED = (
     "The way in: the route from the site's entrance to the job, its doorways, aisle widths, steps, ramps and floor "
@@ -844,7 +842,7 @@ def fit_lines(table: Mapping[str, Any]) -> list[str]:
     if payload_unknown and inputs.get("mass_basis") == "estimated":
         mass = _range(inputs.get("mass_kg_range"), "kg")
         lines.append(f"Payload is unknown for {payload_unknown} of the {len(rows)} robots listed: the object was not "
-                     "weighed, and its mass is estimated from the video only"
+                     "weighed, and its mass is an estimate, as the weight line above says"
                      + (f" (the paper check allows {mass})." if mass not in (NOT_RECORDED, INVALID) else "."))
     return lines
 
@@ -1063,32 +1061,24 @@ def _metres(value: float) -> str:
     return f"{value:.2f} m"
 
 
-def _grasp_words(fit_table: Mapping[str, Any] | None, box: tuple[list[float], list[float]] | None) -> str:
-    """What the first look assumed about holding the object (the fit table's grasp rule and the catalog's tool),
-    beside the object's narrowest side; empty without a fit table that took it from above."""
-    inputs = _mapping(_mapping(fit_table).get("inputs"))
-    if _mapping(inputs.get("point_rule")).get("grasp") != TOP_DOWN_GRASP:
-        return ""
-    try:
-        from .robot_spec_catalog import figure_value, load_robot_spec_catalog
-        tool = load_robot_spec_catalog()["default_tool"]
-        stroke = _number(figure_value(tool, "stroke_m"))
-    except Exception:  # noqa: BLE001 - the line is informational; without the catalog it is left out
-        return ""
-    if tool.get("tool_id") != _mapping(inputs.get("tool")).get("tool_id") or stroke is None:
-        return ""
-    words = (f" The first look on paper assumes a robot takes it from above with a two-finger gripper that opens "
-             f"{stroke * 1000:.0f} mm ({_cell(tool.get('name'))}); whether that gripper can hold it was not checked.")
-    if box is not None:
-        narrowest = min(box[1][0] - box[0][0], box[1][1] - box[0][1])
-        if narrowest > stroke:
-            words += (f" The object's box is {_length(narrowest)} across its narrowest side, wider than that opening, "
-                      "so it would have to be held by a narrower part or with another tool.")
-    return words
+def _holding_words(box: tuple[list[float], list[float]], band: tuple[float, float] | None, *,
+                   size_answered: bool) -> str:
+    """The object's sizes that matter for holding it, and nothing about any particular gripper: which hand or tool
+    can hold it is the deployment company's to judge (owner decision 2026-11-19)."""
+    from .website_job_estimates import ESTIMATE_LABEL
+    plan = sorted(b - a for a, b in zip(box[0][:2], box[1][:2], strict=True))
+    tall = box[1][2] - box[0][2]
+    longest = ("its longest side: the site's own answer, above" if size_answered
+               else f"its longest side about {_length(max(*plan, tall))} ({ESTIMATE_LABEL})")
+    return (f"Sizes that matter for holding it, from the video: {_length(plan[0])} across the narrower side of its "
+            f"footprint, {_length(plan[1])} across the wider, {_length(tall)} tall; {longest}."
+            + (f" Each may be {band[0]:.3g} to {band[1]:.3g} times that (the scale band)." if band else "")
+            + " No particular gripper or hand was checked against them.")
 
 
 def object_lines(prep: Mapping[str, Any], base_scene: Mapping[str, Any] | None, fit_table: Mapping[str, Any] | None,
-                 handoff: Mapping[str, Any] | None, criteria: Mapping[str, Any] | None) -> list[str]:
+                 handoff: Mapping[str, Any] | None, criteria: Mapping[str, Any] | None, *,
+                 size_answered: bool = False) -> list[str]:
     """The object, where it starts and where it goes, with heights above the floor and the room next to the task:
     every figure the preparation, the base scene and the fit table already hold, each with how sure it is."""
     subject, destination = _mapping(prep.get("subject")), _mapping(prep.get("destination"))
@@ -1101,7 +1091,12 @@ def object_lines(prep: Mapping[str, Any], base_scene: Mapping[str, Any] | None, 
     if rigidity.get("rigidity") in RIGIDITY_WORDS:
         lines.append(f"Rigid or soft: {RIGIDITY_WORDS[rigidity['rigidity']]} "
                      f"({RIGIDITY_SOURCES.get(rigidity.get('source'), 'its source is not recorded')}; not checked).")
-    lines.append("Material, how fragile it is and how it should be held: not recorded." + _grasp_words(fit_table, box))
+    material = _mapping(prep.get("weight_estimate")).get("material")
+    lines.append(f"Material: mostly {_cell(material)}, as Blueprint's video analysis read it (not checked); how fragile "
+                 "it is and how it should be held: not recorded." if isinstance(material, str) and material != "unknown"
+                 else "Material, how fragile it is and how it should be held: not recorded.")
+    if box is not None:
+        lines.append(_holding_words(box, band, size_answered=size_answered))
     start = None
     if box is not None:
         start = [(box[0][0] + box[1][0]) / 2, (box[0][1] + box[1][1]) / 2, box[0][2]]
@@ -1149,7 +1144,8 @@ def object_lines(prep: Mapping[str, Any], base_scene: Mapping[str, Any] | None, 
 
 
 def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[str, Any] | None,
-                            fit_table: Mapping[str, Any] | None) -> tuple[list[str], list[str]]:
+                            fit_table: Mapping[str, Any] | None, *,
+                            site_weight: bool = False) -> tuple[list[str], list[str]]:
     prep = preparation
     residual = _length(_mapping(_mapping(prep.get("registration")).get("task_region")).get("trimmed_rmse_m"))
     measured = [f"How closely the video's geometry and the reconstruction line up around the task (registration "
@@ -1181,9 +1177,10 @@ def _measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[
         estimated.append("The object's footprint is larger than the supported part of the surface at that spot: "
                          f"about {reach * 100:.1f} cm hangs over its edge; its centre is over the surface.")
     bounds = _mapping(_mapping(prep.get("physics")).get("bounds"))
-    if "mass_kg" in bounds:
-        estimated.append(f"Mass estimate: {_range(bounds.get('mass_kg'), 'kg')}, a prior from the object's size, not "
-                         "weighed.")
+    from .website_job_estimates import weight_line  # Blueprint's best estimate, labelled, never as weighed
+    weight = weight_line(prep, site_stated=site_weight)
+    if weight is not None:
+        estimated.append(weight)
     if "static_friction" in bounds or "dynamic_friction" in bounds:
         estimated.append(f"Friction: static {_range(bounds.get('static_friction'), '')}, dynamic "
                          f"{_range(bounds.get('dynamic_friction'), '')}; prior ranges, not measured.")
@@ -1646,12 +1643,17 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
         sheet.append("The site stated nothing beyond its description.")
     if unread:
         sheet.append(f"- {unread}")
+    # The seam ``UNSTATED_FACTS`` leaves: Blueprint's estimate of what the site did not answer, never of what it did.
+    from .website_job_estimates import operations_lines
+    rate_lines, rate_estimated = operations_lines(prep or None, answered)
     if prep:
         sheet += ["", "## The object and where it goes", ""]
-        sheet += [f"- {line}" for line in object_lines(prep, base_scene, fit_table, handoff, criteria)]
-        measured, estimated = _measured_and_estimated(prep, base_scene, fit_table)
+        sheet += [f"- {line}" for line in object_lines(prep, base_scene, fit_table, handoff, criteria,
+                                                         size_answered="item_size_longest_side" in answered)]
+        measured, estimated = _measured_and_estimated(prep, base_scene, fit_table, site_weight=bool(
+            details.get("item_weight")) or "item_weight" in answered)
         sheet += ["", "## Measured", ""] + [f"- {line}" for line in measured]
-        sheet += ["", "## Estimated", ""] + [f"- {line}" for line in estimated]
+        sheet += ["", "## Estimated", ""] + [f"- {line}" for line in [*estimated, *rate_lines]]
     sheet += ["", "## The video", "", "`files/video/`: the job's video, without its sound or its recorded details such as "
               "place and time. A deployment company needs neither to judge a job." if video is not None else "The video is not in this packet."]
     sheet += ["", "## First look on paper", ""]
@@ -1673,7 +1675,8 @@ def build_job_packet(inputs: JobInputs, *, output_root: Path, owned: OwnedCaptur
                                                                                else "."),
               "- No safety assessment of any robot at this site.",
               *(f"- {line}" for line in NOT_MEASURED),
-              *(f"- {line}" for line in unstated_rate_lines(answered, stated.get("cycleTimeSeconds") not in (None, ""))),
+              *(f"- {line}" for line in unstated_rate_lines({**answered, **dict.fromkeys(rate_estimated)},
+                                                             stated.get("cycleTimeSeconds") not in (None, ""))),
               ""]
     if any(removed):
         sheet[6] += " Contact details the site typed into its description or answers were removed."
