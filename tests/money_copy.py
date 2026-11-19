@@ -11,7 +11,7 @@ The same reading as the WebApp's ``scripts/qa/price-statements.ts``, sentence by
 - one of Blueprint's own spend fields by name (``reserved_cost_usd``, ``max_spend_usd``, ``budget_usd``): internal
   spend tracking is Blueprint's control, never a figure for a company.
 
-Used by ``test_job_packet_export.py`` and ``test_website_company_simulation.py``.
+Used by ``test_website_packet_facts.py`` and ``test_website_company_simulation.py``.
 """
 from __future__ import annotations
 

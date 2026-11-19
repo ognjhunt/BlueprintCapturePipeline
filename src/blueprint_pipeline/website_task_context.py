@@ -27,21 +27,14 @@ from .website_task_context_contracts import validate_website_task_context as val
 
 def load_current_website_task_context(
     *, request_id: str, scene_id: str, capture_id: str,
-    purpose: str | None = None, include_site_job_facts: bool = False,
+    purpose: str | None = None,
 ) -> dict[str, Any]:
-    """One authenticated bounded read; errors hold preparation without fallback.
-
-    ``include_site_job_facts`` asks the website to add the site's quick answers (``site_job_facts``). Only the job
-    sheet's reader asks (``website_site_job_facts``): the answers change whenever the site taps one, so a context read
-    with them is never retained, compared or bound to anything.
-    """
+    """One authenticated bounded read; errors hold preparation without fallback."""
     payload: dict[str, Any] = {"request_id": request_id, "scene_id": scene_id}
     if purpose is not None:
         if purpose != "scene_preparation":
             raise ValueError("website_task_context_purpose_invalid")
         payload["purpose"] = purpose
-    if include_site_job_facts:
-        payload["include_site_job_facts"] = True
     value = website_webapp_request(capture_id=capture_id, operation="task-context", payload=payload)
     return validate_website_task_context(value, request_id=request_id,
                                          scene_id=scene_id, capture_id=capture_id, purpose=purpose)

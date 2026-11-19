@@ -6,7 +6,7 @@ The lookups are compile's own ``support_under``; no provider is reached and noth
 """
 # Covers: src/blueprint_pipeline/website_destination_overhang.py
 # Covers: src/blueprint_pipeline/website_task_preparation.py
-# Covers: src/blueprint_pipeline/job_packet_export.py
+# Covers: src/blueprint_pipeline/website_packet_facts.py
 from __future__ import annotations
 
 import numpy as np
@@ -234,16 +234,21 @@ def test_where_it_finally_lands_is_read_again_and_a_place_that_cannot_hold_it_ne
     assert placement.admits(lambda sealed: True)({"position_world_m": held})
 
 
+def _estimated(value):
+    from blueprint_pipeline.website_packet_facts import measured_and_estimated
+    return [row["text"] for row in measured_and_estimated(value, None, None)[1]]
+
+
 def test_the_packet_prints_the_measured_overhang_and_nothing_at_none():
-    from blueprint_pipeline import job_packet_export as packet
+    from blueprint_pipeline.website_packet_facts import ESTIMATE_SENTENCES
     preparation_record = {"subject": {"aabb_min_xyz": [0.0, 0.0, 0.75], "aabb_max_xyz": [0.21, 0.18, 1.2]},
                           "destination_overhang": {"largest_overhang_m": 0.0816, "flag": DESTINATION_OVERHANG}}
-    estimated = packet._measured_and_estimated(preparation_record, None, None)[1]
+    estimated = _estimated(preparation_record)
     assert ("The object's footprint is larger than the supported part of the surface at that spot: about 8.2 cm "
             "hangs over its edge; its centre is over the surface.") in estimated
-    assert any(line.startswith(f"`{DESTINATION_OVERHANG}`: ") for line in estimated)
+    assert ESTIMATE_SENTENCES[DESTINATION_OVERHANG] in estimated
     unflagged = {**preparation_record, "destination_overhang": {"largest_overhang_m": 0.0}}
-    assert not any("hangs over" in line for line in packet._measured_and_estimated(unflagged, None, None)[1])
+    assert not any("hangs over" in line for line in _estimated(unflagged))
 
 
 #: The room's glass shelf made 0.12 m deep, and a cup 0.16 m across: more than the shelf's depth.
@@ -253,7 +258,6 @@ SHALLOW, WIDE_CUP = ((0.55, 1.19, 2.88), (1.15, 1.2, 3.0)), ((-0.68, 0.75, 2.42)
 @pytest.mark.parametrize("flipped", [False, True])
 def test_compile_places_the_wide_cup_on_the_shallow_shelf_clear_of_the_wall_and_says_how_much_hangs_over(
         tmp_path, flipped):
-    from blueprint_pipeline import job_packet_export as packet
     value = preparation.compile_website_scene_preparation(
         **_arguments(tmp_path, shelf=SHALLOW, cup_box=WIDE_CUP, flipped=flipped))
     assert "task_destination_surface_contact_required" not in value["blockers"], value["blockers"]
@@ -280,7 +284,7 @@ def test_compile_places_the_wide_cup_on_the_shallow_shelf_clear_of_the_wall_and_
     back = final[1] - size[1] / 2 if wall < final[1] else final[1] + size[1] / 2
     assert (back >= wall) if wall < final[1] else (back <= wall)
     line = f"about {record['largest_overhang_m'] * 100:.1f} cm hangs over its edge"
-    assert any(line in text for text in packet._measured_and_estimated(value, None, None)[1])
+    assert any(line in text for text in _estimated(value))
 
 
 def _clear(mesh, lower, upper, whole, *, start=ELSEWHERE):

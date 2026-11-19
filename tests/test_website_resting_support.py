@@ -14,7 +14,7 @@ table top 0.226 m above it, the box-fit check's flags and overlap (0.187), the n
 #   src/blueprint_pipeline/website_task_masks.py
 #   src/blueprint_pipeline/website_task_preparation.py
 #   src/blueprint_pipeline/website_collider_conditioning.py
-#   src/blueprint_pipeline/job_packet_export.py
+#   src/blueprint_pipeline/website_packet_facts.py
 #   src/blueprint_pipeline/website_surface_target_admission.py
 from __future__ import annotations
 
@@ -393,7 +393,11 @@ def test_a_bumpy_top_found_under_the_outline_is_flattened_level_at_its_top():
 
 
 def test_the_package_says_where_the_object_was_set_down_and_why():
-    from blueprint_pipeline.job_packet_export import ESTIMATE_SENTENCES, _measured_and_estimated
+    from blueprint_pipeline.website_packet_facts import ESTIMATE_SENTENCES, measured_and_estimated
+
+    def _measured_and_estimated(*args):
+        measured, estimated = measured_and_estimated(*args)
+        return [row["text"] for row in measured], [row["text"] for row in estimated]
 
     subject = {"aabb_min_xyz": [0.0, 0.0, 0.765], "aabb_max_xyz": [0.4, 0.375, 1.208]}
     raised = {"subject": subject, "support": {"guess": {"basis": resting.GUESS_BASIS, "flag": SUPPORT_GUESSED,
@@ -405,7 +409,7 @@ def test_the_package_says_where_the_object_was_set_down_and_why():
     assert size.endswith("from the video; its box reached 23 cm below the surface its frames show it resting on, "
                          "so Blueprint raised its bottom onto that surface and kept its observed top (height 67 cm "
                          "before, 44 cm after).")
-    assert f"`{SUPPORT_GUESSED}`: {ESTIMATE_SENTENCES[SUPPORT_GUESSED]}" in estimated
+    assert ESTIMATE_SENTENCES[SUPPORT_GUESSED] in estimated
     nearest = {"subject": subject, "support": {"guess": {"basis": "nearest_surface_under_footprint",
                                                          "drop_m": 0.2, "flag": SUPPORT_GUESSED}}}
     assert "moved it down 20 cm onto the nearest surface under it, its size unchanged." in \
@@ -413,7 +417,7 @@ def test_the_package_says_where_the_object_was_set_down_and_why():
     plain = _measured_and_estimated({"subject": subject, "support": {"basis": "fitted_surface_under_footprint"}},
                                     {"scene_estimates": []}, None)[1]
     assert next(line for line in plain if line.startswith("Object size")).endswith(", from the video.")
-    assert not any(SUPPORT_GUESSED in line for line in plain)
+    assert ESTIMATE_SENTENCES[SUPPORT_GUESSED] not in plain
 
 
 def test_the_object_outline_is_its_points_hull_not_its_box():

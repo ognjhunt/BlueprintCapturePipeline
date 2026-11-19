@@ -52,7 +52,12 @@ STATUS_V7 = "website_preparation_status.v7"
 # hand height, cycle time, floor width, or a clear route), why an open row is open, and each row's
 # payload limit. v5 to v7 keep v1.
 STATUS_V8 = "website_preparation_status.v8"
-_FROM_V7 = frozenset({STATUS_V7, STATUS_V8})
+# v9 is v8 with the facts a deployment company reads about the job's object on its job page
+# (website_packet_facts): where it starts and goes, how high, how sure each figure is, and Blueprint's
+# own estimates of its weight and of how often the job runs. v8 and earlier never carry them.
+STATUS_V9 = "website_preparation_status.v9"
+_FROM_V8 = frozenset({STATUS_V8, STATUS_V9})
+_FROM_V7 = _FROM_V8 | {STATUS_V7}
 _FROM_V6 = _FROM_V7 | {STATUS_V6}
 _FROM_V5 = _FROM_V6 | {STATUS_V5}
 _FROM_V4 = _FROM_V5 | {STATUS_V4}
@@ -69,7 +74,8 @@ _ACCEPTANCE = {"website_preparation_status_acceptance.v1": (STATUS_V1, _STATES_V
                "website_preparation_status_acceptance.v5": (STATUS_V5, _STATES_V2),
                "website_preparation_status_acceptance.v6": (STATUS_V6, _STATES_V2),
                "website_preparation_status_acceptance.v7": (STATUS_V7, _STATES_V2),
-               "website_preparation_status_acceptance.v8": (STATUS_V8, _STATES_V2)}
+               "website_preparation_status_acceptance.v8": (STATUS_V8, _STATES_V2),
+               "website_preparation_status_acceptance.v9": (STATUS_V9, _STATES_V2)}
 _CODES = {"preparing": "preparation_in_progress", "awaiting_inputs": "preparation_inputs_pending",
           "capacity_delayed": "preparation_capacity_delayed", "failed_retryable": "preparation_retryable_failure",
           "failed_terminal": "preparation_failed_terminal", "authority_ended": "preparation_authority_ended",
@@ -86,7 +92,7 @@ def requested_status_version(value: Any) -> str:
     text = value.strip() if type(value) is str else ""
     if re.fullmatch(r"[1-9][0-9]{0,2}", text):
         number = int(text)
-        versions = (STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7, STATUS_V8)
+        versions = (STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6, STATUS_V7, STATUS_V8, STATUS_V9)
         return versions[min(number, len(versions)) - 1]
     return STATUS_V1
 
@@ -475,7 +481,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         else:
             _require(before.get("status") in _LEDGER_STATES)
             state = _LEDGER_STATES[before["status"]]
-        outcome = question = robot_fit = precheck = None
+        outcome = question = robot_fit = precheck = packet_facts = None
         if schema_version in _FROM_V3:
             from .website_preparation_outcome import read_preparation_outcome
             outcome = read_preparation_outcome(capture_root=root,
@@ -498,11 +504,14 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             question = public_question(root)
         if schema_version in _FROM_V5:
             from .website_robot_fit_projection import read_robot_fit, read_robot_fit_v2
-            robot_fit = (read_robot_fit_v2 if schema_version == STATUS_V8 else read_robot_fit)(
+            robot_fit = (read_robot_fit_v2 if schema_version in _FROM_V8 else read_robot_fit)(
                 capture_root=root, task_context_digest=selected["task_context_digest"])
         if schema_version in _FROM_V6:
             from .website_robot_fit_precheck_projection import read_robot_fit_precheck
             precheck = read_robot_fit_precheck(capture_root=root, task_context_digest=selected["task_context_digest"])
+        if schema_version == STATUS_V9:
+            from .website_packet_facts import read_packet_facts
+            packet_facts = read_packet_facts(capture_root=root, task_context_digest=selected["task_context_digest"])
         after = _read_job_ledger(root)
         _require(before == after, "ledger_changed")
         _require(read_consent_state(root)["state"] != "revoked", "consent_revoked")
@@ -514,6 +523,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                   **({"question": question} if schema_version in _FROM_V4 else {}),
                   **({"robot_fit": robot_fit} if schema_version in _FROM_V5 else {}),
                   **({"robot_fit_precheck": precheck} if schema_version in _FROM_V6 else {}),
+                  **({"packet_facts": packet_facts} if schema_version == STATUS_V9 else {}),
                   "correlation_id": cross_runtime_canonical_digest({**selected,
                       "attempt_count": before["attempt_count"], "revision": before["revision"]})}
         result["status_digest"] = cross_runtime_canonical_digest(result)

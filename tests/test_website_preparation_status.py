@@ -516,6 +516,38 @@ def test_status_v8_carries_the_first_look_and_v7_keeps_the_shape_the_website_on_
         == status_reader.STATUS_V8
 
 
+def test_status_v9_is_v8_with_the_facts_a_company_reads_about_the_jobs_object(prepared_source):
+    from tests.test_website_packet_facts import LAMP
+    from tests.test_website_robot_fit_projection import FIRST_LOOK_ROWS, write_fit_table
+
+    root, owner, context, selected, ledger, _ = prepared_source
+    handoff = write_fit_table(root, rows=FIRST_LOOK_ROWS, context=context["context_digest"], preparation=LAMP,
+                              handoff={"website_intake_outbox": {"state": "forward_pending"}, "simulator_ready": False})
+    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
+        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
+            "website_scene_preparation": handoff}, owner="synthetic-worker", token=ledger["lease_token"],
+        ledger_update={"status": "completed"})
+    read = {version: status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                                           schema_version=version)
+            for version in (status_reader.STATUS_V8, status_reader.STATUS_V9)}
+    v8, v9 = read[status_reader.STATUS_V8], read[status_reader.STATUS_V9]
+    assert "packet_facts" not in v8 and set(v9) == set(v8) | {"packet_facts"}
+    assert v9["robot_fit"] == v8["robot_fit"] and v9["state"] == "handed_off"
+    assert v9["packet_facts"]["schema_version"] == "website_packet_facts.v1"
+    assert {"text": "Object: table lamp.", "answers": None} in v9["packet_facts"]["object"]
+    assert v9["status_digest"] == cross_runtime_canonical_digest(
+        {key: value for key, value in v9.items() if key != "status_digest"})
+    # The website reads up to 16 KiB from v9 on.
+    assert len(json.dumps(v9)) < 16384
+    assert status_reader.requested_status_version("9") == status_reader.STATUS_V9
+    assert status_reader.requested_status_version("10") == status_reader.STATUS_V9
+    acceptance = {"schema_version": "website_preparation_status_acceptance.v9", **selected, "accepted": True,
+                  "state": v9["state"], "status_digest": v9["status_digest"], "native_execution_complete": False,
+                  "correlation_id": "bp-prep-" + v9["status_digest"][7:23]}
+    assert status_reader.accepted_status_version(status_reader.validate_acceptance(acceptance, selected)) \
+        == status_reader.STATUS_V9
+
+
 def _write_legacy_precheck(root: Path, value: dict, *, context: str) -> dict:
     """A handoff with its preparation and precheck, as an earlier release's scene handoff left them."""
     from blueprint_pipeline.common import write_json

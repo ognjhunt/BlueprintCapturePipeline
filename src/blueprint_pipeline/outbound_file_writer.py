@@ -1,7 +1,6 @@
 """Every file that leaves Blueprint as a simulation file is written by Blueprint, never copied.
 
-The rule: no file reaches the simulation package (``website_company_simulation``) or the job packet's simulation
-folders (``job_packet_export``) byte for byte. Each is written here, from values Blueprint read, into a new file:
+The rule: no file reaches the simulation package (``website_company_simulation``) byte for byte. Each is written here, from values Blueprint read, into a new file:
 what the reader skips is not written, and every part that is kept is either a field of a fixed, checked length
 (an image header, a PNG gamma or colour chunk, a JPEG frame header) or numeric payload (the one limit below). The
 shared scan (``outbound_file_scan``) then runs over the output as the proof.

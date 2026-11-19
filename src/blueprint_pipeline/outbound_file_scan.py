@@ -1,7 +1,7 @@
 """One scan for every file that leaves Blueprint: ids, keys, host paths, links and the site's identity.
 
-The job packet tool (``job_packet_export``) and the simulation package for deployment companies
-(``website_company_simulation``) both hand over simulation files that Blueprint WROTE, never copied: every USD layer,
+The simulation package for deployment companies (``website_company_simulation``) hands over simulation files that
+Blueprint WROTE, never copied: every USD layer,
 usdz, PNG and JPEG is written by ``outbound_file_writer`` from what was read (what the reader does not read cannot
 be in the output). This scan then runs over the written output, as the proof, and refuses, naming the file, when
 one holds something that says who or where the site is, where Blueprint keeps things, or how to reach it. A finding
@@ -744,22 +744,8 @@ def scan_tree(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Pat
     return findings
 
 
-def first_finding(root: Path, literals: Sequence[tuple[bytes, str]], *, scratch: Path | None = None,
-                  words_only_under: str | None = None, words_except: Sequence[str] = (),
-                  closed: bool | Sequence[str] = False) -> Finding | None:
-    """The first finding under ``root`` in name order, or None; stops at the first."""
-    root = Path(root)
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        relative = path.relative_to(root).as_posix()
-        finding = scan_file(path, relative, _needles(relative, literals, words_only_under, words_except), scratch,
-                            closed=_closed(relative, closed))
-        if finding:
-            return finding
-    return None
-
-
 __all__ = ["ALLOWED_LINK_PREFIXES", "COMMON_WORDS", "Finding", "NOT_SHIPPED", "RAW_LITERAL_MINIMUM",
            "SHIPPED_SUFFIXES", "SITE_IDENTITY", "SITE_WORDS", "UNREADABLE", "UNREADABLE_USD", "UNREADABLE_ZIP",
-           "capture_site_identity", "capture_site_words", "content_kind", "first_finding", "fold", "literal_forms",
+           "capture_site_identity", "capture_site_words", "content_kind", "fold", "literal_forms",
            "record_site_identity", "record_site_words", "scan_file", "scan_stream", "scan_tree", "site_identity",
            "site_words"]
