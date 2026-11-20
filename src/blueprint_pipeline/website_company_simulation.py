@@ -123,8 +123,9 @@ ROTATIONS_STORED_WRONG = ("In that version each Gaussian's rotation is stored in
 #: more at the first pass after the release. v2 (2026-11-16): the layer's flatten note naming a host file is
 #: dropped (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a look
 #: is written again from its source splat with the fixed writer (every Gaussian's rotation as given) and also ships
-#: as a standard 3DGS PLY of that source.
-BUILDER_REVISION = "website_company_simulation_builder.v3"
+#: as a standard 3DGS PLY of that source. v4 (2026-11-21): the README speaks to the company in plain words (one name
+#: for the look file, no internal codes, notes as bullets), so packages built with the old README are built once more.
+BUILDER_REVISION = "website_company_simulation_builder.v4"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
