@@ -164,12 +164,13 @@ kept no message bytes (the tick counts it as `website_preparation_retry_payload_
 
 ## 1a. A unit failed
 
-Fourteen units start `blueprint-unit-failure@<unit>.service` when they fail
+Sixteen units start `blueprint-unit-failure@<unit>.service` when they fail
 (`OnFailure=`): the spend guard, the intake, the capacity controller, the
 units that move a website job (the handoff listener, Atlas preview and provider
 poll, scene progression, launch preparation, activation and dispatcher, team
-scene packet, the rigid probe runner, screening) and the withdrawal deletion
-pass (section 8). The list is
+scene packet, the rigid probe runner, scene stage maintenance), the withdrawal
+deletion pass (section 8), the control-plane state backup and the off-host
+reaper heartbeat. The list is
 `UNIT_FAILURE_NOTIFIED_UNITS` in `tests/test_deploy_systemd_contract.py`.
 
 The notifier (`src/blueprint_pipeline/unit_failure_notifier.py`) does two things:
@@ -238,7 +239,7 @@ The credit guard is on by default in code; only `BLUEPRINT_VAST_CREDIT_GUARD_ENA
 (`PAID_ALLOCATION_UNITS` in
 `src/blueprint_pipeline/task_evaluation_production_chain_preflight.py`; the chain
 preflight refuses one without it). That includes the rigid robot-free probe runner
-and beta policy screening. A Vast launch then needs a fresh balance that covers
+and the handoff listener. A Vast launch then needs a fresh balance that covers
 its cap plus a reserve before it allocates (`record_vast_credit_admission` in
 `src/blueprint_pipeline/vast_provider_adapter.py`). If not, the launch stops
 before allocation, at $0, with `provider_credit_insufficient`. Each launch is
@@ -518,14 +519,13 @@ reservation ledger could not hold the output's upload ceiling plus 512 MiB
 `src/blueprint_pipeline/task_evaluation_scene_capacity_recovery.py`). Ceiling
 mode uses `scene_configuration_provider_output_disk_capacity_insufficient`.
 
-Beta screening and the rigid robot-free probe stage new attempts on the work
-volume: `/mnt/blueprint-work/beta-policy-screening-work` and
-`/mnt/blueprint-work/rigid-robot-free-probe-work` (each unit's `*_WORK_ROOT`
-setting). Their `policy_canary_output` disk hold therefore draws on this
-volume, not on `/`. Their queues and the screening budget ledger stay on `/`.
-An attempt staged before that setting keeps its queue paths. A screening
-candidate refused with `policy_canary_output_disk_admission_refused` is out
-of room on the disk its attempt directory is on.
+The rigid robot-free probe stages new attempts on the work volume:
+`/mnt/blueprint-work/rigid-robot-free-probe-work` (the unit's `*_WORK_ROOT`
+setting). Its `policy_canary_output` disk hold therefore draws on this volume,
+not on `/`. Its queue stays on `/`. An attempt staged before that setting
+keeps its queue paths. The early trial's retained screening attempts stay in
+`/mnt/blueprint-work/beta-policy-screening-work` and its ledger on `/`; only
+withdrawal deletion and the spend meter read them (`AGENTS.md`).
 
 The capacity controller pages for disk with these codes: `floor_within_three_days`,
 `floor_within_hours`, `admission_refused`, `critical_admission_refused`,
@@ -654,16 +654,15 @@ Before you deploy:
 3. Do not redeploy an older commit before you read that list. If it removes
    work of another session, ask the owner first.
 4. A revert merged on `main` is a newer commit. It removes only what it names.
-5. Read `door status` (`deploy_activation_hold`). While a website or screening
-   job has work in flight on the running release, the door holds the deploy (it
-   parks; the job is never touched). `deploy_activation_hold.stages` and each
-   `live` row's `stage` say which. Paid: `scene_configuration_activation`,
-   `scene_configuration_launch`, `paid_launch_lock` or `beta_screening`. Not
-   paid yet: `scene_attempt_preparation`, `scene_configuration_preparation` or
-   `beta_screening_preparation` (section 6). The hold ends when the work ends,
-   or at its bound: 285 min for paid work, counted from when a paid stage was
-   first live; 60 min in all for work that is not paid yet (`CAP_SECONDS` and
-   `UNPAID_CAP_SECONDS` in
+5. Read `door status` (`deploy_activation_hold`). While a website job has work
+   in flight on the running release, the door holds the deploy (it parks; the
+   job is never touched). `deploy_activation_hold.stages` and each `live` row's
+   `stage` say which. Paid: `scene_configuration_activation`,
+   `scene_configuration_launch` or `paid_launch_lock`. Not paid yet:
+   `scene_attempt_preparation` or `scene_configuration_preparation` (section
+   6). The hold ends when the work ends, or at its bound: 285 min for paid
+   work, counted from when a paid stage was first live; 60 min in all for work
+   that is not paid yet (`CAP_SECONDS` and `UNPAID_CAP_SECONDS` in
    `deploy/operator-door/operator_door/activation_hold.py`; `bound` says which
    applies).
 6. `--activation-hold-override <reason>` deploys at once. Use it only for
@@ -705,26 +704,24 @@ Before you deploy:
      the launch queue or claimed by a live dispatcher;
    - a paid-launch slot lock (`paid_launch_locks`, not the `.gate.lock`) held by
      a process running from this release;
-   - a beta-screening candidate `launching` or `running` whose plan froze this
-     release's commit;
    - work that is not paid yet and that the new release would refuse and
      rebuild: a scene attempt in its factory, publication or submission; a
      scene-configuration preparation pending, claimed by a live worker, or
-     finished and not yet named by an activation; a beta-screening candidate
-     `preparing` with no blocker.
+     finished and not yet named by an activation.
 
    It goes out when they end, at its bound (285 min for paid work from when it
    was first live, 60 min in all for work not paid yet), or at once with
    `--activation-hold-override <reason>`. Anything it cannot read counts as not
    live. While it waits, `door status` `deploy_activation_hold` (its `stages` and
    `live` rows) says why; that read replaces the old hand check of
-   `paid_launch_locks` and `beta_screening.candidate_counts`.
+   `paid_launch_locks`.
    Until the owner upgrades the installed door (`install.sh --upgrade` as root,
    or `upgrade-door`, [`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md#install-tokens-upgrade-removal)),
    the door holds only for an activation: a normal deploy does not update the
    door. Until then, keep the hand check: do not deploy while a
-   `paid_launch_locks` entry has `held: true` or
-   `beta_screening.candidate_counts.launching` or `.running` is above 0.
+   `paid_launch_locks` entry has `held: true`. An older door's `door status`
+   still has a `beta_screening` section: it is the early trial's last worker
+   status (2026-11-15), not a live lane, and its counts no longer matter.
 2. Read `door requests` and `deploys.recent_receipts`. If another operator has a
    deploy pending, processing, or finished in the last hour, do not stack a
    second one: use theirs, or wait for it.
@@ -825,10 +822,6 @@ acknowledgement within 10 business days and completion within 30 days
    and answers with an acknowledgement (`website_capture_withdrawal.py`,
    `acknowledge_withdrawal`). From then on the site's capture reads as revoked
    (`consent_takedown.read_consent_state`).
-   - The paid screening launch refuses the capture with
-     `team_scene_capture_withdrawn`, through
-     `beta_policy_screening_worker.require_current_source`, which resolves the
-     capture with `team_scene_capture_root.resolve_capture_root`.
    - The Atlas preview queue and the scene preview publisher also refuse a
      withdrawn capture.
 3. The WebApp's deletion worker deletes the WebApp's own copies for the site
@@ -844,10 +837,11 @@ acknowledgement within 10 business days and completion within 30 days
    No operator is involved. Each pass:
    - finds every tombstone under `/var/lib/blueprint/pubsub-handoffs` that has
      no sealed deletion receipt with `covered_copies_deleted: true`;
-   - does nothing while a paid stage is live, by the definition in section 6
-     and `AGENTS.md`: a held lock in `provider-locks/` (read from
-     `/proc/locks`, without locking it), or screening candidates `launching`
-     or `running`. If it cannot tell, it counts the host as busy;
+   - does nothing while a paid stage is live: a held lock in `provider-locks/`
+     (read from `/proc/locks`, without locking it), or screening candidates
+     `launching` or `running` in the early trial's last worker status
+     (`beta-policy-screening/worker_status.json`, last written 2026-11-15 with
+     none). If it cannot tell, it counts the host as busy;
    - plans at most one site, the one whose last attempt is oldest, and records
      the outcome beside the tombstone (below);
    - deletes only under the owner's standing approval (below), through the
@@ -948,10 +942,6 @@ the deletion. The plan reads every run's records, so run it on a quiet host.
 
 Known gaps:
 
-- The screening ledger's own reservation
-  (`beta_policy_screening_coordinator._reserve`) and `enqueue_screening_campaign`
-  do not read the tombstone. A campaign that was already planned can still
-  reserve its cap. The launch then refuses before any spend, as step 2 says.
 - The WebApp's acknowledgement schema is `.strict()` (`websiteWithdrawalReceipt`).
   So the acknowledgement cannot carry anything about a Pipeline deletion until
   the WebApp accepts a new optional field. The field it would need is

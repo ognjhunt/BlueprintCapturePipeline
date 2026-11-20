@@ -798,15 +798,15 @@ def test_status_carries_the_oom_reports(host_tree: dict[str, Path]) -> None:
 def test_status_says_which_paid_stage_holds_the_deploy(host_tree: dict[str, Path]) -> None:
     parked = host_tree["base"] / "door" / "requests" / "parked"
     parked.mkdir(exist_ok=True)
-    live = [{"stage": "beta_screening", "state": "screening_running", "id": "camp-1/cand-1"}]
+    live = [{"stage": "paid_launch_lock", "state": "paid_launch_lock_held", "id": "vast_paid_launch.lock"}]
     (parked / ".activation-hold").write_text(json.dumps({
         "schema": "blueprint_operator_door_activation_hold.v1", "active_release": "a" * 40,
         "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0, "recheck_after_epoch": 3.0, "live": live,
-        "stages": ["beta_screening"], "requests": {}}), encoding="utf-8")
+        "stages": ["paid_launch_lock"], "requests": {}}), encoding="utf-8")
     hold = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"]
     assert hold == {"active_release": "a" * 40, "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0, "bound": None,
-                    "recheck_after_epoch": 3.0, "live": live, "stages": ["beta_screening"],
-                    "paid_stages": ["beta_screening"], "unpaid_stages": []}
+                    "recheck_after_epoch": 3.0, "live": live, "stages": ["paid_launch_lock"],
+                    "paid_stages": ["paid_launch_lock"], "unpaid_stages": []}
     # A record an older door wrote names no stage: it was an activation, which is paid.
     (parked / ".activation-hold").write_text(json.dumps({
         "active_release": "a" * 40, "live": [{"activation_id": "act-1", "state": "pending"}]}), encoding="utf-8")

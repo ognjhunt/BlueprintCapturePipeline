@@ -120,8 +120,8 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 
 The early trial retired on 2026-11-14. Its last worker snapshot is historical
 and is omitted from `/status`. The door still accepts older configurations
-that set `screening_worker_status`. The deploy hold reads the retained ledger
-for paid work bound to the release it is replacing.
+that set `screening_worker_status`. The deploy hold does not read the trial's
+retained ledger: nothing runs from it.
 
 `status.memory` answers "what holds host RAM?" read-only. `meminfo` gives
 `MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` and `Shmem` in bytes from
@@ -466,18 +466,15 @@ release: a scene-configuration activation (pending, claimed by a live worker, or
 finished and waiting for its launch submission); a scene-configuration launch
 that progression submitted for this release and that is pending in
 `task-evaluation-launches` or claimed by a dispatcher holding its
-`.dispatcher.lock`; a `provider-locks/*.lock` slot (not the `.gate.lock`)
-flocked by a process whose working directory is this release's tree; or a
-beta-screening candidate `launching` or `running` in `screening_ledger.v1.json`
-whose plan froze this release's commit. Those are the paid stages. It also
-holds for work that is not paid yet and that the new release would refuse and
-rebuild: a scene attempt still in its factory, publication or submission
-(`scene_attempt_preparation`); a scene-configuration preparation pending,
-claimed by a live worker, or finished and not yet named by an activation
-(`scene_configuration_preparation`); and a beta-screening candidate `preparing`
-with no blocker (`beta_screening_preparation`). A held deploy parks (an iteration
-deploy) or is refused with `scene_configuration_activation_live`, `retry_after`
-and `deploys_by` (a production deploy, which never parks; the code keeps its
+`.dispatcher.lock`; or a `provider-locks/*.lock` slot (not the `.gate.lock`)
+flocked by a process whose working directory is this release's tree. Those are
+the paid stages. It also holds for work that is not paid yet and that the new
+release would refuse and rebuild: a scene attempt still in its factory,
+publication or submission (`scene_attempt_preparation`); a scene-configuration
+preparation pending, claimed by a live worker, or finished and not yet named by
+an activation (`scene_configuration_preparation`). A held deploy parks (an
+iteration deploy) or is refused with `scene_configuration_activation_live`,
+`retry_after` and `deploys_by` (a production deploy, which never parks; the code keeps its
 old name whichever stage holds it). It goes out when nothing is live, when its bound is reached, or at
 once with `--activation-hold-override <reason>` (money, privacy, rights or a fix
 to the stuck stage). Two bounds: paid work holds for `CAP_SECONDS` (285 min)

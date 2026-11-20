@@ -36,7 +36,7 @@ tick so those stops page on the same route:
     in ``processing/`` for two days, held 14 GB of staging as queue-referenced,
     and nothing paged.
 
-Four more stores were found unwatched on 2026-11-10: a job stuck in any of them
+More stores were found unwatched on 2026-11-10: a job stuck in any of them
 was invisible. Each has its own check, with the same route and repeat:
 
 ``atlas_preview_stalled``
@@ -64,7 +64,7 @@ was invisible. Each has its own check, with the same route and repeat:
     never pages.
 
 A store whose own trigger the operator door holds is paused on purpose and is
-not read. A request, probe or campaign pages only while its capture still has a
+not read. A request or probe pages only while its capture still has a
 scene intent with an open execution window (``open_window_captures``); after
 that it cannot run again and is history.
 
@@ -176,7 +176,7 @@ _HOLD_CODES = {
     "scene_intake_attempt_cap_exhausted": "spending_cap",
 }
 
-# The four job stores below name a withdrawn capture in their own codes
+# The three job stores below name a withdrawn capture in their own codes
 # (``team_scene_capture_withdrawn``); only their checks read these. ``_HOLD_WORDS`` is unchanged.
 _STORE_HOLD_WORDS = {"withdrawn": "privacy", "withdrawal": "privacy"}
 

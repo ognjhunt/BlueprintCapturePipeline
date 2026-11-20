@@ -344,7 +344,7 @@ def test_the_scan_bound_keeps_the_newest_files(tmp_path: Path, monkeypatch) -> N
     assert [path.name for path in hold._json_files(tmp_path, modified_since=time.time() - 150)] == ["r1.json"]
 
 
-# --- Every paid stage of a website job (WP-17): launches, paid-launch slots, screening ---
+# --- Every paid stage of a website job (WP-17): launches and paid-launch slots ---
 
 
 @pytest.fixture()
@@ -358,14 +358,12 @@ def state(tmp_path: Path) -> dict[str, Path]:
         (launches / name).mkdir(parents=True)
     (launches / hold.DISPATCHER_LOCK).write_text("", encoding="utf-8")
     (root / hold.PROVIDER_LOCKS).mkdir()
-    (root / hold.SCREENING_ROOT / "plans").mkdir(parents=True)
     parked = tmp_path / "parked"
     parked.mkdir()
     proc = tmp_path / "proc"
     proc.mkdir()
     return {"root": root, "queue": queue, "progression": root / "task-evaluation-configured-controls",
-            "launches": launches, "locks": root / hold.PROVIDER_LOCKS,
-            "screening": root / hold.SCREENING_ROOT, "parked": parked, "proc": proc}
+            "launches": launches, "locks": root / hold.PROVIDER_LOCKS, "parked": parked, "proc": proc}
 
 
 def _all(state: dict[str, Path], *, held: set[int] | None = None, holders: dict[int, set[int]] | None = None,
@@ -377,8 +375,7 @@ def _all(state: dict[str, Path], *, held: set[int] | None = None, holders: dict[
         parked_dir=state["parked"], override=override, now=time.time() if now is None else now,
         held=set(holders) | (held or set()), times=times,
         launch_queue_root=state["launches"], launch_pending_claimable=launch_pending_claimable,
-        lock_dir=state["locks"], holders=holders, proc_root=state["proc"],
-        screening_root=state["screening"], request_id=request_id)
+        lock_dir=state["locks"], holders=holders, proc_root=state["proc"], request_id=request_id)
 
 
 def _record(state: dict[str, Path]) -> dict:
@@ -537,71 +534,23 @@ def test_a_real_flock_from_this_release_parks_the_deploy(state, tmp_path: Path, 
     assert code == hold.EXIT_HOLD
 
 
-def _screening(state: dict[str, Path], *, status: str = "running", commit: str | None = ACTIVE,
-               campaign: str = "camp-1", candidate: str = "cand-1") -> None:
-    (state["screening"] / hold.SCREENING_LEDGER).write_text(json.dumps({
-        "schema_version": "blueprint.beta_policy_screening_ledger.v1",
-        "campaigns": {campaign: {"site_id": "site-1", "candidates": {candidate: {"status": status}}}}}),
-        encoding="utf-8")
-    spec = None if commit is None else {"implementation_commit": commit}
-    (state["screening"] / "plans" / f"{campaign}.json").write_text(json.dumps({
-        "campaign_id": campaign, "candidates": [{"candidate_id": candidate, "execution_spec": spec}]}),
-        encoding="utf-8")
-
-
-@pytest.mark.parametrize("status", ["launching", "running"])
-def test_a_screening_candidate_launching_or_running_parks_the_deploy(state, status: str) -> None:
-    _screening(state, status=status)
-    code, reason = _all(state)
-    assert code == hold.EXIT_HOLD and reason == f"paid_stage_live:screening_{status}:camp-1/cand-1"
-    assert _record(state)["stages"] == [hold.STAGE_SCREENING]
-
-
-@pytest.mark.parametrize("status", ["completed", "blocked", "pending", "reconciliation_required"])
-def test_a_screening_candidate_not_launching_or_running_lets_the_deploy_go(state, status: str) -> None:
-    _screening(state, status=status)
-    assert _all(state)[0] == hold.EXIT_DEPLOY
-
-
-def test_a_screening_candidate_ending_ends_the_hold(state) -> None:
-    _screening(state)
-    assert _all(state)[0] == hold.EXIT_HOLD
-    _screening(state, status="completed")
-    assert _all(state)[0] == hold.EXIT_DEPLOY
-    assert not (state["parked"] / hold.HOLD_FILE).exists()
-
-
-def test_a_screening_candidate_of_another_release_lets_the_deploy_go(state) -> None:
-    _screening(state, commit=OTHER)
-    assert _all(state)[0] == hold.EXIT_DEPLOY
-    _screening(state, commit=None)
-    assert _all(state)[0] == hold.EXIT_DEPLOY
-
-
-def test_unreadable_screening_files_do_not_hold_the_deploy(state) -> None:
-    _screening(state)
-    (state["screening"] / "plans" / "camp-1.json").write_text("garbage", encoding="utf-8")
-    assert _all(state)[0] == hold.EXIT_DEPLOY
-    for ledger in ("garbage", "[]", json.dumps({"campaigns": []}), json.dumps({"campaigns": {"camp-1": 3}}),
-                   json.dumps({"campaigns": {"../x": {"candidates": {"c": {"status": "running"}}}}})):
-        (state["screening"] / hold.SCREENING_LEDGER).write_text(ledger, encoding="utf-8")
-        assert _all(state)[0] == hold.EXIT_DEPLOY
-
-
 def test_one_broken_source_hides_no_other(state, monkeypatch) -> None:
     def broken(**_: object) -> None:
         raise TypeError("bug")
 
-    monkeypatch.setattr(hold, "live_screening", broken)
+    monkeypatch.setattr(hold, "live_launches", broken)
     monkeypatch.setattr(hold, "live_paid_locks", broken)
-    _screening(state)
-    assert _all(state)[0] == hold.EXIT_DEPLOY
+    _submitted(state)
+    _launch_request(state, "pending")
+    inode = _slot(state)
+    _runs_from(state, 4242, ACTIVE)
+    assert _all(state, holders={inode: {4242}})[0] == hold.EXIT_DEPLOY
     _envelope(state["queue"] / "pending" / "act-1-abc.json")
     code, reason = _all(state)
     assert code == hold.EXIT_HOLD and reason == "scene_configuration_activation_live:pending:act-1"
 
 
-@pytest.mark.parametrize("stage", ["launch", "paid_lock", "screening"])
+@pytest.mark.parametrize("stage", ["launch", "paid_lock"])
 def test_the_cap_and_the_override_apply_to_every_new_stage(state, stage: str) -> None:
     holders: dict[int, set[int]] = {}
     held: set[int] = set()
@@ -609,11 +558,9 @@ def test_the_cap_and_the_override_apply_to_every_new_stage(state, stage: str) ->
         _submitted(state)
         _launch_request(state, "processing")
         held = _dispatcher_alive(state)
-    elif stage == "paid_lock":
+    else:
         holders = {_slot(state): {4242}}
         _runs_from(state, 4242, ACTIVE)
-    else:
-        _screening(state)
     start = time.time() - hold.CAP_SECONDS - 60
     assert _all(state, held=held, holders=holders, now=start)[0] == hold.EXIT_HOLD
     assert _all(state, held=held, holders=holders, now=start + hold.CAP_SECONDS - 60)[0] == hold.EXIT_HOLD
@@ -624,7 +571,7 @@ def test_the_cap_and_the_override_apply_to_every_new_stage(state, stage: str) ->
 
 
 def test_one_cap_however_the_stages_hand_over(state) -> None:
-    """An activation, then its launch, then a paid slot, then screening: one clock."""
+    """An activation, then its launch, then a paid slot, then another slot: one clock."""
     start = time.time() - hold.CAP_SECONDS - 3600
     pending = _envelope(state["queue"] / "pending" / "act-1-abc.json")
     assert _all(state, now=start)[0] == hold.EXIT_HOLD
@@ -639,26 +586,34 @@ def test_one_cap_however_the_stages_hand_over(state) -> None:
     while moment < start + hold.CAP_SECONDS - hold.RECHECK_SECONDS:
         moment += hold.RECHECK_SECONDS  # a parked deploy's rechecks
         assert _all(state, holders=holders, now=moment)[0] == hold.EXIT_HOLD
-        if moment > start + 9000 and holders:
-            holders = {}
-            _screening(state)  # the slot ends as screening starts, between two rechecks
+        if moment > start + 9000 and 4242 in next(iter(holders.values())):
+            # The slot ends as an unrelated slot is taken, between two rechecks.
+            holders = {_slot(state, "vast_paid_launch.slot2.lock"): {4343}}
+            _runs_from(state, 4343, ACTIVE)
     assert _record(state)["first_held_at_epoch"] == start
-    code, reason = _all(state, now=start + hold.CAP_SECONDS)
-    assert code == hold.EXIT_DEPLOY and reason == "activation_hold_cap_reached:screening_running:camp-1/cand-1"
+    code, reason = _all(state, holders=holders, now=start + hold.CAP_SECONDS)
+    assert code == hold.EXIT_DEPLOY
+    assert reason == "activation_hold_cap_reached:paid_launch_lock_held:vast_paid_launch.slot2.lock"
 
 
 def test_a_held_request_keeps_its_first_hold_across_a_gap(state) -> None:
+    def slot(name: str, pid: int) -> dict[int, set[int]]:
+        holders = {_slot(state, name): {pid}}
+        _runs_from(state, pid, ACTIVE)
+        return holders
+
     start = time.time() - 4 * 3600
-    _screening(state)
-    assert _all(state, now=start, request_id=DEPLOY_ID)[0] == hold.EXIT_HOLD
-    _screening(state, campaign="camp-2")  # unrelated work, an hour after the last check
-    assert _all(state, now=start + 3600, request_id=DEPLOY_ID)[0] == hold.EXIT_HOLD
+    first = slot("vast_paid_launch.slot1.lock", 4242)
+    assert _all(state, holders=first, now=start, request_id=DEPLOY_ID)[0] == hold.EXIT_HOLD
+    # Unrelated work, an hour after the last check.
+    second = slot("vast_paid_launch.slot2.lock", 4343)
+    assert _all(state, holders=second, now=start + 3600, request_id=DEPLOY_ID)[0] == hold.EXIT_HOLD
     record = _record(state)
     assert record["first_held_at_epoch"] == start and record["requests"] == {DEPLOY_ID: start}
     # A different request after the gap is a new hold, as before.
     other = "20261031T210000Z-deploy-0000abce"
-    _screening(state, campaign="camp-3")
-    assert _all(state, now=start + 7200, request_id=other)[0] == hold.EXIT_HOLD
+    third = slot("vast_paid_launch.slot3.lock", 4444)
+    assert _all(state, holders=third, now=start + 7200, request_id=other)[0] == hold.EXIT_HOLD
     assert _record(state)["first_held_at_epoch"] == start + 7200
 
 
@@ -679,7 +634,8 @@ def test_main_reads_every_stage_from_the_state_root(state, tmp_path: Path, monke
     release.mkdir(parents=True)
     link = tmp_path / "active"
     link.symlink_to(release)
-    _screening(state)
+    _submitted(state)
+    _launch_request(state, "pending")
     monkeypatch.setenv("DOOR_STATE_ROOT", str(state["root"]))
     monkeypatch.setenv("DOOR_ACTIVE_RELEASE_LINK", str(link))
     monkeypatch.setenv("DOOR_ACTIVATION_HOLD_PARKED_DIR", str(state["parked"]))
@@ -687,10 +643,40 @@ def test_main_reads_every_stage_from_the_state_root(state, tmp_path: Path, monke
     monkeypatch.delenv("DOOR_ACTIVATION_HOLD_OVERRIDE", raising=False)
     assert hold.main(["activation_hold.py"]) == hold.EXIT_HOLD
     out = capsys.readouterr().out.splitlines()
-    assert out[0] == "paid_stage_live:screening_running:camp-1/cand-1" and len(out) == 2
+    assert out[0] == "paid_stage_live:launch_pending:act-1-launch" and len(out) == 2
     assert _record(state)["requests"] == {DEPLOY_ID: _record(state)["first_held_at_epoch"]}
     monkeypatch.setenv("DOOR_ACTIVATION_HOLD_OVERRIDE", "fixes_live_activation")
     assert hold.main(["activation_hold.py"]) == hold.EXIT_DEPLOY
+
+
+def test_the_dropped_trials_frozen_screening_ledger_holds_no_deploy(state, tmp_path: Path, monkeypatch) -> None:
+    """The owner dropped the early trial on 2026-11-14 and its timer is retired. Its ledger stays on
+    the host for withdrawal deletion and the spend meter, but nothing runs from it, so a row left
+    ``running`` or ``preparing`` under a plan frozen at the running release must not park a deploy."""
+
+    release = tmp_path / "releases" / ACTIVE
+    release.mkdir(parents=True)
+    link = tmp_path / "active"
+    link.symlink_to(release)
+    screening = state["root"] / "beta-policy-screening"
+    (screening / "plans").mkdir(parents=True)
+    (screening / "screening_ledger.v1.json").write_text(json.dumps({
+        "schema_version": "blueprint.beta_policy_screening_ledger.v1",
+        "campaigns": {"camp-1": {"site_id": "site-1", "candidates": {
+            "cand-1": {"status": "running"},
+            "cand-2": {"status": "preparing", "blockers": [], "attempt": {"attempt_id": "screen-1"}}}}}}),
+        encoding="utf-8")
+    (screening / "plans" / "camp-1.json").write_text(json.dumps({
+        "campaign_id": "camp-1", "candidates": [
+            {"candidate_id": candidate, "execution_spec": {"implementation_commit": ACTIVE}}
+            for candidate in ("cand-1", "cand-2")]}), encoding="utf-8")
+    monkeypatch.setenv("DOOR_STATE_ROOT", str(state["root"]))
+    monkeypatch.setenv("DOOR_ACTIVE_RELEASE_LINK", str(link))
+    monkeypatch.setenv("DOOR_ACTIVATION_HOLD_PARKED_DIR", str(state["parked"]))
+    monkeypatch.setenv("DOOR_REQUEST_ID", DEPLOY_ID)
+    monkeypatch.delenv("DOOR_ACTIVATION_HOLD_OVERRIDE", raising=False)
+    assert hold.main(["activation_hold.py"]) == hold.EXIT_DEPLOY
+    assert not (state["parked"] / hold.HOLD_FILE).exists()
 
 
 # --- Unpaid work in flight: a deploy waits for it too, under the same cap ---
@@ -710,15 +696,14 @@ def cpu(state: dict[str, Path]) -> dict[str, Path]:
 
 def _cpu(state: dict[str, Path], *, holders: dict[int, set[int]] | None = None, now: float | None = None,
          override: str = "", progression_claimable: bool = True, preparation_pending_claimable: bool = True,
-         screening_preparing_claimable: bool = True, active: str = ACTIVE, held: set[int] | None = None,
+         active: str = ACTIVE, held: set[int] | None = None,
          request_id: str = "", times: dict[str, float] | None = None) -> tuple[int, str]:
     holders = holders or {}
     return hold.decide(
         queue_root=state["queue"], progression_root=state["progression"], active=active,
         parked_dir=state["parked"], override=override, now=time.time() if now is None else now,
         held=set(holders) | (held or set()), launch_queue_root=state["launches"], lock_dir=state["locks"],
-        holders=holders, proc_root=state["proc"], screening_root=state["screening"], request_id=request_id,
-        times=times, screening_preparing_claimable=screening_preparing_claimable,
+        holders=holders, proc_root=state["proc"], request_id=request_id, times=times,
         intent_root=state["intents"], progression_claimable=progression_claimable,
         preparation_queue_root=state["preparations"],
         preparation_pending_claimable=preparation_pending_claimable)
@@ -766,15 +751,6 @@ def _prepared(state: dict[str, Path], *, commit: str = ACTIVE, age: float = 0.0,
         moment = time.time() - age
         os.utime(path, (moment, moment))
     return path
-
-
-def _staging(state: dict[str, Path], *, commit: str = ACTIVE, blockers: list[str] | None = None,
-             attempt: dict | None = None) -> None:
-    _screening(state, status="preparing", commit=commit)
-    ledger = json.loads((state["screening"] / hold.SCREENING_LEDGER).read_text(encoding="utf-8"))
-    ledger["campaigns"]["camp-1"]["candidates"]["cand-1"].update(
-        blockers=blockers or [], attempt=attempt or {"attempt_id": "screen-1", "reservation_status": "reserved"})
-    (state["screening"] / hold.SCREENING_LEDGER).write_text(json.dumps(ledger), encoding="utf-8")
 
 
 def test_a_scene_attempt_building_its_factory_on_this_release_parks_the_deploy(cpu) -> None:
@@ -919,37 +895,15 @@ def test_unreadable_preparation_files_do_not_hold_the_deploy(cpu) -> None:
     assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
 
 
-def test_a_screening_candidate_staging_its_bundle_parks_the_deploy(cpu) -> None:
-    _staging(cpu)
-    code, reason = _cpu(cpu)
-    assert code == hold.EXIT_HOLD and reason == "in_flight_work_live:screening_preparing:camp-1/cand-1"
-    record = _record(cpu)
-    assert record["stages"] == [hold.STAGE_SCREENING_PREPARATION]
-    assert record["unpaid_stages"] == [hold.STAGE_SCREENING_PREPARATION] and record["paid_stages"] == []
-
-
-def test_a_screening_candidate_waiting_or_of_another_release_lets_the_deploy_go(cpu) -> None:
-    _staging(cpu, blockers=["beta_screening_capacity_wait"])
-    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
-    _staging(cpu, attempt={"attempt_id": "screen-1", "retry_not_before": "2099-01-01T00:00:00Z"})
-    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
-    _staging(cpu, commit=OTHER)
-    assert _cpu(cpu)[0] == hold.EXIT_DEPLOY
-    _staging(cpu)
-    assert _cpu(cpu, screening_preparing_claimable=False)[0] == hold.EXIT_DEPLOY
-    # The paid screening rule is unchanged by the held timer.
-    _screening(cpu)
-    assert _cpu(cpu, screening_preparing_claimable=False)[0] == hold.EXIT_HOLD
-
-
 def test_paid_and_unpaid_work_together_is_named_as_both(cpu) -> None:
     _preparation(cpu, "pending")
-    _screening(cpu)
-    code, reason = _cpu(cpu)
+    inode = _slot(cpu)
+    _runs_from(cpu, 4242, ACTIVE)
+    code, reason = _cpu(cpu, holders={inode: {4242}})
     assert code == hold.EXIT_HOLD
-    assert reason == "in_flight_work_live:preparation_pending:prep-1,screening_running:camp-1/cand-1"
+    assert reason == "in_flight_work_live:paid_launch_lock_held:vast_paid_launch.lock,preparation_pending:prep-1"
     record = _record(cpu)
-    assert record["paid_stages"] == [hold.STAGE_SCREENING]
+    assert record["paid_stages"] == [hold.STAGE_PAID_LOCK]
     assert record["unpaid_stages"] == [hold.STAGE_PREPARATION]
 
 
@@ -963,13 +917,10 @@ def _make_live(cpu: dict[str, Path], stage: str) -> dict[int, set[int]]:
     elif stage == "preparation_processing":
         claim = _preparation(cpu, "processing")
         _worker(cpu, 4243, started=claim.lstat().st_ctime - 30)
-    elif stage == "screening_preparing":
-        _staging(cpu)
     return {}
 
 
-@pytest.mark.parametrize("stage", ["scene_attempt", "preparation_pending", "preparation_processing",
-                                   "screening_preparing"])
+@pytest.mark.parametrize("stage", ["scene_attempt", "preparation_pending", "preparation_processing"])
 def test_unpaid_work_alone_holds_for_the_unpaid_cap_and_the_override_goes_at_once(cpu, stage: str) -> None:
     holders = _make_live(cpu, stage)
     start = time.time() - hold.CAP_SECONDS - 60

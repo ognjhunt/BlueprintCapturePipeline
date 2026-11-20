@@ -57,6 +57,8 @@ class DoorConfig:
     capacity_summary: str = f"{_CONTROL_PLANE}/capacity/summary.json"
     preflight_summary: str = f"{_CONTROL_PLANE}/preflight/public/summary.json"
     handoff_delivery_metrics: str = "/var/lib/blueprint/pubsub-handoffs/.website_preparation_delivery_metrics.json"
+    # Read by nothing since the early trial was dropped (2026-11-14); kept so an older door.json that
+    # sets it still loads (an unknown key refuses the whole configuration).
     screening_worker_status: str = f"{_CONTROL_PLANE}/beta-policy-screening/worker_status.json"
     lane_scratch_work_root: str = "/mnt/blueprint-work/lanes"
     lane_scratch_inputs_root: str = "/var/lib/blueprint/task-evaluation-inputs/lanes"
