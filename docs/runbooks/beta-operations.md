@@ -56,14 +56,15 @@ at once. A stall that continues posts again each hour.
 | `screening_publication_stalled` | A campaign's latest revision stayed unpublished to the WebApp. | 90 min from when the alarm first saw it | Read `last_publication_failure` in `worker_status.json`. |
 | `stall_check_incomplete` (warn) | A check could not read what it needs. | none | Read the `stall` section: `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`. |
 
-These never page: completed rows, `needs_input` rows, revoked or expired
-execution windows, and intended holds. Intended holds are pauses, privacy,
+For scene intents, completed rows, `needs_input` rows, revoked or expired
+execution windows, and intended holds never page. Intended holds are pauses, privacy,
 consent, rights and money approvals, for example
 `scene_intake_spend_cap_exhausted` and `scene_intake_attempt_cap_exhausted`.
 In the four job stores, these never page either:
 
 - an Atlas job that is `ready`, `failed` or `withdrawn`, or `needs_input`
-  waiting for a person, a grant, consent or money;
+  with no scheduled recheck or waiting on privacy, rights or money. Parked
+  jobs stay visible under `dispositions` in the Atlas stall summary;
 - a wait the system scheduled itself (an outage's backoff, the six timed
   refusal retries, a `needs_input` recheck, a team scene request's or a rigid
   probe's next timed retry) while its next attempt is still ahead. It pages
