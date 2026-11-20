@@ -118,6 +118,11 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 | `POST /requests` | per kind | `202 {"id": …}` |
 | `GET /requests` · `GET /requests/<id>` | read | queue, or one request with result, outcome, redacted log tail and live unit state |
 
+The early trial retired on 2026-11-14. Its last worker snapshot is historical
+and is omitted from `/status`. The door still accepts older configurations
+that set `screening_worker_status`. The deploy hold reads the retained ledger
+for paid work bound to the release it is replacing.
+
 `status.memory` answers "what holds host RAM?" read-only. `meminfo` gives
 `MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` and `Shmem` in bytes from
 `/proc/meminfo`; `slices` gives cgroup v2 `memory.current`/`memory.peak` for
