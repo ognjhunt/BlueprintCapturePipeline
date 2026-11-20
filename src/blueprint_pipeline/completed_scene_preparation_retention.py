@@ -76,10 +76,12 @@ def protection(*, pins_root: Path, queue_roots: Sequence[Path], intent_root: Pat
     from .control_plane_storage_pins import live_pinned_paths
     from .website_scene_workspace_queue import QueueInventoryUnavailable, queue_reference_text
     from .website_scene_workspace_references import build_reference_index
-    from .website_scene_workspace_retention import RetentionContext, scene_queue_roots
+    from .website_scene_workspace_retention import RetentionContext, binding_root_for, scene_queue_roots
 
+    # Registrations are read where the workspace phases read them: the reclaim unit names no binding root, and
+    # without the intent root's sibling every folder read as ``reference_index_unreadable`` (2026-11-19: 17 kept).
     context = RetentionContext(storage_root=Path("/nonexistent"), pins_root=Path(pins_root), queue_roots=(),
-                               intent_root=intent_root, binding_root=binding_root)
+                               intent_root=intent_root, binding_root=binding_root or binding_root_for(intent_root))
     index = build_reference_index(context, now=now)
     intents = {row["intent_id"]: row for row in index.intents} if index.readable else {}
     try:

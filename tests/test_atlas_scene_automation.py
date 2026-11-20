@@ -1667,7 +1667,14 @@ def test_a_retained_plan_without_reference_names_keeps_its_measurement_binding()
                                           ('website_image_completion_budget_missing', False),
                                           ('website_image_completion_budget_exceeded', False),
                                           ('website_preparation_spend_receipt_invalid', False),
-                                          ('website_control_preparation-spend_http_403:source_revoked', False)])
+                                          ('website_control_preparation-spend_http_403:source_revoked', False),
+                                          # Which release may buy (2026-11-19: two jobs parked while a deploy
+                                          # switched releases): the job's retry schedule, never input.
+                                          ('website_atlas_pose_release_not_admitted:'
+                                           'gpu_canary_deployed_release_inactive_or_untrusted', True),
+                                          ('atlas_automation_release_not_admitted:'
+                                           'gpu_canary_deployed_release_receipt_unverified', True),
+                                          ('atlas_task_release_not_admitted:gpu_canary_checkout_not_clean', True)])
 def test_a_provider_answer_in_the_background_step_is_raised_not_held_for_input(tmp_path, monkeypatch, error, raised):
     from blueprint_pipeline import atlas_scene_automation as worker
 
@@ -1692,6 +1699,15 @@ def test_a_provider_answer_in_the_background_step_is_raised_not_held_for_input(t
             job = {'state': 'processing', 'enqueued_at_epoch': 0, 'revision': 1, 'reason': None}
             waited = preview._failed_step(job, caught.value, 100)
             assert waited['state'] == 'needs_input' and waited['retry_at_epoch'] == 100 + preview.AUTHORITY_RECHECK_SECONDS
+        if 'release_not_admitted' in error:
+            from blueprint_pipeline import website_atlas_preview as preview
+            job = {'state': 'processing', 'enqueued_at_epoch': 0, 'revision': 1, 'reason': None,
+                   'next_attempt_at_epoch': 0}
+            waited = preview._failed_step(job, caught.value, 100)
+            assert waited['state'] == 'processing' and waited['next_attempt_at_epoch'] > 100
+            switching = error.endswith(('untrusted', 'unverified'))
+            assert (waited.get('transient_failures'), waited.get('refusal_retries')) == (
+                (1, None) if switching else (None, 1))
     else:
         result = worker.run_automation(**arguments)
         flag = 'spending_cap_reached' if error.endswith('website_scene_preparation_budget_exhausted') else error

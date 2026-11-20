@@ -25,6 +25,7 @@ __all__ = [
     "OWNER_CLOSED_CODE",
     "PRIVACY_RIGHTS",
     "REFUSAL_RETRY_DELAYS_SECONDS",
+    "RELEASE_SWITCHING_BLOCKERS",
     "hard_stop_kind",
     "owner_closed",
     "owner_closed_refusal",
@@ -33,6 +34,8 @@ __all__ = [
     "provider_answer",
     "provider_says_retry_later",
     "refusal_retry_delay",
+    "release_refusal",
+    "release_switching",
     "request_cannot_succeed",
 ]
 
@@ -195,3 +198,30 @@ def request_cannot_succeed(code: object) -> bool:
     if status is not None:
         return 400 <= status < 500 and status not in RETRY_LATER_STATUSES
     return code.partition(":")[0].strip().lower() in _UNSENDABLE_REQUEST_CODES
+
+
+#: The active-release admission's answers while a release is switching: a step that started on the old
+#: release and reached a paid stage after the link moved, or one that ran before the new release's receipt
+#: existed (2026-11-16, 19:13). The stage still refuses to buy every time; the job waits as for an outage,
+#: since the next attempt runs on the new release.
+RELEASE_SWITCHING_BLOCKERS = frozenset({"gpu_canary_deployed_release_inactive_or_untrusted",
+                                        "gpu_canary_deployed_release_receipt_unverified"})
+
+
+def release_refusal(code: object) -> bool:
+    """Whether ``code`` is a stage's ``<stage>_release_not_admitted:<blockers>`` refusal.
+
+    It answers which release may buy, never anything a person can give the job: the step that met it
+    raises it to its controller's retry schedule instead of holding the job for input.
+    """
+    if not isinstance(code, str):
+        return False
+    return code.partition(":")[0].strip().lower().endswith("_release_not_admitted")
+
+
+def release_switching(code: object) -> bool:
+    """A release refusal whose every blocker is a release switching (``RELEASE_SWITCHING_BLOCKERS``)."""
+    if not release_refusal(code):
+        return False
+    blockers = {item for item in str(code).partition(":")[2].split(",") if item}
+    return bool(blockers) and blockers <= RELEASE_SWITCHING_BLOCKERS

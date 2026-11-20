@@ -52,7 +52,8 @@ from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .deterministic_refusal import find as find_deterministic_refusal, unchanged as deterministic_unchanged
 from .file_digest_cache import SIDECAR as DIGEST_CACHE_FILE, file_digest_cache
 from .job_retry_policy import (
-    MONEY, PRIVACY_RIGHTS, REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, outage_retry_delay, refusal_retry_delay)
+    MONEY, PRIVACY_RIGHTS, REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, outage_retry_delay, refusal_retry_delay,
+    release_switching)
 from .website_atlas_preview_store import (
     ARTIFACT_KIND, JOB_FILE, LOCK_FILE, MAXIMUM_JOB_SECONDS, SCHEMA, TERMINAL,
     bundle_filename, capture_name_matches_request, capture_withdrawn as _withdrawn,
@@ -205,24 +206,16 @@ def enqueue_preview(*, descriptor: Any, capture_root: Path, pipeline_dir: Path,
 _TASK_CONTEXT_CHANGED = frozenset({"website_scene_sponsorship_binding_invalid"})
 
 
-#: The active-release admission's answers while a release is switching: a step that started on the old release
-#: and reached a paid stage after the link moved, or one that ran before the new release's receipt existed
-#: (2026-11-16, 19:13: it cost a job a refusal retry and a three-hour wait). The stage still refuses to buy every
-#: time; the job only waits as for an outage (2 min, doubling to 1 h, never past its deadline), with no refusal
-#: counted, since the next tick runs on the new release.
-_RELEASE_SWITCHING = frozenset({"gpu_canary_deployed_release_inactive_or_untrusted",
-                                "gpu_canary_deployed_release_receipt_unverified"})
-
-
 def _release_switching(error: BaseException) -> bool:
-    """A ``<stage>_release_not_admitted:<blockers>`` refusal whose every blocker is a release switching."""
-    head, _, tail = str(error).partition(":")
-    blockers = {item for item in tail.split(",") if item}
-    return head.endswith("_release_not_admitted") and bool(blockers) and blockers <= _RELEASE_SWITCHING
+    """A ``<stage>_release_not_admitted:<blockers>`` refusal whose every blocker is a release switching
+    (``job_retry_policy.release_switching``; 2026-11-16, 19:13: it cost a job a refusal retry and a three-hour
+    wait). The job only waits as for an outage (2 min, doubling to 1 h, never past its deadline), with no
+    refusal counted, since the next tick runs on the new release."""
+    return release_switching(str(error))
 
 
 def _outage(error: BaseException) -> bool:
-    """A provider 429 or 5xx, a changed task context, a release switching (``_RELEASE_SWITCHING``), or a transport
+    """A provider 429 or 5xx, a changed task context, a release switching (``_release_switching``), or a transport
     or OS error (timeouts included)."""
     status = getattr(error, "status", None)
     if isinstance(status, int):
@@ -456,12 +449,15 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
             if result.get("reason") == SPENDING_CAP_REACHED or any(
                     _reason(ValueError(code)) == JOB_SPEND_CAP for code in (result.get("reason"), *blockers) if code):
                 return _transition(job, current, "failed", SPENDING_CAP_REACHED, stage=result.get("stage", "preparation"))
-            from .job_retry_policy import provider_answer, request_cannot_succeed
-            answers = [str(row) for row in blockers
-                       if provider_answer(str(row)) is not None or request_cannot_succeed(str(row))]
+            from .job_retry_policy import provider_answer, release_refusal, request_cannot_succeed
+            answers = sorted((str(row) for row in blockers if provider_answer(str(row)) is not None
+                              or request_cannot_succeed(str(row)) or release_refusal(str(row))),
+                             key=lambda code: not release_refusal(code))
             if blockers and len(answers) == len(blockers):
-                # Every blocker is a provider's answer (capture-39ecdc97 kept meta_sam_http_413): the
-                # retry policy decides it, never needs_input. When any blocker is not, that one may
+                # Every blocker is a provider's answer (capture-39ecdc97 kept meta_sam_http_413) or a
+                # release refusal (2026-11-19: two jobs parked with no retry time while a deploy switched
+                # releases): the retry policy decides it, never needs_input. A release refusal goes first:
+                # the next step runs on the admitted release. When any blocker is not, that one may
                 # need a person, and the outcome below is main's, naming the first blocker.
                 return _failed_step(job, ValueError(answers[0]), current)
             reason = (_reason(ValueError(result["reason"]))

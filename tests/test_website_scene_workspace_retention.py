@@ -455,6 +455,30 @@ def test_the_sharing_recheck_record_alone_does_not_make_a_scene_recently_active(
     assert _plan(tmp_path, cloud)["reasons"] == ["recently_active"]
 
 
+def test_the_atlas_digest_cache_alone_does_not_make_a_scene_recently_active(tmp_path):
+    """2026-11-19: six finished test jobs idle since 11-16 were kept as recently active because their
+    ``pipeline/atlas/file_digest_cache.json`` had been rewritten."""
+    scene, cloud = _scene(tmp_path)
+    from blueprint_pipeline import file_digest_cache as cache
+
+    atlas = scene / "captures" / CAPTURE / "pipeline" / "atlas"
+    atlas.mkdir(parents=True, exist_ok=True)
+    retained = atlas / "result.json"
+    retained.write_text("{}", encoding="utf-8")
+    record = atlas / cache.SIDECAR
+    record.write_text(json.dumps({"schema_version": cache.SCHEMA, "entries": {}, "checks": []}), encoding="utf-8")
+    old = time.time() - 72 * HOUR
+    os.utime(retained, (old, old))
+    # A rewrite "now" (just before the planner's clock): only the cache and its directory changed.
+    later = time.time() + 72 * HOUR - 60
+    os.utime(record, (later, later))
+    os.utime(atlas, (later, later))
+    assert "recently_active" not in _plan(tmp_path, cloud)["reasons"]
+    # Anything else written as recently still is.
+    os.utime(retained, (later, later))
+    assert _plan(tmp_path, cloud)["reasons"] == ["recently_active"]
+
+
 def test_not_retired_while_pinned(tmp_path):
     scene, cloud = _scene(tmp_path)
     context = _context(tmp_path)

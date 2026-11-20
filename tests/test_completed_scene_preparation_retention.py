@@ -64,9 +64,10 @@ def _intent_named(tmp_path: Path, submission: str, **kwargs) -> str:
 def _run(tmp_path: Path, client: MultipartClient | None = None, *, enabled: bool = True, **kwargs) -> dict:
     return preparation.offload_finished_intent_outputs(
         roots=[tmp_path / "completed-scene-preparation"], pins_root=tmp_path / "pins",
-        queue_roots=[tmp_path / "queue"], intent_root=tmp_path / "intents", binding_root=tmp_path / "bindings",
+        queue_roots=[tmp_path / "queue"], intent_root=tmp_path / "intents",
         apply=True, enabled=enabled, now=time.time(), classifier=lambda *_args, **_kwargs: None,
-        **{"stream_publisher": functools.partial(store.publish_configured_scene_stream,
+        **{"binding_root": tmp_path / "bindings",
+           "stream_publisher": functools.partial(store.publish_configured_scene_stream,
                                                  client=client or MultipartClient(), bucket=BUCKET),
            "process_checker": lambda _path: False, "retract": lambda uri: pytest.fail(f"retracted {uri}"), **kwargs})
 
@@ -135,6 +136,28 @@ def test_a_folder_in_use_stays_and_unreadable_intents_keep_every_folder(tmp_path
     (tmp_path / "intents" / done / "intent.json").write_text("{", encoding="utf-8")
     assert _run(tmp_path)["retained_counts"] == {"reference_index_unreadable": 1}
     assert all((folder / name).is_file() for name in MEMBERS)
+
+
+def test_without_a_named_binding_root_the_registrations_beside_the_intents_are_read(tmp_path, monkeypatch):
+    """2026-11-19: the reclaim unit names no binding root, and every folder (17) was kept as
+    ``reference_index_unreadable`` while the workspace phases read the same intents fine."""
+    from blueprint_pipeline.website_scene_workspace_retention import BINDING_ROOT_ENV
+
+    monkeypatch.delenv(BINDING_ROOT_ENV, raising=False)
+    done = _intent_named(tmp_path, "done", finished="completed")
+    folder = _folder(tmp_path, done)
+    unknown = _folder(tmp_path, "scene-" + "0" * 64)
+
+    report = _run(tmp_path, binding_root=None)
+
+    assert report["offloaded_count"] == 1 and report["retained_counts"] == {"intent_unknown": 1}
+    assert not any((folder / name).exists() for name in MEMBERS)
+    assert all((unknown / name).is_file() for name in MEMBERS)
+    # A registration beside the intents that cannot be read still keeps every folder.
+    (tmp_path / "website-source-bindings").mkdir()
+    (tmp_path / "website-source-bindings" / "broken.json").write_text("{", encoding="utf-8")
+    assert _run(tmp_path, binding_root=None)["retained_counts"] == {"already_archived": 1,
+                                                                    "reference_index_unreadable": 1}
 
 
 def test_switched_off_it_only_plans_and_each_tick_is_bounded(tmp_path):
