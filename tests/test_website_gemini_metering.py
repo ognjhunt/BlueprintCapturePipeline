@@ -180,12 +180,23 @@ def test_an_openai_preparation_settlement_is_metered_against_its_job(tmp_path, m
     website_task_context.meter_preparation_settlement(
         {"request_id": "capture-job2", "settlement": {"provider": "openai"}},
         {"status": "settled", "provider": "openai", "allocation_binding_digest": binding, "actual_cost_usd": 0.53})
-    # Another provider, or a refusal, records nothing here.
+    # An Atlas purchase is journaled under World Labs, so it stays counted after the workspace is retired.
+    atlas = "sha256:" + "c" * 64
     website_task_context.meter_preparation_settlement(
         {"request_id": "capture-job2"}, {"status": "settled", "provider": "world_labs_atlas",
-                                         "allocation_binding_digest": binding, "actual_cost_usd": 5})
+                                         "allocation_binding_digest": atlas, "actual_cost_usd": 5})
+    # Another provider, or a refusal, records nothing here.
+    website_task_context.meter_preparation_settlement(
+        {"request_id": "capture-job2"}, {"status": "settled", "provider": "meta",
+                                         "allocation_binding_digest": "sha256:" + "d" * 64, "actual_cost_usd": 1})
+    website_task_context.meter_preparation_settlement(
+        {"request_id": "capture-job2"}, {"status": "refused", "provider": "openai",
+                                         "allocation_binding_digest": "sha256:" + "e" * 64, "actual_cost_usd": 1})
     events, _ = meter.read_journal(tmp_path)
-    [row] = meter.journal_rows(events)
-    assert (row["job_id"], row["meter_key"], row["provider"], row["status"]) == (
-        "capture-job2", binding, "openai", "settled")
-    assert float(row["settled_usd"]) == 0.53
+    rows = {row["meter_key"]: row for row in meter.journal_rows(events)}
+    assert set(rows) == {binding, atlas}
+    assert (rows[binding]["job_id"], rows[binding]["provider"], rows[binding]["status"]) == (
+        "capture-job2", "openai", "settled")
+    assert float(rows[binding]["settled_usd"]) == 0.53
+    assert (rows[atlas]["provider"], rows[atlas]["status"], float(rows[atlas]["settled_usd"])) == (
+        "world_labs", "settled", 5.0)

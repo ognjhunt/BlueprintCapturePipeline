@@ -26,7 +26,10 @@ job, so they are read where they are, not copied:
 ``atlas`` (World Labs attempt records)
     Each Atlas attempt that ``provider_spend_alerts.observe_world_labs_spend``
     counts: a completed operation at its reviewed price, one whose outcome is
-    unknown held at that price (``atlas_spend_settlement``).
+    unknown held at that price (``atlas_spend_settlement``). Its settlement is
+    also journaled (``website_task_context.meter_preparation_settlement``, keyed
+    by its reservation's binding): the purchase counts once, from the scan while
+    its records are on disk and from the journal once its workspace is retired.
 ``openai_settlement`` (the OpenAI settlements each job keeps)
     The OpenAI calls of a job's Atlas stage (planners, reviews, image edits)
     that ``provider_spend_alerts.observe_openai_job_settlements`` finds settled

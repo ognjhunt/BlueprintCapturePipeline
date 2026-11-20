@@ -274,8 +274,11 @@ def _atlas_charge(state_dir: Path, *, since: float) -> dict[str, Any] | None:
     price = _attempt_price(state_dir, state)
     if price is None:
         raise ValueError("world_labs_spend_attempt_unreadable")
+    binding = state.get("request_digest")
     return {"at_epoch": sent_at, "usd": price, "held": outcome is None, "job_id": _atlas_job_id(state_dir),
-            "attempt": "atlas:" + hashlib.sha256(str(state_dir).encode()).hexdigest()[:32]}
+            "attempt": "atlas:" + hashlib.sha256(str(state_dir).encode()).hexdigest()[:32],
+            # The reservation it settles against: the journal's key for the same purchase (``paid_spend_meter_sources``).
+            **({"binding": binding} if isinstance(binding, str) and binding else {})}
 
 
 def _atlas_job_id(state_dir: Path) -> str | None:

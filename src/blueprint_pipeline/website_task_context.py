@@ -121,16 +121,22 @@ def metered_admission(admission: Mapping[str, Any], *, job_id: Any, provider: An
     return {**admission, "meter": {"job_id": job_id, "provider": METER_PROVIDERS.get(str(provider), str(provider))}}
 
 
-def meter_preparation_settlement(payload: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
-    """An OpenAI preparation call's settled cost in its job's meter, whoever settled it; never raises.
+#: The preparation settlements journaled here; each is also read from its workspace by the capacity tick.
+_JOURNALED_SETTLEMENT_PROVIDERS = frozenset({"openai", "world_labs_atlas"})
 
-    The job's settlement receipts under its workspace are also read by the capacity tick
-    (``provider_spend_alerts.observe_openai_job_settlements``); the meter counts a call once, and this record
-    keeps it attributed after the workspace is retired. Gemini settles in ``website_gemini_receipts``.
+
+def meter_preparation_settlement(payload: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    """An OpenAI call's or an Atlas purchase's settled cost in its job's meter, whoever settled it; never raises.
+
+    The job's records under its workspace are also read by the capacity tick
+    (``provider_spend_alerts.observe_openai_job_settlements`` and ``observe_world_labs_spend``); the meter counts
+    each once, and this record keeps it counted and attributed after the workspace is retired (2026-11-20: two
+    retirements took $13.79 of the month's World Labs purchases out of its reading). Gemini settles in
+    ``website_gemini_receipts``.
     """
 
     try:
-        if receipt.get("status") != "settled" or receipt.get("provider") != "openai":
+        if receipt.get("status") != "settled" or receipt.get("provider") not in _JOURNALED_SETTLEMENT_PROVIDERS:
             return
         from .paid_spend_meter import meter_root, record_settlement
         root = meter_root()
@@ -138,7 +144,7 @@ def meter_preparation_settlement(payload: Mapping[str, Any], receipt: Mapping[st
         if root is None or not isinstance(job_id, str) or not job_id or not isinstance(binding, str) or not binding:
             return
         record_settlement(job_id=job_id, meter_key=binding, settled_usd=receipt.get("actual_cost_usd"),
-                          basis="preparation_settlement", provider="openai", root=root)
+                          basis="preparation_settlement", provider=METER_PROVIDERS[receipt["provider"]], root=root)
     except Exception:  # noqa: BLE001 - metering is visibility; the WebApp ledger holds the settlement
         return
 

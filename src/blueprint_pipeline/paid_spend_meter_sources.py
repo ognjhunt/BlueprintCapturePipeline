@@ -135,16 +135,27 @@ def screening_rows(queue_root: Path | None) -> tuple[list[dict[str, Any]], list[
     return rows, sorted(gaps)
 
 
-def _once(journal: list[dict[str, Any]], openai: Mapping[str, Any] | None) -> list[dict[str, Any]]:
-    """Journal rows with each OpenAI call the job's scanned receipts already count reduced to a call.
+def _once(journal: list[dict[str, Any]], openai: Mapping[str, Any] | None,
+          world_labs: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Journal rows with each OpenAI call or Atlas purchase the job's scanned records already count reduced to a call.
 
     A scanned job row lists the calls it covers (``bindings``); one from an older tick lists none, and then every
     OpenAI preparation settlement the journal holds for that job is left to the scan. ARTISAN's journal
-    rows come from the scene attempt, outside the scan's preparation receipts.
+    rows come from the scene attempt, outside the scan's preparation receipts. A scanned Atlas attempt names the
+    reservation it settles (``binding``): while its records are on disk the scan counts it, and once its workspace
+    is retired the journal's settlement does.
     """
 
     covered: set[tuple[str, str]] = set()
     whole: set[str] = set()
+    atlas: set[tuple[str, str]] = set()
+    atlas_whole: set[str] = set()  # a charge from an older tick names no binding: its job is left to the scan
+    for charge in (world_labs or {}).get("charges") or []:
+        if isinstance(charge, Mapping):
+            if isinstance(charge.get("binding"), str):
+                atlas.add((job_key(charge.get("job_id")), charge["binding"]))
+            else:
+                atlas_whole.add(job_key(charge.get("job_id")))
     for charge in (openai or {}).get("job_charges") or []:
         if not isinstance(charge, Mapping):
             continue
@@ -156,9 +167,11 @@ def _once(journal: list[dict[str, Any]], openai: Mapping[str, Any] | None) -> li
             whole.add(job)
     rows = []
     for row in journal:
-        if (row.get("status") == "settled" and row.get("provider") == "openai"
+        if ((row.get("status") == "settled" and row.get("provider") == "openai"
                 and not row["meter_key"].startswith(ARTISAN_OPENAI_METER_PREFIX)
-                and (row["job_id"] in whole or (row["job_id"], row["meter_key"]) in covered)):
+                and (row["job_id"] in whole or (row["job_id"], row["meter_key"]) in covered))
+                or (row.get("status") == "settled" and row.get("provider") == "world_labs"
+                    and (row["job_id"] in atlas_whole or (row["job_id"], row["meter_key"]) in atlas))):
             row = {**row, "status": "unpriced", "settled_usd": None, "settled_at_epoch": None}
         rows.append(row)
     return rows
@@ -189,7 +202,7 @@ def collect_meter_view(*, now: float, world_labs: Mapping[str, Any] | None = Non
         gaps.append("paid_spend_meter_webapp_overhead_unobserved")
     elif overhead is not None and overhead.get("complete") is not True:
         gaps.append("paid_spend_meter_webapp_overhead_partial")
-    return meter_view([*_once(journal_rows(events), openai), *screening, *atlas_rows(world_labs),
+    return meter_view([*_once(journal_rows(events), openai, world_labs), *screening, *atlas_rows(world_labs),
                        *openai_rows(openai), *overhead_rows(overhead)], now=now, gaps=gaps)
 
 

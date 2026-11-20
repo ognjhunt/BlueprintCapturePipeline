@@ -326,6 +326,16 @@ def test_world_labs_counts_blueprints_own_attempt_records(tmp_path):
     assert not _codes(result, "world_labs")
 
 
+def test_each_world_labs_charge_names_the_reservation_it_settles(tmp_path):
+    """The journal keys an Atlas settlement by its reservation: the meter matches the two (paid_spend_meter_sources)."""
+    root = tmp_path / "handoffs"
+    _attempt(_job(root) / "automation/splat/native", price=5.0, sent_at=NOW - 3600)
+    row = spend.observe_world_labs_spend(now=NOW, storage_root=root)
+    [charge] = row["charges"]
+    assert charge["binding"] == "sha256:" + hashlib.sha256(
+        str(_job(root) / "automation/splat/native").encode()).hexdigest()
+
+
 def test_world_labs_spend_over_either_line_pages(tmp_path):
     env = {spend.ATLAS_STORAGE_ROOT_ENV: str(_world_labs(tmp_path)),
            spend.WORLD_LABS_24H_PAGE_ENV: "5.75", spend.WORLD_LABS_MONTH_PAGE_ENV: "7"}
