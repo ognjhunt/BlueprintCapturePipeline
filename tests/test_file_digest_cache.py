@@ -127,11 +127,32 @@ def test_an_unreadable_sidecar_is_ignored_and_gone_files_are_dropped(tmp_path, h
         cache.file_sha256(kept)
         cache.file_sha256(gone)
     gone.unlink()
-    with cache.file_digest_cache(sidecar):
-        pass  # a step that hashed nothing keeps what is still valid
-    assert set(json.loads(sidecar.read_text())["entries"]) == {str(kept)}
     with pytest.raises(FileNotFoundError):
-        _digest(sidecar, gone)
+        _digest(sidecar, gone)  # a gone file's row is never trusted
+    fresh = tmp_path / "fresh"
+    fresh.write_bytes(b"3")
+    assert _digest(sidecar, fresh) == _expected(b"3")  # the next write drops it
+    assert set(json.loads(sidecar.read_text())["entries"]) == {str(kept), str(fresh)}
+
+
+def test_a_step_that_hashes_nothing_never_rewrites_the_sidecar(tmp_path, hashed):
+    """2026-11-19: every finished job's sidecar was rewritten once one of its files went, which kept the
+    finished job recently active for disk cleanup (``website_scene_workspace_retention``)."""
+    kept, gone, sidecar = tmp_path / "kept", tmp_path / "gone", tmp_path / cache.SIDECAR
+    kept.write_bytes(b"1")
+    gone.write_bytes(b"2")
+    with cache.file_digest_cache(sidecar):
+        cache.file_sha256(kept)
+        cache.file_sha256(gone)
+    gone.unlink()
+    kept.chmod(0o600)  # a changed fingerprint too
+    os.utime(sidecar, (1_000_000_000, 1_000_000_000))
+    before = sidecar.read_bytes()
+    for _tick in range(2):
+        with cache.file_digest_cache(sidecar):
+            pass
+    assert sidecar.read_bytes() == before and sidecar.stat().st_mtime == 1_000_000_000
+    assert not [name for name in os.listdir(tmp_path) if name.startswith("." + cache.SIDECAR)]
 
 
 def test_a_passed_check_runs_once_per_job_for_the_same_binding(tmp_path):

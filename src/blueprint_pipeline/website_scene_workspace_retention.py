@@ -56,6 +56,7 @@ from typing import Any, Protocol
 
 from .company_share_permission import CHECK_DIRECTORY as permission_check_directory
 from .company_share_permission import STATEMENT_CHECK_FILE as permission_check_file
+from .file_digest_cache import SIDECAR as digest_cache_file
 from .completed_replay_cache_retention import active_reference
 from .capture_delivery_ledger import ended_producer_delivery_keys
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
@@ -367,6 +368,13 @@ class _Walk:
 #: mtime; that directory's own mtime is not counted either (every file in it still is).
 _RECHECK_RECORD = "/".join((*permission_check_directory, permission_check_file))
 _RECHECK_DIRECTORY = "/".join(permission_check_directory)
+#: The Atlas job's digest cache (``file_digest_cache``) is a cache of digests its ticks computed, not work in the
+#: job: it never makes a workspace recently active either (2026-11-19: six finished test jobs idle since 11-16 were
+#: kept as recently active after their caches were rewritten). It is replaced atomically too, so its directory's own
+#: mtime is not counted (every file in it still is). It is still archived like any other file.
+_DIGEST_CACHE_DIRECTORY = "pipeline/atlas"
+_DIGEST_CACHE_RECORD = f"{_DIGEST_CACHE_DIRECTORY}/{digest_cache_file}"
+_NOT_ACTIVITY = frozenset({_RECHECK_RECORD, _RECHECK_DIRECTORY, _DIGEST_CACHE_RECORD, _DIGEST_CACHE_DIRECTORY})
 
 
 def _walk(scene: Path) -> _Walk:
@@ -398,7 +406,7 @@ def _walk(scene: Path) -> _Walk:
                 unsafe.append(relative)
                 continue
             inside_capture = relative.split("/", 2)[-1] if relative.startswith("captures/") else None
-            if inside_capture not in {_RECHECK_RECORD, _RECHECK_DIRECTORY}:
+            if inside_capture not in _NOT_ACTIVITY:
                 newest = max(newest, info.st_mtime)
             if stat.S_ISDIR(info.st_mode):
                 allocated += _allocated(info)
