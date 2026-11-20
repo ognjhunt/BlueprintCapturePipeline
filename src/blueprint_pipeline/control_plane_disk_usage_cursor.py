@@ -30,6 +30,7 @@ identity it was measured with.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import os
 import stat
 import time
@@ -251,12 +252,14 @@ def plan_partitions(
             (c for k, c in plan.candidates.items() if k not in queued), key=_sort_key))
         # A folder emptied or refilled keeps its inode, so its old measurement stays usable until the rotation
         # comes back to it (2026-11-20: two folders emptied on 11-18 still read 53 GiB, with measurements up to
-        # 12 days old). One whose entries changed after it was measured is measured again first.
+        # 12 days old). One whose entries changed after it was measured goes early, alternating with the normal
+        # rotation so that at least half of every pass keeps the rotation moving and nothing is starved.
         changed = [key for key in plan.queue if _changed_since_measured(plan.ledger.get(key),
                                                                         plan.candidates.get(key), now=started)]
         if changed:
-            first = set(changed)
-            plan.queue = changed + [key for key in plan.queue if key not in first]
+            early = set(changed)
+            rest = [key for key in plan.queue if key not in early]
+            plan.queue = [key for pair in itertools.zip_longest(rest, changed) for key in pair if key is not None]
     order: list[tuple[RootPlan, Candidate]] = []
     selectable = [[plan.candidates[key] for key in plan.queue if key in plan.candidates][:partitions_per_mount]
                   for plan in plans]

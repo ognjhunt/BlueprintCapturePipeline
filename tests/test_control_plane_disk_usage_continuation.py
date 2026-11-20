@@ -171,8 +171,9 @@ def test_a_folder_emptied_after_its_measurement_is_measured_again_first(tmp_path
     later = time.time() + 10
     os.utime(tmp_path / "c", (later, later))
     monkeypatch.setattr(cursor, "CHANGED_REMEASURE_AFTER_SECONDS", 0, raising=False)
-    emptied = _survey(tmp_path, previous=previous)
-    assert emptied["selected_partitions"] == 1
+    # Two partitions this pass: the rotation's next one ("a") and the changed one, not "a" and "b".
+    emptied = _survey(tmp_path, previous=previous, partitions=2)
+    assert emptied["selected_partitions"] == 2
     assert emptied["mounts"][0]["surveyed_bytes"] <= full - 40960
     assert emptied["composite"]["unmeasured"] == 0
 
@@ -193,3 +194,31 @@ def test_a_directory_changed_recently_waits_for_its_turn(tmp_path: Path) -> None
     os.utime(tmp_path / "c", (later, later))
     rotated = _survey(tmp_path, previous=previous)
     assert rotated["mounts"][0]["surveyed_bytes"] == full
+
+
+def test_folders_that_change_every_pass_never_starve_the_rotation(tmp_path: Path, monkeypatch) -> None:
+    """Codex on #3669: changed folders taking every slot would leave an unchanged one unmeasured for good."""
+
+    from blueprint_pipeline import control_plane_disk_usage_cursor as cursor
+
+    names = ("a", "b", "c", "d")
+    for name in names:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 4096)
+    previous = None
+    for _tick in range(4):
+        result = _survey(tmp_path, previous=previous)
+        previous = result["continuation"]
+    [root] = previous["roots"].values()
+    measured_d = root["ledger"][cursor._digest("d")]["observed_at_epoch"]
+    monkeypatch.setattr(cursor, "CHANGED_REMEASURE_AFTER_SECONDS", 0, raising=False)
+    remeasured = False
+    for tick in range(4):
+        later = time.time() + 10 + tick
+        for name in ("a", "b", "c"):
+            os.utime(tmp_path / name, (later, later))
+        result = _survey(tmp_path, previous=previous, partitions=2)
+        previous = result["continuation"]
+        [root] = previous["roots"].values()
+        remeasured = remeasured or root["ledger"][cursor._digest("d")]["observed_at_epoch"] > measured_d
+    assert remeasured
