@@ -459,13 +459,14 @@ When a spend page arrives:
 
 ## 2b. Account monthly limit
 
-The owner set one account-wide limit on 2026-11-07 and raised it on
-2026-11-12: **USD 300 per UTC month**, across every provider. The design and the stage-2 plan are in
+The account-wide limit across providers is **USD 300 per UTC month**. The
+owner set **USD 400 for November 2026 only**. The USD 300 limit resumes in
+December. The design and the stage-2 plan are in
 [`../architecture/metered-spend.md`](../architecture/metered-spend.md).
 
-- **Where the amount lives.** `monthly_limit_usd` in
-  `config/account_monthly_spend_limit.v1.json`. It is committed and the
-  deploy installs it.
+- **Where the amount lives.** `monthly_limit_usd` and
+  `monthly_limit_overrides` in `config/account_monthly_spend_limit.v1.json`.
+  The deploy installs this file.
 - **What counts.** Reconciled provider month-to-date plus held reservations.
   The spend guard rewrites the report about once a minute, to
   `/var/lib/blueprint/pipeline-control-plane/account-monthly-spend/report.json`.
@@ -474,9 +475,9 @@ The owner set one account-wide limit on 2026-11-07 and raised it on
 
 | Alert or refusal | Means | Do |
 |---|---|---|
-| `account_spend_month_50pct` (warn) | The month has counted $150. | Nothing. Read the jobs (below) if it is early in the month. |
-| `account_spend_month_80pct` (page) | $240. | Tell the owner. Find the largest jobs and any unexpected spend. |
-| `account_spend_month_limit_reached` (page); refusal `account_monthly_spend_limit_reached` | $300 counted: new paid admissions are refused until the month ends or the owner raises the limit. | Tell the owner. Only the owner can raise the limit (a money decision). A one-month raise goes in `monthly_limit_overrides` (`{"2026-11": "300"}`), in a reviewed commit, then a deploy. |
+| `account_spend_month_50pct` (warn) | $150 counted, or $200 in November 2026. | Read the jobs below if it is early in the month. |
+| `account_spend_month_80pct` (page) | $240 counted, or $320 in November 2026. | Tell the owner. Find the largest jobs and any unexpected spend. |
+| `account_spend_month_limit_reached` (page); refusal `account_monthly_spend_limit_reached` | $300 counted, or $400 in November 2026. New paid admissions are refused. | Tell the owner and leave paid work stopped until admission reopens. |
 | `account_spend_report_stale` (page); refusals `account_monthly_spend_report_stale` / `_missing_or_invalid` | The spend guard has not rewritten the report for 15 min, so every paid admission is refused. | Check `blueprint-gpu-spend-guard.service` (`door status`, `failed_units`). For up to a minute after a deploy or after 00:00 UTC on the 1st, this is expected. |
 | `account_spend_limit_config_invalid` (page) | The installed config does not validate, so every paid admission is refused. | Fix the file in a reviewed commit and deploy. |
 | `account_spend_unverifiable` (warn) | A provider reading is missing or stale (`reason`). The month counts what it can see. | See section 2a for that provider. |
