@@ -118,6 +118,11 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 | `POST /requests` | per kind | `202 {"id": …}` |
 | `GET /requests` · `GET /requests/<id>` | read | queue, or one request with result, outcome, redacted log tail and live unit state |
 
+The early trial retired on 2026-11-14. Its last worker snapshot is historical
+and is omitted from `/status`. The door still accepts older configurations
+that set `screening_worker_status`. The deploy hold does not read the trial's
+retained ledger: nothing runs from it.
+
 `status.memory` answers "what holds host RAM?" read-only. `meminfo` gives
 `MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` and `Shmem` in bytes from
 `/proc/meminfo`; `slices` gives cgroup v2 `memory.current`/`memory.peak` for
@@ -467,10 +472,9 @@ the paid stages. It also holds for work that is not paid yet and that the new
 release would refuse and rebuild: a scene attempt still in its factory,
 publication or submission (`scene_attempt_preparation`); a scene-configuration
 preparation pending, claimed by a live worker, or finished and not yet named by
-an activation (`scene_configuration_preparation`). The early trial's screening
-ledger is not read: the trial was dropped on 2026-11-14 and nothing runs from
-it. A held deploy parks (an iteration deploy) or is refused with `scene_configuration_activation_live`, `retry_after`
-and `deploys_by` (a production deploy, which never parks; the code keeps its
+an activation (`scene_configuration_preparation`). A held deploy parks (an
+iteration deploy) or is refused with `scene_configuration_activation_live`,
+`retry_after` and `deploys_by` (a production deploy, which never parks; the code keeps its
 old name whichever stage holds it). It goes out when nothing is live, when its bound is reached, or at
 once with `--activation-hold-override <reason>` (money, privacy, rights or a fix
 to the stuck stage). Two bounds: paid work holds for `CAP_SECONDS` (285 min)

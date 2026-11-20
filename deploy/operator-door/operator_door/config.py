@@ -57,6 +57,9 @@ class DoorConfig:
     capacity_summary: str = f"{_CONTROL_PLANE}/capacity/summary.json"
     preflight_summary: str = f"{_CONTROL_PLANE}/preflight/public/summary.json"
     handoff_delivery_metrics: str = "/var/lib/blueprint/pubsub-handoffs/.website_preparation_delivery_metrics.json"
+    # Read by nothing since the early trial was dropped (2026-11-14); kept so an older door.json that
+    # sets it still loads (an unknown key refuses the whole configuration).
+    screening_worker_status: str = f"{_CONTROL_PLANE}/beta-policy-screening/worker_status.json"
     lane_scratch_work_root: str = "/mnt/blueprint-work/lanes"
     lane_scratch_inputs_root: str = "/var/lib/blueprint/task-evaluation-inputs/lanes"
     owner_census_decisions_enabled: int = 0
@@ -147,7 +150,7 @@ _PATH_SCALARS = (
     "state_root", "token_file", "install_root", "control_plane_state", "active_release_link",
     "source_clone", "reference_repo", "github_deploy_key", "github_known_hosts", "venv_python",
     "capacity_summary",
-    "preflight_summary", "handoff_delivery_metrics",
+    "preflight_summary", "handoff_delivery_metrics", "screening_worker_status",
     "lane_scratch_work_root", "lane_scratch_inputs_root", "lane_owner_policy_file",
     "needed_checkpoint_cache_inventory_file", "experiment_gc_environment_file",
 )

@@ -58,7 +58,7 @@ For scene intents, completed rows, `needs_input` rows, revoked or expired
 execution windows, and intended holds never page. Intended holds are pauses, privacy,
 consent, rights and money approvals, for example
 `scene_intake_spend_cap_exhausted` and `scene_intake_attempt_cap_exhausted`.
-In the three job stores, these never page either:
+The job-store checks also skip these cases:
 
 - an Atlas job that is `ready`, `failed` or `withdrawn`, or `needs_input`
   with no scheduled recheck or waiting on privacy, rights or money. Parked
@@ -71,9 +71,8 @@ In the three job stores, these never page either:
   (`team_scene_owner_contract_invalid:*`) or on a withdrawn capture;
 - a rigid probe whose grant the WebApp refused (`website_grant_refused`, a
   money stop that the owner lifts);
-- a team scene request or a rigid probe whose capture has no scene intent
-  with an open execution window any more (expired or revoked): it cannot run
-  again;
+- a team scene request or rigid probe whose capture has no scene intent with
+  an open execution window because it expired or was revoked;
 - a store whose own trigger has a door hold. If you switch a lane off on
   purpose, hold its timer with `door hold`.
 
@@ -651,10 +650,10 @@ Before you deploy:
    job is never touched). `deploy_activation_hold.stages` and each `live` row's
    `stage` say which. Paid: `scene_configuration_activation`,
    `scene_configuration_launch` or `paid_launch_lock`. Not paid yet:
-   `scene_attempt_preparation` or `scene_configuration_preparation` (section 6). The hold ends when the work ends,
-   or at its bound: 285 min for paid work, counted from when a paid stage was
-   first live; 60 min in all for work that is not paid yet (`CAP_SECONDS` and
-   `UNPAID_CAP_SECONDS` in
+   `scene_attempt_preparation` or `scene_configuration_preparation` (section
+   6). The hold ends when the work ends, or at its bound: 285 min for paid
+   work, counted from when a paid stage was first live; 60 min in all for work
+   that is not paid yet (`CAP_SECONDS` and `UNPAID_CAP_SECONDS` in
    `deploy/operator-door/operator_door/activation_hold.py`; `bound` says which
    applies).
 6. `--activation-hold-override <reason>` deploys at once. Use it only for

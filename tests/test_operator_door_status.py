@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
@@ -214,6 +215,24 @@ def test_status_assembles_every_section(host_tree: dict[str, Path]) -> None:
     assert set(status["disk"]) and "loadavg" in status["load"]
 
 
+def test_status_omits_the_retired_trial_worker_snapshot(host_tree: dict[str, Path]) -> None:
+    path = host_tree["state"] / "beta-policy-screening" / "worker_status.json"
+    snapshot = json.dumps({
+        "schema_version": "blueprint.beta_policy_screening_worker_status.v1",
+        "status": "preparation_needed",
+        "coverage": "current_ledger",
+        "candidate_counts": {"unavailable": 1},
+    })
+    path.parent.mkdir()
+    path.write_text(snapshot, encoding="utf-8")
+    config = replace(_config(host_tree), screening_worker_status=str(path))
+
+    status = build_status(config, _host(host_tree, FakeRunner({})), caller={})
+
+    assert "beta_screening" not in status
+    assert path.read_text(encoding="utf-8") == snapshot
+
+
 def test_status_shows_active_and_overdue_holds_with_remaining_seconds(host_tree: dict[str, Path]) -> None:
     root = host_tree["base"] / "door" / "requests" / "holds"
     root.mkdir()
@@ -276,15 +295,6 @@ def test_preparation_delivery_shows_live_and_parked_callbacks(host_tree: dict[st
         "schema_version": "website_preparation_delivery_metrics.v1", "observed_at_epoch": 1_000.0,
         "due_backlog": 0, "oldest_due_age_seconds": 0.0, "overloaded": False, "live_count": 1,
         "oldest_live_age_seconds": 4_000.0, "parked_count": 7, "oldest_parked_age_seconds": 408_000.0}
-
-
-def test_status_does_not_report_the_dropped_early_trial_as_a_live_lane(host_tree: dict[str, Path]) -> None:
-    # The owner dropped the early trial on 2026-11-14 and its timer is retired. Its worker's last
-    # status file stays on the host (last written 2026-11-15); status must not show that stopped
-    # lane's state as current, and the door no longer has a setting that points at it.
-    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
-    assert not any("screening" in key for key in status)
-    assert not any("screening" in field for field in DoorConfig.__dataclass_fields__)
 
 
 def test_a_receipt_with_credential_shaped_content_names_the_refusal(host_tree: dict[str, Path]) -> None:

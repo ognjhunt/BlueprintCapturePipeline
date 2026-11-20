@@ -186,13 +186,13 @@ has been stuck and how many there are (`count`, `targets`).
   `/var/lib/blueprint-operator-door/requests/holds/`. Start it through the
   door, or place an owned hold if it is off on purpose.
 
-Three job stores have their own check (added 2026-11-10). The unit names each
-root as that store's own worker unit does. A root that does not exist is
-"nothing to check"; a store whose own trigger has a door hold is not read
-(`status: held`). Each default is one of the two waits above: 90 minutes where
-the job waits on the pipeline itself, 8 hours where a worker may hold it for
-whole runs. A team scene request or a rigid probe pages only while its capture
-still has a scene intent with an open execution window (not revoked,
+The alarm also checks three job stores. The unit names each root as
+that store's own worker unit does. A root that does not exist is "nothing to
+check"; a store whose own trigger has a door hold is not read (`status: held`).
+Each default is one of the two waits above: 90 minutes where the job waits on
+the pipeline itself, 8 hours where a worker may hold it for whole runs. A team
+scene request or a rigid probe pages only while its capture still has a scene
+intent with an open execution window (not revoked,
 extensions included), the rule the progression check applies to an intent's own
 row. After that the row is history (`execution_window` in the check's
 `dispositions`): it cannot be funded or run again, and a refusal from months ago
@@ -247,7 +247,7 @@ tick's deadline), every row stays watched and the tick reports
 
 A persisting stall repeats hourly; a newly stuck target posts at once.
 `stall_check_incomplete` (warn) means a check could not look, for example an
-unreadable root, job or ledger, or a failed `systemctl show`. The `stall`
+unreadable root or job, or a failed `systemctl show`. The `stall`
 section of `capacity/summary.json` lists what each check examined and why rows
 were skipped. Thresholds are minutes in the environment file:
 `BLUEPRINT_STALL_PROGRESSION_MINUTES`, `BLUEPRINT_STALL_HANDOFF_MINUTES`,
