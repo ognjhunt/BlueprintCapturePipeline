@@ -567,7 +567,9 @@ Known edges:
 - ARTISAN is inside the job's cap through the scene attempt's hold. The
   website job's journal records the priced OpenAI usage from the attempt's
   retained meter, including any design-board estimate, and separately records
-  the Anthropic subtotal at list price when it supplied the text calls.
+  the Anthropic subtotal at list price when it supplied the text calls. OpenAI
+  call IDs prevent overlapping archives from adding the same usage twice. A
+  continuation contributes only its own meter's calls.
   OpenAI request upper bounds without usage remain in the attempt's cap
   accounting and the provider bill owns their final cost. An attempt with no
   readable usage archive leaves no new OpenAI journal row. Earlier attempts,

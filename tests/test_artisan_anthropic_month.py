@@ -204,7 +204,7 @@ def test_a_hold_that_cannot_be_written_on_the_host_raises(host, tmp_path, monkey
         month.hold_attempt(RECEIPT, AUTHORITY, ttl_seconds=7200, now=NOW - 100)
 
 
-def test_openai_attribution_uses_bound_usage_and_counts_an_attempt_once(host, tmp_path):
+def test_openai_attribution_counts_each_call_once_across_retained_archives(host, tmp_path):
     from blueprint_pipeline import paid_spend_meter
 
     source_commit = "e" * 40
@@ -218,16 +218,24 @@ def test_openai_attribution_uses_bound_usage_and_counts_an_attempt_once(host, tm
                          run_id="website-run-other")
     duplicate = _archive(tmp_path / "duplicate.zip", calls + [calls[0]],
                          configuration=config, source_commit=source_commit)
+    partial = _archive(tmp_path / "partial.zip", calls[:2], configuration=config, source_commit=source_commit)
     archive = _archive(tmp_path / "retained.zip", calls, configuration=config, source_commit=source_commit)
+    with zipfile.ZipFile(archive, "a") as opened:
+        source_usage = month.USAGE_MEMBER.replace("blueprint_usage.json", "continuation/source/blueprint_usage.json")
+        opened.writestr(source_usage, json.dumps({"schema_version": "artisan_upstream_usage.v1",
+                                                  "maximum_cost_usd": 12.0, "calls": [_row("create", 0.9)]}))
     before = _report()
-    assert month.settle_openai_attempt(receipt, AUTHORITY, archives=(wrong_run, duplicate, archive),
+    assert month.settle_openai_attempt(receipt, AUTHORITY, archives=(wrong_run, duplicate, partial),
                                       job_id="site-request-id", now=NOW - 50)
-    assert month.settle_openai_attempt(receipt, AUTHORITY, archives=(archive,), job_id="site-request-id", now=NOW)
+    assert _report()["providers"]["openai"]["metered_attributed_usd"] == pytest.approx(
+        before["providers"]["openai"]["metered_attributed_usd"] + 0.3)
+    assert month.settle_openai_attempt(receipt, AUTHORITY, archives=(partial, archive),
+                                      job_id="site-request-id", now=NOW)
     events, _ = paid_spend_meter.read_journal(paid_spend_meter.meter_root())
     settled = [row for row in paid_spend_meter.journal_rows(events) if row["job_id"] == "request-id"]
-    assert [(row["provider"], float(row["settled_usd"])) for row in settled] == [("openai", 0.55)]
+    assert [(row["provider"], float(row["settled_usd"])) for row in settled] == [("openai", 0.3), ("openai", 0.25)]
     assert {row["basis"] for row in events if row.get("job_id") == "request-id"} == {
-        "artisan_measured_usage_with_image_estimate"}
+        "artisan_measured_usage", "artisan_metered_image_estimate"}
     after = _report()
     assert after["providers"]["openai"]["metered_attributed_usd"] == pytest.approx(
         before["providers"]["openai"]["metered_attributed_usd"] + 0.55)

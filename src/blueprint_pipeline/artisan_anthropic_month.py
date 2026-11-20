@@ -28,6 +28,7 @@ USAGE_MEMBER = "stages/stage-3/producer/artisan_runtime/blueprint_usage.json"
 STAGE_INPUT_MEMBER = "stages/stage-3/producer/stage_production_input.v1.json"
 NO_FUNDS_ORIGIN = "upstream_rejected_request_no_funds"
 MAX_USAGE_BYTES = 2 * 1024**2
+METER_ROUNDING_TOLERANCE_USD = Decimal("0.000001")
 
 
 def _root(environ: Mapping[str, str] | None) -> Path | None:
@@ -127,7 +128,8 @@ def settle_attempt(receipt: Mapping[str, Any], archive: Path | None, *, environ:
     return True
 
 
-def _metered_openai(archive: Path, receipt: Mapping[str, Any], *, stage_cap: Decimal) -> tuple[Decimal, bool] | None:
+def _metered_openai(archive: Path, receipt: Mapping[str, Any], *,
+                    stage_cap: Decimal) -> list[tuple[str, Decimal, bool]] | None:
     """Price only recognizable OpenAI usage from the current run's own ARTISAN meter."""
     from .paid_spend_meter import money
 
@@ -153,9 +155,9 @@ def _metered_openai(archive: Path, receipt: Mapping[str, Any], *, stage_cap: Dec
     meter_cap = money(usage.get("maximum_cost_usd"))
     if meter_cap is None or not 0 < meter_cap <= stage_cap:
         return None
-    seen, subtotal, estimated = set(), Decimal(0), False
+    seen, charges = set(), []
     for call in usage["calls"]:
-        if not isinstance(call, Mapping) or not isinstance(call.get("id"), str) or call["id"] in seen:
+        if not isinstance(call, Mapping) or not isinstance(call.get("id"), str) or not call["id"] or call["id"] in seen:
             return None
         seen.add(call["id"])
         kind, origin = call.get("kind"), call.get("cost_origin")
@@ -168,15 +170,15 @@ def _metered_openai(archive: Path, receipt: Mapping[str, Any], *, stage_cap: Dec
         amount = money(cost) if isinstance(cost, (int, float)) else None
         if amount is None:
             return None
-        subtotal += amount
-        estimated |= image
-    return (subtotal, estimated) if subtotal <= meter_cap + Decimal("0.000001") else None
+        charges.append((call["id"], amount, image))
+    total = sum((amount for _, amount, _ in charges), Decimal(0))
+    return charges if total <= meter_cap + METER_ROUNDING_TOLERANCE_USD else None
 
 
 def settle_openai_attempt(receipt: Mapping[str, Any], authority: Mapping[str, Any], *, archives: tuple[Path, ...],
                           job_id: str | None, environ: Mapping[str, str] | None = None,
                           now: float | None = None) -> bool:
-    """Journal the job's OpenAI subtotal once per attempt, from one retained archive."""
+    """Journal the job's OpenAI usage by call ID, so overlapping archives count each call once."""
     if not job_id or receipt.get("replacement_authoring_backend") != "artisan_v1":
         return False
     root = _root(environ)
@@ -189,21 +191,23 @@ def settle_openai_attempt(receipt: Mapping[str, Any], authority: Mapping[str, An
     if stage_cap is None:
         return False
 
-    for archive in archives:
-        observed = _metered_openai(archive, receipt, stage_cap=stage_cap)
-        if observed is None:
-            continue
-        subtotal, estimated = observed
-        if not subtotal:
-            return False
-        basis = "artisan_measured_usage_with_image_estimate" if estimated else "artisan_measured_usage"
+    charges = {}
+    for archive in dict.fromkeys(archives):
+        for call_id, cost, estimated in _metered_openai(archive, receipt, stage_cap=stage_cap) or ():
+            if cost:
+                charges.setdefault(call_id, (cost, estimated))
+    if sum((cost for cost, _ in charges.values()), Decimal(0)) > stage_cap + METER_ROUNDING_TOLERANCE_USD:
+        return False
+    written = False
+    for call_id, (cost, estimated) in charges.items():
+        basis = "artisan_metered_image_estimate" if estimated else "artisan_measured_usage"
         try:
-            record_settlement(job_id=job_id, meter_key=ARTISAN_OPENAI_METER_PREFIX + str(receipt["run_id"]),
-                              settled_usd=subtotal, basis=basis, provider="openai", root=root, now=now)
+            record_settlement(job_id=job_id, meter_key=ARTISAN_OPENAI_METER_PREFIX + call_id,
+                              settled_usd=cost, basis=basis, provider="openai", root=root, now=now)
         except (OSError, ValueError):
-            return False
-        return True
-    return False
+            continue
+        written = True
+    return written
 
 
 def ended_without_funds(receipt: Mapping[str, Any], archive: Path, *,

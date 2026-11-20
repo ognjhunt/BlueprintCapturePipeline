@@ -86,7 +86,7 @@ SOURCE_SCREENING = "beta_policy_screening"
 SOURCE_ATLAS = "atlas"
 SOURCE_OPENAI = "openai_settlement"
 SOURCE_OVERHEAD = "webapp_overhead"
-ARTISAN_OPENAI_METER_PREFIX = "artisan-openai-attempt:"
+ARTISAN_OPENAI_METER_PREFIX = "artisan-openai-call:"
 #: The job key of a named overhead row: spend that belongs to no job and still counts toward the account.
 OVERHEAD_PREFIX = "overhead:"
 #: The meter's provider for each name the WebApp reports a run under: the bill it lands on.
