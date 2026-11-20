@@ -162,6 +162,16 @@ def test_an_atlas_input_recheck_overdue_pages_unless_it_waits_on_money_or_consen
     assert alerts == [] and section["dispositions"] == {"money_approval": 1, "privacy": 1}
 
 
+def test_a_job_stopped_for_input_is_read_by_its_own_reason_not_an_earlier_waits(tmp_path: Path) -> None:
+    """The move to needs_input keeps the outage and refusal counters of the waits before it
+    (``atlas_preparation_job_control._transition``); a money stop read by an old outage's code paged."""
+    _atlas_job(tmp_path, state="needs_input", reason="atlas_runtime_price_review_expired",
+               retry_at_epoch=NOW - 2 * 86400, transient_failures=3, last_transient_reason="website_atlas_api_503",
+               refusal_retries=1, last_refusal_reason="task_brief_missing")
+    section, alerts = _atlas(tmp_path)
+    assert alerts == [] and section["dispositions"] == {"money_approval": 1}
+
+
 def test_a_parked_atlas_job_does_not_page_alongside_an_overdue_recheck(tmp_path: Path) -> None:
     # A retained release-switch refusal has no retry time, so the worker cannot miss a retry.
     _atlas_job(tmp_path, state="needs_input", reason="website_atlas_pose_release_not_admitted",
