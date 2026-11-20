@@ -222,3 +222,38 @@ def test_folders_that_change_every_pass_never_starve_the_rotation(tmp_path: Path
         [root] = previous["roots"].values()
         remeasured = remeasured or root["ledger"][cursor._digest("d")]["observed_at_epoch"] > measured_d
     assert remeasured
+
+
+def test_a_single_partition_pass_still_reaches_a_changed_folder_in_its_turn(tmp_path: Path, monkeypatch) -> None:
+    """Codex on #3669: with one partition a pass, rotation-first alternation kept a changed folder out for good."""
+
+    from blueprint_pipeline import control_plane_disk_usage_cursor as cursor
+
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 40960)
+    previous = None
+    for _tick in range(4):
+        result = _survey(tmp_path, previous=previous)
+        previous = result["continuation"]
+    full = result["mounts"][0]["surveyed_bytes"]
+    (tmp_path / "c" / "data").unlink()
+    later = time.time() + 10
+    os.utime(tmp_path / "c", (later, later))
+    monkeypatch.setattr(cursor, "CHANGED_REMEASURE_AFTER_SECONDS", 0, raising=False)
+    surveyed = []
+    for _tick in range(4):
+        result = _survey(tmp_path, previous=previous)
+        previous = result["continuation"]
+        surveyed.append(result["mounts"][0]["surveyed_bytes"])
+    assert surveyed[-1] <= full - 40960
+
+
+def test_changed_partitions_take_every_second_slot_and_move_no_partition_later() -> None:
+    from blueprint_pipeline.control_plane_disk_usage_cursor import _promote_changed
+
+    queue = ["a", "b", "c", "d", "e", "f"]
+    order = _promote_changed(queue, {"e", "f"})
+    assert order == ["a", "e", "b", "f", "c", "d"]
+    assert _promote_changed(queue, {"a"}) == queue
+    assert all(order.index(key) <= queue.index(key) for key in ("e", "f"))

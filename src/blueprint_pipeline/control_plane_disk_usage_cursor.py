@@ -30,10 +30,10 @@ identity it was measured with.
 from __future__ import annotations
 
 import hashlib
-import itertools
 import os
 import stat
 import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -252,14 +252,11 @@ def plan_partitions(
             (c for k, c in plan.candidates.items() if k not in queued), key=_sort_key))
         # A folder emptied or refilled keeps its inode, so its old measurement stays usable until the rotation
         # comes back to it (2026-11-20: two folders emptied on 11-18 still read 53 GiB, with measurements up to
-        # 12 days old). One whose entries changed after it was measured goes early, alternating with the normal
-        # rotation so that at least half of every pass keeps the rotation moving and nothing is starved.
-        changed = [key for key in plan.queue if _changed_since_measured(plan.ledger.get(key),
-                                                                        plan.candidates.get(key), now=started)]
+        # 12 days old). One whose entries changed after it was measured is promoted into every other slot.
+        changed = {key for key in plan.queue if _changed_since_measured(plan.ledger.get(key),
+                                                                        plan.candidates.get(key), now=started)}
         if changed:
-            early = set(changed)
-            rest = [key for key in plan.queue if key not in early]
-            plan.queue = [key for pair in itertools.zip_longest(rest, changed) for key in pair if key is not None]
+            plan.queue = _promote_changed(plan.queue, changed)
     order: list[tuple[RootPlan, Candidate]] = []
     selectable = [[plan.candidates[key] for key in plan.queue if key in plan.candidates][:partitions_per_mount]
                   for plan in plans]
@@ -273,6 +270,30 @@ def plan_partitions(
 
 def measurement_usable(measurement: Any, candidate: Candidate) -> bool:
     return isinstance(measurement, Mapping) and measurement.get("identity") == _identity(candidate.info)
+
+
+def _promote_changed(queue: Sequence[str], changed: set[str]) -> list[str]:
+    """The rotation, with every second slot given to the earliest changed partition not yet placed.
+
+    Nothing moves later than its place in the rotation, so a pass of one partition walks the rotation exactly
+    as before and a changed partition is still reached in its turn; every other slot keeps the rotation moving,
+    so a set of partitions that change all the time cannot starve the rest.
+    """
+
+    rotation, promoted = deque(queue), deque(key for key in queue if key in changed)
+    order: list[str] = []
+    placed: set[str] = set()
+    rotation_turn = True
+    while rotation or promoted:
+        source = rotation if rotation_turn or not promoted else promoted
+        while source and source[0] in placed:
+            source.popleft()
+        if source:
+            key = source.popleft()
+            order.append(key)
+            placed.add(key)
+        rotation_turn = not rotation_turn
+    return order
 
 
 def _changed_since_measured(measurement: Any, candidate: Candidate | None, *, now: float) -> bool:
