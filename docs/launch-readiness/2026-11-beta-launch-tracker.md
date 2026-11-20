@@ -185,6 +185,12 @@ Intended design: every upload is written to one record before it is sent, and st
 - **Still running:** `blueprint-scene-stage-maintenance.timer` (first run on this release at 03:40:51Z, clean, nothing to deliver), the intake, scene progression, the scripted check's runner, the Atlas preview timer, withdrawal deletion and the spend guard.
 - **Not checked:** no website job has passed through scene configuration, the scene packet or the scripted check on this release.
 
+## Metering and retry rollout on 2026-11-20
+
+- **WebApp.** The site's journey changes ([WebApp #1330](https://github.com/ognjhunt/Blueprint-WebApp/pull/1330)) and named overhead with Gemini settlements ([WebApp #1331](https://github.com/ognjhunt/Blueprint-WebApp/pull/1331)) are live: `version.json` read `285edc01d172942e92f45beb496669c5bc8e3ca2` at about 02:46Z.
+- **Pipeline.** The host ran `5c91221acad4733df26bbe604302d3f528195d95` with no deploy units, no held paid locks and an empty door queue. Request `20261120T024545Z-deploy-cdbc5001` deployed `03dcd29c6eb48f50f6e418d1ccc1cb6a35b5c427` under D-08's money-fix exception: the month's spend stood at $280.13 of the $300 account limit, and the owner had set $400 for November. `door status` at 03:09Z showed `03dcd29` active, `commit_proven: true` and no blockers, and the installed limit file carries `"2026-11": "400"`. The release also carries the release-switch self-retry, the disk-cleanup fixes and per-job metering. [Pipeline #3664](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3664) · [Pipeline #3665](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3665)
+- **Found after release.** Reopening the parked drawer test job (`site-itest-917ca852…`) stopped at its read-only status: `selected_handoff_atlas_configuration_invalid`. Since the $40 cap, the WebApp reports the Atlas allowance's remainder never above what the job has left, and the recovery check still demanded exact equality with the allowance alone. The fix goes out in the 15:00Z window; the job stays parked until then, and the lamp job stays parked.
+
 ## Simplification rollout on 2026-11-19
 
 - **WebApp.** At 22:43:37Z Render verified the website and worker both live at `42187f7bcc758e3e4f07d3f9146c15f01640e10f`. The public version, liveness, readiness, worker heartbeat, and outbox checks passed. [WebApp #1325](https://github.com/ognjhunt/Blueprint-WebApp/pull/1325) · [Render verification](https://github.com/ognjhunt/Blueprint-WebApp/actions/runs/44630947834)
