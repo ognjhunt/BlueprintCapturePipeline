@@ -42,9 +42,11 @@ def room_job(tmp_path: Path, patches, *, family: str = "navigation", description
     from tests.test_website_company_simulation import CAPTURE, REQUEST, SITE, Job
     from tests.test_website_native_appearance import inputs
 
-    (tmp_path / "fixture").mkdir(parents=True)
-    args, _preparation, _data = inputs(tmp_path / "fixture")
     job = Job(tmp_path / "download")
+    # Atlas keeps its levelled source under the capture. The company package only reads look sources there.
+    source_root = job.capture / "pipeline" / "website_scene_preparation" / "atlas" / "level"
+    source_root.mkdir(parents=True)
+    args, _preparation, _data = inputs(source_root)
     for status in (job.queue / "status").glob("*.json"):
         status.unlink()
     context = {**{k: v for k, v in args["task_context"].items() if k != "context_digest"}, "request_id": REQUEST,
@@ -98,6 +100,8 @@ def _record(result) -> dict:
 
 
 def test_a_navigation_job_ships_the_room_and_an_assumed_goal_rule(tmp_path, monkeypatch):
+    from tests.test_website_company_simulation import _package
+
     job, context, result = room_job(tmp_path, monkeypatch)
     assert (result["status"], result["blockers"], result["job_disposition"]) == ("room_package_written", [], "accepted")
     assert "native_task_preparation_gap" not in result and not holds_native_task_preparation(result, context)
@@ -114,12 +118,15 @@ def test_a_navigation_job_ships_the_room_and_an_assumed_goal_rule(tmp_path, monk
     assert job.rerun() == result  # a second handoff writes the same package
     _status, members = _published(job)
     assert sorted(members) == ["README.txt", "scene.usda", "success_rule.json"]
+    with zipfile.ZipFile(_package(job)) as archive:
+        assert "scene/room.ply" in archive.namelist()
     rule = json.loads(members["success_rule.json"])
     assert rule["criteria"] == {"surface_target": {"surface_position_world_m": goal["centre_world_m"], "radius_m": 0.5},
                                 "settling": {"stable_seconds": 2.0}}
     assert all(NAVIGATE not in text for text in members.values())  # the site's words stay on the job's page
     said = _said(members["README.txt"])
     assert said.endswith(f"{sim.ROOM_NOT_RUN} {sim.GOAL_ESTIMATED}")
+    assert sim.LOOK_AS_FIRST_WRITTEN not in said
     # The centre is the goal mask's lowest point as filmed (a tray on a counter: the counter top), and says so.
     files = " ".join(members["README.txt"].split())
     assert ("radius_m around surface_position_world_m, the middle of the goal's footprint at the lowest point of "
