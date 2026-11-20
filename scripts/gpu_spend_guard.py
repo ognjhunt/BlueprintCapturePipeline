@@ -68,6 +68,10 @@ BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_EXPORT_SCOPE = "blueprint_beta_100_user_cohort"
 SECRETS_DIR = Path.home() / ".blueprint-secrets"
 RUNPOD_API = "https://rest.runpod.io/v1"
+#: RunPod is retired (owner decision 2026-11-05), and on 2026-11-20 the owner confirmed its account holds no pods. Its
+#: key is not read: RunPod is recorded as retired with no credential in use, never queried and never required, so an
+#: unreachable retired API cannot block the guard (it failed every run from 2026-11-19).
+RUNPOD_ACCOUNT_CONFIRMED_EMPTY = True
 VAST_API = "https://console.vast.ai/api/v0"
 DEFAULT_MAX_BOOT_SECONDS = 480
 DEFAULT_MAX_BOOTED_ORPHAN_SECONDS = 4 * 60 * 60
@@ -2300,7 +2304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     secrets_dir = Path(
         str(os.getenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR") or SECRETS_DIR)
     ).expanduser()
-    runpod_key = _read_secret("runpod_api_key", secrets_dir=secrets_dir)
+    runpod_key = None if RUNPOD_ACCOUNT_CONFIRMED_EMPTY else _read_secret("runpod_api_key", secrets_dir=secrets_dir)
     vast_key = _read_secret("vast_api_key", secrets_dir=secrets_dir)
     do_token = _read_secret("digitalocean_api_token", secrets_dir=secrets_dir)
     now = _now()
@@ -2319,11 +2323,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if not configured and not required_providers:
         required_providers = set(PROVIDERS)
-    # RunPod is retired (owner decision 2026-11-05). While its key exists the
-    # inventory is still read and required, a free GET that keeps an orphan pod
-    # visible to provider-zero and the reaper. With no key it is recorded as
-    # retired and not required, so the owner can delete the key once the account
-    # is closed; even --require-provider runpod then accepts its absence.
+    # RunPod is retired and its key is not read (above): it is recorded as retired
+    # and not required; even --require-provider runpod then accepts its absence.
     if runpod_key:
         runpod_pods, runpod_inventory = _inventory_query(
             provider="runpod",

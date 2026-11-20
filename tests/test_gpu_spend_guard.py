@@ -1393,7 +1393,11 @@ def test_report_never_contains_secret_values() -> None:
 @pytest.fixture()
 def patched_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Wire main() to canned API JSON, a fixed clock, a fake owner process, and a
-    recording terminate path so the three reap scenarios run without any network."""
+    recording terminate path so the three reap scenarios run without any network.
+
+    These scenarios use RunPod-shaped pods to exercise the provider-neutral reaper, so the fixture reads the RunPod key
+    as before; production does not (``RUNPOD_ACCOUNT_CONFIRMED_EMPTY``, covered by its own test)."""
+    monkeypatch.setattr(guard, "RUNPOD_ACCOUNT_CONFIRMED_EMPTY", False)
     now = _epoch(2026, 6, 27, 0, 10, 0)  # 600s after the pods' start
     started = "2026-06-27T00:00:00Z"
     booted_orphan_started = "2026-06-26T19:00:00Z"
@@ -1641,6 +1645,7 @@ def test_inventory_http_failure_is_blocked_not_green_empty(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(guard, "RUNPOD_ACCOUNT_CONFIRMED_EMPTY", False)  # RunPod-shaped sample provider
     report_path = tmp_path / "inventory-failed.json"
     monkeypatch.setattr(
         guard,
@@ -2407,28 +2412,27 @@ def _guard_args(tmp_path: Path, output_root: Path, billing: Path) -> list[str]:
             "--json-report", str(tmp_path / "guard.json")]
 
 
-def test_runpod_key_present_still_inventories_blocks_and_reaps(patched_guard, monkeypatch) -> None:
-    """While a RunPod key exists the retired provider is still a required inventory:
-    a live orphan pod is reaped and keeps provider-zero and paid admission closed."""
+def test_a_runpod_key_left_on_the_host_is_ignored_and_runpod_stays_retired(patched_guard, monkeypatch) -> None:
+    """RunPod is retired and its account confirmed empty (owner, 2026-11-20): a key still on the host is never read,
+    RunPod is never queried or reaped, and an unreachable RunPod API cannot block the guard."""
 
     tmp_path, terminated = patched_guard
-    monkeypatch.setattr(guard, "_read_secret", lambda name, **_kw: {
-        "runpod_api_key": "rp-super-secret", "vast_api_key": "va-super-secret",
-        "digitalocean_api_token": "do-super-secret"}.get(name))
+    fetched: list[str] = []
+    read: list[str] = []
+    keys = {"runpod_api_key": "rp-super-secret", "vast_api_key": "va-super-secret",
+            "digitalocean_api_token": "do-super-secret"}
+    monkeypatch.setattr(guard, "RUNPOD_ACCOUNT_CONFIRMED_EMPTY", True)
+    monkeypatch.setattr(guard, "_read_secret", lambda name, **_kw: read.append(name) or keys.get(name))
+    monkeypatch.setattr(guard, "fetch_runpod_pods", lambda *_a, **_k: fetched.append("runpod") or [])
     monkeypatch.setattr(guard, "fetch_do_droplets", lambda *_a, **_k: [])
     billing = _keyed_billing(tmp_path, guard._now())
-    assert guard.main(_guard_args(tmp_path, tmp_path, billing)) == 2
+    assert guard.main(_guard_args(tmp_path, tmp_path, billing)) == 0
     report = json.loads((tmp_path / "guard.json").read_text(encoding="utf-8"))
     runpod = next(row for row in report["inventory_results"] if row["provider"] == "runpod")
-    assert runpod["required"] is True and runpod["status"] == "succeeded" and runpod["row_count"] == 4
-    assert sorted(report["provider_zero"]["required_provider_ids"]) == ["digitalocean", "runpod", "vast"]
-    assert report["provider_zero_verified"] is False
-    assert sorted(url.rsplit("/", 1)[-1] for url in terminated) == ["pod-booted-orphan", "pod-dud"]
-    # The live pods' provider has no billing total, so paid admission stays closed.
-    assert "provider_billing_export_missing:runpod" in report["billing_reconciliation"]["blockers"]
-    lock = json.loads((tmp_path / "lock.json").read_text(encoding="utf-8"))
-    assert lock["admission_allowed"] is False
-    assert "runpod" in {row["provider"] for row in lock["provider_inventory"]}
+    assert runpod["required"] is False and runpod["credential_present"] is False
+    assert sorted(report["provider_zero"]["required_provider_ids"]) == ["digitalocean", "vast"]
+    assert report["status"] == "passed" and report["blockers"] == []
+    assert "runpod_api_key" not in read and fetched == [] and terminated == []
 
 
 def test_a_restore_hold_keeps_admission_closed_until_a_reap_and_billing_postdate_it_then_clears_itself(
