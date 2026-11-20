@@ -390,10 +390,12 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
         native_rows = value["native_preparation_accounting"]["reservations"]
         _require(not ({row["allocation_binding_digest"] for row in atlas_rows}
                       & {row["allocation_binding_digest"] for row in native_rows}), "accounting_invalid_ledger_overlap")
+        # The WebApp reports what the Atlas allowance has left, never more than the job has left under its
+        # per-job cap (one cap at $40, 2026-11-19): the cap may only lower it, never raise it.
         _require(_equal_cost(config["reserved_or_settled_cost_usd"],
                              value["allowance_accounting"]["reserved_or_settled_cost_usd"])
-                 and _equal_cost(config["remaining_cost_usd"], max(
-                     0, authority["maximum_cost_usd"] - config["reserved_or_settled_cost_usd"]))
+                 and config["remaining_cost_usd"] < max(
+                     0, authority["maximum_cost_usd"] - config["reserved_or_settled_cost_usd"]) + 0.000001
                  and ("remaining_requests" not in config or config["remaining_requests"] == max(
                      0, authority["maximum_requests"] - value["allowance_accounting"]["request_count"])),
                  "configuration_invalid")

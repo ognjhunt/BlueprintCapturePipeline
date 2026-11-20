@@ -569,6 +569,18 @@ def test_current_configuration_allowance_must_agree_with_checked_ledger(site, ch
     assert site.job_path.read_bytes() == before
 
 
+def test_the_job_cap_may_lower_what_the_allowance_has_left_and_the_retry_still_reviews(site):
+    # One cap at $40 (2026-11-19): the WebApp reports the Atlas allowance's remainder, never more than the job has
+    # left under its cap. A lower remainder is the cap, not a disagreement (2026-11-20: the drawer test job's status
+    # was refused as configuration_invalid).
+    site.config["remaining_cost_usd"] = 4.25
+    result = recover(site)["atlas"]
+    assert result["allowance"]["remaining_cost_usd"] == 4.25
+    assert "website_scene_preparation_budget_exhausted" not in result["preflight_blockers"]
+    reviewed = result["atlas_status_digest"]
+    assert recover(site, retry_digest=reviewed)["atlas"]["atlas_status_digest"] == reviewed
+
+
 def test_a_dollar_only_allowance_is_not_blocked_by_a_request_count(site):
     # Owner decision 2026-10-30: money is the hard stop; requests are only counted.
     site.config.pop("remaining_requests")
