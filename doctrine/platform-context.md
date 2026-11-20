@@ -96,8 +96,8 @@ Nobody but the owner changes the wording of anything a site agrees to.
 
 One video becomes a packet; the Pipeline is the packet factory. No person at
 Blueprint stands between a site's video and an introduction. When a job is
-ready it is shown to every approved deployment company, and those that asked
-for job emails are told. People act only where their own decision is the
+ready it is shown to every approved deployment company, and each is emailed
+about it unless it turned job emails off. People act only where their own decision is the
 point: a site sends, confirms, asks for an introduction and can withdraw; a
 company applies and answers; Blueprint approves a company once.
 
