@@ -860,6 +860,23 @@ def test_selected_atlas_cli_requires_explicit_snapshot_review_and_excludes_nativ
     assert _run(*args, "--resume-request", "20261009T154718Z-selected-handoff-9ef60661")[0] == 2
 
 
+@pytest.mark.parametrize("flags,acts", [
+    ([], False), (["--atlas-status"], False), (["--dispatch"], True),
+    (["--atlas-retry", "--atlas-status-digest", "sha256:" + "c" * 64], True),
+])
+def test_a_repeated_selected_handoff_reading_runs_again_and_an_action_does_not(door, flags, acts):
+    """2026-11-20: after the deploy that fixed the drawer job, --atlas-status handed back the 03:09Z refusal."""
+    from tests.test_operator_door_requests import _selected_request
+    body = {key: value for key, value in _selected_request().items() if key not in {"kind", "mode"}}
+    selector = door["base"] / "selected-repeat.json"
+    selector.write_text(json.dumps(body))
+    args = ["selected-handoff", "--selector-file", str(selector), *flags]
+    first, second = (json.loads(_run(*args)[1])["id"] for _ in range(2))
+    assert (first == second) is acts
+    pending = list((door["state"] / "requests" / "pending").glob("*.json"))
+    assert len(pending) == (1 if acts else 2)
+
+
 def test_selected_handoff_cli_discovers_original_selectors_without_execution(door):
     from tests.test_operator_door_requests import _selected_request
     fields = {"bucket", "scene_id", "capture_id", "marker_generation"}

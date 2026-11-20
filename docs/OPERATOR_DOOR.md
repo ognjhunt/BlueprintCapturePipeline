@@ -244,6 +244,8 @@ reads retain 100,000 bytes. Oversized responses fail closed without truncation;
 unbounded configuration prose does not make the transport unbounded.
 
 Use `selected-handoff --selector-file SELECTOR --atlas-status --wait` first.
+Each status (like `inspect` and `--discover-selector`) is a new reading; a request that acts
+reuses the key derived from what it asks, so resending it after a lost response does not act twice.
 After reviewing that result against the run's authorized cumulative ceiling,
 use `--atlas-retry --atlas-status-digest sha256:... --wait` with the same selector.
 The existing preview job lock protects a fresh source/rights/grant/accounting
