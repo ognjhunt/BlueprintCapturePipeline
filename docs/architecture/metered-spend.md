@@ -550,9 +550,11 @@ settled; the per-job meter had no Gemini source at all.
   capture-447ae4f4 and capture-5b067498 were retired and two other jobs were no
   longer on the host; up to $6.63 they settled on their ledgers was missing from
   the meter, some of it perhaps settled in late October).
-- **Named overhead.** The WebApp records each agent run's cost in
-  `accountSpendOverhead` (one document per run, keyed by month); the capacity
-  tick reads the month per run kind and provider and the meter keys it
+- **Named overhead.** The WebApp reads the month from its agent runs' own
+  records (`agentRuns`, each with the cost the runtime stored for it), so no run
+  can be missing; a finished run with no recorded cost is counted as unpriced
+  and an unreadable record marks the month incomplete. The capacity tick reads
+  the month per run kind and provider and the meter keys it
   `overhead:<name>`. It is in no job's figure and counts toward the account's
   month like any settled row (`max(bill, meter)` per provider).
 - **Reconciliation.** Each provider's row splits the ledger into
