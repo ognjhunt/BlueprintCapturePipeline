@@ -773,22 +773,28 @@ unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
 ### Lanes paused by the 2026-11-12 frame
 
 Every release stops and disables the triggers in `DEFAULT_PAUSED_LANE_DISARM_UNITS`
-(`scripts/deploy_control_plane_commit.py`): the humanoid G1 campaign dispatcher and
-settlement, the agent-run dispatcher with the team-evaluation runner path, SAM 3.1
-preparation execution (`.timer` and `.path`), and configured-controls progression
-(`.timer` and `.path`). Since the owner deleted the robot-team evaluation lanes, it
-also stops the policy-canary dispatcher path, the launch supervisor timer, the scene
-object discovery path, embodiment preparation (`.timer` and `.path`) and host episode
-compilation (`.timer` and `.path`); remote episode compilation stays armed only to
-drain a hand-off already in flight. A lane is armed or disarmed whole. No website job needs them;
-their unit files and code stay. A unit already stopped or absent is fine; one that
-will not stop does not fail the release and is named in the receipt's
-`paused_lane_disarm.failed`, which `door status` shows under `deploys.recent_receipts`. The stall
-alarm and the preflight do not count them. To bring a lane back, move all its names from
-`DEFAULT_PAUSED_LANE_DISARM_UNITS` back into the arm lists (timers into
+(`scripts/deploy_control_plane_commit.py`): host episode compilation (`.timer` and
+`.path`), which only a robot-team policy or controls run staged; the owner deleted
+those lanes. Remote episode compilation stays armed only to drain and tear down a
+hand-off already in flight. A lane is armed or disarmed whole. No website job needs
+them; their unit files and code stay. A unit already stopped or absent is fine; one
+that will not stop does not fail the release and is named in the receipt's
+`paused_lane_disarm.failed`, which `door status` shows under `deploys.recent_receipts`.
+The stall alarm and the preflight do not count them. To bring a lane back, move all
+its names from `DEFAULT_PAUSED_LANE_DISARM_UNITS` back into the arm lists (timers into
 `DEFAULT_ALWAYS_ARM_TIMER_UNITS`, paths into the list they came from) and deploy.
-Before it switches the release, every release also stops and disables, if installed, the triggers this repo no longer ships (`DEFAULT_RETIRED_TRIGGER_UNITS`, the door's `RETIRED_HOLD_UNITS`: `blueprint-pipeline-control-plane.timer`, `blueprint-capture-reconstruction-dispatcher.timer` and `.path`); their services and files are left alone, absent is fine,
-and the receipt's `unshipped_trigger_retirement` lists each as `retired`, `already_off`, `absent` or `failed` (a failure does not fail the release; a rollback leaves them off).
+
+Before it switches the release, every release also stops and disables, if installed,
+the triggers this repo no longer ships (`DEFAULT_RETIRED_TRIGGER_UNITS`, the same names
+as the door's `RETIRED_HOLD_UNITS`): the old control-plane timer, legacy capture
+reconstruction, the robot-team lanes (policy-canary dispatch and its continuation, the
+launch supervisor, scene object discovery, embodiment preparation, SAM 3.1 preparation
+execution, the team-evaluation runner, configured-controls progression), the early
+trial's `blueprint-beta-policy-screening.timer`, the agent-run dispatcher and the agent
+stage replay. Their services and files are left alone, absent is fine, and the
+receipt's `unshipped_trigger_retirement` lists each as `retired`, `already_off`,
+`absent` or `failed` (a failure does not fail the release; a rollback leaves them off).
+The 2026-11-20 release (`iteration_03dcd29c6eb4_door.json`) found all 18 `already_off`.
 A release that fails restores the earlier state, so paused lanes that were on before stay on until a release succeeds. Releasing a door hold on `blueprint-agent-run-dispatcher.timer` starts that timer until the next release.
 
 Not done: `reset-failed` on the transient failed units (O-24). It needs a door
