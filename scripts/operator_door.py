@@ -85,6 +85,8 @@ ATTESTED_SEARCH_RUNS = 30
 # Unauthenticated, the API allows 60 requests an hour for everyone on this address.
 ATTESTED_JOB_READS = 8
 SCENE_WINDOW_ACK = "extend-scene-execution-window"
+# selected-handoff modes that only read; every other mode acts.
+SELECTED_HANDOFF_READ_MODES = frozenset({"inspect", "atlas-status", "discover-selector"})
 OWNER_SUCCESS_ACK = "confirm-owner-success-contract"
 MAX_SCENE_WINDOW_SECONDS = 7 * 86400
 
@@ -1057,7 +1059,10 @@ def run(args: argparse.Namespace) -> int:
             if not args.dispatch:
                 raise DoorError(2, "selected_handoff_resume_requires_dispatch")
             body["resume_request_id"] = args.resume_request
-        if not args.operation_key:
+        # A request that acts keeps a key derived from what it asks, so a resend after a lost response
+        # cannot act twice. A reading gets a fresh key: a derived one would hand back the first reading
+        # ever taken, e.g. a refusal from before the deploy that fixed it.
+        if not args.operation_key and mode not in SELECTED_HANDOFF_READ_MODES:
             args.operation_key = "selected-handoff-" + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
         return _submit(body, args)
     elif command == "provider-output-resume":
