@@ -117,7 +117,7 @@ def test_a_stopped_object_path_ships_the_room_floor_once(tmp_path, monkeypatch, 
     assert manifest["source_kind"] == "floor"
     assert manifest["floor_reason"] == "object_not_built:" + REASON[state]
     readme = _readme(floor.job)
-    assert sim.OBJECTS_TAKEN_OUT.format(count=1) in readme and sim.NO_RULE in readme
+    assert sim.OBJECTS_TAKEN_OUT_ONE in readme and sim.NO_RULE in readme
     assert world.publish()["status"] == "current" and len(world.delivered) == 1
 
 
@@ -385,7 +385,7 @@ def test_a_floor_reads_its_object_out_of_the_scan_in_the_pinned_room_order(tmp_p
     floor.started(reason="spend_cap_reached")
     assert World(floor.job).publish()["status"] == "published"
     readme = _readme(floor.job)
-    said = [sim.NO_RULE, sim.OBJECTS_TAKEN_OUT.format(count=1), sim.NOT_FILLED_IN]
+    said = [sim.NO_RULE, sim.OBJECTS_TAKEN_OUT_ONE, sim.NOT_FILLED_IN]
     assert readme.index(said[0]) < readme.index(said[1]) < readme.index(said[2])
     assert readme.count("taken out of the room scan") == 1
 

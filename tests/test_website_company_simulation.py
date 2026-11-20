@@ -2236,7 +2236,7 @@ def test_a_package_without_its_look_says_nothing_of_the_look(tmp_path):
     with zipfile.ZipFile(tmp_path / "bare.zip") as archive:
         readme = " ".join(archive.read("README.txt").decode().split())
     assert sim.LOOK_LEFT_OUT in readme and sim.FURNITURE_REMOVED_NO_LOOK.format(count=2) in readme
-    assert sim.APPEARANCE_QUALITY_NOT_PASSED not in readme and "appearance file" not in readme
+    assert sim.APPEARANCE_QUALITY_NOT_PASSED not in readme and "it still appears in the look file" not in readme
     # Admitted generated geometry is still named, by the collision file alone.
     assert sim.GENERATED_NO_LOOK_NOTE in readme and sim.GENERATED_LOOK_AND_COLLISION_NOTE not in readme
     assert "Gaussian" not in readme and "how the site looks" not in readme and "Hidden in scene.usda" not in readme
@@ -2553,7 +2553,7 @@ def test_a_splat_look_is_written_again_and_ships_with_a_viewer_ply_of_the_same_s
     flat = " ".join(readme.split())
     assert "- scene/room.ply: the same look as a standard 3D Gaussian splat PLY" in readme
     assert "scene/room.ply holds the Gaussians where scene/room.usdc places them" in flat
-    assert "in its frame: up axis Z and 1 metres per unit." in flat
+    assert "in its frame: up axis Z and 1 metre per unit." in flat
     assert sim.PLY_LEFT_OUT not in flat and sim.LOOK_AS_FIRST_WRITTEN not in flat
     assert "room.ply" not in (unpacked / "scene.usda").read_text()
     assert "look_not_written" not in _manifest(job)["package"]

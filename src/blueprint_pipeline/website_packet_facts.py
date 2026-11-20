@@ -35,17 +35,16 @@ SCHEMA_VERSION = "website_packet_facts.v1"
 MAX_BYTES = 8192
 MAX_LINE = 700
 NOT_RECORDED = "not recorded"
-INVALID = "not recorded (invalid value)"
+INVALID = "not known"
 #: Plain sentences for the scene estimate flags (``atlas_scene_estimates``).
 ESTIMATE_SENTENCES = {
-    "scene_estimate:level": "Which way is up was not observed; the reconstruction provider's up direction stands in.",
+    "scene_estimate:level": "Which way is up was not seen in the video; it was estimated.",
     "scene_estimate:splat_view_dependence_dropped": "The room's look keeps base colours only; shine that changes with the view was dropped.",
     "scene_estimate:floor": "A flat floor stands in for an uneven or missing scanned floor.",
     "scene_estimate:collider_registration": "Where the collision surfaces sit, or which faces were kept, is an estimate.",
-    "scene_estimate:review_citations_dropped": "The scene review cited frames that could not be used; those citations were left out.",
-    "scene_estimate:surrounding_views_dropped": "Some surrounding views were left out to keep within the frame budget.",
-    "scene_estimate:task_views_left_out": "Some views of the task area were too blurred or did not connect to the others and were left out; the object's start position comes from the views that were kept.",
-    "scene_estimate:surroundings_not_connected": "Only the task area was filmed in views that connect. Any of the room around it in the simulation was not filmed; it is generated from the surrounding footage.",
+    "scene_estimate:surrounding_views_dropped": "Some views of the surroundings were left out.",
+    "scene_estimate:task_views_left_out": "Some views of the job's area were too blurred or did not connect to the others and were left out; the object's start position comes from the views that were kept.",
+    "scene_estimate:surroundings_not_connected": "Only the job's area was filmed in views that connect. Any of the room around it in the simulation was not filmed; it is generated from the surrounding footage.",
     SUPPORT_GUESSED: "No surface lay at the object's estimated bottom: Blueprint chose the surface it rests on from the video (the one its frames show it touching, else the nearest under it) and corrected where it rests onto that surface, as the object size line says.",
     DESTINATION_OVERHANG: "No surface at the destination holds the object's whole footprint: it is placed with its centre over the surface and part of its footprint over the edge, as the overhang line says.",
     OBJECT_SIZE_FROM_ITS_POINTS: "The object's masks also took in what lies under or behind it in some frames: Blueprint estimated its size from the video's points of the object that the frames agree on, as the object size line says.",
@@ -53,21 +52,23 @@ ESTIMATE_SENTENCES = {
     "scene_estimate:destination_surface_estimated": "The destination shelf or surface did not show in the scan (glass and other see-through or shiny surfaces often do not); it was estimated from its visible edges in the video and is in the collision file, not in the look.",
     "scene_estimate:task_object_guessed": "The analysis of the video could not tell for certain which object is moved; Blueprint went on with the most likely one, which the site may correct.",
     "scene_estimate:target_role_kept": "The analysis could not decide what part one object plays in the job; the part it first gave was kept.",
-    "scene_estimate:task_review_estimated": "The scene review named parts of the job it could not see (a support or destination only partly filmed, where the object came from, or the scene's state); those parts are estimates.",
+    "scene_estimate:task_review_estimated": "Some parts of the job were only partly filmed, such as where the object comes from or where it goes; those parts are estimates.",
     "scene_estimate:destination_guessed": "The site's sentence named no place to put the object: Blueprint chose the destination on the surface.",
     "scene_estimate:destination_near_start": "The surface left no spot at least the object's longest side away from where it starts: the destination is nearer than that.",
     "scene_estimate:registration_ambiguous": "The object's filmed shape fitted the scene almost as well in a second position; the best fit is used.",
-    "scene_estimate:placement_uncertainty": "Where the object sits in the room is known only to within the registration residual near the task, given under Measured.",
+    "scene_estimate:placement_uncertainty": "Where the object sits in the room is known only to within the registration residual near the job, given under Measured.",
     SUPPORT_HEIGHT: "The surface under the object is at a different height in the collision geometry than in the reconstruction's picture; it was not corrected, as the surface height line says.",
     "task_object_box_fit_offset": "In the frames, the centre of the box Blueprint fitted to the object is off the centre of the object's outline by more than the placement uncertainty. This is how well the box fits the object, not where it sits in the room.",
     "task_object_box_fit_size": "In the frames, the box Blueprint fitted to the object and the object's outline differ in size by more than 15 % along a side, as the object size line says: the size is less certain than the scale band alone suggests.",
 }
+#: Estimates recorded for Blueprint's own checks that say nothing a company can act on: never shown on its page.
+UNSAID = frozenset({"scene_estimate:review_citations_dropped"})
 #: Whether the job's object keeps its shape when handled (``task_profile_contracts.task_object_rigidity``, on the
 #: handoff as ``task_object_rigidity``), and which source said so: a model's reading, never a measurement.
 RIGIDITY_WORDS = {"rigid": "rigid: it keeps its shape when handled",
                   "deformable": "soft: it does not keep its shape when handled",
                   "unknown": "not known whether it keeps its shape when handled"}
-RIGIDITY_SOURCES = {"object_analysis": "Blueprint's model reading of the video",
+RIGIDITY_SOURCES = {"object_analysis": "Blueprint's reading of the video",
                     "label_word_backstop": "read from the object's name only"}
 #: What set the scene's scale (the preparation's ``coordinate_frame.scale_authority``), in plain words.
 SCALE_WORDS = {"atlas_reference_estimate": "the 3D reconstruction's own estimate",
@@ -300,7 +301,7 @@ def object_lines(prep: Mapping[str, Any], base_scene: Mapping[str, Any] | None, 
     residual = _number(_mapping(prep.get("coordinate_frame")).get("placement_uncertainty_m"))
     lines.append(line("Positions are in the simulation's coordinates, in metres with z up"
                       + (f"; heights are above {floor[1]}" if floor else "") + "."
-                      + (f" Each may also be off by about {_length(residual)}, the registration residual near the task."
+                      + (f" Each may also be off by about {_length(residual)}, the registration residual near the job."
                          if residual is not None and residual > 0 else "")))
     stations = _mapping(inputs.get("stations")).get("positions_world_m")
     if isinstance(stations, list):
@@ -331,7 +332,7 @@ def measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[s
     from .website_job_estimates import operations_lines, weight_line
     prep = preparation
     residual = _length(_mapping(_mapping(prep.get("registration")).get("task_region")).get("trimmed_rmse_m"))
-    measured = [line(f"How closely the video's geometry and the reconstruction line up around the task (registration "
+    measured = [line(f"How closely the video's geometry and the reconstruction line up near the job (registration "
                      f"residual, trimmed RMS): {residual}, in the scene's estimated metres.")]
     frame = _mapping(prep.get("coordinate_frame"))
     band = scale_band(prep, fit_table)
@@ -378,7 +379,7 @@ def measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[s
     # (``atlas_scene_estimates.preparation_record_flags``): its choices, its checks and its corrections.
     codes |= preparation_record_flags(prep)
     estimated += [line(ESTIMATE_SENTENCES.get(code, "Another estimate the scene rests on, not yet described in "
-                                                    "words.")) for code in sorted(codes)]
+                                                    "words.")) for code in sorted(codes - UNSAID)]
     return measured, estimated
 
 
@@ -436,4 +437,4 @@ def read_packet_facts(*, capture_root: Path, task_context_digest: str) -> dict[s
         return None
 
 
-__all__ = ["ESTIMATE_SENTENCES", "SCHEMA_VERSION", "measured_and_estimated", "object_lines", "read_packet_facts"]
+__all__ = ["ESTIMATE_SENTENCES", "SCHEMA_VERSION", "UNSAID", "measured_and_estimated", "object_lines", "read_packet_facts"]

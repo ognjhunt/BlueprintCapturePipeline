@@ -259,7 +259,7 @@ def test_the_planner_removals_the_atlas_job_sealed_are_counted(tmp_path, monkeyp
                                       clean_plate_flag=NOT_LOCATED)
     _status, members = _published(job)
     assert _said(members["README.txt"]).endswith(
-        f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.NOT_LOCATED} {sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+        f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.NOT_LOCATED} {sim.OBJECTS_TAKEN_OUT_ONE}")
 
 
 @pytest.mark.parametrize("look", ["unfinished", "refined_noun"])

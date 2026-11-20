@@ -1283,7 +1283,7 @@ def test_the_room_package_of_a_drawer_that_could_not_be_prepared_says_so(tmp_pat
     _status, members = _published(job)
     said = _said(members["README.txt"])
     assert said.endswith(f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.OBJECT_NOT_PREPARED} "
-                         f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+                         f"{sim.OBJECTS_TAKEN_OUT_ONE}")
 
 
 def test_the_room_package_of_an_object_with_no_surface_to_start_on_says_so(tmp_path, monkeypatch):
@@ -1307,7 +1307,7 @@ def test_the_room_package_of_an_object_with_no_surface_to_start_on_says_so(tmp_p
     assert _record(result)["flags"][0] == "support_surface_not_found_under_subject"
     _status, members = _published(job)
     assert _said(members["README.txt"]).endswith(f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} {sim.OBJECT_NOT_PLACED} "
-                                                 f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+                                                 f"{sim.OBJECTS_TAKEN_OUT_ONE}")
 
 
 # --- Owner, 2026-11-17: accept every job; one rule at the handoff (``goes_on``) ----------------------------------
@@ -1397,9 +1397,11 @@ def test_the_room_package_names_each_piece_it_could_not_prepare(tmp_path, monkey
     _status, members = _published(job)
     assert _said(members["README.txt"]).endswith(
         f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} "
-        "Blueprint could not prepare the job's destination (task_destination_surface_contact_required). "
-        "Blueprint could not prepare the job's success rule (website_owner_success_criteria_translation_required). "
-        f"{sim.OBJECTS_TAKEN_OUT.format(count=1)}")
+        "Blueprint could not prepare the job's destination. "
+        "Blueprint could not prepare the job's success rule. "
+        f"{sim.OBJECTS_TAKEN_OUT_ONE}")
+    # The blocker codes stay in the record, never in the file a company reads.
+    assert not any(code in members["README.txt"] for code in codes)
 
 
 def test_a_defect_waits_named_and_paged_and_ships_only_at_the_window_end(tmp_path, monkeypatch, ready_atlas):

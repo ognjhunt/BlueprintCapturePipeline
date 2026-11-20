@@ -24,15 +24,15 @@
    ]
   },
   "notes": {
-   "furniture_removed": "movable item(s) the site agreed to move are not in the collision file; they still appear in the appearance file.",
-   "appearance_quality_not_passed": "The appearance file did not pass Blueprint's image quality check; it is included as it is.",
+   "furniture_removed": "movable items the site agreed to move are not in the collision file; they still appear in the look file.",
+   "appearance_quality_not_passed": "The look file did not pass Blueprint's image quality check; it is included as it is.",
    "support_region_not_held": "At part of the destination area the surface in the collision file does not hold the object where the success rule counts it as placed: it would tip off an edge or rest higher or lower than the rule allows. Blueprint did not test this.",
    "support_not_held": "Where the object starts or is placed, the surface in the collision file does not hold it as the success rule expects. Blueprint did not test this.",
    "room_not_run": "The room is as reconstructed from the video; Blueprint ran no robot, policy or simulator in it.",
    "goal_estimated": "The goal region was estimated from the video; its radius and how long the robot must stay in it are assumed, not stated by the site.",
    "no_rule": "This package includes no success rule from Blueprint for this job; the job as the site described it is on the job's page.",
    "not_found": "Blueprint did not find what the job is about in the video.",
-   "objects_taken_out": "object(s) the job involves were taken out of the room scan and are not in this package.",
+   "objects_taken_out": "objects the job involves were taken out of the room scan and are not in this package.",
    "objects_in_scan": "The job's objects are part of the room scan; they are not separate files.",
    "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video."
   }
@@ -73,7 +73,7 @@
     "readme_variant": [
      "not_run_static_check_passed"
     ],
-    "readme_sha256": "sha256:8041d71620a4b15b3bac86bfd3723c6194a89ac5cd336bbe233ff8cc78a4ad8e"
+    "readme_sha256": "sha256:e76c464ac4948d191b5a7ba9fc3b4cd7ad89fdde1621f85fe41ab10214080242"
    }
   },
   {
@@ -109,7 +109,7 @@
     "readme_variant": [
      "not_run"
     ],
-    "readme_sha256": "sha256:60713917f2820ce9b0a92da57ded2b69bf418f3ff9b34abaa8269244dae82fa9"
+    "readme_sha256": "sha256:5a4f8df8f4158b769bb10e163e0494c9614626e08f8a687652175fe604d9cbc3"
    }
   },
   {
@@ -142,7 +142,7 @@
     "readme_variant": [
      "not_run_joint_as_authored"
     ],
-    "readme_sha256": "sha256:960448a38e7e0312b3d9761c16912e3904507450d86a9f9b7f509a760e1eebb9"
+    "readme_sha256": "sha256:ecc85cc6edadf669e4fc0e42d899c32cb122b35f365cbbb9843a08222022a7a8"
    }
   },
   {
@@ -173,7 +173,7 @@
      "room_not_run",
      "goal_estimated"
     ],
-    "readme_sha256": "sha256:76995d26908f2dc6c849f843beb1ffe8a4364798f76ddcf7b3aea17c1328088e"
+    "readme_sha256": "sha256:31635df18c64c22a3e2afffd22a6a64a8a92922fccdae8aac9dc8d91ec599b26"
    }
   },
   {
@@ -206,7 +206,7 @@
      "no_rule",
      "not_found"
     ],
-    "readme_sha256": "sha256:33052b5a29258ef8f60c97cf2f3ce8f419b12a6808abc3e7625abaaa188bced6"
+    "readme_sha256": "sha256:fd2ad4615b6db345ad47c952ca695bb3d9e1ddaac296561ede00039ca1c07f23"
    }
   },
   {
@@ -240,7 +240,7 @@
     "readme_variant": [
      "not_run"
     ],
-    "readme_sha256": "sha256:cffd314940a89898590c83b15e2816360331cfb8ed7a0f54ce8bfe305701c577"
+    "readme_sha256": "sha256:7bd3b20541ae5f2681656e645328184927f41204c8805c5223ad0217283a000a"
    }
   },
   {
@@ -269,7 +269,7 @@
     "zip_built": true,
     "assumed_thresholds": true,
     "robot_free_probe": "not_queued",
-    "readme_sha256": "sha256:8401c853542c2ca5580cf903334c1bc198cc64c5d3451b56fe518cedeca81259"
+    "readme_sha256": "sha256:b8708ae87f449a839ac7266174f51a4f0d4074ec79e028eefda58bf50170723b"
    }
   },
   {
@@ -300,7 +300,7 @@
      "room_not_run",
      "no_rule"
     ],
-    "readme_sha256": "sha256:1e3040254e9701e047a8b861daae3e975476300bb1abaf51ab368ea97bee85c5"
+    "readme_sha256": "sha256:8626fa3f44cf83b5b7f71ecde88857b2142871e59ef82d47c4bcf5dbe2952461"
    }
   },
   {
@@ -334,7 +334,7 @@
      "isaac_sim"
     ],
     "robot_free_probe": "not_queued",
-    "readme_sha256": "sha256:8401c853542c2ca5580cf903334c1bc198cc64c5d3451b56fe518cedeca81259"
+    "readme_sha256": "sha256:b8708ae87f449a839ac7266174f51a4f0d4074ec79e028eefda58bf50170723b"
    }
   },
   {
@@ -392,7 +392,7 @@
      "not_run",
      "appearance_quality_not_passed"
     ],
-    "readme_sha256": "sha256:79d3db4eb00c6f7f8f765859d0bb91e94bdf82584057c4d8ab4aa1cf85047b22"
+    "readme_sha256": "sha256:8f66be0d2d8e09e9fc78c2f3a729b5a7b33bf751b7f1e0ad4d2a375a293de268"
    }
   },
   {
@@ -428,7 +428,7 @@
      "not_run",
      "furniture_removed"
     ],
-    "readme_sha256": "sha256:c25e7561d4e8edd902455cd9a467488ac57c5b2e9c08b08df49980939dd36e8d"
+    "readme_sha256": "sha256:907b135596c659faa4a63059474e7a976cf06141275fdd3552c62ca42e78d4ad"
    }
   },
   {
@@ -466,7 +466,7 @@
      "not_run",
      "support_region_not_held"
     ],
-    "readme_sha256": "sha256:fe3eb33c64aaa5c150f206c275e8837a8900969281c6ffacef9412b974c4c069"
+    "readme_sha256": "sha256:84b0a1b4d81cbcdb5c85387be4aad1d8989f7af369a094db1ccb103d729c3ad0"
    }
   },
   {
@@ -500,7 +500,7 @@
      "not_run",
      "no_rule"
     ],
-    "readme_sha256": "sha256:3d50e12405253503bc505c9afdf0db4b84f90e0e447013bb7f2b9c47086ba173"
+    "readme_sha256": "sha256:dd7b2a9294a370b79401bceb9cf875aec3fc1b2ad00944373b14d4d0069bae0d"
    }
   },
   {

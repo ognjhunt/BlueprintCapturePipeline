@@ -309,7 +309,9 @@ def readme_variant(readme: str, physics_check: str | None, sentences: Mapping[st
     sentences are the matrix file's own literals, never the package's constants, so a changed or added sentence
     fails a row until its expectation is changed on purpose."""
     section = readme.split("\nHow it was made\n", 1)[-1].split("\nTerms\n", 1)[0]
-    rest = " ".join(section.split())
+    # The notes sit under their own heading, one bullet each: read as words, in order.
+    rest = " ".join(" ".join(line[2:] if line.startswith("- ") else line for line in section.splitlines()
+                             if line != "Notes on this simulation").split())
     if not rest.startswith(sentences["made"]):
         return [f"unexpected_text:{rest}"]
     rest = rest[len(sentences["made"]):].strip()

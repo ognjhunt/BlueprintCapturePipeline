@@ -362,7 +362,7 @@ def test_the_package_says_what_the_shipped_scan_lost_with_every_sentence_togethe
         assert sim.OBJECTS_IN_SCAN not in said
     else:
         assert record["job_objects"] == {"count": 1, "in_package": "taken_out_of_room_scan"}
-        assert said.endswith(" ".join([sim.ROOM_NOT_RUN, sim.NO_RULE, sim.NOT_LOCATED, sim.OBJECTS_TAKEN_OUT.format(count=1), sim.NOT_FILLED_IN]))
+        assert said.endswith(" ".join([sim.ROOM_NOT_RUN, sim.NO_RULE, sim.NOT_LOCATED, sim.OBJECTS_TAKEN_OUT_ONE, sim.NOT_FILLED_IN]))
         assert sim.NOTHING_TAKEN_OUT not in said
 
 
