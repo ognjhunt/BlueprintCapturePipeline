@@ -744,10 +744,10 @@ def test_a_withdrawal_still_deletes_a_scene_run_the_clean_up_keeps_for_an_open_j
     # The work disk has room, so the open job's run is kept (under the floor it may be moved, oldest first).
     monkeypatch.setattr(open_jobs, "measure_disk", lambda _path: SimpleNamespace(total=100 * 1024**3,
                                                                                  free=90 * 1024**3, used=0))
-    # The job is open (its window runs, no campaign is final): the clean-up keeps the run.
+    # The job is open (its window runs): the clean-up keeps the run.
     assert evidence_protection_reason(
         run, settlement_roots=(), pins_root=tmp_path / "pins", queue_roots=[], now=time.time,
-        team_scene_packet_queue_root=packets, screening_queue_root=tmp_path / "no-screening",
+        team_scene_packet_queue_root=packets,
         scene_intent_root=intent_root) == PROTECTED_OPEN_JOB_SOURCE
     gcs = FakeGcs()
     plan = _plan(world, cloud_storage=gcs)

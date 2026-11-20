@@ -4,9 +4,9 @@ Beta journey step: L5 team policy evaluation. The storage GC may move a sealed l
 store (``control_plane_evidence_offload``), leaving a pointer that keeps only the launch receipt. Stage 8
 reads more of the run than that:
 
-- the screening re-plan: the launch receipt, its terminal result, ``webapp_sync_succeeded.json`` and
-  ``post_teardown_provider_zero_receipt.json`` (``task_evaluation_configured_controls_source_evidence``),
-  and the robot-free probe's receipt beside the launch (``robot_free_probe_gate.retained_probe_receipt``);
+- the site's success-rule exchange: the launch receipt and its terminal result, checked by
+  ``task_evaluation_configured_controls_source_evidence``, and the success and template documents kept
+  in the run (``task_evaluation_owner_success_confirmation.published_job``);
 - a team-half recompile: the configured bundle inside the run (``team_scene_packet_worker._compile``);
 - a new robot-free probe: the run itself (``rigid_robot_free_probe_bundle``).
 
@@ -23,18 +23,19 @@ restores it in place for an OPEN job (its scene intent window still runs; ``open
   run's own leftover and deletes it with the run (``website_capture_withdrawal_deletion._Units``);
 - a transient failed try (disk admission, transfer, store outage, timeout) spends nothing and is tried again
   while the job's window is open: the next try waits ``job_retry_policy.outage_retry_delay`` (15 min,
-  doubling, at most 6 h), recorded beside the pointer; the screening pass reads the run again on its next
-  pass and its hold is published as released;
+  doubling, at most 6 h), recorded beside the pointer; the scene stage's maintenance pass
+  (``scene_stage_maintenance``) reads the run again on its next pass and its hold is published as released;
 - a failure of the archive's own integrity (its digest, a member list that does not match the pointer, a
   symlink, an archive that will not open) cannot clear by waiting: the bytes stored are not the bytes
   offloaded. It ends the tries for this cold-storage episode as ``ARCHIVE_INVALID`` (in the restore record
-  and the screening outcome; the job's hold becomes ``team_scene_packet_blocked`` with this code as its
+  and the maintenance pass's outcome; the job's hold becomes ``team_scene_packet_blocked`` with this code as its
   detail, which the website words as its general "a problem on our side" sentence, never "being restored",
   and reports to staff with its held-evaluation alert) and is tried again only
   when the pointer changes.
 
-A job whose window has ended is not restored: there is nothing left to run for it, and the screening pass
-tells it its window closed (``beta_screening_job_window_closed``). Restoring never deletes the pointer.
+A job whose window has ended is not restored: there is nothing left to run for it, and the maintenance
+pass tells it its window closed (``beta_screening_job_window_closed``, a code that keeps the trial's
+name). Restoring never deletes the pointer.
 """
 from __future__ import annotations
 

@@ -82,7 +82,6 @@ def evidence_protection_reason(
     ignored_process_ids: Sequence[int] = (),
     process_root: Path = Path("/proc"),
     team_scene_packet_queue_root: str | Path | None = None,
-    screening_queue_root: str | Path | None = None,
     scene_intent_root: str | Path | None = None,
 ) -> str | None:
     """Why the evidence phase must leave ``directory`` in place, or None when nothing protects it.
@@ -101,7 +100,7 @@ def evidence_protection_reason(
     5. ``protected_queue``: a pending or processing queue message names it;
     6. ``protected_open_job_source``: an open website job still needs it as its
        scene run (``open_job_source_runs``: a team-scene-packet request names
-       it, the job's window is open and its testing is not final). Checked only
+       it and the job's window is open). Checked only
        when ``team_scene_packet_queue_root`` and ``scene_intent_root`` are given.
 
     Settlement records and queue messages are re-read on every call.
@@ -129,8 +128,7 @@ def evidence_protection_reason(
     from .open_job_source_runs import open_job_source_reason
 
     if open_job_source_reason(directory, packet_queue_root=team_scene_packet_queue_root,
-                              screening_queue_root=screening_queue_root, intent_root=scene_intent_root,
-                              now=now) is not None:
+                              intent_root=scene_intent_root, now=now) is not None:
         return PROTECTED_OPEN_JOB_SOURCE
     return None
 

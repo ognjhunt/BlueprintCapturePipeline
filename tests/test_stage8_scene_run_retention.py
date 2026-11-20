@@ -40,6 +40,9 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 FIXTURES = Path(__file__).parent / "fixtures" / "capture_447ae4f4_stage8"
 HOT_WINDOW = 172_800  # the host unit's BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS
+# The dropped early trial's files, still on the host: its frozen ledger and its last testing record.
+TRIAL_LEDGER = "screening_ledger.v1.json"
+TRIAL_TESTING_RECORD = "open_job_testing.v1.json"
 
 
 def _fixture(name: str) -> dict:
@@ -103,7 +106,7 @@ def world(tmp_path):
     def ledger(state: dict) -> None:
         value = _sealed({"schema_version": campaign["schema_version"], "campaigns": {plan["campaign_id"]: state},
                          "last_processed_campaign": plan["campaign_id"]}, "ledger_digest")
-        (screening / open_jobs.LEDGER_FILENAME).write_text(json.dumps(value), encoding="utf-8")
+        (screening / TRIAL_LEDGER).write_text(json.dumps(value), encoding="utf-8")
 
     ledger(campaign["state"])
     return {"run": run, "runs": runs, "pointer": pointer, "request": request, "packets": packets,
@@ -111,17 +114,12 @@ def world(tmp_path):
             "ledger": ledger, "now": now, "receipt": receipt}
 
 
-def _publish_testing_record(world, final: bool) -> None:
-    """The sealed record the retired screening pass wrote for the ledger as it is now."""
-    ledger = json.loads((world["screening"] / open_jobs.LEDGER_FILENAME).read_text(encoding="utf-8"))
-    record = _sealed({"schema_version": open_jobs.TESTING_RECORD_SCHEMA, "ledger_digest": ledger["ledger_digest"],
-                      "final_by_intent": {world["request"]["intent_id"]: final}}, "record_digest")
-    (world["screening"] / open_jobs.TESTING_RECORD_FILENAME).write_text(json.dumps(record, sort_keys=True))
-
-
 def _reason(world, **overrides):
-    roots = {"team_scene_packet_queue_root": world["packets"], "screening_queue_root": world["screening"],
-             "scene_intent_root": world["intent_root"], **overrides}
+    # The roots the storage GC takes from its unit's environment, which named the trial's queue root too
+    # until the trial was dropped: that one must not matter any more.
+    environment = {"BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT": str(world["packets"]),
+                   "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT": str(world["screening"])}
+    roots = {**open_jobs.queue_roots_from_env(environment), "scene_intent_root": world["intent_root"], **overrides}
     return evidence_protection_reason(world["run"], settlement_roots=(), pins_root=world["run"].parent / "pins",
                                       queue_roots=[], now=time.time, **roots)
 
@@ -141,70 +139,23 @@ def test_before_the_fix_the_clean_up_picks_447s_scene_run_for_cold_storage(world
 
 
 def test_with_the_job_open_the_clean_up_keeps_447s_scene_run_by_name(world):
-    report = _gc(world, team_scene_packet_queue_root=world["packets"], screening_queue_root=world["screening"],
-                 scene_intent_root=world["intent_root"])
+    report = _gc(world, team_scene_packet_queue_root=world["packets"], scene_intent_root=world["intent_root"])
     offload = report["evidence_offload"]
     assert offload["candidates"] == []
     assert list(offload["retained_by_reason"]) == [PROTECTED_OPEN_JOB_SOURCE]
     assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
 
 
-def test_447s_testing_is_not_final_because_a_deploy_plans_its_money_deferred_rows_again(world):
-    # The real ledger: two rows deferred beta_screening_site_budget_exhausted at $26.63 of $30.
-    intent_id = world["request"]["intent_id"]
-    _publish_testing_record(world, False)
-    assert open_jobs.testing_final(intent_id, screening_queue_root=world["screening"]) is False
+def test_the_dropped_trials_testing_record_no_longer_moves_an_open_jobs_run(world):
+    """The owner dropped the early trial on 2026-11-14; its screening pass no longer runs. A testing record it
+    left, even one sealed to the ledger as it is and marking this job final, no longer decides anything: the
+    run stays while a team-scene request names it and the job's window is open."""
+    ledger = json.loads((world["screening"] / TRIAL_LEDGER).read_text(encoding="utf-8"))
+    record = _sealed({"schema_version": "blueprint.open_job_testing_record.v1", "ledger_digest": ledger["ledger_digest"],
+                      "final_by_intent": {world["request"]["intent_id"]: True}}, "record_digest")
+    (world["screening"] / TRIAL_TESTING_RECORD).write_text(json.dumps(record, sort_keys=True))
     assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
-
-
-def test_once_testing_is_final_the_run_goes_cold_on_the_two_day_rule(world):
-    state = copy.deepcopy(world["campaign"]["state"])
-    for row in state["candidates"].values():
-        if row["status"] == "deferred":
-            row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
-    world["ledger"](state)
-    intent_id = world["request"]["intent_id"]
-    # The GC reads only the screening pass's record: until the pass writes one, the run is kept.
-    assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
-    _publish_testing_record(world, True)
-    assert open_jobs.testing_final(intent_id, screening_queue_root=world["screening"]) is True
-    assert _reason(world) is None
-
-
-def test_with_the_trial_retired_no_testing_record_is_written_so_the_run_is_kept(world):
-    """The early trial's timer is retired (2026-11-14): nothing writes the testing record any more.
-
-    A job with no record is simply not testing-final, so the storage collector keeps its source run
-    (planner amendment A3): nothing is deleted sooner, even when every screening row has ended.
-    """
-    state = copy.deepcopy(world["campaign"]["state"])
-    for row in state["candidates"].values():
-        if row["status"] == "deferred":
-            row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
-    world["ledger"](state)
-    intent_id = world["request"]["intent_id"]
-    assert not (world["screening"] / open_jobs.TESTING_RECORD_FILENAME).exists()
-    assert open_jobs.testing_final(intent_id, screening_queue_root=world["screening"]) is False
-    assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
-
-
-@pytest.mark.parametrize("fault", ["ledger_changed_since", "record_tampered", "record_unreadable"])
-def test_a_testing_record_the_gc_cannot_trust_keeps_the_run(world, fault):
-    state = copy.deepcopy(world["campaign"]["state"])
-    for row in state["candidates"].values():
-        if row["status"] == "deferred":
-            row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
-    world["ledger"](state)
-    _publish_testing_record(world, True)
-    record = world["screening"] / open_jobs.TESTING_RECORD_FILENAME
-    if fault == "ledger_changed_since":
-        world["ledger"](copy.deepcopy(world["campaign"]["state"]))  # a later write: the record is for another ledger
-    elif fault == "record_tampered":
-        value = json.loads(record.read_text())
-        record.write_text(json.dumps({**value, "final_by_intent": {"other": True, **value["final_by_intent"]}}))
-    else:
-        record.write_text("{not json")
-    assert open_jobs.testing_final(world["request"]["intent_id"], screening_queue_root=world["screening"]) is False
+    (world["screening"] / TRIAL_LEDGER).write_text("{not json")
     assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
 
 
@@ -229,11 +180,6 @@ def test_a_window_that_cannot_be_read_counts_as_ended_so_nothing_is_kept_for_eve
         tampered = {**world["intent"], "request": {"execution": {"expires_at_epoch": world["now"] + 10**9}}}
         path.write_text(json.dumps(tampered))
     assert _reason(world) is None
-
-
-def test_an_unreadable_screening_ledger_keeps_the_run_while_the_window_is_open(world):
-    (world["screening"] / open_jobs.LEDGER_FILENAME).write_text("{not json")
-    assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
 
 
 def test_a_run_no_packet_request_names_is_not_kept(world):
@@ -416,18 +362,13 @@ def test_a_restore_keeps_trying_while_the_window_is_open_spaced_by_the_retry_pol
     assert fake.calls == 8
 
 
-def test_a_job_marked_final_whose_half_is_compiled_again_gets_its_run_back(world, monkeypatch):
-    """Review point 5: "final" ignores a later scene-half change; the run it then needs is restored, not lost."""
+def test_a_run_released_at_the_floor_whose_half_is_compiled_again_gets_its_run_back(world, monkeypatch):
+    """Review point 5: a run the clean-up moved is restored when a later scene-half change needs it, not lost."""
     from blueprint_pipeline import scene_run_restore as restore
     from blueprint_pipeline import team_scene_packet_worker as packets
 
-    state = copy.deepcopy(world["campaign"]["state"])
-    for row in state["candidates"].values():
-        if row["status"] == "deferred":
-            row.update(status="unavailable", blockers=["candidate_infeasible_measured_geometry"])
-    world["ledger"](state)
-    _publish_testing_record(world, True)
-    assert _reason(world) is None  # final: the clean-up may move it
+    _under_floor(monkeypatch, deficit=1)
+    assert _reason(world) is None  # under the floor: the clean-up may move it
     _offloaded(world)
     # The half is compiled again (a new station): it needs the run, and the job's window is still open.
     with pytest.raises(ValueError, match=f"^{cold.COLD_STORAGE}$"):
@@ -466,22 +407,22 @@ def test_at_the_floor_the_oldest_open_jobs_run_goes_first_and_only_as_far_as_nee
     older = _second_open_job(world, older=True)
     _under_floor(monkeypatch, deficit=1)  # one byte under: the oldest run covers it
     assert open_jobs.open_job_source_reason(older, packet_queue_root=world["packets"],
-                                            screening_queue_root=world["screening"],
                                             intent_root=world["intent_root"]) is None
     assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE  # 447's newer run stays
     _under_floor(monkeypatch, deficit=0)  # at or above the floor: both are kept
     assert open_jobs.open_job_source_reason(older, packet_queue_root=world["packets"],
-                                            screening_queue_root=world["screening"],
                                             intent_root=world["intent_root"]) == PROTECTED_OPEN_JOB_SOURCE
 
 
-def test_at_the_floor_a_run_whose_job_has_a_test_running_is_never_moved(world, monkeypatch):
+@pytest.mark.parametrize("status", ["running", "pending", "waitlisted"])
+def test_at_the_floor_a_row_left_in_the_dropped_trials_ledger_does_not_pin_the_run(world, monkeypatch, status):
+    """Nothing runs from the trial's frozen ledger any more, so a row it left open never keeps a run past the
+    floor; the run is moved like any other open job's and comes back on need."""
     state = copy.deepcopy(world["campaign"]["state"])
-    next(iter(state["candidates"].values())).update(status="running")
+    next(iter(state["candidates"].values())).update(status=status)
     world["ledger"](state)
     _under_floor(monkeypatch, deficit=10**12)
-    assert open_jobs.job_test_active(world["request"]["intent_id"], screening_queue_root=world["screening"])
-    assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
+    assert _reason(world) is None
 
 
 def test_a_team_half_refused_for_cold_storage_is_held_by_name_on_the_first_pass(tmp_path, monkeypatch):
@@ -607,16 +548,6 @@ def test_three_failed_tries_then_a_success_inside_the_window_restore_the_run(wor
     shutil.rmtree(world["run"])
     fake.transfer = False
     assert restore.restore_open_job_run(world["run"], window_open=True, now=lambda: clock[0])["status"] == "refused"
-
-
-def test_at_the_floor_a_job_with_pending_or_waitlisted_rows_keeps_its_run(world, monkeypatch):
-    """Review 36 (7c)."""
-    for status in ("pending", "waitlisted"):
-        state = copy.deepcopy(world["campaign"]["state"])
-        next(iter(state["candidates"].values())).update(status=status)
-        world["ledger"](state)
-        _under_floor(monkeypatch, deficit=10**12)
-        assert _reason(world) == PROTECTED_OPEN_JOB_SOURCE
 
 
 def test_a_crashed_restores_staging_is_cleaned_unless_a_restorer_holds_the_run(world):

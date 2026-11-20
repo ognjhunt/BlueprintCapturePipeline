@@ -1320,7 +1320,6 @@ def run_storage_gc(
     lane_scratch_alert: str | None = None,
     lane_reference_target: str | Path | None = None,
     team_scene_packet_queue_root: str | Path | None = None,
-    screening_queue_root: str | Path | None = None,
     _experiment_config_path: str | Path = "/etc/blueprint-operator-door/door.json",
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
@@ -1465,8 +1464,7 @@ def run_storage_gc(
                 return evidence_protection_reason(
                     directory, settlement_roots=settlement_roots, pins_root=pins_root,
                     queue_roots=queue_roots, now=clock, ignored_process_ids=(os.getpid(),),
-                    team_scene_packet_queue_root=team_scene_packet_queue_root,
-                    screening_queue_root=screening_queue_root, scene_intent_root=scene_intent_root)
+                    team_scene_packet_queue_root=team_scene_packet_queue_root, scene_intent_root=scene_intent_root)
 
             # Keep authenticated downloads usable after cold evidence reclamation.
             from .task_evaluation_result_artifact_store import (
