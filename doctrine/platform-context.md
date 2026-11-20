@@ -8,6 +8,10 @@ direction of 2026-11-11 about what the site's answer is. Where any other
 document disagrees with this block, this block is right and the other document
 is out of date.
 
+Owner direction, 2026-11-20. A video is required to post a job. The site can
+save its description in a private draft and film or upload through the same
+job link.
+
 ### What Blueprint Does
 
 A site films one recurring job once. Blueprint turns the video into a **job
@@ -45,8 +49,9 @@ The job packet has one format for every job:
 4. The simulation of the site, with the job's object in it.
 5. The success rule: what counts as the job done.
 
-A packet is not held for the simulation: it goes when the video and the first
-look exist, and says plainly what is not finished.
+Approved companies can review and respond once the job has a description and
+a playable, sound-free video with the site's permission. The first look and
+simulation appear in the same job as soon as they are ready.
 
 The site's answer is who will take the job, and on what evidence: the
 responses of deployment companies. Until responses exist the site sees the
