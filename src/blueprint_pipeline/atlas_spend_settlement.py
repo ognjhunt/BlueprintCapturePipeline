@@ -97,12 +97,40 @@ def settle_closed_atlas_attempt(*, state_dir: Path, admission_path: Path, task_c
         if receipt.get("status") != "settled" or any(receipt.get(key) != value for key, value in command.items()):
             raise ValueError("atlas_settlement_receipt_invalid")
         _write_state(record_path, receipt)
+        journal_atlas_purchase(receipt, state, task_context)
     except Exception as exc:  # noqa: BLE001 - accounting only: never changes the attempt's own outcome
         # The hold stays in place and a later pass reports it again.
         _LOG.warning("atlas_settlement_deferred binding=%s outcome=%s reason=%s",
                      binding, outcome["outcome"], str(exc)[:200])
         return None
     return receipt
+
+
+def journal_atlas_purchase(receipt: Mapping[str, Any], state: Mapping[str, Any],
+                           task_context: Mapping[str, Any]) -> None:
+    """A settled Atlas purchase in its job's meter journal; never raises.
+
+    The capacity tick also reads the purchase from its workspace (``provider_spend_alerts.observe_world_labs_spend``);
+    the meter counts it once, from the scan while its records are on disk and from this record once the workspace is
+    retired (2026-11-20: two retirements took $13.79 of the month's World Labs purchases out of its reading). It is
+    dated as the scan dates it, at the attempt's last send, so both put it in the same month.
+    """
+    try:
+        sends = state.get("sends")
+        last = sends[-1] if isinstance(sends, list) and sends else None
+        sent_at = last.get("at_epoch") if isinstance(last, Mapping) else None
+        job_id, binding = task_context.get("request_id"), receipt.get("allocation_binding_digest")
+        if (not isinstance(sent_at, (int, float)) or isinstance(sent_at, bool) or not isinstance(job_id, str)
+                or not job_id or not isinstance(binding, str) or not binding):
+            return
+        from .paid_spend_meter import meter_root, record_settlement
+        root = meter_root()
+        if root is None:
+            return
+        record_settlement(job_id=job_id, meter_key=binding, settled_usd=receipt.get("actual_cost_usd"),
+                          basis="preparation_settlement", provider="world_labs", root=root, now=float(sent_at))
+    except Exception:  # noqa: BLE001 - metering is visibility; the WebApp ledger holds the settlement
+        return
 
 
 def settle_closed_atlas_task_attempts(root: Path, *, task_context: Mapping[str, Any]) -> list[dict[str, Any]]:

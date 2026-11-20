@@ -179,3 +179,26 @@ def test_a_job_pass_settles_every_retained_attempt_before_anything_new_is_admitt
     # A later pass returns the retained receipts and reports nothing again.
     assert settlement.settle_closed_atlas_attempts_under(tmp_path, task_context=CONTEXT) == settled
     assert len(webapp.settled) == 3
+
+
+def test_a_settled_purchase_is_journaled_against_its_job_dated_at_its_last_send(tmp_path, webapp, monkeypatch):
+    """The journal keeps a purchase after its workspace is retired (2026-11-20), dated as the workspace scan dates
+    it: a purchase sent on the last day of a month and settled on the first of the next counts in the first month."""
+    from blueprint_pipeline import paid_spend_meter as meter
+
+    monkeypatch.setenv(meter.METER_ROOT_ENV, str(tmp_path / "meter"))
+    sent_at = 1795996799.0  # 2026-11-30T23:59:59Z
+    _attempt(tmp_path / "job", {"status": "completed", "operation_id": "op_1", "result_digest": "sha256:" + "9" * 64,
+                                "sends": [{"at_epoch": sent_at - 600, "status": 402}, {"at_epoch": sent_at, "status": 201}]})
+    [receipt] = settlement.settle_closed_atlas_task_attempts(tmp_path / "job", task_context=CONTEXT)
+    events, gaps = meter.read_journal(tmp_path / "meter")
+    [row] = meter.journal_rows(events)
+    assert gaps == [] and receipt["actual_cost_usd"] == 5
+    assert (row["job_id"], row["meter_key"], row["provider"], row["status"]) == (
+        "request-atlas", BINDING, "world_labs", "settled")
+    assert float(row["settled_usd"]) == 5 and row["settled_at_epoch"] == sent_at
+    assert meter.month_of(row["settled_at_epoch"]) == "2026-11"
+    # A retained settlement is not journaled again.
+    settlement.settle_closed_atlas_task_attempts(tmp_path / "job", task_context=CONTEXT)
+    events, _ = meter.read_journal(tmp_path / "meter")
+    assert len(meter.journal_rows(events)) == 1

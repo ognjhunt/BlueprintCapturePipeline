@@ -273,6 +273,29 @@ def test_an_openai_call_counts_once_and_stays_attributed_after_its_workspace_is_
     assert jobs["req-1"]["by_provider_settled_usd"] == {"openai": 1.3}
 
 
+def test_an_atlas_purchase_counts_once_and_stays_counted_after_its_workspace_is_retired(tmp_path):
+    """2026-11-20: retiring two workspaces took $13.79 of November's World Labs purchases out of the scan, so the
+    month's reading fell and the report held its last count. The journal's settlement now keeps each one."""
+    root = tmp_path / "m"
+    for job, binding, usd in (("req-1", "sha256:a1", "1.5"), ("req-9", "sha256:a9", "2.0")):
+        meter.record_settlement(job_id=job, meter_key=binding, settled_usd=usd, basis="preparation_settlement",
+                                provider="world_labs", root=root, now=NOW - 50)
+    # The scan still finds req-1's attempt (with its reservation's binding); req-9's workspace was retired.
+    world_labs = {"complete": True, "charges": [
+        {"at_epoch": NOW - 60, "usd": 1.5, "held": False, "job_id": "site-req-1", "attempt": "atlas:aaaa",
+         "binding": "sha256:a1"}]}
+    view = sources.collect_meter_view(now=NOW, world_labs=world_labs, environ={meter.METER_ROOT_ENV: str(root)})
+    jobs = {row["job_id"]: row for row in view["jobs"]}
+    assert jobs["req-1"]["by_provider_settled_usd"] == {"world_labs": 1.5}
+    assert jobs["req-9"]["by_provider_settled_usd"] == {"world_labs": 2.0}
+    assert view["_exact"]["by_provider_settled_usd"]["world_labs"] == Decimal("3.5")
+    # A scanned charge from an older tick names no binding: the scan alone counts that job, never twice.
+    older = {"complete": True, "charges": [{**world_labs["charges"][0]}]}
+    older["charges"][0].pop("binding")
+    view = sources.collect_meter_view(now=NOW, world_labs=older, environ={meter.METER_ROOT_ENV: str(root)})
+    assert view["_exact"]["by_provider_settled_usd"]["world_labs"] == Decimal("3.5")
+
+
 def test_the_webapps_own_runs_are_named_overhead_outside_every_job(tmp_path):
     overhead = {"status": "observed", "complete": True, "month": "2026-11", "charges": [
         {"name": "webapp.site_task_brief_reading", "provider": "openai", "usd": 0.4, "runs": 3,
