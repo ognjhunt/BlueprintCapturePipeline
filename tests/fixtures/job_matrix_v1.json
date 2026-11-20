@@ -173,7 +173,7 @@
      "room_not_run",
      "goal_estimated"
     ],
-    "readme_sha256": "sha256:439d786bbaec30c19081695a75bdcc445a0bfa760ca727d155e8d3bc317e8930"
+    "readme_sha256": "sha256:76995d26908f2dc6c849f843beb1ffe8a4364798f76ddcf7b3aea17c1328088e"
    }
   },
   {
@@ -206,7 +206,7 @@
      "no_rule",
      "not_found"
     ],
-    "readme_sha256": "sha256:00f10f8d1f42799fa4b74caf0517fd3e1642af05dd0a2499f3d6b2d5568c9974"
+    "readme_sha256": "sha256:33052b5a29258ef8f60c97cf2f3ce8f419b12a6808abc3e7625abaaa188bced6"
    }
   },
   {
@@ -300,7 +300,7 @@
      "room_not_run",
      "no_rule"
     ],
-    "readme_sha256": "sha256:d3dbd70a268cc81fddb9497b5e0454e268894634013a984a46b688784cb7c577"
+    "readme_sha256": "sha256:1e3040254e9701e047a8b861daae3e975476300bb1abaf51ab368ea97bee85c5"
    }
   },
   {
