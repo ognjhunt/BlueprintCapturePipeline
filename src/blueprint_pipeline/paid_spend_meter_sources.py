@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .paid_spend_meter import (
+    ARTISAN_OPENAI_METER_PREFIX,
     BILLABLE_UNTIL_FIELD,
     DEFAULT_SCREENING_QUEUE_ROOT,
     MAX_LEDGER_BYTES,
@@ -138,7 +139,8 @@ def _once(journal: list[dict[str, Any]], openai: Mapping[str, Any] | None) -> li
     """Journal rows with each OpenAI call the job's scanned receipts already count reduced to a call.
 
     A scanned job row lists the calls it covers (``bindings``); one from an older tick lists none, and then every
-    OpenAI settlement the journal holds for that job is left to the scan.
+    OpenAI preparation settlement the journal holds for that job is left to the scan. ARTISAN's journal
+    rows come from the scene attempt, outside the scan's preparation receipts.
     """
 
     covered: set[tuple[str, str]] = set()
@@ -155,6 +157,7 @@ def _once(journal: list[dict[str, Any]], openai: Mapping[str, Any] | None) -> li
     rows = []
     for row in journal:
         if (row.get("status") == "settled" and row.get("provider") == "openai"
+                and not row["meter_key"].startswith(ARTISAN_OPENAI_METER_PREFIX)
                 and (row["job_id"] in whole or (row["job_id"], row["meter_key"]) in covered)):
             row = {**row, "status": "unpriced", "settled_usd": None, "settled_at_epoch": None}
         rows.append(row)

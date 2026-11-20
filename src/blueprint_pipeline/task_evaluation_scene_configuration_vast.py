@@ -1179,14 +1179,20 @@ def run_scene_configuration_vast(
         resource_class="vast_provider_adapter",
         require_allocation_binding=True,
     )
+    envelope = _portable_construction_envelope(receipt)
+    scene = (envelope.get("request") or {}).get("scene") or {}
+    scene_id = (scene.get("identity") or {}).get("id")
+    from .website_capture_entry import WEBSITE_SCENE_ID_PREFIX
+    website_job_id = (scene_id if scene.get("website_native_inputs") and isinstance(scene_id, str)
+                      and scene_id.startswith(WEBSITE_SCENE_ID_PREFIX) else None)
     try:  # Anthropic's part of the month, held before any authoring; unwritable, the attempt stops here
-        artisan_anthropic_month.hold_attempt(receipt, authority, ttl_seconds=ttl)
+        artisan_anthropic_month.hold_attempt(receipt, authority, ttl_seconds=ttl, job_id=website_job_id)
     except (OSError, ValueError) as exc:
         raise TaskEvaluationSceneConfigurationVastError("scene_configuration_anthropic_month_hold_unwritable") from exc
     # A recipe with no GPU stage runs whole on this host and rents nothing (owner, 2026-11-15):
     # no bundle staging, no Vast watchdog, no provider call (``host_chain_plan``).
-    host_chain, cpu_prestage_stage_limit = host_chain_plan(_portable_construction_envelope(
-        receipt), receipt, cpu_prestage_stage_limit, diagnostic_only=diagnostic_only)
+    host_chain, cpu_prestage_stage_limit = host_chain_plan(
+        envelope, receipt, cpu_prestage_stage_limit, diagnostic_only=diagnostic_only)
     external_cap = sum(float(provider["maximum_cost_usd"])
                        for provider in authority["external_service_spend_caps"].values())
     provider_all_in_cap = float(authority["hard_attempt_spend_cap_usd"]) - external_cap
@@ -1688,9 +1694,14 @@ def run_scene_configuration_vast(
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
     # Preserve the CPU model ledger and partial assets through the existing
     # output/reconciliation path when no native output could be returned.
-    if not output_zip.is_file() and (job / "cpu_prestage_output.zip").is_file():
-        output_zip = job / "cpu_prestage_output.zip"
-    artisan_anthropic_month.settle_attempt(receipt, output_zip if output_zip.is_file() else None)
+    cpu_archive = job / "cpu_prestage_output.zip"
+    if not output_zip.is_file() and cpu_archive.is_file():
+        output_zip = cpu_archive
+    artisan_anthropic_month.settle_attempt(receipt, output_zip if output_zip.is_file() else None,
+                                         job_id=website_job_id)
+    # A returned GPU archive can omit the CPU prefix. Prefer the host's own meter when it exists.
+    artisan_anthropic_month.settle_openai_attempt(
+        receipt, authority, archives=(cpu_archive, output_zip), job_id=website_job_id)
     execution, blockers, extraction_disk_capacity = (
         output_admission.extract(
             extract_provider_output_with_capacity_guard, output_zip,
