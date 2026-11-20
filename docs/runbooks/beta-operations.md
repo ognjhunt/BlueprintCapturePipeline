@@ -52,15 +52,13 @@ at once. A stall that continues posts again each hour.
 | `atlas_preview_stalled` | An Atlas preview job made no progress and is not in a scheduled wait that is still ahead: no step returned and none is scheduled (`status: silent`), a scheduled retry is overdue (`status: retry_overdue`), a step started and never returned (`status: step_unreturned`), or a `needs_input` recheck is overdue (`status: recheck_overdue`). | 90 min | Read `blueprint-website-atlas-preview.service`'s journal and `door status` for a kill or a stopped timer, and `last_error` in the job. The job retries by itself on its schedule. |
 | `team_scene_packet_stalled` | A team scene packet request waited in `pending/` or `processing/`, or stayed `blocked` (`status: retry_overdue` when its timed retry fell due and it is still blocked). | 8 h | Read the request's `team-scene-packets/status/<key>.json` and `blueprint-team-scene-packet.service`'s journal. |
 | `rigid_probe_stalled` | A rigid robot-free probe entry stayed in `pending/` and its latest attempt recorded nothing new, or a retired staging refusal's timed retry is overdue (`status: retry_overdue`). | 8 h | Read the latest `rigid-robot-free-probes/jobs/<key>-*/attempts/<NN>/rigid_robot_free_probe_ingest.json` (`status` in the page is its `state`) and the runner's journal. |
-| `screening_campaign_stalled` | A screening campaign has rows still to run and its ledger entry did not change. | 8 h | Read `beta-policy-screening/worker_status.json` and `blueprint-beta-policy-screening.service`'s journal. `reconciliation_required` needs a person. |
-| `screening_publication_stalled` | A campaign's latest revision stayed unpublished to the WebApp. | 90 min from when the alarm first saw it | Read `last_publication_failure` in `worker_status.json`. |
 | `stall_check_incomplete` (warn) | A check could not read what it needs. | none | Read the `stall` section: `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`. |
 
 These never page: completed rows, `needs_input` rows, revoked or expired
 execution windows, and intended holds. Intended holds are pauses, privacy,
 consent, rights and money approvals, for example
 `scene_intake_spend_cap_exhausted` and `scene_intake_attempt_cap_exhausted`.
-In the four job stores, these never page either:
+The job-store checks also skip these cases:
 
 - an Atlas job that is `ready`, `failed` or `withdrawn`, or `needs_input`
   waiting for a person, a grant, consent or money;
@@ -72,20 +70,16 @@ In the four job stores, these never page either:
   (`team_scene_owner_contract_invalid:*`) or on a withdrawn capture;
 - a rigid probe whose grant the WebApp refused (`website_grant_refused`, a
   money stop that the owner lifts);
-- a screening campaign whose remaining rows are `waitlisted` (the site
-  allowance or the job ceiling);
-- a team scene request, a rigid probe or a screening campaign whose capture
-  has no scene intent with an open execution window any more (expired or
-  revoked): it cannot run again;
+- a team scene request or rigid probe whose capture has no scene intent with
+  an open execution window because it expired or was revoked;
 - a store whose own trigger has a door hold. If you switch a lane off on
   purpose, hold its timer with `door hold`.
 
 The limits are minutes in the environment file:
 `BLUEPRINT_STALL_PROGRESSION_MINUTES`, `BLUEPRINT_STALL_HANDOFF_MINUTES`,
 `BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES`, `BLUEPRINT_STALL_TRIGGER_MINUTES`,
-`BLUEPRINT_STALL_ATLAS_MINUTES`, `BLUEPRINT_STALL_TEAM_SCENE_MINUTES`,
-`BLUEPRINT_STALL_RIGID_PROBE_MINUTES`, `BLUEPRINT_STALL_SCREENING_MINUTES` and
-`BLUEPRINT_STALL_PUBLICATION_MINUTES`.
+`BLUEPRINT_STALL_ATLAS_MINUTES`, `BLUEPRINT_STALL_TEAM_SCENE_MINUTES` and
+`BLUEPRINT_STALL_RIGID_PROBE_MINUTES`.
 `BLUEPRINT_STALL_ALARM=0` turns the alarm off. More detail is in
 [`control-plane-capacity.md`](control-plane-capacity.md#stalled-jobs).
 

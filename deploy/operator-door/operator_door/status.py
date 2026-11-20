@@ -291,36 +291,6 @@ def _handoff_delivery(config: DoorConfig) -> dict[str, Any]:
     return safe
 
 
-def _screening_progress(config: DoorConfig) -> dict[str, Any]:
-    raw = _regular_bytes(Path(config.screening_worker_status), 32 * 1024)
-    if scan_bytes(raw) is not None:
-        raise SecretContentRefused("secret_content")
-    value = json.loads(raw)
-    if not isinstance(value, dict) or value.get("schema_version") != "blueprint.beta_policy_screening_worker_status.v1":
-        raise ValueError("screening_status_schema_invalid")
-    safe = {"schema_version": value["schema_version"]}
-    for key in ("status", "coverage", "reason"):
-        candidate = value.get(key)
-        if candidate is None or isinstance(candidate, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", candidate):
-            safe[key] = candidate
-    for key in ("observed_at_epoch", "campaign_count", "publication_pending", "oldest_eligible_wait_seconds",
-                "last_ledger_progress_at_epoch", "last_successful_publication_at_epoch"):
-        candidate = value.get(key)
-        if candidate is None or type(candidate) in (int, float) and math.isfinite(candidate) and candidate >= 0:
-            safe[key] = candidate
-    for key in ("candidate_counts", "blocker_categories"):
-        candidates = value.get(key)
-        if isinstance(candidates, dict):
-            safe[key] = {name: count for name, count in candidates.items()
-                         if isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", name) and type(count) is int and count >= 0}
-    failure = value.get("last_publication_failure")
-    if isinstance(failure, dict) and failure.get("category") in {"auth", "source", "ack", "unavailable", "unknown"}:
-        safe["last_publication_failure"] = {key: failure.get(key) for key in ("category", "owner", "next_action", "next_retry_at_epoch", "observed_at_epoch")
-            if failure.get(key) is None or type(failure.get(key)) in (int, float) and math.isfinite(failure[key])
-            or isinstance(failure.get(key), str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", failure[key])}
-    return safe
-
-
 def _unit_health(controller_units: Any, failed_units: Any) -> dict[str, Any]:
     if not isinstance(controller_units, list) or not isinstance(failed_units, list):
         return {"status": "unknown", "reason": "unit_inventory_unavailable"}
@@ -414,7 +384,6 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
         "unit_health": _unit_health(controllers, failed),
         "preflight": _preflight(config),
         "preparation_delivery": _section(lambda: _handoff_delivery(config), "preparation_delivery_unavailable"),
-        "beta_screening": _section(lambda: _screening_progress(config), "beta_screening_unavailable"),
         "disk": _section(lambda: host.disk(("/", "/var/lib/blueprint", "/mnt/blueprint-work")),
                          "disk_unavailable"),
         "capacity": _section(lambda: _capacity(config), "capacity_unavailable"),

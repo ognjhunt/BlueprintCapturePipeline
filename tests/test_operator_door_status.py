@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
@@ -212,6 +213,24 @@ def test_status_assembles_every_section(host_tree: dict[str, Path]) -> None:
     assert status["break_glass"] == {"unreported": 0, "latest": None}
     assert status["door"]["caller"] == {"name": "cloud"}
     assert set(status["disk"]) and "loadavg" in status["load"]
+
+
+def test_status_omits_the_retired_trial_worker_snapshot(host_tree: dict[str, Path]) -> None:
+    path = host_tree["state"] / "beta-policy-screening" / "worker_status.json"
+    snapshot = json.dumps({
+        "schema_version": "blueprint.beta_policy_screening_worker_status.v1",
+        "status": "preparation_needed",
+        "coverage": "current_ledger",
+        "candidate_counts": {"unavailable": 1},
+    })
+    path.parent.mkdir()
+    path.write_text(snapshot, encoding="utf-8")
+    config = replace(_config(host_tree), screening_worker_status=str(path))
+
+    status = build_status(config, _host(host_tree, FakeRunner({})), caller={})
+
+    assert "beta_screening" not in status
+    assert path.read_text(encoding="utf-8") == snapshot
 
 
 def test_status_shows_active_and_overdue_holds_with_remaining_seconds(host_tree: dict[str, Path]) -> None:
