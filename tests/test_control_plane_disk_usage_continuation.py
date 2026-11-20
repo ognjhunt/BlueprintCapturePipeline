@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -148,3 +149,111 @@ def test_missing_or_incomplete_reference_inventory_never_authorizes_retirement()
     assert scratch_lifecycle_disposition(root, base, now=500)["lifecycle_disposition"] == "unknown"
     no_references = {**base, "rows": [{"path": root, "references": []}]}
     assert scratch_lifecycle_disposition(root, no_references, now=100)["retirement_eligible"] is False
+
+
+def test_a_folder_emptied_after_its_measurement_is_measured_again_first(tmp_path: Path, monkeypatch) -> None:
+    """2026-11-20: two folders emptied on 11-18 kept the inode they were measured with, so the survey still read
+    their 53 GiB until the rotation came back to them (measurements up to 12 days old)."""
+
+    from blueprint_pipeline import control_plane_disk_usage_cursor as cursor
+
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 40960)
+    previous = None
+    for _tick in range(4):
+        result = _survey(tmp_path, previous=previous)
+        previous = result["continuation"]
+    assert result["composite"]["unmeasured"] == 0
+    full = result["mounts"][0]["surveyed_bytes"]
+    # "c" is emptied in place; the rotation's next partition is "a".
+    (tmp_path / "c" / "data").unlink()
+    later = time.time() + 10
+    os.utime(tmp_path / "c", (later, later))
+    monkeypatch.setattr(cursor, "CHANGED_REMEASURE_AFTER_SECONDS", 0, raising=False)
+    # Two partitions this pass: the rotation's next one ("a") and the changed one, not "a" and "b".
+    emptied = _survey(tmp_path, previous=previous, partitions=2)
+    assert emptied["selected_partitions"] == 2
+    assert emptied["mounts"][0]["surveyed_bytes"] <= full - 40960
+    assert emptied["composite"]["unmeasured"] == 0
+
+
+def test_a_directory_changed_recently_waits_for_its_turn(tmp_path: Path) -> None:
+    """A measurement younger than the re-measure age keeps the rotation's order, so a busy folder cannot crowd it."""
+
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 40960)
+    previous = None
+    for _tick in range(4):
+        result = _survey(tmp_path, previous=previous)
+        previous = result["continuation"]
+    full = result["mounts"][0]["surveyed_bytes"]
+    (tmp_path / "c" / "data").unlink()
+    later = time.time() + 10
+    os.utime(tmp_path / "c", (later, later))
+    rotated = _survey(tmp_path, previous=previous)
+    assert rotated["mounts"][0]["surveyed_bytes"] == full
+
+
+def test_folders_that_change_every_pass_never_starve_the_rotation(tmp_path: Path, monkeypatch) -> None:
+    """Codex on #3669: changed folders taking every slot would leave an unchanged one unmeasured for good."""
+
+    from blueprint_pipeline import control_plane_disk_usage_cursor as cursor
+
+    names = ("a", "b", "c", "d")
+    for name in names:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 4096)
+    previous = None
+    for _tick in range(4):
+        result = _survey(tmp_path, previous=previous)
+        previous = result["continuation"]
+    [root] = previous["roots"].values()
+    measured_d = root["ledger"][cursor._digest("d")]["observed_at_epoch"]
+    monkeypatch.setattr(cursor, "CHANGED_REMEASURE_AFTER_SECONDS", 0, raising=False)
+    remeasured = False
+    for tick in range(4):
+        later = time.time() + 10 + tick
+        for name in ("a", "b", "c"):
+            os.utime(tmp_path / name, (later, later))
+        result = _survey(tmp_path, previous=previous, partitions=2)
+        previous = result["continuation"]
+        [root] = previous["roots"].values()
+        remeasured = remeasured or root["ledger"][cursor._digest("d")]["observed_at_epoch"] > measured_d
+    assert remeasured
+
+
+def test_a_single_partition_pass_still_reaches_a_changed_folder_in_its_turn(tmp_path: Path, monkeypatch) -> None:
+    """Codex on #3669: with one partition a pass, rotation-first alternation kept a changed folder out for good."""
+
+    from blueprint_pipeline import control_plane_disk_usage_cursor as cursor
+
+    for name in ("a", "b", "c", "d"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 40960)
+    previous = None
+    for _tick in range(4):
+        result = _survey(tmp_path, previous=previous)
+        previous = result["continuation"]
+    full = result["mounts"][0]["surveyed_bytes"]
+    (tmp_path / "c" / "data").unlink()
+    later = time.time() + 10
+    os.utime(tmp_path / "c", (later, later))
+    monkeypatch.setattr(cursor, "CHANGED_REMEASURE_AFTER_SECONDS", 0, raising=False)
+    surveyed = []
+    for _tick in range(4):
+        result = _survey(tmp_path, previous=previous)
+        previous = result["continuation"]
+        surveyed.append(result["mounts"][0]["surveyed_bytes"])
+    assert surveyed[-1] <= full - 40960
+
+
+def test_changed_partitions_take_every_second_slot_and_move_no_partition_later() -> None:
+    from blueprint_pipeline.control_plane_disk_usage_cursor import _promote_changed
+
+    queue = ["a", "b", "c", "d", "e", "f"]
+    order = _promote_changed(queue, {"e", "f"})
+    assert order == ["a", "e", "b", "f", "c", "d"]
+    assert _promote_changed(queue, {"a"}) == queue
+    assert all(order.index(key) <= queue.index(key) for key in ("e", "f"))
