@@ -186,13 +186,13 @@ has been stuck and how many there are (`count`, `targets`).
   `/var/lib/blueprint-operator-door/requests/holds/`. Start it through the
   door, or place an owned hold if it is off on purpose.
 
-Four job stores had no check until 2026-11-10. The unit names each root as
-that store's own worker unit does. A root that does not exist is "nothing to
-check"; a store whose own trigger has a door hold is not read (`status: held`).
-Each default is one of the two waits above: 90 minutes where the job waits on
-the pipeline itself, 8 hours where a worker may hold it for whole runs. A team
-scene request, a rigid probe or a screening campaign pages only while its
-capture still has a scene intent with an open execution window (not revoked,
+Three job stores have their own check (added 2026-11-10). The unit names each
+root as that store's own worker unit does. A root that does not exist is
+"nothing to check"; a store whose own trigger has a door hold is not read
+(`status: held`). Each default is one of the two waits above: 90 minutes where
+the job waits on the pipeline itself, 8 hours where a worker may hold it for
+whole runs. A team scene request or a rigid probe pages only while its capture
+still has a scene intent with an open execution window (not revoked,
 extensions included), the rule the progression check applies to an intent's own
 row. After that the row is history (`execution_window` in the check's
 `dispositions`): it cannot be funded or run again, and a refusal from months ago
@@ -244,20 +244,6 @@ tick's deadline), every row stays watched and the tick reports
   `staging_refused` terminal waits for its next timed retry (sealed time plus
   the schedule step its `refusal_retry` supersession markers reach) is quiet
   until due and pages once overdue by 8 hours (`status: retry_overdue`).
-- `screening_campaign_stalled` (`BLUEPRINT_STALL_SCREENING_MINUTES`, 480): a
-  campaign in `beta-policy-screening/screening_ledger.v1.json` has rows that
-  are `pending`, `preparing`, `launching`, `running` or
-  `reconciliation_required`, and its `updated_at` is 8 hours old (a run's hard
-  TTL is at most 4 hours). A campaign whose remaining rows are `waitlisted`, or
-  whose rows all name consent, rights or an approval, never pages. A `blocked`
-  row waiting for the coordinator's timed re-plan is not a row still to run,
-  so it is quiet; the ledger records no due time for that re-plan, so an
-  overdue one is not seen.
-- `screening_publication_stalled` (`BLUEPRINT_STALL_PUBLICATION_MINUTES`, 90):
-  a campaign's `revision` differs from its `published_revision` on every tick
-  for 90 minutes. The ledger does not record since when, so the age counts
-  from the first tick that saw it (`age_is_lower_bound`), and one tick that
-  sees it published forgets it.
 
 A persisting stall repeats hourly; a newly stuck target posts at once.
 `stall_check_incomplete` (warn) means a check could not look, for example an
@@ -266,7 +252,7 @@ section of `capacity/summary.json` lists what each check examined and why rows
 were skipped. Thresholds are minutes in the environment file:
 `BLUEPRINT_STALL_PROGRESSION_MINUTES`, `BLUEPRINT_STALL_HANDOFF_MINUTES`,
 `BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES`, `BLUEPRINT_STALL_TRIGGER_MINUTES` and
-the five named above; `BLUEPRINT_STALL_ALARM=0` turns the alarm off. It never
+the three named above; `BLUEPRINT_STALL_ALARM=0` turns the alarm off. It never
 changes a queue, a job, a progression, a provider or a unit.
 
 ## Preparation status callbacks

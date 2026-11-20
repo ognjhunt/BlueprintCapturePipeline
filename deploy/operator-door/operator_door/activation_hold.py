@@ -26,8 +26,6 @@ Live means bound to the running release, and one of these paid stages:
   processing/ while a live dispatcher holds the queue's ``.dispatcher.lock``;
 - a paid-launch slot lock (``provider-locks/*.lock``, not the deploy gate) whose
   flock is held by a process running from this release's tree (``/proc/<pid>/cwd``);
-- a beta-screening candidate ``launching`` or ``running`` in the screening ledger
-  whose plan froze this release's commit (``implementation_commit``);
 
 or one of these unpaid stages (CPU work the next release would refuse and redo):
 
@@ -41,9 +39,11 @@ or one of these unpaid stages (CPU work the next release would refuse and redo):
   a worker from this release's tree that started before the claim still runs (the
   rule ``task_evaluation_preparation_claim_recovery`` uses), or finished for the
   scene-configuration lane recently (``SUBMIT_WINDOW_SECONDS``) with no activation
-  queued for it yet;
-- a beta-screening candidate ``preparing`` (staging its bundle, not waiting on a
-  blocker) under a plan frozen at this release, while the screening timer can run.
+  queued for it yet.
+
+The early trial's screening ledger is not read: the owner dropped the trial on
+2026-11-14, its timer is retired and nothing writes the ledger any more, so no
+screening candidate can be in flight.
 
 Anything unreadable or unexpected counts as not live. Two bounds, so unpaid work
 never weakens the paid guarantee and never parks a deploy for hours:
@@ -119,11 +119,9 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 STAGE_ACTIVATION = "scene_configuration_activation"
 STAGE_LAUNCH = "scene_configuration_launch"
 STAGE_PAID_LOCK = "paid_launch_lock"
-STAGE_SCREENING = "beta_screening"
 STAGE_SCENE_ATTEMPT = "scene_attempt_preparation"
 STAGE_PREPARATION = "scene_configuration_preparation"
-STAGE_SCREENING_PREPARATION = "beta_screening_preparation"
-PAID_STAGES = frozenset({STAGE_ACTIVATION, STAGE_LAUNCH, STAGE_PAID_LOCK, STAGE_SCREENING})
+PAID_STAGES = frozenset({STAGE_ACTIVATION, STAGE_LAUNCH, STAGE_PAID_LOCK})
 # Scene progression, under the control-plane state root.
 INTENT_ROOT = "task-evaluation-scene-intents"
 PROGRESSION_STATE = "progression.json"
@@ -146,7 +144,6 @@ PREPARATION_WORKERS = (
 PREPARED_STATUS = "queued_for_production_scene_configuration"
 # task_evaluation_launch_activation_queue.QUEUE_STATES, and its results.
 ACTIVATION_STATES = ("pending", "processing", "prepared", "blocked", "results")
-SCREENING_TIMER_UNIT = "blueprint-beta-policy-screening.timer"
 MAX_PROC_SCAN = 65536
 # Under the control-plane state root, as door status reads them.
 LAUNCH_QUEUE = "task-evaluation-launches"
@@ -156,9 +153,6 @@ DISPATCHER_LOCK = ".dispatcher.lock"
 PROVIDER_LOCKS = "provider-locks"
 # vast_launch_slots.vast_launch_gate_path: a deploy takes it, a launch only while taking a slot.
 GATE_SUFFIX = ".gate.lock"
-SCREENING_ROOT = "beta-policy-screening"
-SCREENING_LEDGER = "screening_ledger.v1.json"
-SCREENING_LIVE = ("launching", "running")
 LAUNCH_STATE = "launch_progression.json"
 # Checks this close together are one hold, so a stage handing over to the next
 # never restarts the clock. A parked deploy rechecks every RECHECK_SECONDS.
@@ -432,60 +426,6 @@ def live_paid_locks(
     return live, notes
 
 
-def _screening_staging(row: Any) -> bool:
-    """A ``preparing`` row staging its bundle now: no blocker (a capacity, offer, control or
-    billing wait has one) and no retry set for later."""
-
-    if not isinstance(row, dict) or row.get("status") != "preparing" or row.get("blockers"):
-        return False
-    attempt = row.get("attempt")
-    return isinstance(attempt, dict) and attempt.get("retry_not_before") is None
-
-
-def live_screening(*, screening_root: Path, active: str,
-                   preparing: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
-    """Beta-screening candidates launching or running under a plan frozen at this release.
-
-    With ``preparing`` (the screening timer can run), candidates staging their bundle
-    count too, as unpaid work: the next release refuses that bundle and replans it.
-    """
-
-    ledger = _read_json(screening_root / SCREENING_LEDGER)
-    campaigns = (ledger or {}).get("campaigns")
-    if not isinstance(campaigns, dict):
-        return [], []
-    live: list[dict[str, Any]] = []
-    notes: list[str] = []
-    scanned = 0
-    for campaign_id in sorted(campaigns, key=str):
-        campaign = campaigns[campaign_id]
-        rows = campaign.get("candidates") if isinstance(campaign, dict) else None
-        if not isinstance(rows, dict):
-            continue
-        busy = sorted(str(candidate) for candidate, row in rows.items()
-                      if isinstance(row, dict) and row.get("status") in SCREENING_LIVE
-                      or preparing and _screening_staging(row))
-        if not busy or not isinstance(campaign_id, str) or not _IDENT.fullmatch(campaign_id):
-            continue
-        scanned += 1
-        if scanned > MAX_SCAN:
-            notes.append("screening_scan_limit_reached")
-            break
-        plan = _read_json(screening_root / "plans" / f"{campaign_id}.json")
-        frozen: dict[str, Any] = {}
-        for candidate in (plan or {}).get("candidates") or []:
-            if isinstance(candidate, dict) and isinstance(candidate.get("execution_spec"), dict):
-                frozen[str(candidate.get("candidate_id"))] = candidate["execution_spec"].get("implementation_commit")
-        for candidate_id in busy:
-            if frozen.get(candidate_id) == active:
-                status = rows[candidate_id]["status"]
-                live.append(_row(STAGE_SCREENING if status in SCREENING_LIVE else STAGE_SCREENING_PREPARATION,
-                                 f"screening_{status}", f"{campaign_id}/{candidate_id}"))
-            else:
-                notes.append(f"screening_candidate_of_other_or_unknown_release:{campaign_id}/{candidate_id}")
-    return live, notes
-
-
 def live_scene_attempts(
     *, intent_root: Path, active: str, now: float, holders: dict[int, set[int]], proc_root: Path,
     claimable: bool = True,
@@ -664,8 +604,7 @@ def decide(
     times: dict[str, float] | None = None,
     launch_queue_root: Path | None = None, launch_pending_claimable: bool = True,
     lock_dir: Path | None = None, holders: dict[int, set[int]] | None = None,
-    proc_root: Path = Path("/proc"), screening_root: Path | None = None, request_id: str = "",
-    screening_preparing_claimable: bool = True,
+    proc_root: Path = Path("/proc"), request_id: str = "",
     intent_root: Path | None = None, progression_claimable: bool = True,
     preparation_queue_root: Path | None = None, preparation_pending_claimable: bool = True,
 ) -> tuple[int, str]:
@@ -693,9 +632,6 @@ def decide(
     if lock_dir is not None:
         sources.append(("paid_launch_locks", lambda: live_paid_locks(
             lock_dir=lock_dir, active=active, holders=holders or {}, proc_root=proc_root)))
-    if screening_root is not None:
-        sources.append(("beta_screening", lambda: live_screening(
-            screening_root=screening_root, active=active, preparing=screening_preparing_claimable)))
     if intent_root is not None:
         sources.append(("scene_attempts", lambda: live_scene_attempts(
             intent_root=intent_root, active=active, now=now, holders=holders or {}, proc_root=proc_root,
@@ -900,9 +836,7 @@ def main(argv: list[str]) -> int:
         launch_queue_root=state / LAUNCH_QUEUE,
         launch_pending_claimable=not activation_path_held(holds_dir, LAUNCH_PATH_UNIT),
         lock_dir=state / PROVIDER_LOCKS, holders=holders,
-        screening_root=state / SCREENING_ROOT,
         request_id=os.environ.get("DOOR_REQUEST_ID", ""),
-        screening_preparing_claimable=not activation_path_held(holds_dir, SCREENING_TIMER_UNIT),
         intent_root=state / INTENT_ROOT,
         progression_claimable=not activation_path_held(holds_dir, PROGRESSION_TIMER_UNIT),
         preparation_queue_root=state / PREPARATION_QUEUE,

@@ -278,6 +278,15 @@ def test_preparation_delivery_shows_live_and_parked_callbacks(host_tree: dict[st
         "oldest_live_age_seconds": 4_000.0, "parked_count": 7, "oldest_parked_age_seconds": 408_000.0}
 
 
+def test_status_does_not_report_the_dropped_early_trial_as_a_live_lane(host_tree: dict[str, Path]) -> None:
+    # The owner dropped the early trial on 2026-11-14 and its timer is retired. Its worker's last
+    # status file stays on the host (last written 2026-11-15); status must not show that stopped
+    # lane's state as current, and the door no longer has a setting that points at it.
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert not any("screening" in key for key in status)
+    assert not any("screening" in field for field in DoorConfig.__dataclass_fields__)
+
+
 def test_a_receipt_with_credential_shaped_content_names_the_refusal(host_tree: dict[str, Path]) -> None:
     receipt = host_tree["state"] / "deploy-receipts" / "iteration_dddddddddddd.json"
     receipt.write_text(json.dumps({"status": "deployed", "api_key": "abcdefghijklmnop12"}), encoding="utf-8")
@@ -779,15 +788,15 @@ def test_status_carries_the_oom_reports(host_tree: dict[str, Path]) -> None:
 def test_status_says_which_paid_stage_holds_the_deploy(host_tree: dict[str, Path]) -> None:
     parked = host_tree["base"] / "door" / "requests" / "parked"
     parked.mkdir(exist_ok=True)
-    live = [{"stage": "beta_screening", "state": "screening_running", "id": "camp-1/cand-1"}]
+    live = [{"stage": "paid_launch_lock", "state": "paid_launch_lock_held", "id": "vast_paid_launch.lock"}]
     (parked / ".activation-hold").write_text(json.dumps({
         "schema": "blueprint_operator_door_activation_hold.v1", "active_release": "a" * 40,
         "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0, "recheck_after_epoch": 3.0, "live": live,
-        "stages": ["beta_screening"], "requests": {}}), encoding="utf-8")
+        "stages": ["paid_launch_lock"], "requests": {}}), encoding="utf-8")
     hold = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})["deploy_activation_hold"]
     assert hold == {"active_release": "a" * 40, "first_held_at_epoch": 1.0, "cap_at_epoch": 2.0, "bound": None,
-                    "recheck_after_epoch": 3.0, "live": live, "stages": ["beta_screening"],
-                    "paid_stages": ["beta_screening"], "unpaid_stages": []}
+                    "recheck_after_epoch": 3.0, "live": live, "stages": ["paid_launch_lock"],
+                    "paid_stages": ["paid_launch_lock"], "unpaid_stages": []}
     # A record an older door wrote names no stage: it was an activation, which is paid.
     (parked / ".activation-hold").write_text(json.dumps({
         "active_release": "a" * 40, "live": [{"activation_id": "act-1", "state": "pending"}]}), encoding="utf-8")
