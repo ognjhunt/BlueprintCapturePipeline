@@ -168,8 +168,12 @@ def preparation_webapp_request(*, task_context: Mapping[str, Any], operation: st
             body["create"] = False  # Only an actual owner command may retain the first allowance.
     else:
         raise ValueError("owned_capture_atlas_control_operation_invalid")
-    return website_webapp_request(capture_id=task_context["capture_id"], operation=operation,
-                                 payload=body, source_kind="owned_capture")
+    value = website_webapp_request(capture_id=task_context["capture_id"], operation=operation,
+                                   payload=body, source_kind="owned_capture")
+    if operation == "preparation-settlement":
+        # The owned route's body carries only the settlement: meter it against the plan here, where its id is known.
+        meter_preparation_settlement({"request_id": task_context["request_id"]}, value)
+    return value
 
 
 def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest: str,

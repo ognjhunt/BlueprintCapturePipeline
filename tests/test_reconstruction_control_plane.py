@@ -897,6 +897,28 @@ def test_owned_settlement_routes_without_reopening_revoked_processing_authority(
         'payload': {'settlement': {'allocation_binding_digest': 'sha256:' + 'd' * 64}}, 'source_kind': 'owned_capture'}]
 
 
+def test_an_owned_openai_settlement_is_metered_against_its_plan(tmp_path, monkeypatch):
+    """The owned route strips the body to the settlement; the meter still names the plan (review of #3665)."""
+    from blueprint_pipeline import paid_spend_meter as meter
+    from blueprint_pipeline import website_task_context as transport
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    monkeypatch.setenv(meter.METER_ROOT_ENV, str(tmp_path / 'meter'))
+    binding = 'sha256:' + 'd' * 64
+    monkeypatch.setattr(transport, 'website_webapp_request', lambda **kw: {
+        'status': 'settled', 'provider': 'openai', 'allocation_binding_digest': binding, 'actual_cost_usd': 0.42})
+    transport.preparation_webapp_request(task_context=plan['source_context'], operation='preparation-settlement',
+        payload={'request_id': plan['plan_id'], 'scene_id': plan['source_context']['scene_id'],
+                 'settlement': {'allocation_binding_digest': binding}})
+    events, _ = meter.read_journal(tmp_path / 'meter')
+    [row] = meter.journal_rows(events)
+    assert (row['job_id'], row['meter_key'], row['provider']) == (
+        meter.job_key(plan['source_context']['request_id']), binding, 'openai')
+
+
 def test_owned_paid_reservation_requires_current_runtime_source_before_budget_or_rpc(tmp_path, monkeypatch):
     from blueprint_pipeline import website_task_context as transport
     from blueprint_pipeline import paid_resource_admission as admission
