@@ -1116,9 +1116,10 @@ def check_atlas_previews(config: StallConfig, *, now: float, budget: _Budget, ho
         outages, refusals = job.get("transient_failures"), job.get("refusal_retries")
         outages = outages if type(outages) is int and outages > 0 else None
         refusals = refusals if type(refusals) is int and refusals > 0 else None
-        # The refusal behind the current wait: an outage streak, the refusal schedule, or the state's reason.
-        cause = (job.get("last_transient_reason") if outages else job.get("last_refusal_reason") if refusals
-                 else job.get("reason"))
+        # The refusal behind the current wait: an outage streak, the refusal schedule, or the state's reason. A job
+        # stopped for input waits on its own reason: the move there keeps the counters of the waits before it.
+        cause = (job.get("reason") if state == "needs_input" else job.get("last_transient_reason") if outages
+                 else job.get("last_refusal_reason") if refusals else job.get("reason"))
         hold = _atlas_hold(cause)
         if state == "needs_input":
             if hold is not None:
