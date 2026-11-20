@@ -185,6 +185,41 @@ Intended design: every upload is written to one record before it is sent, and st
 - **Still running:** `blueprint-scene-stage-maintenance.timer` (first run on this release at 03:40:51Z, clean, nothing to deliver), the intake, scene progression, the scripted check's runner, the Atlas preview timer, withdrawal deletion and the spend guard.
 - **Not checked:** no website job has passed through scene configuration, the scene packet or the scripted check on this release.
 
+## Deploy on 2026-11-20 in the D-08 window (`cbff06b`)
+
+- **Late in the window:** the deploy was planned for 15:02Z. The cloud session's worker restarted three times between 14:10Z and 17:20Z, so it was requested at 17:24Z instead. The window had opened at 15:00Z, and nothing had deployed since `03dcd29` at 03:09Z, so this is the day's one window deploy.
+- **Before, 17:22Z (door status and requests):**
+  - active release `03dcd29`, `commit_proven` true;
+  - no deploy unit, no activation hold, no paid-launch lock held, and the door queue empty (0 parked, pending or processing);
+  - November counted spend $284.80 of the $400 limit, nothing held.
+- **Which commit:** main's head `cbff06b` (#3678). Its "SBOM, license, and provenance contract" job attested it. The same run's nightly full lane was red on two tests that also fail on `03dcd29`, so they are older than this release. [#3679](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3679) fixes them; it changes only tests, merged after the request, and is not in this release.
+- **17:24:20Z, `cbff06b`:** request `20261120T172420Z-deploy-8c098468`; deployed at 17:49:07Z.
+- **What the release carries since `03dcd29`:**
+  - #3666: the Atlas retry review accepts a remainder lowered by the job cap, which unparks the drawer job;
+  - #3667: stall pages only for scheduled Atlas work;
+  - #3668: the November limit in the runbooks;
+  - #3669: the disk survey re-measures an emptied or refilled folder early;
+  - #3670: ARTISAN spend is attributed by provider;
+  - #3671: the retired trial snapshot leaves door status;
+  - #3672: room-only package tests;
+  - #3673: the stall page for a job stopped for input names its own reason;
+  - #3674: a World Labs purchase survives workspace retirement;
+  - #3676: an open job's scene run is kept by its window;
+  - #3677: runbook trigger lists;
+  - #3675 and #3678: deploy holds stop reading the trial ledger, and job video is required in the doctrine. #3675 is door code: it is live only after a `door-upgrade`, which has not been requested.
+- **After, 17:49Z:**
+  - active release `cbff06b`, `commit_proven` true, no blockers;
+  - no deploy unit, no lock held, door queue empty;
+  - failed units 206 (207 before);
+  - receipt: no paused lane disarmed or failed (episode compilation was already off);
+  - counted spend $284.85, admission allowed.
+- **Drawer test job (`site-itest-917ca852…`):**
+  - A fresh `--atlas-status` at 17:49:53Z (request `20261120T174953Z-selected-handoff-c265243a`) returned `atlas_status_returned`. The `selected_handoff_atlas_configuration_invalid` refusal of 03:10Z is gone.
+  - The job was `needs_input` (`website_atlas_pose_release_not_admitted`, 0 retries), with $37.30 of the Atlas allowance left under the $40 cap and $2.40 reserved or settled.
+  - `--atlas-retry` at 17:50:29Z (request `20261120T175029Z-selected-handoff-532225ff`), against status digest `sha256:1e39edd3…`, returned `atlas_retry_queued` at job revision 3. At 17:51Z the job read `processing`/`queued`.
+  - The lamp test job stays parked.
+- **Door gap found:** `selected-handoff` derives its operation key from the request body, so repeating `--atlas-status` after a deploy returns the earlier result (here, the 03:09Z refusal) until a new `--operation-key` is passed.
+
 ## Metering and retry rollout on 2026-11-20
 
 - **WebApp.** The site's journey changes ([WebApp #1330](https://github.com/ognjhunt/Blueprint-WebApp/pull/1330)) and named overhead with Gemini settlements ([WebApp #1331](https://github.com/ognjhunt/Blueprint-WebApp/pull/1331)) are live: `version.json` read `285edc01d172942e92f45beb496669c5bc8e3ca2` at about 02:46Z.
