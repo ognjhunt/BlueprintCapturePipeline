@@ -17,10 +17,15 @@ from blueprint_pipeline.paid_spend_meter import month_of
 SHIPPED = Path(__file__).resolve().parents[1] / "config" / account.CONFIG_FILENAME
 
 
-def test_drill_walks_the_real_admission_code_through_the_limit(tmp_path):
-    result = drill.run_drill(work_root=tmp_path / "drill", config=SHIPPED)
+# November 2026 is USD 400 (owner decision 2026-11-20, a dated override); every other month USD 300 (2026-11-12).
+@pytest.mark.parametrize("moment,limit", [(datetime(2026, 11, 20, 12, tzinfo=timezone.utc).timestamp(), 400.0),
+                                          (datetime(2026, 12, 1, 0, tzinfo=timezone.utc).timestamp(), 300.0)])
+def test_drill_walks_the_real_admission_code_through_the_limit(tmp_path, monkeypatch, moment, limit):
+    monkeypatch.setattr(account, "_clock", lambda: moment)
+    shipped = SHIPPED.read_bytes()
+    result = drill.run_drill(work_root=tmp_path / "drill", config=SHIPPED, now=moment)
     assert result["status"] == "passed", result["failures"]
-    assert result["limit_usd"] == 300.0 and result["spend_usd"] == 0  # the shipped limit (owner, 2026-11-12)
+    assert result["limit_usd"] == limit and result["spend_usd"] == 0  # the shipped limit for that month
     by_percent = {step["percent"]: step for step in result["steps"]}
     assert by_percent[49]["threshold_alerts"] == [] and by_percent[49]["admission_blockers"] == []
     assert by_percent[50]["threshold_alerts"] == [{"code": "account_spend_month_50pct", "severity": "warn"}]
@@ -32,7 +37,7 @@ def test_drill_walks_the_real_admission_code_through_the_limit(tmp_path):
         assert by_percent[percent]["admission_blockers"] == [account.LIMIT_REACHED]
         assert by_percent[percent]["chokepoint_blockers"] == [account.LIMIT_REACHED]
     # The drill's own copy only: the shipped limit file is unchanged.
-    assert json.loads(SHIPPED.read_text())["monthly_limit_overrides"] == {}
+    assert SHIPPED.read_bytes() == shipped
 
 
 def test_a_dated_override_moves_the_refusal_to_its_amount(tmp_path):

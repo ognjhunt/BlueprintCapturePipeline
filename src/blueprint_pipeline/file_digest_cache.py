@@ -79,6 +79,13 @@ class _Cache:
             self.changed = True
 
     def save(self) -> None:
+        # Written only when the block hashed a file or passed a check. Rows for gone or
+        # changed files are no reason to write on their own: such a row is never trusted
+        # (its fingerprint no longer matches), and a finished job's tick hashes nothing.
+        # Before, each of those ticks rewrote every finished job's sidecar after any of
+        # its files moved, which kept the job recently active for disk cleanup (2026-11-19).
+        if not self.changed:
+            return
         # Unused entries stay while their file is unchanged, so a pass that stops
         # early keeps the rest; those for gone or changed files are dropped.
         for key in [key for key in self.entries if key not in self.used]:
@@ -88,16 +95,11 @@ class _Cache:
                 current = None
             if current != self.entries[key][:5]:
                 del self.entries[key]
-                self.changed = True
         if len(self.entries) > MAXIMUM_ENTRIES:
             ordered = sorted(self.entries, key=lambda key: key not in self.used)
             self.entries = {key: self.entries[key] for key in ordered[:MAXIMUM_ENTRIES]}
-            self.changed = True
         if len(self.checks) > MAXIMUM_CHECKS:
             self.checks = dict.fromkeys(list(self.checks)[-MAXIMUM_CHECKS:])  # the most recently passed
-            self.changed = True
-        if not self.changed:
-            return
         payload = json.dumps({"schema_version": SCHEMA, "entries": self.entries, "checks": list(self.checks)},
                              sort_keys=True, separators=(",", ":")).encode()
         descriptor, temporary = tempfile.mkstemp(prefix="." + self.sidecar.name + ".", dir=self.sidecar.parent)

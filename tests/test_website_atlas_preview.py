@@ -1075,6 +1075,37 @@ def test_a_refusal_only_because_a_release_is_switching_waits_like_an_outage(monk
     assert _job(site)["transient_failures"] == 0 and _job(site)["stage"] == "mesh"
 
 
+@pytest.mark.parametrize("stage", ["website_atlas_pose", "atlas_automation", "atlas_completion"])
+def test_a_release_switch_kept_in_a_result_waits_like_an_outage_and_resumes_by_itself(monkeypatch, site, stage):
+    """2026-11-19 (itest-917ca852, itest-314bd4bc): the room step kept the refusal as a needs_input result
+    while a deploy switched releases, and both jobs parked in needs_input with no retry time."""
+    _enqueue(site)
+    blocker = f"{stage}_release_not_admitted:gpu_canary_deployed_release_inactive_or_untrusted"
+    kept = {"status": "needs_input", "download": None, "blockers": [blocker], "digest": "sha256:retained"}
+    world = World(monkeypatch, site, [kept, {"status": "processing", "stage": "mesh"}])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["retry_at_epoch"] is None and not job.get("refusal_retries")
+    assert job["transient_failures"] == 1 and job["last_transient_reason"] == f"{stage}_release_not_admitted"
+    assert job["next_attempt_at_epoch"] == world.clock + 120
+    assert {row["state"] for row in world.pushed} == {"processing"}
+    # Nothing runs before the retry time; the next tick after it runs on the admitted release.
+    assert world.advance() == "processing" and len(world.runs) == 1
+    world.clock = job["next_attempt_at_epoch"]
+    assert world.advance() == "processing"
+    assert (_job(site)["stage"], _job(site)["transient_failures"], len(world.runs)) == ("mesh", 0, 2)
+
+
+def test_a_kept_release_refusal_with_another_blocker_takes_the_refusal_schedule(monkeypatch, site):
+    _enqueue(site)
+    blocker = "atlas_automation_release_not_admitted:gpu_canary_checkout_not_clean"
+    world = World(monkeypatch, site, [{"status": "needs_input", "download": None, "blockers": [blocker],
+                                       "digest": "sha256:retained"}])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["refusal_retries"] == 1 and job["next_attempt_at_epoch"] > world.clock and job["retry_at_epoch"] is None
+
+
 @pytest.mark.parametrize("code", ["atlas_completion_not_admitted", "atlas_completion_release_not_admitted_late",
                                   "atlas_release_not_admitted_reason"])
 def test_a_look_alike_refusal_with_release_blockers_keeps_the_refusal_schedule(monkeypatch, site, code):
@@ -1570,6 +1601,9 @@ def test_a_request_that_cannot_succeed_fails_the_step_at_once(monkeypatch, site,
     (["meta_sam_http_413", "metric_scene_registration_unproven"], "needs_input", "meta_sam_http_413"),
     (["metric_scene_registration_unproven", "meta_sam_http_503"], "needs_input", "metric_scene_registration_unproven"),
     (["meta_sam_http_503", "metric_scene_registration_unproven"], "needs_input", "meta_sam_http_503"),
+    # A release switch with a provider's answer: the switch waits first; the next step re-asks the provider.
+    (["meta_sam_http_413", "atlas_task_release_not_admitted:gpu_canary_deployed_release_receipt_unverified"],
+     "processing", None),
 ])
 def test_a_kept_result_takes_the_retry_policy_only_when_every_blocker_is_a_provider_answer(
         monkeypatch, site, blockers, state, reason):
@@ -1582,7 +1616,8 @@ def test_a_kept_result_takes_the_retry_policy_only_when_every_blocker_is_a_provi
     if state == "needs_input":
         assert job["stage"] == "preparation" and job.get("refusal_retries", 0) == 0
     if state == "processing":
-        assert job["refusal_retries"] == 1 and job["next_attempt_at_epoch"] > world.clock
+        assert (job.get("refusal_retries") or job["transient_failures"]) == 1
+        assert job["next_attempt_at_epoch"] > world.clock
 
 
 @pytest.mark.parametrize("code", ["meta_sam_http_408", "meta_sam_http_409", "meta_sam_http_425",

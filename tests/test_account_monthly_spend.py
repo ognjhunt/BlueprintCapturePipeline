@@ -111,13 +111,17 @@ def _admit(resource_class: str = "vast_provider_adapter"):
 # ----------------------------- the shipped configuration -----------------------------
 
 
-def test_the_shipped_config_is_300_dollars_and_parses():
+def test_the_shipped_config_is_300_dollars_with_400_for_november_2026_and_parses():
     # Owner, 2026-11-12: raised from USD 200 to USD 300; the alert percentages are unchanged.
+    # Owner, 2026-11-20: USD 400 for November 2026 only, one dated entry; USD 300 again from December.
     assert account.SHIPPED_CONFIG_PATH == REPO / "config" / "account_monthly_spend_limit.v1.json"
     policy = account.load_policy(account.SHIPPED_CONFIG_PATH)
     assert policy["monthly_limit_usd"] == "300"
-    assert policy["monthly_limit_overrides"] == {}
-    assert account.effective_limit(policy, "2026-11") == Decimal("300")
+    assert policy["monthly_limit_overrides"] == {"2026-11": "400"}
+    assert account.effective_limit(policy, "2026-11") == Decimal("400")
+    assert account.effective_limit(policy, "2026-10") == Decimal("300")
+    assert account.effective_limit(policy, "2026-12") == Decimal("300")
+    assert account.effective_limit(policy, "2027-11") == Decimal("300")
     assert account.ALERT_PERCENTS == (50, 80, 100)
     assert policy["report_path"] == str(account.DEFAULT_ROOT / account.REPORT_FILENAME)
     assert policy["policy_sha256"] == "sha256:" + hashlib.sha256(account.SHIPPED_CONFIG_PATH.read_bytes()).hexdigest()
