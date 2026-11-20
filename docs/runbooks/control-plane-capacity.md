@@ -124,7 +124,12 @@ their totals as lower bounds (`container_runtime_complete: false`). The survey
 reaches every partition within a few hourly passes and reports the composite of
 their latest measurements (`usage.composite` says how many are measured and how
 old the oldest is); until 2026-11-04 it restarted every hour and never reached
-`/var/lib` or `/opt`. A fast unreserved decline
+`/var/lib` or `/opt`. A folder whose own entries changed after it was measured
+(emptied or refilled in place, so it keeps its inode) is promoted into every
+second slot of the next pass, once that measurement is six hours old; nothing
+moves later than its turn in the rotation, and at least half of every pass keeps
+the rotation moving; before 2026-11-20 two folders emptied
+on 11-18 still read 53 GiB from measurements up to 12 days old. A fast unreserved decline
 pages `floor_within_hours` whatever the writer. The door cannot read these
 paths, so the host owner reads `docker system df` and the store's size directly.
 
