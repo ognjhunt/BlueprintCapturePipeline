@@ -74,29 +74,36 @@ def snapshot(tmp_path, monkeypatch):
 FINAL = [_row(1, 0.25), _row(2, 0.16), _row(2, 3.0, resource="instance-8")]
 
 
-def test_final_bills_replace_only_the_gpu_allowance(site, snapshot):  # noqa: F811 - the imported fixture
-    rows = {
-        "pre_gate": _terminal_attempt(site, "pregate", _request("pregate", authoring=15.0, total=20.0),
-                                      _pre_gate_refusal, after=_closed_run),
-        "parent": _terminal_attempt(site, "parent", _request("parent", authoring=15.0, total=20.0),
-            lambda output, request: _artisan_runtime(output, request, runs=AGREEING), after=_closed_run),
-        "no_completion": _terminal_attempt(site, "died", _request("died", authoring=15.0, total=20.0),
-            lambda output, request: _artisan_runtime(output, request, baseline=18.41,
-                                                     runs=[([3.0, 4.0], None, True)]), after=_closed_run),
-    }
-    before = {name: _hold(site, path)["retained_spend_usd"] for name, path in rows.items()}
-    assert before == {"pre_gate": 5.0, "parent": 18.76, "no_completion": 20.0}
+# Each attempt runs on its own job: three $20 reservations on one job would pass the $40 per-job cap
+# (config/website_job_spend_cap.v1.json), which is not what this test is about.
+FINAL_CASES = {
+    "pre_gate": (lambda job: _terminal_attempt(job, "pregate", _request("pregate", authoring=15.0, total=20.0),
+                                                _pre_gate_refusal, after=_closed_run),
+                 5.0, (settlement.MEASURED_UNENTERED_BASIS, 0.41)),                # $0.41 billed, no model spend
+    "parent": (lambda job: _terminal_attempt(job, "parent", _request("parent", authoring=15.0, total=20.0),
+                   lambda output, request: _artisan_runtime(output, request, runs=AGREEING), after=_closed_run),
+               18.76, (settlement.MEASURED_PROVEN_AUTHORING_BASIS, 14.17)),        # $13.76 metered + $0.41 billed
+    "no_completion": (lambda job: _terminal_attempt(job, "died", _request("died", authoring=15.0, total=20.0),
+                          lambda output, request: _artisan_runtime(output, request, baseline=18.41,
+                                                                   runs=[([3.0, 4.0], None, True)]),
+                          after=_closed_run),
+                      20.0, (settlement.MEASURED_COMPUTE_BASIS, 15.41)),           # $15 model allowance kept
+}
+
+
+@pytest.mark.parametrize("case", sorted(FINAL_CASES))
+def test_final_bills_replace_only_the_gpu_allowance(site, snapshot, case):  # noqa: F811 - the imported fixture
+    attempt, held_before, held_after = FINAL_CASES[case]
+    path = attempt(site)
+    assert _hold(site, path)["retained_spend_usd"] == held_before
     snapshot(FINAL)
-    holds = {name: _hold(site, path) for name, path in rows.items()}
-    assert {name: (hold["basis"], hold["retained_spend_usd"]) for name, hold in holds.items()} == {
-        "pre_gate": (settlement.MEASURED_UNENTERED_BASIS, 0.41),               # $0.41 billed, no model spend
-        "parent": (settlement.MEASURED_PROVEN_AUTHORING_BASIS, 14.17),         # $13.76 metered + $0.41 billed
-        "no_completion": (settlement.MEASURED_COMPUTE_BASIS, 15.41),           # $15 model allowance kept
-    }
-    evidence = holds["parent"]["evidence"]
-    assert evidence["billed_usd"] == 0.41 and evidence["vast_instance_ids"] == [7]
-    assert evidence["final_after_destroy_seconds"] == 48 * 3600 and evidence["compute_allowance_kept"] is False
-    assert evidence["snapshot_source_collected_at"] == _iso(DESTROYED + timedelta(hours=48))
+    hold = _hold(site, path)
+    assert (hold["basis"], hold["retained_spend_usd"]) == held_after
+    if case == "parent":
+        evidence = hold["evidence"]
+        assert evidence["billed_usd"] == 0.41 and evidence["vast_instance_ids"] == [7]
+        assert evidence["final_after_destroy_seconds"] == 48 * 3600 and evidence["compute_allowance_kept"] is False
+        assert evidence["snapshot_source_collected_at"] == _iso(DESTROYED + timedelta(hours=48))
 
 
 def test_a_bill_above_the_allowance_is_kept_up_to_the_reservation(site, snapshot):  # noqa: F811 - the imported fixture

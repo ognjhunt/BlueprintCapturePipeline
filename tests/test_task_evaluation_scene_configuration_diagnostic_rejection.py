@@ -14,6 +14,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_driver imp
     _materialize_diagnostic_rejected_artifixer_artifacts,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
+    _RAW_SECRET_ENVIRONMENT_NAMES,
     builtin_scene_configuration_stage_producer_registry,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_diagnostic_checkpoint import (
@@ -430,8 +431,12 @@ def test_stage_six_assembles_rejected_candidate_as_nonpublishable_diagnostic(
 
 
 def test_diagnostic_producer_accepts_rejection_roles_only_in_diagnostic_mode(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The producer runs in this process's environment and refuses a raw provider key in it. A CI runner
+    # that exports one (the nightly lane does) must not decide this test.
+    for name in _RAW_SECRET_ENVIRONMENT_NAMES:
+        monkeypatch.delenv(name, raising=False)
     commit = "a" * 40
     toolchain = _toolchain(tmp_path, commit)
     identity = next(
