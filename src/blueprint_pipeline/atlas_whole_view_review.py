@@ -74,6 +74,8 @@ def _ask(*, prompt, pairs, output_root: Path, binding_digest: str) -> dict:
                 config=types.GenerateContentConfig(response_mime_type="application/json",
                                                    max_output_tokens=MAX_OUTPUT_TOKENS,
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
+            from .website_gemini_receipts import note_gemini_usage
+            note_gemini_usage(response)
     finished = bool(response.candidates) and response.candidates[0].finish_reason == "STOP"
     try:
         answer = json.loads(response.text) if finished else None

@@ -295,7 +295,7 @@ def _write_public(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def persist_provider_observation(observation: Mapping[str, Any], *, environ: Mapping[str, str] | None = None) -> bool:
-    """Leave the capacity tick's OpenAI and World Labs readings where the spend guard reads them."""
+    """Leave the capacity tick's OpenAI, World Labs and WebApp overhead readings where the spend guard reads them."""
 
     try:
         root = account_root(environ)
@@ -307,7 +307,7 @@ def persist_provider_observation(observation: Mapping[str, Any], *, environ: Map
         value = {"schema_version": OBSERVATION_SCHEMA, "observed_at_epoch": observation.get("observed_at_epoch"),
                  "providers": {name: {key: row[key] for key in keep if key in row}
                                for name, row in providers.items()
-                               if name in {"openai", "world_labs"} and isinstance(row, Mapping)}}
+                               if name in {"openai", "world_labs", "webapp_overhead"} and isinstance(row, Mapping)}}
         _write_public(root / OBSERVATION_FILENAME, value)
         return True
     except Exception:  # noqa: BLE001 - visibility only; the guard flags a missing observation
@@ -342,6 +342,12 @@ def current_openai(observation: Mapping[str, Any] | None, *, now: float) -> dict
     """The retained OpenAI reading, with the calls each job settled (``job_charges``), when it is this month's."""
 
     return _current(observation, "openai", now=now)
+
+
+def current_overhead(observation: Mapping[str, Any] | None, *, now: float) -> dict[str, Any] | None:
+    """The retained reading of the WebApp's own agent runs (named overhead), when it is this month's."""
+
+    return _current(observation, "webapp_overhead", now=now)
 
 
 # ----------------------------- the report -----------------------------

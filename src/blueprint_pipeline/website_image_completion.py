@@ -836,6 +836,8 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
                 model=DEFAULT_MODEL, contents=contents,
                 config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=max_output_tokens,
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
+            from .website_gemini_receipts import note_gemini_usage
+            note_gemini_usage(response)
     if not response.candidates or response.candidates[0].finish_reason != "STOP":
         # Keep the actual stop reason rather than reducing every refusal to an
         # unexplained submitting intent. It never approves or refunds this call.
@@ -1204,6 +1206,8 @@ def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],
                     config=types.GenerateContentConfig(response_mime_type="application/json",
                                                        max_output_tokens=max_output_tokens,
                                                        media_resolution="MEDIA_RESOLUTION_HIGH"))
+                from .website_gemini_receipts import note_gemini_usage
+                note_gemini_usage(response)
         if not response.candidates or response.candidates[0].finish_reason != "STOP":
             raise ValueError("website_background_consistency_diagnosis_incomplete")
         try:  # kept whatever it says; the check below refuses an unusable one after it is stored

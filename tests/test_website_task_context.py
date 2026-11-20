@@ -398,3 +398,25 @@ def test_invalid_remote_admission_cannot_be_retained_as_restart_authority(monkey
             request_count=1, provider=command["provider"], resource_class=command["resource_class"],
             retain_admission=retained.append)
     assert retained == []
+
+
+def test_a_preparation_reservation_is_journaled_against_its_job_and_the_receipt_is_unchanged(tmp_path, monkeypatch):
+    """Every preparation call names its job in the meter (2026-11-20); its price arrives when it settles."""
+    from blueprint_pipeline import paid_spend_meter as meter
+    monkeypatch.setenv(meter.METER_ROOT_ENV, str(tmp_path))
+    received = {}
+
+    def post(**kwargs):
+        received.update(kwargs["payload"]["spend"])
+        return {**kwargs["payload"]["spend"], "schema_version": "paid_lane_admission.v1", "status": "admitted",
+                "blockers": [], "external_disclosure_allowed": True, "expires_at_epoch": 9_999_999_999}
+
+    monkeypatch.setattr(module, "website_webapp_request", post)
+    digest = "sha256:" + "c" * 64
+    receipt, _grant = module.reserve_website_preparation_spend(task_context=context(), binding_digest=digest,
+        maximum_cost_usd=0.12, request_count=1, resource_class="evaluator_api", provider="google")
+    assert "meter" not in receipt and "meter" not in received
+    events, _ = meter.read_journal(tmp_path)
+    [row] = meter.journal_rows(events)
+    assert (row["job_id"], row["meter_key"], row["provider"], row["status"]) == (
+        meter.job_key(context()["request_id"]), digest, "gcp", "unpriced")

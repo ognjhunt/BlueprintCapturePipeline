@@ -76,6 +76,8 @@ def locate_target(*, target: Mapping[str, Any], frame: Mapping[str, Any], task_c
             response = client.models.generate_content(model=DEFAULT_MODEL, contents=contents,
                 config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048,
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
+            from .website_gemini_receipts import note_gemini_usage
+            note_gemini_usage(response)
         complete = bool(response.candidates) and response.candidates[0].finish_reason == "STOP"
         try:
             observation = json.loads(response.text) if complete else None

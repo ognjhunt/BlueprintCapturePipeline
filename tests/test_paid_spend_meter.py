@@ -241,6 +241,64 @@ def test_each_jobs_settled_openai_calls_are_metered_against_it(tmp_path):
     assert older["gaps"] == [] and older["jobs"] == []
 
 
+
+def test_an_openai_call_counts_once_and_stays_attributed_after_its_workspace_is_retired(tmp_path):
+    """The scan of a job's receipts and the journal's settlement are one call; the journal keeps it after retirement."""
+    root = tmp_path / "m"
+    for job, binding, usd in (("req-1", "sha256:p1", "0.5"), ("req-1", "sha256:p2", "0.25"),
+                              ("req-9", "sha256:gone", "2.64")):
+        meter.record_admission(job_id=job, meter_key=binding, resource_class="openai_api_candidate",
+                               provider="openai", root=root, now=NOW - 100)
+        meter.record_settlement(job_id=job, meter_key=binding, settled_usd=usd, basis="preparation_settlement",
+                                provider="openai", root=root, now=NOW - 50)
+    # The scan still finds req-1's receipts for p1 only; req-9's workspace was retired, so the scan has none.
+    openai = {"month": "2026-11", "job_charges_complete": True, "job_charges": [
+        {"at_epoch": NOW - 60, "usd": 0.5, "calls": 1, "job_id": "site-req-1",
+         "attempt": "openai_settlements:site-req-1", "bindings": ["sha256:p1"]}]}
+    view = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []}, openai=openai,
+                                      environ={meter.METER_ROOT_ENV: str(root)})
+    jobs = {row["job_id"]: row for row in view["jobs"]}
+    assert jobs["req-1"]["by_provider_settled_usd"] == {"openai": 0.75}
+    assert jobs["req-1"]["admissions"] == 2
+    assert jobs["req-9"]["by_provider_settled_usd"] == {"openai": 2.64}
+    assert view["_exact"]["by_provider_settled_usd"]["openai"] == Decimal("3.39")
+    # A scan row from an older tick lists no calls: then the scan alone counts that job.
+    older = {**openai, "job_charges": [{**openai["job_charges"][0], "bindings": None}]}
+    older["job_charges"][0].pop("bindings")
+    view = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []}, openai=older,
+                                      environ={meter.METER_ROOT_ENV: str(root)})
+    jobs = {row["job_id"]: row for row in view["jobs"]}
+    assert jobs["req-1"]["by_provider_settled_usd"] == {"openai": 0.5}
+
+
+def test_the_webapps_own_runs_are_named_overhead_outside_every_job(tmp_path):
+    overhead = {"status": "observed", "complete": True, "month": "2026-11", "charges": [
+        {"name": "webapp.site_task_brief_reading", "provider": "openai", "usd": 0.4, "runs": 3,
+         "unpriced_runs": 0, "at_epoch": NOW - 10},
+        {"name": "webapp.capture_coverage", "provider": "gemini", "usd": 0.03, "runs": 26, "unpriced_runs": 0,
+         "at_epoch": NOW - 10},
+        {"name": "../bad", "provider": "openai", "usd": 9, "runs": 1, "unpriced_runs": 0, "at_epoch": NOW}]}
+    openai = {"month": "2026-11", "job_charges_complete": True, "job_charges": [
+        {"at_epoch": NOW - 60, "usd": 1.0, "calls": 1, "job_id": "site-req-1",
+         "attempt": "openai_settlements:site-req-1", "bindings": ["sha256:p1"]}]}
+    env = {meter.METER_ROOT_ENV: str(tmp_path / "m")}
+    view = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []}, openai=openai,
+                                      overhead=overhead, environ=env)
+    assert view["gaps"] == []
+    jobs = {row["job_id"]: row for row in view["jobs"]}
+    assert set(jobs) == {"req-1", "overhead:webapp.site_task_brief_reading", "overhead:webapp.capture_coverage"}
+    assert jobs["overhead:webapp.capture_coverage"]["by_provider_settled_usd"] == {"gcp": 0.03}
+    assert view["totals"]["by_provider_settled_usd"] == {"gcp": 0.03, "openai": 1.4}
+    assert view["totals"]["overhead_by_provider_settled_usd"] == {"gcp": 0.03, "openai": 0.4}
+    assert view["_exact"]["overhead_by_provider_settled_usd"]["openai"] == Decimal("0.4")
+    unread = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []},
+                                        overhead={"status": "unknown", "blockers": ["webapp_overhead_unreadable"]},
+                                        environ=env)
+    assert unread["gaps"] == ["paid_spend_meter_webapp_overhead_unobserved"]
+    partial = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []},
+                                         overhead={**overhead, "complete": False}, environ=env)
+    assert partial["gaps"] == ["paid_spend_meter_webapp_overhead_partial"]
+
 def test_job_key_reads_the_website_request_id():
     assert meter.job_key("site-abc123") == "abc123"
     assert meter.job_key("abc123") == "abc123"

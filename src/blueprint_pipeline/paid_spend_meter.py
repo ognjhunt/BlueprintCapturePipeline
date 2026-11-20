@@ -32,6 +32,19 @@ job, so they are read where they are, not copied:
     that ``provider_spend_alerts.observe_openai_job_settlements`` finds settled
     with the WebApp, summed per job at their settled cost. The account still
     counts OpenAI from the organization's bill; these rows say which job spent it.
+    A call the journal also settled (``website_task_context.meter_preparation_settlement``)
+    counts once, here; the journal's record keeps it attributed once the job's
+    workspace is retired and its receipts are gone.
+``webapp_overhead`` (the WebApp's own paid agent runs)
+    The first look, brief reading and the WebApp's other agent runs, per run
+    kind and provider for the month (``provider_spend_alerts.observe_webapp_overhead``).
+    They are outside every job's $40 cap (owner rule 2026-11-20) and keyed as
+    named overhead (``overhead:<name>``), never as a job; they count toward the
+    account's month like any other settled row.
+
+Gemini calls reach the journal from ``website_gemini_receipts``: each preparation
+admission names its job (``website_task_context.metered_admission``), and each
+answered call settles at its reported usage (provider ``gcp``, where Gemini bills).
 
 A website job is keyed by its WebApp request id: the Pipeline names the
 job's scene and screening site ``site-<request id>``.
@@ -70,6 +83,13 @@ SOURCE_JOURNAL = "paid_resource_admission"
 SOURCE_SCREENING = "beta_policy_screening"
 SOURCE_ATLAS = "atlas"
 SOURCE_OPENAI = "openai_settlement"
+SOURCE_OVERHEAD = "webapp_overhead"
+#: The job key of a named overhead row: spend that belongs to no job and still counts toward the account.
+OVERHEAD_PREFIX = "overhead:"
+#: The meter's provider for each name the WebApp reports a run under: the bill it lands on.
+OVERHEAD_PROVIDERS = {"openai": "openai", "openai_responses": "openai", "gemini": "gcp", "google": "gcp",
+                      "anthropic": "anthropic"}
+_OVERHEAD_NAME = re.compile(r"[a-z][a-z0-9_.-]{0,79}")
 MAX_JOURNAL_FILE_BYTES = 16 * 1024 * 1024
 MAX_LEDGER_BYTES = 32 * 1024 * 1024
 #: Optional on a held row: the last moment its attempt could be billed, from the attempt's own record.
@@ -359,6 +379,29 @@ def openai_rows(openai: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     return rows
 
 
+def overhead_rows(overhead: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The WebApp's named overhead for the month, one settled row per name and provider."""
+
+    rows = []
+    for charge in (overhead or {}).get("charges") or []:
+        if not isinstance(charge, Mapping):
+            continue
+        name, price, at = str(charge.get("name") or ""), money(charge.get("usd")), _epoch(charge.get("at_epoch"))
+        provider = str(charge.get("provider") or "").strip().lower()
+        if not _OVERHEAD_NAME.fullmatch(name) or not provider or price is None or at is None:
+            continue
+        meter_provider = OVERHEAD_PROVIDERS.get(provider, provider)
+        rows.append({"source": SOURCE_OVERHEAD, "job_id": OVERHEAD_PREFIX + name,
+                     "meter_key": f"{OVERHEAD_PREFIX}{name}:{meter_provider}", "resource_class": None,
+                     "provider": meter_provider, "held_usd": None, "settled_usd": price, "settled_at_epoch": at,
+                     "status": "settled"})
+    return rows
+
+
+def is_overhead(job_id: Any) -> bool:
+    return str(job_id or "").startswith(OVERHEAD_PREFIX)
+
+
 def _zero() -> dict[str, Decimal]:
     return {"settled_usd": Decimal(0), "held_usd": Decimal(0)}
 
@@ -418,6 +461,11 @@ def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[
             job["admissions"] += 1
             job["unpriced_admissions"] += int(status == "unpriced")
     totals = {**_zero(), "admissions": 0, "unpriced_admissions": 0, "by_source": {}, "by_provider_settled_usd": {}}
+    overhead_by_provider: dict[str, Decimal] = {}
+    for job_id, job in jobs.items():
+        if is_overhead(job_id):
+            for provider, amount in job["by_provider_settled_usd"].items():
+                overhead_by_provider[provider] = overhead_by_provider.get(provider, Decimal(0)) + amount
     for job in jobs.values():
         for key in ("settled_usd", "held_usd", "admissions", "unpriced_admissions"):
             totals[key] += job[key]
@@ -442,7 +490,11 @@ def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[
     old_total = sum((hold["held_usd"] for hold in old_holds), Decimal(0))
     old_holds.sort(key=lambda hold: (-hold["held_usd"], hold["job_id"], hold["source"], hold["meter_key"]))
     return {"schema_version": VIEW_SCHEMA, "period": month, "generated_at": _utc(now).isoformat(),
-            "jobs": job_rows, "totals": project(totals),
+            "jobs": job_rows,
+            "totals": {**project(totals),
+                       # Of the settled spend per provider, what is named overhead rather than a job's.
+                       "overhead_by_provider_settled_usd": {name: usd(amount) for name, amount
+                                                            in sorted(overhead_by_provider.items())}},
             "old_unsettled_held_usd": usd(old_total),
             "old_unsettled_holds": [{**hold, "held_usd": usd(hold["held_usd"])} for hold in old_holds],
             "_exact": {"settled_usd": totals["settled_usd"], "held_usd": totals["held_usd"],
@@ -451,7 +503,8 @@ def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[
                        "held_outside_provider_readings_usd": sum(
                            (amounts["held_usd"] for name, amounts in totals["by_source"].items() if name != SOURCE_ATLAS),
                            Decimal(0)),
-                       "by_provider_settled_usd": dict(totals["by_provider_settled_usd"])},
+                       "by_provider_settled_usd": dict(totals["by_provider_settled_usd"]),
+                       "overhead_by_provider_settled_usd": dict(overhead_by_provider)},
             "gaps": sorted(set(gaps)), "complete": not list(gaps)}
 
 
@@ -469,7 +522,8 @@ def public_view(view: Mapping[str, Any], *, max_jobs: int | None = None) -> dict
 
 __all__ = [
     "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV", "METER_ROOT_ENV", "RESOURCE_CLASS_PROVIDERS",
-    "BILLABLE_UNTIL_FIELD", "SOURCE_OPENAI", "UNATTRIBUTED", "VIEW_SCHEMA", "atlas_rows", "openai_rows",
+    "BILLABLE_UNTIL_FIELD", "OVERHEAD_PREFIX", "OVERHEAD_PROVIDERS", "SOURCE_OPENAI", "SOURCE_OVERHEAD",
+    "UNATTRIBUTED", "VIEW_SCHEMA", "atlas_rows", "openai_rows", "overhead_rows", "is_overhead",
     "hold_counts_in_month", "job_key",
     "journal_rows", "meter_chokepoint_admission", "meter_root", "meter_view", "month_of", "month_start",
     "public_view", "read_journal",

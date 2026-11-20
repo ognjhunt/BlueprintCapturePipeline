@@ -529,6 +529,8 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
                                                        thinking_config=types.ThinkingConfig(
                                                            thinking_level=CLASSIFIER_THINKING_LEVEL),
                                                        media_resolution="MEDIA_RESOLUTION_HIGH"))
+                from .website_gemini_receipts import note_gemini_usage
+                note_gemini_usage(response)
                 reason = response.candidates[0].finish_reason if response.candidates else None
                 if reason != "STOP":
                     # Retained as an invalid classification, never left uncertain or bought again.
@@ -548,6 +550,8 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
                                                            max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS,
                                                            thinking_config=types.ThinkingConfig(
                                                                thinking_level=CLASSIFIER_THINKING_LEVEL)))
+                    from .website_gemini_receipts import note_gemini_usage
+                    note_gemini_usage(fixed)
                     if not fixed.candidates or fixed.candidates[0].finish_reason != "STOP":
                         raise ValueError("website_assembly_coverage_json_repair_incomplete")
                     return fixed.text
@@ -680,6 +684,8 @@ def read_brand_labels(*, target_id: str, assembly_label: str, frames: Sequence[M
                 config=types.GenerateContentConfig(response_mime_type="application/json",
                                                    max_output_tokens=BRAND_READ_MAX_OUTPUT_TOKENS,
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
+            from .website_gemini_receipts import note_gemini_usage
+            note_gemini_usage(response)
         # Retain an incomplete or unparseable answer as such: this optional read
         # must neither buy again nor leave a receipt that needs reconciliation.
         reason = response.candidates[0].finish_reason if response.candidates else None
