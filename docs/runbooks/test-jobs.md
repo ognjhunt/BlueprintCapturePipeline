@@ -88,8 +88,8 @@ starting a batch.
 
 Up to about $20 a job. The one complete run so far (2026-11-16, a rigid job) settled $6.04 at World Labs and
 about $2 of object authoring. Every website job's scene, a door or drawer job's too, is built on the host with no
-rented GPU (stage 5 records that no simulator ran, `website_native_background.select_stage_five`). The month's
-$300 limit counts test jobs like any other job.
+rented GPU (stage 5 records that no simulator ran, `website_native_background.select_stage_five`). The account
+limit counts test jobs like any other job. It is $400 for November 2026 and $300 again from December.
 
 ## Reading the report
 
