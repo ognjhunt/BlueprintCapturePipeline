@@ -76,7 +76,7 @@ def test_a_healthy_finished_or_waiting_atlas_job_is_quiet(tmp_path: Path) -> Non
     for index, state in enumerate(("ready", "failed", "withdrawn")):
         _atlas_job(tmp_path, capture=f"walkthrough-old{index}", request=f"old{index}", state=state,
                    updated_at_epoch=NOW - 6 * 86400, next_attempt_at_epoch=NOW - 6 * 86400)
-    # Just stopped for input with no recheck: quiet until the threshold passes (below).
+    # Stopped for input with no recheck: the worker has nothing scheduled.
     _atlas_job(tmp_path, capture="walkthrough-person", request="person", state="needs_input",
                reason="atlas_background_review_required", updated_at_epoch=NOW - 10 * MINUTE)
     # An outage backing off: the job made no progress for hours, but its next attempt is still ahead.
@@ -162,27 +162,30 @@ def test_an_atlas_input_recheck_overdue_pages_unless_it_waits_on_money_or_consen
     assert alerts == [] and section["dispositions"] == {"money_approval": 1, "privacy": 1}
 
 
-def test_an_atlas_job_parked_in_needs_input_with_no_retry_time_pages_unless_it_is_a_hold(tmp_path: Path) -> None:
-    # 2026-11-19 (itest-917ca852, itest-314bd4bc): parked on a release switch with no retry time, nothing
-    # stepped them again, and the alarm counted them as quiet needs_input.
+def test_a_parked_atlas_job_does_not_page_alongside_an_overdue_recheck(tmp_path: Path) -> None:
+    # A retained release-switch refusal has no retry time, so the worker cannot miss a retry.
     _atlas_job(tmp_path, state="needs_input", reason="website_atlas_pose_release_not_admitted",
-               stage="preparation", updated_at_epoch=NOW - 2 * HOUR, retry_at_epoch=None)
+               stage="preparation", updated_at_epoch=NOW - 6 * 86400, next_attempt_at_epoch=NOW - 6 * 86400)
+    _atlas_job(tmp_path, capture="walkthrough-overdue", request="overdue", state="needs_input",
+               reason="task_brief_missing", updated_at_epoch=NOW - 3 * HOUR,
+               next_attempt_at_epoch=NOW - 3 * HOUR, retry_at_epoch=NOW - 2 * HOUR)
     section, [alert] = _atlas(tmp_path)
     assert section["stalled"] == 1
-    assert (alert["status"], alert["age_seconds"], alert["blockers"]) == (
-        "parked_without_retry", 7200, ["website_atlas_pose_release_not_admitted"])
-    assert stall.describe(alert) == ("Atlas preview job needs input with no retry time for 2.0h "
-                                     "[website_atlas_pose_release_not_admitted] at stage preparation: walkthrough-req1")
-    # Inside the threshold since its last progress: quiet.
-    section, alerts = _atlas(tmp_path, now=NOW - 2 * HOUR + 89 * MINUTE)
-    assert alerts == [] and section["dispositions"] == {"needs_input": 1}
+    assert section["dispositions"] == {"needs_input": 1}
+    assert (alert["status"], alert["targets"], alert["age_seconds"], alert["blockers"]) == (
+        "recheck_overdue", ["walkthrough-overdue"], 7200, ["task_brief_missing"])
+
+
+def test_an_atlas_job_parked_for_a_hard_stop_keeps_its_disposition(tmp_path: Path) -> None:
     # A privacy, rights or money stop never pages, however long it has stood.
-    _atlas_job(tmp_path / "held", state="needs_input", reason="website_atlas_source_consent_required",
+    _atlas_job(tmp_path, state="needs_input", reason="website_atlas_source_consent_required",
                updated_at_epoch=NOW - 6 * 86400)
-    _atlas_job(tmp_path / "held", capture="walkthrough-req2", request="req2", state="needs_input",
+    _atlas_job(tmp_path, capture="walkthrough-req2", request="req2", state="needs_input",
                reason="account_monthly_spend_limit_reached", updated_at_epoch=NOW - 6 * 86400)
-    section, alerts = stall.check_atlas_previews(_config(tmp_path / "held"), now=NOW, budget=_budget())
-    assert alerts == [] and section["dispositions"] == {"money_approval": 1, "privacy": 1}
+    _atlas_job(tmp_path, capture="walkthrough-req3", request="req3", state="needs_input",
+               reason="source_revoked", updated_at_epoch=NOW - 6 * 86400)
+    section, alerts = _atlas(tmp_path)
+    assert alerts == [] and section["dispositions"] == {"money_approval": 1, "privacy": 1, "rights": 1}
 
 
 def test_the_alarm_reads_what_the_atlas_worker_writes(tmp_path: Path, monkeypatch) -> None:

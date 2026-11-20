@@ -46,7 +46,7 @@ was invisible. Each has its own check, with the same route and repeat:
     (an outage's backoff, the refusal schedule, a killed step's retry, a
     ``needs_input`` recheck) pages only once its attempt is overdue by as long,
     and a step in flight that long pages. ``ready``, ``failed`` and
-    ``withdrawn`` jobs, ``needs_input`` jobs that wait for a person, and any
+    ``withdrawn`` jobs, ``needs_input`` jobs with no scheduled recheck, and any
     wait on privacy, rights, consent or money never page.
 ``team_scene_packet_stalled``
     A team scene packet request has waited in ``pending/`` or ``processing/``,
@@ -185,7 +185,7 @@ _STORE_HOLD_WORDS = {"withdrawn": "privacy", "withdrawal": "privacy"}
 ATLAS_JOB_GLOB = "*/scenes/site-*/captures/*/pipeline/atlas/preview_job.json"
 ATLAS_JOB_SCHEMA = "website_atlas_preview_job.v1"
 ATLAS_TRIGGER = "blueprint-website-atlas-preview.timer"
-# ``processing`` and ``needs_input`` jobs are stepped again; ready, failed and withdrawn are final.
+# The worker steps ``processing`` jobs and rechecks ``needs_input`` jobs with a retry time.
 ATLAS_WAITING_STATES = frozenset({"processing", "needs_input"})
 ATLAS_STEP_IN_FLIGHT = "step_in_flight"
 TEAM_SCENE_WAITING_STATES = ("pending", "processing")
@@ -1063,12 +1063,9 @@ def check_atlas_previews(config: StallConfig, *, now: float, budget: _Budget, ho
     A ``processing`` job pages when its step has been in flight for the threshold, or when the
     threshold has passed since the later of its last progress and its next attempt time (a wait
     still in the future is quiet; an attempt overdue by the threshold means the worker is not
-    taking it). A ``needs_input`` job pages when a recheck the worker scheduled for a refusal that
-    is no hold is overdue by the threshold, or when it has no recheck at all and the threshold has
-    passed since its last progress: the worker never steps it again, and only privacy, rights and
-    money may stop a job (2026-11-19: two jobs parked on a release switch with no retry time and
-    were counted as quiet). A refusal that names privacy, rights, consent or money never pages.
-    ``ready``, ``failed`` and ``withdrawn`` are final.
+    taking it). A ``needs_input`` job pages when a scheduled recheck is overdue by the threshold.
+    If there is no recheck, the job stays visible in ``dispositions``. A refusal that names privacy,
+    rights, consent or money never pages. ``ready``, ``failed`` and ``withdrawn`` are final.
     """
 
     root = config.atlas_storage_root
@@ -1127,11 +1124,7 @@ def check_atlas_previews(config: StallConfig, *, now: float, budget: _Budget, ho
             if hold is not None:
                 counts[hold] = counts.get(hold, 0) + 1
             elif _number(job.get("retry_at_epoch")) is None:
-                # Never stepped again: nothing retries it by itself.
-                if now - progress < threshold:
-                    counts["needs_input"] = counts.get("needs_input", 0) + 1
-                else:
-                    stalled.append(_atlas_row(job, path, threshold, "parked_without_retry", now - progress, cause))
+                counts["needs_input"] = counts.get("needs_input", 0) + 1
             elif now - due < threshold:
                 counts["scheduled_wait"] = counts.get("scheduled_wait", 0) + 1
             else:
@@ -1617,7 +1610,6 @@ def describe(alert: Mapping[str, Any]) -> str | None:
         what = (f"step started {age} ago never returned" if status == "step_unreturned"
                 else f"scheduled retry overdue {age}{why}" if status == "retry_overdue"
                 else f"input recheck overdue {age}{why}" if status == "recheck_overdue"
-                else f"needs input with no retry time for {age}{why}" if status == "parked_without_retry"
                 else f"processing with no finished step {age}")
         return f"Atlas preview job {what} at stage {alert.get('phase') or 'unknown'}: {name}{tail}"
     if code == "team_scene_packet_stalled":
