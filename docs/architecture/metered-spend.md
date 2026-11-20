@@ -564,11 +564,14 @@ settled; the per-job meter had no Gemini source at all.
 
 Known edges:
 
-- ARTISAN's own OpenAI spend is inside the job's cap (the scene attempt's
-  hold) but not in the per-job meter by provider: its proven spend lives in the
-  attempt's terminal settlement (`artisan_proven_authoring_spend`). capture-447's
-  $17.02 of ARTISAN on 2026-11-01 and 11-02 is part of November's unattributed
-  OpenAI.
+- ARTISAN is inside the job's cap through the scene attempt's hold. The
+  website job's journal records the priced OpenAI usage from the attempt's
+  retained meter, including any design-board estimate, and separately records
+  the Anthropic subtotal at list price when it supplied the text calls.
+  OpenAI request upper bounds without usage remain in the attempt's cap
+  accounting and the provider bill owns their final cost. An attempt with no
+  readable usage archive leaves no new OpenAI journal row. Earlier attempts,
+  including capture-447's $17.02 on November 1 and 2, have no journal replay.
 - Spend before this change keeps its old shape: Gemini rows already on job
   ledgers stay at their quotes, and earlier calls have no journal settlement.
 - The organization's OpenAI bill also carries traffic that is neither a job

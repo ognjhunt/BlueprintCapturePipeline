@@ -35,6 +35,8 @@ job, so they are read where they are, not copied:
     A call the journal also settled (``website_task_context.meter_preparation_settlement``)
     counts once, here; the journal's record keeps it attributed once the job's
     workspace is retired and its receipts are gone.
+    ARTISAN records the usage retained by its authoring attempt directly in
+    the journal (``artisan_anthropic_month``), outside this scan.
 ``webapp_overhead`` (the WebApp's own paid agent runs)
     The first look, brief reading and the WebApp's other agent runs, per run
     kind and provider for the month (``provider_spend_alerts.observe_webapp_overhead``).
@@ -84,6 +86,7 @@ SOURCE_SCREENING = "beta_policy_screening"
 SOURCE_ATLAS = "atlas"
 SOURCE_OPENAI = "openai_settlement"
 SOURCE_OVERHEAD = "webapp_overhead"
+ARTISAN_OPENAI_METER_PREFIX = "artisan-openai-attempt:"
 #: The job key of a named overhead row: spend that belongs to no job and still counts toward the account.
 OVERHEAD_PREFIX = "overhead:"
 #: The meter's provider for each name the WebApp reports a run under: the bill it lands on.

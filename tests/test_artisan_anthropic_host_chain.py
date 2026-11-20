@@ -9,6 +9,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -17,9 +18,11 @@ from blueprint_pipeline import artisan_provider_choice as choice
 from blueprint_pipeline import paid_spend_meter
 from blueprint_pipeline import task_evaluation_scene_configuration_vast as scene_vast
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.paid_spend_meter_sources import collect_meter_view
 from tests import test_scene_configuration_whole_chain_on_host as host_chain
 
 PRODUCER = "stages/stage-3/producer/"
+REQUEST_ID = "req-website-artisan"
 NO_FUNDS = {"id": "refused", "kind": "messages", "status": "priced", "cost_usd": 0.0,
             "cost_origin": "upstream_rejected_request_no_funds"}
 
@@ -52,9 +55,12 @@ def _lane(tmp_path, monkeypatch, *, calls):
                         (choice.SUCCESSOR_ROOT_ENV, tmp_path / "choices")):
         monkeypatch.setenv(name, str(value))
     lane = host_chain._host_lane(tmp_path, monkeypatch)
+    scene = scene_vast._portable_construction_envelope(lane.receipt)["request"]["scene"]
+    scene["identity"] = {**scene["identity"], "id": "site-" + REQUEST_ID}
     real_load = scene_vast.load_scene_configuration_provider_bundle_receipt
     monkeypatch.setattr(scene_vast, "load_scene_configuration_provider_bundle_receipt", lambda path, **kwargs: {
-        **real_load(path, **kwargs), "replacement_authoring_text_provider": "anthropic"})
+        **real_load(path, **kwargs), "replacement_authoring_backend": "artisan_v1",
+        "replacement_authoring_text_provider": "anthropic"})
     scene_vast.validate_scene_configuration_paid_authority(None)["external_service_spend_caps"]["openai"][
         "stage_max_cost_usd"] = {"content_agents": 1.25}
     # The OpenAI half of the lane's secrets stays the fixture's; the Anthropic key and its staging are real.
@@ -75,9 +81,10 @@ def _lane(tmp_path, monkeypatch, *, calls):
         producer = Path(env["BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"]) / PRODUCER
         (producer / "artisan_runtime").mkdir(parents=True, exist_ok=True)
         (producer / "artisan_runtime/blueprint_usage.json").write_text(json.dumps(
-            {"schema_version": "artisan_upstream_usage.v1", "calls": calls}))
+            {"schema_version": "artisan_upstream_usage.v1", "maximum_cost_usd": 1.25, "calls": calls}))
         (producer / "stage_production_input.v1.json").write_text(json.dumps(
-            {"run_id": lane.receipt["run_id"], "configuration": {"artisan_provider_choice": lane.choice}}))
+            {"run_id": lane.receipt["run_id"], "source_commit": lane.receipt["source_commit"],
+             "configuration": {"artisan_provider_choice": lane.choice, "authoring_backend": "artisan_v1"}}))
         return completed
 
     monkeypatch.setattr(host_chain.cpu_prestage, "prepare_stage_prefix_before_gpu",
@@ -113,7 +120,8 @@ def _forbid_network_and_vast(monkeypatch, *, resolved):
 
 def test_an_all_host_anthropic_run_holds_before_authoring_settles_after_and_rents_nothing(tmp_path, monkeypatch):
     calls = [{"id": "c1", "kind": "messages", "status": "priced", "cost_usd": 0.4, "cost_origin": "upstream_priced_usage"},
-             {"id": "c2", "kind": "images", "status": "priced", "cost_usd": 0.2, "cost_origin": "upstream_priced_usage"}]
+             {"id": "c2", "kind": "generated_design_board", "status": "priced", "cost_usd": 0.2,
+              "cost_origin": "upstream_image_budget_estimate"}]
     lane = _lane(tmp_path, monkeypatch, calls=calls)
     resolved: list[str] = []
     _forbid_network_and_vast(monkeypatch, resolved=resolved)
@@ -134,6 +142,9 @@ def test_an_all_host_anthropic_run_holds_before_authoring_settles_after_and_rent
     assert (held["event"], held["held_usd"], held["basis"]) == ("admission", "1.25", "metered_list_price_not_officially_read")
     [row] = _month(tmp_path).values()
     assert (row["status"], float(row["settled_usd"])) == ("settled", 0.4)
+    [job] = collect_meter_view(now=time.time(), world_labs={"complete": True})["jobs"]
+    assert job["job_id"] == REQUEST_ID
+    assert job["by_provider_settled_usd"] == {"anthropic": 0.4, "openai": 0.2}
     assert Path(result["provider_runtime_output_zip_path"]).name == "cpu_prestage_output.zip"
     assert choice.retained_successor(lane.choice["grant_authority_digest"]) is None
 

@@ -73,10 +73,12 @@ def chooser(tmp_path, monkeypatch):
     return choose, calls
 
 
-def _archive(path, calls, *, configuration=None, run_id="website-run-1"):
+def _archive(path, calls, *, configuration=None, run_id="website-run-1", source_commit=None):
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(month.USAGE_MEMBER, json.dumps({"schema_version": "artisan_upstream_usage.v1", "calls": calls}))
-        archive.writestr(month.STAGE_INPUT_MEMBER, json.dumps({"run_id": run_id, "configuration": configuration or {}}))
+        archive.writestr(month.USAGE_MEMBER, json.dumps({"schema_version": "artisan_upstream_usage.v1",
+                                                        "maximum_cost_usd": 12.0, "calls": calls}))
+        archive.writestr(month.STAGE_INPUT_MEMBER, json.dumps({"run_id": run_id, "source_commit": source_commit,
+                                                              "configuration": configuration or {}}))
     return path
 
 
@@ -200,3 +202,33 @@ def test_a_hold_that_cannot_be_written_on_the_host_raises(host, tmp_path, monkey
     monkeypatch.setenv(METER_ROOT_ENV, str(blocked))
     with pytest.raises(OSError):
         month.hold_attempt(RECEIPT, AUTHORITY, ttl_seconds=7200, now=NOW - 100)
+
+
+def test_openai_attribution_uses_bound_usage_and_counts_an_attempt_once(host, tmp_path):
+    from blueprint_pipeline import paid_spend_meter
+
+    source_commit = "e" * 40
+    receipt = {"run_id": "website-run-1", "source_commit": source_commit,
+               "replacement_authoring_backend": "artisan_v1"}
+    config = {"authoring_backend": "artisan_v1"}
+    calls = [_row("create", 0.3), _row("create", 0.8, origin="request_upper_bound_no_usage"),
+             _row("generated_design_board", 0.25, origin="upstream_image_budget_estimate"), _row("messages", 0.4),
+             _row("compact", 0.7, status="in_flight")]
+    wrong_run = _archive(tmp_path / "wrong.zip", calls, configuration=config, source_commit=source_commit,
+                         run_id="website-run-other")
+    duplicate = _archive(tmp_path / "duplicate.zip", calls + [calls[0]],
+                         configuration=config, source_commit=source_commit)
+    archive = _archive(tmp_path / "retained.zip", calls, configuration=config, source_commit=source_commit)
+    before = _report()
+    assert month.settle_openai_attempt(receipt, AUTHORITY, archives=(wrong_run, duplicate, archive),
+                                      job_id="site-request-id", now=NOW - 50)
+    assert month.settle_openai_attempt(receipt, AUTHORITY, archives=(archive,), job_id="site-request-id", now=NOW)
+    events, _ = paid_spend_meter.read_journal(paid_spend_meter.meter_root())
+    settled = [row for row in paid_spend_meter.journal_rows(events) if row["job_id"] == "request-id"]
+    assert [(row["provider"], float(row["settled_usd"])) for row in settled] == [("openai", 0.55)]
+    assert {row["basis"] for row in events if row.get("job_id") == "request-id"} == {
+        "artisan_measured_usage_with_image_estimate"}
+    after = _report()
+    assert after["providers"]["openai"]["metered_attributed_usd"] == pytest.approx(
+        before["providers"]["openai"]["metered_attributed_usd"] + 0.55)
+    assert after["counted_usd"] == before["counted_usd"]  # already covered by the organization's bill

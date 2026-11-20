@@ -262,13 +262,15 @@ def test_an_openai_call_counts_once_and_stays_attributed_after_its_workspace_is_
     assert jobs["req-1"]["admissions"] == 2
     assert jobs["req-9"]["by_provider_settled_usd"] == {"openai": 2.64}
     assert view["_exact"]["by_provider_settled_usd"]["openai"] == Decimal("3.39")
-    # A scan row from an older tick lists no calls: then the scan alone counts that job.
+    # A scan row from an older tick lists no calls. It still covers only preparation receipts.
+    meter.record_settlement(job_id="req-1", meter_key=meter.ARTISAN_OPENAI_METER_PREFIX + "run-id", settled_usd="0.8",
+                            basis="artisan_measured_usage", provider="openai", root=root, now=NOW - 30)
     older = {**openai, "job_charges": [{**openai["job_charges"][0], "bindings": None}]}
     older["job_charges"][0].pop("bindings")
     view = sources.collect_meter_view(now=NOW, world_labs={"complete": True, "charges": []}, openai=older,
                                       environ={meter.METER_ROOT_ENV: str(root)})
     jobs = {row["job_id"]: row for row in view["jobs"]}
-    assert jobs["req-1"]["by_provider_settled_usd"] == {"openai": 0.5}
+    assert jobs["req-1"]["by_provider_settled_usd"] == {"openai": 1.3}
 
 
 def test_the_webapps_own_runs_are_named_overhead_outside_every_job(tmp_path):
