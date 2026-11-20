@@ -945,6 +945,8 @@ def _invoke_agentic_video(
             generation_config={"max_output_tokens": 8192, "thinking_level": "low"},
             timeout=300.0,
         )
+        from .website_gemini_receipts import note_gemini_usage
+        note_gemini_usage(response)
     finally:
         try:
             client.files.delete(name=uploaded.name)
@@ -1019,6 +1021,8 @@ def _invoke_text_repair(*, api_key: str, model: str, genai: Any, types: Any, pro
         generation_config={"max_output_tokens": 8192, "thinking_level": "low"},
         timeout=300.0,
     )
+    from .website_gemini_receipts import note_gemini_usage
+    note_gemini_usage(response)
     if getattr(response, "status", None) != "completed":
         raise ValueError("gemini_clean_plate_repair_incomplete")
     return {"text": "\n".join(

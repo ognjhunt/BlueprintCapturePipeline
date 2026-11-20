@@ -51,6 +51,9 @@ Pipeline names the job's scene and screening site `site-<request id>`.
 | `paid_resource_admission` journal (new) | Every grant `require_paid_resource_admission` issues, in `<meter root>/events/<YYYY-MM>/uid-<uid>.jsonl`. | `admission["meter"]["held_usd"]` when the admission names one. No lane names one yet, so in stage 1 these rows count calls (`unpriced_admissions`), not dollars. | `record_settlement(...)`, the stage-2 API. No caller yet. | `admission["meter"]["job_id"]`, else the admission's `job_id` / `website_request_id` / `request_id`, else `BLUEPRINT_PAID_SPEND_JOB_ID`, else `unattributed` |
 | Beta screening ledger (existing, read in place) | Each attempt in `screening_ledger.v1.json`. | Its cap while `reserved`, or while `committed` without a verified settlement. | `settled_cost` (`beta_policy_screening_settlement`), dated `settled_at`. | campaign `site_id` |
 | Atlas attempts (existing, read in place) | Each attempt `provider_spend_alerts.observe_world_labs_spend` counts this month. | Its reviewed price while the outcome is unknown. | Its reviewed price once completed. A failed or refused attempt counts $0 (`atlas_spend_settlement`). | the `scenes/<scene>` path component |
+| OpenAI preparation settlements (read in place, and journaled) | Each planner, review, image-edit, research and repair call a job settled with the WebApp: the job's settlement receipts (`observe_openai_job_settlements`), and since 2026-11-20 a journal settlement written when the WebApp settles it (`website_task_context.meter_preparation_settlement`). A call both record counts once, from the receipts; the journal keeps it attributed once the job's workspace is retired. | Never held. | Its settled cost. | the receipt's `scenes/<scene>` path component; the journal's request id |
+| Gemini calls (journal, 2026-11-20) | Each Gemini call of website preparation (`website_gemini_receipts.retained_gemini_call`), under provider `gcp`, where Gemini bills. | Never held in the meter: the job's WebApp ledger holds its quote before the call. | Its reported usage at the quote's rates once answered (`note_gemini_usage`, `gemini_usage_cost`); its quote when usage is not fully reported or the dispatch got no answer. | the request id |
+| WebApp overhead (2026-11-20) | The WebApp's own paid agent runs (first look, brief reading and the rest) for the month, per run kind and provider, read by the capacity tick (`observe_webapp_overhead`, WebApp `POST /api/internal/pipeline/account-spend-overhead`). | Never held. | The cost the WebApp recorded for its runs. | `overhead:<name>`, never a job |
 
 Nothing is copied. The screening ledger and the Atlas records already hold
 admission and settlement per job, so the meter reads them.
@@ -276,8 +279,9 @@ The existing OpenAI, World Labs and GCP pages are unchanged.
   `account_monthly_spend_report_stale`. The GCP guard behaves the same way
   (its month is Los Angeles).
 - **Unattributed calls.** Admissions that carry no job id are journaled as
-  `unattributed`. The website preparation receipts (Atlas, upstream) carry the
-  request id only if the WebApp echoes it. Stage 2 passes `meter` blocks.
+  `unattributed`. Since 2026-11-20 every website preparation admission names its
+  job (`website_task_context.metered_admission`: the request id and the bill it
+  lands on, no price); its cost arrives when it settles.
 - **Lanes refuse in their own way.** A lane meets the new refusal codes as it
   meets any other admission refusal. Only the Atlas automation treats a
   refusal as a wait, and only for the GCP report. Stage 2 makes
@@ -504,7 +508,68 @@ extensions, the held-in-full extensions and the owner's grants.
   the total stays under $40.
 - **The WebApp's own agent runs** (the first look, brief reading, footage
   review) are not on this ledger: they run before the packet factory spends
-  and are bounded by the agent runtime's rolling guards.
+  and are bounded by the agent runtime's rolling guards. They are named
+  overhead that counts toward the account's month
+  ([Every paid AI call against its job](#every-paid-ai-call-against-its-job-2026-11-20)).
 - **Shrunk compute.** Near the cap a scene attempt's compute shrinks to what is
   left (`spend_block`); below about $4 no GPU offer qualifies and the attempt
   waits for capacity until the job's window ends.
+
+## Every paid AI call against its job (2026-11-20)
+
+Owner decision 2026-11-20: every paid AI call counts against its job, so the
+$40 cap and the account's month are exact; the WebApp's first look and brief
+reading stay outside the $40 cap as named overhead that still counts toward the
+account's month.
+
+What it found (November 2026, read 2026-11-20): OpenAI billed $84.68 for the
+month and the meter tied $26.03 of it to jobs. Every one of the 345 journaled
+admissions of the month read `unattributed` with no price; all 289 Gemini rows
+on job ledgers (every job so far) sat at their quotes ($16.93), none ever
+settled; the per-job meter had no Gemini source at all.
+
+- **Before each call.** Unchanged: every Gemini, OpenAI, SAM, World Labs and
+  Vast preparation call reserves its quote on the job's WebApp ledger
+  (`reserve_website_preparation_spend`), which counts every ledger of the job
+  against the $40 (`websiteJobSpend`). ARTISAN runs inside a scene attempt held
+  within the scene intake's allowance on the same ledger.
+- **Named in the journal.** Each preparation admission names its job and the
+  bill it lands on (`gcp` for Gemini), without a price, so no call reads
+  `unattributed` and nothing is added to the account's count twice.
+- **Gemini settles at its usage.** `retained_gemini_call` collects the usage of
+  every answer of the call (`note_gemini_usage`, a repair turn included),
+  records it on the completed receipt, settles the job's ledger row at that cost
+  (`preparation-settlement`, provider `google`; the receipt is kept as
+  `<receipt>.settlement.json`) and journals the cost against the job. A call
+  whose usage is not fully reported keeps its quote and is journaled at it; a
+  dispatch with no answer is journaled at its quote when it is counted as spent.
+  A WebApp that does not accept a Gemini settlement leaves the row at its quote:
+  the cap over-counts, never under-counts.
+- **OpenAI counts once.** The journal settlement of an OpenAI preparation call
+  keeps it attributed after its workspace is retired (in November,
+  capture-447ae4f4 and capture-5b067498 were retired and two other jobs were no
+  longer on the host; up to $6.63 they settled on their ledgers was missing from
+  the meter, some of it perhaps settled in late October).
+- **Named overhead.** The WebApp records each agent run's cost in
+  `accountSpendOverhead` (one document per run, keyed by month); the capacity
+  tick reads the month per run kind and provider and the meter keys it
+  `overhead:<name>`. It is in no job's figure and counts toward the account's
+  month like any settled row (`max(bill, meter)` per provider).
+- **Reconciliation.** Each provider's row splits the ledger into
+  `attributed_usd` (jobs) and `overhead_usd`, and shows `unattributed_usd`,
+  the bill less both, with `totals` across the providers whose bill was read.
+  A negative figure means the ledger counts more than the bill shows yet.
+
+Known edges:
+
+- ARTISAN's own OpenAI spend is inside the job's cap (the scene attempt's
+  hold) but not in the per-job meter by provider: its proven spend lives in the
+  attempt's terminal settlement (`artisan_proven_authoring_spend`). capture-447's
+  $17.02 of ARTISAN on 2026-11-01 and 11-02 is part of November's unattributed
+  OpenAI.
+- Spend before this change keeps its old shape: Gemini rows already on job
+  ledgers stay at their quotes, and earlier calls have no journal settlement.
+- The organization's OpenAI bill also carries traffic that is neither a job
+  nor WebApp overhead (operator and development runs, such as the 27
+  `adp_run_operator` runs of November 2–12 with no recorded cost). It shows as
+  `unattributed_usd`.

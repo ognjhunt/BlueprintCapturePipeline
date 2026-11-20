@@ -6,6 +6,13 @@ same month's reconciled reading, ``account_monthly_spend_report``) were on
 different scopes and compared nowhere. This compares them per provider, on the
 month, inside the account monthly spend report.
 
+Each provider's ledger splits into what jobs settled (``attributed_usd``) and what
+is named overhead (``overhead_usd``: the WebApp's own agent runs, outside every
+job's cap, owner rule 2026-11-20). What the bill shows beyond both is
+``unattributed_usd``, a number rather than a hidden remainder; a negative figure
+means the ledger counts more than the bill shows yet (provider lag, or a quote
+counted as an upper bound).
+
 Tolerance (owner, O-13): the larger of ``$5`` or 10 % of the provider's billing
 delta. Outside it is a warning (``account_spend_reconciliation_outside_tolerance``),
 never a refusal: nothing here admits, refuses or changes a count. A provider
@@ -36,22 +43,33 @@ def reconcile(providers: Mapping[str, Mapping[str, Any]], *, period: str | None)
         if not isinstance(row, Mapping):
             continue
         ledger = money(row.get("metered_settled_usd")) or Decimal(0)
+        overhead = money(row.get("metered_overhead_usd")) or Decimal(0)
         billing = money(row.get("reconciled_month_usd")) if row.get("reconciled_month_usd") is not None else None
-        result: dict[str, Any] = {"ledger_settled_usd": usd(ledger),
+        result: dict[str, Any] = {"ledger_settled_usd": usd(ledger), "attributed_usd": usd(ledger - overhead),
+                                  "overhead_usd": usd(overhead),
                                   "billing_month_usd": None if billing is None else usd(billing)}
         if billing is None or row.get("status") != "observed":
-            result.update(status="unknown",
+            result.update(status="unknown", unattributed_usd=None,
                           reason=str(row.get("reason") or f"billing_reading_{row.get('status') or 'missing'}"))
         else:
             tolerance = max(TOLERANCE_FLOOR_USD, billing * TOLERANCE_FRACTION)
             difference = ledger - billing
             result.update(difference_usd=usd(difference), tolerance_usd=usd(tolerance),
+                          unattributed_usd=usd(-difference),
                           status="within_tolerance" if abs(difference) <= tolerance else "outside_tolerance")
         rows[str(name)] = result
     outside = sorted(name for name, row in rows.items() if row["status"] == "outside_tolerance")
     unknown = sorted(name for name, row in rows.items() if row["status"] == "unknown")
+    known = [row for row in rows.values() if row.get("unattributed_usd") is not None]
     return {"schema_version": SCHEMA, "period": period, "providers": rows, "outside_tolerance": outside,
-            "unknown": unknown, "tolerance_rule": "max(USD 5, 10% of the billing delta); outside is a warning"}
+            "unknown": unknown,
+            # Across the providers whose bill was read: jobs, named overhead, and what the bill shows beyond both.
+            "totals": {"billing_month_usd": usd(sum((money(row["billing_month_usd"]) for row in known), Decimal(0))),
+                       "attributed_usd": usd(sum((money(row["attributed_usd"]) for row in known), Decimal(0))),
+                       "overhead_usd": usd(sum((money(row["overhead_usd"]) for row in known), Decimal(0))),
+                       "unattributed_usd": usd(sum((Decimal(str(row["unattributed_usd"])) for row in known),
+                                                   Decimal(0)))},
+            "tolerance_rule": "max(USD 5, 10% of the billing delta); outside is a warning"}
 
 
 def main(argv: list[str] | None = None) -> int:

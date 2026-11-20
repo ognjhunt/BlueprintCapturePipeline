@@ -379,6 +379,8 @@ def ask_gemini(*, binding: Mapping[str, Any], maximum_cost_usd: float,
                                                    max_output_tokens=MAX_OUTPUT_TOKENS,
                                                    thinking_config=types.ThinkingConfig(thinking_level="low"),
                                                    media_resolution=MEDIA_RESOLUTION))
+            from .website_gemini_receipts import note_gemini_usage
+            note_gemini_usage(response)
         reason = response.candidates[0].finish_reason if response.candidates else None
         sent = [{"timestamp_seconds": row["timestamp_seconds"], "sha256": row["sha256"]} for row in frames]
         if reason != "STOP":

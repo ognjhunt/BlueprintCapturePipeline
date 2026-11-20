@@ -433,12 +433,81 @@ def observe_openai_job_settlements(*, now: float, storage_root: Path, deadline_s
     jobs_rows: dict[str, dict[str, Any]] = {}
     for (job_id, _attempt), charge in sorted(charges.items(), key=lambda item: (str(item[0][0]), item[0][1])):
         row = jobs_rows.setdefault(str(job_id), {"job_id": job_id, "usd": 0.0, "calls": 0, "at_epoch": 0.0,
-                                                 "attempt": f"openai_settlements:{job_id}"})
+                                                 "attempt": f"openai_settlements:{job_id}", "bindings": []})
         row["usd"] += charge["usd"]
         row["calls"] += 1
         row["at_epoch"] = max(row["at_epoch"], charge["at_epoch"])
-    return {"job_charges": [{**row, "usd": round(row["usd"], 6)} for _key, row in sorted(jobs_rows.items())],
+        # The calls this row covers, so the meter does not count a call its journal also settled.
+        row["bindings"].append(charge["attempt"].removeprefix("openai:"))
+    return {"job_charges": [{**row, "usd": round(row["usd"], 6), "bindings": sorted(set(row["bindings"]))}
+                            for _key, row in sorted(jobs_rows.items())],
             "job_charges_complete": not blockers, "job_charges_blockers": sorted(blockers)}
+
+
+#: The WebApp's month of its own paid agent runs (first look, brief reading and the rest), as named overhead.
+WEBAPP_OVERHEAD_ROUTE = "/api/internal/pipeline/account-spend-overhead"
+WEBAPP_OVERHEAD_SCHEMA = "blueprint.account_spend_overhead.v1"
+_OVERHEAD_TEXT = r"[a-z][a-z0-9_.-]{0,79}"
+
+
+def _fetch_webapp_overhead(configured_url: str, month: str) -> Mapping[str, Any]:
+    """One signed read over the Pipeline's existing WebApp transport."""
+
+    from urllib.parse import urlsplit
+
+    from .safe_outbound_http import pinned_api_policy, request
+    from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
+    from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
+
+    parsed = urlsplit(validated_https_sync_url(configured_url))
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    body = json.dumps({"month": month}, separators=(",", ":")).encode()
+    response = request(f"{origin}{WEBAPP_OVERHEAD_ROUTE}", method="POST", data=body,
+                       headers=_pipeline_sync_headers(load_pipeline_sync_token(), body), timeout_seconds=10,
+                       policy=pinned_api_policy(origin, max_response_bytes=100_000), max_response_bytes=100_000)
+    value = json.loads(response.body)
+    if not isinstance(value, Mapping):
+        raise TypeError("webapp_overhead_response_invalid")
+    return value
+
+
+def observe_webapp_overhead(*, now: float, environ: Mapping[str, str],
+                            fetch: Callable[[str, str], Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """What the WebApp's own paid agent runs cost this UTC month, per run kind and provider.
+
+    Owner rule 2026-11-20: the first look and brief reading (and the WebApp's other agent runs) stay outside every
+    job's $40 cap and count toward the account's month as named overhead. Each row names the run kind
+    (``name``), the provider that served it, the cost the WebApp recorded for its runs and how many runs had no
+    cost recorded (``unpriced_runs``). A failed or malformed read says so; it never reads as zero.
+    """
+
+    import re
+
+    month = _utc(now).strftime("%Y-%m")
+    row: dict[str, Any] = {"status": "unknown", "blockers": [], "month": month, "charges": [], "complete": False}
+    configured = str(environ.get("PIPELINE_SYNC_WEBAPP_URL") or "").strip()
+    if not configured:
+        return {**row, "blockers": ["webapp_overhead_url_unset"]}
+    try:
+        value = (fetch or _fetch_webapp_overhead)(configured, month)
+    except Exception:  # noqa: BLE001 - transport errors may carry headers; one warn code
+        return {**row, "blockers": ["webapp_overhead_unreadable"]}
+    rows = value.get("rows")
+    if value.get("schema_version") != WEBAPP_OVERHEAD_SCHEMA or value.get("month") != month or not isinstance(rows, list):
+        return {**row, "blockers": ["webapp_overhead_invalid"]}
+    charges = []
+    for item in rows:
+        usd = _number(item.get("usd")) if isinstance(item, Mapping) else None
+        runs, unpriced = (item.get("runs"), item.get("unpriced_runs")) if isinstance(item, Mapping) else (None, None)
+        if (usd is None or usd < 0 or not re.fullmatch(_OVERHEAD_TEXT, str(item.get("name") or ""))
+                or not re.fullmatch(_OVERHEAD_TEXT, str(item.get("provider") or ""))
+                or type(runs) is not int or type(unpriced) is not int or not 0 <= unpriced <= runs):
+            return {**row, "blockers": ["webapp_overhead_invalid"]}
+        charges.append({"name": item["name"], "provider": item["provider"], "usd": round(usd, 6), "runs": runs,
+                        "unpriced_runs": unpriced, "at_epoch": now})
+    unpriced = sum(charge["unpriced_runs"] for charge in charges)
+    return {**row, "status": "observed", "charges": charges, "unpriced_runs": unpriced,
+            "complete": value.get("complete") is True and unpriced == 0}
 
 
 def observe_gcp_spend(*, now: float, config_path: str | None) -> dict[str, Any]:
@@ -559,6 +628,10 @@ def observe_provider_spend(now: float, *, environ: Mapping[str, str] | None = No
         "gcp": observe_gcp_spend(now=now, config_path=env.get(GCP_BUDGET_CONFIG_ENV)),
         "account": observe_account_spend(now=now, environ=env),
     }
+    if str(env.get("PIPELINE_SYNC_WEBAPP_URL") or "").strip():
+        # Named overhead: the WebApp's own agent runs, outside every job's cap, counted toward the account.
+        # A host with no WebApp to read (development, tests) has none to report.
+        providers["webapp_overhead"] = observe_webapp_overhead(now=now, environ=env)
     alerts.extend(spend_alerts(providers, lines))
     return {"schema_version": SCHEMA_VERSION, "observed_at_epoch": now, "lines": lines, "providers": providers,
             "alerts": alerts, "provider_mutations_performed": 0}

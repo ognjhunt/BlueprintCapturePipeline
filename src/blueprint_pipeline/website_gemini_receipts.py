@@ -1,6 +1,15 @@
-"""ADP-009B/day 14: one admitted Gemini dispatch per exact website input."""
+"""ADP-009B/day 14: one admitted Gemini dispatch per exact website input.
+
+Every Gemini call a website job makes is reserved on the job's ledger at its quote before it is sent
+(``reserve_website_preparation_spend``), so the job's $40 cap counts it first. Once answered, the call is
+settled at what its reported usage costs (``note_gemini_usage``, ``gemini_usage_cost``): the job's ledger
+row releases the rest of its quote (``preparation-settlement``) and the job's meter records the cost
+(``paid_spend_meter``, provider ``gcp``, where Gemini bills). A call whose usage is not fully reported
+keeps its quote on the ledger and is metered at it; a dispatch with no answer is metered at its quote.
+"""
 from __future__ import annotations
 
+import contextvars
 import fcntl
 import hashlib
 import json
@@ -33,6 +42,117 @@ def gemini_quote(*, model: str, input_tokens: int, max_output_tokens: int = 65_5
     if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or not 0 < max_output_tokens <= 65_536:
         raise ValueError("website_gemini_output_budget_invalid")
     return math.ceil((input_tokens * 0.75 + max_output_tokens * 3.75) / 10_000) / 100
+
+
+#: The provider name a Gemini call is metered under: Gemini bills to the Google Cloud project, so its meter rows
+#: sit beside that project's bill in the account's reconciliation.
+METER_PROVIDER = "gcp"
+_USAGE: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar("website_gemini_usage",
+                                                                                      default=None)
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def gemini_response_usage(response: Any) -> dict[str, Any]:
+    """Billed input and output tokens a Gemini answer reports, or ``{"status": "unknown"}``.
+
+    ``generate_content`` reports ``usage_metadata``; an Interactions answer reports ``usage``. Thinking is billed
+    as output. A total above the parts is read as output (an upper bound), never dropped.
+    """
+
+    meta = getattr(response, "usage_metadata", None)
+    if meta is not None:
+        prompt, tool = _count(getattr(meta, "prompt_token_count", None)), _count(
+            getattr(meta, "tool_use_prompt_token_count", None))
+        visible, thoughts = _count(getattr(meta, "candidates_token_count", None)), _count(
+            getattr(meta, "thoughts_token_count", None))
+        total = _count(getattr(meta, "total_token_count", None))
+    else:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {"status": "unknown"}
+        prompt, tool = _count(getattr(usage, "total_input_tokens", None)), 0
+        visible, thoughts = _count(getattr(usage, "total_output_tokens", None)), _count(
+            getattr(usage, "total_thought_tokens", None))
+        total = _count(getattr(usage, "total_tokens", None))
+    if prompt is None:
+        return {"status": "unknown"}
+    input_tokens = prompt + (tool or 0)
+    if total is not None and total >= input_tokens:
+        output_tokens = total - input_tokens
+    elif visible is not None and thoughts is not None and total is None:
+        # With neither a total nor a thinking count, the thinking billed as output is unknown.
+        output_tokens = visible + thoughts
+    else:
+        return {"status": "unknown"}
+    return {"status": "reported", "input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
+def note_gemini_usage(response: Any) -> None:
+    """Record one provider answer's usage for the call ``retained_gemini_call`` is making; elsewhere a no-op.
+
+    Every ``generate_content`` or Interactions answer inside a retained call's ``invoke`` is noted, a repair turn
+    included, so the call settles at what all of its turns cost.
+    """
+
+    calls = _USAGE.get()
+    if calls is not None:
+        calls.append(gemini_response_usage(response))
+
+
+def gemini_usage_cost(*, model: Any, calls: Sequence[Mapping[str, Any]]) -> float | None:
+    """What the noted answers cost at ``gemini_quote``'s rates, rounded up to the micro-dollar; None if unknown."""
+
+    if model != "gemini-3.8-flash" or not calls or any(call.get("status") != "reported" for call in calls):
+        return None
+    micro = sum(call["input_tokens"] * 0.75 + call["output_tokens"] * 3.75 for call in calls)
+    return math.ceil(micro) / 1_000_000
+
+
+def _meter_settlement(*, job_id: Any, meter_key: str, settled_usd: float, basis: str) -> None:
+    """Record a Gemini call's cost in the job's meter (``paid_spend_meter``); best effort, never raises."""
+
+    try:
+        from .paid_spend_meter import meter_root, record_settlement
+        root = meter_root()
+        if root is not None and job_id:
+            record_settlement(job_id=job_id, meter_key=meter_key, settled_usd=settled_usd, basis=basis,
+                              provider=METER_PROVIDER, root=root)
+    except Exception:  # noqa: BLE001 - metering is visibility; the job's ledger holds the quote
+        return
+
+
+def _settle_answered(*, path: Path, task_context: Mapping[str, Any], dispatch: str,
+                     admission: Mapping[str, Any], model: Any, calls: Sequence[Mapping[str, Any]]) -> None:
+    """Settle an answered call on the job's ledger at its usage cost, and meter it; never raises.
+
+    The ledger row keeps its quote unless the WebApp accepts the settlement (an older release refuses a Gemini
+    settlement): the cap then over-counts, never under-counts. The meter records the usage cost when every turn
+    reported it, else the quote.
+    """
+
+    try:
+        maximum = float(admission.get("maximum_cost_usd"))
+        cost = gemini_usage_cost(model=model, calls=calls)
+        if cost is None or not 0 <= cost <= maximum:
+            _meter_settlement(job_id=task_context.get("request_id"), meter_key=dispatch, settled_usd=maximum,
+                              basis="quote_upper_bound")
+            return
+        _meter_settlement(job_id=task_context.get("request_id"), meter_key=dispatch, settled_usd=cost,
+                          basis="reported_usage")
+        from .website_task_context import preparation_webapp_request
+        command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": dispatch,
+                   "provider": "google", "completed_request_count": 1, "provider_charge_amount_usd": cost,
+                   "usage_receipt_digest": canonical_digest({"model": model, "calls": list(calls)})}
+        receipt = preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
+            payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"],
+                     "settlement": command})
+        if receipt.get("status") == "settled" and all(receipt.get(key) == value for key, value in command.items()):
+            _fsynced(path.with_suffix(".settlement.json"), receipt)
+    except Exception:  # noqa: BLE001 - the answer is bought; an unsettled row keeps its quote
+        return
 
 
 def _request(*, binding: Mapping[str, Any], task_context: Mapping[str, Any], maximum_cost_usd: float,
@@ -173,7 +293,7 @@ def _http_status(exc: BaseException) -> int | None:
     return None
 
 
-def _dispatch_chain(output_root: Path, digest: str):
+def _dispatch_chain(output_root: Path, digest: str, job_id: str | None = None):
     """Walk one request's dispatches: its first intent, then each resend.
 
     Returns ``(completed result or None, next dispatch digest, next intent path, resend marks,
@@ -183,7 +303,8 @@ def _dispatch_chain(output_root: Path, digest: str):
     resend. Such an intent is always its chain's latest record, so no resend follows it. Each intent whose
     receipt holds no answer is counted as spent once (``unanswered-<k>.json``), whatever else is recorded
     about its run, so the next dispatch is the single resend one new reservation pays for; after
-    ``UNKNOWN_DISPATCH_LIMIT`` unanswered dispatches nothing more is sent.
+    ``UNKNOWN_DISPATCH_LIMIT`` unanswered dispatches nothing more is sent. ``job_id``, when given, meters each
+    unanswered dispatch at its quote in the job's meter as it is first counted.
     """
     stem = digest[7:]
     dispatch, path, marks, index = digest, output_root / f"{stem}.json", {}, 0
@@ -214,6 +335,8 @@ def _dispatch_chain(output_root: Path, digest: str):
                                "request_digest": digest, "dispatch_digest": dispatch, "intent_sha256": intent_sha256,
                                "reservation": "held_at_maximum_never_released_or_settled_as_zero",
                                "resends_allowed": 1})
+            _meter_settlement(job_id=job_id, meter_key=dispatch, settled_usd=admission.get("maximum_cost_usd"),
+                              basis="unanswered_counted_as_spent")
         if index >= UNKNOWN_DISPATCH_LIMIT:
             raise ValueError(EXHAUSTED)
         marks = {"original_request_digest": digest, "resend_index": index, "resend_of": intent_sha256}
@@ -253,7 +376,8 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("website_gemini_request_in_progress") from exc
-        result, dispatch, path, marks, reuse = _dispatch_chain(output_root, digest)
+        job_id = task_context.get("request_id")
+        result, dispatch, path, marks, reuse = _dispatch_chain(output_root, digest, job_id)
         if result is not None:
             return result
         if not marks and reuse is None:
@@ -261,7 +385,7 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                 _, earlier = _request(binding=earlier_binding, task_context=task_context,
                                       maximum_cost_usd=earlier_cost, source_video_digest=source_video_digest)
                 try:
-                    retained = _dispatch_chain(output_root, earlier)[0]
+                    retained = _dispatch_chain(output_root, earlier, job_id)[0]
                 except ValueError as exc:
                     if str(exc) != EXHAUSTED:
                         raise
@@ -278,12 +402,12 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
             require_current_website_source(task_context)
             try:
                 # The same hold, never released, pays this dispatch: the last one provably bought nothing.
-                grant = reuse_website_preparation_spend(admission=reuse, binding_digest=dispatch)
+                grant = reuse_website_preparation_spend(admission=reuse, binding_digest=dispatch, job_id=job_id)
                 admission = reuse
             except RetainedAdmissionUnusable:
                 # Expired or invalid: keep its hold (never released here) and reserve once more.
                 _fsynced(path, {**json.loads(path.read_text()), "status": "superseded"})
-                result, dispatch, path, marks, reuse = _dispatch_chain(output_root, digest)
+                result, dispatch, path, marks, reuse = _dispatch_chain(output_root, digest, job_id)
                 if result is not None or reuse is not None:
                     raise ValueError(UNRESERVED) from None
         if reuse is None:
@@ -307,6 +431,7 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
             _fsynced(path, {"status": "not_dispatched", "request_digest": dispatch, "request": request,
                             "admission": admission, **marks})
             raise
+        noted = _USAGE.set([])
         try:
             result = invoke()
         except Exception as exc:
@@ -320,6 +445,14 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
             if depleted:
                 raise CreditDepleted() from exc
             raise
+        finally:
+            calls = _USAGE.get() or []
+            _USAGE.reset(noted)
+        usage = {"model": binding.get("model"), "calls": calls,
+                 "cost_usd": gemini_usage_cost(model=binding.get("model"), calls=calls)}
         _fsynced(path, {"status": "completed", "request_digest": dispatch, "request": request,
-                        "admission": admission, "result": result, "result_digest": canonical_digest(result), **marks})
+                        "admission": admission, "result": result, "result_digest": canonical_digest(result),
+                        "usage": usage, **marks})
+        _settle_answered(path=path, task_context=task_context, dispatch=dispatch, admission=admission,
+                         model=binding.get("model"), calls=calls)
         return result

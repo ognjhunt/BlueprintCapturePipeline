@@ -337,6 +337,7 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
     prior_providers = prior.get("providers") if isinstance(prior.get("providers"), Mapping) else {}
     exact = meter["_exact"]
     metered_by_provider: Mapping[str, Decimal] = exact["by_provider_settled_usd"]
+    overhead_by_provider: Mapping[str, Decimal] = exact.get("overhead_by_provider_settled_usd") or {}
     providers: dict[str, dict[str, Any]] = {}
     gaps = list(meter.get("gaps") or [])
     spend = Decimal(0)
@@ -349,8 +350,11 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
         if name not in ACCOUNT_PROVIDERS and reconciled is None:
             status = "metered_only"
         observed_at = reading.get("observed_at") if reconciled is not None and counted == reconciled else None
+        overhead = overhead_by_provider.get(name, Decimal(0))
         row = {"reconciled_month_usd": None if reconciled is None else usd(reconciled),
                "metered_settled_usd": usd(metered),
+               # Of the metered figure: what jobs settled, and what is named overhead (the WebApp's own runs).
+               "metered_attributed_usd": usd(metered - overhead), "metered_overhead_usd": usd(overhead),
                # A provider whose bill is not read: its list-price meter is what counts.
                **({"cost_basis": METERED_ONLY_BASES[name]} if name in METERED_ONLY_BASES else {}),
                **{key: reading[key] for key in ("reason", "baseline_at", "source", "carried_forward")
@@ -431,7 +435,8 @@ def refresh_report(*, now: float | None = None, environ: Mapping[str, str] | Non
     readings = collect_readings(now=moment, environ=env, observation=observation,
                                 billing_export_path=billing_export_path, audit_root=audit_root)
     meter = collect_meter_view(now=moment, world_labs=_account.current_world_labs(observation, now=moment),
-                               openai=_account.current_openai(observation, now=moment), environ=env)
+                               openai=_account.current_openai(observation, now=moment),
+                               overhead=_account.current_overhead(observation, now=moment), environ=env)
     destination = report_path(policy, env)
     previous = None
     if destination is not None:

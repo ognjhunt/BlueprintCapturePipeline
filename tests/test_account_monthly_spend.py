@@ -209,6 +209,33 @@ def test_jobs_openai_calls_show_per_job_while_the_bill_stays_the_count(host):
     assert jobs["req-1"]["by_provider_settled_usd"]["openai"] == 1.5
 
 
+
+def test_the_webapps_own_runs_count_toward_the_month_as_named_overhead_beside_the_jobs(host):
+    """Owner rule 2026-11-20: outside every job's cap, inside the account's month, and shown as overhead."""
+    path = host["root"] / account.OBSERVATION_FILENAME
+    observation = json.loads(path.read_text())
+    observation["providers"]["openai"].update(job_charges=[
+        {"at_epoch": NOW - 1000, "usd": 1.5, "calls": 16, "job_id": "site-req-1",
+         "attempt": "openai_settlements:site-req-1", "bindings": []}], job_charges_complete=True)
+    observation["providers"]["webapp_overhead"] = {
+        "status": "observed", "blockers": [], "month": "2026-11", "complete": True, "charges": [
+            {"name": "webapp.site_task_brief_reading", "provider": "openai", "usd": 6.0, "runs": 5,
+             "unpriced_runs": 0, "at_epoch": NOW - 500}]}
+    path.write_text(json.dumps(observation))
+    report = report_module.refresh_report(now=NOW)
+    openai = report["providers"]["openai"]
+    assert (openai["metered_settled_usd"], openai["metered_attributed_usd"], openai["metered_overhead_usd"]) == (
+        7.5, 1.5, 6.0)
+    # The bill stays the count; the overhead only says what part of it is not a job's.
+    assert openai["counted_usd"] == 40.0 and report["counted_usd"] == 127.2
+    row = report["reconciliation"]["providers"]["openai"]
+    assert (row["attributed_usd"], row["overhead_usd"], row["unattributed_usd"]) == (1.5, 6.0, 32.5)
+    jobs = {row["job_id"]: row for row in report["meter"]["jobs"]}
+    assert jobs["overhead:webapp.site_task_brief_reading"]["by_provider_settled_usd"] == {"openai": 6.0}
+    # It survives the capacity tick's own write.
+    assert account.persist_provider_observation(observation) is True
+    assert account.current_overhead(account.read_provider_observation(), now=NOW)["charges"][0]["usd"] == 6.0
+
 def test_without_a_receipt_before_the_month_the_first_one_of_the_month_stands_in(tmp_path):
     audit = tmp_path / "audit"
     _receipt(audit, "20261101T001000.000000Z", {"vast": 951.0})

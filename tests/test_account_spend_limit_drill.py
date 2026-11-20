@@ -112,7 +112,8 @@ def test_reconciliation_tolerance_is_the_larger_of_five_dollars_or_ten_percent_a
     assert rows["openai"]["status"] == "within_tolerance" and rows["openai"]["tolerance_usd"] == 5.0
     assert rows["digitalocean"]["status"] == "outside_tolerance"
     assert rows["world_labs"]["status"] == "within_tolerance"
-    assert rows["gcp"] == {"ledger_settled_usd": 3.0, "billing_month_usd": None, "status": "unknown",
+    assert rows["gcp"] == {"ledger_settled_usd": 3.0, "attributed_usd": 3.0, "overhead_usd": 0.0,
+                           "billing_month_usd": None, "status": "unknown", "unattributed_usd": None,
                            "reason": "gcp_budget_guard_not_configured"}
     assert rows["lambda"]["status"] == "unknown"
     assert value["outside_tolerance"] == ["digitalocean"] and value["unknown"] == ["gcp", "lambda"]
@@ -122,3 +123,24 @@ def test_reconciliation_tolerance_is_the_larger_of_five_dollars_or_ten_percent_a
     assert alerts == [{"code": account.RECONCILIATION_CODE, "provider": "account", "window": "utc_month:2026-11",
                        "reason": "digitalocean"}]
     assert account.RECONCILIATION_CODE not in account.ACCOUNT_PAGE_CODES
+
+
+def test_reconciliation_shows_jobs_overhead_and_the_unattributed_gap_as_numbers():
+    """The November 2026 shape: OpenAI billed $84.68, jobs settled $26.03, so the gap is a number, not a hiding place."""
+    providers = {
+        "openai": {"status": "observed", "metered_settled_usd": 32.05, "metered_overhead_usd": 6.02,
+                   "reconciled_month_usd": 84.68},
+        "gcp": {"status": "observed", "metered_settled_usd": 4.0, "metered_overhead_usd": 0.03,
+                "reconciled_month_usd": 54.11},
+        "vast": {"status": "observed", "metered_settled_usd": 34.52, "reconciled_month_usd": 24.84},
+        "world_labs": {"status": "partial", "metered_settled_usd": 38.52, "reconciled_month_usd": 38.52},
+    }
+    value = reconcile(providers, period="2026-11")
+    openai = value["providers"]["openai"]
+    assert (openai["attributed_usd"], openai["overhead_usd"], openai["unattributed_usd"]) == (26.03, 6.02, 52.63)
+    assert openai["ledger_settled_usd"] == 32.05 and openai["status"] == "outside_tolerance"
+    # The ledger above the bill (provider lag) reads as a negative gap, never as zero.
+    assert value["providers"]["vast"]["unattributed_usd"] == -9.68
+    assert value["providers"]["world_labs"]["unattributed_usd"] is None
+    assert value["totals"] == {"billing_month_usd": 163.63, "attributed_usd": 64.52, "overhead_usd": 6.05,
+                               "unattributed_usd": 93.06}

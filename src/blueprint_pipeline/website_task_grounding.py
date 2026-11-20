@@ -201,6 +201,8 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
                                                    max_output_tokens=MAX_OUTPUT_TOKENS,
                                                    thinking_config=types.ThinkingConfig(thinking_level=THINKING_LEVEL),
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
+            from .website_gemini_receipts import note_gemini_usage
+            note_gemini_usage(response)
         return grounding_answer(response)
 
     result = retained_gemini_call(output_root=output_root / "receipts", binding=binding, task_context=task_context,

@@ -99,7 +99,48 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
     value = json.loads(response.body)
     if not isinstance(value, Mapping):
         raise ValueError("website_task_context_response_invalid")
+    if operation == "preparation-settlement":
+        meter_preparation_settlement(payload, value)
     return dict(value)
+
+
+#: The meter's name for each preparation provider: the bill its spend lands on (Gemini bills to Google Cloud).
+METER_PROVIDERS = {"google": "gcp", "openai": "openai", "meta": "meta", "world_labs_atlas": "world_labs",
+                   "vast": "vast"}
+
+
+def metered_admission(admission: Mapping[str, Any], *, job_id: Any, provider: Any) -> dict[str, Any]:
+    """The admission as the paid chokepoint journals it: against its job, under the bill it lands on.
+
+    It names no price, so the journal counts it as a call (``paid_spend_meter``); its cost reaches the job's meter
+    when the call settles. The admission itself is never changed: callers keep and compare the WebApp's own.
+    """
+
+    if not isinstance(job_id, str) or not job_id:
+        return dict(admission)
+    return {**admission, "meter": {"job_id": job_id, "provider": METER_PROVIDERS.get(str(provider), str(provider))}}
+
+
+def meter_preparation_settlement(payload: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    """An OpenAI preparation call's settled cost in its job's meter, whoever settled it; never raises.
+
+    The job's settlement receipts under its workspace are also read by the capacity tick
+    (``provider_spend_alerts.observe_openai_job_settlements``); the meter counts a call once, and this record
+    keeps it attributed after the workspace is retired. Gemini settles in ``website_gemini_receipts``.
+    """
+
+    try:
+        if receipt.get("status") != "settled" or receipt.get("provider") != "openai":
+            return
+        from .paid_spend_meter import meter_root, record_settlement
+        root = meter_root()
+        job_id, binding = payload.get("request_id"), receipt.get("allocation_binding_digest")
+        if root is None or not isinstance(job_id, str) or not job_id or not isinstance(binding, str) or not binding:
+            return
+        record_settlement(job_id=job_id, meter_key=binding, settled_usd=receipt.get("actual_cost_usd"),
+                          basis="preparation_settlement", provider="openai", root=root)
+    except Exception:  # noqa: BLE001 - metering is visibility; the WebApp ledger holds the settlement
+        return
 
 
 def preparation_webapp_request(*, task_context: Mapping[str, Any], operation: str,
@@ -202,7 +243,9 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
         # local budget. A restart must never turn a bare already_reserved
         # answer into authority or overwrite the original receipt with it.
         retain_admission(dict(value))
-    grant = require_paid_resource_admission(value, resource_class=resource_class, expected_schema_version="paid_lane_admission.v1")
+    grant = require_paid_resource_admission(
+        metered_admission(value, job_id=task_context.get("request_id"), provider=provider),
+        resource_class=resource_class, expected_schema_version="paid_lane_admission.v1")
     return value, grant
 
 
@@ -233,7 +276,7 @@ def require_current_website_source(task_context: Mapping[str, Any]) -> None:
 
 
 def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_digest: str,
-                                    now: float | None = None) -> Any:
+                                    now: float | None = None, job_id: str | None = None) -> Any:
     """The in-process grant of a retained Gemini reservation whose last dispatch provably bought nothing.
 
     Only ``website_gemini_receipts`` calls this, for an intent the provider refused before any work
@@ -253,7 +296,8 @@ def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_dig
             or isinstance(expires, bool) or not isinstance(expires, (int, float))
             or not expires > (time.time() if now is None else now)):
         raise RetainedAdmissionUnusable("website_preparation_retained_admission_unusable")
-    return require_paid_resource_admission(admission, resource_class="evaluator_api",
+    return require_paid_resource_admission(metered_admission(admission, job_id=job_id, provider="google"),
+                                           resource_class="evaluator_api",
                                            expected_schema_version="paid_lane_admission.v1")
 
 

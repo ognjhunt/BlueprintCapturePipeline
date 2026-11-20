@@ -32,6 +32,7 @@ from .paid_spend_meter import (
     meter_view,
     money,
     openai_rows,
+    overhead_rows,
     public_view,
     read_journal,
 )
@@ -133,13 +134,41 @@ def screening_rows(queue_root: Path | None) -> tuple[list[dict[str, Any]], list[
     return rows, sorted(gaps)
 
 
+def _once(journal: list[dict[str, Any]], openai: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Journal rows with each OpenAI call the job's scanned receipts already count reduced to a call.
+
+    A scanned job row lists the calls it covers (``bindings``); one from an older tick lists none, and then every
+    OpenAI settlement the journal holds for that job is left to the scan.
+    """
+
+    covered: set[tuple[str, str]] = set()
+    whole: set[str] = set()
+    for charge in (openai or {}).get("job_charges") or []:
+        if not isinstance(charge, Mapping):
+            continue
+        job = job_key(charge.get("job_id"))
+        bindings = charge.get("bindings")
+        if isinstance(bindings, list):
+            covered.update((job, str(binding)) for binding in bindings)
+        else:
+            whole.add(job)
+    rows = []
+    for row in journal:
+        if (row.get("status") == "settled" and row.get("provider") == "openai"
+                and (row["job_id"] in whole or (row["job_id"], row["meter_key"]) in covered)):
+            row = {**row, "status": "unpriced", "settled_usd": None, "settled_at_epoch": None}
+        rows.append(row)
+    return rows
+
+
 def collect_meter_view(*, now: float, world_labs: Mapping[str, Any] | None = None,
-                       openai: Mapping[str, Any] | None = None,
+                       openai: Mapping[str, Any] | None = None, overhead: Mapping[str, Any] | None = None,
                        environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     """The meter for this month from every source this host records.
 
     ``openai`` is the capacity tick's OpenAI reading; its ``job_charges`` put each job's settled OpenAI calls
-    in the meter. A reading without them (an older tick) shows no per-job OpenAI, as before.
+    in the meter. A reading without them (an older tick) shows no per-job OpenAI, as before. ``overhead`` is
+    its reading of the WebApp's own agent runs (``observe_webapp_overhead``), metered as named overhead.
     """
 
     env = os.environ if environ is None else environ
@@ -153,14 +182,23 @@ def collect_meter_view(*, now: float, world_labs: Mapping[str, Any] | None = Non
         gaps.append("paid_spend_meter_atlas_attempts_partial")
     if openai is not None and openai.get("job_charges_complete") is False:
         gaps.append("paid_spend_meter_openai_settlements_partial")
-    return meter_view([*journal_rows(events), *screening, *atlas_rows(world_labs), *openai_rows(openai)],
-                      now=now, gaps=gaps)
+    if overhead is not None and overhead.get("status") != "observed":
+        gaps.append("paid_spend_meter_webapp_overhead_unobserved")
+    elif overhead is not None and overhead.get("complete") is not True:
+        gaps.append("paid_spend_meter_webapp_overhead_partial")
+    return meter_view([*_once(journal_rows(events), openai), *screening, *atlas_rows(world_labs),
+                       *openai_rows(openai), *overhead_rows(overhead)], now=now, gaps=gaps)
 
 
 def main(argv: list[str] | None = None, *, now: float | None = None) -> int:
     import argparse
 
-    from .account_monthly_spend import current_openai, current_world_labs, read_provider_observation
+    from .account_monthly_spend import (
+        current_openai,
+        current_overhead,
+        current_world_labs,
+        read_provider_observation,
+    )
 
     parser = argparse.ArgumentParser(description="Print this month's per-job metered spend (reads only).")
     parser.add_argument("--job", default=None, help="show one job (WebApp request id)")
@@ -170,7 +208,8 @@ def main(argv: list[str] | None = None, *, now: float | None = None) -> int:
     observation = read_provider_observation()
     world_labs = current_world_labs(observation, now=moment)
     view = public_view(collect_meter_view(now=moment, world_labs=world_labs,
-                                          openai=current_openai(observation, now=moment)))
+                                          openai=current_openai(observation, now=moment),
+                                          overhead=current_overhead(observation, now=moment)))
     if args.job:
         view["jobs"] = [row for row in view["jobs"] if row["job_id"] == job_key(args.job)]
     print(json.dumps(view, indent=2, sort_keys=True))

@@ -403,9 +403,9 @@ def test_openai_job_settlements_are_read_per_job_from_the_receipts_each_job_keep
     # One row per job: its calls summed, a receipt kept twice for one call counted once, at the latest settlement.
     assert row["job_charges"] == [
         {"job_id": "site-capture-a", "usd": 1.62, "calls": 2, "at_epoch": NOW - 1800,
-         "attempt": "openai_settlements:site-capture-a"},
+         "attempt": "openai_settlements:site-capture-a", "bindings": ["sha256:e1", "sha256:p1"]},
         {"job_id": "site-capture-b", "usd": 0.1, "calls": 1, "at_epoch": NOW - 600,
-         "attempt": "openai_settlements:site-capture-b"}]
+         "attempt": "openai_settlements:site-capture-b", "bindings": ["sha256:r1"]}]
     assert "job_charges" not in spend.summary_projection(result)["providers"]["openai"]
 
 
@@ -624,3 +624,36 @@ def test_the_capacity_unit_reads_the_same_admin_key_and_atlas_root_as_their_lane
     assert key_line in unit and key_line in dispatcher
     assert root_line in unit and root_line in atlas
     assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in unit
+
+
+def test_the_webapps_own_runs_are_read_as_named_overhead_and_a_bad_read_never_reads_as_zero():
+    rows = [{"name": "webapp.site_task_brief_reading", "provider": "openai", "usd": 0.0005, "runs": 3,
+             "unpriced_runs": 0},
+            {"name": "webapp.site_task_brief_reading", "provider": "deepseek", "usd": 0, "runs": 10,
+             "unpriced_runs": 10}]
+    sent = []
+
+    def fetch(url, month):
+        sent.append((url, month))
+        return {"schema_version": spend.WEBAPP_OVERHEAD_SCHEMA, "month": month, "rows": rows, "complete": True}
+
+    env = {"PIPELINE_SYNC_WEBAPP_URL": "https://tryblueprint.io"}
+    row = spend.observe_webapp_overhead(now=NOW, environ=env, fetch=fetch)
+    assert sent == [("https://tryblueprint.io", "2026-11")]
+    assert row["status"] == "observed" and row["month"] == "2026-11" and row["unpriced_runs"] == 10
+    # Ten runs had no recorded cost: the reading is a lower bound.
+    assert row["complete"] is False
+    assert [charge["usd"] for charge in row["charges"]] == [0.0005, 0]
+    assert spend.observe_webapp_overhead(now=NOW, environ={}, fetch=fetch)["blockers"] == ["webapp_overhead_url_unset"]
+
+    def broken(_url, _month):
+        raise OSError("connection reset")
+
+    assert spend.observe_webapp_overhead(now=NOW, environ=env, fetch=broken)["blockers"] == ["webapp_overhead_unreadable"]
+    for bad in ({"schema_version": spend.WEBAPP_OVERHEAD_SCHEMA, "month": "2026-10", "rows": rows},
+                {"schema_version": spend.WEBAPP_OVERHEAD_SCHEMA, "month": "2026-11",
+                 "rows": [{**rows[0], "usd": -1}]},
+                {"schema_version": spend.WEBAPP_OVERHEAD_SCHEMA, "month": "2026-11",
+                 "rows": [{**rows[0], "unpriced_runs": 4}]}):
+        row = spend.observe_webapp_overhead(now=NOW, environ=env, fetch=lambda _u, _m, bad=bad: bad)
+        assert row["status"] == "unknown" and row["blockers"] == ["webapp_overhead_invalid"] and row["charges"] == []
