@@ -1063,9 +1063,12 @@ def check_atlas_previews(config: StallConfig, *, now: float, budget: _Budget, ho
     A ``processing`` job pages when its step has been in flight for the threshold, or when the
     threshold has passed since the later of its last progress and its next attempt time (a wait
     still in the future is quiet; an attempt overdue by the threshold means the worker is not
-    taking it). A ``needs_input`` job is quiet, except a recheck the worker scheduled for a refusal
-    that is no hold and that is overdue by the threshold. A refusal that names privacy, rights,
-    consent or money never pages. ``ready``, ``failed`` and ``withdrawn`` are final.
+    taking it). A ``needs_input`` job pages when a recheck the worker scheduled for a refusal that
+    is no hold is overdue by the threshold, or when it has no recheck at all and the threshold has
+    passed since its last progress: the worker never steps it again, and only privacy, rights and
+    money may stop a job (2026-11-19: two jobs parked on a release switch with no retry time and
+    were counted as quiet). A refusal that names privacy, rights, consent or money never pages.
+    ``ready``, ``failed`` and ``withdrawn`` are final.
     """
 
     root = config.atlas_storage_root
@@ -1124,7 +1127,11 @@ def check_atlas_previews(config: StallConfig, *, now: float, budget: _Budget, ho
             if hold is not None:
                 counts[hold] = counts.get(hold, 0) + 1
             elif _number(job.get("retry_at_epoch")) is None:
-                counts["needs_input"] = counts.get("needs_input", 0) + 1  # waits for a person, not the clock
+                # Never stepped again: nothing retries it by itself.
+                if now - progress < threshold:
+                    counts["needs_input"] = counts.get("needs_input", 0) + 1
+                else:
+                    stalled.append(_atlas_row(job, path, threshold, "parked_without_retry", now - progress, cause))
             elif now - due < threshold:
                 counts["scheduled_wait"] = counts.get("scheduled_wait", 0) + 1
             else:
@@ -1610,6 +1617,7 @@ def describe(alert: Mapping[str, Any]) -> str | None:
         what = (f"step started {age} ago never returned" if status == "step_unreturned"
                 else f"scheduled retry overdue {age}{why}" if status == "retry_overdue"
                 else f"input recheck overdue {age}{why}" if status == "recheck_overdue"
+                else f"needs input with no retry time for {age}{why}" if status == "parked_without_retry"
                 else f"processing with no finished step {age}")
         return f"Atlas preview job {what} at stage {alert.get('phase') or 'unknown'}: {name}{tail}"
     if code == "team_scene_packet_stalled":

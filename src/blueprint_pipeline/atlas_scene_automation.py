@@ -673,10 +673,15 @@ def run_automation(
             )
     except (ValueError, StopIteration) as exc:
         from .atlas_preparation_job_control import _reason
-        from .job_retry_policy import provider_answer, request_cannot_succeed
+        from .job_retry_policy import provider_answer, release_refusal, request_cannot_succeed
         if provider_answer(str(exc)) is not None or request_cannot_succeed(str(exc)):
             # An outside service refused one request (capture-39ecdc97: meta_sam_http_413). That is
             # its answer, not input anyone can give: the job's own retry schedule handles it.
+            raise
+        if release_refusal(str(exc)):
+            # Which release may buy, not input anyone can give (2026-11-19: two jobs parked here with no
+            # retry time while a deploy switched releases): a switch waits as an outage, any other blocker
+            # takes the refusal schedule, and the next attempt runs on the admitted release.
             raise
         if _reason(exc) in MONEY_REFUSALS:
             # The account's month ran out: it waits on the money recheck, never ends here.
