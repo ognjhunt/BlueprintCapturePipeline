@@ -24,7 +24,16 @@ def _texts(rows):
 
 def test_every_estimate_the_pipeline_records_has_a_plain_sentence() -> None:
     from blueprint_pipeline.atlas_scene_estimates import CODES, TASK_OBJECT_BOX_FIT_FLAGS
-    assert CODES | TASK_OBJECT_BOX_FIT_FLAGS <= set(facts.ESTIMATE_SENTENCES)
+    # Or is one of Blueprint's own checks a company cannot act on, which its page leaves out.
+    assert CODES | TASK_OBJECT_BOX_FIT_FLAGS <= set(facts.ESTIMATE_SENTENCES) | facts.UNSAID
+    assert not facts.UNSAID & set(facts.ESTIMATE_SENTENCES)
+
+
+def test_an_estimate_a_company_cannot_act_on_is_left_out_and_never_described_as_unknown() -> None:
+    measured, estimated = facts.measured_and_estimated(
+        LAMP, {"scene_estimates": [{"code": "scene_estimate:review_citations_dropped"}]}, None)
+    texts = " ".join(_texts(estimated))
+    assert "citation" not in texts and "not yet described" not in texts and "scene review" not in texts
 
 
 #: A preparation as test job 4's was (a table lamp to a glass wall shelf, 2026-11-18): every estimate it records.
@@ -47,7 +56,7 @@ def test_each_estimate_says_how_sure_it_is_and_every_estimate_the_preparation_re
     """Job 4's sheet gave the lamp's size bare and left four of the preparation's own estimates out."""
     from blueprint_pipeline.atlas_scene_estimates import preparation_flags, preparation_record_flags
     measured, estimated = facts.measured_and_estimated(LAMP, {"scene_estimates": []}, None)
-    assert _texts(measured) == ["How closely the video's geometry and the reconstruction line up around the task "
+    assert _texts(measured) == ["How closely the video's geometry and the reconstruction line up near the job "
                                 "(registration residual, trimmed RMS): 8 cm, in the scene's estimated metres."]
     estimated = _texts(estimated)
     assert estimated[0] == ("Scale: set by the 3D reconstruction's own estimate, not measured at the site. Sizes, "
@@ -84,7 +93,7 @@ def test_where_the_object_starts_and_goes_how_high_and_how_much_room_there_is() 
     rows = facts.object_lines(LAMP, {"ground_plane_offset_m": 0.0}, None, handoff)
     assert rows == [
         {"text": "Object: table lamp.", "answers": None},
-        {"text": "Rigid or soft: rigid: it keeps its shape when handled (Blueprint's model reading of the video; not "
+        {"text": "Rigid or soft: rigid: it keeps its shape when handled (Blueprint's reading of the video; not "
                  "checked).", "answers": None},
         {"text": "Material, how fragile it is and how it should be held: not recorded.", "answers": None},
         {"text": "Sizes that matter for holding it, from the video: 37 cm across the narrower side of its footprint, "
@@ -101,7 +110,7 @@ def test_where_the_object_starts_and_goes_how_high_and_how_much_room_there_is() 
                  "from the middle of its base to the place point.", "answers": None},
         {"text": "Positions are in the simulation's coordinates, in metres with z up; heights are above the scene's "
                  "floor, which Blueprint levelled to height 0. Each may also be off by about 8 cm, the registration "
-                 "residual near the task.", "answers": None}]
+                 "residual near the job.", "answers": None}]
     assert "PLANTREASON" not in json.dumps(rows)  # the model's own words about the object are not quoted
     # With the fit table: its floor, where a base stands, how wide; never whether one particular gripper fits.
     table = {"rows": [{"checks": [{"check": "stance", "values": {"station_footprint_half_extent_m": [0.15, 0.15]}}]}],

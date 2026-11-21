@@ -92,7 +92,12 @@ def _published(job) -> tuple[dict, dict[str, str]]:
 
 
 def _said(readme: str) -> str:
-    return " ".join(readme.split("\nHow it was made\n", 1)[1].split("\nTerms\n", 1)[0].split())
+    """The README's "How it was made" section as one line: its fixed paragraph, then each note in order, without the
+    notes' own heading or their bullet marks."""
+    section = readme.split("\nHow it was made\n", 1)[1].split("\nTerms\n", 1)[0]
+    lines = [line[2:] if line.startswith("- ") else line for line in section.splitlines()
+             if line != "Notes on this simulation"]
+    return " ".join(" ".join(lines).split())
 
 
 def _record(result) -> dict:
@@ -152,7 +157,7 @@ def test_a_navigation_job_without_one_goal_mask_ships_the_room_with_no_rule(tmp_
      sim.OBJECTS_TAKEN_OUT.format(count=2)),
     ("wiping", (), None, False, "wiping", [handoff.RUNTIME_GAP], None),
     ("rigid_pick_place", CUPS[:1], None, True, "rigid_pick_place", [handoff.MISMATCH],
-     sim.OBJECTS_TAKEN_OUT.format(count=1))],
+     sim.OBJECTS_TAKEN_OUT_ONE)],
     ids=["unknown_kind", "unknown_kind_scene_as_filmed", "several_objects", "family_without_runtime",
          "profile_mechanism_mismatch"])
 def test_a_job_blueprint_has_no_rule_for_ships_the_room_and_says_so(tmp_path, monkeypatch, family, removal, route,

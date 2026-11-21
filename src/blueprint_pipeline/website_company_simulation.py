@@ -106,25 +106,26 @@ MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
 SIZE_RULE = "zip_bytes.v1"
 #: When the zip with the room's look is over the limit, the package is built once more without the look, with the
 #: collision file shown in its place, and says so.
-LOOK_LEFT_OUT = ("The room's photographed look is not in this package: with it the download would have been larger "
-                 "than Blueprint's size limit. The collision file, which holds the room's shape, is shown in its "
-                 "place.")
+LOOK_LEFT_OUT = ("The look file is not in this package: with it the download would have been larger than "
+                 "Blueprint's size limit. The collision file, which holds the room's shape, is shown in its place.")
 #: A look written from its source splat (``look_source``) also ships as the standard 3DGS PLY common splat viewers
 #: open. It is the first thing a zip over the limit gives up: built once more without it, then without the look.
-PLY_LEFT_OUT = ("The room's look is in this package as USD only: with a splat PLY of it as well, the download would "
+PLY_LEFT_OUT = ("The look file is in this package as USD only: with a splat PLY of it as well, the download would "
                 "have been larger than Blueprint's size limit.")
 #: A look whose source splat could not be written again here (missing, changed, over ``website_company_look.REAUTHOR_MAX_SOURCE_BYTES``
-#: or refused by the writer) ships as its half holds it, with no PLY.
-LOOK_AS_FIRST_WRITTEN = ("The room's look is in this package as Blueprint first wrote it, and only as USD: Blueprint "
-                         "could not write it again for this package.")
+#: or refused by the writer) ships as its half holds it, with no PLY. Said as what the reader gets, not how Blueprint
+#: wrote it.
+LOOK_AS_FIRST_WRITTEN = "The look file is included as USD only, in an earlier version."
 #: ... and, when that first writing predates 2026-11-18 (``look_source``'s ``first_rotations_scrambled``):
-ROTATIONS_STORED_WRONG = "That first writing stored each Gaussian's rotation in the wrong order."
+ROTATIONS_STORED_WRONG = ("In that version each Gaussian's rotation is stored in the wrong order, so the look may not "
+                          "show correctly.")
 #: Moves whenever what the builder writes changes, so a package built or refused by the earlier builder is built once
 #: more at the first pass after the release. v2 (2026-11-16): the layer's flatten note naming a host file is
 #: dropped (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a look
 #: is written again from its source splat with the fixed writer (every Gaussian's rotation as given) and also ships
-#: as a standard 3DGS PLY of that source.
-BUILDER_REVISION = "website_company_simulation_builder.v3"
+#: as a standard 3DGS PLY of that source. v4 (2026-11-21): the README speaks to the company in plain words (one name
+#: for the look file, no internal codes, notes as bullets), so packages built with the old README are built once more.
+BUILDER_REVISION = "website_company_simulation_builder.v4"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
@@ -166,31 +167,35 @@ PHYSICS_CHECK_WORDS = {
 FLATTEN_PROVENANCE = "Generated from Composed Stage of root layer "
 #: The stage-4 record of a jointed object (``task_evaluation_articulated_open_close_native_adapter``).
 ARTICULATED_STATIC_SCHEMA = "task_evaluation_articulated_replacement_static_qualification.v1"
-#: ``{count}`` movable items the site agreed to move out of the arm's way (``robot_access_removal``): a count only.
-FURNITURE_REMOVED = ("{count} movable item(s) the site agreed to move are not in the collision file; they still "
-                     "appear in the appearance file.")
-#: The same, for a package built without the appearance file (``LOOK_LEFT_OUT``).
-FURNITURE_REMOVED_NO_LOOK = "{count} movable item(s) the site agreed to move are not in the collision file."
+#: ``{count}`` movable items the site agreed to move out of the arm's way (``robot_access_removal``): a count only,
+#: said in the singular for one (``_counted``).
+FURNITURE_REMOVED = ("{count} movable items the site agreed to move are not in the collision file; they still "
+                     "appear in the look file.")
+FURNITURE_REMOVED_ONE = ("1 movable item the site agreed to move is not in the collision file; it still appears in "
+                         "the look file.")
+#: The same, for a package built without the look file (``LOOK_LEFT_OUT``).
+FURNITURE_REMOVED_NO_LOOK = "{count} movable items the site agreed to move are not in the collision file."
+FURNITURE_REMOVED_NO_LOOK_ONE = "1 movable item the site agreed to move is not in the collision file."
 #: Where a generated estimate of a surface the video did not show sits (``generated_patch``, read from the base scene
 #: the job's scene handoff recorded). The collision mesh is trimmed after registration and nothing checks that the
 #: generated samples survive it, so each sentence names the scan the collision file was made from.
 #: ``collision_only`` (owner 2026-11-17): the look is Atlas's refined splat of the filmed frames.
 GENERATED_COLLISION_ONLY_NOTE = ("The collision file was made from a scan that also holds a generated estimate of "
                                  "a surface the video did not show; that estimate was not filmed, and it is not in "
-                                 "the look.")
+                                 "the look file.")
 #: ``look_and_collision``: no refined splat could be had, so the look is that scan itself.
-GENERATED_LOOK_AND_COLLISION_NOTE = ("The room's look, and the scan the collision file was made from, hold a "
+GENERATED_LOOK_AND_COLLISION_NOTE = ("The look file, and the scan the collision file was made from, hold a "
                                      "generated estimate of a surface the video did not show; that estimate was not "
                                      "filmed.")
-#: Either, for a package built without the appearance file (``LOOK_LEFT_OUT``).
+#: Either, for a package built without the look file (``LOOK_LEFT_OUT``).
 GENERATED_NO_LOOK_NOTE = ("The collision file was made from a scan that holds a generated estimate of a surface the "
                           "video did not show; that estimate was not filmed.")
 #: The destination's surface did not show in the scan and was estimated from its visible edges, then added to the
 #: collision file only (``website_unscanned_surface``; read from the base scene the job's scene handoff recorded).
 SURFACE_ESTIMATED_NOTE = ("The destination shelf or surface the job's object is placed on did not show in the scan "
                           "(glass and other see-through or shiny surfaces often do not); it was estimated from its "
-                          "visible edges in the video. That estimate is in the collision file, not in the look.")
-#: The same, for a package built without the appearance file (``LOOK_LEFT_OUT``).
+                          "visible edges in the video. That estimate is in the collision file, not in the look file.")
+#: The same, for a package built without the look file (``LOOK_LEFT_OUT``).
 SURFACE_ESTIMATED_NO_LOOK_NOTE = ("The destination shelf or surface the job's object is placed on did not show in "
                                   "the scan (glass and other see-through or shiny surfaces often do not); it was "
                                   "estimated from its visible edges in the video. That estimate is in the collision "
@@ -210,14 +215,14 @@ DESTINATION_OVERHANG_NOTE = ("The job's object's footprint is larger than the su
 SIZE_DISAGREES_WITH_PUBLISHED_NOTE = ("The published size of the job's object's exact model disagrees with the size "
                                       "estimated from the video; the object's file keeps the video's estimate.")
 #: The look's refined splat also holds generated views (``atlas_look_views``, ``look_views``): never for a package
-#: built without the appearance file.
-GENERATED_VIEWS_LOOK_NOTE = ("Parts of the room's look were made from generated views of areas the video saw from "
+#: built without the look file.
+GENERATED_VIEWS_LOOK_NOTE = ("Parts of the look file were made from generated views of areas the video saw from "
                              "few angles, checked against the filmed frames and their depth.")
 #: The two places ``generated_patch`` names.
 COLLISION_ONLY, LOOK_AND_COLLISION = GENERATED_IN_COLLISION_ONLY, "look_and_collision"
 #: The look file failed its quality gate (``team_scene_robot_absent.APPEARANCE_QUALITY``) and ships as it is.
-APPEARANCE_QUALITY_NOT_PASSED = ("The appearance file did not pass Blueprint's image quality check; it is included "
-                                 "as it is.")
+APPEARANCE_QUALITY_NOT_PASSED = ("The look file did not pass Blueprint's image quality check; it is included as "
+                                 "it is.")
 #: The half's support record (``task_support_pad``, ``rigid_support_pad.support_rest_check``, read on the CPU) is
 #: ``held``, chosen by its typed reasons: only a corner of the destination region fails
 #: (``rigid_support_goal_region_rest_outside_success_window``), or else the start or the goal centre does. A CPU
@@ -236,7 +241,8 @@ GOAL_ESTIMATED = ("The goal region was estimated from the video; its radius and 
                   "are assumed, not stated by the site.")
 NO_RULE = ("This package includes no success rule from Blueprint for this job; the job as the site described it is "
            "on the job's page.")
-OBJECTS_TAKEN_OUT = "{count} object(s) the job involves were taken out of the room scan and are not in this package."
+OBJECTS_TAKEN_OUT = "{count} objects the job involves were taken out of the room scan and are not in this package."
+OBJECTS_TAKEN_OUT_ONE = "1 object the job involves was taken out of the room scan and is not in this package."
 OBJECTS_IN_SCAN = "The job's objects are part of the room scan; they are not separate files."
 NOT_FOUND = "Blueprint did not find what the job is about in the video."
 NOT_LOCATED = ("Blueprint saw the job's object in the video but could not locate it precisely, so it is not a "
@@ -253,11 +259,13 @@ OBJECT_NOT_PLACED = ("Blueprint did not place the job's object: no surface to st
 OBJECT_NOT_PLACED_FLAGS = frozenset({"support_surface_not_found_under_subject",
                                      "website_synthetic_subject_start_unplaceable"})
 #: Any other blocker a room package shipped for (``website_scene_handoff.goes_on``), from the record's
-#: ``not_prepared``: the piece of the job it left out and its code, as recorded, never a reason.
-NOT_PREPARED = "Blueprint could not prepare the job's {piece} ({codes})."
+#: ``not_prepared``: the piece of the job it left out, never its code (the record keeps the codes) or a reason.
+NOT_PREPARED = "Blueprint could not prepare the job's {piece}."
 NOT_PREPARED_PIECES = ("object", "destination", "success rule")
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."
+#: The half's rule holds the object's mass and friction as ranges estimated from the video.
+OBJECT_ESTIMATES_FROM_VIDEO = "The object's mass and friction in success_rule.json are ranges estimated from the video."
 NOT_FILLED_IN = "Parts of the room the video did not show were not filled in."
 ROOM_RECORD_SCHEMA = "blueprint.room_package_inputs.v1"
 #: A one-object job no task profile models (``website_scene_handoff``; the gaps of its ``ROOM_GAPS``, pinned equal
@@ -1114,7 +1122,8 @@ def _layer_units(path: Path) -> tuple[str | None, float | None]:
     return (str(up) if up else None), (float(metres) if metres is not None else None)
 
 
-_SAYS = {"scene_appearance": "how the site looks", "scene_collision": "the site's surfaces for contact",
+_SAYS = {"scene_appearance": "the look file, which shows how the site looks",
+         "scene_collision": "the site's surfaces for contact",
          "task_object": "the job's object, at its start position", "task_support": "the surface the object goes on",
          "replacement": "a stand-in part of the site"}
 
@@ -1141,8 +1150,14 @@ def _root_offset(path: Path) -> dict[str, list[float]] | None:
             "rotation_xyzw": [round(value, 6) for value in xyzw]}
 
 
+def _counted(many: str, one: str, count: int) -> str:
+    """A note with a count, in the singular for one."""
+    return one if count == 1 else many.format(count=count)
+
+
 def _stated(up: str | None, metres: float | None) -> str:
-    stated = [f"up axis {up}" if up else None, f"{metres:g} metres per unit" if metres is not None else None]
+    unit = None if metres is None else f"{metres:g} {'metre' if metres == 1 else 'metres'} per unit"
+    stated = [f"up axis {up}" if up else None, unit]
     return " and ".join(item for item in stated if item) or "no up axis or unit"
 
 
@@ -1154,15 +1169,15 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     written again, so their looks ship as first written."""
     plys, first_written = plys or {}, first_written or {}
     room, withheld = source.get("room"), bool(source.get("rule_withheld"))
-    what = (["A simulation of the site a deployment company was asked about, with the job's object in it at its",
+    what = (["A simulation of the site for this job, with the job's object in it at its",
              "start position as estimated from the video. Test in your own tools."] if withheld else
-            ["A simulation of the site a deployment company was asked about, with the job's object in it,",
-             "and the rule for what counts as the job done. Test in your own tools."] if room is None else
-            ["A simulation of the site a deployment company was asked about, with the job's goal region and an",
-             "assumed rule for reaching it. Test in your own tools."] if room["success_rule_defined"] else
-            ["A simulation of the site a deployment company was asked about. The job, as the site described it,",
-             "is on the job's page. Test in your own tools."])
-    lines = ["Simulation of one job", "", "What this is", "", *what, "",
+            ["A simulation of the site for this job, with the job's object in it, and the rule for what counts",
+             "as the job done. Test in your own tools."] if room is None else
+            ["A simulation of the site for this job, with the job's goal region and an assumed rule for reaching",
+             "it. Test in your own tools."] if room["success_rule_defined"] else
+            ["A simulation of the site for this job. The job, as the site described it, is on the job's page.",
+             "Test in your own tools."])
+    lines = ["Simulation of the site", "", "What this is", "", *what, "",
              "How the pieces fit", "",
              "- scene.usda: open this one. It places every part below at its position, in /World."]
     hidden = []
@@ -1197,9 +1212,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                   + "). Where a tool places a file's root at the",
                   "part's position instead of under it, this part lands somewhere else: check it."]
     for prim in hidden:
-        lines += [f"/World/{prim} is in the scene but hidden, as in Blueprint's simulation, where it is used for",
-                  "contact and not drawn. To see it, set its visibility to inherited (in usdview: select it and",
-                  "press Make Visible)."]
+        lines += [f"/World/{prim} is hidden: it is for contact, not for display.",
+                  "To see it, set its visibility to inherited (in usdview: select it and press Make Visible)."]
     lines += ["", "Units and axes", "", "- scene.usda is in metres (1 unit is 1 metre), radians and seconds.",
               f"- Up is +{source['axis']} in scene.usda."]
     for prim, relative in placed.items():
@@ -1209,7 +1223,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                   f"  applied), in its frame: {_stated(*units[prim])}. A PLY states no axis, so a viewer that",
                   "  assumes another up axis shows it turned."]
     if source.get("appearance_representation") == "particlefield_3d_gaussian_splat" and not source.get("look_left_out"):
-        lines += ["- The room's look is a 3D Gaussian splat stored as USD particle fields. Some tools cannot show",
+        lines += ["- The look file is a 3D Gaussian splat stored as USD particle fields. Some tools cannot show",
                   "  it; the hidden collision part holds the room's geometry."]
     lines += ["", "How it was made", "",
               "Built from one phone video of the site. Sizes, distances and positions are estimates from that",
@@ -1223,8 +1237,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                                                                         for row in first_written.values()) else [])]
                if first_written and not source.get("look_left_out") else []),
              *(PHYSICS_CHECK_WORDS.get(source.get("physics_check")) or ()),
-             *([(FURNITURE_REMOVED_NO_LOOK if source.get("look_left_out") else FURNITURE_REMOVED).format(
-                 count=source["removed_items"])] if source.get("removed_items") else []),
+             *([_counted(*((FURNITURE_REMOVED_NO_LOOK, FURNITURE_REMOVED_NO_LOOK_ONE) if source.get("look_left_out")
+                           else (FURNITURE_REMOVED, FURNITURE_REMOVED_ONE)), source["removed_items"])]
+               if source.get("removed_items") else []),
              *([APPEARANCE_QUALITY_NOT_PASSED] if source.get("appearance_quality") else []),
              *([GENERATED_VIEWS_LOOK_NOTE] if source.get("look_views") and not source.get("look_left_out") else []),
              *([GENERATED_NO_LOOK_NOTE if source.get("look_left_out")
@@ -1242,21 +1257,24 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_LOCATED] if room.get("not_located") else []),
                 *([OBJECT_NOT_PREPARED] if room.get("object_not_prepared") else []),
                 *([OBJECT_NOT_PLACED] if room.get("object_not_placed") else []),
-                *[NOT_PREPARED.format(piece=piece, codes=", ".join(code for named, code in room["not_prepared"]
-                                                                 if named == piece))
-                  for piece in NOT_PREPARED_PIECES
+                *[NOT_PREPARED.format(piece=piece) for piece in NOT_PREPARED_PIECES
                   if any(named == piece for named, _code in room.get("not_prepared") or [])],
-                *([OBJECTS_IN_SCAN if room["objects_in_scan"] else OBJECTS_TAKEN_OUT.format(count=room["objects"])]
+                *([OBJECTS_IN_SCAN if room["objects_in_scan"]
+                   else _counted(OBJECTS_TAKEN_OUT, OBJECTS_TAKEN_OUT_ONE, room["objects"])]
                   if room.get("objects") else []),
                 *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),
                 *([NOT_FILLED_IN] if room.get("not_filled_in") else [])] if room is not None else []),
-             *([NO_RULE] if withheld else [])]
-    lines += textwrap.wrap(" ".join(notes), width=100) if notes else []
-    if (source.get("rule") or {}).get("object_estimates_from_video"):
-        lines.append("The object's mass and friction in success_rule.json are ranges estimated from the video.")
+             *([NO_RULE] if withheld else []),
+             *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else [])]
+    # One bullet per note, under its own heading, so a reader can pick out the ones that matter.
+    if notes:
+        lines += ["", "Notes on this simulation", ""]
+        for note in notes:
+            lines += textwrap.wrap(note, width=100, initial_indent="- ", subsequent_indent="  ",
+                                   break_long_words=False, break_on_hyphens=False)
     lines += ["", "Terms", "",
-              "This package is for judging this one job. Do not pass it on and do not use it to train software.",
-              "Blueprint may ask you to delete it; then delete every copy.", ""]
+              "Use this package only to decide whether you can do this job. Do not pass it on and do not use it",
+              "to train software. Blueprint may ask you to delete it; then delete every copy.", ""]
     return "\n".join(lines)
 
 
