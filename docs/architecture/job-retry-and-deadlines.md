@@ -254,15 +254,18 @@ preparation (`website_scene_handoff.goes_on`), a blocker ships the room package,
 buys nothing more, unless it is a wall (`hard_stops.is_wall`, or a code the retry policy reads as
 privacy, rights, money or the owner's closing of the run), the job's sentence is still to come, only
 a new video clears it, the job is a development test, or the room package would be wrong
-(`KEEP_HOLDING`: the job's record or inputs are bad or unsafe to read, or the room's inputs are not
-ready, read from the codes' own wording: a changed or mismatched record, a path outside the
-capture, an invalid or missing receipt, a step still pending), judged on every `:`-separated part of
-the code. Only facts about the job's own scene or wording that compile finds
+(`KEEP_HOLDING_SUFFIXES`, since 2026-11-22 only codes that protect privacy or money, read from the
+codes' own wording: privacy, a changed or mismatched record or a path outside the capture, which may
+be another job's, and a step still pending, which covers the clean plate's privacy check; money, an
+invalid or missing receipt or paid result, a call that needs reconciling, an invalid settlement),
+judged on every `:`-separated part of the code. Only facts about the job's own scene or wording that compile finds
 (`website_task_preparation.SCENE_FACT_BLOCKERS`) ship at once, and the end of a provider's bound of
 unanswered sends. Everything else, an unknown code included (a configuration fault, a missing key or
 profile, a website refusal, an outage, a defect with no typed code: `website_preparation_defect`),
-waits until the job's window, read when it fails, ends within two hours, then ships the same; the
-retry lane runs a waiting job once more in that last stretch, and `preparation_fault_alert` pages the
+ships the same once the run that fails is the last of its first retry cycle (since 2026-11-22: six
+failed attempts in a row already, the first of them at least the whole six-step schedule, about 46
+hours, ago; `website_scene_handoff.first_retry_cycle_spent`), or earlier if the job's window, read
+when it fails, ends within two hours; the retry lane runs a waiting job once more in that last stretch, and `preparation_fault_alert` pages the
 faults ours to fix. The rule covers preparation and compile only: once the prepared scene is sent to
 the website, or may have been (a marker written before the write and settled by the answer, or an
 earlier handoff's receipt kept as that marker), a failure keeps the job waiting. The record names each piece left out (object, destination,
