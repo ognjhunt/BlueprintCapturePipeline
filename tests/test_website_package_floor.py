@@ -1,4 +1,5 @@
-"""The package floor: a routed job's room ships once its object path stops, and gives way to the half.
+"""The package floor: a routed job's room ships while its object is built or once its path stops, and gives way
+to the half.
 
 The job's own scene intent decides (``website_company_simulation.object_path_stopped``); the floor record is the
 real room writer's (``website_scene_handoff.write_room_package``) on the shared appearance fixture, and the company
@@ -121,9 +122,8 @@ def test_a_stopped_object_path_ships_the_room_floor_once(tmp_path, monkeypatch, 
     assert world.publish()["status"] == "current" and len(world.delivered) == 1
 
 
-MOVING = {
+BUILDING = {
     "running": lambda floor: floor.started(),
-    "intent_not_yet_made": lambda floor: floor.age(DAY - 60),
     # Queued for a day: ``enqueue_team_scene_request`` writes only ``pending/``; the worker writes its status when
     # it claims the request.
     "half_queued": lambda floor: (floor.completed({"status": "enqueued", "request_key": "k" * 32}),
@@ -131,6 +131,25 @@ MOVING = {
                                   os.utime(floor.directory / "progression.json", (NOW - DAY, NOW - DAY))),
     "half_claimed": lambda floor: (floor.completed({"status": "enqueued", "request_key": "k" * 32}),
                                    _write(floor.job.queue / "status" / f"{'k' * 32}.json", {"status": "processing"})),
+}
+
+
+@pytest.mark.parametrize("state", sorted(BUILDING))
+def test_a_room_ships_flagged_while_its_object_is_still_being_built(tmp_path, monkeypatch, state):
+    """C-01: the room is ready, so it ships now, flagged; nothing waits on the GPU build of the object."""
+    floor = Floor(tmp_path, monkeypatch)
+    BUILDING[state](floor)
+    world = World(floor.job)
+    assert world.publish()["status"] == "published"
+    manifest = _manifest(floor.job)
+    assert manifest["source_kind"] == "floor" and manifest["floor_reason"] == sim.OBJECT_IN_PROGRESS
+    readme = _readme(floor.job)
+    assert sim.OBJECTS_TAKEN_OUT_ONE in readme and sim.NO_RULE in readme
+    assert world.publish()["status"] == "current" and len(world.delivered) == 1
+
+
+MOVING = {
+    "intent_not_yet_made": lambda floor: floor.age(DAY - 60),
     "half_retry_armed": lambda floor: (floor.completed({"status": "enqueued", "request_key": "k" * 32}),
                                        _write(floor.job.queue / "status" / f"{'k' * 32}.json",
                                               {"status": "blocked", "blockers": ["team_scene_packet_failed:x"]})),
@@ -140,7 +159,7 @@ MOVING = {
 
 
 @pytest.mark.parametrize("state", sorted(MOVING))
-def test_an_object_path_still_moving_or_ended_by_rights_ships_nothing(tmp_path, monkeypatch, state):
+def test_an_object_path_not_yet_known_or_ended_by_rights_ships_nothing(tmp_path, monkeypatch, state):
     floor = Floor(tmp_path, monkeypatch)
     MOVING[state](floor)
     world = World(floor.job)
@@ -412,13 +431,15 @@ def test_a_served_floor_whose_path_moves_again_still_follows_revoked_rights(tmp_
         _hold(floor, monkeypatch, "released")
     else:
         (floor.directory / "outcome.json").unlink()  # the row moves again: its outcome is removed
-    assert _at(world, 3600) == {"status": "no_source"}  # rights still hold: it stays out
+    # Rights still hold: it stays out (a row building again keeps its room as the source, C-01).
+    after = "current" if moves == "money_granted" else "no_source"
+    assert _at(world, 3600)["status"] == after
     assert world.retracted == []
     world.rights = REVOKED
     assert _at(world, 7 * 3600)["status"] == "refused"
     assert len(world.retracted) == 1
     for hours in (13, 30, 72):
-        assert _at(world, hours * 3600) == {"status": "no_source"}
+        assert _at(world, hours * 3600)["status"] == ("refused" if moves == "money_granted" else "no_source")
     assert len(world.retracted) == 1
 
 
