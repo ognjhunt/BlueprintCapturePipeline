@@ -464,6 +464,74 @@ def test_the_tick_covers_a_capture_handed_off_before_normalization(tmp_path):
     assert counts == {"published": 1} and _manifest(legacy)["source"] == "raw_upload"
 
 
+def _handed_off_only(tmp_path: Path, *, version: str = SHARED, staged_size: int | None = None,
+                     size: str = "1920x1080") -> Path:
+    """A new capture right after the upload hand-off: staged, no normalization record, no derived folder,
+    no preparation admitted: ``pipeline/`` holds only what the hand-off keeps before the paid grant is read."""
+    capture = _capture(tmp_path, version=version, size=size, normalized=False)
+    shutil.rmtree(capture / "pipeline")
+    _write(capture / "pipeline/website_task_context.json", {})
+    raw = capture / "raw/walkthrough.mp4"
+    _write(capture / clip.STAGING_MANIFEST_FILE, {"objects": [
+        {"name": "scenes/site-req1/captures/walkthrough-req1/raw/walkthrough.mp4",
+         "relative_path": "raw/walkthrough.mp4",
+         "size": raw.stat().st_size if staged_size is None else staged_size}]})
+    return capture
+
+
+def test_the_staging_manifest_name_is_the_hand_offs_own():
+    from blueprint_pipeline.pubsub_handoff_listener import STAGING_MANIFEST_FILENAME
+    assert clip.STAGING_MANIFEST_FILE == STAGING_MANIFEST_FILENAME
+
+
+def test_a_job_handed_off_with_no_preparation_admitted_gets_its_clip_from_the_upload(tmp_path):
+    capture = _handed_off_only(tmp_path, size="2560x1440")
+    world = World()
+    assert clip.capture_roots(tmp_path / "storage") == [capture]
+    counts = clip.tick(tmp_path / "storage", check_rights=world.check_rights, archive=world.archive,
+                       retract=world.retract, deliver=world.deliver, now=lambda: NOW)
+    assert counts == {"published": 1} and world.rights_reads == 1 and len(world.delivered) == 1
+    assert _manifest(capture)["source"] == "raw_upload"
+    made = capture.joinpath(*clip.DIRECTORY) / clip.CLIP_FILE
+    assert _audio_streams(made) == 0 and world.delivered[0]["digest"] != _sha(capture / "raw/walkthrough.mp4")
+    # Building the clip starts no normalization and leaves preparation's choice of source as it was.
+    assert not (capture / "pipeline/source_video").exists()
+    from blueprint_pipeline.website_source_video import DERIVED_ARTIFACT_DIRS
+    assert not any((capture / "pipeline" / name).exists() for name in DERIVED_ARTIFACT_DIRS)
+    # When preparation later normalizes (this upload is over its bounds), the clip is rebuilt from that.
+    from blueprint_pipeline.website_source_video import preparation_source_video
+    preparation_source_video(capture_root=capture, raw_video=capture / "raw/walkthrough.mp4")
+    assert world.publish(capture)["status"] == "published" and _manifest(capture)["source"] == "normalized"
+
+
+def test_a_job_handed_off_without_the_sharing_permission_still_gets_no_clip(tmp_path):
+    capture = _handed_off_only(tmp_path, version=OLDER)
+    world = World(rights=_rights(OLDER))
+    assert world.publish(capture) == {"status": "not_permitted"}
+    assert world.archived == [] and world.delivered == []
+    assert not (capture.joinpath(*clip.DIRECTORY) / clip.CLIP_FILE).exists()
+
+
+def test_a_withdrawn_job_handed_off_with_no_preparation_gets_no_clip(tmp_path):
+    capture = _handed_off_only(tmp_path)
+    _withdraw(capture)
+    world = World()
+    assert world.publish(capture) == {"status": "withdrawn"}
+    assert world.rights_reads == 0 and world.archived == [] and world.delivered == []
+
+
+@pytest.mark.parametrize("case", ["not_staged", "still_downloading", "no_task_context_kept"])
+def test_an_upload_the_hand_off_has_not_finished_staging_is_no_source(tmp_path, case):
+    capture = _handed_off_only(tmp_path, staged_size=10**9 if case == "still_downloading" else None)
+    if case == "not_staged":
+        (capture / clip.STAGING_MANIFEST_FILE).unlink()
+    elif case == "no_task_context_kept":
+        shutil.rmtree(capture / "pipeline")
+    world = World()
+    assert world.publish(capture) == {"status": "no_source"}
+    assert world.rights_reads == 0 and world.archived == [] and world.delivered == []
+
+
 def test_a_failed_make_never_raises_and_is_retried_by_the_next_pass(capture, monkeypatch):
     real = clip._encode
 
