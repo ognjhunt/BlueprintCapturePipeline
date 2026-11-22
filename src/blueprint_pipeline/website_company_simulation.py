@@ -389,6 +389,8 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
 
 #: The room record a routed job's handoff seals for its package floor (``website_scene_handoff``), flagged so.
 FLOOR_FLAG = "object_not_built"
+#: The floor's reason while the job's object is still being built: the room ships now, flagged, not after the build.
+OBJECT_IN_PROGRESS = FLOOR_FLAG + ":object_build_in_progress"
 #: The scene intents (``task_evaluation_scene_intake``); tests point it elsewhere.
 INTENT_ROOT: Path | None = None
 DEFAULT_INTENT_ROOT = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"
@@ -412,9 +414,12 @@ def _scene_hold(intent_id: str) -> dict[str, Any]:
 
 
 def object_path_stopped(root: Path, handoff: Mapping[str, Any], *, queue_root: Path, now: float) -> str | None:
-    """Why the job's object is not being built any more (``object_not_built:<code>``: its room floor ships), or
-    None while its object path still moves by itself, or ``floor_unclassified:<code>`` when its state cannot be
-    read or bound to this job (nothing ships; the pass says so).
+    """Why the job's object is not in its package (``object_not_built:<code>``: its room floor ships), or None when
+    privacy, rights or consent ended its path or its state is not yet known, or ``floor_unclassified:<code>`` when
+    its state cannot be read or bound to this job (nothing ships; the pass says so).
+
+    An object still being built (``OBJECT_IN_PROGRESS``) is a reason too: the room ships flagged at once, and the
+    compiled half replaces it when it arrives (``package_source``); nothing waits on the GPU build (C-01).
 
     Read through the job's own scene intent, the one its handoff's intake receipt names and whose request it
     sealed, never the capture's other intents (a release retires and replaces them). The floor ships only when
@@ -455,7 +460,7 @@ def object_path_stopped(root: Path, handoff: Mapping[str, Any], *, queue_root: P
         return "object_not_built:" + outcome["reason_code"]
     progression = _read(directory / "progression.json")
     if progression.get("status") != "completed":
-        return None  # queued, running, a capacity wait or a receipt still pending
+        return OBJECT_IN_PROGRESS  # queued, running, a capacity wait or a receipt still pending
     asked = ((progression.get("state") or {}).get("scene_preparation_completion") or {}).get("team_scene_request")
     asked = asked if isinstance(asked, Mapping) else {}
     if asked.get("status") in ("not_configured", "not_a_website_scene", "not_enqueued"):
@@ -464,10 +469,10 @@ def object_path_stopped(root: Path, handoff: Mapping[str, Any], *, queue_root: P
     status = _read(Path(queue_root) / "status" / f"{key}.json") if isinstance(key, str) else {}
     if not status:
         if any((Path(queue_root) / state / f"{key}.json").is_file() for state in ("pending", "processing")):
-            return None  # queued for the worker, which writes its status when it claims the request
+            return OBJECT_IN_PROGRESS  # queued for the worker, which writes its status when it claims the request
         return unclear(directory / "progression.json", "half_not_enqueued")
     if status.get("status") in ("pending", "processing"):
-        return None
+        return OBJECT_IN_PROGRESS
     if status.get("status") == "skipped":
         return "object_not_built:" + str(status.get("reason") or "team_scene_skipped")
     if status.get("status") == "blocked":

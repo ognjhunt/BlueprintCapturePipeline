@@ -814,8 +814,8 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         return result
 
     def room_floor() -> None:
-        # Kept beside the object's own route, CPU only: the company builder ships it only once that route stops
-        # (``website_company_simulation.object_path_stopped``). Never a stop of its own.
+        # Kept beside the object's own route, CPU only: the company builder ships it, flagged, while that route
+        # runs or once it stops (``website_company_simulation.object_path_stopped``). Never a stop of its own.
         try:
             record = write_room_floor(now=now, task_context=context, base_scene=base,
                                       source_geometry=atlas["source_geometry"], removal=removal,
