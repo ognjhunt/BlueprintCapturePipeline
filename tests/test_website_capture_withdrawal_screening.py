@@ -697,3 +697,17 @@ def test_a_later_run_does_not_report_attempts_an_earlier_run_deleted(world, scre
     receipt = base._apply(world, plan)
     assert "beta_screening_allocated_attempt_directory_absent" not in {row["holder"] for row in receipt["remaining"]}
     assert screening.incomplete(plan["screening"]) is False and receipt["covered_copies_deleted"] is True
+
+
+def test_a_ledger_above_the_retired_site_limit_still_reads_for_withdrawal_and_accounting(tmp_path):
+    # G-07: screening can no longer spend, so the reader enforces no site limit; a ledger that once
+    # committed more than the old $30 still reads, and its money still counts.
+    queue = tmp_path / "queue"
+    (queue / "attempts").mkdir(parents=True)
+    attempts = {f"cand-{n}": {"status": "completed", "blockers": [], "attempt": _attempt(
+        f"attempt-{n}", None, "committed", **_settled(f"attempt-{n}", "4", "4"))} for n in range(9)}
+    _save(queue, {"schema_version": coordinator.LEDGER_SCHEMA,
+                  "campaigns": {"screening-site-big": _campaign(SITE, "sha256:" + "a" * 64, attempts)}})
+    budget = coordinator._budget(coordinator._ledger(queue), SITE)
+    assert budget["spent_upper_bound_usd"] == "36" and "limit_usd" not in budget
+    assert not hasattr(coordinator, "SITE_LIMIT")

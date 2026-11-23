@@ -18,7 +18,7 @@ from fastapi import Request
 from blueprint_pipeline import permission_recheck
 from blueprint_pipeline import website_company_clip as clip
 from tests.test_website_company_clip import (
-    NOW, OLDER, SHARED, World, _Bucket, _capture, _manifest, _owned_list, _rights, _sha, _withdraw,
+    NOW, OLDER, SHARED, World, _Bucket, _capture, _manifest, _rights, _withdraw,
 )
 
 pytestmark = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
@@ -54,11 +54,6 @@ def _recheck(client, capture_id: str = "walkthrough-req1", request_id: str = "re
                        headers=headers)
 
 
-def _owned_row(capture: Path) -> dict:
-    return {"capture_id": "walkthrough-req1", "approved_by": "owner", "approved_on": "2026-11-12", "evidence": "t",
-            "video_sha256_prefix": _sha(capture / "raw/walkthrough.mp4")[7:19]}
-
-
 def test_a_recheck_rereads_the_rights_and_keeps_a_refusal_while_they_are_unchanged(tmp_path, monkeypatch):
     # A website that keeps asking for a recheck while it keeps refusing does not set the pace of uploads:
     # each recheck makes the pass read the live rights again, and unchanged rights keep the refusal.
@@ -83,14 +78,14 @@ def test_a_recheck_rereads_the_rights_and_keeps_a_refusal_while_they_are_unchang
     assert json.loads(mark.read_text())["requested_at_epoch"] == NOW + 61 * 4
 
 
-def test_the_reference_capture_owned_then_refused_then_v4_after_a_recheck(tmp_path, monkeypatch):
-    # The owner's reference job: shared as Blueprint's own, which the website does not accept; then the
-    # owner accepts the sharing statement on the job page and the website asks for a recheck.
+def test_the_reference_capture_not_shared_then_v4_after_a_recheck(tmp_path, monkeypatch):
+    # The owner's reference job: under an older statement nothing is built (the Pipeline no longer treats
+    # Blueprint's own video as shareable, C-10); then the owner accepts the sharing statement on the job page
+    # and the website asks for a recheck.
     capture = _capture(tmp_path, version=OLDER)
-    monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, [_owned_row(capture)]))
-    world = World(rights=_rights(OLDER), delivery_error=REFUSED)
-    assert world.publish(capture)["status"] == "refused"
-    assert _manifest(capture)["refused_by_webapp"] and world.objects == {}
+    world = World(rights=_rights(OLDER))
+    assert world.publish(capture) == {"status": "not_permitted"}
+    assert world.archived == [] and world.objects == {}
     world.rights, world.delivery_error = _rights(SHARED), None
     monkeypatch.setattr(permission_recheck.time, "time", lambda: NOW + 30)
     assert _recheck(_client(tmp_path / "storage", monkeypatch)).status_code == 202
