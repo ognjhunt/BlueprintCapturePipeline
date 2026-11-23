@@ -2,7 +2,10 @@
 
 Fetching: only from an allow-listed host (``ALLOWED_HOSTS``) through the pipeline's outbound boundary
 (``safe_outbound_http.download_file``), every file size-capped and checked against the sha256 the catalog pinned, and
-cached by that digest, so a rerun downloads nothing and a changed file is never used.
+cached by that digest, so a rerun downloads nothing and a changed file is never used. A Google Scanned Objects model
+is its OBJ mesh. A SimReady package is its bill of materials (pinned by the catalog) and every USD layer the bill
+lists, each pinned by the bill, kept at its own path and composed with ``pxr`` (payloads loaded, instances expanded,
+guides and hidden meshes left out) into one mesh in metres with Z up: converted from USD, its materials not carried.
 
 Sizing (``library_design``, from compile's estimated bounds of the object): the model is used at its own size when
 every side is within the metric envelope's tolerance of the estimate (the authoring step checks the same), turned a
@@ -20,9 +23,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import math
 import urllib.parse
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -31,8 +35,14 @@ from .decision_evidence_contracts import canonical_digest
 
 GENERATOR = "website_library_asset.v1"
 SOURCE = "library"
-#: The only hosts a library file is fetched from.
-ALLOWED_HOSTS = frozenset({"fuel.gazebosim.org"})
+#: The only hosts a library file is fetched from: Gazebo Fuel (Google Scanned Objects) and Hugging Face (SimReady).
+ALLOWED_HOSTS = frozenset({"fuel.gazebosim.org", "huggingface.co"})
+#: The hosts Hugging Face redirects a large file's bytes to (its content delivery). A fetch may follow a redirect only
+#: to one of these, sending no header but its user agent, and the bytes must still match the pinned sha256. Seen on
+#: 2026-11-23: ``us.aws.cdn.hf.co``; the others are Hugging Face's other published content hosts. A redirect anywhere
+#: else fails the fetch, which is recorded, and the next source is tried.
+CONTENT_HOSTS = frozenset({"us.aws.cdn.hf.co", "eu.aws.cdn.hf.co", "cas-bridge.xethub.hf.co", "cdn-lfs.hf.co",
+                           "cdn-lfs-us-1.hf.co", "cdn-lfs-eu-1.hf.co", "cdn-lfs.huggingface.co"})
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_THUMBNAIL_BYTES = 4 * 1024 * 1024
 THUMBNAIL_SIDE = 256
@@ -53,12 +63,13 @@ def _sha256(path: Path) -> str:
 
 
 def download(url: str, target: Path, *, sha256: str, max_bytes: int) -> None:
-    """One pinned file through the outbound boundary: https, an allowed host, same-origin redirects only."""
+    """One pinned file through the outbound boundary: https, an allowed host, its same-origin redirects, and a
+    redirect to a content host (``CONTENT_HOSTS``) only."""
     from .safe_outbound_http import OutboundHttpPolicy, download_file
     download_file(url, output_path=target, expected_sha256="sha256:" + sha256, max_bytes=max_bytes,
                   timeout_seconds=TIMEOUT_SECONDS, headers={"User-Agent": "blueprint-object-library/1"},
                   policy=OutboundHttpPolicy(allowed_hosts=ALLOWED_HOSTS, follow_same_origin_redirects=True,
-                                            max_response_bytes=max_bytes))
+                                            max_response_bytes=max_bytes, redirect_hosts=CONTENT_HOSTS))
 
 
 def fetch_pinned(row: Mapping[str, Any], cache_root: Path, *, fetch: Callable[..., Any] | None = None,
@@ -73,7 +84,14 @@ def fetch_pinned(row: Mapping[str, Any], cache_root: Path, *, fetch: Callable[..
             or len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256)):
         raise ValueError("library_file_too_large" if isinstance(size, int) and size > max_bytes
                          else "library_file_record_invalid")
-    target = Path(cache_root) / f"{sha256}{row.get('suffix') or ''}"
+    relative = row.get("relative_path")
+    if relative is not None:  # a file a package's layers name by path keeps that path under the package's folder
+        parts = PurePosixPath(str(relative))
+        if parts.is_absolute() or ".." in parts.parts or not parts.parts:
+            raise ValueError("library_file_record_invalid")
+        target = Path(cache_root).joinpath(*parts.parts)
+    else:
+        target = Path(cache_root) / f"{sha256}{row.get('suffix') or ''}"
     if target.is_file() and not target.is_symlink() and _sha256(target) == sha256:
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -84,9 +102,44 @@ def fetch_pinned(row: Mapping[str, Any], cache_root: Path, *, fetch: Callable[..
     return target
 
 
+#: A SimReady package's USD layers, all together, are fetched only up to this size.
+MAX_PACKAGE_LAYER_BYTES = 256 * 1024 * 1024
+USD_SUFFIXES = (".usd", ".usda", ".usdc")
+
+
+def _simready_rows(chosen: Mapping[str, Any], cache_root: Path, fetch: Callable[..., Any] | None
+                   ) -> list[dict[str, Any]]:
+    """A SimReady package's bill of materials (pinned by the catalog), then every USD layer it lists outside its
+    thumbnails, each pinned by the bill's sha256 and kept at its own path so the root composes as published. Its
+    textures and materials are not fetched: the model is used for its shape."""
+    bom_row, package = chosen["files"][0], chosen["package"]
+    folder = Path(cache_root) / bom_row["sha256"][:16]
+    bom = fetch_pinned(bom_row, folder, fetch=fetch)
+    items = json.loads(bom.read_text())["items"]
+    layers = [item for item in items if PurePosixPath(item["relative_path"]).suffix.lower() in USD_SUFFIXES
+              and ".thumbs" not in PurePosixPath(item["relative_path"]).parts]
+    if sum(int(item["size"]) for item in layers) > MAX_PACKAGE_LAYER_BYTES:
+        raise ValueError("library_file_too_large")
+    rows = [{"role": "bom", "path": str(bom), "sha256": bom_row["sha256"], "size_bytes": bom_row["size_bytes"],
+             "suffix": ".json"}]
+    for item in sorted(layers, key=lambda value: value["relative_path"]):
+        relative = str(item["relative_path"])
+        row = {"role": "root" if relative == package["root"] else "layer",
+               "url": package["base_url"] + urllib.parse.quote(relative), "sha256": str(item["hash"]["sha256"]),
+               "size_bytes": int(item["size"]), "relative_path": relative}
+        path = fetch_pinned(row, folder / "package", fetch=fetch)
+        rows.append({**{key: row[key] for key in ("role", "sha256", "size_bytes", "relative_path")},
+                     "path": str(path), "suffix": PurePosixPath(relative).suffix.lower()})
+    if sum(row["role"] == "root" for row in rows) != 1:
+        raise ValueError("library_root_usd_missing")
+    return rows
+
+
 def fetch_files(chosen: Mapping[str, Any], cache_root: Path, *, fetch: Callable[..., Any] | None = None
                 ) -> list[dict[str, Any]]:
     """Every file of the chosen model, fetched and checked: its role, path, sha256 and size."""
+    if chosen.get("format") == "simready_usd":
+        return _simready_rows(chosen, cache_root, fetch)
     return [{"role": row["role"], "path": str(fetch_pinned(row, cache_root, fetch=fetch)), "sha256": row["sha256"],
              "size_bytes": row["size_bytes"], "suffix": row.get("suffix") or ""}
             for row in chosen["files"]]
@@ -131,11 +184,61 @@ def read_obj(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return points, triangles
 
 
+def read_usd(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Every mesh a USD stage shows, composed (payloads loaded, instances expanded), in its world placement, as one set
+    of vertices in metres with Z up and triangles; guides, proxies and hidden meshes are left out, as are materials."""
+    from pxr import Usd, UsdGeom
+    stage = Usd.Stage.Open(str(path), load=Usd.Stage.LoadAll)
+    if stage is None:
+        raise ValueError("library_mesh_unreadable")
+    metres, up = float(UsdGeom.GetStageMetersPerUnit(stage)), str(UsdGeom.GetStageUpAxis(stage))
+    if not metres > 0 or up not in ("Y", "Z"):
+        raise ValueError("library_mesh_frame_unknown")
+    cache = UsdGeom.XformCache()
+    points: list[np.ndarray] = []
+    triangles: list[np.ndarray] = []
+    count = 0
+    for prim in Usd.PrimRange(stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()):
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        shown = UsdGeom.Imageable(prim)
+        if (shown.ComputeVisibility() == UsdGeom.Tokens.invisible
+                or shown.ComputePurpose() in (UsdGeom.Tokens.guide, UsdGeom.Tokens.proxy)):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        local, counts = mesh.GetPointsAttr().Get(), mesh.GetFaceVertexCountsAttr().Get()
+        indices = mesh.GetFaceVertexIndicesAttr().Get()
+        if not local or not counts or not indices:
+            continue
+        matrix = np.asarray(cache.GetLocalToWorldTransform(prim), dtype=float)  # row vectors, translation last
+        placed = np.asarray(local, dtype=float) @ matrix[:3, :3] + matrix[3, :3]
+        flat, sizes, start = np.asarray(indices, dtype=np.int64), np.asarray(counts, dtype=np.int64), 0
+        if (sizes == 3).all() and len(flat) == 3 * len(sizes):
+            triangles.append(flat.reshape(-1, 3) + count)
+        else:
+            for corners in sizes:
+                face = flat[start:start + corners]
+                triangles += [np.array([[face[0], face[i], face[i + 1]]]) + count for i in range(1, corners - 1)]
+                start += corners
+        points.append(placed)
+        count += len(placed)
+    if not points or not triangles:
+        raise ValueError("library_mesh_unreadable")
+    vertices = np.concatenate(points) * metres
+    if up == "Y":  # a quarter turn about X takes Y up to Z up
+        vertices = np.stack([vertices[:, 0], -vertices[:, 2], vertices[:, 1]], axis=1)
+    faces = np.concatenate(triangles)
+    if not np.isfinite(vertices).all() or faces.min() < 0 or faces.max() >= len(vertices):
+        raise ValueError("library_mesh_unreadable")
+    return vertices, faces
+
+
 #: How each model format becomes vertices (metres, Z up) and triangles.
 READERS: dict[str, Callable[[Sequence[Mapping[str, Any]]], tuple[np.ndarray, np.ndarray]]] = {
-    "obj": lambda files: read_obj(Path(next(row["path"] for row in files if row["role"] == "mesh")))}
+    "obj": lambda files: read_obj(Path(next(row["path"] for row in files if row["role"] == "mesh"))),
+    "simready_usd": lambda files: read_usd(Path(next(row["path"] for row in files if row["role"] == "root")))}
 #: What converting each format to USD is called in the record and the package's credit.
-CONVERTED_FROM = {"obj": "OBJ"}
+CONVERTED_FROM = {"obj": "OBJ", "simready_usd": "USD"}
 
 
 def fit(model_size_m: Sequence[float], estimated_m: Sequence[float], tolerance: float) -> dict[str, Any]:

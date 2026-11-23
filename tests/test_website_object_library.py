@@ -145,7 +145,7 @@ def test_retrieval_drops_another_size_and_never_counts_a_colour(tmp_path):
     found = library.candidates({**ROW, "name": "blue tote"}, entries)
     assert [row["entry"]["title"] for row in found] == ["Sterilite Storage Tote, Blue"]  # the doll's tote is too small
     assert library.candidates({**ROW, "name": "blue", "variety": None}, entries) == []
-    assert library.tokens("SM_BoxCardboard_A01 boxes, 12 pieces") == ["sm", "box", "cardboard", "box"]
+    assert library.tokens("SM_BoxCardboard_A01 boxes, 12 pieces") == ["box", "cardboard", "box"]
 
 
 # --- the model's pick, checked by plain code ------------------------------------------------------------------

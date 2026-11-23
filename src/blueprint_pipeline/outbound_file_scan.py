@@ -78,7 +78,12 @@ from typing import BinaryIO
 #: Each ends at a space, quote, bracket or ``?#&``, so nothing after it (a query's key or token) is ever blanked.
 ALLOWED_LINK_PREFIXES = (b"http://www.w3.org/", b"https://creativecommons.org/licenses/by/4.0/",
                          b"https://creativecommons.org/publicdomain/zero/1.0/",
-                         b"https://fuel.gazebosim.org/1.0/GoogleResearch/models/")
+                         b"https://fuel.gazebosim.org/1.0/GoogleResearch/models/",
+                         *(b"https://huggingface.co/datasets/" + name + b"/resolve/" for name in (
+                             b"nvidia/simready-assets", b"PalatialSim/palatial-nv-asset-library",
+                             b"projectsim/simready-assets", b"M-XR/marso-simready", b"ALLSIDES/simready-scanned-objects",
+                             b"UCLA-VAIL/UrbanVerse-SimReady-Validated", b"ForgeCAD/simready-assets",
+                             b"NdotLight/SimReady_Assets", b"Vertiv/simready-assets")))
 USD_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz"})
 #: What a scene may ship (Rule 1). Blueprint's own text files are recognised by their content.
 SHIPPED_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz", ".png", ".jpg", ".jpeg"})

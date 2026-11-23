@@ -555,3 +555,36 @@ def test_blocked_presigned_redirect_does_not_expose_query_secret(
     assert "outbound_http_redirect_blocked" in message
     assert "source-secret" not in message
     assert "redirect-secret" not in message
+
+
+def _redirect(policy: soh.OutboundHttpPolicy, url: str, newurl: str, headers=None):
+    handler = soh._PolicyRedirectHandler(policy)
+    request = urllib.request.Request(url, headers=dict(headers or {}))
+    return handler.redirect_request(request, None, 302, "Found", Message(), newurl)
+
+
+def test_a_listed_content_host_admits_a_redirect_that_carries_no_secret_header() -> None:
+    """A file's bytes on a content host (Hugging Face's CDN), digest-pinned by the caller: the only cross-origin
+    redirect the boundary follows, https to https, to a listed host, with no header but the user agent."""
+    import urllib.parse
+    policy = soh.OutboundHttpPolicy(allowed_hosts=frozenset({"huggingface.co"}), follow_same_origin_redirects=True,
+                                    redirect_hosts=frozenset({"us.aws.cdn.hf.co"}))
+    start = "https://huggingface.co/datasets/a/b/resolve/" + "0" * 40 + "/x.usd"
+    followed = _redirect(policy, start, "https://us.aws.cdn.hf.co/xet/abc?x=1", {"User-Agent": "a"})
+    assert followed.full_url == "https://us.aws.cdn.hf.co/xet/abc?x=1"
+    soh._enforce_redirect_policy(urllib.parse.urlparse(start), followed.full_url, policy=policy)
+    # From the content host, only to another listed content host.
+    with pytest.raises(soh.SafeOutboundHttpError, match="redirect_escape_blocked:evil.example"):
+        _redirect(policy, followed.full_url, "https://evil.example/x", {"User-Agent": "a"})
+    for newurl, headers in (("https://evil.example/x", {}), ("http://us.aws.cdn.hf.co/x", {}),
+                            ("https://user@us.aws.cdn.hf.co/x", {}),
+                            ("https://us.aws.cdn.hf.co/x", {"Authorization": "Bearer secret"}),
+                            ("https://us.aws.cdn.hf.co/x", {"X-Api-Key": "secret"})):
+        with pytest.raises(soh.SafeOutboundHttpError, match="redirect_escape_blocked"):
+            _redirect(policy, start, newurl, headers)
+    with pytest.raises(soh.SafeOutboundHttpError, match="redirect_escape_blocked"):
+        soh._enforce_redirect_policy(urllib.parse.urlparse(start), "https://evil.example/x", policy=policy)
+    # With no content host listed, every cross-origin redirect is an escape, as before.
+    plain = soh.OutboundHttpPolicy(allowed_hosts=frozenset({"huggingface.co"}), follow_same_origin_redirects=True)
+    with pytest.raises(soh.SafeOutboundHttpError, match="redirect_escape_blocked:us.aws.cdn.hf.co"):
+        _redirect(plain, start, "https://us.aws.cdn.hf.co/xet/abc", {"User-Agent": "a"})

@@ -6,9 +6,11 @@ an existing licensed library model first, whatever the plan's sourcing said, the
 then the paid generated model (ARTISAN) only for what is left, all inside the job's one cap.
 
 The catalog is checked in (``_catalog_data/object_library_*.json``, built by ``scripts/build_*_object_index.py``):
-Google Scanned Objects, real scanned household objects Google published on Gazebo Fuel under CC BY 4.0. Rights are a
+Google Scanned Objects, real scanned household objects Google published on Gazebo Fuel under CC BY 4.0, and NVIDIA
+SimReady packages, read only from the pinned URLs NVIDIA reviewed (SimReady Central's submission lists). Rights are a
 hard stop: an entry is a candidate only when every license statement its source makes is, word for word, a spelling
-of a license on ``ALLOWED_LICENSES``; anything else, unknown or missing is refused and never shown.
+of a license on ``ALLOWED_LICENSES`` (for SimReady both the package definition's ``license`` and the USD's own
+``asset_license``) and it names its author; anything else, unknown or missing is refused and never shown.
 
 Matching, in two steps (``decide_library_object``):
 
@@ -46,7 +48,8 @@ RECORD = "library_choice.json"
 SUBJECT_RECORD = "library_subject.json"
 DATA = Path(__file__).parent / "_catalog_data"
 #: Each library's checked-in index, by its key.
-INDEXES = {"google_scanned_objects": DATA / "object_library_gso.v1.json"}
+INDEXES = {"google_scanned_objects": DATA / "object_library_gso.v1.json",
+           "nvidia_simready": DATA / "object_library_simready.v1.json"}
 #: The only licenses a library model may be used under (rights are a hard stop), with their names and deeds.
 ALLOWED_LICENSES = {"CC-BY-4.0": {"name": "CC BY 4.0", "url": "https://creativecommons.org/licenses/by/4.0/"},
                     "CC0-1.0": {"name": "CC0 1.0", "url": "https://creativecommons.org/publicdomain/zero/1.0/"}}
@@ -75,7 +78,7 @@ NO_CANDIDATE = "website_object_library_no_candidate"
 NO_MATCH = "website_object_library_no_match"
 NOT_RIGID = "website_object_library_object_not_rigid"
 DOWNLOAD_FAILED = "website_object_library_download_failed"
-_STOPWORDS = frozenset("a an and the of for with in on to from by at or its it this that one two some set pack piece "
+_STOPWORDS = frozenset("sm a an and the of for with in on to from by at or its it this that one two some set pack piece "
                        "pieces item items object objects thing".split())
 #: Colour words do not decide what an object is: they are left out of the words a fallback must match.
 _COLOURS = frozenset("black white gray grey red green blue yellow orange purple pink brown beige tan silver gold "
@@ -161,8 +164,47 @@ def _gso_entries(index: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+SIMREADY_BOM = ".metadata/com.nvidia.simready.packaging.bom.json"
+
+
+def _simready_entries(index: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """SimReady package records as catalog entries, every link at the commit NVIDIA reviewed: the package definition
+    (the item's link), its bill of materials (which names every file and its sha256) and its 256 px thumbnail."""
+    from pathlib import PurePosixPath
+    rows = []
+    for record in index["records"]:
+        source, rights = index["sources"][record["source"]], index["rights"][record["rights"]]
+        repo, commit, asset = source["repo"], source["commit"], record["asset"]
+
+        def link(path: str) -> str:
+            return index["file_url"].format(repo=repo, commit=commit, asset=urllib.parse.quote(asset),
+                                            path=urllib.parse.quote(path))
+        root = PurePosixPath(record["root"])
+        thumbnail = record.get("thumbnail")
+        named = str(record.get("asset_name") or "")
+        rows.append({
+            "id": f"simready:{repo}/{asset}@{commit[:12]}", "library": index["library"],
+            "library_title": f"the SimReady dataset {repo}",
+            # The package's own name; the USD's asset_name beside it when that is a name in words.
+            "title": asset + (f" ({named})" if " " in named.strip() else ""), "author": rights.get("author"),
+            "copyright": None, "words": [asset.replace("_", " "), str(record.get("asset_name") or "")],
+            "categories": [str(record["category"])] if record.get("category") else [],
+            "size_m": record.get("size_m"), "mass_kg": record.get("mass_kg"),
+            "license_statements": [("the package definition", rights.get("package_license")),
+                                   ("the USD's own SimReady_Metadata", rights.get("asset_license"))],
+            "item_url": index["item_url"].format(repo=repo, commit=commit, asset=urllib.parse.quote(asset)),
+            "format": "simready_usd", "package": {"base_url": link(""), "root": str(root)},
+            "files": [{"role": "bom", "url": link(SIMREADY_BOM), "sha256": record["bom"]["sha256"],
+                       "size_bytes": record["bom"]["size_bytes"], "suffix": ".json"}],
+            **({"thumbnail": {"url": link(str(root.parent / ".thumbs" / "256x256" / (root.name + ".png"))),
+                              "sha256": thumbnail["sha256"], "size_bytes": thumbnail["size_bytes"], "suffix": ".png"}}
+               if thumbnail else {})})
+    return rows
+
+
 #: How each library's index becomes catalog entries.
-READERS: dict[str, Callable[[Mapping[str, Any]], list[dict[str, Any]]]] = {"google_scanned_objects": _gso_entries}
+READERS: dict[str, Callable[[Mapping[str, Any]], list[dict[str, Any]]]] = {"google_scanned_objects": _gso_entries,
+                                                                           "nvidia_simready": _simready_entries}
 
 
 @lru_cache(maxsize=4)
@@ -175,8 +217,25 @@ def _catalog(paths: tuple[tuple[str, str], ...]) -> tuple[dict[str, Any], ...]:
             continue  # a library whose index cannot be read offers nothing; the others still do
         for entry in READERS[library](index):
             spdx, refused = license_of(entry["license_statements"])
+            if spdx is not None and not entry.get("author"):
+                spdx, refused = None, "author_not_stated"  # the credit names who made it, or the model is not used
+            elif spdx is not None and not credit_shippable(entry, spdx):
+                spdx, refused = None, "credit_not_shippable"  # a credit the package scan would refuse is never owed
             entries.append({**entry, "license": spdx, **({"license_refused": refused} if refused else {})})
     return tuple(entries)
+
+
+def credit_shippable(entry: Mapping[str, Any], spdx: str) -> bool:
+    """Whether the entry's credit, as the company README would word it, passes the package's outbound scan (an
+    author named by a web address would refuse the whole package): a model whose credit cannot ship is not used."""
+    import io
+    from .outbound_file_scan import scan_stream
+    from .website_library_notes import CREDIT, MODEL_FILE
+    license = ALLOWED_LICENSES[spdx]
+    text = CREDIT.format(file=MODEL_FILE, title=entry["title"], author=entry.get("author"),
+                         library=entry["library_title"], link=entry["item_url"], license=license["name"],
+                         license_url=license["url"], changes="converted it and scaled it")
+    return scan_stream(io.BytesIO(text.encode()), [], text=True) is None
 
 
 def catalog(indexes: Mapping[str, Path] | None = None) -> list[dict[str, Any]]:
@@ -269,7 +328,8 @@ def validate_answer(answer: Any, *, plan_row: Mapping[str, Any], found: Sequence
     if not isinstance(answer["candidate_id"], str) or answer["candidate_id"] not in ids:
         raise ValueError(f"{INVALID}:candidate_not_shown")
     entry = found[ids.index(answer["candidate_id"])]["entry"]
-    if license_of(entry["license_statements"])[0] not in ALLOWED_LICENSES:
+    if (license_of(entry["license_statements"])[0] not in ALLOWED_LICENSES or entry.get("license") not in ALLOWED_LICENSES
+            or not entry.get("author")):
         raise ValueError(f"{INVALID}:license")
     if size_fits(entry, plan_row.get("size_m"), SIZE_BAND) is False:
         raise ValueError(f"{INVALID}:size")
@@ -434,7 +494,8 @@ def _attribution(entry: Mapping[str, Any]) -> dict[str, Any]:
             "title": entry["title"], "author": entry.get("author"), "copyright": entry.get("copyright"),
             "item_url": entry["item_url"], "license": entry["license"], "license_name": license["name"],
             "license_url": license["url"], "license_statements": [list(row) for row in entry["license_statements"]],
-            "format": entry["format"], "size_m": entry.get("size_m"), "files": [dict(row) for row in entry["files"]]}
+            "format": entry["format"], "size_m": entry.get("size_m"), "files": [dict(row) for row in entry["files"]],
+            **({"package": dict(entry["package"])} if entry.get("package") else {})}
 
 
 def plan_row_for(decided: Mapping[str, Any] | None) -> dict[str, Any] | None:

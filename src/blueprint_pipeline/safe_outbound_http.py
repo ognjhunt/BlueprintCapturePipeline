@@ -70,6 +70,23 @@ class OutboundHttpPolicy:
     allow_loopback_http: bool = False
     follow_same_origin_redirects: bool = False
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES
+    #: The https hosts an https request may be redirected to on another origin (a content host that serves a file
+    #: whose digest the caller fixed): only for a request carrying no header but ``REDIRECT_SAFE_HEADERS``, since
+    #: urllib carries every header across a redirect. Empty: every cross-origin redirect is an escape, as before.
+    redirect_hosts: frozenset[str] = frozenset()
+
+
+#: The only request headers a cross-origin redirect (``OutboundHttpPolicy.redirect_hosts``) may carry along.
+REDIRECT_SAFE_HEADERS = frozenset({"user-agent", "accept", "accept-encoding"})
+
+
+def _redirect_host_allowed(final: urllib.parse.ParseResult, requested: urllib.parse.ParseResult,
+                           policy: OutboundHttpPolicy, headers: Mapping[str, str] | None = None) -> bool:
+    """Whether a cross-origin redirect to ``final`` is one ``policy.redirect_hosts`` admits: https to https, a
+    listed host, no credentials in the URL, and (when known) no header beyond ``REDIRECT_SAFE_HEADERS``."""
+    return (requested.scheme.lower() == "https" and final.scheme.lower() == "https"
+            and (final.hostname or "").lower() in policy.redirect_hosts and "@" not in final.netloc
+            and all(str(name).lower() in REDIRECT_SAFE_HEADERS for name in (headers or {})))
 
 
 @dataclass(frozen=True)
@@ -210,6 +227,8 @@ def _enforce_redirect_policy(
     if not final_url or final_url == requested.geturl():
         return
     final = urllib.parse.urlparse(final_url)
+    if _origin(final) != _origin(requested) and _redirect_host_allowed(final, requested, policy):
+        return  # the redirect handler admitted it before any byte was sent there
     if _origin(final) != _origin(requested):
         raise SafeOutboundHttpError(
             f"outbound_http_redirect_escape_blocked:{(final.hostname or '').lower() or 'missing'}"
@@ -230,9 +249,19 @@ class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
         self._policy = policy
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
-        requested = validate_outbound_url(str(req.full_url), policy=self._policy)
         resolved = urllib.parse.urljoin(str(req.full_url), str(newurl))
         final = urllib.parse.urlparse(resolved)
+        current = urllib.parse.urlparse(str(req.full_url))
+        if self._policy.redirect_hosts and (current.hostname or "").lower() in self._policy.redirect_hosts:
+            # Already on an admitted content host: it may move only within the admitted content hosts.
+            if not _redirect_host_allowed(final, current, self._policy, dict(req.headers)):
+                raise SafeOutboundHttpError(
+                    f"outbound_http_redirect_escape_blocked:{(final.hostname or '').lower() or 'missing'}")
+            return super().redirect_request(req, fp, code, msg, headers, resolved)
+        requested = validate_outbound_url(str(req.full_url), policy=self._policy)
+        if _origin(final) != _origin(requested) and _redirect_host_allowed(
+                final, requested, self._policy, dict(req.headers)):
+            return super().redirect_request(req, fp, code, msg, headers, resolved)
         if _origin(final) != _origin(requested):
             raise SafeOutboundHttpError(
                 "outbound_http_redirect_escape_blocked:"
