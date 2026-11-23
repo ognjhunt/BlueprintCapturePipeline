@@ -10,7 +10,9 @@ Google Scanned Objects, real scanned household objects Google published on Gazeb
 SimReady packages, read only from the pinned URLs NVIDIA reviewed (SimReady Central's submission lists). Rights are a
 hard stop: an entry is a candidate only when every license statement its source makes is, word for word, a spelling
 of a license on ``ALLOWED_LICENSES`` (for SimReady both the package definition's ``license`` and the USD's own
-``asset_license``) and it names its author; anything else, unknown or missing is refused and never shown.
+``asset_license``) and it names its author; anything else, unknown or missing is refused and never shown. So is a
+model whose library asks to be credited in a way the README cannot give (``attribution_refusal``: a link or a name of
+its own), and, for now, the whole M-XR dataset, whose attribution files ask for a web link (``DATASETS_REFUSED``).
 
 Matching, in two steps (``decide_library_object``):
 
@@ -184,8 +186,9 @@ def _simready_entries(index: Mapping[str, Any]) -> list[dict[str, Any]]:
         thumbnail = record.get("thumbnail")
         named = str(record.get("asset_name") or "")
         rows.append({
-            "id": f"simready:{repo}/{asset}@{commit[:12]}", "library": index["library"],
+            "id": f"simready:{repo}/{asset}@{commit[:12]}", "library": index["library"], "dataset": repo,
             "library_title": f"the SimReady dataset {repo}",
+            "attribution_request": [str(line) for line in record.get("attribution_request") or []],
             # The package's own name; the USD's asset_name beside it when that is a name in words.
             "title": asset + (f" ({named})" if " " in named.strip() else ""), "author": rights.get("author"),
             "copyright": rights.get("copyright") or None, "disclaimer": rights.get("disclaimer") or None,
@@ -221,10 +224,54 @@ def _catalog(paths: tuple[tuple[str, str], ...]) -> tuple[dict[str, Any], ...]:
             spdx, refused = license_of(entry["license_statements"])
             if spdx is not None and not entry.get("author"):
                 spdx, refused = None, "author_not_stated"  # the credit names who made it, or the model is not used
+            elif spdx is not None and entry.get("dataset") in DATASETS_REFUSED:
+                spdx, refused = None, DATASETS_REFUSED[entry["dataset"]]
+            elif spdx is not None and attribution_refusal(entry, spdx):
+                spdx, refused = None, attribution_refusal(entry, spdx)
             elif spdx is not None and not credit_shippable(entry, spdx):
                 spdx, refused = None, "credit_not_shippable"  # a credit the package scan would refuse is never owed
             entries.append({**entry, "license": spdx, **({"license_refused": refused} if refused else {})})
     return tuple(entries)
+
+
+#: Datasets left out whole for now, listed but never used (rights is a hard stop). M-XR's attribution files ask for
+#: credit as "marso by M-XR" with a web link (CC BY 4.0 3(a)(1)(A)(i): "in any reasonable manner requested by the
+#: Licensor"), and the package scan refuses an unlisted link, so the README cannot give it (coordinator, 2026-11-23).
+DATASETS_REFUSED = {"M-XR/marso-simready": "attribution_link_not_carried"}
+_LINK = re.compile(r"https?://[^\s)\]>,]+")
+_LABEL = re.compile(r"(?i)^\s*(attribution|credit|source|licen[cs]e|licensor)\s*:\s*")
+
+
+def _credit(entry: Mapping[str, Any], spdx: str) -> str:
+    """The entry's credit as the company README would word it (``website_library_notes.credit_text``)."""
+    from .website_library_notes import MODEL_FILE, credit_text
+    license = ALLOWED_LICENSES[spdx]
+    return credit_text({"title": entry["title"], "author": entry.get("author"), "copyright": entry.get("copyright"),
+                        "disclaimer": entry.get("disclaimer"), "library": entry["library_title"],
+                        "link": entry["item_url"], "license": license["name"], "license_url": license["url"],
+                        "changes": "converted it and scaled it"}, [MODEL_FILE, "object.usdz"])
+
+
+def attribution_refusal(entry: Mapping[str, Any], spdx: str) -> str | None:
+    """Why the README cannot credit the entry the way its library asks (``attribution_request``, read from its notice
+    or attribution file), or None when it can or nothing is asked: a link the credit does not give (only the license's
+    deed and the item's own link are given) is ``attribution_link_not_carried``; a name or wording it does not give is
+    ``attribution_manner_not_carried``. A request is never dropped: the model is refused instead."""
+    request = [str(line) for line in entry.get("attribution_request") or []]
+    if not request:
+        return None
+    credit = _credit(entry, spdx)
+    deed = ALLOWED_LICENSES[spdx]["url"]
+    for line in request:
+        for link in _LINK.findall(line):
+            link = link.rstrip(".")
+            if link not in (deed, deed.replace("https://", "http://", 1)) and link not in credit:
+                return "attribution_link_not_carried"
+    for line in request:
+        wanted = _LINK.sub("", _LABEL.sub("", line)).strip(" .()")
+        if wanted and wanted not in credit:
+            return "attribution_manner_not_carried"
+    return None
 
 
 def credit_shippable(entry: Mapping[str, Any], spdx: str) -> bool:
@@ -232,13 +279,7 @@ def credit_shippable(entry: Mapping[str, Any], spdx: str) -> bool:
     author named by a web address would refuse the whole package): a model whose credit cannot ship is not used."""
     import io
     from .outbound_file_scan import scan_stream
-    from .website_library_notes import MODEL_FILE, credit_text
-    license = ALLOWED_LICENSES[spdx]
-    text = credit_text({"title": entry["title"], "author": entry.get("author"), "copyright": entry.get("copyright"),
-                        "disclaimer": entry.get("disclaimer"), "library": entry["library_title"],
-                        "link": entry["item_url"], "license": license["name"], "license_url": license["url"],
-                        "changes": "converted it and scaled it"}, [MODEL_FILE, "object.usdz"])
-    return scan_stream(io.BytesIO(text.encode()), [], text=True) is None
+    return scan_stream(io.BytesIO(_credit(entry, spdx).encode()), [], text=True) is None
 
 
 def catalog(indexes: Mapping[str, Path] | None = None) -> list[dict[str, Any]]:

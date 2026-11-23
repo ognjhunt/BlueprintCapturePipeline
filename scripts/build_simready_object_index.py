@@ -53,8 +53,9 @@ USD_SUFFIXES = (".usd", ".usda", ".usdc")
 MAX_SMALL_BYTES = 4 * 1024 * 1024
 MAX_ROOT_BYTES = 64 * 1024 * 1024
 #: What a package is read for besides its metadata: v3 keeps any copyright, notice or disclaimer its root layer states
-#: and any copyright notice or disclaimer in a notice or license file its bill names.
-SURVEY = "notices.v3"
+#: and any copyright notice or disclaimer in a notice or license file its bill names; v4 also keeps how such a file
+#: asks to be credited (``attribution_request``), so the catalog can refuse a credit the README cannot give.
+SURVEY = "notices.v4"
 NOTICE_WORDS = re.compile(r"(?i)copyright|notice|disclaim|warrant|attribution|legal")
 #: A file the bill names whose name reads as a notice or a license (an ATTRIBUTION.txt, a NOTICE, a LICENSE.txt). The
 #: package-level ``.metadata/LICENSE.txt`` is not in the bill: for every NVIDIA package it is one file, the CC BY 4.0
@@ -67,6 +68,11 @@ COPYRIGHT_SENTENCE = re.compile(r"^\s*(.+?\.)(?:\s|$)")
 #: A disclaimer of warranties in a notice file; a license file's own disclaimer is the license text, not one beyond it.
 DISCLAIMER_LINE = re.compile(r"(?i)disclaim|warrant")
 LICENSE_FILE = re.compile(r"(?i)^licen[cs]e")
+#: A file that is itself a request for how to be credited: every line of it is the request (but a contact line).
+ATTRIBUTION_FILE = re.compile(r"(?i)^(attribution|credits?)\b")
+#: In any other notice or license file, a line that asks for a credit.
+ATTRIBUTION_LINE = re.compile(r"(?i)\b(attribution|credit)\s*:|please (credit|attribute)\b")
+CONTACT_LINE = re.compile(r"(?i)^\s*(contact|e-?mail)\s*:")
 
 
 def fetcher(timeout_seconds: float = 120.0) -> Callable[[str, int], bytes]:
@@ -207,12 +213,18 @@ def package_record(row: dict[str, str], fetch: Callable[[str, int], bytes]) -> d
             raise ValueError("notice_file_digest_mismatch")
         lines = text.decode("utf-8", "replace").splitlines()
         license_file = bool(LICENSE_FILE.match(PurePosixPath(path).name))
+        asks = ATTRIBUTION_FILE.match(PurePosixPath(path).name)
         notice_files.append({"path": path, **items[path],
                              "copyright_lines": [COPYRIGHT_SENTENCE.match(line).group(1) for line in lines
                                                  if COPYRIGHT_LINE.match(line) and COPYRIGHT_SENTENCE.match(line)],
                              "disclaimer_lines": [] if license_file else [line.strip() for line in lines
-                                                                          if DISCLAIMER_LINE.search(line)]})
+                                                                          if DISCLAIMER_LINE.search(line)],
+                             # How the file asks to be credited, as written (a contact line is not a credit).
+                             "attribution_lines": [line.strip() for line in lines if line.strip()
+                                                   and (asks or ATTRIBUTION_LINE.search(line))
+                                                   and not CONTACT_LINE.match(line)]})
     supplied = [line for row in notice_files for line in row["copyright_lines"]]
+    request = list(dict.fromkeys(line for row in notice_files for line in row["attribution_lines"]))
     return {"repo": row["repo"], "commit": row["commit"], "asset": row["asset"], "root": root,
             "package_license": packaging.get("license"),
             "asset_license": meta.get("asset_license"), "author": meta.get("author") or meta.get("asset_author"),
@@ -232,6 +244,8 @@ def package_record(row: dict[str, str], fetch: Callable[[str, int], bytes]) -> d
                                next((line for row in notice_files for line in row["disclaimer_lines"]), None)),
             **({"notices": read["notices"]} if read["notices"] else {}),
             **({"notice_files": notice_files} if notice_files else {}),
+            # How the package asks to be credited, when a notice file asks (the catalog gives it or refuses the model).
+            **({"attribution_request": request} if request else {}),
             "survey": SURVEY}
 
 

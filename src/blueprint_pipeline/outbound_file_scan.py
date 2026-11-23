@@ -81,7 +81,7 @@ ALLOWED_LINK_PREFIXES = (b"http://www.w3.org/", b"https://creativecommons.org/li
                          b"https://fuel.gazebosim.org/1.0/GoogleResearch/models/",
                          *(b"https://huggingface.co/datasets/" + name + b"/resolve/" for name in (
                              b"nvidia/simready-assets", b"PalatialSim/palatial-nv-asset-library",
-                             b"projectsim/simready-assets", b"M-XR/marso-simready", b"ALLSIDES/simready-scanned-objects",
+                             b"projectsim/simready-assets", b"ALLSIDES/simready-scanned-objects",
                              b"UCLA-VAIL/UrbanVerse-SimReady-Validated", b"ForgeCAD/simready-assets",
                              b"NdotLight/SimReady_Assets", b"Vertiv/simready-assets")))
 USD_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz"})

@@ -186,6 +186,33 @@ def test_the_reviewed_package_is_fetched_at_its_commit_composed_and_converted(tm
     assert again["library_not_used"] == "library_file_changed"
 
 
+@pytest.mark.parametrize("repo, request_lines, refused", [
+    # As M-XR asks (its ATTRIBUTION.txt and LICENSE.txt, 2026-11-23): a link the README cannot give.
+    (REPO, ["marso by M-XR", "Source: https://huggingface.co/datasets/M-XR/marso-simready"],
+     "attribution_link_not_carried"),
+    (REPO, ["Copyright (c) M-XR Limited. Attribution: marso by M-XR (https://m-xr.com)."],
+     "attribution_link_not_carried"),
+    # A name the credit does not give is refused too; never dropped.
+    (REPO, ["Please credit: Someone Else Studio"], "attribution_manner_not_carried"),
+    # What the credit already gives (its author, its license and deed) is carried, and the model is used.
+    (REPO, ["NVIDIA", "Licence: CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/"], None),
+    (REPO, [], None),
+    # The M-XR dataset is left out whole for now, whatever a package's files say.
+    ("M-XR/marso-simready", [], "attribution_link_not_carried")])
+def test_a_credit_the_readme_cannot_give_as_asked_leaves_the_model_out(tmp_path, repo, request_lines, refused):
+    indexes, _ = _fixture(tmp_path)
+    index = json.loads(indexes["nvidia_simready"].read_text())
+    index["sources"][0]["repo"] = repo
+    if request_lines:
+        index["records"][0]["attribution_request"] = request_lines
+    path = tmp_path / "variant.json"
+    path.write_text(json.dumps(index))
+    entry = library.catalog({"nvidia_simready": path})[0]
+    assert entry.get("license_refused") == refused and (entry["license"] is None) is (refused is not None)
+    if refused:
+        assert library.candidates(ROW, [entry]) == []  # listed, never shown or used
+
+
 def test_a_layer_path_cannot_leave_its_package_folder(tmp_path):
     for relative in ("../outside.usd", "/etc/x.usd", ""):
         with pytest.raises(ValueError, match="library_file_record_invalid"):
@@ -194,12 +221,23 @@ def test_a_layer_path_cannot_leave_its_package_folder(tmp_path):
 
 
 def test_every_checked_in_credit_link_passes_the_outbound_scan():
-    """Each library model's credit names its pinned item: the scan admits exactly those links, and the licenses'."""
+    """Each usable library model's credit names its pinned item: the scan admits exactly those links, and the
+    licenses'; a dataset left out whole (M-XR, whose credit asks for a link the README cannot give) needs none."""
     from blueprint_pipeline import outbound_file_scan as scan
     entries = library.catalog()
-    assert {entry["library"] for entry in entries} == {"google_scanned_objects", "nvidia_simready"}
-    for link in {entry["item_url"] for entry in entries} | {row["url"] for row in library.ALLOWED_LICENSES.values()}:
+    used = [entry for entry in entries if entry["license"]]
+    assert {entry["library"] for entry in used} == {"google_scanned_objects", "nvidia_simready"}
+    for link in {entry["item_url"] for entry in used} | {row["url"] for row in library.ALLOWED_LICENSES.values()}:
         assert scan._blank_allowed_links(f"({link}).".encode()) == b"(" + b" " * len(link) + b").", link
+    mxr = [entry for entry in entries if entry.get("dataset") == "M-XR/marso-simready"]
+    assert mxr and not any(entry["license"] for entry in mxr)
+    assert {entry["license_refused"] for entry in mxr} <= {"attribution_link_not_carried",
+                                                          "license_not_allowed:the USD's own SimReady_Metadata"}
+    assert all(entry["license_refused"] == "attribution_link_not_carried" for entry in mxr
+               if entry["license_statements"][1][1] == "cc-by-4.0")
+    # Every request to be credited in a manner of its own is the M-XR one: no other usable model carries one.
+    assert not any(entry.get("attribution_request") for entry in used)
+    assert b"M-XR" not in b"".join(scan.ALLOWED_LINK_PREFIXES)
 
 
 def test_the_index_builder_reads_only_pinned_urls_and_checks_the_bill(tmp_path):
@@ -231,6 +269,9 @@ def test_the_index_builder_reads_only_pinned_urls_and_checks_the_bill(tmp_path):
     assert record["copyright"] == "Copyright 2026 Example Ltd."
     assert record["disclaimer"] == "Provided as is, without warranty of any kind."
     assert record["notice_files"][0]["path"] == "usd/ATTRIBUTION.txt" and "someone" not in json.dumps(record)
+    # The attribution file is a request for how to be credited: kept as written (but its contact line), never dropped.
+    assert record["attribution_request"] == ["marso by M-XR", "Copyright 2026 Example Ltd.",
+                                             "Provided as is, without warranty of any kind."]
     # A license file's own copyright line is kept (its first sentence); the legal code's words are not a notice, and its
     # disclaimer is the license text itself, not one beyond it.
     licence = ("Creative Commons Attribution 4.0 International (CC BY 4.0)\n"
@@ -244,6 +285,7 @@ def test_the_index_builder_reads_only_pinned_urls_and_checks_the_bill(tmp_path):
                        hashlib.sha256(bom).hexdigest(), hashlib.sha256(bill).hexdigest()).encode()})
     record = builder.package_record(builder.submission_urls(listing)[0], lambda url, cap: served[url])
     assert (record["copyright"], record["disclaimer"]) == ("Copyright (c) M-XR Limited.", None)
+    assert record["attribution_request"] == ["Copyright (c) M-XR Limited. Attribution: marso by M-XR (https://m-xr.com)."]
     served[BASE + BOM] = bill + b" "
     with pytest.raises(ValueError, match="bom_digest_mismatch"):
         builder.package_record(builder.submission_urls(listing)[0], lambda url, cap: served[url])
