@@ -134,8 +134,7 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/.lock",
                 }
             continue
-        if unit.name in {"blueprint-task-evaluation-episode-compilation-remote.service",
-                         "blueprint-team-scene-packet-remote.service"}:
+        if unit.name in {"blueprint-team-scene-packet-remote.service"}:
             # Plan 14 §1: the paid remote-compilation unit.  The no-spend compile unit's hardening, but narrow
             # writes instead of /var/lib/blueprint, the dispatcher key through LoadCredential= and a read-only
             # standing authority; it never compiles, so 2G bounds its readback and landing.
@@ -380,10 +379,8 @@ HOST_MEMORY = {
     "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G", "722M"),
     "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G", "32M"),
     "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G", "62M"),
-    "blueprint-task-evaluation-episode-compilation.service": ("200", "3G", "4G", "60M"),
     "blueprint-provider-billing-reconciler.service": ("-200", "3G", "4G", "1.7G"),
     "blueprint-pipeline-intake.service": ("-200", "2G", "3G", "1.5G"),
-    "blueprint-task-evaluation-episode-compilation-remote.service": ("-200", "1G", "2G", "424M"),
     # Not yet run on the host: the episode remote unit's host peak, on the same allocator, promotion and landing
     # code; landing a capture-447-scale half (1.07 GB) in 1 MiB blocks peaked at 69M locally.
     "blueprint-team-scene-packet-remote.service": ("-200", "1G", "2G", "424M"),
@@ -498,8 +495,6 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-scene-stage-maintenance.service",
-    "blueprint-task-evaluation-episode-compilation.service",
-    "blueprint-task-evaluation-episode-compilation-remote.service",
     # Not a job mover, but bulk reads and uploads every 15 minutes: bounded with them so it never starves the host.
     "blueprint-control-plane-state-backup.service",
 )

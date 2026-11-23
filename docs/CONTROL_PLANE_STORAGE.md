@@ -1876,6 +1876,11 @@ retained.
 
 ## Remote episode compilation (plan 14, 2026-09-29)
 
+**Retired (V-01).** The host and remote episode-compilation units are no longer
+shipped, and every release stops and disables their triggers
+(`DEFAULT_RETIRED_TRIGGER_UNITS`). No website job compiles episodes. The rest of this
+section describes the code that remains until it is deleted.
+
 `BLUEPRINT_EPISODE_COMPILATION_EXECUTION` picks where an episode compiles: `host`
 (today's path), `cloud_run_shadow` or `cloud_run`. Unset or empty is auto
 (owner decision 2026-09-30, everything on by default): `cloud_run` once

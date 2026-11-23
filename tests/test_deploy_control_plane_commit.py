@@ -455,32 +455,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     preparation_timer = unit_dir / "blueprint-task-evaluation-launch-preparation.timer"
     preparation_timer.write_text("[Timer]\nOnUnitInactiveSec=2min\n", encoding="utf-8")
-    compilation_service = (
-        unit_dir / "blueprint-task-evaluation-episode-compilation.service"
-    )
-    compilation_service.write_text(
-        "[Service]\nExecStart=/usr/bin/blueprint-compile-episode\n",
-        encoding="utf-8",
-    )
-    compilation_path = (
-        unit_dir / "blueprint-task-evaluation-episode-compilation.path"
-    )
-    compilation_path.write_text(
-        "[Path]\nPathChanged=/episode-compilations/pending\n"
-        "PathExistsGlob=/episode-compilations/pending/*.json\n",
-        encoding="utf-8",
-    )
-    compilation_timer = unit_dir / "blueprint-task-evaluation-episode-compilation.timer"
-    compilation_timer.write_text("[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
-    remote_units = []
-    for suffix, body in (
-        (".service", "[Service]\nExecStart=/usr/bin/blueprint-collect-remote-episodes\n"),
-        (".timer", "[Timer]\nOnUnitInactiveSec=60s\n"),
-        (".path", "[Path]\nPathChanged=/remote-cpu-jobs/handoffs/episode_compilation\n"),
-    ):
-        remote_unit = unit_dir / f"blueprint-task-evaluation-episode-compilation-remote{suffix}"
-        remote_unit.write_text(body, encoding="utf-8")
-        remote_units.append(remote_unit)
     activation_service = (
         unit_dir / "blueprint-task-evaluation-launch-activation.service"
     )
@@ -635,10 +609,6 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         preparation_service,
         preparation_path,
         preparation_timer,
-        compilation_service,
-        compilation_path,
-        compilation_timer,
-        *remote_units,
         activation_service,
         activation_path,
         activation_timer,
@@ -700,13 +670,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-preparation.service",
         "blueprint-task-evaluation-launch-preparation.path",
         "blueprint-task-evaluation-launch-preparation.timer",
-        "blueprint-task-evaluation-episode-compilation.service",
-        "blueprint-task-evaluation-episode-compilation.path",
-        "blueprint-task-evaluation-episode-compilation.timer",
-        # Plan 14 §1: the paid remote-compilation unit, woken by its timer and by hand-offs.
-        "blueprint-task-evaluation-episode-compilation-remote.service",
-        "blueprint-task-evaluation-episode-compilation-remote.timer",
-        "blueprint-task-evaluation-episode-compilation-remote.path",
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
         "blueprint-task-evaluation-launch-activation.timer",
@@ -772,7 +735,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-scene-stage-maintenance.timer",
         "blueprint-task-evaluation-scene-progression.timer",
-        "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-team-scene-packet-remote.timer",
         "blueprint-control-plane-storage-gc.timer",
         "blueprint-completed-replay-cache-gc.timer",
@@ -787,7 +749,6 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
         "blueprint-rigid-robot-free-probe-runner.path",
-        "blueprint-task-evaluation-episode-compilation-remote.path",
         "blueprint-team-scene-packet-remote.path",
     )
 
@@ -814,10 +775,10 @@ def test_only_service_path_and_timer_unit_suffixes_may_be_installed(
         )
 
 
-PAUSED_LANE_UNITS = (
-    "blueprint-task-evaluation-episode-compilation.path",
-    "blueprint-task-evaluation-episode-compilation.timer",
-)
+# No lane is paused now: episode compilation, the last one, is retired (V-01). The
+# mechanism stays, so the tests below drive it with a stand-in lane.
+PAUSED_LANE_UNITS: tuple[str, ...] = ()
+STAND_IN_PAUSED_LANE = ("blueprint-stand-in-paused-lane.path", "blueprint-stand-in-paused-lane.timer")
 
 
 def test_paused_lanes_are_disarmed_and_never_armed_again_without_leaving_the_disarm_list() -> None:
@@ -843,7 +804,7 @@ def test_paused_lanes_are_disarmed_and_never_armed_again_without_leaving_the_dis
 
 @pytest.mark.parametrize("arm_list", ["always_arm_units", "always_arm_authority_gated_units", "always_arm_timer_units"])
 def test_a_unit_both_armed_and_disarmed_refuses_before_any_host_action(monkeypatch, arm_list: str) -> None:
-    unit = "blueprint-task-evaluation-episode-compilation.timer"
+    unit = "blueprint-stand-in-paused-lane.timer"
     monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
     with pytest.raises(deploy.ControlPlaneDeployError, match="authority_ambiguous"):
         deploy._restore_installed_path_units(
@@ -866,7 +827,7 @@ def test_release_disarms_a_paused_lane_unit_idempotently(
     monkeypatch, case: str, before: tuple[str, str], returncode: int, final: tuple[str, str],
     preserve_controls: bool,
 ) -> None:
-    unit = "blueprint-task-evaluation-episode-compilation.timer"
+    unit = "blueprint-stand-in-paused-lane.timer"
     state = {"is-enabled": before[0], "is-active": before[1]}
     calls: list[tuple[str, ...]] = []
 
@@ -890,7 +851,7 @@ def test_release_disarms_a_paused_lane_unit_idempotently(
             [{"unit": unit}], before={unit: {"enabled": before[0], "state": before[1]}},
             arm_path_units=False, always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
             preserve_configured_controls_state=preserve_controls,
-            disarm_units=deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS, defer_start_verification=True,
+            disarm_units=STAND_IN_PAUSED_LANE, defer_start_verification=True,
         )
         assert calls == [
             ("systemctl", "stop", unit), ("systemctl", "disable", unit),
@@ -905,7 +866,7 @@ def test_release_disarms_a_paused_lane_unit_idempotently(
 
 
 def test_disarm_reports_a_unit_it_cannot_stop_without_failing_the_release(monkeypatch) -> None:
-    unit = "blueprint-task-evaluation-episode-compilation.timer"
+    unit = "blueprint-stand-in-paused-lane.timer"
 
     def completed(argv, **_kwargs):
         if argv[1] in {"stop", "disable"}:
@@ -924,7 +885,7 @@ def test_disarm_reports_a_unit_it_cannot_stop_without_failing_the_release(monkey
 
 
 def test_disarm_touches_no_unit_outside_its_list(monkeypatch) -> None:
-    paused, other = "blueprint-task-evaluation-episode-compilation.timer", "blueprint-task-evaluation-terminal-resource-release.path"
+    paused, other = "blueprint-stand-in-paused-lane.timer", "blueprint-task-evaluation-terminal-resource-release.path"
     calls: list[tuple[str, ...]] = []
 
     def completed(argv, **_kwargs):
@@ -945,14 +906,16 @@ def test_disarm_touches_no_unit_outside_its_list(monkeypatch) -> None:
     assert ("systemctl", "disable", other) not in calls and ("systemctl", "stop", other) not in calls
 
 
-@pytest.mark.parametrize("stuck", [None, "blueprint-task-evaluation-episode-compilation.path"])
+@pytest.mark.parametrize("stuck", [None, "blueprint-stand-in-paused-lane.path"])
 def test_a_release_disarms_every_paused_lane_trigger_and_arms_every_armed_one(tmp_path, monkeypatch, stuck) -> None:
     """End to end through deploy_control_plane_commit with the real restore and a fake systemd."""
 
     restore = deploy._restore_installed_path_units
     arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
-    triggers = [unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))]
-    already_off = "blueprint-task-evaluation-episode-compilation.timer"
+    monkeypatch.setattr(deploy, "DEFAULT_PAUSED_LANE_DISARM_UNITS", STAND_IN_PAUSED_LANE)
+    triggers = [*(unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))),
+                *STAND_IN_PAUSED_LANE]
+    already_off = "blueprint-stand-in-paused-lane.timer"
     states = {unit: {"enabled": "enabled", "state": "active"} for unit in triggers}
     states[already_off] = {"enabled": "disabled", "state": "inactive"}
     before = {unit: dict(state) for unit, state in states.items()}

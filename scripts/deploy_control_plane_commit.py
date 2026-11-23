@@ -442,14 +442,6 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-preparation.service",
     "blueprint-task-evaluation-launch-preparation.path",
     "blueprint-task-evaluation-launch-preparation.timer",
-    "blueprint-task-evaluation-episode-compilation.service",
-    "blueprint-task-evaluation-episode-compilation.path",
-    # Plan 14 §1: backstops the path unit for fallback markers and deferred handed-back rows.
-    "blueprint-task-evaluation-episode-compilation.timer",
-    # Plan 14 §1: the paid remote-compilation unit, woken by its timer and by hand-offs.
-    "blueprint-task-evaluation-episode-compilation-remote.service",
-    "blueprint-task-evaluation-episode-compilation-remote.timer",
-    "blueprint-task-evaluation-episode-compilation-remote.path",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
     "blueprint-task-evaluation-launch-activation.timer",
@@ -570,15 +562,10 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     # is on (the service default, with an operator opt-out), and
     # only under that capture's own website grant, $1.00 and 3600 s per attempt.
     "blueprint-rigid-robot-free-probe-runner.path",
-    # Remote episode compilation dispatches only in a remote mode (set, or auto
-    # once the remote CPU config is there), with that config, the owner's
-    # standing authority and the dispatcher credential; in host mode, which an
-    # unset flag without a config is, its ExecCondition skips it except to drain.
-    # Its host half is paused, so it receives no new hand-off; it stays armed
-    # to finish and tear down one already in flight.
-    "blueprint-task-evaluation-episode-compilation-remote.path",
-    # Remote team-scene compilation under the same rule, for its own stage: a
-    # config without team_scene_packet keeps it in host mode.
+    # Remote team-scene compilation dispatches only in a remote mode (set, or
+    # auto once the remote CPU config names team_scene_packet), with that
+    # config, the owner's standing authority and the dispatcher credential; in
+    # host mode its ExecCondition skips it.
     "blueprint-team-scene-packet-remote.path",
 )
 #: Timers (and the replay path that carries a timer's authority) every release
@@ -593,9 +580,8 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # delivers held notices, restores an open job's run and only queues a probe.
     "blueprint-scene-stage-maintenance.timer",
     "blueprint-task-evaluation-scene-progression.timer",
-    # Follow, collect and tear down a remote compilation (compute-zero and
-    # provider-zero) already handed off before its host half was paused: money.
-    "blueprint-task-evaluation-episode-compilation-remote.timer",
+    # Follow, collect and tear down a remote team-scene compilation
+    # (compute-zero and provider-zero) already handed off: money.
     "blueprint-team-scene-packet-remote.timer",
     # The storage reaper is no-spend housekeeping. By default it removes
     # unpinned cache and replay bytes, releases stale pins, offloads sealed
@@ -637,16 +623,8 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
 #: outside this list.  Their unit files and code stay.  To re-arm a lane, move
 #: all its names back into the arm lists (a name in both refuses the release).
 DEFAULT_PAUSED_LANE_DISARM_UNITS = (
-    # Robot-team evaluation lanes, deleted by the owner (a deployment company
-    # running its own software in our simulation is later). Their triggers stop
-    # here before the WebApp routes they call are removed.
-    # Episode compilation (host): launch preparation stages it only for a
-    # reuse_configured_scene request (policy and controls runs); a website job
-    # prepares as scene_configuration and never compiles episodes. Its remote
-    # half stays armed above, only to drain and tear down a hand-off in flight.
-    "blueprint-task-evaluation-episode-compilation.path",
-    "blueprint-task-evaluation-episode-compilation.timer",
 )
+
 #: Triggers this repository no longer ships that a host may still have
 #: installed and enabled (the same names as the operator door's
 #: RETIRED_HOLD_UNITS).  Removing a unit file from the repository does not stop
@@ -681,6 +659,15 @@ DEFAULT_RETIRED_TRIGGER_UNITS = (
     # recovery tasks (the agent service is retired; a job retries by itself).
     "blueprint-agent-stage-replay.timer",
     "blueprint-agent-stage-replay.path",
+    # Episode compilation, host and remote (robot-team evaluation lanes, deleted
+    # by the owner). Launch preparation stages it only for a
+    # reuse_configured_scene request (policy and controls runs); a website job
+    # prepares as scene_configuration and never compiles episodes. The remote
+    # collector found zero rows on every run, so nothing is in flight.
+    "blueprint-task-evaluation-episode-compilation.path",
+    "blueprint-task-evaluation-episode-compilation.timer",
+    "blueprint-task-evaluation-episode-compilation-remote.path",
+    "blueprint-task-evaluation-episode-compilation-remote.timer",
 )
 #: Where typed release protection is read: live queue envelopes, standing
 #: authorizations, retention bindings (with their sidecar leases) and the

@@ -3,8 +3,6 @@
 #   src/blueprint_pipeline/task_evaluation_episode_compilation_remote.py
 #   src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py
 #   src/blueprint_pipeline/remote_cpu_job_allocator.py
-#   deploy/systemd/blueprint-task-evaluation-episode-compilation.service
-#   deploy/systemd/blueprint-task-evaluation-episode-compilation-remote.service
 """Owner decision 2026-09-30, everything on by default: an unset ``BLUEPRINT_EPISODE_COMPILATION_EXECUTION`` is
 auto.  It runs ``cloud_run`` once this stage's remote-CPU config is there, exactly as the paid unit loads it, and
 ``host`` otherwise; the paid unit's ExecCondition answers the same question with the standard library alone."""
@@ -100,10 +98,6 @@ def test_auto_turns_on_only_for_a_config_the_paid_unit_would_load_for_this_stage
     assert condition.CONFIG_SCHEMA_VERSION == contract.CONFIG_SCHEMA_VERSION
     assert condition.CONFIG_KEYS == contract._CONFIG_KEYS
     assert condition.STAGE_KEYS == {"job", "image", *contract._JOB_LIMITS}
-    for unit in ("blueprint-task-evaluation-episode-compilation.service",
-                 "blueprint-task-evaluation-episode-compilation-remote.service"):
-        text = (SYSTEMD / unit).read_text(encoding="utf-8")
-        assert f"Environment={remote.CONFIG_ENV}={remote.DEFAULT_CONFIG_PATH}\n" in text, unit
 
 
 def test_the_exec_condition_runs_the_paid_unit_when_the_effective_mode_is_remote_or_to_drain(

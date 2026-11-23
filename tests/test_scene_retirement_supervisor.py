@@ -174,7 +174,13 @@ def test_worker_uses_fixed_installed_policy_when_environment_omits_it(tmp_path, 
     assert calls == []
 
 
-@pytest.mark.parametrize('unit,worker', UNITS.items())
+# The episode-compilation unit is no longer shipped (V-01); a host that installed it
+# keeps the file, so the supervisor still proves it idle there.
+RETIRED_UNITS = {'blueprint-task-evaluation-episode-compilation'}
+
+
+@pytest.mark.parametrize('unit,worker', [(unit, worker) for unit, worker in UNITS.items()
+                                         if unit not in RETIRED_UNITS])
 def test_installed_known_worker_uses_startup_fence(unit, worker):
     root = Path(__file__).resolve().parents[1]
     text = (root / 'deploy' / 'systemd' / (unit + '.service')).read_text()

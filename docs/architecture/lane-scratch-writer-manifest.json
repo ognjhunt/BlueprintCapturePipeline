@@ -57,7 +57,7 @@
     },
     {
       "path": "scripts/install_live_pipeline_control_plane.sh",
-      "sha256": "212dfe90ac05f4ba888c91b2b20a5a1d95525e4431b9040691fee3bffc5faaa2",
+      "sha256": "1049125b9a225a91c8b5b2b3dd35a4282dd95092ea6cea64cbff999ae090c5de",
       "responsibility": "parent_provisioning",
       "output_class": "container",
       "admission_method": "mounted volume preflight then bounded install -d",

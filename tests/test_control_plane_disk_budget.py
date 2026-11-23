@@ -768,8 +768,7 @@ ROLE_WORKER_UNITS = {
     "embodiment_preparation": (),  # its unit, embodiment preparation, is retired
     "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
                            "blueprint-task-evaluation-scene-progression.service"),
-    "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",
-                            "blueprint-task-evaluation-episode-compilation-remote.service"),
+    "episode_compilation": (),  # its units, host and remote episode compilation, are retired
     "team_scene_landing": ("blueprint-team-scene-packet-remote.service",),
     "launch_activation": ("blueprint-task-evaluation-launch-activation.service",),
     "launch_dispatch": ("blueprint-task-evaluation-launch-dispatcher.service",),

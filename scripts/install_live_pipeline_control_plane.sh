@@ -1481,24 +1481,6 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.timer" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.timer"
 run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.service" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.path" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.path"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.timer" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation-remote.service" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation-remote.service"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation-remote.timer" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation-remote.timer"
-run install -m 0644 \
-  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation-remote.path" \
-  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation-remote.path"
-run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-activation.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-activation.service"
 run install -m 0644 \
@@ -1712,10 +1694,6 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.timer
-  systemctl enable --now blueprint-task-evaluation-episode-compilation.path
-  systemctl enable --now blueprint-task-evaluation-episode-compilation.timer
-  systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.timer
-  systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.timer
   systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path
@@ -1728,7 +1706,6 @@ else
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
   echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
   echo "enable bounded disk-capacity preparation retries with: systemctl enable --now blueprint-task-evaluation-launch-preparation.timer"
-  echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"
   echo "enable hourly recovery of interrupted activation claims with: systemctl enable --now blueprint-task-evaluation-launch-activation.timer"
   echo "enable terminal resource release queue watch with: systemctl enable --now blueprint-task-evaluation-terminal-resource-release.path"
