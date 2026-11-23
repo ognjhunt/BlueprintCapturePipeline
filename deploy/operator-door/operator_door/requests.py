@@ -216,6 +216,10 @@ RETIRED_HOLD_UNITS = (
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.timer",
     "blueprint-agent-stage-replay.path",
+    "blueprint-task-evaluation-episode-compilation.path",
+    "blueprint-task-evaluation-episode-compilation.timer",
+    "blueprint-task-evaluation-episode-compilation-remote.path",
+    "blueprint-task-evaluation-episode-compilation-remote.timer",
 )
 EXPLICIT_RELEASE_UNITS = RETIRED_HOLD_UNITS
 # No unit request starts a retired trigger, the founder-stopped agent-run dispatcher's service,

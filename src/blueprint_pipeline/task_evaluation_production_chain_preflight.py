@@ -77,9 +77,6 @@ GIB = 1024**3
 CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-pipeline-intake.service",
     "blueprint-task-evaluation-launch-preparation.service",
-    "blueprint-task-evaluation-episode-compilation.service",
-    # Plan 14 §1: the paid remote-compilation unit (its ExecCondition skips it while the effective mode is host).
-    "blueprint-task-evaluation-episode-compilation-remote.service",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-reconciler.service",

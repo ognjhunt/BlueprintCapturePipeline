@@ -435,7 +435,8 @@ def test_the_trigger_contract_is_the_deploy_tools_own_lists() -> None:
 def test_paused_lanes_disarmed_by_a_release_are_never_watched_as_stalls(tmp_path: Path) -> None:
     units, _holds = stall.read_deploy_trigger_contract(REPO / "scripts" / "deploy_control_plane_commit.py")
     paused = stall.read_deploy_paused_triggers()
-    assert paused == set(deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS) and paused
+    # No lane is paused now (episode compilation is retired, V-01); the reader still follows the list.
+    assert paused == set(deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS)
     assert not paused & set(units)
     assert stall.read_deploy_paused_triggers(tmp_path / "absent.py") == frozenset()
 

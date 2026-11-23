@@ -55,6 +55,10 @@ def test_retired_units_may_be_held_with_or_without_explicit_release() -> None:
         "blueprint-agent-run-dispatcher.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-agent-stage-replay.path",
+        "blueprint-task-evaluation-episode-compilation.path",
+        "blueprint-task-evaluation-episode-compilation.timer",
+        "blueprint-task-evaluation-episode-compilation-remote.path",
+        "blueprint-task-evaluation-episode-compilation-remote.timer",
     )
     for unit in RETIRED_HOLD_UNITS:
         plain = {"kind": "hold", "unit": unit, "owner": "retire-legacy-loop",
