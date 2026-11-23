@@ -379,6 +379,8 @@ HOST_MEMORY = {
     "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G", "722M"),
     "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G", "32M"),
     "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G", "62M"),
+    # Unshipped but kept: the scene retirement supervisor proves this installed service idle against its source.
+    "blueprint-task-evaluation-episode-compilation.service": ("200", "3G", "4G", "60M"),
     "blueprint-provider-billing-reconciler.service": ("-200", "3G", "4G", "1.7G"),
     "blueprint-pipeline-intake.service": ("-200", "2G", "3G", "1.5G"),
     # Not yet run on the host: the episode remote unit's host peak, on the same allocator, promotion and landing
@@ -495,6 +497,7 @@ BATCH_SLICE_UNITS = (
     "blueprint-team-scene-packet-remote.service",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-scene-stage-maintenance.service",
+    "blueprint-task-evaluation-episode-compilation.service",
     # Not a job mover, but bulk reads and uploads every 15 minutes: bounded with them so it never starves the host.
     "blueprint-control-plane-state-backup.service",
 )

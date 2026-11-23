@@ -370,7 +370,15 @@ def test_the_retired_episode_compilation_triggers_are_stopped_and_no_longer_ship
     for unit in (NO_SPEND, PAID):
         for kind in ("service", "path", "timer"):
             assert f"{unit}.{kind}" not in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+            if f"{unit}.{kind}" == f"{NO_SPEND}.service":
+                # Kept, unshipped: the scene retirement supervisor compares the installed
+                # service with this source to prove the worker cohort idle (_KNOWN_UNITS).
+                continue
             assert not (SYSTEMD / f"{unit}.{kind}").exists()
+    from blueprint_pipeline import task_evaluation_scene_retirement_supervisor as supervisor
+
+    for unit in supervisor._KNOWN_UNITS:
+        assert (SYSTEMD / unit).is_file(), unit
     installer = (ROOT / "scripts" / "install_live_pipeline_control_plane.sh").read_text(encoding="utf-8")
     assert f"{NO_SPEND}." not in installer and f"{PAID}." not in installer
     # The queue's marker directories stay: launch preparation still imports the queue module.

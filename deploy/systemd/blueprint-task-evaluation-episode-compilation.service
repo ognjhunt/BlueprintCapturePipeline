@@ -1,0 +1,61 @@
+[Unit]
+Description=Compile Blueprint Task Evaluation configured-scene episodes
+Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
+
+[Service]
+ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/prepared-references
+ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/task-evaluation-inputs/compiled-episodes /var/lib/blueprint/pipeline-control-plane/storage-pins /var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs
+TasksMax=512
+LimitNOFILE=4096
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 60M on the host.
+# One of the batch units system-blueprintbatch.slice bounds together.
+Slice=system-blueprintbatch.slice
+MemoryHigh=3G
+MemoryMax=4G
+OOMScoreAdjust=200
+CPUQuota=200%
+TimeoutStartSec=15m
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/prepared-references
+Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_OUTPUT_ROOT=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
+# Plan 14 §1: this unit owns pending/ in every mode and holds no credential.  BLUEPRINT_EPISODE_COMPILATION_EXECUTION
+# (host, cloud_run_shadow or cloud_run) comes from the shared environment file.  Unset or empty it is auto (owner
+# decision 2026-09-30): cloud_run once the config below is there and usable for this stage, host (today's path,
+# byte for byte) without it.  cloud_run shadows each row of a class still earning its three shadow passes while
+# compiling it here, then hands that class's rows off.  Set host to keep every row here, config or not.
+Environment=BLUEPRINT_REMOTE_CPU_JOBS_ROOT=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs
+Environment=BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG=/etc/blueprint/remote-cpu-workers.json
+EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+WorkingDirectory=/
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && source_commit="$$(git rev-parse --verify HEAD^{commit})" && test -z "$$(git status --porcelain --untracked-files=no)" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_scene_retirement_supervisor --worker blueprint_pipeline.task_evaluation_episode_compilation_worker -- --source-commit "$${source_commit}" --max-messages 4'
