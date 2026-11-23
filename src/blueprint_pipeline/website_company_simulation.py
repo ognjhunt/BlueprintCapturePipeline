@@ -72,7 +72,6 @@ from .atlas_automation_plan import (
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .outbound_file_scan import capture_site_identity
-from .sharing_statement import covers_sharing
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 from .website_company_look import look_ply, look_source, reauthor_look
 
@@ -1537,16 +1536,8 @@ def _take_back_if_archived(root: Path, manifest_path: Path, retract: Callable[[s
             permission.take_back(manifest, manifest_path, retract)
 
 
-#: Read at call time, so a test can point it at a temporary list (the clip's own setting when unset).
-OWNED_CAPTURES_LIST: Path | None = None
-
-
-def _owned_list() -> Path | None:
-    return OWNED_CAPTURES_LIST if OWNED_CAPTURES_LIST is not None else clip.OWNED_CAPTURES_LIST
-
-
 def upload_sha256(capture_root: Path) -> str | None:
-    """The digest of the upload the scene was built from, which Blueprint's own list names by prefix: the
+    """The digest of the upload the scene was built from: the
     original normalization recorded, else the one the company clip recorded for the raw upload."""
     recorded = clip.recorded_video_sha256(capture_root)
     if recorded:
@@ -1603,9 +1594,9 @@ def _refused_live(check, manifest, manifest_path, retract):
 _RETRIED_AFTER_WINDOW = re.compile(r"website_company_simulation_[a-z_]+")
 
 
-def _kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now, owned):
-    """None while the published package keeps its basis, else its take-back's answer: Blueprint's list every pass,
-    the live rights at least once a window (and at once after a recheck mark). A definite "no" takes it back."""
+def _kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now):
+    """None while the published package keeps its basis, else its take-back's answer: the live rights at least
+    once a window (and at once after a recheck mark). A definite "no" takes it back."""
     check = permission.read_check(root)
     if permission.live_due(check, now(), root):
         check = permission.record_live(root, identity, check_rights, now())
@@ -1614,8 +1605,7 @@ def _kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, r
     if check.get("outcome") == "rights_refused":  # recorded by this pass or the clip's: any basis stops
         return _refused_live(check, manifest, manifest_path, retract)
     basis = (manifest.get("permission") or {}).get("permission_basis")
-    if ((basis == "blueprint_owned_capture" and owned)
-            or (basis == "site_sharing_statement" and permission.live_grant_holds(check, now()))
+    if ((basis == "site_sharing_statement" and permission.live_grant_holds(check, now()))
             or (basis == "internal_test" and permission.internal_test_holds(check, now()))):
         return None
     permission.take_back(manifest, manifest_path, retract)
@@ -1626,7 +1616,6 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
     identity = permission.capture_identity(root)
     directory = root.joinpath(*DIRECTORY)
     manifest_path, package_path = directory / MANIFEST_FILE, directory / PACKAGE_FILE
-    owned_list = _owned_list()
     if permission.retraction_pending(_read(manifest_path)):
         with package_lock(root):
             manifest = _read(manifest_path)
@@ -1644,7 +1633,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
     if not permission.delivery_gate_allows(root, surface="website_company_simulation"):
         _take_back_if_archived(root, manifest_path, retract)
         return {"status": "refused", "reason": "website_company_simulation_takedown_gate_closed"}
-    if not permission.may_be_permitted(root, identity, now(), owned_list):
+    if not permission.may_be_permitted(root, identity, now()):
         _take_back_if_archived(root, manifest_path, retract)
         return {"status": "not_permitted"}
     notes: dict[str, Any] = {}
@@ -1656,9 +1645,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             manifest = _read(manifest_path)
             archived = manifest.get("archive")
             if isinstance(archived, Mapping) and not permission.hidden(archived):
-                stop = _kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now,
-                                           permission.owned_basis_holds(identity["capture_id"], upload_sha256(root),
-                                                                        owned_list))
+                stop = _kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now)
                 if stop is not None:
                     return stop
         return {"status": "no_source", **notes}
@@ -1671,10 +1658,9 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             return {"status": "no_source"}
         revision = simulation_revision(source, max_bytes=max_bytes)
         upload = upload_sha256(root)
-        owned = permission.owned_basis_holds(identity["capture_id"], upload, owned_list)
         check = permission.read_check(root)
         if _current(manifest, revision, package_path):
-            return (_kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now, owned)
+            return (_kept_or_taken_back(root, identity, manifest, manifest_path, check_rights, retract, now)
                     or {"status": "current", "simulation_revision": revision})
         refusal = _refusal(manifest, revision)
         refused, refused_at = refusal.get("refused"), refusal.get("refused_at_epoch")
@@ -1687,7 +1673,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             return ({"status": "build_timed_out"} if refused == BUILD_TIMED_OUT
                     else {"status": "refused", "reason": refused})
         # A definite "no" from this window's live read stands until the window passes: no request every pass.
-        if (not owned and not permission.live_due(check, now(), root)
+        if (not permission.live_due(check, now(), root)
                 and check.get("outcome") in ("not_sharing", "rights_refused")):
             if manifest:
                 permission.take_back(manifest, manifest_path, retract)
@@ -1698,12 +1684,9 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
         stopped = _refused_live(check, manifest, manifest_path, retract)
         if stopped is not None:
             return stopped
-        basis = permission.decided_basis(check, owned)
-        if basis is None or (source["source_kind"] == "floor" and basis["permission_basis"] == "blueprint_owned_capture"
-                             and not covers_sharing(basis.get("statement_version"))):
-            # A floor is not built for a capture the website would refuse (Blueprint's own video under a
-            # statement that does not share): nobody new may see it.
-            if manifest and basis is None:
+        basis = permission.decided_basis(check)
+        if basis is None:
+            if manifest:
                 permission.take_back(manifest, manifest_path, retract)
             return {"status": "not_permitted"}
         # The website refused this package: nothing is uploaded again until the live rights differ from those at
@@ -1774,8 +1757,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, queue_root, max
             # list that landed while the package was being built stops it here.
             if not permission.delivery_gate_allows(root, surface="website_company_simulation"):
                 return stop({"status": "refused", "reason": "website_company_simulation_takedown_gate_closed"})
-            if not permission.basis_holds(root, identity["capture_id"], basis["permission_basis"],
-                                          upload_sha256(root), now(), _owned_list()):
+            if not permission.basis_holds(root, identity["capture_id"], basis["permission_basis"], now()):
                 recorded = permission.read_check(root)
                 if recorded.get("outcome") == "rights_refused":
                     return stop({"status": "refused",
@@ -1939,8 +1921,8 @@ def open_company_simulation(*, request_id: str, capture_id: str, digest: str, st
 
     It fails closed: with no storage root, a withdrawn site (found without the workspace), no capture
     workspace, a closed takedown gate, a manifest that does not name this digest as archived and not taken back,
-    or a basis that no longer holds at ``now`` (Blueprint's list names this upload, or the last live grant is
-    younger than the bound and nothing has said no since), nothing is served.
+    or a basis that no longer holds at ``now`` (the last live grant is younger than the bound and nothing has
+    said no since), nothing is served.
     """
     if (storage_root is None or not capture_name_matches_request(request_id, capture_id)
             or not _DIGEST.fullmatch(str(digest)) or permission.site_withdrawn(storage_root, request_id)):
@@ -1957,7 +1939,7 @@ def open_company_simulation(*, request_id: str, capture_id: str, digest: str, st
     if (not permission.delivery_gate_allows(roots[0], surface="website_company_simulation")
             or manifest.get("schema_version") != MANIFEST_SCHEMA or stored.get("digest") != digest
             or permission.hidden(stored)
-            or not permission.basis_still_holds(roots[0], capture_id, manifest, moment, _owned_list())):
+            or not permission.basis_still_holds(roots[0], capture_id, manifest, moment)):
         raise CompanySimulationUnavailable("website_company_simulation_unavailable")
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
     from .task_evaluation_configured_scene_object_store import _artifact_object_store_client, _object_missing

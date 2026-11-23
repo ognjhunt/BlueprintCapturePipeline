@@ -1169,18 +1169,6 @@ def test_the_spec_walk_finds_what_the_text_export_finds(tmp_path, monkeypatch, w
 UPLOAD = "sha256:" + "ab" * 32
 
 
-def _owned_job(tmp_path, monkeypatch, *, prefix: str = UPLOAD[7:19]) -> Job:
-    """A capture under an older statement, on Blueprint's own list for the upload the scene was made from."""
-    job = Job(tmp_path, version=OLDER)
-    _write(job.capture.joinpath("pipeline", "company_clip", "company_clip.json"), {"upload_sha256": UPLOAD})
-    owned = _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "purpose": "test",
-                                             "captures": [{"capture_id": CAPTURE, "approved_by": "owner",
-                                                           "approved_on": "2026-11-12", "evidence": "test",
-                                                           "video_sha256_prefix": prefix}]})
-    monkeypatch.setattr(sim, "OWNED_CAPTURES_LIST", owned)
-    return job
-
-
 def _at(world: World, seconds: int) -> dict:
     return sim.publish_company_simulation(world.job.capture, now=lambda: NOW + seconds, check_rights=world.check_rights,
                                           archive=world.archive, retract=world.retract, deliver=world.deliver,
@@ -1197,25 +1185,13 @@ def _read_route(job: Job, world: World, *, now: float, storage_root: Path | None
         return "unavailable"
 
 
-@pytest.mark.parametrize("later", [60, 7 * 3600, 30 * 86400])
-def test_a_capture_taken_off_blueprints_list_loses_its_package_on_the_next_pass_and_route_read(
-        tmp_path, monkeypatch, later):
-    job = _owned_job(tmp_path, monkeypatch)
-    world = World(job, rights={"consent_status": "granted", "consent_revoked": False, "statement_version": OLDER})
-    assert world.publish()["status"] == "published"
-    assert world.delivered[0]["permission_basis"] == "blueprint_owned_capture"
-    assert _read_route(job, world, now=NOW + 1) != "unavailable"
-    _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "purpose": "test", "captures": []})
-    # The route reads the list itself, before any pass.
-    assert _read_route(job, world, now=NOW + later) == "unavailable"
-    assert _at(world, later)["status"] == "not_permitted"
-    assert len(world.retracted) == 1 and _manifest(job)["archive"]["retracted"] is True
-
-
-def test_an_owned_row_for_another_upload_never_shares(tmp_path, monkeypatch):
-    job = _owned_job(tmp_path, monkeypatch, prefix="000000000000")
+def test_blueprints_own_capture_under_an_older_statement_gets_no_package(tmp_path):
+    # C-10: the website's sharing rule is the one authority; the Pipeline keeps no list of its own captures.
+    job = Job(tmp_path, version=OLDER)
+    _write(job.capture.joinpath("pipeline", "company_clip", "company_clip.json"), {"upload_sha256": UPLOAD})
     world = World(job, rights={"consent_status": "granted", "consent_revoked": False, "statement_version": OLDER})
     assert world.publish() == {"status": "not_permitted"} and world.archived == []
+    assert not hasattr(sim, "OWNED_CAPTURES_LIST")
 
 
 @pytest.mark.parametrize("later", [60, 7 * 3600, 30 * 86400])
@@ -1382,18 +1358,6 @@ def test_random_bytes_pass_the_raw_byte_patterns():
         assert scan.scan_stream(_io.BytesIO(text), [], text=True) is not None
 
 
-def test_an_owned_package_is_taken_back_when_the_clip_records_a_definite_no(tmp_path, monkeypatch):
-    from blueprint_pipeline import company_share_permission as permission
-    job = _owned_job(tmp_path, monkeypatch)
-    world = World(job, rights={"consent_status": "granted", "consent_revoked": False, "statement_version": OLDER})
-    assert world.publish()["status"] == "published"
-    revoked = {"consent_status": "revoked", "consent_revoked": True, "statement_version": OLDER}
-    permission.record_live(job.capture, permission.capture_identity(job.capture), lambda _i: dict(revoked), NOW + 60)
-    assert _read_route(job, world, now=NOW + 90) == "unavailable"
-    assert _at(world, 120) == {"status": "refused", "reason": "website_company_simulation_rights_refused"}
-    assert len(world.retracted) == 1
-
-
 def test_a_site_package_is_taken_back_when_the_clip_records_a_definite_no(job):
     from blueprint_pipeline import company_share_permission as permission
     world = World(job)
@@ -1459,26 +1423,21 @@ def test_the_spec_walk_reads_string_and_token_arrays(tmp_path, monkeypatch, kind
     assert found is not None and found[0] == "a job id"
 
 
-@pytest.mark.parametrize("event", ["takedown", "revoked_recorded", "owned_removed"])
+@pytest.mark.parametrize("event", ["takedown", "revoked_recorded"])
 def test_an_event_during_the_build_stops_the_upload(tmp_path, monkeypatch, event):
     from blueprint_pipeline import company_share_permission as permission
-    job = _owned_job(tmp_path, monkeypatch) if event == "owned_removed" else Job(tmp_path)
-    rights = ({"consent_status": "granted", "consent_revoked": False, "statement_version": OLDER}
-              if event == "owned_removed" else None)
-    world = World(job, rights=rights)
+    job = Job(tmp_path)
+    world = World(job)
     real = sim.build_package
 
     def during(*args, **kwargs):
         built = real(*args, **kwargs)
         if event == "takedown":
             _write(job.capture / "pipeline/consent_takedown/takedown_manifest.json", {"takedown_open": True})
-        elif event == "revoked_recorded":
+        else:
             permission.record_live(job.capture, permission.capture_identity(job.capture),
                                    lambda _i: {"consent_status": "revoked", "consent_revoked": True,
                                                "statement_version": SHARED}, NOW)
-        else:
-            _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "purpose": "test",
-                                             "captures": []})
         return built
     monkeypatch.setattr(sim, "build_package", during)
     result = world.publish()

@@ -5,8 +5,6 @@ One set of rules for both things a company receives from a website capture: the 
 the same stored live check (``pipeline/company_clip/statement_check.json``), so a capture is read live once a
 window for both, and both honour the website's recheck mark (``permission_recheck``).
 
-- Blueprint's own list (``config/blueprint_owned_captures.v1.json``) is a local read, made every pass and on
-  every route read, against the digest of the upload the shared thing was made from.
 - The live rights (the WebApp's signed ``task-context`` read) are read at least once every
   ``LIVE_STATEMENT_RECHECK_SECONDS``, and at once after a recheck mark; every answer is recorded. A definite
   "no" takes the shared thing back on that pass. With no answer a live grant is kept at most
@@ -27,7 +25,7 @@ from typing import Any
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .permission_recheck import recheck_requested_since
-from .sharing_statement import covers_sharing, internal_test_label, owned_captures, sharing_basis
+from .sharing_statement import covers_sharing, internal_test_label, sharing_basis
 from .website_atlas_preview_store import capture_withdrawn
 
 #: The shared live check sits in the clip's folder, where the website's recheck mark is written too.
@@ -166,16 +164,6 @@ def retraction_pending(manifest: Mapping[str, Any], key: str = "archive") -> boo
 
 # --- the basis --------------------------------------------------------------------------------------------------
 
-def owned_basis_holds(capture_id: str, video_sha256: str | None, owned_list: Path | None = None) -> bool:
-    """The capture is on Blueprint's own list and its row's prefix names this upload. A local read, made
-    every pass and on every route read; an unreadable list holds for nothing."""
-    return sharing_basis({"capture_id": capture_id}, video_sha256=video_sha256, owned_list=owned_list) is not None
-
-
-def on_owned_list(capture_id: str, owned_list: Path | None = None) -> bool:
-    return capture_id in owned_captures(owned_list)[0]
-
-
 def recorded_statement_version(capture_root: Path) -> str | None:
     """The statement version the capture's files kept at submission (a snapshot)."""
     root = Path(capture_root)
@@ -261,22 +249,20 @@ def live_grant_holds(check: Mapping[str, Any], now: float | None = None) -> bool
     return now is None or 0 <= now - granted < LIVE_GRANT_LIFETIME_SECONDS
 
 
-def may_be_permitted(root: Path, identity: Mapping[str, str], now: float, owned_list: Path | None = None) -> bool:
-    """No network: the snapshot covers sharing, the capture is on Blueprint's own list, the last live read
-    granted sharing, or a live read is due. Otherwise a capture gets no directory, file or request."""
-    if (covers_sharing(recorded_statement_version(root)) or on_owned_list(identity["capture_id"], owned_list)
-            or recorded_internal_test(root)):
+def may_be_permitted(root: Path, identity: Mapping[str, str], now: float) -> bool:
+    """No network: the snapshot covers sharing, the last live read granted sharing, or a live read is due.
+    Otherwise a capture gets no directory, file or request."""
+    if covers_sharing(recorded_statement_version(root)) or recorded_internal_test(root):
         return True
     check = read_check(root)
     return live_due(check, now, root) or live_grant_holds(check, now)
 
 
-def decided_basis(check: Mapping[str, Any], owned: bool) -> dict[str, Any] | None:
-    """The rule that lets the thing be shared now: a live grant, else Blueprint's own capture, else None."""
+def decided_basis(check: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The rule that lets the thing be shared now: the website's live grant (or an internal test job), else None.
+    The website's sharing rule is the one authority: the Pipeline keeps no list of its own (C-10)."""
     if check.get("outcome") == "covers_sharing":
         return {"permission_basis": "site_sharing_statement", "statement_version": check.get("statement_version")}
-    if owned and check.get("outcome") == "not_sharing":  # consent definitely granted, Blueprint's own video
-        return {"permission_basis": "blueprint_owned_capture", "statement_version": check.get("statement_version")}
     if check.get("outcome") == "internal_test":
         return {"permission_basis": "internal_test", "statement_version": check.get("statement_version"),
                 "label": check.get("internal_test_label")}
@@ -304,15 +290,13 @@ def refused_live(check: Mapping[str, Any], manifest: dict[str, Any], manifest_pa
     return None
 
 
-def basis_holds(root: Path, capture_id: str, basis: str | None, upload_sha256: str | None, now: float,
-                owned_list: Path | None = None) -> bool:
+def basis_holds(root: Path, capture_id: str, basis: str | None, now: float) -> bool:
     """A basis holds now, by the stored record alone (no network). A recorded definite "no" (``rights_refused``)
-    means no basis holds, whatever the basis: Blueprint's own capture too."""
+    means no basis holds, whatever the basis. A thing published under the retired ``blueprint_owned_capture``
+    basis holds no more."""
     check = read_check(root)
     if check.get("outcome") == "rights_refused":
         return False
-    if basis == "blueprint_owned_capture":
-        return owned_basis_holds(capture_id, upload_sha256, owned_list)
     if basis == "site_sharing_statement":
         return live_grant_holds(check, now)
     if basis == "internal_test":
@@ -320,11 +304,9 @@ def basis_holds(root: Path, capture_id: str, basis: str | None, upload_sha256: s
     return False
 
 
-def basis_still_holds(root: Path, capture_id: str, manifest: Mapping[str, Any], now: float,
-                      owned_list: Path | None = None) -> bool:
+def basis_still_holds(root: Path, capture_id: str, manifest: Mapping[str, Any], now: float) -> bool:
     """For a route read: the published thing's basis holds now (``basis_holds``)."""
-    return basis_holds(root, capture_id, (manifest.get("permission") or {}).get("permission_basis"),
-                       manifest.get("upload_sha256"), now, owned_list)
+    return basis_holds(root, capture_id, (manifest.get("permission") or {}).get("permission_basis"), now)
 
 
 def delivery_gate_allows(capture_root: Path, *, surface: str) -> bool:
@@ -353,6 +335,6 @@ def site_withdrawn(storage_root: Path, request_id: str) -> bool:
 __all__ = ["CHECK_DIRECTORY", "basis_holds", "capture_identity", "retract_object", "sha256_file", "LIVE_GRANT_LIFETIME_SECONDS", "LIVE_STATEMENT_RECHECK_SECONDS", "NOT_PERMITTED",
            "RIGHTS_REFUSALS", "RIGHTS_REFUSED", "STATEMENT_CHECK_FILE", "basis_still_holds", "check_path",
            "decided_basis", "delivery_gate_allows", "hidden", "live_due", "live_grant_holds", "live_rights",
-           "may_be_permitted", "on_owned_list", "owned_basis_holds", "read_check", "read_json", "reason_code",
+           "may_be_permitted", "read_check", "read_json", "reason_code",
            "record_live", "recorded_statement_version", "refused_live", "retraction_pending", "site_withdrawn",
            "take_back"]

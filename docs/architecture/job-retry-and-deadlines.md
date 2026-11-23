@@ -247,6 +247,14 @@ capture (the owner's "update video" issues a replacement capture, which becomes 
 runs from the start. `website_registration_anchor_frame_missing`, `..._anchor_frame_invalid` and
 `..._scale_conflicts_declared` are not video faults and keep their earlier handling.
 
+Since 2026-11-22 the five fit codes and `website_front_normal_undetermined` no longer ask for a new
+video: they are found after the room was built, so the job ships the room package, flagged, under
+section 8 (`website_recapture_required.ROOM_BUILT_CODES`, read by `website_scene_handoff.goes_on`);
+the site can still send a new video. Only the scene review's abstentions, found before any room is
+bought (`website_task_object_not_observed`, `website_capture_frames_unusable`), still ask the site to
+film again. A hold an earlier release wrote is looked at again once per release by the held hand-off
+replay, which then ships the room.
+
 ## 8. A preparation blocker that is no wall ships the room package (2026-11-18)
 
 Owner direction 2026-11-17: accept every job, then decide what is needed. In the scene
