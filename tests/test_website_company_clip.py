@@ -535,6 +535,42 @@ def test_the_atlas_preview_timer_pass_runs_the_clip_pass_and_swallows_its_failur
     assert website_atlas_preview.company_clip_tick(tmp_path) == {"tick_failed": 1}
 
 
+@pytest.mark.parametrize("atlas", ["long", "raises"])
+def test_a_new_jobs_clip_is_delivered_before_the_atlas_steps_start(monkeypatch, tmp_path, atlas):
+    # 2026-11-23: a new job's clip was built only after every job's paid Atlas steps (more than six minutes after
+    # its hand-off). The unit now runs the clip pass first, whatever the Atlas steps then do.
+    from blueprint_pipeline import owned_capture_atlas_worker
+    from blueprint_pipeline import website_atlas_preview as preview
+    from blueprint_pipeline import website_company_simulation
+    capture = _handed_off_only(tmp_path)
+    world, real = World(), clip.publish_company_clip
+    monkeypatch.setattr(clip, "publish_company_clip", lambda root, **_: real(
+        root, now=lambda: NOW, check_rights=world.check_rights, archive=world.archive, retract=world.retract,
+        deliver=world.deliver))
+    monkeypatch.setattr(website_company_simulation, "tick", lambda root, **_: {})
+    monkeypatch.setattr(preview, "trigger_stop_reason", lambda: lambda: None)
+    monkeypatch.setattr(preview, "scene_preview_tick", lambda root: {})
+    monkeypatch.setattr(owned_capture_atlas_worker, "tick_from_environment", lambda: {})
+    seen = []
+
+    def atlas_tick(root, **options):
+        seen.append(len(world.delivered))
+        if atlas == "raises":
+            raise RuntimeError("atlas step failed")
+        return {"processing": 1}
+    monkeypatch.setattr(preview, "tick", atlas_tick)
+    if atlas == "raises":
+        with pytest.raises(RuntimeError, match="atlas step failed"):
+            preview.main(["tick", "--storage-root", str(tmp_path / "storage")])
+    else:
+        assert preview.main(["tick", "--storage-root", str(tmp_path / "storage")]) == 0
+    assert seen == [1] and len(world.delivered) == 1 and len(world.archived) == 1
+    assert world.delivered[0]["clip_digest"] == _manifest(capture)["clip_digest"]
+    # The pass after the Atlas steps finds the clip current: no second build, upload or delivery, and the
+    # rights read the first pass made still stands for this window (the clip is never shown without one).
+    assert world.rights_reads == 1
+
+
 def test_delivery_uses_the_signed_company_clip_operation_and_checks_the_acceptance(monkeypatch):
     from blueprint_pipeline import website_task_context
     calls, sent = [], []

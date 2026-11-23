@@ -646,6 +646,40 @@ def test_nothing_raises_out_of_a_pass_or_the_tick(job, monkeypatch):
     assert website_atlas_preview.company_simulation_tick(job.tmp) == {"tick_failed": 1}
 
 
+@pytest.mark.parametrize("atlas", ["long", "raises"])
+def test_a_ready_rooms_package_is_delivered_before_the_atlas_steps_start(job, monkeypatch, atlas):
+    # A finished room's package waited behind every job's paid Atlas steps and every clip; the unit now runs the
+    # package pass first, whatever the Atlas steps then do.
+    from blueprint_pipeline import owned_capture_atlas_worker
+    from blueprint_pipeline import website_atlas_preview as preview
+    from blueprint_pipeline import website_company_clip
+    world, real = World(job), sim.publish_company_simulation
+    monkeypatch.setattr(sim, "publish_company_simulation", lambda capture, **_: real(
+        capture, now=lambda: NOW, check_rights=world.check_rights, archive=world.archive, retract=world.retract,
+        deliver=world.deliver, queue_root=job.queue))
+    monkeypatch.setattr(website_company_clip, "tick", lambda root, **_: {})
+    monkeypatch.setattr(preview, "trigger_stop_reason", lambda: lambda: None)
+    monkeypatch.setattr(preview, "scene_preview_tick", lambda root: {})
+    monkeypatch.setattr(owned_capture_atlas_worker, "tick_from_environment", lambda: {})
+    seen = []
+
+    def atlas_tick(root, **options):
+        seen.append(len(world.delivered))
+        if atlas == "raises":
+            raise RuntimeError("atlas step failed")
+        return {"processing": 1}
+    monkeypatch.setattr(preview, "tick", atlas_tick)
+    if atlas == "raises":
+        with pytest.raises(RuntimeError, match="atlas step failed"):
+            preview.main(["tick", "--storage-root", str(job.tmp / "storage")])
+    else:
+        assert preview.main(["tick", "--storage-root", str(job.tmp / "storage")]) == 0
+    assert seen == [1] and len(world.delivered) == 1 and len(world.archived) == 1
+    assert world.delivered[0]["simulation_digest"] == _manifest(job)["simulation_digest"]
+    # The pass after the Atlas steps finds the package current: no second build or delivery.
+    assert world.rights_reads == 1
+
+
 def test_a_busy_lock_is_busy(job):
     import fcntl
     directory = job.capture.joinpath(*sim.DIRECTORY)
