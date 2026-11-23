@@ -177,6 +177,26 @@ def publish_job_thumbnail(capture_root: Path, *, now: Callable[[], float] = time
     root = Path(capture_root)
     identity = _identity(root)
     directory = root.joinpath(*DIRECTORY)
+    # Read-only first: nothing here creates a file or a lock for a withdrawn capture or one with no delivered preview.
+    if capture_withdrawn(root):
+        return {"status": "withdrawn"}
+    if _delivered_preview(_read(directory / MANIFEST_FILE)) is None:
+        return {"status": "no_delivered_preview"}
+    # Withdrawal deletion takes this same lock. It is held from the withdrawal check through rendering, every write
+    # and the delivery, as the scene preview's build holds it, so deletion can never finish ahead of a render and have
+    # the image or its receipt written again after it.
+    try:
+        with preview_lock(root):
+            return _publish_locked(root, identity, directory, now=now, check_rights=check_rights, render=render,
+                                   deliver=deliver)
+    except ScenePreviewBusy:
+        return {"status": "busy"}
+
+
+def _publish_locked(root: Path, identity: Mapping[str, str], directory: Path, *, now: Callable[[], float],
+                    check_rights: Callable[[Mapping[str, str]], None], render: Callable[..., dict[str, Any]],
+                    deliver: Callable[..., None]) -> dict[str, Any]:
+    """`publish_job_thumbnail`'s work, with the preview lock held throughout."""
     receipt_path, image_path = directory / RECEIPT_FILE, directory / IMAGE_FILE
     if capture_withdrawn(root):
         return {"status": "withdrawn"}
@@ -229,25 +249,17 @@ def publish_job_thumbnail(capture_root: Path, *, now: Callable[[], float] = time
                                     width=int(receipt.get("width") or WIDTH), height=int(receipt.get("height") or HEIGHT))
         kept = {key: receipt.get(key) for key in ("render_inputs_digest", "output_digest", "width", "height",
                                                     "visible_gaussians")}
-        # Delivered under the preview's lock, which withdrawal deletion takes: no delivery after a withdrawal.
-        with preview_lock(root):
-            if capture_withdrawn(root):
-                return {"status": "withdrawn"}
-            if _delivered_preview(_read(directory / MANIFEST_FILE)) != preview_digest:
-                return {"status": "failed", "reason": "website_job_thumbnail_preview_changed"}
-            try:
-                deliver(payload, identity=identity)
-            except Exception as error:  # noqa: BLE001 - a 4xx answer is final; anything else retries
-                reason = _reason(error)
-                if _HTTP_CLIENT_REFUSAL.search(str(error)):
-                    record("refused", reason=reason, **kept)
-                    return {"status": "refused", "reason": reason}
-                record("failed", reason=reason, **kept)
-                return {"status": "failed", "reason": reason}
-            record("delivered", digest=payload["thumbnail"]["digest"], **kept)
-            return {"status": "delivered", "digest": payload["thumbnail"]["digest"]}
-    except ScenePreviewBusy:
-        return {"status": "busy"}
+        try:
+            deliver(payload, identity=identity)
+        except Exception as error:  # noqa: BLE001 - a 4xx answer is final; anything else retries
+            reason = _reason(error)
+            if _HTTP_CLIENT_REFUSAL.search(str(error)):
+                record("refused", reason=reason, **kept)
+                return {"status": "refused", "reason": reason}
+            record("failed", reason=reason, **kept)
+            return {"status": "failed", "reason": reason}
+        record("delivered", digest=payload["thumbnail"]["digest"], **kept)
+        return {"status": "delivered", "digest": payload["thumbnail"]["digest"]}
     except Exception as error:  # noqa: BLE001 - one capture never stops a pass; retried, at most MAX_ATTEMPTS times
         reason = _reason(error)
         logger.warning("website_job_thumbnail_failed capture=%s type=%s", identity["capture_id"], type(error).__name__)

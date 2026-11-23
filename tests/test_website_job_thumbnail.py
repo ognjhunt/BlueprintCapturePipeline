@@ -219,3 +219,30 @@ def test_the_tick_keeps_to_its_render_budget(previewed, tmp_path):
     assert thumbnail.tick(storage, renders=0, **options) == {"deferred": 1, "stopped_render_budget": 1}
     assert thumbnail.tick(storage, **options) == {"delivered": 1}
     assert thumbnail.tick(storage, **options) == {"current": 1}
+
+
+def test_withdrawal_deletion_cannot_take_the_lock_while_a_render_runs(previewed):
+    """Codex review of #3705: deletion takes the preview's lock, so the render holds it from start to finish."""
+    from blueprint_pipeline.website_scene_preview import ScenePreviewBusy, preview_lock
+    side = Side()
+    rendering = side.render
+
+    def render_while_deletion_tries(source, start_view):
+        with pytest.raises(ScenePreviewBusy):
+            with preview_lock(previewed):
+                pass
+        return rendering(source, start_view)
+
+    side.render = render_while_deletion_tries
+    assert side.publish(previewed)["status"] == "delivered"
+
+
+def test_a_withdrawal_just_before_the_lock_leaves_no_image_and_no_receipt(previewed, monkeypatch):
+    """Withdrawn after the read-only checks and before the lock: rechecked under the lock, nothing is written."""
+    calls = iter([False, True])
+    monkeypatch.setattr(thumbnail, "capture_withdrawn", lambda root: next(calls, True))
+    side = Side()
+    assert side.publish(previewed) == {"status": "withdrawn"}
+    directory = previewed / "pipeline/website_scene_preparation"
+    assert not (directory / "job_thumbnail.png").exists() and not (directory / "job_thumbnail.json").exists()
+    assert side.renders == [] and side.delivered == []
