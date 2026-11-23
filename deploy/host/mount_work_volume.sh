@@ -107,6 +107,8 @@ WORKER_UNITS=(
   blueprint-website-atlas-provider-poll.timer
   blueprint-website-atlas-provider-poll.path
   blueprint-task-evaluation-launch-preparation.service
+  # Unshipped but still installed on the host (the retirement proof reads it): stopped for the move.
+  blueprint-task-evaluation-episode-compilation.service
   blueprint-task-evaluation-launch-activation.service
   blueprint-task-evaluation-launch-dispatcher.service
   blueprint-rigid-robot-free-probe-runner.service
