@@ -1147,6 +1147,20 @@ def scene_preview_tick(storage_root: Path) -> dict[str, int]:
         return {"tick_failed": 1}
 
 
+def job_thumbnail_tick(storage_root: Path, stop_reason: Callable[[], str | None] | None = None) -> dict[str, int]:
+    """A still of each job's simulation for its thumbnail (``website_job_thumbnail``), after its scene preview.
+
+    A CPU render of retained splats; it pays for nothing and never touches a job. It keeps to its own render and
+    time budget, and a failure is counted, never raised into the tick, and retried by the next one.
+    """
+    try:
+        from .website_job_thumbnail import tick as publish_job_thumbnails
+        return publish_job_thumbnails(storage_root, stop_reason=stop_reason)
+    except Exception as error:  # noqa: BLE001 - thumbnails are optional; the Atlas tick has finished
+        logger.warning("website_job_thumbnail_tick_failed type=%s", type(error).__name__)
+        return {"tick_failed": 1}
+
+
 def company_clip_tick(storage_root: Path, stop_reason: Callable[[], str | None] | None = None) -> dict[str, int]:
     """The silent clip approved deployment companies watch (``website_company_clip``), made by the same timer.
 
@@ -1205,6 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
     from .owned_capture_atlas_worker import tick_from_environment
     counts.update({"owned_" + key: value for key, value in tick_from_environment().items()})
     counts.update({"scene_preview_" + key: value for key, value in scene_preview_tick(args.storage_root).items()})
+    counts.update({"job_thumbnail_" + key: value for key, value in job_thumbnail_tick(args.storage_root, stop_reason).items()})
     counts.update({"company_clip_" + key: value for key, value in company_clip_tick(args.storage_root, stop_reason).items()})
     counts.update({"company_simulation_" + key: value
                    for key, value in company_simulation_tick(args.storage_root, stop_reason).items()})
