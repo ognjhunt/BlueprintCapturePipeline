@@ -217,7 +217,34 @@ def test_the_index_builder_reads_only_pinned_urls_and_checks_the_bill(tmp_path):
     assert record["root"] == ROOT and record["up_axis"] == "Y" and record["meters_per_unit"] == 0.01
     assert record["size_m"] == [0.6, 0.4, 0.3]  # Y up in centimetres, as metres with Z up
     assert record["thumbnail"]["sha256"] == hashlib.sha256(files[THUMB]).hexdigest()
-    served[BASE + BOM] = bom + b" "
+    # The package supplies no copyright notice and no disclaimer: none is recorded, and none made up.
+    assert (record["copyright"], record["disclaimer"]) == (None, None) and "notice_files" not in record
+    # A notice file the bill names is read for its copyright line and its disclaimer, as written; a contact is not.
+    attribution = ("marso by M-XR\nCopyright 2026 Example Ltd.\nContact: someone@example.com\n"
+                   "Provided as is, without warranty of any kind.\n").encode()
+    noticed = {**files, "usd/ATTRIBUTION.txt": attribution}
+    bill = _bom(noticed)
+    served.update({BASE + "usd/ATTRIBUTION.txt": attribution, BASE + BOM: bill,
+                   BASE + "com.nvidia.simready.packaging.json": packaging.replace(
+                       hashlib.sha256(bom).hexdigest(), hashlib.sha256(bill).hexdigest()).encode()})
+    record = builder.package_record(builder.submission_urls(listing)[0], lambda url, cap: served[url])
+    assert record["copyright"] == "Copyright 2026 Example Ltd."
+    assert record["disclaimer"] == "Provided as is, without warranty of any kind."
+    assert record["notice_files"][0]["path"] == "usd/ATTRIBUTION.txt" and "someone" not in json.dumps(record)
+    # A license file's own copyright line is kept (its first sentence); the legal code's words are not a notice, and its
+    # disclaimer is the license text itself, not one beyond it.
+    licence = ("Creative Commons Attribution 4.0 International (CC BY 4.0)\n"
+               "Copyright (c) M-XR Limited. Attribution: marso by M-XR (https://m-xr.com).\n"
+               "     copyright and certain other rights. Our licenses are\n"
+               "Section 5 -- Disclaimer of Warranties and Limitation of Liability.\n").encode()
+    licensed = {**files, "usd/LICENSE.txt": licence}
+    bill = _bom(licensed)
+    served.update({BASE + "usd/LICENSE.txt": licence, BASE + BOM: bill,
+                   BASE + "com.nvidia.simready.packaging.json": packaging.replace(
+                       hashlib.sha256(bom).hexdigest(), hashlib.sha256(bill).hexdigest()).encode()})
+    record = builder.package_record(builder.submission_urls(listing)[0], lambda url, cap: served[url])
+    assert (record["copyright"], record["disclaimer"]) == ("Copyright (c) M-XR Limited.", None)
+    served[BASE + BOM] = bill + b" "
     with pytest.raises(ValueError, match="bom_digest_mismatch"):
         builder.package_record(builder.submission_urls(listing)[0], lambda url, cap: served[url])
     listing.write_text(f"https://huggingface.co/datasets/{REPO}/resolve/main/{ASSET}/com.nvidia.simready.packaging.json\n")
@@ -225,11 +252,20 @@ def test_the_index_builder_reads_only_pinned_urls_and_checks_the_bill(tmp_path):
         builder.submission_urls(listing)
 
 
-def test_the_package_credits_a_simready_model_with_the_owners_wording(tmp_path):
+#: A copyright notice and a disclaimer of warranties a package might supply (none of the reviewed ones does today).
+SUPPLIED = {"package_license": "CC-BY-4.0", "asset_license": "CC-BY 4.0", "author": "NVIDIA",
+            "copyright": "Copyright (c) 2026 Example Corporation.",
+            "disclaimer": "This asset is provided as is, without warranties of any kind."}
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+def test_the_package_credits_a_simready_model_with_the_owners_wording(tmp_path, supplied):
+    """The settled credit, every file holding the model named, and the package's own copyright notice and disclaimer
+    kept exactly where it supplies them; nothing in their place where it supplies none."""
     from blueprint_pipeline import outbound_file_scan as scan
     from blueprint_pipeline import website_company_simulation as sim
     from tests.test_website_company_simulation import Job
-    indexes, fetch = _fixture(tmp_path)
+    indexes, fetch = _fixture(tmp_path, rights=[SUPPLIED] if supplied else None)
     job = Job(tmp_path / "job")
     capture = job.capture
     chosen = library._attribution(library.catalog(indexes)[0])
@@ -246,10 +282,14 @@ def test_the_package_credits_a_simready_model_with_the_owners_wording(tmp_path):
     with zipfile.ZipFile(tmp_path / "package.zip") as archive:
         readme = " ".join(archive.read("README.txt").decode().split())
         archive.extractall(tmp_path / "unpacked")
-    assert (f"- scene/files/library_model.usda: {ASSET} by NVIDIA, from the SimReady dataset {REPO} "
-            f"({BASE}com.nvidia.simready.packaging.json), under CC BY 4.0 "
+    notice = " (Copyright (c) 2026 Example Corporation.)" if supplied else ""
+    disclaimer = (" Its own notice: This asset is provided as is, without warranties of any kind." if supplied
+                  else "")
+    assert (f"- scene/files/library_model.usda and object.usdz: {ASSET} by NVIDIA{notice}, from the SimReady dataset "
+            f"{REPO} ({BASE}com.nvidia.simready.packaging.json), under CC BY 4.0 "
             "(https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from USD and scaled it to fit "
-            "this job.") in readme
+            f"this job.{disclaimer}") in readme
+    assert ("Copyright" in readme) is supplied and ("warrant" in readme) is supplied  # never one made up
     assert ("These files stay under their own license. Blueprint does not own them, and the terms Blueprint shares "
             "this package under do not restrict them.") in readme
     assert scan.scan_tree(tmp_path / "unpacked", []) == []

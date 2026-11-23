@@ -1432,8 +1432,9 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
                                                        encoding="utf-8")
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
-        (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units, offsets, plys,
-                                                    first_written),
+        credited = {"library_files": library_notes.credited_files(source, staging, placed)}  # every file of a model
+        (staging / "README.txt").write_text(_readme({**source, **credited}, placed, [*names, "README.txt"], units,
+                                                    offsets, plys, first_written),
                                             encoding="utf-8")
         on_time()
         _resolves_inside(staging, room=source.get("room") is not None)

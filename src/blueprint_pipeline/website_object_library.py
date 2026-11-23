@@ -151,7 +151,8 @@ def _gso_entries(index: Mapping[str, Any]) -> list[dict[str, Any]]:
         rows.append({
             "id": f"gso:{name}@{version}", "library": index["library"], "library_title": index["library_title"],
             "title": title, "author": ", ".join(rights.get("authors") or []) or None,
-            "copyright": rights.get("copyright"), "words": [title, name.replace("_", " "), record.get("brand") or ""],
+            "copyright": rights.get("copyright") or None, "disclaimer": rights.get("disclaimer") or None,
+            "words": [title, name.replace("_", " "), record.get("brand") or ""],
             "categories": list(record.get("categories") or []), "size_m": record.get("size_m"), "mass_kg": None,
             "license_statements": [("Gazebo Fuel's license", license.get("fuel_license_name")),
                                    ("Gazebo Fuel's license link", license.get("fuel_license_url")),
@@ -187,7 +188,8 @@ def _simready_entries(index: Mapping[str, Any]) -> list[dict[str, Any]]:
             "library_title": f"the SimReady dataset {repo}",
             # The package's own name; the USD's asset_name beside it when that is a name in words.
             "title": asset + (f" ({named})" if " " in named.strip() else ""), "author": rights.get("author"),
-            "copyright": None, "words": [asset.replace("_", " "), str(record.get("asset_name") or "")],
+            "copyright": rights.get("copyright") or None, "disclaimer": rights.get("disclaimer") or None,
+            "words": [asset.replace("_", " "), str(record.get("asset_name") or "")],
             "categories": [str(record["category"])] if record.get("category") else [],
             "size_m": record.get("size_m"), "mass_kg": record.get("mass_kg"),
             "license_statements": [("the package definition", rights.get("package_license")),
@@ -230,11 +232,12 @@ def credit_shippable(entry: Mapping[str, Any], spdx: str) -> bool:
     author named by a web address would refuse the whole package): a model whose credit cannot ship is not used."""
     import io
     from .outbound_file_scan import scan_stream
-    from .website_library_notes import CREDIT, MODEL_FILE
+    from .website_library_notes import MODEL_FILE, credit_text
     license = ALLOWED_LICENSES[spdx]
-    text = CREDIT.format(file=MODEL_FILE, title=entry["title"], author=entry.get("author"),
-                         library=entry["library_title"], link=entry["item_url"], license=license["name"],
-                         license_url=license["url"], changes="converted it and scaled it")
+    text = credit_text({"title": entry["title"], "author": entry.get("author"), "copyright": entry.get("copyright"),
+                        "disclaimer": entry.get("disclaimer"), "library": entry["library_title"],
+                        "link": entry["item_url"], "license": license["name"], "license_url": license["url"],
+                        "changes": "converted it and scaled it"}, [MODEL_FILE, "object.usdz"])
     return scan_stream(io.BytesIO(text.encode()), [], text=True) is None
 
 
@@ -492,6 +495,7 @@ def _attribution(entry: Mapping[str, Any]) -> dict[str, Any]:
     license = ALLOWED_LICENSES[entry["license"]]
     return {"entry_id": entry["id"], "library": entry["library"], "library_title": entry["library_title"],
             "title": entry["title"], "author": entry.get("author"), "copyright": entry.get("copyright"),
+            "disclaimer": entry.get("disclaimer"),
             "item_url": entry["item_url"], "license": entry["license"], "license_name": license["name"],
             "license_url": license["url"], "license_statements": [list(row) for row in entry["license_statements"]],
             "format": entry["format"], "size_m": entry.get("size_m"), "files": [dict(row) for row in entry["files"]],

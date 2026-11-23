@@ -52,6 +52,21 @@ ROOTS = ".metadata/com.nvidia.simready.root_usds.json"
 USD_SUFFIXES = (".usd", ".usda", ".usdc")
 MAX_SMALL_BYTES = 4 * 1024 * 1024
 MAX_ROOT_BYTES = 64 * 1024 * 1024
+#: What a package is read for besides its metadata: v3 keeps any copyright, notice or disclaimer its root layer states
+#: and any copyright notice or disclaimer in a notice or license file its bill names.
+SURVEY = "notices.v3"
+NOTICE_WORDS = re.compile(r"(?i)copyright|notice|disclaim|warrant|attribution|legal")
+#: A file the bill names whose name reads as a notice or a license (an ATTRIBUTION.txt, a NOTICE, a LICENSE.txt). The
+#: package-level ``.metadata/LICENSE.txt`` is not in the bill: for every NVIDIA package it is one file, the CC BY 4.0
+#: legal code, with no notice of its own (checked 2026-11-23 through the Hugging Face tree at each pinned commit).
+NOTICE_FILES = re.compile(r"(?i)^(notice|disclaimer|copyright|attribution|legal|licen[cs]e)")
+#: A copyright notice line: "Copyright (c) ...", "Copyright 2020 ...", "© ..." (never the legal code's "copyright and
+#: certain other rights"); its first sentence is the notice kept.
+COPYRIGHT_LINE = re.compile(r"^\s*(?:Copyright\s*(?:\(c\)|\(C\)|©|\d{4})|©|\(c\)\s*\d{4})")
+COPYRIGHT_SENTENCE = re.compile(r"^\s*(.+?\.)(?:\s|$)")
+#: A disclaimer of warranties in a notice file; a license file's own disclaimer is the license text, not one beyond it.
+DISCLAIMER_LINE = re.compile(r"(?i)disclaim|warrant")
+LICENSE_FILE = re.compile(r"(?i)^licen[cs]e")
 
 
 def fetcher(timeout_seconds: float = 120.0) -> Callable[[str, int], bytes]:
@@ -126,15 +141,25 @@ def root_metadata(data: bytes, suffix: str) -> dict[str, Any]:
         layer = Sdf.Layer.OpenAsAnonymous(str(path))
         if layer is None:
             raise ValueError("root_usd_unreadable")
-        metadata = dict(layer.customLayerData.get("SimReady_Metadata") or {})
+        layer_data = dict(layer.customLayerData)
+        metadata = dict(layer_data.get("SimReady_Metadata") or {})
         root = layer.pseudoRoot
         up = str(root.GetInfo("upAxis")) if root.HasInfo("upAxis") else None
         metres = float(root.GetInfo("metersPerUnit")) if root.HasInfo("metersPerUnit") else None
+        documentation = str(layer.documentation or "")
     keep = ("asset_license", "author", "asset_author", "asset_name", "category", "asset_type", "mass",
             "asset_extents", "qcode")
+    # Any copyright, notice or disclaimer the package states about itself (CC BY 4.0 3(a)(1)(A)(ii) and (iv)), as
+    # written, wherever the root layer holds one: SimReady_Metadata, the layer's own customLayerData, its
+    # documentation. None found is recorded as none; nothing is supplied in its place.
+    notices = {f"{where}.{key}": str(value) for where, data in (("SimReady_Metadata", metadata),
+                                                               ("customLayerData", layer_data))
+               for key, value in data.items() if NOTICE_WORDS.search(str(key))}
+    if NOTICE_WORDS.search(documentation):
+        notices["documentation"] = documentation[:1000]
     return {"metadata": {key: (value if isinstance(value, (str, int, float)) else str(value))
                          for key, value in metadata.items() if key in keep},
-            "up_axis": up, "meters_per_unit": metres}
+            "up_axis": up, "meters_per_unit": metres, "notices": notices}
 
 
 def size_in_metres(extents: list[float] | None, up: str | None, metres: float | None) -> list[float] | None:
@@ -171,6 +196,23 @@ def package_record(row: dict[str, str], fetch: Callable[[str, int], bytes]) -> d
     meta = read["metadata"]
     thumbnail = str(PurePosixPath(root).parent / ".thumbs" / "256x256" / (PurePosixPath(root).name + ".png"))
     mass = meta.get("mass")
+    # A notice file the bill names (an ATTRIBUTION.txt, a NOTICE) is read, checked against the bill, for a copyright
+    # line or a disclaimer of its own; its other lines (a contact address) are not kept.
+    notice_files = []
+    for path in sorted(path for path in items if NOTICE_FILES.search(PurePosixPath(path).name)):
+        if items[path]["size_bytes"] > MAX_SMALL_BYTES:
+            continue
+        text = fetch(base + path, MAX_SMALL_BYTES)
+        if hashlib.sha256(text).hexdigest() != items[path]["sha256"]:
+            raise ValueError("notice_file_digest_mismatch")
+        lines = text.decode("utf-8", "replace").splitlines()
+        license_file = bool(LICENSE_FILE.match(PurePosixPath(path).name))
+        notice_files.append({"path": path, **items[path],
+                             "copyright_lines": [COPYRIGHT_SENTENCE.match(line).group(1) for line in lines
+                                                 if COPYRIGHT_LINE.match(line) and COPYRIGHT_SENTENCE.match(line)],
+                             "disclaimer_lines": [] if license_file else [line.strip() for line in lines
+                                                                          if DISCLAIMER_LINE.search(line)]})
+    supplied = [line for row in notice_files for line in row["copyright_lines"]]
     return {"repo": row["repo"], "commit": row["commit"], "asset": row["asset"], "root": root,
             "package_license": packaging.get("license"),
             "asset_license": meta.get("asset_license"), "author": meta.get("author") or meta.get("asset_author"),
@@ -179,7 +221,18 @@ def package_record(row: dict[str, str], fetch: Callable[[str, int], bytes]) -> d
             "size_m": size_in_metres(parse_extents(meta.get("asset_extents")), read["up_axis"], read["meters_per_unit"]),
             "mass_kg": round(float(mass), 6) if isinstance(mass, (int, float)) and mass > 0 else None,
             "bom": {"sha256": bom_hash, "size_bytes": len(bom_bytes)},
-            **({"thumbnail": items[thumbnail]} if thumbnail in items else {})}
+            **({"thumbnail": items[thumbnail]} if thumbnail in items else {}),
+            # A copyright notice the package supplies, as written (its USD first, then a notice file); null when it
+            # supplies none.
+            "copyright": next((value for key, value in sorted(read["notices"].items())
+                               if "copyright" in key.lower()), supplied[0] if supplied else None),
+            # A disclaimer of warranties the package supplies beyond the license text, as written; null otherwise.
+            "disclaimer": next((value for key, value in sorted(read["notices"].items())
+                                if re.search(r"(?i)disclaim|warrant", key)),
+                               next((line for row in notice_files for line in row["disclaimer_lines"]), None)),
+            **({"notices": read["notices"]} if read["notices"] else {}),
+            **({"notice_files": notice_files} if notice_files else {}),
+            "survey": SURVEY}
 
 
 def build_index(submissions: list[Path], fetch: Callable[[str, int], bytes], *, workers: int = 6,
@@ -192,7 +245,7 @@ def build_index(submissions: list[Path], fetch: Callable[[str, int], bytes], *, 
         for line in cache.read_text().splitlines():
             if line.strip():
                 value = json.loads(line)
-                if "record" in value:
+                if "record" in value and value["record"].get("survey") == SURVEY:
                     done[value["url"]] = value
     rows = [row for path in submissions for row in submission_urls(path)]
     log(f"listed {len(rows)} packages; {len(done)} cached")
@@ -224,12 +277,13 @@ def build_index(submissions: list[Path], fetch: Callable[[str, int], bytes], *, 
         record = dict(value["record"])
         # Kept compact: the size is already in metres with Z up (``size_basis``), and a name equal to the folder's
         # is said once.
-        for key in ("up_axis", "meters_per_unit", "asset_type"):
+        for key in ("up_axis", "meters_per_unit", "asset_type", "survey"):
             record.pop(key, None)
         if record.get("asset_name") in (None, record["asset"]):
             record.pop("asset_name", None)
         source = {"repo": record.pop("repo"), "commit": record.pop("commit")}
-        held = {key: record.pop(key) for key in ("package_license", "asset_license", "author")}
+        held = {key: record.pop(key, None) for key in ("package_license", "asset_license", "author", "copyright",
+                                                      "disclaimer")}
         for table, item in ((sources, source), (rights, held)):
             if item not in table:
                 table.append(item)
