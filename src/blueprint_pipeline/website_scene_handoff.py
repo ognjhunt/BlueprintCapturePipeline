@@ -1207,6 +1207,13 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         if masks != clean_plate["task_masks"]:
             write_track_json(root / "task_masks.coverage.json", masks)
             clean_plate = {**clean_plate, "task_masks": masks}
+        # The plan's object from a licensed library first, before a shape or a paid model (owner, 2026-11-23).
+        from .website_object_library import attach_library_subject
+        handoff_lease_checkpoint("website_scene_handoff_object_library")
+        removal = attach_library_subject(removal, capture_root=capture_root, task_context=context,
+            output_root=root / "object_library", source_video_digest=source_video_digest,
+            source_video=source_video if source_video.is_file() and source_video.resolve().is_relative_to(
+                capture_root.resolve()) else None)
         authority = metadata.get("website_scene_execution_authority") or {}
         if not all(key in authority for key in ("max_total_spend_usd", "max_paid_attempts", "expires_at_epoch")):
             # Compile geometry even while execution is held. Zero authority

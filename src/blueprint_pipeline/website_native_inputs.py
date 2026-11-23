@@ -203,7 +203,8 @@ def preflight_website_authoring_request(*, envelope, configurations):
     if configuration.get("authoring_method") == AUTHORING_METHOD:
         # A designed subject's supplied mesh calls no provider: there is no request to translate.
         _require(stage.get("adapter", {}).get("id") == AUTHORING_ADAPTER and stage.get("execution_class") == "no_spend"
-                 and (configuration.get("source_observation_kind") == ORIGIN) != ("parametric_design" in configuration)
+                 and (configuration.get("source_observation_kind") == ORIGIN)
+                 != bool({"parametric_design", "library_design"} & set(configuration))
                  and "authoring_backend" not in configuration,
                  "designed_subject_authoring_invalid")
         _reference(envelope, PREFIX + ".candidate")
@@ -255,6 +256,8 @@ def materialize_website_inputs(*, envelope, stage_one_configuration, output_root
     binding = validate_website_native_inputs(envelope=envelope, configurations=configurations, require_render_inputs=False)
     from .website_synthetic_subject import AUTHORING_METHOD
     supplied_mesh = any(configuration.get("authoring_method") == AUTHORING_METHOD for configuration in configurations.values())
+    # A licensed library model (``website_library_asset``): which one, its license, who picked it and how it was sized.
+    library = next((row["library_design"] for row in configurations.values() if row.get("library_design")), None)
     result = {"schema_version": "task_evaluation_scene_configuration_render_inputs.v1", "status": INPUT_STATUS,
               "run_id": envelope["request"]["run_id"], "input_kind": "website_capture_derivatives", "website_binding": binding,
               "source_appearance_digest": runtime["appearance"]["digest"],
@@ -263,6 +266,10 @@ def materialize_website_inputs(*, envelope, stage_one_configuration, output_root
               # no provider, so no frame of it reaches one; the record says which, for the disclosure check.
               "captured_frame_derivatives_in_provider_packet": binding["captured_frame_count"] > 0 and not supplied_mesh,
               **({"supplied_mesh_authoring": True} if supplied_mesh else {}),
+              **({"library_model": {"entry_id": library["entry_id"], "library": library["attribution"]["library"],
+                                    "license": library["attribution"]["license"], "pick": library.get("pick"),
+                                    "sizing": library["sizing"]["status"], "scale": library["sizing"]["scale"],
+                                    "provider_called": False, "authoring_cost_usd": 0.0}} if library else {}),
               "prepared_background_in_provider_packet": True,
               "derived_frames": [], "derived_frame_count": 0, "renderer_qualified": False,
               "physical_truth_claimed": False, "provider_render_required": False,

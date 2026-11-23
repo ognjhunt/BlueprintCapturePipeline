@@ -1796,10 +1796,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             "unknown_surfaces": "Generated completion must remain an explicit assumption.",
         },
     )
-    from .website_supplied_mesh import PARAMETRIC_SUBJECT, supplied_mesh_configuration  # designed or parametric: no spend
+    from .website_supplied_mesh import LIBRARY_SUBJECT, PARAMETRIC_SUBJECT, supplied_mesh_configuration  # no spend
     authoring_configuration = supplied_mesh_configuration(authoring_configuration, synthetic=synthetic,
         synthetic_authoring=synthetic_authoring if synthetic is not None else None, subject_id=subject_entry["target_id"],
-        parametric=removal_manifest.get(PARAMETRIC_SUBJECT), sim_min=sim_min, sim_max=sim_max)
+        parametric=removal_manifest.get(PARAMETRIC_SUBJECT), sim_min=sim_min, sim_max=sim_max,
+        library=removal_manifest.get(LIBRARY_SUBJECT), library_root=Path(output_root) / "object_library_model")
     if contract is not None and authoring_configuration.get("authoring_backend") == "astra_cad_blender_v1":
         # Hold what the legacy builder would refuse before anything is bought.
         from .task_object_articulated_packaging import plan_articulated_assembly
@@ -1941,7 +1942,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         **({"subject_excision": subject_excision} if subject_excision is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None
-                                  or "parametric_design" in authoring_configuration
+                                  or {"parametric_design", "library_design"} & set(authoring_configuration)
                              else "content_agents_rigid_replacement",
                              **({"synthetic_design": dict(synthetic)} if synthetic is not None else {}),
                              "source_frames": authoring_frames,
