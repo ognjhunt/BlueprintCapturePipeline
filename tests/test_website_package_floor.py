@@ -21,7 +21,7 @@ from blueprint_pipeline import website_scene_handoff as handoff
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.task_evaluation_scene_outcome import REASONS, outcome_record
 from tests.test_website_company_simulation import (
-    CAPTURE, NOW, OLDER, REQUEST, SITE, Job, World, _at, _manifest, _owned_job, _package, _withdraw, _write)
+    CAPTURE, NOW, OLDER, REQUEST, SITE, Job, World, _at, _manifest, _package, _withdraw, _write)
 
 INTENT = "scene-" + "f" * 64
 REQUEST_BODY = {"task": {"task_id": "website-floor", "strategy": "pick_and_place"},
@@ -349,8 +349,9 @@ def test_a_floor_follows_the_live_rights_like_any_package(tmp_path, monkeypatch,
 
 
 def test_no_floor_is_built_for_blueprints_own_capture_the_website_would_refuse(tmp_path, monkeypatch):
-    """39ec's shape: on Blueprint's list under a statement that does not share. The half follows today's rule."""
-    job = _owned_job(tmp_path / "owned", monkeypatch)
+    """39ec's shape: Blueprint's own video under a statement that does not share. The Pipeline keeps no list of its
+    own captures (C-10), so the website's rule decides and nothing is built."""
+    job = Job(tmp_path / "owned", version=OLDER)
     floor = Floor(tmp_path, monkeypatch, job=job)
     floor.started(reason="spend_cap_reached")
     world = World(floor.job)

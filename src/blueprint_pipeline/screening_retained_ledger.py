@@ -28,9 +28,6 @@ WORK_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT"
 ATTEMPT_DIR_FIELD = "attempt_dir"
 LEDGER_SCHEMA = "blueprint.beta_policy_screening_ledger.v1"
 LEDGER_FILENAME = "screening_ledger.v1.json"
-#: The site's screening allowance across its campaigns (raised from $15 on 2026-11-05, owner
-#: approval). Each website job's ceiling still bounds what a job spends in all.
-SITE_LIMIT = Decimal("30")
 SETTLEMENT_HELD_FIELD = "settlement_held"
 ACTIVE_STATUSES = frozenset({"preparing", "launching", "running", "reconciliation_required"})
 SETTLEMENT_SCHEMA = "blueprint.beta_policy_screening_settlement.v1"
@@ -102,7 +99,7 @@ def _budget(ledger: Mapping[str, Any], site_id: str, *, campaign_id: str | None 
                     spent += cap if settled is None else settled
                 elif state != "released":
                     raise ScreeningCoordinatorError("beta_screening_reservation_state_invalid")
-    return {"currency": "USD", "limit_usd": money(SITE_LIMIT),
+    return {"currency": "USD",
             "committed_upper_bound_usd": money(reserved + spent),
             "spent_upper_bound_usd": money(spent), "reserved_usd": money(reserved)}
 
@@ -117,9 +114,10 @@ def _ledger(root: Path) -> dict[str, Any]:
     if (ledger.get("schema_version") != LEDGER_SCHEMA or not isinstance(ledger.get("campaigns"), dict)
             or ledger.get("ledger_digest") != canonical_digest(ledger, digest_field="ledger_digest")):
         raise ScreeningCoordinatorError("beta_screening_ledger_invalid")
+    # Screening can no longer spend (the trial was dropped 2026-11-14), so no site limit is
+    # enforced here; a ledger over the old $30 still reads, for withdrawal and accounting (G-07).
     for site_id in {row["site_id"] for row in ledger["campaigns"].values()}:
-        if _amount(_budget(ledger, site_id)["committed_upper_bound_usd"]) > SITE_LIMIT:
-            raise ScreeningCoordinatorError("beta_screening_site_budget_exceeded")
+        _budget(ledger, site_id)
     return ledger
 
 

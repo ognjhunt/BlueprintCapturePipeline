@@ -14,6 +14,7 @@ from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.website_object_local_frame import REGISTRATION_REFUSALS
+from blueprint_pipeline.website_recapture_required import REGISTRATION_CODES
 
 
 def inputs(tmp_path):
@@ -729,13 +730,22 @@ def test_an_object_that_does_not_register_leaves_a_withheld_job_its_room_package
     assert list(tmp_path.rglob("registration_refusal.json"))  # its scores stay written, as today
 
 
-def test_a_modelled_job_whose_object_does_not_register_keeps_its_hold(tmp_path, monkeypatch, ready_atlas):
-    kwargs, asked, _, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place",
-                                                  refusal="website_registration_poor_fit")
+@pytest.mark.parametrize("code", sorted(REGISTRATION_CODES | {"website_front_normal_undetermined"}))
+def test_a_modelled_job_whose_object_does_not_register_ships_its_room_flagged_and_asks_no_new_video(
+        tmp_path, monkeypatch, ready_atlas, code):
+    """The room was built before the fit or facing check: the job ships it, flagged, and the site is not asked to
+    film again (section 8 of the retry doc). Nothing is chosen or bought for the object."""
+    kwargs, asked, _, packaged = _through_compile(tmp_path, monkeypatch, family="rigid_pick_place", refusal=code)
     result = handoff.prepare_website_scene_handoff(**kwargs)
-    assert result["status"] == "needs_input"
-    assert result["recapture_required"]["code"] == "website_registration_poor_fit"
-    assert packaged == [] and asked == []
+    assert result["status"] == "room_package_written"
+    assert "recapture_required" not in result
+    assert packaged[-1]["flags"] == [code] and asked == []
+
+
+@pytest.mark.parametrize("code", ["website_capture_frames_unusable", "website_task_object_not_observed"])
+def test_a_stop_found_before_any_room_still_asks_for_a_new_video(code):
+    assert not handoff.goes_on([code], task_context={"context_digest": "sha256:" + "0" * 64}, now=0.0,
+                               window_end=lambda: 0.0)
 
 
 def test_development_test_mode_still_places_a_withheld_job_s_object_that_does_not_register(
@@ -1161,8 +1171,8 @@ CONTEXT = {"context_digest": "sha256:" + "a" * 64}
     # The job's own request is not a valid one, or its inputs are not ready or unsafe: kept.
     (["scene_intake_owner_invalid"], False, False), (["website_scene_preparation_pending"], False, False),
     (["website_subject_origin_conflict"], False, False),
-    # A stop only a new video clears keeps its own hold.
-    (["website_registration_poor_fit"], False, False),
+    # A stop only a new video clears keeps its own hold; a fit stop found once the room was built ships at once.
+    (["website_capture_frames_unusable"], False, False), (["website_registration_poor_fit"], False, True),
     # A dollar budget reads as money and holds.
     (["website_native_construction_budget_exceeds_authority"], False, False),
     # The job's spending cap ships at once (owner, 2026-11-19), except a development test, which holds anything.
@@ -1193,7 +1203,7 @@ def test_every_other_blocker_waits_for_the_window_end_then_ships(monkeypatch, co
 @pytest.mark.parametrize("code", [
     "website_control_preparation-spend_http_409:website_scene_sponsorship_binding_invalid",
     "website_control_task-context_http_409:website_task_context_changed",
-    "website_control_preparation-spend_http_409:website_registration_poor_fit"])
+    "website_control_preparation-spend_http_409:website_capture_frames_unusable"])
 def test_a_holding_code_after_the_website_s_operation_still_holds(monkeypatch, code):
     """A site that edits its job mid-run: the website's refusal carries the holding code after its operation."""
     monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)

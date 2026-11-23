@@ -268,72 +268,20 @@ def test_a_live_older_statement_takes_back_a_clip_made_under_the_sharing_one(cap
     assert len(world.retracted) == 1 and _manifest(capture)["archive"]["retracted"] is True
 
 
-def _owned_list(tmp_path: Path, rows) -> Path:
-    return _write(tmp_path / "owned.json", {"schema_version": "blueprint_owned_captures.v1", "purpose": "test",
-                                            "captures": rows})
-
-
-def test_blueprint_owned_captures_on_the_allow_list_get_a_clip(tmp_path, monkeypatch):
+def test_a_capture_once_on_blueprints_own_list_gets_no_clip_without_the_websites_grant(tmp_path):
+    # C-10: the website's sharing rule is the one authority. The Pipeline's own list of Blueprint captures is gone,
+    # so a capture under an older statement gets nothing, and a clip published under that retired basis no
+    # longer holds on a route read.
+    from blueprint_pipeline import company_share_permission as permission
+    from blueprint_pipeline import sharing_statement as sharing
     capture = _capture(tmp_path, version=OLDER)
-    digest = _sha(capture / "raw/walkthrough.mp4")
-    monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, [
-        {"capture_id": "walkthrough-req1", "approved_by": "owner", "approved_on": "2026-11-12", "evidence": "test",
-         "video_sha256_prefix": digest[7:19]}]))
-    world = World(rights=_rights(OLDER))
-    assert world.publish(capture)["status"] == "published"
-    assert world.delivered[0]["permission_basis"] == "blueprint_owned_capture"
-    assert world.delivered[0]["statement_version"] == OLDER
-
-
-def test_an_owned_row_whose_video_digest_does_not_match_is_not_owned(tmp_path, monkeypatch):
-    capture = _capture(tmp_path, version=OLDER)
-    monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, [
-        {"capture_id": "walkthrough-req1", "video_sha256_prefix": "000000000000"}]))
     world = World(rights=_rights(OLDER))
     assert world.publish(capture) == {"status": "not_permitted"} and world.archived == []
-
-
-def test_the_sharing_basis_reads_a_strict_allow_list(tmp_path):
-    from blueprint_pipeline import sharing_statement as sharing
-    digest = "sha256:" + "ab" * 32
-    context = {"capture_id": "walkthrough-x", "capture_rights": {"statement_version": OLDER}}
-    shared = {"capture_id": "walkthrough-x", "capture_rights": {"statement_version": SHARED}}
-    good = _owned_list(tmp_path, [{"capture_id": "walkthrough-x", "approved_by": "owner", "approved_on": "2026-11-12",
-                                   "evidence": "e", "video_sha256_prefix": "ab" * 6}])
-    assert sharing.sharing_basis(shared, owned_list=good) == {"permission_basis": "site_sharing_statement",
-                                                               "statement_version": SHARED}
-    assert sharing.sharing_basis(context, video_sha256=digest, owned_list=good) == {
-        "permission_basis": "blueprint_owned_capture", "capture_id": "walkthrough-x"}
-    assert sharing.sharing_basis(context, video_sha256=None, owned_list=good) is None
-    assert sharing.sharing_basis(context, video_sha256="sha256:" + "cd" * 32, owned_list=good) is None
-    assert sharing.sharing_basis({**context, "capture_id": "walkthrough-y"}, video_sha256=digest, owned_list=good) is None
-    row = {"capture_id": "walkthrough-x", "video_sha256_prefix": "ab" * 6}
-    for bad in ([{**row, "role": "admin"}], [{"capture_id": 7, "video_sha256_prefix": "ab" * 6}], ["walkthrough-x"],
-                [row, row],
-                # Every row names one video: a row without a prefix, or with a one-digit prefix that 1 video in
-                # 16 under the capture id would match, makes the whole list malformed.
-                [{"capture_id": "walkthrough-x"}], [{"capture_id": "walkthrough-x", "video_sha256_prefix": "a"}],
-                [{"capture_id": "walkthrough-x", "video_sha256_prefix": "XYZ"}], {"capture_id": "walkthrough-x"},
-                # As strict as the packet tool was: a prefix of 12 to 64 hex digits, never null; text where
-                # text is expected; a real approval date.
-                [{"capture_id": "walkthrough-x", "video_sha256_prefix": "abab"}],
-                [{"capture_id": "walkthrough-x", "video_sha256_prefix": None}],
-                [{"capture_id": "walkthrough-x", "video_sha256_prefix": "ab" * 33}],
-                [{**row, "evidence": " "}], [{**row, "approved_by": 7}], [{**row, "approved_on": "yesterday"}]):
-        path = _owned_list(tmp_path, bad)
-        assert sharing.owned_captures(path) == ({}, "blueprint_owned_capture_list_invalid")
-        assert sharing.sharing_basis(context, video_sha256=digest, owned_list=path) is None
-    (tmp_path / "broken.json").write_text("{not json")
-    assert sharing.owned_captures(tmp_path / "broken.json")[1] == "blueprint_owned_capture_list_invalid"
-    assert sharing.owned_captures(tmp_path / "missing.json")[1] == "blueprint_owned_capture_list_invalid"
-    (tmp_path / "dupe.json").write_text('{"schema_version": "blueprint_owned_captures.v1", "captures": [], "captures": []}')
-    assert sharing.owned_captures(tmp_path / "dupe.json")[1] == "blueprint_owned_capture_list_invalid"
-
-
-def test_the_shipped_allow_list_reads_cleanly():
-    from blueprint_pipeline import sharing_statement as sharing
-    owned, flag = sharing.owned_captures()
-    assert flag is None and "walkthrough-req1" not in owned
+    context = {"capture_id": "walkthrough-req1", "capture_rights": {"statement_version": OLDER}}
+    assert sharing.sharing_basis(context) is None
+    assert not hasattr(sharing, "owned_captures") and not hasattr(clip, "OWNED_CAPTURES_LIST")
+    assert not (Path(sharing.__file__).resolve().parents[2] / "config" / "blueprint_owned_captures.v1.json").exists()
+    assert permission.basis_holds(capture, "walkthrough-req1", "blueprint_owned_capture", NOW) is False
 
 
 def test_revoked_consent_or_an_unreadable_rights_read_is_a_refusal(capture):
@@ -720,32 +668,6 @@ def test_a_storage_fault_is_503_and_names_nothing(served, monkeypatch):
     monkeypatch.setattr(clip, "open_company_clip", broken)
     response = served["client"].get(served["url"], headers=served["signed"])
     assert response.status_code == 503 and "secret" not in response.text
-
-
-def test_an_owned_clip_is_refused_by_the_route_and_taken_back_once_a_definite_no_is_recorded(tmp_path, monkeypatch):
-    # The live check is shared with the simulation package: a "no" either pass records stops every basis.
-    from blueprint_pipeline import company_share_permission as permission
-    capture = _capture(tmp_path, version=OLDER)
-    digest = _sha(capture / "raw/walkthrough.mp4")
-    monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, [
-        {"capture_id": "walkthrough-req1", "approved_by": "owner", "approved_on": "2026-11-12", "evidence": "test",
-         "video_sha256_prefix": digest[7:19]}]))
-    world = World(rights=_rights(OLDER))
-    assert world.publish(capture)["status"] == "published"
-    stored = _manifest(capture)["archive"]["digest"]
-
-    def route():
-        try:
-            return clip.open_company_clip(request_id="req1", capture_id="walkthrough-req1", digest=stored,
-                                          storage_root=capture.parents[4], client=_Bucket(world.objects), bucket="b")[1]
-        except clip.CompanyClipUnavailable:
-            return "unavailable"
-    assert route() != "unavailable"
-    permission.record_live(capture, permission.capture_identity(capture),
-                           lambda _i: _rights(OLDER, consent="revoked", revoked=True), NOW + 30)
-    assert route() == "unavailable"
-    assert world.publish(capture, now=lambda: NOW + 60)["status"] == "refused"
-    assert len(world.retracted) == 1 and _manifest(capture)["archive"]["retracted"] is True
 
 
 def test_the_clip_route_serves_nothing_once_the_capture_folder_is_gone(served):

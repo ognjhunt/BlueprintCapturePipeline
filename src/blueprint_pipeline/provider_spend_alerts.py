@@ -67,9 +67,7 @@ DEFAULT_ATLAS_STORAGE_ROOT = Path("/var/lib/blueprint/pubsub-handoffs")
 ATLAS_JOB_GLOB = "*/scenes/*/captures/*/pipeline/atlas"
 
 OPENAI_24H_PAGE_ENV = "BLUEPRINT_OPENAI_SPEND_24H_PAGE_USD"
-OPENAI_MONTH_PAGE_ENV = "BLUEPRINT_OPENAI_SPEND_MONTH_PAGE_USD"
 WORLD_LABS_24H_PAGE_ENV = "BLUEPRINT_WORLD_LABS_SPEND_24H_PAGE_USD"
-WORLD_LABS_MONTH_PAGE_ENV = "BLUEPRINT_WORLD_LABS_SPEND_MONTH_PAGE_USD"
 GCP_PAGE_FRACTION_ENV = "BLUEPRINT_GCP_SPEND_PAGE_FRACTION"
 
 #: B-03 (docs/launch-readiness/2026-11-cost-model.md, sections 2 and 6): one
@@ -84,22 +82,21 @@ OPENAI_JOB_USD = 25.0 + 0.91 + 5.0
 WORLD_LABS_JOB_USD = 25.0
 #: B-03 section 5 found 15 website jobs in the 30 days to 2026-11-02 (0.5 a
 #: day); the WebApp admits at most 5 new jobs a day. A beta day is planned at 2
-#: jobs and a beta month at 15.
+#: jobs.
 BETA_JOBS_PER_DAY = 2
-BETA_JOBS_PER_MONTH = 15
 #: 20 % for spend outside website jobs (development, operator runs), rounded up to $5.
 LINE_MARGIN = 1.2
 OPENAI_24H_PAGE_USD = 75.0         # 2 x $30.91 x 1.2 = $74.18
-OPENAI_MONTH_PAGE_USD = 560.0      # 15 x $30.91 x 1.2 = $556.38
 WORLD_LABS_24H_PAGE_USD = 60.0     # 2 x $25 x 1.2
-WORLD_LABS_MONTH_PAGE_USD = 450.0  # 15 x $25 x 1.2
+#: No OpenAI or World Labs month page: both sat above the account monthly limit
+#: (config/account_monthly_spend_limit.v1.json), which refuses paid work first (G-07).
 #: The project's month pages at 80 % of the budget guard's effective limit
 #: ($80 of the $100 ceiling), well before the guard refuses paid work at 100 %.
 GCP_PAGE_FRACTION = 0.8
 
 PAGE_CODES = frozenset({
-    "openai_spend_24h_high", "openai_spend_month_high",
-    "world_labs_spend_24h_high", "world_labs_spend_month_high",
+    "openai_spend_24h_high",
+    "world_labs_spend_24h_high",
     "gcp_spend_month_high",
     *ACCOUNT_PAGE_CODES,
 })
@@ -124,9 +121,7 @@ GCP_REPORT_MAX_AGE_SECONDS = 30 * 60
 
 _LINES = (
     ("openai_24h_usd", OPENAI_24H_PAGE_ENV, OPENAI_24H_PAGE_USD),
-    ("openai_month_usd", OPENAI_MONTH_PAGE_ENV, OPENAI_MONTH_PAGE_USD),
     ("world_labs_24h_usd", WORLD_LABS_24H_PAGE_ENV, WORLD_LABS_24H_PAGE_USD),
-    ("world_labs_month_usd", WORLD_LABS_MONTH_PAGE_ENV, WORLD_LABS_MONTH_PAGE_USD),
     ("gcp_fraction", GCP_PAGE_FRACTION_ENV, GCP_PAGE_FRACTION),
 )
 _LABELS = {"openai": "OpenAI", "world_labs": "World Labs", "gcp": "Google Cloud", "account": "Account"}
@@ -585,20 +580,13 @@ def spend_alerts(providers: Mapping[str, Mapping[str, Any]], lines: Mapping[str,
             day, usd = max(days.items(), key=lambda item: (item[1], item[0]))
             if usd >= lines["openai_24h_usd"]:
                 alerts.append(_page("openai_spend_24h_high", "openai", usd, lines["openai_24h_usd"], f"utc_day:{day}"))
-        month = _number(openai.get("month_to_date_usd"))
-        if month is not None and month >= lines["openai_month_usd"]:
-            alerts.append(_page("openai_spend_month_high", "openai", month, lines["openai_month_usd"],
-                                f"utc_month:{openai.get('month')}"))
         alerts.extend(_warns("openai", openai))
     world = providers.get("world_labs")
     if isinstance(world, Mapping):
-        day_usd, month = _number(world.get("spend_24h_usd")), _number(world.get("month_to_date_usd"))
+        day_usd = _number(world.get("spend_24h_usd"))
         if day_usd is not None and day_usd >= lines["world_labs_24h_usd"]:
             alerts.append(_page("world_labs_spend_24h_high", "world_labs", day_usd, lines["world_labs_24h_usd"],
                                 "rolling_24h"))
-        if month is not None and month >= lines["world_labs_month_usd"]:
-            alerts.append(_page("world_labs_spend_month_high", "world_labs", month, lines["world_labs_month_usd"],
-                                f"utc_month:{world.get('month')}"))
         alerts.extend(_warns("world_labs", world))
     gcp = providers.get("gcp")
     if isinstance(gcp, Mapping):
@@ -692,14 +680,10 @@ __all__ = [
     "OPENAI_24H_PAGE_ENV",
     "OPENAI_24H_PAGE_USD",
     "OPENAI_ADMIN_KEY_FILE_ENV",
-    "OPENAI_MONTH_PAGE_ENV",
-    "OPENAI_MONTH_PAGE_USD",
     "PAGE_CODES",
     "WARN_CODES",
     "WORLD_LABS_24H_PAGE_ENV",
     "WORLD_LABS_24H_PAGE_USD",
-    "WORLD_LABS_MONTH_PAGE_ENV",
-    "WORLD_LABS_MONTH_PAGE_USD",
     "configured_spend_check",
     "default_lines",
     "describe",
