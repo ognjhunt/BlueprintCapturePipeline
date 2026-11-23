@@ -75,9 +75,6 @@ _OUTAGE = re.compile(r"http_(?:429|5[0-9][0-9])(?![0-9])|timeout|timed out|conne
 # Google's status and its upper-case name ("500 INTERNAL.", "504 DEADLINE_EXCEEDED", "429 RESOURCE_EXHAUSTED"): the
 # name alone is too common (Blueprint's own codes end in "_resource_exhausted").
 _OUTAGE_STATUS_NAME = re.compile(r"(?<![0-9])(?:429|5[0-9][0-9]) [A-Z][A-Z_]{2,}\b")
-#: An outside service's answer that means "try again later" when an error carries it as its own status:
-#: a rate limit (429) or any 5xx (``job_retry_policy.provider_says_retry_later`` reads the same from a code).
-_OUTAGE_STATUSES = frozenset({429}) | frozenset(range(500, 600))
 _CHAIN_LIMIT = 16
 OUTAGE, REFUSAL, DETERMINISTIC = "outage", "refusal", "deterministic"
 #: The WebApp's ``website_run_closed_by_owner``: the run is closed until the site gives a new instruction.
@@ -198,30 +195,12 @@ def _texts(exc: BaseException) -> list[str]:
     return texts
 
 
-def _chain(exc: BaseException):
-    seen, current = set(), exc
-    while current is not None and id(current) not in seen and len(seen) < _CHAIN_LIMIT:
-        seen.add(id(current))
-        yield current
-        current = current.__cause__ if current.__cause__ is not None else current.__context__
-
-
-def _http_status(exc: BaseException) -> int | None:
-    """The HTTP status a provider answered with, read from the error's own ``code``, ``status_code`` or ``status``
-    along its chain (as ``website_gemini_receipts._http_status`` reads it); None when no link carries one."""
-    for link in _chain(exc):
-        for name in ("code", "status_code", "status"):
-            value = getattr(link, name, None)
-            if isinstance(value, int) and not isinstance(value, bool) and 100 <= value < 600:
-                return value
-    return None
-
-
 def _retry_after_seconds(exc: BaseException, now: datetime) -> int | None:
     """Seconds the provider asked to wait (its response's ``Retry-After``: seconds or an HTTP date); None when the
     error carries no response or no readable header."""
     from email.utils import parsedate_to_datetime
-    for link in _chain(exc):
+    from .job_retry_policy import error_chain
+    for link in error_chain(exc):
         headers = getattr(getattr(link, "response", None), "headers", None)
         try:
             value = None if headers is None else (headers.get("retry-after") or headers.get("Retry-After"))
@@ -321,13 +300,15 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
     """The retry record for a failed attempt, or None when the host does not own its retry. Never raises."""
     try:
         from .deterministic_refusal import find
+        from .job_retry_policy import provider_error_waits
         failures = max(1, consecutive_failures(history))
         kind = classify(*_texts(exc))
         deterministic = find(exc) if kind == REFUSAL else None
         if deterministic is not None:
             kind = DETERMINISTIC
-        elif kind == REFUSAL and _http_status(exc) in _OUTAGE_STATUSES:
-            # The provider's own 429 or 5xx, whatever its text says: an outage. A privacy, rights or money reading of
+        elif kind == REFUSAL and provider_error_waits(exc):
+            # The provider's own 429 or 5xx, or its refusal of Blueprint's key, account or credit, whatever its text
+            # says: an outage (``job_retry_policy.provider_error_waits``, the room build's rule too). A privacy, rights or money reading of
             # the text, the owner's closing and a deterministic refusal were decided above and still win.
             kind = OUTAGE
         if _spent(kind, failures, deadline=has_deadline(capture_root)):
