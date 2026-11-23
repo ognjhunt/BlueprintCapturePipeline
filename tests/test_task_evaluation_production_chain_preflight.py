@@ -191,8 +191,8 @@ def test_disk_admission_projection_reports_every_refused_role(tmp_path: Path, mo
     [finding] = preflight.disk_admission_check({})
 
     assert finding["severity"] == "blocker" and finding["code"] == "disk_admission_projection"
-    assert finding["refused_roles"] == ["episode_compilation", "launch_activation", "launch_dispatch", "launch_preparation", "policy_canary_dispatch"]
-    assert finding["free_needed_for_one_role_gib"] == 10.0 and finding["free_needed_for_whole_chain_gib"] == 18.0
+    assert finding["refused_roles"] == ["episode_compilation", "launch_activation", "launch_dispatch", "launch_preparation"]
+    assert finding["free_needed_for_one_role_gib"] == 10.0 and finding["free_needed_for_whole_chain_gib"] == 16.0
     monkeypatch.setattr(preflight.shutil, "disk_usage", lambda _p: Usage(total, 0, 60 * GIB))
     [healthy] = preflight.disk_admission_check({})
     assert healthy["severity"] == "info" and "refused_roles" not in healthy
@@ -231,7 +231,7 @@ def test_disk_admission_projection_shares_the_ledgers_floor_footprints_and_liven
     assert finding["available_gib"] == 3.0
     assert finding["severity"] == "info" and "refused_roles" not in finding
     assert finding["free_needed_for_one_role_gib"] == round((10 * GIB + 500 * 1024**2) / GIB, 2)
-    assert finding["free_needed_for_whole_chain_gib"] == round((10 * GIB + 5 * 500 * 1024**2) / GIB, 2)
+    assert finding["free_needed_for_whole_chain_gib"] == round((10 * GIB + 4 * 500 * 1024**2) / GIB, 2)
     assert finding["required_workspace_basis"] == "measured_p95"
 
 

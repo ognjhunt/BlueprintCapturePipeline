@@ -105,7 +105,8 @@ PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trig
                         # Not a stall: a website job's look is the draft for good, paged once (same module).
                         "website_atlas_look_draft_final",
                         # Not a stall: the state backup's newest complete generation is over two hours old
-                        # (control_plane_state_backup.backup_freshness); a host never set up stays quiet.
+                        # (control_plane_state_backup.backup_freshness). A host never set up warns
+                        # (control_plane_backup_not_configured, F-01): it is not a page, but not silence.
                         "control_plane_backup_stale"})
 INCOMPLETE_CODE = "stall_check_incomplete"
 
@@ -170,6 +171,9 @@ _HOLD_WORDS = {
 }
 _HOLD_CODES = {
     "scene_intake_authority_expired": "execution_window",
+    # A revoked intent is a site's withdrawal only when its receipt says so (G-05); the scene check
+    # reads the receipt's cause. Matched as a code, before the word "revoked" below could call it rights.
+    "scene_intake_authority_revoked": "revoked",
     # The intent's budget (the job's spending cap at most) or its paid attempts are used up. Nothing
     # extends them (owner, 2026-11-19): the job ends with what it has (``spending_cap_reached``).
     "scene_intake_spend_cap_exhausted": "spending_cap",
@@ -416,6 +420,18 @@ def hold_reason(status: str, phase: str, blockers: Iterable[str]) -> str | None:
     return None
 
 
+def revocation_hold(path: Path) -> str:
+    """``rights`` only for a receipt whose cause is the site's own withdrawal (``source_revoked``);
+    any other cause, or a receipt with none (every one sealed before causes were recorded), is
+    ``revoked``: Blueprint's own bookkeeping or unknown, never counted as a rights stop (G-05)."""
+
+    try:
+        cause = _read_json(path).get("revocation_cause")
+    except (OSError, ValueError, AttributeError):
+        cause = None
+    return "rights" if cause == "source_revoked" else "revoked"
+
+
 def _execution_expired(directory: Path, intent: Mapping[str, Any], *, now: float) -> bool | None:
     """Whether the effective execution window (with extensions) has passed; ``None`` if unknown."""
 
@@ -543,8 +559,8 @@ def check_scene_progressions(
             continue
         status, phase, blockers = _signature(progression or {"status": "not_started", "phase": "intake"})
         reason = hold_reason(status, phase, blockers)
-        if reason is None and (directory / "revoked.json").exists():
-            reason = "rights"
+        if reason in (None, "revoked") and (directory / "revoked.json").exists():
+            reason = revocation_hold(directory / "revoked.json")
         if reason is not None:
             counts[reason] = counts.get(reason, 0) + 1
             continue
@@ -1476,12 +1492,21 @@ def _check_preparation_faults(config: StallConfig, *, now: float, remembered: An
 
 
 def _check_state_backup(*, now: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    from .control_plane_state_backup import STALE_CODE, backup_freshness, ledger_path, report_root_from_env
+    from .control_plane_state_backup import (
+        NOT_CONFIGURED_CODE,
+        STALE_CODE,
+        backup_freshness,
+        ledger_path,
+        report_root_from_env,
+    )
 
     ledger = ledger_path(report_root_from_env())
     section = backup_freshness(ledger, now=now)
     if section["status"] == "unreadable":
         return section, [_incomplete("state_backup_ledger_unreadable")]
+    if section["status"] == "not_configured":
+        # No backup has ever run on this host (F-01): one standing warning, never a page.
+        return section, [{"code": NOT_CONFIGURED_CODE, "target": str(ledger)}]
     if section["status"] != "stale":
         return section, []
     return section, [_page(STALE_CODE, [{"target": str(ledger), "age_seconds": section["age_seconds"],

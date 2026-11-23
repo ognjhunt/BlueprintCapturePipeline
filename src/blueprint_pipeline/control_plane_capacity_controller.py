@@ -867,7 +867,9 @@ def class_budgets(environ: Mapping[str, str] | None = None) -> tuple[dict[str, i
 
 
 def usage_alerts(survey: Mapping[str, Any], *, budgets: Mapping[str, int] | None = None) -> list[dict[str, Any]]:
-    """Usage warnings: large unregistered scratch, each class over budget, each large root."""
+    """Usage warnings: large unregistered scratch, each class over budget, each large root.
+
+    They are kept in ``usage.warnings``, not in the report's alerts: a usage finding is never posted."""
 
     def number(value: Any) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -987,7 +989,7 @@ def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_
         summary["truncated"] = True
     while size() > max_bytes:
         usage_lists = [(summary["usage"], key) for key in
-                       ("unclassified_roots", "top_owners", "top_roots", "by_class", "mounts")]
+                       ("warnings", "unclassified_roots", "top_owners", "top_roots", "by_class", "mounts")]
         candidates = [
             (len(json.dumps(holder[key])), holder, key)
             for holder, key in [(summary, "alerts"), (summary, "mounts"), *usage_lists]
@@ -1125,9 +1127,10 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
     )
     if ineffective and ineffective.get("top_retained_reasons"):
         summary += "; retained: " + ", ".join(ineffective["top_retained_reasons"])
-    # The usage warnings a reclaim page rests on; their rows are in ``alerts``.
-    cited = sorted({str(a.get("code")) for a in report.get("alerts") or []
-                    if a.get("code") in _RECLAIM_CITED_WARNINGS}) if ineffective else []
+    # The usage warnings a reclaim page rests on; their rows are in ``usage.warnings``.
+    usage_warnings = (report.get("usage") or {}).get("warnings") if isinstance(report.get("usage"), Mapping) else None
+    cited = sorted({str(a.get("code")) for a in usage_warnings or []
+                    if isinstance(a, Mapping) and a.get("code") in _RECLAIM_CITED_WARNINGS}) if ineffective else []
     if stalls or spends:
         # A stalled job or a provider's spend leads: the disk pages may have been repeating for days.
         summary = "; ".join([*stalls, *spends, *([summary] if page_alerts else [])])
@@ -1412,9 +1415,9 @@ def run_controller(
             _read_attention_summary(orphan_scratch_census_path, max_bytes=4 * 1024 * 1024),
             usage, now=observed)
     if usage is not None and (warnings := usage_alerts(usage)):
-        report["alerts"].extend(warnings)
-        if report["level"] == "ok":
-            report["level"] = "warning"
+        # Usage findings stay in the usage view the door reads (D-07, O-10): they are not
+        # capacity alerts, never raise the level and never ride the operator alert route.
+        report["usage"]["warnings"] = warnings
     retirement = _read_attention_summary(release_retirement_summary_path)
     if retirement is not None:
         retirement_alerts = retirement.get("alerts")

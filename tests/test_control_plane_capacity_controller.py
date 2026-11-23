@@ -1001,11 +1001,11 @@ def test_whole_chain_admission_rejects_space_that_fits_only_one_stage(tmp_path):
                                        disk_usage=_usage(12.0))
     assert result["status"] == "waiting_for_capacity"
     assert result["measurement"]["refused_roles"] == []
-    assert result["required_workspace_bytes"] == 10 * GIB
+    assert result["required_workspace_bytes"] == 8 * GIB  # C-12: the retired canary dispatcher no longer counts
     assert result["reservation_granted"] is False
     assert cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000,
                                      disk_usage=_usage(20.0))["status"] == "admitted"
-    _reservation(tmp_path/"ledger", "another-run", expected_bytes=3*GIB, expires_at=2000)
+    _reservation(tmp_path/"ledger", "another-run", expected_bytes=5*GIB, expires_at=2000)
     assert cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000,
                                      disk_usage=_usage(20.0))["status"] == "waiting_for_capacity"
 
@@ -1032,8 +1032,9 @@ def test_whole_chain_admission_groups_roles_by_device(tmp_path) -> None:
     assert result["status"] == "waiting_for_capacity"
     devices = {row["device"]: row for row in result["devices"]}
     assert devices[101]["required_bytes"] == 6 * GIB and devices[101]["passed"] is True
-    assert set(devices[101]["roles"]) == set(cap.CHAIN_ROLES) - {"launch_dispatch", "policy_canary_dispatch"}
-    assert devices[202]["required_bytes"] == 4 * GIB and devices[202]["passed"] is False
+    assert set(devices[101]["roles"]) == set(cap.CHAIN_ROLES) - {"launch_dispatch"}
+    assert "policy_canary_dispatch" not in cap.CHAIN_ROLES  # C-12: retired, not counted
+    assert devices[202]["required_bytes"] == 2 * GIB and devices[202]["passed"] is False
     assert devices[202]["available_bytes"] == 0
 
 
@@ -1132,12 +1133,12 @@ def test_measured_p95_admits_a_chain_the_constants_refuse(tmp_path):
     usage = _usage(free_gib=8.0 + 5.0)            # 5 GiB above the 8 GiB floor
     admitted = cap.whole_chain_admission(tmp_path, reservation_root=ledger, now=1.0, disk_usage=usage)
     assert admitted["status"] == "admitted"
-    assert admitted["required_workspace_bytes"] == 5 * 500 * MIB
+    assert admitted["required_workspace_bytes"] == 4 * 500 * MIB
     assert admitted["required_workspace_basis"] == "measured_p95"
     empty = tmp_path / "empty-ledger"
     refused = cap.whole_chain_admission(tmp_path, reservation_root=empty, now=1.0, disk_usage=usage)
     assert refused["status"] == "waiting_for_capacity"
-    assert refused["required_workspace_bytes"] == 10 * GIB
+    assert refused["required_workspace_bytes"] == 8 * GIB
     assert refused["required_workspace_basis"] == "declared_default"
 
 
@@ -1255,7 +1256,7 @@ def test_orphan_scratch_warns_once_without_folder_names(total, largest):
     assert "private-name" not in json.dumps(alerts)
 
 
-def test_orphan_scratch_warning_reaches_the_controller_poster(tmp_path, monkeypatch):
+def test_orphan_scratch_warning_stays_in_usage_and_is_not_posted(tmp_path, monkeypatch):
     _no_project_spend(monkeypatch)
     posted = _capture_payloads(monkeypatch)
     report = cap.run_controller(
@@ -1266,11 +1267,10 @@ def test_orphan_scratch_warning_reaches_the_controller_poster(tmp_path, monkeypa
                                                   orphan_scratch_largest_bytes=3 * GIB),
         poster=cap.post_alert,
     )
-    assert len(posted) == 1
-    assert report["alert_posted"] is True
-    assert any(row["code"] == "orphan_scratch_large" and row["severity"] == "warn"
-               for row in posted[0]["alerts"])
-    assert posted[0]["page"] is False
+    # D-07, O-10: a usage finding is not a capacity alert and never rides the alert route.
+    assert posted == []
+    assert report["level"] == "ok" and report["alerts"] == []
+    assert any(row["code"] == "orphan_scratch_large" for row in report["usage"]["warnings"])
 
 
 def _no_project_spend(monkeypatch, value=None):
@@ -1303,8 +1303,9 @@ def test_summary_is_door_readable_and_secret_free(tmp_path, monkeypatch):
     assert "project_spend" not in summary and "provider_funding" not in summary
     assert report["project_spend"] == {"spend_usd": 12.5}
     assert {"mount": None, "code": "usage_unclassified_root", "root": "/var/lib/blueprint/x"} in [
-        {k: a.get(k) for k in ("mount", "code", "root")} for a in report["alerts"]]
-    assert report["level"] == summary["level"] == "warning"
+        {k: a.get(k) for k in ("mount", "code", "root")} for a in summary["usage"]["warnings"]]
+    assert not [a for a in report["alerts"] if a["code"] == "usage_unclassified_root"]
+    assert report["level"] == summary["level"] == "warning"  # the alert route is unconfigured
     assert summary["usage"]["unclassified_roots"] == [{"root": "/var/lib/blueprint/x", "allocated_bytes": 2 * GIB}]
     assert summary["usage"]["age_seconds"] == 0.0
     assert set(summary["mounts"][0]) <= {"mount", "status", "total_bytes", "free_bytes", "used_fraction",
@@ -1458,7 +1459,7 @@ def test_interrupted_survey_attempt_is_throttled_after_restart(tmp_path, monkeyp
     assert calls == [1]
 
 
-def test_new_capacity_warning_pages_while_usage_warning_persists(tmp_path, monkeypatch):
+def test_new_capacity_warning_pages_while_a_usage_warning_stays_unposted(tmp_path, monkeypatch):
     _no_project_spend(monkeypatch)
     posted = []
     common = dict(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
@@ -1467,12 +1468,13 @@ def test_new_capacity_warning_pages_while_usage_warning_persists(tmp_path, monke
                   survey=lambda **_kwargs: _survey_result(unclassified_roots=[
                       {"root": "/var/lib/blueprint/unknown", "allocated_bytes": 2 * GIB}]))
     usage_only = cap.run_controller(**common, now=1_000.0, disk_usage=_usage(free_gib=80.0))
-    assert usage_only["level"] == "warning" and usage_only["alert_posted"] is True
+    assert usage_only["level"] == "ok" and not usage_only.get("alert_posted") and posted == []
+    assert [row["code"] for row in usage_only["usage"]["warnings"]] == ["usage_unclassified_root"]
     capacity_warning = cap.run_controller(**common, now=1_600.0, disk_usage=_usage(free_gib=40.0))
     assert capacity_warning["level"] == "warning"
-    assert {row["code"] for row in capacity_warning["alerts"]} >= {
-        "usage_unclassified_root", "utilization_warning"}
-    assert capacity_warning["alert_posted"] is True and len(posted) == 2
+    assert "utilization_warning" in {row["code"] for row in capacity_warning["alerts"]}
+    assert "usage_unclassified_root" not in {row["code"] for row in posted[0]["alerts"]}
+    assert capacity_warning["alert_posted"] is True and len(posted) == 1
 
 
 def test_a_second_mount_warning_pages_with_the_same_alert_code():
@@ -1526,8 +1528,7 @@ def test_low_attribution_warns_but_never_masks_critical(tmp_path, monkeypatch):
     common = dict(mounts=[str(tmp_path)], reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
                   ack="", token="", survey=survey, now=1_000.0)
     warned = cap.run_controller(**common, report_root=tmp_path / "a", disk_usage=_usage(free_gib=100.0))
-    assert {"mount": "/", "code": "usage_attribution_low", "attributed_fraction": 0.5,
-            "severity": "warn"} in warned["alerts"]
+    assert {"mount": "/", "code": "usage_attribution_low", "attributed_fraction": 0.5} in warned["usage"]["warnings"]
     assert warned["level"] == "warning"
     critical = cap.run_controller(**common, report_root=tmp_path / "b", disk_usage=_usage(free_gib=9.0))
     assert critical["level"] == "critical"
@@ -1677,7 +1678,7 @@ def test_snapshot_critical_mount_that_reclaim_cannot_fix_pages_once(tmp_path, mo
     assert page["mount"] == str(tmp_path) and mount["level"] == "critical"
     assert (page["free_bytes"], page["floor_bytes"]) == (mount["free_bytes"], mount["floor_bytes"])
     assert page["top_retained_reasons"] == ["result_registry", "hot", "protected_settlement"]
-    warned = {row["code"] for row in report["alerts"] if row["severity"] == "warn"}
+    warned = {row["code"] for row in report["usage"]["warnings"]}
     assert {"storage_class_over_budget", "orphan_scratch_large", "usage_unclassified_root"} <= warned
     assert len(posted) == 1 and posted[0]["page"] is True
     summary = posted[0]["summary"]
@@ -1704,8 +1705,8 @@ def test_healthy_mount_with_a_class_over_budget_does_not_page(tmp_path, monkeypa
     )
     assert report["mounts"][0]["level"] == "ok"
     assert not [row for row in report["alerts"] if row["severity"] == "page"]
-    assert any(row["code"] == "storage_class_over_budget" for row in report["alerts"])
-    assert all(payload["page"] is False for payload in posted)
+    assert any(row["code"] == "storage_class_over_budget" for row in report["usage"]["warnings"])
+    assert posted == []
 
 
 def test_money_credit_spend_and_stall_pages_are_unchanged():

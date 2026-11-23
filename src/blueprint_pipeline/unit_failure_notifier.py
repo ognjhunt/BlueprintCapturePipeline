@@ -1,4 +1,4 @@
-"""Record a failed systemd unit and tell the operator once, then hourly.
+"""Record a failed systemd unit and tell the operator when it starts or changes, then daily.
 
 ``blueprint-unit-failure@.service`` runs this when a unit that names it in
 ``OnFailure=`` enters the failed state (a crash, a start timeout, an OOM kill, a
@@ -8,7 +8,9 @@ Each run rewrites one small record, ``<record root>/<unit>.json``, which the
 operator door can read, and posts through the capacity controller's own alert
 route and posting code (``control_plane_capacity_controller.post_alert`` on
 ``BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL``). A unit that fails every minute posts
-once and then once an hour, the controller's own repeat interval. It reads the
+once, again whenever its cause (result and exit status) changes, and otherwise
+at most once a day as a reminder (O-10: one known failure posted hourly drowned
+a new one). It reads the
 failure from the ``MONITOR_*`` variables systemd (251 and later) passes to an
 ``OnFailure=`` service; what systemd does not say stays ``null``.
 
@@ -40,6 +42,8 @@ MAX_RECORD_BYTES = 64 * 1024
 # A unit this repository installs; the name becomes a file name and part of the alert.
 _UNIT = re.compile(r"blueprint-[A-Za-z0-9_.:@-]{1,200}\.(?:service|timer|path)\Z")
 _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}\Z")
+# A failure whose cause has not changed is repeated at most this often.
+REMINDER_SECONDS = 24 * 3600
 
 
 def _word(value: Any) -> str | None:
@@ -80,12 +84,19 @@ def _number(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def alert_report(record: Mapping[str, Any]) -> dict[str, Any]:
-    """The one-alert report ``post_alert`` formats: it names an alert by its code."""
+def failure_cause(record: Mapping[str, Any]) -> str:
+    """The failure's cause as the alert names it: the result, with the exit status for an exit code."""
 
     detail = str(record.get("result") or "unknown")
     if detail == "exit-code" and record.get("exit_status"):
         detail += f":{record['exit_status']}"
+    return detail
+
+
+def alert_report(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The one-alert report ``post_alert`` formats: it names an alert by its code."""
+
+    detail = failure_cause(record)
     return {
         "level": "critical",
         "mounts": [],
@@ -128,6 +139,8 @@ def record_unit_failure(
         "last_failure_epoch": observed,
         "last_failure_at": datetime.fromtimestamp(observed, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "last_alert_epoch": _number(previous.get("last_alert_epoch")),
+        # The cause last posted; a record written before this field reads its own last cause.
+        "last_alert_cause": previous.get("last_alert_cause") or (failure_cause(previous) if previous else None),
         "alert_posted": False,
         "alert_error": None,
         "runbook": RUNBOOK,
@@ -139,13 +152,14 @@ def record_unit_failure(
         record["alert_error"] = "operator_alert_route_unconfigured"
         write_json(path, record)
         return record
-    # Imported here: the controller is the one webhook client, and its repeat interval the one dedupe.
+    # Imported here: the controller is the one webhook client.
     from . import control_plane_capacity_controller as capacity
 
     last = record["last_alert_epoch"]
     due = (
         last is None
-        or observed - last >= capacity.ALERT_REPEAT_SECONDS
+        or record["last_alert_cause"] != failure_cause(record)  # a new cause posts at once
+        or observed - last >= REMINDER_SECONDS
         or bool(previous.get("alert_error"))  # the last delivery failed: retry it
     )
     if due:
@@ -153,6 +167,7 @@ def record_unit_failure(
             (poster or capacity.post_alert)(webhook_url, alert_report(record))
             record["alert_posted"] = True
             record["last_alert_epoch"] = observed
+            record["last_alert_cause"] = failure_cause(record)
         except Exception as exc:  # noqa: BLE001 - a failed post must not fail the notifier; it may carry the URL
             record["alert_error"] = type(exc).__name__
         write_json(path, record)

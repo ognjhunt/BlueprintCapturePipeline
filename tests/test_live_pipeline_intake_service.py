@@ -363,7 +363,8 @@ def test_configured_disk_headroom_fails_closed_for_invalid_targets(
     monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS", "launch_dispatch=relative")
     result = service._configured_disk_headroom()
     assert result["status"] == "unknown_fail_closed"
-    assert "policy_canary_dispatch" in result["refused_roles"]
+    assert "launch_dispatch" in result["refused_roles"]
+    assert "policy_canary_dispatch" not in result["refused_roles"]  # C-12: retired, not a chain role
 
 
 def test_live_pipeline_intake_service_error_edges(

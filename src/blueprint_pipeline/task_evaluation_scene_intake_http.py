@@ -200,11 +200,14 @@ def register_scene_intake_routes(app: FastAPI, require_admission: Callable,
             payload = await request.json()
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(payload, Mapping) or set(payload) != {"intent_digest", "owner"}:
+        # ``revocation_cause`` is optional (G-05): the receipt records it, or ``unknown``.
+        if (not isinstance(payload, Mapping) or not {"intent_digest", "owner"} <= set(payload)
+                or not set(payload) <= {"intent_digest", "owner", "revocation_cause"}):
             raise HTTPException(status_code=422, detail="revocation request invalid")
         try:
             result = await run_in_threadpool(revoke_scene_intent, queue_root=root, intent_id=intent_id,
-                intent_digest=payload["intent_digest"], owner=payload["owner"])
+                intent_digest=payload["intent_digest"], owner=payload["owner"],
+                revocation_cause=payload.get("revocation_cause"))
         except SceneIntakeError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         return JSONResponse(content=result, headers={"Cache-Control": "no-store"})

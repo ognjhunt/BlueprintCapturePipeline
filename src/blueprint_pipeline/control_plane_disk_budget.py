@@ -62,6 +62,10 @@ CRITICAL_ROLES = frozenset({"control_plane_deploy"})
 DEFAULT_CRITICAL_FLOOR_BYTES = GIB
 DEFAULT_CRITICAL_FLOOR_FRACTION = 0.01
 DEFAULT_TTL_SECONDS = 2 * 60 * 60
+# Roles whose worker unit is retired: nothing reserves for them, so their declared
+# footprints are left out of the headroom projection (C-12). Admission still knows them.
+RETIRED_ROLES = frozenset({"embodiment_preparation", "policy_canary_dispatch", "policy_canary_output",
+                           "stage_replay"})
 # Pid liveness is the primary liveness signal; the TTL is only the backstop for a
 # recycled pid.  A job holds its reservation for at most its unit's
 # TimeoutStartSec, so each role's entry must outlive that timeout (pinned by a
@@ -727,7 +731,8 @@ def disk_headroom(
             device_of=device_of,
         )
         devices = {default_device: (usage, reserved)}
-        role_devices = dict.fromkeys(ROLE_FOOTPRINT_BYTES, default_device)
+        live_roles = {role: size for role, size in ROLE_FOOTPRINT_BYTES.items() if role not in RETIRED_ROLES}
+        role_devices = dict.fromkeys(live_roles, default_device)
         for role, path in targets_by_role.items():
             device = device_of(_existing_ancestor(path))
             role_devices[role] = device
@@ -739,7 +744,7 @@ def disk_headroom(
                 devices[device] = (target_usage, target_reserved)
     floor = floor_bytes(int(usage.total))
     available = max(0, int(usage.free) - floor - reserved)
-    footprints = role_footprints(ROLE_FOOTPRINT_BYTES, reservation_root=ledger)
+    footprints = role_footprints(live_roles, reservation_root=ledger)
     targets = []
     for role, footprint in sorted(footprints.items()):
         device = role_devices[role]
@@ -754,7 +759,7 @@ def disk_headroom(
     refused = sorted(row["role"] for row in targets if row["refused"])
     status = (
         "exhausted"
-        if len(refused) == len(ROLE_FOOTPRINT_BYTES)
+        if len(refused) == len(live_roles)
         else "low" if refused else "ok"
     )
     return {

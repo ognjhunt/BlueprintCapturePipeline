@@ -54,6 +54,7 @@ at once. A stall that continues posts again each hour.
 | `rigid_probe_stalled` | A rigid robot-free probe entry stayed in `pending/` and its latest attempt recorded nothing new, or a retired staging refusal's timed retry is overdue (`status: retry_overdue`). | 8 h | Read the latest `rigid-robot-free-probes/jobs/<key>-*/attempts/<NN>/rigid_robot_free_probe_ingest.json` (`status` in the page is its `state`) and the runner's journal. |
 | `stall_check_incomplete` (warn) | A check could not read what it needs. | none | Read the `stall` section: `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`. |
 | `control_plane_backup_stale` | No complete control-plane state backup for too long (`status: never_completed`, or the last one's age). | 2 h since the newest complete backup | `door status` for a hold on `blueprint-control-plane-state-backup.timer` (`door release-hold` it if forgotten), `door journal blueprint-control-plane-state-backup.service -n 200` for the failure, then `door unit start blueprint-control-plane-state-backup.timer`. Backup and rebuild: the last section of this file. |
+| `control_plane_backup_not_configured` (warn, not a page) | No state backup has ever run on this host: its ledger does not exist. | Every capacity tick until one runs | The backup unit is skipped until its bucket file is installed (`door journal blueprint-control-plane-state-backup.service` says `unmet condition check`). Owner step: install `/etc/blueprint/control-plane-backup/b2_bucket` and its key. |
 | `website_preparation_blueprint_fault` (pages once) | A website preparation stopped on a fault in Blueprint's own code, not the site's input (`preparation_fault_alert.py`). | once per fault | Fix the cause in a release. The retry lane runs the job once more in its window's last two hours ([`../architecture/job-retry-and-deadlines.md`](../architecture/job-retry-and-deadlines.md) §8), so the fix must be live before then. |
 | `website_atlas_look_draft_final` (pages once) | A job's refined splat kept failing until its window ended, so its look is the draft for good (`preparation_fault_alert.py`). | once per job | Nothing more can be bought for that job ([`../architecture/job-retry-and-deadlines.md`](../architecture/job-retry-and-deadlines.md) §9). Read why the refined splat failed (the job's `last_error` and its splat attempts under `pipeline/atlas/`) and fix that cause for later jobs. |
 
@@ -183,7 +184,8 @@ The notifier (`src/blueprint_pipeline/unit_failure_notifier.py`) does two things
 - It posts on the capacity alert route, `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`,
   with the capacity controller's own posting code. The text reads
   `systemd unit_failed:<unit>:<result>`. A unit that fails on every run posts
-  once, then once an hour.
+  once, again at once when its cause (result and exit status) changes, and
+  otherwise once a day as a reminder.
 
 | `result` | Meaning | Do this |
 |---|---|---|

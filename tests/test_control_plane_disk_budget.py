@@ -312,24 +312,23 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         pid_alive=lambda _pid: True,
     )
     assert report["status"] == "low"
+    # C-12: roles whose unit is retired are not in the projection at all.
+    assert disk_budget.RETIRED_ROLES.isdisjoint(row["role"] for row in report["targets"])
+    assert disk_budget.RETIRED_ROLES.isdisjoint(report["footprints"])
     assert set(report["refused_roles"]) == {
-        "embodiment_preparation",
         "handoff_staging",
         "launch_preparation",
         "episode_compilation",
         "team_scene_landing",
         "launch_activation",
         "launch_dispatch",
-        "policy_canary_dispatch",
         "evidence_offload",
         "result_artifact_download",
-        "stage_replay",
         "semantic_pretraining",
         "cpu_prestage",
         "scene_configuration_output",
         "g1_checkpoint_cache",
         "experiment_restore",
-        "policy_canary_output",
     }
     assert next(row for row in report["targets"] if row["role"] == "control_plane_deploy")["refused"] is False
     assert str(tmp_path) not in json.dumps(report)
@@ -786,6 +785,10 @@ ROLE_WORKER_UNITS = {
     # Its unit, the robot-team canary dispatcher, is retired.
     "policy_canary_output": (),
 }
+
+
+def test_retired_roles_are_exactly_the_roles_without_a_worker_unit():
+    assert disk_budget.RETIRED_ROLES == {role for role, units in ROLE_WORKER_UNITS.items() if not units}
 
 
 def _start_timeout_seconds(unit_text):
