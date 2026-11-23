@@ -71,7 +71,7 @@ def test_a_built_room_with_no_source_pose_is_handed_on_levelled_in_its_own_units
     assert base["levelling"]["up_basis"] == "observed_floor" and base["ground_plane_offset_m"] == 0.0
     assert base["collision_mesh_path"].endswith("atlas_mesh_levelled.glb")
     assert "camera_path_levelled_m" not in value
-    assert list(_metres_values(base)) == []
+    assert base["levelling"]["provider_to_levelled"] and "scale_authority" not in base
     # Read twice, it is the same scene.
     assert source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep") == value
 
@@ -132,10 +132,12 @@ def test_the_unscaled_room_ships_to_companies_flagged_with_no_metres_value_in_it
     assert record["flags"] == [SCALE_NOT_MEASURED]
     assert record["not_prepared"] == [{"piece": "object", "code": POSE_FAILED}]
     assert job.rerun() == result  # the handoff reading the result twice
-    room = job.capture / "pipeline/website_scene_preparation/room_package"
+    # The sealed half the company builder reads: its record and plan hold relative units and no metres value.
+    room = job.capture / "pipeline/website_scene_preparation/room_package/half"
     for path in room.rglob("*.json"):
         assert list(_metres_values(json.loads(path.read_text()))) == [], path
-    plan = json.loads(next(room.rglob(sim.PLAN_FILE)).read_text())
+    from blueprint_pipeline.team_scene_robot_absent import PLAN_FILENAME
+    plan = json.loads(next(room.rglob(PLAN_FILENAME)).read_text())
     assert plan["task_kind"] == "not_defined_by_blueprint"
     published, files = _published(job)
     assert published["status"] == "published"
@@ -149,18 +151,30 @@ def test_the_unscaled_room_ships_to_companies_flagged_with_no_metres_value_in_it
     assert "- scene.usda states 1 unit as 1 metre only so that tools can open it; the room's scale was not" in readme
 
 
-def test_takedown_withdrawal_and_revoked_rights_still_stop_the_unscaled_room(tmp_path, monkeypatch):
+def test_takedown_and_withdrawal_still_stop_the_unscaled_room(tmp_path, monkeypatch):
     from tests.test_website_company_simulation import World, _withdraw, _write
 
     job, _result = shipped_room(tmp_path, monkeypatch)
     world = World(job)
-    world.rights = {"consent_status": "revoked", "consent_revoked": True, "statement_version": None}
-    assert world.publish()["status"] == "refused" and world.delivered == []
-    world.rights = World(job).rights
     assert world.publish()["status"] == "published"
     takedown = _write(job.capture / "pipeline/consent_takedown/takedown_manifest.json", {"takedown_open": True})
     assert world.publish() == {"status": "refused", "reason": "website_company_simulation_takedown_gate_closed"}
+    assert len(world.retracted) == 1
     takedown.unlink()
     assert world.publish()["status"] == "published"
     _withdraw(job.capture)
     assert world.publish()["status"] == "withdrawn"
+
+
+@pytest.mark.parametrize("rights", ["refused", "not_sharing"])
+def test_the_unscaled_room_follows_the_live_rights_like_any_package(tmp_path, monkeypatch, rights):
+    from tests.test_website_company_simulation import OLDER, World
+
+    job, _result = shipped_room(tmp_path, monkeypatch)
+    world = World(job)
+    world.rights = ({"consent_status": "revoked", "consent_revoked": True, "statement_version": None}
+                    if rights == "refused" else {"consent_status": "granted", "consent_revoked": False,
+                                                 "statement_version": OLDER})
+    result = world.publish()
+    assert result["status"] in ({"refused"} if rights == "refused" else {"not_permitted"}), result
+    assert world.delivered == []

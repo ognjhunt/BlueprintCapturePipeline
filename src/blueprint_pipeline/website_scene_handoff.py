@@ -673,10 +673,14 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
     goals = [row for row in (task_masks or {}).get("targets") or []
              if row.get("target_role") == "destination" and isinstance(row.get("estimated_visible_bounds"), Mapping)]
     focus = goals[0]["estimated_visible_bounds"] if task_masks is not None and len(goals) == 1 else None
-    mpu, runtime_to_sim, matrix = _sim_frame(base_scene=base_scene, source_geometry=source_geometry, focus=focus)
+    from .atlas_unscaled_room import RELATIVE_FRAME, is_unscaled, relative_frame
+    unscaled = is_unscaled(base_scene)  # its units relative, and no metres value written (``atlas_unscaled_room``)
+    mpu, runtime_to_sim, matrix = (relative_frame(base_scene) if unscaled else
+                                   _sim_frame(base_scene=base_scene, source_geometry=source_geometry, focus=focus))
     room = {"binding": {key + "_digest": base_scene[key + "_digest"] for key in ("splat", "collision_mesh")},
             "coordinate_frame": {"declared_meters_per_unit": mpu, "declared_up_axis": base_scene["up_axis"],
-                                 "physical_scale_measured": False, "runtime_to_simulator": runtime_to_sim.tolist()}}
+                                 "physical_scale_measured": False, "runtime_to_simulator": runtime_to_sim.tolist(),
+                                 **(RELATIVE_FRAME if unscaled else {})}}
     room["digest"] = canonical_digest(room, digest_field="digest")
     collision_root, normalized = normalize_runtime_collision(preparation=room, base_scene=base_scene,
                                                              output_root=output_root)
@@ -821,6 +825,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         # ``not_prepared``: the blockers it ships for, each with the piece of the job it leaves out (``piece_of``).
         result.pop("rule_withheld", None)
         flags = package_flags(flags)
+        geometry = atlas.get("source_geometry") or {}  # none for a room whose scale was not measured
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only or in_scan, flags=flags,
@@ -829,8 +834,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                                         # The code alone, never its detail (a builder's or an exception's words).
                                         for code in dict.fromkeys(code.split(":", 1)[0] for code in not_prepared)])
         result.update(status=ROOM_PACKAGE, blockers=[], job_disposition="accepted",
-                      geometry_backend=atlas["source_geometry"]["geometry_backend"],
-                      source_geometry_digest=atlas["source_geometry"]["digest"],
+                      geometry_backend=geometry.get("geometry_backend"), source_geometry_digest=geometry.get("digest"),
                       room_package={"path": str(root / "room_package" / "half" / ROOM_RECORD),
                                     **{key: record[key] for key in ("inputs_digest", "task_kind", "task_profile",
                                                                     "success_rule_defined", "success_rule_assumed")}})
@@ -954,6 +958,13 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             if not may_fall_back():
                 raise ValueError(SPENDING_CAP_REACHED)
             return room_package(context.get("task_family"), not_prepared=[SPENDING_CAP_REACHED])
+        from .atlas_unscaled_room import SCALE_NOT_MEASURED
+        if SCALE_NOT_MEASURED in (atlas.get("flags") or []):
+            # Built, but no source pose: nothing lifts onto it, so the room ships as it is (``atlas_unscaled_room``).
+            if not may_fall_back():
+                raise ValueError(SCALE_NOT_MEASURED)
+            return room_package(context.get("task_family"), flags=[SCALE_NOT_MEASURED],
+                                not_prepared=atlas.get("not_prepared") or ())
         if in_scan:
             return room_package(context.get("task_family"))
         from .website_task_semantics import load_task_semantics

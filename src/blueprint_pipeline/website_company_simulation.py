@@ -63,12 +63,8 @@ from typing import Any
 
 from . import company_share_permission as permission
 from . import website_company_clip as clip
-from .atlas_automation_plan import (
-    GENERATED_ESTIMATES_BASIS,
-    GENERATED_IN_COLLISION_ONLY,
-    GENERATED_VIEWS_IN_LOOK,
-    JOB_OBJECT_RULE,
-)
+from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, GENERATED_VIEWS_IN_LOOK, JOB_OBJECT_RULE
+from .atlas_unscaled_room import SCALE_NOT_MEASURED, SCALE_NOT_MEASURED_NOTE, UNITS_LINE
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .outbound_file_scan import capture_site_identity
@@ -781,6 +777,7 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
                  and isinstance(row.get("code"), str)
                  and row["code"] not in OBJECT_NOT_PREPARED_FLAGS | OBJECT_NOT_PLACED_FLAGS]) else {}),
              **({"nothing_taken_out": True} if JOB_OBJECT_RULE in (record.get("flags") or []) else {}),
+             **({"scale_not_measured": True} if SCALE_NOT_MEASURED in (record.get("flags") or []) else {}),
              **({"not_filled_in": True} if "scene_completion_not_admitted" in (record.get("flags") or []) else {})}
             if record.get("schema_version") == ROOM_RECORD_SCHEMA else None)
     return {**({"removed_items": len(items)} if isinstance(items, list) and items else {}),
@@ -1238,8 +1235,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     for prim in hidden:
         lines += [f"/World/{prim} is hidden: it is for contact, not for display.",
                   "To see it, set its visibility to inherited (in usdview: select it and press Make Visible)."]
-    lines += ["", "Units and axes", "", "- scene.usda is in metres (1 unit is 1 metre), radians and seconds.",
-              f"- Up is +{source['axis']} in scene.usda."]
+    unscaled = bool((room or {}).get("scale_not_measured"))  # its units relative (``atlas_unscaled_room``)
+    lines += ["", "Units and axes", "", UNITS_LINE if unscaled else "- scene.usda is in metres (1 unit is 1 metre), "
+              "radians and seconds.", f"- Up is +{source['axis']} in scene.usda."]
     for prim, relative in placed.items():
         lines.append(f"- {relative} states {_stated(*units[prim])}.")
     for prim, relative in plys.items():
@@ -1287,7 +1285,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                    else _counted(OBJECTS_TAKEN_OUT, OBJECTS_TAKEN_OUT_ONE, room["objects"])]
                   if room.get("objects") else []),
                 *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),
-                *([NOT_FILLED_IN] if room.get("not_filled_in") else [])] if room is not None else []),
+                *([NOT_FILLED_IN] if room.get("not_filled_in") else []), *([SCALE_NOT_MEASURED_NOTE] if unscaled else [])]
+               if room is not None else []),
              *([NO_RULE] if withheld else []),
              *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else [])]
     # One bullet per note, under its own heading, so a reader can pick out the ones that matter.
