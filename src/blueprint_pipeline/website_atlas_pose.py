@@ -42,6 +42,7 @@ from .atlas_refined_splat_forms import SPLAT_FRAME_TARGET, SPLAT_POSE_INPUT_CAPA
 from .atlas_spend_settlement import settle_closed_atlas_pose_attempts
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest
+from .job_retry_policy import PROVIDER_ACCOUNT_STATUSES
 from .local_reconstruction_adapters import _sha256_bytes, _sha256_file
 from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 
@@ -978,9 +979,11 @@ def submit_atlas_pose_operation(*, pose_inputs: Mapping[str, Any], output_root: 
                          api_base=client.base_url)
         elif 400 <= status < 500 and status not in _UNCERTAIN_4XX and not earlier_uncertain:
             # A definitive refusal of the only send so far bought nothing. A
-            # 402 is resent later, as the billing docs describe; any other
-            # refusal closes the attempt.
-            state.update(status="rejected", provider_rejection={"status": status, "retryable": status == 402},
+            # key or account refusal (401, 402, 403) is resent later, as the
+            # billing docs describe for 402, so a fixed key or a top-up lets the
+            # outage retry go on; any other refusal closes the attempt.
+            state.update(status="rejected",
+                         provider_rejection={"status": status, "retryable": status in PROVIDER_ACCOUNT_STATUSES},
                          possibly_bought=False)
             state.pop("uncertain_since_epoch")
         _write_state(path, state)

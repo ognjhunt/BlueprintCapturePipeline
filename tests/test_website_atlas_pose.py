@@ -779,12 +779,14 @@ def test_throttling_and_server_errors_are_not_refusals(atlas_case, status):
     assert len(fake.submissions) == 2 and fake.raw_submissions[0] == fake.raw_submissions[1]
 
 
-def test_a_credit_refusal_is_resent_after_the_documented_interval(atlas_case):
-    fake = FakeAtlas(atlas_case.events, submit_outcomes=[402])
-    with pytest.raises(atlas.AtlasHttpError, match="website_atlas_api_402"):
+@pytest.mark.parametrize("status", [401, 402, 403])
+def test_a_credit_refusal_is_resent_after_the_documented_interval(atlas_case, status):
+    # A key or account refusal waits as an outage, so a fixed key lets the retry finish.
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=[status])
+    with pytest.raises(atlas.AtlasHttpError, match=f"website_atlas_api_{status}"):
         atlas_case.run(fake)
     state = _state(atlas_case)
-    assert state["status"] == "rejected" and state["provider_rejection"] == {"status": 402, "retryable": True}
+    assert state["status"] == "rejected" and state["provider_rejection"] == {"status": status, "retryable": True}
     # A credit refusal is resent under the same hold, so it does not settle yet.
     assert atlas_case.webapp.settled == []
     # Not in a tight loop: the billing docs ask for a top-up first.
