@@ -215,13 +215,16 @@ def _release_switching(error: BaseException) -> bool:
 
 
 def _outage(error: BaseException) -> bool:
-    """A provider 429 or 5xx, a changed task context, a release switching (``_release_switching``), or a transport
-    or OS error (timeouts included)."""
+    """A provider 429 or 5xx, a provider's refusal of Blueprint's own key or account (401, 402, 403:
+    ``job_retry_policy.provider_account_refused``, paged once by ``preparation_fault_alert``), a changed task
+    context, a release switching (``_release_switching``), or a transport or OS error (timeouts included)."""
+    from .job_retry_policy import PROVIDER_ACCOUNT_STATUSES, provider_account_refused
     status = getattr(error, "status", None)
     if isinstance(status, int):
-        return status == 429 or status >= 500
+        return status == 429 or status >= 500 or status in PROVIDER_ACCOUNT_STATUSES
     if isinstance(error, ValueError):
         return (_reason(error) in _TASK_CONTEXT_CHANGED or _release_switching(error)
+                or provider_account_refused(_reason(error)) or provider_account_refused(str(error))
                 or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None)
     return isinstance(error, OSError)
 
@@ -314,7 +317,7 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         # with the code. Each retry of a refused SAM dispatch reserves anew: no call releases a hold.
         return _refusal_retry(job, current, code, detail)
     if request_cannot_succeed(code):
-        # An outside service refused the request itself (a 413, a 400, a 403...), or it cannot be made
+        # An outside service refused the request itself (a 413, a 400...), or it cannot be made
         # to fit: sending it again unchanged cannot succeed, so the step ends now with that code. A
         # rate limit (429) is an outage above; an operator's retry reopens the job after a fix.
         return _transition(job, current, "failed", code, **detail)
@@ -705,6 +708,45 @@ def _reopen_observed_room(job: dict[str, Any], *, job_dir: Path, now: Callable[[
 REOPEN_MARGIN_SECONDS = 86_400
 
 
+def _parked_without_wall(job: Mapping[str, Any]) -> bool:
+    """A job ended failed or needs_input with no retry time, on a reason that is no wall: not privacy, rights or
+    money (``hard_stop_kind``, the spending cap, a withdrawal), not the owner's closing of the run, not a stop only
+    a new video or the site's input clears, and not the job's own end (expired, source gone)."""
+    from .atlas_preparation_job_control import _NOT_RETRYABLE
+    from .hard_stops import JOB_SPEND_CAP
+    from .job_retry_policy import owner_closed
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
+    from .website_recapture_required import ABSTENTION_CODES
+    reason = job.get("reason")
+    return (job.get("state") in {"failed", "needs_input"} and not job.get("retry_at_epoch")
+            and isinstance(reason, str) and hard_stop_kind(reason) is None and not owner_closed(reason)
+            and reason not in (_NOT_RETRYABLE | _NEEDS_NEW_CAPTURE | _NEEDS_TASK_INPUT | _WITHDRAWN
+                               | set(ABSTENTION_CODES.values())
+                               | {"atlas_scene_planner_abstained", SPENDING_CAP_REACHED, JOB_SPEND_CAP}))
+
+
+def _reopen_parked_after_release(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:
+    """Run a parked job (``_parked_without_wall``) once more on each new release, by itself (2026-11-22: before,
+    only an operator's ``--atlas-retry`` did). Only while it can still finish inside its window and its grant
+    is live (``_may_reopen``); the step asks every consent, withdrawal and money admission again, and resumes
+    from its receipts, so nothing is bought twice. A release that cannot be read reopens nothing."""
+    from .atlas_preparation_job_control import _AUTOMATIC_RETRY_FIELDS
+    from .website_preparation_retry import _release
+    if not _parked_without_wall(job):
+        return job
+    release = _release()
+    current = int(now())
+    if (release is None or job.get("release_reopened") == release
+            or not _may_reopen(job, capture_root=job_dir.parents[1], current=current)):
+        return job
+    retries = [*job.get("retries", []), {"reason": "release_reopened", "at_epoch": current}]
+    cleanup = {**(job.get("provider_cleanup") or {}), "state": "pending", "attempts": 0, "next_attempt_at_epoch": 0}
+    job = {key: value for key, value in job.items() if key not in _AUTOMATIC_RETRY_FIELDS}
+    return _transition(job, current, "processing", None, stage="queued", transient_failures=0,
+                       next_attempt_at_epoch=current, retries=retries, provider_cleanup=cleanup,
+                       release_reopened=release)
+
+
 def _may_reopen(job: Mapping[str, Any], *, capture_root: Path, current: int) -> bool:
     """Only a job that can still finish is reopened (review 2026-11-12: a reopened job past its window
     failed at once as ``atlas_preview_expired`` and lost its ready preview)."""
@@ -745,7 +787,9 @@ def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: 
         step=lambda job: _restore_unfinished_reopen(
             _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now)),
         deliver=lambda job: _deliver(job, now=now),
-        refresh=lambda job: _reopen_observed_room(job, job_dir=path.parent, now=now), now=now, transport=transport)
+        refresh=lambda job: _reopen_parked_after_release(_reopen_observed_room(job, job_dir=path.parent, now=now),
+                                                         job_dir=path.parent, now=now),
+        now=now, transport=transport)
 
 
 def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]],

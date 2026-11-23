@@ -138,57 +138,15 @@ def test_fallback_rows_are_compiled_by_the_no_spend_unit(tmp_path: Path, monkeyp
     assert not remote.marker_path(host.jobs, "fallback", name).exists()
 
 
-def test_paid_unit_has_no_exists_glob_and_never_compiles() -> None:
-    path, timer, service = _unit(f"{PAID}.path"), _unit(f"{PAID}.timer"), _unit(f"{PAID}.service")
-    # A timer and PathChanged= on the hand-off and shadow directories: a skipped run can never re-trigger itself.
-    assert "PathExistsGlob" not in path
-    assert set(_paths(path, "PathChanged")) == {f"{JOBS}/handoffs/episode_compilation", f"{JOBS}/shadow/episode_compilation"}
-    assert f"Unit={PAID}.service" in path and f"Unit={PAID}.service" in timer
-    assert "OnUnitInactiveSec=60s" in timer
-    assert "-m blueprint_pipeline.task_evaluation_episode_compilation_collector run" in service
-    assert "-m blueprint_pipeline.task_evaluation_episode_compilation_remote_condition" in service
-    assert "task_evaluation_episode_compilation_worker" not in service
-    # The collector reaches no compiler: it only dispatches, follows, promotes and lands.
-    module = ROOT / "src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py"
-    called = {node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-              for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))) if isinstance(node, ast.Call)}
-    assert not called & {"compile_claimed_envelope", "compile_native_arena_episode", "process_episode_compilation_queue",
-                         "run_no_spend_unit", "run_episode_compilation_in_worker"}
-    # The no-spend unit keeps pending/ and also wakes on fallback markers, which have no glob.
-    no_spend = _unit(f"{NO_SPEND}.path")
-    assert set(_paths(no_spend, "PathChanged")) == {
-        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending",
-        f"{JOBS}/fallback/episode_compilation"}
-    assert _paths(no_spend, "PathExistsGlob") == [
-        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending/*.json"]
-
-
-def test_dispatcher_credential_is_loaded_only_by_the_paid_unit() -> None:
+def test_dispatcher_credential_is_loaded_only_by_the_team_scene_paid_unit() -> None:
     holders = [unit.name for unit in sorted(SYSTEMD.iterdir()) if unit.is_file()
                and "remote-cpu-dispatcher" in unit.read_text(encoding="utf-8")]
-    # The team-scene stage's paid unit holds it too (tests/test_team_scene_packet_remote_units.py); no other unit.
-    assert holders == sorted([f"{PAID}.service", "blueprint-team-scene-packet-remote.service"])
-    service = _unit(f"{PAID}.service")
-    assert service.count(CREDENTIAL) == 1 and service.count("LoadCredential") == 1
-    assert "LoadCredential" not in _unit(f"{NO_SPEND}.service")
-    # Loaded by systemd from a root-only file: never an environment value, never installed by the repo.
-    assert "remote-cpu-dispatcher.json" not in _unit(f"{PAID}.service").replace(CREDENTIAL, "")
+    # The episode-compilation units are retired; only the team-scene stage's paid unit holds it
+    # (tests/test_team_scene_packet_remote_units.py).
+    assert holders == ["blueprint-team-scene-packet-remote.service"]
     for text in (ROOT / "scripts" / "install_live_pipeline_control_plane.sh",
                  SYSTEMD / "pipeline-control-plane.env.example"):
         assert "remote-cpu-dispatcher.json" not in text.read_text(encoding="utf-8")
-
-
-def test_paid_unit_cannot_write_its_own_standing_authority() -> None:
-    service = _unit(f"{PAID}.service")
-    writable = _paths(service, "ReadWritePaths")
-    assert writable and "/var/lib/blueprint" not in writable
-    assert not any(AUTHORIZATIONS == path or AUTHORIZATIONS.startswith(path.rstrip("/") + "/") for path in writable)
-    assert AUTHORIZATIONS in _paths(service, "ReadOnlyPaths")
-    assert {"/var/lib/blueprint/spend-authority/consumed", "/var/lib/blueprint/spend-authority/remote-cpu-settled",
-            JOBS, "/var/lib/blueprint/task-evaluation-inputs/compiled-episodes",
-            "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations",
-            "/var/lib/blueprint/pipeline-control-plane/disk-reservations",
-            "/var/lib/blueprint/pipeline-control-plane/storage-pins"} == set(writable)
 
 
 def test_host_mode_is_byte_identical_to_today(tmp_path: Path, monkeypatch) -> None:
@@ -299,7 +257,9 @@ def test_chain_preflight_reports_invalid_modes_and_remote_cpu_image_drift(tmp_pa
     assert preflight.remote_execution_checks(units) == []
     remote.record_job_image(host.jobs, job_image=IMAGE.replace("d" * 64, "e" * 64), config_image=IMAGE, now=1.0)
     assert [finding["code"] for finding in preflight.remote_execution_checks(units)] == ["remote_cpu_image_drift"]
-    assert preflight.PAID_EPISODE_COMPILATION_UNIT in preflight.CHAIN_UNITS
+    # The episode-compilation units are retired, so the look-ahead no longer probes them.
+    assert preflight.PAID_EPISODE_COMPILATION_UNIT not in preflight.CHAIN_UNITS
+    assert preflight.EPISODE_COMPILATION_UNIT not in preflight.CHAIN_UNITS
 
 
 def test_a_skipped_exec_condition_is_not_a_failed_unit() -> None:
@@ -325,9 +285,6 @@ def test_the_paid_units_exec_condition_imports_only_the_standard_library(tmp_pat
 
     from blueprint_pipeline import task_evaluation_episode_compilation_remote_condition as condition
 
-    service = _unit(f"{PAID}.service")
-    [line] = [line for line in service.splitlines() if line.startswith("ExecCondition=")]
-    assert "-m blueprint_pipeline.task_evaluation_episode_compilation_remote_condition" in line
     tree = ast.parse(Path(condition.__file__).read_text(encoding="utf-8"))
     imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     imported |= {node.module.split(".")[0] for node in ast.walk(tree)
@@ -397,30 +354,37 @@ def test_fallback_compiles_are_bounded_per_run_by_count_and_time(tmp_path: Path,
     assert len(run["fallback_results"]) == 1 and run["fallback_deferred"] == names[1:]
 
 
-def test_the_no_spend_unit_has_a_timer_backstop_and_deploy_creates_its_marker_directories() -> None:
-    """Review minor: on a host set up before PR 4 no deploy created the hand-off and fallback directories, and
-    the no-spend unit had no timer, so a first fallback event (or a deferred handed-back row) could wait forever.
-    Deploy now creates every marker directory for the service account, and a timer backstops the path unit."""
+def test_the_retired_episode_compilation_triggers_are_stopped_and_no_longer_shipped() -> None:
+    """V-01: no website job compiles episodes and the remote collector found zero rows on every run, so a
+    release stops and disables all four triggers on a host that still has them and ships none of the units."""
 
     import importlib.util
 
-    timer = _unit(f"{NO_SPEND}.timer")
-    assert f"Unit={NO_SPEND}.service" in timer and "OnUnitInactiveSec=" in timer and "OnBootSec=" in timer
     spec = importlib.util.spec_from_file_location("deploy_control_plane_commit",
                                                   ROOT / "scripts" / "deploy_control_plane_commit.py")
     deploy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(deploy)
-    assert f"{NO_SPEND}.timer" in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-    # Robot-team lane: a release now stops and disables both triggers (the remote half stays armed to drain).
-    assert {f"{NO_SPEND}.timer", f"{NO_SPEND}.path"} <= set(deploy.DEFAULT_PAUSED_LANE_DISARM_UNITS)
-    assert f"{NO_SPEND}.timer" not in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    triggers = {f"{unit}.{kind}" for unit in (NO_SPEND, PAID) for kind in ("path", "timer")}
+    assert triggers <= set(deploy.DEFAULT_RETIRED_TRIGGER_UNITS)
+    deploy._validate_retired_trigger_units()
+    for unit in (NO_SPEND, PAID):
+        for kind in ("service", "path", "timer"):
+            assert f"{unit}.{kind}" not in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+            if f"{unit}.{kind}" == f"{NO_SPEND}.service":
+                # Kept, unshipped: the scene retirement supervisor compares the installed
+                # service with this source to prove the worker cohort idle (_KNOWN_UNITS).
+                continue
+            assert not (SYSTEMD / f"{unit}.{kind}").exists()
+    from blueprint_pipeline import task_evaluation_scene_retirement_supervisor as supervisor
+
+    for unit in supervisor._KNOWN_UNITS:
+        assert (SYSTEMD / unit).is_file(), unit
+    installer = (ROOT / "scripts" / "install_live_pipeline_control_plane.sh").read_text(encoding="utf-8")
+    assert f"{NO_SPEND}." not in installer and f"{PAID}." not in installer
+    # The queue's marker directories stay: launch preparation still imports the queue module.
     directories = set(deploy.DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES)
     for kind in ("handoffs", "shadow", "fallback", "recovery"):
         assert {f"{JOBS}/{kind}", f"{JOBS}/{kind}/episode_compilation"} <= directories, kind
-    assert JOBS in directories
-    installer = (ROOT / "scripts" / "install_live_pipeline_control_plane.sh").read_text(encoding="utf-8")
-    assert f"systemctl enable --now {NO_SPEND}.timer" in installer
-    assert f"deploy/systemd/{NO_SPEND}.timer" in installer
 
 
 def test_the_fallback_time_budget_starts_before_the_queue_wait(tmp_path: Path, monkeypatch) -> None:

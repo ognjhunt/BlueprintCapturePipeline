@@ -104,6 +104,9 @@ PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trig
                         "website_preparation_blueprint_fault",
                         # Not a stall: a website job's look is the draft for good, paged once (same module).
                         "website_atlas_look_draft_final",
+                        # Not a stall: an outside service refused Blueprint's key or account, paged once per
+                        # service (same module).
+                        "website_provider_account_refused",
                         # Not a stall: the state backup's newest complete generation is over two hours old
                         # (control_plane_state_backup.backup_freshness). A host never set up warns
                         # (control_plane_backup_not_configured, F-01): it is not a page, but not silence.
@@ -1618,7 +1621,8 @@ def describe(alert: Mapping[str, Any]) -> str | None:
         why = f" [{blockers[0]}]" if blockers else ""
         return (f"scene progression unchanged {age} at {alert.get('status')}/{alert.get('phase')}{why}: "
                 f"{name}{tail}")
-    if code in ("website_preparation_blueprint_fault", "website_atlas_look_draft_final"):
+    if code in ("website_preparation_blueprint_fault", "website_atlas_look_draft_final",
+                "website_provider_account_refused"):
         from .preparation_fault_alert import describe as describe_fault
         return describe_fault(alert)
     if code == "control_plane_backup_stale":

@@ -66,8 +66,12 @@ The job-store checks also skip these cases:
 
 - an Atlas job that is `ready`, `failed` or `withdrawn`, or `needs_input`
   with no scheduled recheck or waiting on privacy, rights or money. Parked
-  jobs stay visible under `dispositions` in the Atlas stall summary. Nothing
-  steps a parked job again: once its cause is fixed in the live release, read
+  jobs stay visible under `dispositions` in the Atlas stall summary. Since
+  2026-11-22 a job parked on no wall runs once more by itself on each new
+  release while its grant is live and it can still finish in its window
+  (`website_atlas_preview._reopen_parked_after_release`); a provider's 401,
+  402 or 403 waits as an outage and pages once per service
+  (`website_provider_account_refused`). To speed one up, read
   it with `door selected-handoff --selector-file <selector> --atlas-status --wait`
   (the selector from `--discover-selector`) and reopen it with `--atlas-retry
   --atlas-status-digest <digest> --wait` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)).
@@ -137,8 +141,9 @@ before it pulls messages:
   `next_attempt_at`, on the one retry policy (`job_retry_policy.py`). An
   outage (429, 5xx, timeout, disk) or a money refusal is retried every 2
   minutes, growing to every hour, until the job's grant ends it. Any other
-  failure gets six retries (15 min, 1 h, 3 h, 6 h, 12 h, 24 h) and is then left
-  as it is; the grant-expiry ending and the WebApp's window sweep end it.
+  failure gets six retries (15 min, 1 h, 3 h, 6 h, 12 h, 24 h) and then, since
+  2026-11-22, keeps retrying hourly on the outage schedule until the grant ends
+  it (a job with no grant runs once more on each new release).
   Each paid call keeps its own intent and receipt, so a re-run buys nothing that
   was already bought.
 - A delivery refused before its claim (the WebApp's rights check, a disk or
@@ -780,17 +785,15 @@ unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
 
 ### Lanes paused by the 2026-11-12 frame
 
-Every release stops and disables the triggers in `DEFAULT_PAUSED_LANE_DISARM_UNITS`
-(`scripts/deploy_control_plane_commit.py`): host episode compilation (`.timer` and
-`.path`), which only a robot-team policy or controls run staged; the owner deleted
-those lanes. Remote episode compilation stays armed only to drain and tear down a
-hand-off already in flight. A lane is armed or disarmed whole. No website job needs
-them; their unit files and code stay. A unit already stopped or absent is fine; one
-that will not stop does not fail the release and is named in the receipt's
-`paused_lane_disarm.failed`, which `door status` shows under `deploys.recent_receipts`.
-The stall alarm and the preflight do not count them. To bring a lane back, move all
-its names from `DEFAULT_PAUSED_LANE_DISARM_UNITS` back into the arm lists (timers into
-`DEFAULT_ALWAYS_ARM_TIMER_UNITS`, paths into the list they came from) and deploy.
+No lane is paused now. Every release stops and disables the triggers in
+`DEFAULT_PAUSED_LANE_DISARM_UNITS` (`scripts/deploy_control_plane_commit.py`); the list
+is empty since episode compilation, host and remote, was retired (V-01): only a
+robot-team policy or controls run staged it, the owner deleted those lanes, and the
+remote collector found zero rows on every run. A lane is armed or disarmed whole. A
+unit already stopped or absent is fine; one that will not stop does not fail the
+release and is named in the receipt's `paused_lane_disarm.failed`, which `door status`
+shows under `deploys.recent_receipts`. To pause a lane, move all its names from the arm
+lists into `DEFAULT_PAUSED_LANE_DISARM_UNITS` and deploy.
 
 Before it switches the release, every release also stops and disables, if installed,
 the triggers this repo no longer ships (`DEFAULT_RETIRED_TRIGGER_UNITS`, the same names
@@ -798,8 +801,8 @@ as the door's `RETIRED_HOLD_UNITS`): the old control-plane timer, legacy capture
 reconstruction, the robot-team lanes (policy-canary dispatch and its continuation, the
 launch supervisor, scene object discovery, embodiment preparation, SAM 3.1 preparation
 execution, the team-evaluation runner, configured-controls progression), the early
-trial's `blueprint-beta-policy-screening.timer`, the agent-run dispatcher and the agent
-stage replay. Their services and files are left alone, absent is fine, and the
+trial's `blueprint-beta-policy-screening.timer`, the agent-run dispatcher, the agent
+stage replay and episode compilation (host and remote `.timer` and `.path`). Their services and files are left alone, absent is fine, and the
 receipt's `unshipped_trigger_retirement` lists each as `retired`, `already_off`,
 `absent` or `failed` (a failure does not fail the release; a rollback leaves them off).
 The 2026-11-20 release (`iteration_03dcd29c6eb4_door.json`) found all 18 `already_off`.

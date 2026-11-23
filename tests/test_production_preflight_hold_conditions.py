@@ -36,12 +36,13 @@ def test_actual_failed_false_condition_is_a_hold_but_other_failed_predicate_is_n
 
 def test_a_paused_lanes_disarmed_trigger_is_not_a_blocker(monkeypatch) -> None:
     """The release disarms paused lanes' triggers (2026-11-12 frame); the preflight must not count them."""
-    from blueprint_pipeline.control_plane_stall_alarm import read_deploy_paused_triggers
+    from blueprint_pipeline import control_plane_stall_alarm as stall
 
-    held = "blueprint-task-evaluation-episode-compilation"
+    # No lane is paused now (episode compilation is retired, V-01): a stand-in lane drives the rule.
+    held = "blueprint-stand-in-paused-lane"
     compile_timer = "blueprint-task-evaluation-launch-preparation.timer"
-    assert f"{held}.timer" in read_deploy_paused_triggers()
-    assert compile_timer not in read_deploy_paused_triggers()
+    assert compile_timer not in stall.read_deploy_paused_triggers()
+    monkeypatch.setattr(stall, "read_deploy_paused_triggers", lambda *_args: frozenset({f"{held}.timer"}))
     monkeypatch.setattr(preflight, "unit_properties", lambda _unit: {"ActiveState": ["inactive"]})
 
     def props(triggers):

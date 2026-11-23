@@ -767,8 +767,9 @@ ROLE_WORKER_UNITS = {
     "embodiment_preparation": (),  # its unit, embodiment preparation, is retired
     "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
                            "blueprint-task-evaluation-scene-progression.service"),
-    "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",
-                            "blueprint-task-evaluation-episode-compilation-remote.service"),
+    # The host unit is no longer triggered, but it stays installed and its source is kept (#3694),
+    # so the role is not retired and its footprint stays in the headroom projection.
+    "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",),
     "team_scene_landing": ("blueprint-team-scene-packet-remote.service",),
     "launch_activation": ("blueprint-task-evaluation-launch-activation.service",),
     "launch_dispatch": ("blueprint-task-evaluation-launch-dispatcher.service",),
