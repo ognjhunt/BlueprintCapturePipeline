@@ -10,9 +10,12 @@ website capture and publishes it exactly as the scene preview is published
 - made from the clip website preparation reads (``website_source_video``:
   ``pipeline/source_video/normalization.json`` names it), re-encoded every time, so the raw
   upload is never what is served, even when it was already within the normalization bounds.
-  A capture handed off before normalization existed (no record, a derived folder already there)
-  has its clip made, the same way, from the raw upload its ``raw/manifest.json`` names
-  (``video_uri``); a new capture waits for normalization. The manifest
+  Until normalization has recorded its outcome (a capture handed off before normalization existed,
+  or a new capture whose preparation has not run or not been admitted), the clip is made, the same
+  way, from the raw upload its ``raw/manifest.json`` names (``video_uri``), once the upload hand-off
+  has finished staging it (``pipeline_staging_manifest.json`` lists it at its size) or a derived
+  folder shows an older capture; when normalization later records its clip, the clip is rebuilt
+  from that. So a company sees the video minutes after hand-off, not after paid preparation. The manifest
   records which (``source``: ``normalized`` or ``raw_upload``). A record that exists but cannot
   be used never falls back to the raw upload;
 - video stream only: no audio stream at all (sites are told people heard in a clip must know
@@ -144,6 +147,8 @@ _NOT_PERMITTED = permission.NOT_PERMITTED
 _RIGHTS_REFUSED = permission.RIGHTS_REFUSED
 #: Beside the lock: a raw upload's digest, kept before any manifest exists (keyed by path, size and mtime).
 RAW_DIGEST_FILE = "raw_upload_digest.json"
+#: The upload hand-off's own record of a finished staging (``pubsub_handoff_listener.STAGING_MANIFEST_FILENAME``).
+STAGING_MANIFEST_FILE = "pipeline_staging_manifest.json"
 #: An after-encode proof that refuses a clip is recorded for that source and builder revision and tried
 #: again only after ``LIVE_STATEMENT_RECHECK_SECONDS``, as a timeout is: no full encode every pass.
 _OUTPUT_REFUSAL = re.compile(r"website_company_clip_output_[a-z_]+")
@@ -190,16 +195,17 @@ _RAW_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
 def raw_upload_source(capture_root: Path) -> dict[str, Any] | None:
     """The raw upload ``raw/manifest.json`` names (``video_uri``), a regular file in this capture's ``raw/``.
 
-    Only for a capture handed off before normalization existed: ``website_source_video``'s own test, a
-    derived folder (``DERIVED_ARTIFACT_DIRS``) and no record. A new capture waits for normalization.
+    Only while there is no normalization record, and only for a file the upload hand-off finished staging
+    (``_staged_whole``) or a capture handed off before normalization existed (a derived folder,
+    ``DERIVED_ARTIFACT_DIRS``, ``website_source_video``'s own test).
     Cheap: no read of the video. Its digest and whether it is a readable video are decided under the lock.
     """
     from .website_source_video import DERIVED_ARTIFACT_DIRS
     root = Path(capture_root)
     pipeline = root / "pipeline"
-    if pipeline.is_symlink() or not any((pipeline / name).is_dir() and not (pipeline / name).is_symlink()
-                                        for name in DERIVED_ARTIFACT_DIRS):
+    if pipeline.is_symlink():
         return None
+    legacy = any((pipeline / name).is_dir() and not (pipeline / name).is_symlink() for name in DERIVED_ARTIFACT_DIRS)
     named = _read(root / "raw" / "manifest.json").get("video_uri")
     prefix = f"scenes/{root.parent.parent.name}/captures/{root.name}/raw/"
     name = named[len(prefix):] if isinstance(named, str) and named.startswith(prefix) else ""
@@ -213,8 +219,21 @@ def raw_upload_source(capture_root: Path) -> dict[str, Any] | None:
         return None
     if not stat.S_ISREG(info.st_mode) or info.st_size <= 0 or not inside:
         return None
+    # ``pipeline/`` is there once the hand-off has kept the job's task context (before any paid grant).
+    if not legacy and not (pipeline.is_dir() and _staged_whole(root, f"raw/{name}", info.st_size)):
+        return None
     return {"path": path, "relative": f"raw/{name}", "source": "raw_upload", "kind": "raw_upload",
             "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns}
+
+
+def _staged_whole(root: Path, relative: str, size: int) -> bool:
+    """Whether the upload hand-off finished staging this file: its staging manifest, written only after every
+    download, lists it at this size. A file still downloading (written in place) is never a source."""
+    manifest = root / STAGING_MANIFEST_FILE
+    objects = _read(manifest).get("objects") if not manifest.is_symlink() else None
+    return isinstance(objects, list) and any(
+        isinstance(row, Mapping) and row.get("relative_path") == relative and row.get("size") == size
+        and not isinstance(row.get("size"), bool) for row in objects)
 
 
 def _raw_upload_digest(source: Mapping[str, Any], manifest: Mapping[str, Any], directory: Path) -> str | None:
