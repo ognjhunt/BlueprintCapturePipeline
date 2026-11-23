@@ -458,7 +458,7 @@ def background_floor(output_root: Path, review, task_context, automation=None):
     return {**_kept(review), "job_object_rule": rule}
 
 
-def job_object_review(output_root: Path, review, task_context):
+def job_object_review(output_root: Path, review, task_context, source_digest: str | None = None):
     """The review as this job consumes it, and whether the decision waits for the clean plate.
 
     The room views lose only what the job brings back as its own object: the clean plate's
@@ -518,7 +518,8 @@ def job_object_review(output_root: Path, review, task_context):
         # soft one, its most important buildable object is taken out alone and the rest stay as filmed.
         plannable = (status in ("noop", "objects_removed") and isinstance(entries, list) and reason != ""
                      and all(isinstance(row, dict) for row in entries))
-        planned = _build_plan(output_root, clean, entries, automation, task_context, reason) if plannable else None
+        planned = (_build_plan(output_root, clean, entries, automation, task_context, reason, source_digest)
+                   if plannable else None)
         if planned == "waiting":
             return review, True
         built = planned.get("built") if planned else None
@@ -558,7 +559,28 @@ def _kept_job_objects(entries: list[dict]) -> str | None:
     return SOFT_JOB_OBJECT if task_object_rigidity(manipulated[0])["rigidity"] == "deformable" else None
 
 
-def _build_plan(output_root: Path, clean: Path, entries: list[dict], automation, task_context, reason):
+def _authors_one_object(output_root: Path, task_context, source_digest: str | None) -> bool:
+    """Whether the handoff authors the job's object on its own, read as the handoff reads the route
+    (``website_scene_handoff``): a navigation job ships the room, and a task family compiles its own targets or, with no
+    runtime installed, ships the room too. Only the one-object route builds what the plan takes out of the scan; on any
+    other route, or when the route cannot be read, every object stays in the room as filmed, as before the plan."""
+    try:
+        from .task_family_scoring import canonical_task_family
+        from .task_profile_contracts import task_profile_for
+        from .website_task_semantics import effective_task_profile, load_task_semantics
+        semantics = (load_task_semantics(job_dir=output_root, task_context=task_context, source_video_digest=source_digest)
+                     if task_context.get("task_family") == "general_task" and source_digest else None)
+        profile = effective_task_profile(task_context=task_context, task_semantics=semantics, source_video_digest=source_digest)
+        if canonical_task_family(profile) is not None:
+            return False
+        resolved = task_profile_for(profile)
+        return resolved is None or resolved.requires_manipulation
+    except Exception:  # noqa: BLE001 - an unreadable route keeps every object as filmed, never a missing one
+        return False
+
+
+def _build_plan(output_root: Path, clean: Path, entries: list[dict], automation, task_context, reason,
+                source_digest: str | None = None):
     """The build plan's part of the sealed decision (``website_build_plan``), "waiting" while another run holds its
     call, or None when it cannot be asked. ``built`` and ``kept_in_scan_target_ids`` only where the analysis named several
     objects or a soft one and the plan names one the job can build: then that one alone is taken out of the scan."""
@@ -579,7 +601,8 @@ def _build_plan(output_root: Path, clean: Path, entries: list[dict], automation,
             return "waiting"
         raise
     built = (built_object(record.get("plan"), entries=entries, editor_objects=editor)
-             if reason in (SEVERAL_JOB_OBJECTS, SOFT_JOB_OBJECT) else None)
+             if reason in (SEVERAL_JOB_OBJECTS, SOFT_JOB_OBJECT) and _authors_one_object(output_root, task_context, source_digest)
+             else None)
     kept = sorted(str(row.get("target_id")) for row in entries
                   if row.get("task_effect") == "manipulated" and built and row.get("target_id") != built["target_id"])
     return {"build_plan": record, **({"built": built, "kept_in_scan_target_ids": kept} if built else {})}
@@ -1594,7 +1617,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             policy=policy, task_context=task_context, source_digest=source_digest,
             configuration=_current_configuration(task_context, source_digest, config), check=check,
             experimental=experimental, max_polls=max_polls, model=receipt["model"], geometry_only=True)
-    review, waiting = job_object_review(output_root, review, task_context)
+    review, waiting = job_object_review(output_root, review, task_context, source_digest)
     if waiting:
         # The clean plate names the job's own object; nothing is bought before it has.
         return {"status": "processing", "stage": "clean_plate_wait"}

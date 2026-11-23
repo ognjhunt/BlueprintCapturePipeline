@@ -182,6 +182,30 @@ def test_several_job_objects_take_the_plans_one_out_and_keep_the_rest_as_filmed(
     assert build_plan_notes(tmp_path) == {"plan_notes": plan_notes(record)}
 
 
+# Review of #3711: a task family (whose runtime may be missing, shipping the room) and a navigation job never author
+# one object, so the plan takes nothing out of the scan for them: every object stays in the room as filmed, as before.
+@pytest.mark.parametrize("task_family, builds", [(None, True), ("pick_place", True), ("stacking", False),
+                                                 ("goal_region_navigation", False)])
+def test_only_the_one_object_route_takes_the_plans_object_out(tmp_path, task_family, builds):
+    from blueprint_pipeline import website_atlas_pipeline as atlas
+    context = {"capture_id": "c", "context_digest": "task", **({"task_family": task_family} if task_family else {})}
+    assert atlas._authors_one_object(tmp_path, context, None) is builds
+
+
+def test_a_family_job_keeps_every_object_as_filmed_and_still_records_its_plan(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as atlas
+    monkeypatch.setattr(atlas, "_authors_one_object", lambda *_args: False)
+    review = _bought_review()
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=("objects_removed", ENTRIES))
+    _preparation(tmp_path)
+    _answering(monkeypatch, FILMED_PLAN)
+    run()
+    record = json.loads((root / "job_object_rule.json").read_text())
+    assert record["applied"] is True and record["job_objects_kept"] == "several_job_objects" and "built" not in record
+    assert record["build_plan"]["plan"]["objects"][0]["target_id"] == "tote"
+    assert not automated and len(posed) == 1
+
+
 @pytest.mark.parametrize("answer", [{"nope": []}, RuntimeError("no answer"),
                                     {"objects": FILMED_PLAN["objects"][2:]}])
 def test_no_plan_or_no_buildable_object_keeps_todays_route_for_several_objects(tmp_path, monkeypatch, answer):
