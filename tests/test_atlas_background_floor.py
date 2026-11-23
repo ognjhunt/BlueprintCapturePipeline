@@ -406,3 +406,23 @@ def test_a_nested_analysis_bound_to_another_source_is_refused(tmp_path, monkeypa
     path.write_text(json.dumps(retained))
     with pytest.raises(ValueError, match="website_not_located_analysis_binding_changed"):
         run()
+
+
+@pytest.mark.parametrize("kept, removal", [
+    ("several_job_objects", [*DRAWER, {**DRAWER[0], "target_id": "second_cabinet", "semantic_label": "cabinet"}]),
+    ("soft_job_object", [{**DRAWER[0], "rigidity": "deformable", "rigidity_reason": "it drapes"}]),
+])
+def test_several_or_soft_job_objects_ship_as_part_of_the_room_scan_and_nothing_is_built(tmp_path, monkeypatch,
+                                                                                         kept, removal):
+    """Owner direction 2026-11-23: the room keeps what the job would never build, rather than lose it."""
+    from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+    from tests.test_website_scene_handoff_navigation import _record, room_job
+    monkeypatch.delenv(CATALOG_PATH_ENV, raising=False)
+    rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": len(removal), "removed_count": 0,
+            "job_objects_kept": kept}
+    _job_, _context, result = room_job(tmp_path, monkeypatch, family="articulated_open_close",
+                                       description="Open the top drawer.", removal=removal, all_targets=True,
+                                       job_object_rule=rule)
+    assert result["status"] == "room_package_written"
+    assert "website_intake_outbox" not in result and "source_registration" not in result  # no object built
+    assert _record(result)["job_objects"] == {"count": len(removal), "in_package": "part_of_room_scan"}

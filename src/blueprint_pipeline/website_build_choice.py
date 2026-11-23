@@ -256,7 +256,8 @@ def build_menu(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], t
     own = str(rules["build"])
     why_not_object = (
         None if len(objects) == 1 and objects[0]["found_in_masks"] else
-        f"the analysis took {len(objects)} objects out of the room; a one-object build would leave the others out"
+        f"the analysis found {len(objects)} objects the job moves; Blueprint builds one object per job, so the room "
+        "keeps them as filmed"
         if len(objects) > 1 else "the analysis found no single object of the job in the video")
     if why_not_object is None and objects[0]["rigidity"] == "deformable":
         why_not_object = "the analysis read the object as soft: a rigid body cannot stand in for it"

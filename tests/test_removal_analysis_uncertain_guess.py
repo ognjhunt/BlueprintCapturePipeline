@@ -320,3 +320,15 @@ def test_a_boxed_task_object_of_another_class_is_kept_as_the_object_the_job_acts
     assert chosen["task_effect"] == "manipulated" and chosen["target_class"] == "movable_object"
     assert chosen["uncertain_guess"]["analysis_before_guess"]["target_class"] == "fixed_clutter"
     assert not analysis.validate_removal_plan(resolved)
+
+
+def test_a_liquid_or_loose_material_is_asked_as_soft_and_earlier_answers_still_bind_the_job():
+    """Owner direction 2026-11-23: a liquid moved as one mass is no rigid body. The sentence that says so is its own
+    revision (r5); analyses bought under r4 and r3 keep their exact digests and are never bought again."""
+    assert analysis.PROMPT_REVISION == "removal_analysis.r5"
+    assert analysis.LOOSE_MATERIAL_INSTRUCTION in analysis.build_removal_plan_prompt()
+    digests = {revision: digest for digest, revision in analysis.PROMPT_REVISIONS.items()}
+    assert digests[analysis.ESTIMATE_PROMPT_REVISION] == "fde4e2d79bf4de3375c82e7e17fe6969615785adab4e3a1303b7030a0ac36255"
+    assert digests[analysis.RIGIDITY_PROMPT_REVISION] == "4f32ead6cc59465919c322830691a4c36a81266835768df4c9d55ffeebe32162"
+    for revision in (analysis.PROMPT_REVISION, analysis.ESTIMATE_PROMPT_REVISION, analysis.RIGIDITY_PROMPT_REVISION):
+        assert analysis.binds_current_job({"status": "blocked", "blockers": ["x"], "prompt_revision": revision})

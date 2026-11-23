@@ -1152,3 +1152,38 @@ def test_a_new_refined_splat_selection_holds_its_repose_per_view_and_a_retained_
         (root / GEOMETRY_INPUTS_FILE).write_text(json.dumps({"binding": binding}))
         value = pipeline._splat_input_options(root, **options, repose_view_cost_usd=.02)
         assert value.get("repose_view_cost_usd") == expected
+
+
+# Owner direction 2026-11-23: the room keeps the job's objects as filmed when the handoff would build none of them.
+@pytest.mark.parametrize("entries, kept", [
+    ([{"target_id": "pan-1", "task_effect": "manipulated"}, {"target_id": "pan-2", "task_effect": "manipulated"}],
+     "several_job_objects"),
+    ([{"target_id": "towel", "task_effect": "manipulated", "rigidity": "deformable", "rigidity_reason": "drapes"}],
+     "soft_job_object"),
+    ([{"target_id": "batter", "task_effect": "manipulated", "rigidity": "deformable", "rigidity_reason": "pours"},
+      {"target_id": "bowl", "task_effect": "static_contact"}], "soft_job_object"),
+    (TRAY, None),  # one object the handoff builds: the planner's removal applies, as before
+    ([{"target_id": "tray", "task_effect": "manipulated", "rigidity": "unknown"}], None),
+])
+def test_several_or_soft_job_objects_stay_in_the_room_as_filmed(tmp_path, monkeypatch, entries, kept):
+    review = _bought_review()
+    root, run, automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=("objects_removed", entries))
+    _preparation(tmp_path)
+    run()
+    record = json.loads((root / "job_object_rule.json").read_text())
+    assert record["applied"] is (kept is not None) and record.get("job_objects_kept") == kept
+    if kept is None:
+        assert len(automated) == 1 and not posed  # the editor takes the object out
+    else:
+        assert not automated and len(posed) == 1
+        assert posed[0]["review"]["job_object_rule"]["job_objects_kept"] == kept
+        assert all(row["disposition"] == "keep" for row in posed[0]["review"]["automation"]["objects"])
+
+
+def test_a_job_with_no_object_of_its_own_records_the_rule_as_before(tmp_path, monkeypatch):
+    review = _bought_review()
+    root, run, _automated, posed = _job(tmp_path, monkeypatch, review, clean_plate=("noop", []))
+    _preparation(tmp_path)
+    run()
+    assert "job_objects_kept" not in json.loads((root / "job_object_rule.json").read_text())
+    assert "job_objects_kept" not in posed[0]["review"]["job_object_rule"]

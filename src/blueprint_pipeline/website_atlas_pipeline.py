@@ -464,7 +464,10 @@ def job_object_review(output_root: Path, review, task_context):
     The room views lose only what the job brings back as its own object: the clean plate's
     ``manipulated`` entries, which the handoff lifts, registers and authors (owner, 2026-11-16).
     When the finished clean plate names none, every object the planner asked to remove is kept and
-    the planner's removal instruction is dropped. Nobody in view: the scene as filmed, its review
+    the planner's removal instruction is dropped. So too when it names several, or one the analysis read as soft
+    (a liquid or loose material included, ``task_profile_contracts.task_object_rigidity``): the handoff builds one
+    rigid or opening object per job, so erasing these would only lose them (owner direction 2026-11-23). The rule
+    then carries ``job_objects_kept`` and the handoff ships the room with them as part of its scan. Nobody in view: the scene as filmed, its review
     carrying ``job_object_rule``. People in the edited views: the editor erases them as today, and
     the review carries ``NOT_APPLIED_FIELD``. People only outside those views: today's route, whose
     inputs may hold those frames. A clean plate that ended blocked or removed an object: today's route.
@@ -509,18 +512,37 @@ def job_object_review(output_root: Path, review, task_context):
                 if _preparation_running(output_root.parent.parent):
                     return review, True
                 status = "absent"
-        applied = (status in ("noop", "objects_removed") and isinstance(entries, list)
-                   and not any(not isinstance(row, dict) or row.get("task_effect") == "manipulated" for row in entries)
-                   and (not review.get("transient_frame_ids") or takes_reviewed_background(kept)))
+        reason = (_kept_job_objects(entries) if status in ("noop", "objects_removed") and isinstance(entries, list)
+                  and all(isinstance(row, dict) for row in entries) else None)
+        applied = reason is not None and (not review.get("transient_frame_ids") or takes_reviewed_background(kept))
         decided = {"schema_version": "atlas_job_object_rule.v1", "applied": applied, "clean_plate_status": status,
-                   "planner_remove_count": asked}
+                   "planner_remove_count": asked, **({"job_objects_kept": reason} if applied and reason else {})}
         decided["digest"] = canonical_digest(decided, digest_field="digest")
         write_json(path, decided)
     if decided.get("applied") is not True:
         return review, False
-    rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": decided["planner_remove_count"], "removed_count": 0}
+    rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": decided["planner_remove_count"], "removed_count": 0,
+            **({"job_objects_kept": decided["job_objects_kept"]} if decided.get("job_objects_kept") else {})}
     field = NOT_APPLIED_FIELD if review.get("transient_frame_ids") else "job_object_rule"
     return {**kept, field: rule}, False
+
+
+#: Why the room keeps the job's own objects as filmed (``job_object_review``): none named, several, or one soft.
+SEVERAL_JOB_OBJECTS, SOFT_JOB_OBJECT = "several_job_objects", "soft_job_object"
+
+
+def _kept_job_objects(entries: list[dict]) -> str | None:
+    """Why the planner's removals are not applied for these clean-plate entries: "" (no job object, as before),
+    ``SEVERAL_JOB_OBJECTS`` or ``SOFT_JOB_OBJECT``; None when they name one object the handoff can build. A family
+    task whose own runtime is installed would build its objects itself; no host installs one (no
+    ``BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH``), so every such job ships the room today and keeps them too."""
+    from .task_profile_contracts import task_object_rigidity
+    manipulated = [row for row in entries if row.get("task_effect") == "manipulated"]
+    if not manipulated:
+        return ""
+    if len(manipulated) > 1:
+        return SEVERAL_JOB_OBJECTS
+    return SOFT_JOB_OBJECT if task_object_rigidity(manipulated[0])["rigidity"] == "deformable" else None
 
 
 def _job_edit_scope(output_root: Path, requested: str | None, *, default="required_and_additional") -> str:
