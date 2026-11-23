@@ -112,11 +112,20 @@ For captured manipulated subjects, the existing replacement route is unchanged:
 | `website_atlas_job_<state>` | The job ended `needs_input`, `failed` or `withdrawn`. |
 | `website_atlas_background_unavailable` | Object removal or its review did not complete. |
 | `website_atlas_background_mesh_unavailable` | No reviewed mesh price, so there is no collider. |
-| `website_atlas_source_pose_unavailable` | The original views were not posed (see the job's reason). |
+| `website_atlas_source_pose_unavailable` | The original views were not posed (see the job's reason) and a privacy, rights or money stop ended that pose, or the scene is preserved as filmed. |
 | `website_atlas_scale_estimate_unavailable` | No named scale reference gave an estimate. |
 
-Jobs that finished before this change have no source pose and report
-`website_atlas_source_pose_unavailable`.
+Jobs that finished before the source pose existed have no source pose and
+report `website_atlas_source_pose_unavailable`.
+
+Since 2026-11-23 a built object-removed background whose source pose did not
+complete for a recorded reason that is no wall (World Labs failing the pose, for
+one) does not wait: it is handed on `ready`, levelled in its own units, with
+`meters_per_unit` None, no source geometry and the flag `scale_not_measured`
+(`atlas_unscaled_room`). The handoff ships it as the room package, the job's
+object not prepared; the package's sealed record and plan hold relative units
+and no metres value, and its README says "Sizes in this room are relative; its scale was not
+measured."
 
 Nothing here measures anything. Scale comes from named reference assumptions,
 `metric_measurement_proven` stays false, and qualification still needs the
