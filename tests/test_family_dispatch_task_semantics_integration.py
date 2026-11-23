@@ -111,13 +111,13 @@ def test_source_bound_general_task_dispatches_unconfirmed_family_under_retained_
     assert reads == ['task-context', 'scene-sponsorship']
     assert retains_task_family_preparation(result, context)
     # The family route keeps its room floor too, bound to the intent the website made for it
-    # (``website_company_simulation.object_path_stopped``): still moving, so nothing ships yet.
+    # (``website_company_simulation.object_path_stopped``): still being built, so the room ships flagged now.
     from blueprint_pipeline import website_company_simulation as sim
     from blueprint_pipeline.website_scene_handoff import ROOM_FLOOR, ROOM_FLOOR_FLAG
     assert [(call['output_root'].name, call['flags']) for call in floors] == [(ROOM_FLOOR, [ROOM_FLOOR_FLAG])]
     assert result['room_floor']['inputs_digest'] == 'sha256:' + '9' * 64
     monkeypatch.setattr(sim, 'INTENT_ROOT', queue)
-    assert sim.object_path_stopped(tmp_path, result, queue_root=tmp_path / 'team', now=args['now']) is None
+    assert sim.object_path_stopped(tmp_path, result, queue_root=tmp_path / 'team', now=args['now']) == sim.OBJECT_IN_PROGRESS
     intent = json.loads((queue / accepted['intent_id'] / 'intent.json').read_text())
     assert intent['request']['task']['strategy'] == 'button_press'
     assert intent['request']['consent']['task_confirmed'] is False

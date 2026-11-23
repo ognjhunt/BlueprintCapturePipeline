@@ -850,3 +850,108 @@ def test_stopped_settlement_fails_closed_when_consumption_appears_later(tmp_path
     _write(standing / "consumed" / "scene-configuration-profile" / (fx["launch_id"] + ".json"), {})
     with pytest.raises(ValueError, match="terminal_settlement_preallocation_evidence_invalid"):
         _reserve(fx["root"], fx["intent"], "source-a2", 1.0, now=300)
+
+
+def _offload(run, *, zero=None):
+    """Move ``run`` off the host the way the evidence offload does: a sealed pointer keeps the small records."""
+    import base64
+    import shutil
+    if zero is not None:
+        _write(run / "post_teardown_provider_zero_receipt.json", zero)
+    members, kept = [], {}
+    for path in sorted(p for p in run.rglob("*") if p.is_file()):
+        raw = path.read_bytes()
+        relative = path.relative_to(run).as_posix()
+        members.append({"relative_path": relative, "size_bytes": len(raw),
+                        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()})
+        if relative in ("launch_receipt.json", "result.json", "post_teardown_provider_zero_receipt.json"):
+            kept[relative] = base64.b64encode(raw).decode("ascii")
+    _write(run.parent / (run.name + ".offloaded.v1.json"), _seal({
+        "schema_version": "control_plane_evidence_offload_pointer.v1", "status": "offloaded",
+        "directory": run.name, "members": members, "retained_receipt_bytes": kept}, "pointer_digest"))
+    shutil.rmtree(run)
+
+
+def _zero_receipt(run, teardown_path, *, allocated=False, status=None):
+    from blueprint_pipeline.task_evaluation_launch_reconciler import canonical_digest as zero_digest
+    launch = json.loads((run / "launch_receipt.json").read_text())
+    teardown = json.loads(teardown_path.read_text())
+    ref = launch["terminal_evidence"]["artifacts"]["teardown_manifest_path"]
+    zero = {"schema_version": "task_evaluation_post_teardown_provider_zero.v1",
+            "status": "provider_zero_confirmed", "launch_id": launch["launch_id"],
+            **{field: launch.get(field) for field in ("run_id", "request_digest", "receipt_digest",
+                                                      "launch_profile_digest")},
+            "teardown_manifest": {"path": ref["path"], "digest": ref["digest"],
+                                  "schema_version": teardown["schema_version"],
+                                  "status": status or teardown["status"], "continuing_spend_from_this_run": False,
+                                  "provider_resource_allocated": allocated},
+            "provider_zero_verified": True, "continuing_spend_from_this_run": False, "allocator_invoked": False,
+            "provider_mutation_performed": False, "automatic_retry_performed": False, "blockers": []}
+    zero["provider_zero_receipt_digest"] = zero_digest(zero, digest_field="provider_zero_receipt_digest")
+    return zero
+
+
+@pytest.mark.parametrize("pretraining_refused", [False, True])
+def test_offloaded_run_settles_its_hold_from_the_records_its_pointer_kept(tmp_path, monkeypatch, pretraining_refused):
+    fx, receipt, result_path, teardown_path = _website_preallocation_failure(tmp_path, monkeypatch)
+    if pretraining_refused:
+        result = json.loads(result_path.read_text())
+        result["blockers"] = ["vast_adapter_failed:ValueError:artifixer_pretraining_first_stage_invalid"]
+        _write(result_path, _seal(result, "result_digest"))
+        launch_path = Path(receipt["execution_terminal"]["launch_receipt"]["path"])
+        launch = json.loads(launch_path.read_text())
+        launch["terminal_evidence"]["result"] = {**settlement._file(result_path), "exists": True}
+        _write(launch_path, launch)
+        (fx["directory"] / "cancelled-unstarted-controls" / (receipt["attempt_id"] + ".json")).unlink()
+        _settle(fx, source_factory=fx["factory"])
+        attempt = json.loads((fx["directory"] / "attempts" / (receipt["attempt_id"] + ".json")).read_text())
+        receipt = validated_cancellation(fx["directory"], attempt)
+    on_disk = settlement.budget_retained_hold(receipt)
+    assert on_disk["retained_spend_usd"] == (0.0 if pretraining_refused else 5.76)
+    run = result_path.parent
+    _offload(run, zero=_zero_receipt(run, teardown_path))
+    assert not run.exists()
+    assert settlement.budget_retained_hold(receipt) == on_disk
+
+
+@pytest.mark.parametrize("change", ["no_zero_receipt", "allocated", "completed", "other_manifest", "other_launch",
+                                    "digest", "result_not_kept"])
+def test_offloaded_run_without_its_proof_keeps_the_full_hold(tmp_path, monkeypatch, change):
+    _, receipt, result_path, teardown_path = _website_preallocation_failure(tmp_path, monkeypatch)
+    run = result_path.parent
+    zero = _zero_receipt(run, teardown_path, allocated=change == "allocated",
+                         status="completed" if change == "completed" else None)
+    if change == "other_manifest":
+        zero["teardown_manifest"]["digest"] = "sha256:" + "0" * 64
+    if change == "other_launch":
+        zero["launch_id"] = "another-launch"
+    if change in ("other_manifest", "other_launch"):
+        from blueprint_pipeline.task_evaluation_launch_reconciler import canonical_digest as zero_digest
+        zero["provider_zero_receipt_digest"] = zero_digest(zero, digest_field="provider_zero_receipt_digest")
+    if change == "digest":
+        zero["observed_at"] = "changed after sealing"
+    if change == "result_not_kept":
+        result_path.rename(run / "kept-elsewhere.json")
+    _offload(run, zero=None if change == "no_zero_receipt" else zero)
+    assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == 16.76
+
+
+def test_offloaded_run_that_rented_keeps_its_hold_without_a_proven_bill(tmp_path, monkeypatch):
+    # The final Vast bill needs the manifest's instance ids and launch_started.json; the offload keeps neither.
+    fx, receipt, result_path, teardown_path = _website_preallocation_failure(tmp_path, monkeypatch, allocated=True)
+    teardown = json.loads(teardown_path.read_text())
+    teardown.update(status="completed", vast_instance_ids=[7], runner_gpu_teardown_completed=True)
+    _write(teardown_path, teardown)
+    launch_path = Path(receipt["execution_terminal"]["launch_receipt"]["path"])
+    launch = json.loads(launch_path.read_text())
+    launch["terminal_evidence"]["artifacts"]["teardown_manifest_path"] = {**settlement._file(teardown_path),
+                                                                         "exists": True}
+    _write(launch_path, launch)
+    (fx["directory"] / "cancelled-unstarted-controls" / (receipt["attempt_id"] + ".json")).unlink()
+    _settle(fx, source_factory=fx["factory"])
+    attempt = json.loads((fx["directory"] / "attempts" / (receipt["attempt_id"] + ".json")).read_text())
+    receipt = validated_cancellation(fx["directory"], attempt)
+    assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == 16.76
+    run = result_path.parent
+    _offload(run, zero=_zero_receipt(run, teardown_path, allocated=True))
+    assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == 16.76

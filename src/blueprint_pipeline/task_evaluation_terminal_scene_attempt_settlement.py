@@ -315,14 +315,37 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
             return {"basis": "launch_refused_before_provider", "retained_spend_usd": 0.0,
                     "counts_as_attempt": hold["counts_as_attempt"]}
 
+        run_root = Path(launch_ref["path"]).parent
+
         def terminal_artifact(ref):
-            if ref.get("exists") is not True or _file(Path(ref["path"]))["digest"] != ref["digest"]:
+            if ref.get("exists") is not True:
                 raise ValueError("preallocation_artifact_changed")
-            return _read(Path(ref["path"]))
+            try:
+                if _file(Path(ref["path"]))["digest"] != ref["digest"]:
+                    raise ValueError("preallocation_artifact_changed")
+                return _read(Path(ref["path"]))
+            except (OSError, ValueError):
+                # An offloaded run keeps this file's exact bytes in its pointer.
+                raw = _offloaded_member(run_root, Path(ref["path"]))
+                if raw is None or "sha256:" + hashlib.sha256(raw).hexdigest() != ref["digest"]:
+                    raise
+                value = json.loads(raw)
+                if not isinstance(value, dict):
+                    raise
+                return value
 
         terminal = launch["terminal_evidence"]
         result = terminal_artifact(terminal["result"])
-        teardown = terminal_artifact(terminal["artifacts"]["teardown_manifest_path"])
+        teardown_ref = terminal["artifacts"]["teardown_manifest_path"]
+        offloaded_unallocated = False
+        try:
+            teardown = terminal_artifact(teardown_ref)
+        except (OSError, ValueError):
+            # The offload does not keep the manifest; only its closure receipt can stand for it.
+            teardown = {}
+            offloaded_unallocated = _offloaded_unallocated_teardown(run_root, launch, teardown_ref)
+            if not offloaded_unallocated:
+                return hold
         from .task_evaluation_unentered_authoring_budget import (
             artisan_proven_authoring_spend, authoring_never_entered, pretraining_never_entered,
             prestage_before_first_stage,
@@ -372,7 +395,7 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 or result.get("continuing_spend_from_this_run") is not False
                 # A no-allocation seal, or an adapter that found no offer and never
                 # reached a create call (2026-11-10): no instance ever existed.
-                or not unallocated_teardown(teardown, adapter_result(result))):
+                or not (offloaded_unallocated or unallocated_teardown(teardown, adapter_result(result)))):
             return hold
         if result.get("provider_runtime_output_zip_path") is not None:
             if prestage_before_first_stage(result, request):
@@ -410,6 +433,56 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 "counts_as_attempt": hold["counts_as_attempt"]}
     except (OSError, ValueError, KeyError, TypeError):
         return hold
+
+
+def _offloaded_member(run_root: Path, path: Path) -> bytes | None:
+    """The exact bytes an offloaded run's sealed pointer kept for ``path``; None while the run is on disk."""
+    from .scene_run_cold_pointer import offload_pointer, retained_member
+    if offload_pointer(run_root) is None or not path.is_relative_to(run_root):
+        return None
+    return retained_member(run_root, path.relative_to(run_root).as_posix())
+
+
+def _offloaded_unallocated_teardown(run_root: Path, launch: Mapping[str, Any], ref: Mapping[str, Any]) -> bool:
+    """Whether an offloaded run's kept closure receipt proves its teardown manifest records no allocation.
+
+    The offload keeps ``post_teardown_provider_zero_receipt.json``, not the manifest. The reconciler
+    writes that receipt only after reading the manifest bound by digest to this launch, and marks it
+    ``provider_resource_allocated`` false only for a ``not_required_*`` manifest with no instance and
+    no teardown action (``task_evaluation_launch_reconciler``). It counts here only when it is intact,
+    bound to this launch receipt, names the same manifest path and digest, and carries one of the
+    statuses ``unallocated_teardown`` accepts from the manifest itself.
+    """
+    from .task_evaluation_launch_reconciler import (
+        POST_TEARDOWN_PROVIDER_ZERO_FILENAME, POST_TEARDOWN_PROVIDER_ZERO_SCHEMA_VERSION, canonical_digest as digest,
+    )
+    raw = _offloaded_member(run_root, run_root / POST_TEARDOWN_PROVIDER_ZERO_FILENAME)
+    try:
+        zero = json.loads(raw) if raw is not None else None
+    except ValueError:
+        return False
+    if not isinstance(zero, dict):
+        return False
+    manifest = zero.get("teardown_manifest")
+    return bool(
+        zero.get("schema_version") == POST_TEARDOWN_PROVIDER_ZERO_SCHEMA_VERSION
+        and zero.get("status") == "provider_zero_confirmed"
+        and zero.get("provider_zero_verified") is True
+        and zero.get("continuing_spend_from_this_run") is False
+        and zero.get("allocator_invoked") is False
+        and zero.get("provider_mutation_performed") is False
+        and zero.get("automatic_retry_performed") is False
+        and zero.get("blockers") == []
+        and zero.get("provider_zero_receipt_digest") == digest(zero, digest_field="provider_zero_receipt_digest")
+        and zero.get("launch_id") and zero.get("launch_id") == launch.get("launch_id")
+        and all(zero.get(field) == launch.get(field)
+                for field in ("run_id", "request_digest", "receipt_digest", "launch_profile_digest"))
+        and isinstance(manifest, dict)
+        and manifest.get("path") == ref.get("path") and manifest.get("digest") == ref.get("digest")
+        and manifest.get("schema_version") == "vast_teardown_manifest.v1"
+        and manifest.get("status") in UNALLOCATED_TEARDOWN_STATUSES
+        and manifest.get("provider_resource_allocated") is False
+        and manifest.get("continuing_spend_from_this_run") is False)
 
 
 def _billed_compute_hold(hold: Mapping[str, Any], kept: Decimal, billed: Mapping[str, Any],
