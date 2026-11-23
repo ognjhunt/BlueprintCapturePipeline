@@ -220,6 +220,38 @@ Intended design: every upload is written to one record before it is sent, and st
   - The lamp test job stays parked.
 - **Door gap found:** `selected-handoff` derives its operation key from the request body, so repeating `--atlas-status` after a deploy returns the earlier result (here, the 03:09Z refusal) until a new `--operation-key` is passed.
 
+## Deploy on 2026-11-23 in the D-08 window (`8feb4e9`)
+
+- **On the owner's word:** the owner asked for the window deploy on 2026-11-23 ("deploy the Pipeline"). Nothing had deployed since `cbff06b` on 11-20.
+- **Before, 14:56Z (door status and requests):**
+  - active release `cbff06b`, `commit_proven` true, no blockers;
+  - no deploy unit, no activation hold, no paid-launch lock held, and the door queue empty (0 parked, pending or processing);
+  - failed units 0;
+  - November counted spend $302.03 of the $400 limit, admission allowed. The guard's own forecast says the account reaches the limit on 11-30.
+- **Which commit:** main's head `8feb4e9` (#3700). Every check on it was green or skipped at 07:00Z, and the door's attestation gate accepted it.
+- **15:00:09Z, `8feb4e9`:** request `20261123T150009Z-deploy-556fb13c`; deployed at 15:11:35Z (receipt `iteration_8feb4e96112b_door.json`).
+- **What the release carries since `cbff06b`:**
+  - #3685: companies get a job's sound-free video minutes after the upload hand-off, not after paid preparation;
+  - #3686: a job's room ships to companies, flagged, while its object is still being built;
+  - #3689: a blocked launch whose run folder was moved off the host settles its hold from the records that were kept;
+  - #3690 and #3691: a fit or facing stop found after the room was built, and a preparation blocker that is no wall, ship the room flagged instead of asking the site to film again or waiting for the window's last two hours;
+  - #3692: a provider key or billing refusal waits as an outage, and parked room builds retry by themselves;
+  - #3684 and #3695: face blur follows one rule (unblurred only for a Privacy version on or after 2026-11-17.1), so a new Privacy version needs no Pipeline change;
+  - #3698: recording statement `2026-11-23.v6` (the job's city and state are shared) is accepted. The website began recording it after this deploy (WebApp #1410);
+  - #3693: a missing state backup warns, unit failures post once per cause, and disk-usage findings stop posting;
+  - #3694: the episode-compilation lane no longer runs on the host;
+  - #3696: two month pages above the account limit, the screening site limit and the Pipeline's own sharing list are removed;
+  - #3699 and #3700: the door commands that confirmed success thresholds and extended a job's work window are removed;
+  - #3687 and #3688: seven modules nothing runs and one retired console script are removed;
+  - #3679, #3681, #3682, #3683 and #3697: tests, the repeated selected-handoff reading, doctrine, the simulation README's wording and test routing.
+- **Door code not live yet:** the door changes in #3693, #3699 and #3700 reach the host only with a root `door-upgrade`, which has not been requested. Until then the installed door still accepts `confirm-owner-success-contract` and `extend-scene-execution-window`, and either would fail, because the release no longer has the code they call.
+- **After, 15:11:58Z:**
+  - active release `8feb4e9`, `commit_proven` true, no blockers;
+  - no deploy unit, no hold, door queue empty;
+  - receipt: no paused lane disarmed, failed or held;
+  - failed units 1: `blueprint-gpu-spend-guard.service`. Its journal shows the run ending with status 2 after `runpod pod query failed`, at 15:08Z and again at 15:11Z. That is the retired RunPod key, not this release: the guard has been blocked on `runpod_inventory_query_failed` since 11-13, and the owner deletes the key on the host;
+  - counted spend $302.04, admission allowed, 0 live instances.
+
 ## Metering and retry rollout on 2026-11-20
 
 - **WebApp.** The site's journey changes ([WebApp #1330](https://github.com/ognjhunt/Blueprint-WebApp/pull/1330)) and named overhead with Gemini settlements ([WebApp #1331](https://github.com/ognjhunt/Blueprint-WebApp/pull/1331)) are live: `version.json` read `285edc01d172942e92f45beb496669c5bc8e3ca2` at about 02:46Z.
