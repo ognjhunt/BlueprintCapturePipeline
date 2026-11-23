@@ -178,3 +178,33 @@ def test_the_unscaled_room_follows_the_live_rights_like_any_package(tmp_path, mo
     result = world.publish()
     assert result["status"] in ({"refused"} if rights == "refused" else {"not_permitted"}), result
     assert world.delivered == []
+
+
+#: Typed walls of the pose controller (``website_atlas_pose``) whose codes name no wall by their words, and one code
+#: no list knows. A pose result stored before the wall's type was recorded carries the code alone.
+UNRECOGNISED_STOPS = ["website_atlas_provider_retention_admission_mismatch",
+                      "website_atlas_provider_retention_decision_required",
+                      "website_atlas_pose_admission_expired", "website_atlas_pose_code_never_seen_before"]
+
+
+@pytest.mark.parametrize("recorded", [{}, {"wall": "privacy_rights"}], ids=["stored_before", "stored_now"])
+@pytest.mark.parametrize("code", UNRECOGNISED_STOPS)
+def test_only_a_known_ordinary_pose_failure_ships_unscaled(tmp_path, monkeypatch, code, recorded):
+    from blueprint_pipeline.atlas_unscaled_room import ships_unscaled
+    from tests.test_website_scene_handoff_navigation import ATLAS, room_job
+
+    pose = {"status": "needs_input", "reason": code, **recorded}
+    assert ships_unscaled(pose) is False
+    assert ships_unscaled({"status": "needs_input", "reason": POSE_FAILED}) is True
+    job_dir = unscaled_job(tmp_path / "atlas-job")
+    result = json.loads((job_dir / "result.json").read_text())
+    result.pop("digest")
+    result["source_pose"] = pose
+    result = write(job_dir / "result.json", digest(result))
+    write(job_dir / "preview_job.json", {"state": "ready", "result_digest": result["digest"]})
+    atlas = source.atlas_scene_source(capture_root=tmp_path / "atlas-job", output_root=tmp_path / "prep")
+    assert atlas == {"status": "needs_input", "reason": "website_atlas_source_pose_unavailable", "job_reason": code}
+    job, _context, _plain = room_job(tmp_path, monkeypatch, family="wiping", description="Wipe the table.")
+    monkeypatch.setattr(ATLAS, lambda **_: atlas)
+    # Through the handoff it is no shipped room: the job waits, as for any pose stopped by a wall.
+    assert job.rerun()["status"] == "needs_input"

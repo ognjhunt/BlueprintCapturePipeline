@@ -13,8 +13,8 @@ nothing is lifted onto it, so the job's object is not built. The room package (`
 write_room_package``) records relative units and writes no metres value; the company package's README says
 ``SCALE_NOT_MEASURED_NOTE``.
 
-Walls stay: a pose stopped by privacy, rights or money hands on nothing (``ships_unscaled``), the spending cap
-answers as before, and a withdrawal, a takedown or revoked rights stop the company package as any other.
+Walls stay: only a pose attempt the provider itself failed hands on its room (``ships_unscaled``); a pose stopped
+by privacy, rights or money, or for any reason not on that list, hands on nothing; the spending cap answers as before; and a withdrawal, a takedown or revoked rights stop the company package as any other.
 Standard library only; no I/O.
 """
 from __future__ import annotations
@@ -35,15 +35,14 @@ RELATIVE_FRAME = {"declared_meters_per_unit": None, "units": "relative", "units_
 
 
 def ships_unscaled(source_pose: Mapping[str, Any]) -> bool:
-    """Whether a background whose source pose did not complete ships unscaled: never after a wall.
+    """Whether a background whose source pose did not complete ships unscaled: only after an ordinary pose failure.
 
-    A wall is recorded on the pose by its type (``wall``, ``website_atlas_pipeline._source_pose``); a pose stored
-    before that is read by its code's words, as the retry policy reads them (``job_retry_policy``). Kept free of
-    the retry module itself: the company builder imports this module and must not reach the GPU lane."""
-    from .job_retry_policy import hard_stop_kind, owner_closed_refusal
-    reason = str(source_pose.get("reason") or "")
-    return (bool(reason) and not source_pose.get("wall") and hard_stop_kind(reason) is None
-            and not owner_closed_refusal(reason))
+    Fails closed: the stored reason must be on ``website_atlas_pose.ORDINARY_POSE_FAILURES``, the provider failing
+    to pose the views, and no wall may be recorded on the pose (``wall``, ``website_atlas_pipeline._source_pose``).
+    Any other code, a pose stored before walls were recorded included, ships nothing, whatever its words say.
+    Imported when called: the company builder imports this module and must not reach the provider client."""
+    from .website_atlas_pose import ORDINARY_POSE_FAILURES
+    return source_pose.get("reason") in ORDINARY_POSE_FAILURES and not source_pose.get("wall")
 
 
 def is_unscaled(base_scene: Mapping[str, Any]) -> bool:

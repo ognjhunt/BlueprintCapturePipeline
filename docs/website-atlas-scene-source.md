@@ -112,15 +112,15 @@ For captured manipulated subjects, the existing replacement route is unchanged:
 | `website_atlas_job_<state>` | The job ended `needs_input`, `failed` or `withdrawn`. |
 | `website_atlas_background_unavailable` | Object removal or its review did not complete. |
 | `website_atlas_background_mesh_unavailable` | No reviewed mesh price, so there is no collider. |
-| `website_atlas_source_pose_unavailable` | The original views were not posed (see the job's reason) and a privacy, rights or money stop ended that pose, or the scene is preserved as filmed. |
+| `website_atlas_source_pose_unavailable` | The original views were not posed (see the job's reason) for any reason other than World Labs failing the pose attempt (a privacy, rights or money stop, or any other code), or the scene is preserved as filmed. |
 | `website_atlas_scale_estimate_unavailable` | No named scale reference gave an estimate. |
 
 Jobs that finished before the source pose existed have no source pose and
 report `website_atlas_source_pose_unavailable`.
 
 Since 2026-11-23 a built object-removed background whose source pose did not
-complete for a recorded reason that is no wall (World Labs failing the pose, for
-one) does not wait: it is handed on `ready`, levelled in its own units, with
+complete because World Labs failed the pose attempt (the one code on
+`website_atlas_pose.ORDINARY_POSE_FAILURES`, with no wall recorded) does not wait: it is handed on `ready`, levelled in its own units, with
 `meters_per_unit` None, no source geometry and the flag `scale_not_measured`
 (`atlas_unscaled_room`). The handoff ships it as the room package, the job's
 object not prepared; the package's sealed record and plan hold relative units
