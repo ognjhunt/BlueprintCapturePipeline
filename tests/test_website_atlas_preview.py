@@ -1055,6 +1055,34 @@ def test_a_tick_starts_no_step_its_unit_limit_would_cut_and_steps_the_least_rece
     assert stepped[2:] == ["a", "c"]  # the job the last tick left goes first
 
 
+def test_the_publication_passes_run_before_the_tick_count_against_its_step_budget(monkeypatch, tmp_path):
+    """The clip and package passes now run first in the unit; the step budget is counted from the unit's start,
+    so a long first run leaves the Atlas steps less time, and the unit still ends inside its limit."""
+    path = tmp_path / "bucket/scenes/site-reqa/captures/walkthrough-reqa/pipeline/atlas" / preview.JOB_FILE
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    stepped = []
+    monkeypatch.setattr(preview, "advance_job", lambda path, *, now: stepped.append(path) or "processing")
+    monkeypatch.setattr(preview, "_read", lambda path: json.loads(path.read_text()))
+    clock = lambda: 5000.0  # noqa: E731
+    assert preview.tick(tmp_path, now=lambda: 0, clock=clock,
+                        budget_started=5000.0 - preview.STEP_START_BUDGET_SECONDS) == {"deferred": 1}
+    assert stepped == []
+    assert preview.tick(tmp_path, now=lambda: 0, clock=clock, budget_started=4000.0) == {"processing": 1}
+
+    from blueprint_pipeline import owned_capture_atlas_worker
+    seen, order = {}, []
+    monkeypatch.setattr(preview, "trigger_stop_reason", lambda: lambda: None)
+    monkeypatch.setattr(preview, "company_clip_tick", lambda root, stop: order.append("clip") or {})
+    monkeypatch.setattr(preview, "company_simulation_tick", lambda root, stop: order.append("simulation") or {})
+    monkeypatch.setattr(preview, "scene_preview_tick", lambda root: order.append("scene_preview") or {})
+    monkeypatch.setattr(owned_capture_atlas_worker, "tick_from_environment", lambda: order.append("owned") or {})
+    monkeypatch.setattr(preview, "tick", lambda root, **kw: seen.update(kw) or order.append("atlas") or {})
+    assert preview.main(["tick", "--storage-root", str(tmp_path)]) == 0
+    assert order == ["clip", "simulation", "atlas", "owned", "scene_preview", "clip", "simulation"]
+    assert isinstance(seen["budget_started"], float)
+
+
 def test_a_continuing_tick_stops_at_the_step_budget_and_keeps_the_jobs_it_left(monkeypatch, tmp_path):
     jobs = {}
     for name in ("a", "b", "c"):

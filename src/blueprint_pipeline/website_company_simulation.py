@@ -39,7 +39,8 @@ context grants consent, and ``sharing_statement.sharing_basis`` gives a basis. T
 shared with the clip (its ``statement_check.json``), so a capture that may not be shared is read once a window,
 not once per package.
 
-It runs in the Atlas preview timer's pass, after the clip (``website_atlas_preview.company_simulation_tick``):
+It runs in the Atlas preview timer's pass, after the clip, both before any job's paid Atlas step and again after
+them (``website_atlas_preview.company_simulation_tick``), so a ready room waits behind no Atlas work:
 local files and ``pxr`` only, no model, provider or paid resource. Nothing here raises out of the pass or holds a
 job: every outcome is a returned status, retried on the next pass.
 """
@@ -131,7 +132,8 @@ BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: well under this; one that does not is recorded and tried again after the live-statement window.
 BUILD_DEADLINE_SECONDS = 900
 #: The pass starts no capture after this. It runs after the company clip's pass (up to 900 s, plus one encode of
-#: at most 900 s) in the same unit, whose start timeout is 2 h: 600 s plus one build keeps both well inside it.
+#: at most 900 s) in the same unit, whose start timeout is 2 h, before the Atlas steps and again after them: 600 s
+#: plus one build keeps each run inside it (``website_atlas_preview.STEP_START_BUDGET_SECONDS``).
 TICK_BUDGET_SECONDS = 600
 QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
 DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/team-scene-packets"
