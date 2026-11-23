@@ -26,10 +26,6 @@ for good once no process, mount or recent write touches it.
 ``provider_output_promotion resume`` for one streamed policy-canary attempt,
 as the service user: promotion, the gated cleanup, the absence proof and, with
 ``ingest``, the needed members' ingestion. It runs no new code.
-``confirm-owner-success-contract`` (``operate``) previews, or with ``apply`` and the
-preview's digest records, one owner confirmation that a published website job's
-success thresholds, exactly as built, are the owner's, through the active
-release. It changes no threshold, starts no compute and moves no money.
 ``retire-parked-delivery`` (``operate``) plans, or with ``apply`` performs, the
 active release's owner-approved retirement of one parked website preparation
 delivery (``website_preparation_delivery_retirement``): one capture-relative path
@@ -82,8 +78,6 @@ _SCOPES = {
     "provider-output-resume": "operate",
     "selected-handoff": "operate",
     # One owner-approved spend/attempt ceiling grant for a sealed scene intent.
-    # One owner confirmation of a published website job's built success thresholds.
-    "confirm-owner-success-contract": "operate",
     # Retires one parked website preparation delivery on the owner's recorded approval.
     "retire-parked-delivery": "operate",
     # Starts one internal test job through the website's signed internal route; its spend passes every paid admission.
@@ -107,13 +101,7 @@ if DISPATCHER_HOLD_ONLY:
     # the operator door's restricted profile") the preparation re-issue: it
     # acts only on a completed preparation whose grant the owner renewed (the
     # renewal names the owner as approver), recomputes CPU inputs, buys
-    # nothing, and leaves every money check to the intake. The owner's
-    # confirmation of a published website job's built success thresholds
-    # (confirm-owner-success-contract) is admitted the same way as the budget
-    # grant: a preview, then an apply bound to that preview's digest, writing
-    # one sealed record that names the owner as approver; it changes no
-    # threshold, starts no compute and moves no money. It was added to this
-    # profile in its own commit for the owner's explicit sign-off. The owner
+    # nothing, and leaves every money check to the intake. The owner
     # approved (2026-11-06, verbatim: "yes retire the 7") retiring the parked
     # preparation deliveries: one parked delivery's record moves to its
     # terminal state with that approval on it; nothing is deleted, no compute
@@ -143,7 +131,7 @@ if DISPATCHER_HOLD_ONLY:
     # inputs still point at it. It starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "confirm-owner-success-contract", "retire-parked-delivery", "test-job",
+                           "retire-parked-delivery", "test-job",
                            "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TEST_JOB_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
@@ -160,8 +148,13 @@ _BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]")
 _DELIVERY_CAPTURE = re.compile(
     r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]/scenes/site-[A-Za-z0-9][A-Za-z0-9._-]{0,122}"
     r"/captures/(?:walkthrough|supplement)-[A-Za-z0-9][A-Za-z0-9._-]{0,114}")
+#: Kinds the door no longer admits. Their ids stay readable so ``requests`` and ``show``
+#: still list and read the outcomes those requests already wrote; nothing admits them.
+_RETIRED_KINDS = ("confirm-owner-success-contract", "extend-scene-execution-window")
 _REQUEST_ID = re.compile(
-    r"[0-9]{8}T[0-9]{6}Z-(" + "|".join(re.escape(kind) for kind in sorted(_SCOPES)) + r")-[0-9a-f]{8}"
+    r"[0-9]{8}T[0-9]{6}Z-("
+    + "|".join(re.escape(kind) for kind in sorted({*_SCOPES, *_RETIRED_KINDS}))
+    + r")-[0-9a-f]{8}"
 )
 _UNIT_ACTIONS = ("start", "reset-failed", "stop", "restart")
 _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
@@ -172,9 +165,6 @@ _LEASE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _CANARY_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 # A scene intent id.
 _INTENT_ID = re.compile(r"scene-[0-9a-f]{64}\Z")
-OWNER_SUCCESS_ACK = "confirm-owner-success-contract"
-# An owner's user or organization id, as the sealed intent records it.
-_OWNER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z")
 # Timers that protect money or cleanup are never paused through the door.
 _SAFETY_CRITICAL = re.compile(
     r"spend-guard|watchdog|teardown|reaper|provider-zero|"
@@ -523,26 +513,6 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(ingest, bool):
             raise RequestRefused("provider_output_resume_ingest_invalid")
         return {"kind": kind, "run": run, "attempt": attempt, "ingest": ingest}
-    if kind == "confirm-owner-success-contract":
-        # The owner fields and acknowledgements; no threshold is a request field.
-        fields = {"kind", "intent_id", "owner_user_id", "owner_organization_id", "approved_by",
-                  "approval_evidence", "apply", "apply_ack", "ack"}
-        if (set(body) != fields or not isinstance(body.get("intent_id"), str)
-                or not _INTENT_ID.fullmatch(body["intent_id"])
-                or not all(isinstance(body.get(key), str) and _OWNER_ID.fullmatch(body[key])
-                           for key in ("owner_user_id", "owner_organization_id", "approved_by"))
-                or type(body.get("apply")) is not bool):
-            raise RequestRefused("owner_success_fields_invalid")
-        evidence = body.get("approval_evidence")
-        if (not isinstance(evidence, str) or evidence != evidence.strip()
-                or not 1 <= len(evidence) <= 500 or not evidence.isprintable()):
-            raise RequestRefused("owner_success_approval_evidence_invalid")
-        if body["apply"] != bool(isinstance(body.get("apply_ack"), str) and _LEASE_DIGEST.fullmatch(body["apply_ack"])):
-            raise RequestRefused("owner_success_apply_ack_invalid")
-        if not body["apply"] and body.get("apply_ack") != "":
-            raise RequestRefused("owner_success_apply_ack_invalid")
-        if body["ack"] != OWNER_SUCCESS_ACK:
-            raise RequestRefused("owner_success_unacknowledged")
         return {key: body[key] for key in sorted(fields)}
     if kind == "retire-parked-delivery":
         _only(body, ("kind", "capture", "approval_evidence", "apply"))

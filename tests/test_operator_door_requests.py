@@ -684,41 +684,21 @@ def test_the_owner_budget_grant_is_gone_and_refused():
             validate_request(body)
 
 
-def _owner_success_body(**changes):
-    body = {"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
-            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
-            "approval_evidence": "owner accepted the built thresholds in session X", "apply": False,
-            "apply_ack": "", "ack": "confirm-owner-success-contract"}
-    body.update(changes)
-    return body
-
-
-def test_owner_success_preview_and_apply_are_accepted_with_their_acknowledgements():
-    from operator_door.requests import required_scope, validate_request
-    assert required_scope("confirm-owner-success-contract") == "operate"
-    assert validate_request(_owner_success_body()) == _owner_success_body()
-    applied = _owner_success_body(apply=True, apply_ack="sha256:" + "c" * 64)
-    assert validate_request(applied) == applied
-
-
-@pytest.mark.parametrize(("changes", "code"), [
-    ({"apply": True}, "owner_success_apply_ack_invalid"),
-    ({"apply_ack": "sha256:" + "c" * 64}, "owner_success_apply_ack_invalid"),
-    ({"apply": True, "apply_ack": "c" * 64}, "owner_success_apply_ack_invalid"),
-    ({"ack": "yes"}, "owner_success_unacknowledged"),
-    ({"approval_evidence": " padded "}, "owner_success_approval_evidence_invalid"),
-    ({"approval_evidence": "x" * 501}, "owner_success_approval_evidence_invalid"),
-    ({"approval_evidence": "line\nbreak"}, "owner_success_approval_evidence_invalid"),
-    ({"approval_evidence": ""}, "owner_success_approval_evidence_invalid"),
-    ({"owner_user_id": "a b"}, "owner_success_fields_invalid"),
-    ({"approved_by": "x" * 129}, "owner_success_fields_invalid"),
-    ({"intent_id": "scene-zz"}, "owner_success_fields_invalid"),
-    ({"apply": "yes"}, "owner_success_fields_invalid"),
-    # No threshold is a request field: the owner confirms the preview's thresholds, never new ones.
-    ({"max_task_contact_force_n": 50}, "owner_success_fields_invalid"),
-    ({"extra": 1}, "owner_success_fields_invalid"),
-])
-def test_owner_success_requests_are_refused_unless_exact(changes, code):
+def test_the_owner_success_confirmation_kind_is_gone():
+    """Submitting a job is the owner's confirmation of its thresholds (owner, 2026-11-07)."""
     from operator_door.requests import RequestRefused, validate_request
-    with pytest.raises(RequestRefused, match=code):
-        validate_request(_owner_success_body(**changes))
+    with pytest.raises(RequestRefused):
+        validate_request({"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
+                          "owner_user_id": "owner-uid", "owner_organization_id": "org-1",
+                          "approved_by": "owner-uid", "approval_evidence": "approval", "apply": False,
+                          "apply_ack": "", "ack": "confirm-owner-success-contract"})
+
+
+def test_a_retired_kinds_written_requests_stay_readable(config: DoorConfig) -> None:
+    """Retiring a kind keeps the outcomes its requests already wrote listable and showable."""
+    request_id = "20261103T150000Z-confirm-owner-success-contract-0000abcd"
+    completed = Path(config.spool_root) / "completed"
+    completed.mkdir(parents=True, exist_ok=True)
+    (completed / f"{request_id}.json").write_text(json.dumps({"id": request_id}), encoding="utf-8")
+    assert request_state(config, request_id)["state"] == "completed"
+    assert any(row["id"] == request_id for row in list_requests(config))

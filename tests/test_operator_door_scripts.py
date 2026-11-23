@@ -307,7 +307,7 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
                                     "door-lane-scratch.sh", "door-provider-output-resume.sh",
                                     "door-retire-parked-delivery.sh",
-                                    "door-confirm-owner-success-contract.sh", "install.sh"])
+                                    "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
 
@@ -1461,61 +1461,10 @@ def test_no_owner_budget_grant_script_is_installed():
     assert not (DOOR / "door-extend-scene-execution-budget.sh").exists()
 
 
-# --- confirm-owner-success-contract --------------------------------------------------------------
+# --- confirm-owner-success-contract (gone) -------------------------------------------------------
 
-OWNER_SUCCESS_ID = "20261103T150000Z-confirm-owner-success-contract-0000abcd"
-
-
-@pytest.fixture()
-def owner_success_env(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
-    _write_stub(tmp_path / "owner-python", '''#!/bin/bash
-{ printf 'owner %s\\n' "$*"; echo "intake-root ${BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT:-unset}"; } >> "$STUB_LOG"
-printf '%s\\n' "${FAKE_OWNER:-}"
-exit "${FAKE_TOOL_RC:-0}"
-''')
-    return {**env, "DOOR_VENV_PYTHON": str(tmp_path / "owner-python"), "DOOR_CONTROL_PLANE_REPO": str(repository),
-            "DOOR_SERVICE_USER": "blueprint", "DOOR_REQUESTED_BY": "cloud-scene-runs",
-            "DOOR_OWNER_SUCCESS_REQUEST": json.dumps({"kind": "confirm-owner-success-contract",
-                                                      "approval_evidence": "approval $(touch pwned)"})}
-
-
-@pytest.mark.parametrize(("report", "rc", "status", "code"), [
-    ({"door_outcome": "planned"}, 0, "planned", None),
-    ({"door_outcome": "confirmed"}, 0, "confirmed", None),
-    ({"door_outcome": "already_confirmed"}, 0, "already_confirmed", None),
-    ({"door_outcome": "refused", "code": "owner_success_confirmation_apply_ack_mismatch"}, 2, "refused",
-     "owner_success_confirmation_apply_ack_mismatch"),
-    ({"door_outcome": "extended"}, 0, "failed", "owner_success_failed"),
-])
-def test_owner_success_runs_the_release_module_as_the_service_user(owner_success_env, tmp_path, report, rc,
-                                                                   status, code):
-    done, outcome, calls = _run("door-confirm-owner-success-contract.sh", owner_success_env,
-                                DOOR_REQUEST_ID=OWNER_SUCCESS_ID, FAKE_OWNER=json.dumps(report), FAKE_TOOL_RC=str(rc))
-    expected_rc = 1 if status == "failed" else rc
-    assert (done, outcome["status"], outcome["code"], outcome["exit_code"]) == (expected_rc, status, code, expected_rc)
-    assert calls[0] == "setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --"
-    assert calls[2].startswith(
-        "owner -m blueprint_pipeline.task_evaluation_owner_success_confirmation_door --request-json ")
-    assert calls[2].endswith(f"--door-caller cloud-scene-runs --door-request-id {OWNER_SUCCESS_ID}")
-    assert calls[3].startswith("intake-root /")
-    assert not (tmp_path / "pwned").exists()
-    result = Path(owner_success_env["DOOR_RESULTS_DIR"]) / f"{OWNER_SUCCESS_ID}.owner-success.json"
-    assert json.loads(result.read_text()) == report and outcome["result"] == str(result)
-
-
-@pytest.mark.parametrize(("overrides", "code"), [
-    ({"DOOR_SERVICE_USER": "root"}, "owner_success_user_invalid"),
-    ({"DOOR_REQUESTED_BY": "../root"}, "owner_success_caller_invalid"),
-])
-def test_owner_success_rechecks_its_inputs(owner_success_env, overrides, code):
-    rc, outcome, calls = _run("door-confirm-owner-success-contract.sh", owner_success_env,
-                              DOOR_REQUEST_ID=OWNER_SUCCESS_ID, **overrides)
-    assert rc == 2 and outcome["code"] == code and not calls
-
-
-def test_owner_success_script_is_installed_with_the_door():
+def test_owner_success_script_is_no_longer_installed_with_the_door():
+    """Submitting a job is the owner's confirmation of its thresholds (owner, 2026-11-07)."""
     installer = (DOOR / "install.sh").read_text(encoding="utf-8")
-    assert '"$source_dir"/door-confirm-owner-success-contract.sh' in installer
+    assert "door-confirm-owner-success-contract.sh" not in installer
+    assert not (DOOR / "door-confirm-owner-success-contract.sh").exists()

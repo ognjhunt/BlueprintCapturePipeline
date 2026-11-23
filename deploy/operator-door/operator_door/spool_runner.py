@@ -270,22 +270,6 @@ def _test_job_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[
             f"BindReadOnlyPaths={secrets}/pipeline_sync_token")
 
 
-def _owner_success_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
-    """Writes one confirmation under the scene intents and its result; no network, every secret hidden."""
-    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
-            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
-            "PrivateNetwork=yes",
-            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
-            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
-            "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane " + str(Path(config.spool_root) / "results"))
-
-
-def _owner_success_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-            "DOOR_SERVICE_USER": "blueprint",
-            "DOOR_OWNER_SUCCESS_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
-
-
 def _output_resume_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
               "DOOR_CANARY_ROOT": _canary_root(config), "DOOR_RUN": request["run"],
@@ -411,12 +395,6 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
                                           "2h", lambda request: hashlib.sha256(
                                               f"{request['run']}/{request['attempt']}".encode("utf-8"))
                                           .hexdigest()[:12], _output_resume_environment, _output_resume_properties),
-    # Named by a hash of the intent id; the caller text never reaches a unit name. It writes one
-    # confirmation under the scene intents and its result.
-    "confirm-owner-success-contract": _LaunchSpec(
-        "blueprint-operator-door-owner-success", "door-confirm-owner-success-contract.sh", "5min",
-        lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
-        _owner_success_environment, _owner_success_properties),
     # Named by a hash of the capture and the mode; the approval text never reaches a unit name.
     "retire-parked-delivery": _LaunchSpec(
         "blueprint-operator-door-parked-delivery", "door-retire-parked-delivery.sh", "5min",
@@ -557,10 +535,9 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
         **_stage_release_provenance(config, request_id, request),
         **(extra or {}),
     }
-    callers = {"confirm-owner-success-contract": "owner_success_caller_invalid",
-               "retire-parked-delivery": "parked_delivery_caller_invalid"}
+    callers = {"retire-parked-delivery": "parked_delivery_caller_invalid"}
     if request["kind"] in callers:
-        # The authenticated token name, recorded in the extension or confirmation as who asked.
+        # The authenticated token name, recorded in the record it writes as who asked.
         if not isinstance(requested_by, str) or _CALLER.fullmatch(requested_by) is None:
             raise RequestRefused(callers[request["kind"]])
         values["DOOR_REQUESTED_BY"] = requested_by

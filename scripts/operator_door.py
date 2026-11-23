@@ -22,10 +22,6 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py legacy-owner-census --wait
     python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
         --approval-evidence "<owner approval>" [--apply] --wait
-    python3 scripts/operator_door.py confirm-owner-success-contract <intent_id> --owner-user-id U \
-        --owner-organization-id O --approved-by U --approval-evidence "<owner approval>" --wait   # preview
-    python3 scripts/operator_door.py confirm-owner-success-contract ... --apply --apply-ack sha256:<preview apply_ack> \
-        --ack confirm-owner-success-contract --wait
     python3 scripts/operator_door.py test-job --idempotency-key K --label L --footage-id F --description "..." --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
@@ -83,7 +79,6 @@ ATTESTED_SEARCH_RUNS = 30
 ATTESTED_JOB_READS = 8
 # selected-handoff modes that only read; every other mode acts.
 SELECTED_HANDOFF_READ_MODES = frozenset({"inspect", "atlas-status", "discover-selector"})
-OWNER_SUCCESS_ACK = "confirm-owner-success-contract"
 
 
 #: Paths no code that runs on the host reads: a deploy that changes only these changes
@@ -693,28 +688,6 @@ def _add_wait(parser: argparse.ArgumentParser, timeout: float) -> None:
     parser.add_argument("--poll", type=float, default=15.0)
 
 
-def _owner_success_body(args: argparse.Namespace) -> dict[str, Any]:
-    """A preview unless --apply; apply repeats the preview's apply_ack and the fixed --ack.
-
-    No threshold is an argument: the owner confirms the job's thresholds exactly as the preview shows them.
-    """
-    if re.fullmatch(r"scene-[0-9a-f]{64}", args.intent_id) is None:
-        raise DoorError(2, "owner_success_intent_id_invalid")
-    for name in ("owner_user_id", "owner_organization_id", "approved_by"):
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}", getattr(args, name)) is None:
-            raise DoorError(2, f"owner_success_{name}_invalid")
-    evidence = args.approval_evidence
-    if evidence != evidence.strip() or not 1 <= len(evidence) <= 500 or not evidence.isprintable():
-        raise DoorError(2, "owner_success_approval_evidence_invalid")
-    if args.apply and (args.ack != OWNER_SUCCESS_ACK
-                       or re.fullmatch(r"sha256:[0-9a-f]{64}", args.apply_ack or "") is None):
-        raise DoorError(2, f"owner_success_apply_requires --apply-ack <preview apply_ack> --ack {OWNER_SUCCESS_ACK}")
-    if not args.apply and (args.apply_ack or args.ack not in (None, OWNER_SUCCESS_ACK)):
-        raise DoorError(2, "owner_success_preview_takes_no_apply_ack")
-    return {"kind": "confirm-owner-success-contract", "intent_id": args.intent_id,
-            "owner_user_id": args.owner_user_id, "owner_organization_id": args.owner_organization_id,
-            "approved_by": args.approved_by, "approval_evidence": evidence, "apply": bool(args.apply),
-            "apply_ack": args.apply_ack if args.apply else "", "ack": OWNER_SUCCESS_ACK}
 
 
 def _hold_duration(value: str) -> int:
@@ -835,19 +808,6 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         if action == "retire-scene":
             lifecycle.add_argument("--apply", action="store_true")
         _add_wait(lifecycle, 2 * 3600 + 600)
-    confirmation = commands.add_parser(
-        "confirm-owner-success-contract",
-        help="preview the owner's confirmation of a published website job's built success thresholds; "
-             "--apply records it",
-    )
-    confirmation.add_argument("intent_id", help="scene-<64 hex>, the sealed intent")
-    for flag in ("--owner-user-id", "--owner-organization-id", "--approved-by"):
-        confirmation.add_argument(flag, required=True)
-    confirmation.add_argument("--approval-evidence", required=True, help="names the owner's approval (<= 500 chars)")
-    confirmation.add_argument("--apply", action="store_true", help="record it; without this only a preview is made")
-    confirmation.add_argument("--apply-ack", help="with --apply: the preview's apply_ack digest")
-    confirmation.add_argument("--ack", help=f"required with --apply: {OWNER_SUCCESS_ACK}")
-    _add_wait(confirmation, 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
     parked = commands.add_parser(
@@ -986,8 +946,6 @@ def run(args: argparse.Namespace) -> int:
     elif command == "retire-parked-delivery":
         return _submit({"kind": "retire-parked-delivery", "capture": args.capture,
                         "approval_evidence": args.approval_evidence, "apply": args.apply}, args)
-    elif command == "confirm-owner-success-contract":
-        return _submit(_owner_success_body(args), args)
     elif command == "test-job":
         body = {"kind": "test-job", "idempotency_key": args.idempotency_key, "label": args.label,
                 "footage_id": args.footage_id, "description": args.description}
