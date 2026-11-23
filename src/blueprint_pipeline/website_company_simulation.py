@@ -396,8 +396,6 @@ DEFAULT_INTENT_ROOT = "/var/lib/blueprint/pipeline-control-plane/task-evaluation
 #: The scene stage's hold store (``scene_stage_holds``: its queue root, ``holds/``, one file per scene intent), read
 #: here as a file: that module and the team-scene worker reach the GPU lane, which this builder never imports.
 SCREENING_ROOT: Path | None = None
-#: Beside the floor's half: when it was first written (``website_scene_handoff.ROOM_FLOOR_FIRST_WRITTEN``).
-FLOOR_FIRST_WRITTEN = "first_written.json"
 SCREENING_ROOT_ENV, DEFAULT_SCREENING_ROOT = ("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT",
                                               "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening")
 
@@ -413,37 +411,30 @@ def _scene_hold(intent_id: str) -> dict[str, Any]:
 
 
 def object_path_stopped(root: Path, handoff: Mapping[str, Any], *, queue_root: Path, now: float) -> str | None:
-    """Why the job's object is not in its package (``object_not_built:<code>``: its room floor ships), or None when
-    privacy, rights or consent ended its path or its state is not yet known, or ``floor_unclassified:<code>`` when
-    its state cannot be read or bound to this job (nothing ships; the pass says so).
+    """Why the job's object is not in its package (``object_not_built:<code>``: its room floor ships, flagged), or
+    None when privacy, rights or consent ended its path, or ``floor_unclassified:<code>`` when its records cannot be
+    read or tied to this job (nothing ships; the pass names the capture).
 
-    An object still being built (``OBJECT_IN_PROGRESS``) is a reason too: the room ships flagged at once, and the
-    compiled half replaces it when it arrives (``package_source``); nothing waits on the GPU build (C-01).
+    Owner decision 2026-11-23: once the room is built and the sharing rights hold, the room floor ships flagged at
+    once, whatever the object path says or fails to say; retries continue and a package with the object replaces it
+    (``package_source``). So an object still being built (``OBJECT_IN_PROGRESS``), an intent not made yet, a half
+    neither queued nor started, and a block with no hold recorded (its timed retries may still run) all ship the
+    floor now; ``<code>`` names what the records show, never a guessed reason. Consent, withdrawal, takedown and
+    the live sharing rights are checked separately at publication (``_publish``) and stop it there.
 
     Read through the job's own scene intent, the one its handoff's intake receipt names and whose request it
-    sealed, never the capture's other intents (a release retires and replaces them). The floor ships only when
-    the path stopped for this job for a reason that can be named: an intent never made, a half neither queued
-    nor started, or a block the scene stage never recorded, ``PARK_AFTER_SECONDS`` on, are listed, not shipped.
+    sealed, never the capture's other intents (a release retires and replaces them). An intent bound to another
+    request, or an outcome that does not read, may hide a withdrawal or a consent ending for this job: nothing ships.
+    ``now`` is unused (the floor no longer waits); it stays for the callers.
     """
     from .task_evaluation_scene_outcome import SceneOutcomeError, read_outcome
-    from .website_preparation_status import PARK_AFTER_SECONDS
 
-    floor = Path(str((handoff.get("room_floor") or {}).get("path") or ""))
-
-    def unclear(since: Path, code: str) -> str | None:
-        # We cannot tell whether it is coming: waited on for a day, then listed (never shipped).
-        first = _read(floor.parents[1] / FLOOR_FIRST_WRITTEN) if since == floor else {}
-        try:  # the floor's wait runs from its first writing (``website_scene_handoff.write_room_floor``)
-            at = (first["first_written_epoch"] if first.get("inputs_digest") == _read(floor).get("inputs_digest")
-                  and isinstance(first.get("first_written_epoch"), int) else since.stat().st_mtime)
-        except OSError:
-            return "floor_unclassified:object_path_unreadable"
-        return "floor_unclassified:" + code if now - at >= PARK_AFTER_SECONDS else None
+    del now
     receipt = handoff.get("website_intake_outbox")
     intent_id = receipt.get("id") if isinstance(receipt, Mapping) else None
     directory = Path(INTENT_ROOT or DEFAULT_INTENT_ROOT) / str(intent_id)
     if not isinstance(intent_id, str) or not intent_id.startswith("scene-") or not (directory / "intent.json").is_file():
-        return unclear(floor, "intent_missing")
+        return FLOOR_FLAG + ":intent_missing"  # not made yet, never made or refused at intake: the room ships
     intent = _read(directory / "intent.json")
     if (intent.get("intent_id") != intent_id or not isinstance(intent.get("request"), Mapping)
             or cross_runtime_canonical_digest(intent["request"]) != receipt.get("request_digest")):
@@ -456,32 +447,30 @@ def object_path_stopped(root: Path, handoff: Mapping[str, Any], *, queue_root: P
         # Privacy, rights and consent never ship it; any other ending, or a wait on a person, does.
         if outcome["kind"] == "withdrawn" or outcome["reason_code"] == "site_consent_required":
             return None
-        return "object_not_built:" + outcome["reason_code"]
+        return FLOOR_FLAG + ":" + outcome["reason_code"]
     progression = _read(directory / "progression.json")
     if progression.get("status") != "completed":
         return OBJECT_IN_PROGRESS  # queued, running, a capacity wait or a receipt still pending
     asked = ((progression.get("state") or {}).get("scene_preparation_completion") or {}).get("team_scene_request")
     asked = asked if isinstance(asked, Mapping) else {}
     if asked.get("status") in ("not_configured", "not_a_website_scene", "not_enqueued"):
-        return "object_not_built:" + str(asked.get("reason") or asked["status"])
+        return FLOOR_FLAG + ":" + str(asked.get("reason") or asked["status"])
     key = asked.get("request_key")
     status = _read(Path(queue_root) / "status" / f"{key}.json") if isinstance(key, str) else {}
     if not status:
         if any((Path(queue_root) / state / f"{key}.json").is_file() for state in ("pending", "processing")):
             return OBJECT_IN_PROGRESS  # queued for the worker, which writes its status when it claims the request
-        return unclear(directory / "progression.json", "half_not_enqueued")
+        return FLOOR_FLAG + ":half_not_enqueued"
     if status.get("status") in ("pending", "processing"):
         return OBJECT_IN_PROGRESS
     if status.get("status") == "skipped":
-        return "object_not_built:" + str(status.get("reason") or "team_scene_skipped")
+        return FLOOR_FLAG + ":" + str(status.get("reason") or "team_scene_skipped")
     if status.get("status") == "blocked":
-        # Held for good under the running release: the scene stage has told the website so (``final_block``); a
-        # new release that tries the half again releases that hold, and the half is moving again.
+        # Held for good under the running release: the scene stage has told the website so (``final_block``). With
+        # no hold its timed retries may still run; the room ships meanwhile and the half replaces it if it comes.
         hold = _scene_hold(intent_id)
-        if hold.get("reason_code"):
-            return "object_not_built:" + str(hold["reason_code"])
-        return unclear(Path(queue_root) / "status" / f"{key}.json", "team_scene_blocked_unheld")
-    return "floor_unclassified:team_scene_" + str(status.get("status"))
+        return FLOOR_FLAG + ":" + str(hold.get("reason_code") or "team_scene_blocked_unheld")
+    return FLOOR_FLAG + ":team_scene_" + str(status.get("status"))
 
 
 def _floor_source(root: Path, *, queue_root: Path, now: float, reason: str | None = None,
