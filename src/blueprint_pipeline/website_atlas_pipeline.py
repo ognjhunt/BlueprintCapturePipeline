@@ -514,11 +514,24 @@ def job_object_review(output_root: Path, review, task_context):
                 status = "absent"
         reason = (_kept_job_objects(entries) if status in ("noop", "objects_removed") and isinstance(entries, list)
                   and all(isinstance(row, dict) for row in entries) else None)
-        applied = reason is not None and (not review.get("transient_frame_ids") or takes_reviewed_background(kept))
-        decided = {"schema_version": "atlas_job_object_rule.v1", "applied": applied, "clean_plate_status": status,
-                   "planner_remove_count": asked, **({"job_objects_kept": reason} if applied and reason else {})}
+        # The build plan (owner direction 2026-11-23): a model says what the simulation needs. With several objects or a
+        # soft one, its most important buildable object is taken out alone and the rest stay as filmed.
+        plannable = (status in ("noop", "objects_removed") and isinstance(entries, list) and reason != ""
+                     and all(isinstance(row, dict) for row in entries))
+        planned = _build_plan(output_root, clean, entries, automation, task_context, reason) if plannable else None
+        if planned == "waiting":
+            return review, True
+        built = planned.get("built") if planned else None
+        applied = (reason is not None and built is None
+                   and (not review.get("transient_frame_ids") or takes_reviewed_background(kept)))
+        decided = {"schema_version": "atlas_job_object_rule.v2" if planned else "atlas_job_object_rule.v1",
+                   "applied": applied, "clean_plate_status": status, "planner_remove_count": asked,
+                   **({"job_objects_kept": reason} if applied and reason else {}), **(planned or {})}
         decided["digest"] = canonical_digest(decided, digest_field="digest")
         write_json(path, decided)
+    if isinstance(decided.get("built"), dict):
+        from .website_build_plan import partial_review
+        return partial_review(review, decided["built"]["editor_object_ids"]), False
     if decided.get("applied") is not True:
         return review, False
     rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": decided["planner_remove_count"], "removed_count": 0,
@@ -543,6 +556,33 @@ def _kept_job_objects(entries: list[dict]) -> str | None:
     if len(manipulated) > 1:
         return SEVERAL_JOB_OBJECTS
     return SOFT_JOB_OBJECT if task_object_rigidity(manipulated[0])["rigidity"] == "deformable" else None
+
+
+def _build_plan(output_root: Path, clean: Path, entries: list[dict], automation, task_context, reason):
+    """The build plan's part of the sealed decision (``website_build_plan``), "waiting" while another run holds its
+    call, or None when it cannot be asked. ``built`` and ``kept_in_scan_target_ids`` only where the analysis named several
+    objects or a soft one and the plan names one the job can build: then that one alone is taken out of the scan."""
+    from .clean_plate_stage import REMOVAL_PLAN_FILENAME
+    from .website_build_choice import IN_PROGRESS
+    from .website_build_plan import built_object, decide_plan
+    try:
+        targets = json.loads((clean / REMOVAL_PLAN_FILENAME).read_text()).get("targets")
+    except (OSError, ValueError, AttributeError):
+        targets = None
+    targets = targets if isinstance(targets, list) and all(isinstance(row, dict) for row in targets) else entries
+    editor = [row for row in automation.get("objects") or [] if isinstance(row, dict)]
+    try:
+        record = decide_plan(task_context=task_context, targets=targets, editor_objects=editor,
+                             output_root=output_root / "build_plan")
+    except ValueError as exc:
+        if str(exc) == IN_PROGRESS:
+            return "waiting"
+        raise
+    built = (built_object(record.get("plan"), entries=entries, editor_objects=editor)
+             if reason in (SEVERAL_JOB_OBJECTS, SOFT_JOB_OBJECT) else None)
+    kept = sorted(str(row.get("target_id")) for row in entries
+                  if row.get("task_effect") == "manipulated" and built and row.get("target_id") != built["target_id"])
+    return {"build_plan": record, **({"built": built, "kept_in_scan_target_ids": kept} if built else {})}
 
 
 def _job_edit_scope(output_root: Path, requested: str | None, *, default="required_and_additional") -> str:
