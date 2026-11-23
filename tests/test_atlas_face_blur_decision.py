@@ -553,7 +553,7 @@ def test_the_authority_alone_decides_before_the_grant_exists(tmp_path, version):
     (LISTED[0], "2026-11-13.1", False),
     ("2026-11-13.1", LISTED[0], False),
     ("2026-11-13.1", "absent", False),
-    ("2026-11-25.1", "absent", False),
+    ("2999-01-01.1", "absent", False),  # dated after tomorrow: unknown, so it blurs
     ("absent", "absent", False),
 ])
 def test_authority_and_grant_together(tmp_path, authority, grant, skips):
@@ -656,7 +656,7 @@ def test_a_version_added_to_or_changed_in_an_existing_authority_is_refused_on_re
 
 
 @pytest.mark.parametrize("version,blurred", [*[(v, False) for v in LISTED], ("2026-11-13.1", True),
-                                              ("absent", True), ("2026-11-25.1", True)])
+                                              ("absent", True), ("2999-01-01.1", True)])
 def test_the_real_order_configuration_present_grant_absent(video_job, monkeypatch, version, blurred):
     """As on the host (2026-11-17 test job): configuration.json before the first frame, the grant ~50 min later."""
     pipeline, path, review, frames, output, calls = video_job
