@@ -34,15 +34,24 @@ LEVELLING_UNITS = 1.0
 RELATIVE_FRAME = {"declared_meters_per_unit": None, "units": "relative", "units_per_reconstruction_unit": 1.0}
 
 
-def ships_unscaled(source_pose: Mapping[str, Any]) -> bool:
-    """Whether a background whose source pose did not complete ships unscaled: only after an ordinary pose failure.
+#: The scale review's own ordinary failures (the views were posed; no scale could be established from them):
+#: ``website_atlas_pipeline._source_pose`` returns the first when the review leaves the measurements unestimated,
+#: and ``atlas_scene_planner`` raises the second when the review's planner call ends with no valid answer. Neither
+#: is a wall: the planner's money and release stops carry their own codes.
+ORDINARY_SCALE_FAILURES = frozenset({"atlas_scale_review_unresolved", "atlas_scene_planner_output_invalid"})
 
-    Fails closed: the stored reason must be on ``website_atlas_pose.ORDINARY_POSE_FAILURES``, the provider failing
-    to pose the views, and no wall may be recorded on the pose (``wall``, ``website_atlas_pipeline._source_pose``).
-    Any other code, a pose stored before walls were recorded included, ships nothing, whatever its words say.
+
+def ships_unscaled(source_pose: Mapping[str, Any]) -> bool:
+    """Whether a background whose source pose did not complete ships unscaled: only after an ordinary failure.
+
+    Fails closed: the stored reason must be on ``website_atlas_pose.ORDINARY_POSE_FAILURES`` (the provider failing
+    to pose the views) or on ``ORDINARY_SCALE_FAILURES`` (the scale review ending without a scale), and no wall
+    may be recorded on the pose (``wall``, ``website_atlas_pipeline._source_pose``). Any other code, a pose stored
+    before walls were recorded included, ships nothing, whatever its words say.
     Imported when called: the company builder imports this module and must not reach the provider client."""
     from .website_atlas_pose import ORDINARY_POSE_FAILURES
-    return source_pose.get("reason") in ORDINARY_POSE_FAILURES and not source_pose.get("wall")
+    reason = source_pose.get("reason")
+    return (reason in ORDINARY_POSE_FAILURES or reason in ORDINARY_SCALE_FAILURES) and not source_pose.get("wall")
 
 
 def is_unscaled(base_scene: Mapping[str, Any]) -> bool:

@@ -119,8 +119,10 @@ Jobs that finished before the source pose existed have no source pose and
 report `website_atlas_source_pose_unavailable`.
 
 Since 2026-11-23 a built object-removed background whose source pose did not
-complete because World Labs failed the pose attempt (the one code on
-`website_atlas_pose.ORDINARY_POSE_FAILURES`, with no wall recorded) does not wait: it is handed on `ready`, levelled in its own units, with
+complete for an ordinary reason (World Labs failing the pose attempt, the one
+code on `website_atlas_pose.ORDINARY_POSE_FAILURES`, or the scale review
+ending without a scale, the codes on
+`atlas_unscaled_room.ORDINARY_SCALE_FAILURES`; with no wall recorded) does not wait: it is handed on `ready`, levelled in its own units, with
 `meters_per_unit` None, no source geometry and the flag `scale_not_measured`
 (`atlas_unscaled_room`). The handoff ships it as the room package, the job's
 object not prepared; the package's sealed record and plan hold relative units

@@ -60,6 +60,15 @@ def _metres_values(value, path=""):
         yield path, value
 
 
+@pytest.mark.parametrize("reason", ["atlas_scale_review_unresolved", "atlas_scene_planner_output_invalid"])
+def test_a_built_room_whose_scale_review_ended_without_a_scale_is_handed_on_flagged_too(tmp_path, reason):
+    unscaled_job(tmp_path, reason=reason)
+    value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    assert value["status"] == "ready" and value["flags"] == [SCALE_NOT_MEASURED]
+    assert value["source_geometry"] is None and value["not_prepared"] == [reason]
+    assert value["base_scene"]["meters_per_unit"] is None
+
+
 def test_a_built_room_with_no_source_pose_is_handed_on_levelled_in_its_own_units_and_flagged(tmp_path):
     unscaled_job(tmp_path)
     value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
@@ -196,6 +205,11 @@ def test_only_a_known_ordinary_pose_failure_ships_unscaled(tmp_path, monkeypatch
     pose = {"status": "needs_input", "reason": code, **recorded}
     assert ships_unscaled(pose) is False
     assert ships_unscaled({"status": "needs_input", "reason": POSE_FAILED}) is True
+    # The scale review ending without a scale is ordinary too (the live job of 2026-11-23 ended this way); a wall
+    # recorded beside either code still ships nothing.
+    for ordinary in ("atlas_scale_review_unresolved", "atlas_scene_planner_output_invalid"):
+        assert ships_unscaled({"status": "needs_input", "reason": ordinary}) is True
+        assert ships_unscaled({"status": "needs_input", "reason": ordinary, "wall": "money"}) is False
     job_dir = unscaled_job(tmp_path / "atlas-job")
     result = json.loads((job_dir / "result.json").read_text())
     result.pop("digest")
