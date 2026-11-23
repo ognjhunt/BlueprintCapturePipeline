@@ -603,15 +603,27 @@ under it.
   preparation path: no new money channel and no WebApp code change.
 - **Free objects reserve nothing:** library objects (Google Scanned Objects,
   SimReady) and parametric shapes (boxes, totes, bins, trays, cans).
-- **At the cap** the refused object and every paid object ranked below it are
-  kept as filmed, each by name, `spending_cap_reached`: in the build budget
-  record (`pipeline/atlas/build_plan/budget/build_budget.json`, beside the
-  plan), in the handoff's `build_plan` disclosure (`kept_at_spending_cap`) and
-  in the company README's plain notes ("Kept as filmed: <name>, the job's
-  spending cap was reached."). The job goes on without them. A refusal is
-  final: money a later settlement frees brings no refused object back. The
-  account's monthly limit, privacy, rights and outages are raised exactly as
-  every reservation raises them: a wait or a wall, never a kept object.
+- **When the WebApp refuses** (`website_scene_preparation_budget_exhausted`),
+  the refused object and every paid object ranked below it are kept as filmed,
+  each by name, under the machine reason `spending_cap_reached`. The WebApp
+  sends that one code for both of the job's limits on paid work: the $40 dollar
+  cap (`checkWebsiteJobCeiling`) and the native ledger's paid-request count
+  (`preparationRequestLimit`, the sponsorship's `max_paid_attempts`, a host
+  value not verified). It does not say which one refused, and no record or
+  sentence claims one:
+  - the build budget record (`pipeline/atlas/build_plan/budget/build_budget.json`,
+    beside the plan) and each object's refused reservation keep
+    `refusal_code` exactly as received, with
+    `refusal_code_means_one_of: ["job_dollar_cap", "paid_request_count"]`;
+  - the handoff's `build_plan` disclosure carries the same fields beside
+    `kept_at_spending_cap` (`website_build_plan_notes.kept_disclosure`);
+  - the company README's plain notes say what is true of either limit:
+    "Kept as filmed: <name>, the job reached its limit on paid work."
+
+  The job goes on without them. A refusal is final: money a later settlement
+  frees brings no refused object back. The account's monthly limit, privacy,
+  rights and outages are raised exactly as every reservation raises them: a
+  wait or a wall, never a kept object.
 - **Partial spend.** An admitted row settles at what the object's authoring
   cost (`settle_object`, the existing OpenAI `preparation-settlement`), never
   above its reservation; until then it holds its whole quote.
@@ -632,17 +644,22 @@ nothing.
 Known edges:
 
 - **No live route calls it yet.** Today the route builds one object, so no
-  extra object is reserved. The several-objects build calls
-  `admit_extra_objects` once the scene intake is held.
-- **One code for two refusals.** The WebApp refuses the native ledger's
-  runaway request count (`preparationRequestLimit`, the sponsorship's
-  `max_paid_attempts`, a host value not verified) with the same code as the
-  dollar cap, so an extra object refused by that count also reads "the job's
-  spending cap was reached".
-- **A lost record.** A row whose local record was lost (a crash between the
-  WebApp's commit and the record) is never reserved twice: the WebApp answers
-  the row it holds, which pays for nothing, and the job's retry raises, as in
-  every preparation lane. Its hold stays counted: over, never under.
-- **One meter row per call.** If the several-objects build runs an extra
-  object's ARTISAN inside a scene attempt, that attempt's meter must not
-  journal the usage the object's settlement journals.
+  extra object is reserved.
+- **One code for two limits.** Above: the WebApp contract is unchanged, so the
+  Pipeline cannot tell a dollar-cap refusal from a paid-request-count one, and
+  says only what is true of both.
+
+Notes for the several-objects build:
+
+1. **Call `admit_extra_objects` only after the scene intake's allowance is
+   held.** The WebApp holds that allowance in full once the intake is admitted;
+   reserving an extra object before it would let the extra object take money
+   the first object's intake needs.
+2. **Settle an extra object's ARTISAN usage through `settle_object` only.** A
+   scene attempt's meter must never also record that usage: the object's row
+   and the job's journal would count it twice.
+3. **The lost-local-record gap exists here, as it does for every preparation
+   step.** A row whose local record was lost (a crash between the WebApp's
+   commit and the record) is never reserved twice: the WebApp answers the row
+   it holds, which pays for nothing, and the job's retry raises. Its hold stays
+   counted: over, never under.

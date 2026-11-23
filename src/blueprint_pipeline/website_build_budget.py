@@ -19,13 +19,16 @@ Raising the scene allowance up front instead was tried and reverted: the scan ca
 $20.50 Atlas hold) and the WebApp holds the intake's whole allowance up front, so a bigger allowance was refused at the
 cap and built nothing.
 
-At the cap the WebApp refuses (``website_scene_preparation_budget_exhausted``). That object and every paid object
-ranked below it are kept as filmed, each by name, ``spending_cap_reached``: in this record, in the handoff's build plan
-disclosure and in the company README's plain notes ("Kept as filmed: <name>, the job's spending cap was reached.",
-``website_build_plan_notes``). The job goes on without them; a refusal never stops it, and nothing spends past the cap.
-A refusal is final: money a later settlement frees never brings a refused object back. Any other refusal (the account's
-monthly limit, privacy, rights, an outage) is raised exactly as the reservation raises it, so the job's own retry asks
-again.
+When the WebApp refuses (``website_scene_preparation_budget_exhausted``), that object and every paid object ranked
+below it are kept as filmed, each by name, under the machine reason ``spending_cap_reached``. The WebApp sends that one
+code for both of the job's limits on paid work, the $40 dollar cap and the native ledger's paid-request count
+(``preparationRequestLimit``), and does not say which refused. So the records keep the code exactly as received with
+the two limits it may mean (``REFUSAL_CODE_MEANS_ONE_OF``), never which one, and the company README's plain notes say
+what is true of either ("Kept as filmed: <name>, the job reached its limit on paid work.", ``website_build_plan_notes``);
+the handoff's build plan disclosure carries the same (``kept_disclosure``). The job goes on without them; a refusal
+never stops it, and nothing spends past the cap. A refusal is final: money a later settlement frees never brings a
+refused object back. Any other refusal (the account's monthly limit, privacy, rights, an outage) is raised exactly as
+the reservation raises it, so the job's own retry asks again.
 
 Each object's reservation is written once (``reservations/<binding>.json``), keyed by the job, the sealed plan and the
 object, so a retry or a resume reuses it and never reserves twice; the WebApp keys its row by the same binding. It is
@@ -35,10 +38,11 @@ frozen cap leaves (``authoring_allocation``: the rule the first object's success
 has ended, its row settles at what it cost (``settle_object``: the existing OpenAI ``preparation-settlement``), never
 above the reservation; until then it holds its whole quote.
 
-The several-objects build calls ``admit_extra_objects`` with the objects it will build, once the scene intake's
-allowance is held, so an extra object never competes with the first. Today's route builds only the first object
+The several-objects build calls ``admit_extra_objects`` with the objects it will build, only once the scene intake's
+allowance is held, so an extra object never competes with the first. It settles an extra object's ARTISAN usage through
+``settle_object`` only; a scene attempt's meter must never also record it. Today's route builds only the first object
 (``website_build_plan.built_object``), so it reserves nothing; the readers (``website_build_plan_notes``, the handoff)
-already name an object the cap kept out.
+already name an object a limit kept out.
 """
 from __future__ import annotations
 
@@ -56,7 +60,8 @@ from typing import Any
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
-from .website_build_plan_notes import BUDGET_RECORD, BUDGET_SCHEMA, KEPT_AT_CAP as KEPT, budget_root
+from .website_build_plan_notes import (BUDGET_RECORD, BUDGET_SCHEMA, KEPT_AT_CAP as KEPT, REFUSAL_CODE_MEANS_ONE_OF,
+                                       budget_root)
 from .website_job_spend_cap import SPENDING_CAP_REACHED
 
 RESERVATION_SCHEMA = "website_build_object_reservation.v1"
@@ -66,7 +71,7 @@ FREE_SOURCING = frozenset({"library", "parametric"})
 #: The plan's sourcing for an object that needs its own generated model (ARTISAN): the paid one.
 PAID_SOURCING = "generate"
 #: An object's status: the first (the scene intake's allowance, as today), free, its own reservation admitted, or kept
-#: as filmed at the cap (``KEPT``). A reservation record is admitted or ``REFUSED`` at the cap.
+#: as filmed at a limit on the job's paid work (``KEPT``). A reservation record is admitted or ``REFUSED`` there.
 FIRST, FREE, ADMITTED, REFUSED = "first_object", "free", "admitted", "refused_at_cap"
 #: The WebApp row: ARTISAN's one OpenAI gate (``website_native_submission``: one reservation and one cap).
 RESOURCE_CLASS, PROVIDER = "openai_api_candidate", "openai"
@@ -113,6 +118,7 @@ def _read_reservation(root: Path, digest: str) -> dict[str, Any] | None:
             or record.get("binding_digest") != digest or canonical_digest(record.get("binding") or {}) != digest
             or record.get("status") not in (ADMITTED, REFUSED)
             or (record["status"] == ADMITTED) != isinstance(record.get("admission"), Mapping)
+            or (record["status"] == REFUSED) != isinstance(record.get("refusal_code"), str)
             or record.get("digest") != canonical_digest(record, digest_field="digest")):
         raise ValueError(RECORD_INVALID)
     return record
@@ -135,15 +141,23 @@ def _write_once(path: Path, record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _at_cap(error: BaseException) -> bool:
-    """Whether ``error`` is the website's refusal at the job's spending cap, as every preparation lane reads it."""
+    """Whether ``error`` is the website's refusal at a limit on the job's paid work, as every preparation lane reads it
+    (``spending_cap_code``): its one code covers the dollar cap and the paid-request count alike."""
     from .website_scene_handoff import spending_cap_code
     return isinstance(error, ValueError) and spending_cap_code(str(error))
 
 
+def _refusal(code: str) -> dict[str, Any]:
+    """The refusal as a record keeps it: the website's code exactly as received and the limits it may mean."""
+    return {"refusal_code": code, "refusal_code_means_one_of": list(REFUSAL_CODE_MEANS_ONE_OF)}
+
+
 def _reserve(*, root: Path, digest: str, value: Mapping[str, Any], task_context: Mapping[str, Any],
              reserve: Callable[..., Any] | None, now: Callable[[], float]) -> dict[str, Any]:
-    """Ask the job's ledger for the object's frozen ARTISAN cap: the admitted reservation, or the refusal at the cap.
-    Anything else is raised and writes nothing, unless the WebApp already admitted the row: that stays written."""
+    """Ask the job's ledger for the object's frozen ARTISAN cap: the admitted reservation, or the refusal at a limit on
+    the job's paid work, kept with the website's code as received (the code after the transport's
+    ``website_control_preparation-spend_http_409:``). Anything else is raised and writes nothing, unless the WebApp
+    already admitted the row: that stays written."""
     from .task_object_authoring_backend import frozen_authoring_cap, new_authoring_budget
     if reserve is None:
         from .website_task_context import reserve_website_preparation_spend as reserve
@@ -162,7 +176,8 @@ def _reserve(*, root: Path, digest: str, value: Mapping[str, Any], task_context:
     except Exception as exc:
         if os.path.lexists(path) or not _at_cap(exc):
             raise
-        return _write_once(path, {**base, "status": REFUSED, "refusal": str(exc)[:300], "recorded_at_epoch": now()})
+        return _write_once(path, {**base, "status": REFUSED, **_refusal(str(exc).rsplit(":", 1)[-1]),
+                                  "recorded_at_epoch": now()})
     record = _read_reservation(root, digest)
     if record is None or record["status"] != ADMITTED:
         raise ValueError(RECORD_INVALID)
@@ -179,10 +194,11 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
     it (``target_id``, ``name``, ``sourcing``); ``build_plan_digest`` is the sealed plan's record digest. The first is
     the first object, under the scene intake's allowance as today: nothing is reserved for it here. Each later one is
     free (``FREE_SOURCING``) or, sourced ``generate``, reserved on the job's ledger (``reserve``, by default
-    ``reserve_website_preparation_spend``), unless a paid object ranked above it was refused at the cap: then it is
-    kept as filmed without asking. A refusal at the cap keeps that object as filmed too, and is final. Any other failure
-    is raised as the reservation raised it, after the objects before it were recorded in their reservations. A rerun
-    reuses every written reservation and asks only for paid objects never asked.
+    ``reserve_website_preparation_spend``), unless a paid object ranked above it was refused at a limit on the job's
+    paid work: then it is kept as filmed without asking, under that refusal's code. A refusal there keeps that object as
+    filmed too, and is final. Any other failure is raised as the reservation raised it, after the objects before it
+    were recorded in their reservations. A rerun reuses every written reservation and asks only for paid objects never
+    asked. Call it only once the scene intake's allowance is held.
     """
     rows = [dict(row) for row in objects if isinstance(row, Mapping)]
     try:
@@ -200,7 +216,7 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
 
     entries: list[dict[str, Any]] = [{**named(0, rows[0]), "status": FIRST}]
     with _locked(root):
-        capped = False
+        capped = None  # the refusal that keeps every later paid object as filmed, once there is one
         for rank, row in enumerate(rows[1:], start=1):
             if row["sourcing"] in FREE_SOURCING:
                 entries.append({**named(rank, row), "status": FREE})
@@ -208,7 +224,7 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
             value = reservation_binding(task_context=task_context, build_plan_digest=build_plan_digest, row=row)
             digest = canonical_digest(value)
             record = _read_reservation(root, digest)
-            if record is None and not capped:
+            if record is None and capped is None:
                 record = _reserve(root=root, digest=digest, value=value, task_context=task_context, reserve=reserve,
                                   now=now)
             if record is not None and record["status"] == ADMITTED:
@@ -216,15 +232,18 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
                                 "maximum_cost_usd": record["maximum_cost_usd"],
                                 "authoring_budget": record["authoring_budget"]})
                 continue
-            capped = True
+            if record is not None:
+                capped = record["refusal_code"]
             entries.append({**named(rank, row), "status": KEPT, "reason": SPENDING_CAP_REACHED,
-                            "refused": record is not None, **({"binding_digest": digest} if record else {})})
+                            "refused": record is not None, **({"binding_digest": digest} if record else {}),
+                            **_refusal(record["refusal_code"] if record else capped)})
         kept = [row["name"] for row in entries if row["status"] == KEPT]
         budget = {"schema_version": BUDGET_SCHEMA, "revision": REVISION, "request_id": str(task_context["request_id"]),
                   "build_plan_digest": build_plan_digest, "objects": entries, "kept_at_cap": kept,
                   **({"flags": [SPENDING_CAP_REACHED]} if kept else {}),
-                  "claim_boundary": "Reservations on the job's spending cap, in the plan's order; no object is built "
-                                    "by this record."}
+                  "claim_boundary": "Reservations inside the job's limits on paid work, in the plan's order; a refusal "
+                                    "names the website's code, which covers the dollar cap and the paid-request count "
+                                    "alike, never which one. No object is built by this record."}
         budget["digest"] = canonical_digest(budget, digest_field="digest")
         write_json(root / BUDGET_RECORD, budget)
     return budget

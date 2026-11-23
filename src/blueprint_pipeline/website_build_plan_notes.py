@@ -20,9 +20,15 @@ NOT_IN_VIDEO = "not_in_video"
 #: The build plan's dollar budget record (``website_build_budget``, owner decision 2026-11-23), in ``budget_root``.
 BUDGET_SCHEMA = "website_build_budget.v1"
 BUDGET_RECORD = "build_budget.json"
-#: An object's status there when the job's spending cap kept it out of the build (``website_build_budget.KEPT``).
+#: An object's status there when a limit on the job's paid work kept it out of the build (``website_build_budget.KEPT``).
 KEPT_AT_CAP = "kept_as_filmed"
-KEPT_AT_CAP_NOTE = "Kept as filmed: {name}, the job's spending cap was reached."
+#: What the website's refusal may mean. It sends one code, ``website_scene_preparation_budget_exhausted``, for both of
+#: the job's limits on paid work: the $40 dollar cap (``checkWebsiteJobCeiling``) and the native ledger's paid-request
+#: count (``preparationRequestLimit``, the sponsorship's ``max_paid_attempts``). It does not say which refused, so no
+#: record or sentence here claims one.
+REFUSAL_CODE_MEANS_ONE_OF = ("job_dollar_cap", "paid_request_count")
+#: True whichever of the two limits refused.
+KEPT_AT_CAP_NOTE = "Kept as filmed: {name}, the job reached its limit on paid work."
 
 
 def budget_root(capture_root: Path) -> Path:
@@ -42,14 +48,31 @@ def sealed_budget(capture_root: Path) -> dict[str, Any] | None:
     return dict(budget)
 
 
-def kept_at_cap(budget: Mapping[str, Any] | None, decided: Mapping[str, Any] | None) -> list[str]:
-    """The names, in the plan's order, of the objects the job's spending cap kept as filmed; only from a budget made
-    for this decision's own plan."""
+def _kept_rows(budget: Mapping[str, Any] | None, decided: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
     plan = ((decided or {}).get("build_plan") or {}).get("digest")
     if not budget or not plan or budget.get("build_plan_digest") != plan:
         return []
-    return [str(row["name"]) for row in budget.get("objects") or [] if isinstance(row, Mapping)
+    return [row for row in budget.get("objects") or [] if isinstance(row, Mapping)
             and row.get("status") == KEPT_AT_CAP and row.get("reason") == SPENDING_CAP_REACHED and row.get("name")]
+
+
+def kept_at_cap(budget: Mapping[str, Any] | None, decided: Mapping[str, Any] | None) -> list[str]:
+    """The names, in the plan's order, of the objects a limit on the job's paid work kept as filmed; only from a budget
+    made for this decision's own plan."""
+    return [str(row["name"]) for row in _kept_rows(budget, decided)]
+
+
+def kept_disclosure(budget: Mapping[str, Any] | None, decided: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The handoff's disclosure of those objects: their names under the machine reason, and the website's refusal code
+    exactly as received with the two limits it may mean (``REFUSAL_CODE_MEANS_ONE_OF``); never which one. Empty when
+    none was kept."""
+    rows = _kept_rows(budget, decided)
+    if not rows:
+        return {}
+    code = next((row["refusal_code"] for row in rows if isinstance(row.get("refusal_code"), str)), None)
+    return {"kept_at_spending_cap": [str(row["name"]) for row in rows], "reason": SPENDING_CAP_REACHED,
+            **({"refusal_code": code} if code else {}),
+            "refusal_code_means_one_of": list(REFUSAL_CODE_MEANS_ONE_OF)}
 
 
 def sealed_decision(capture_root: Path) -> dict[str, Any] | None:
@@ -74,8 +97,8 @@ def plan_notes(decided: Mapping[str, Any] | None, budget: Mapping[str, Any] | No
     of the scan to build on its own, which it keeps in the scan as filmed, what the video does not show. Each is the
     plan's choice, never that anything was built: the package's own notes say whether the object was prepared. Kept
     objects are named only where nothing else was erased (one object taken out alone, or the planner's removals not
-    applied); on today's one-object route the editor erases what the planner asked. An object the job's spending cap
-    kept out of the build (``budget``, ``website_build_budget``) is named once, with the cap's words."""
+    applied); on today's one-object route the editor erases what the planner asked. An object a limit on the job's paid
+    work kept out of the build (``budget``, ``website_build_budget``) is named once, in words true of either limit."""
     plan = ((decided or {}).get("build_plan") or {}).get("plan") or {}
     rows = [row for row in plan.get("objects") or [] if isinstance(row, Mapping) and row.get("name")]
     if not rows:
@@ -106,5 +129,5 @@ def build_plan_notes(capture_root: Path) -> dict[str, Any]:
 
 
 __all__ = ["BUDGET_RECORD", "BUDGET_SCHEMA", "DECISION_SCHEMA", "JOB_OBJECT_RECORD", "KEPT_AT_CAP", "KEPT_AT_CAP_NOTE",
-           "NOT_IN_VIDEO", "budget_root", "build_plan_notes", "kept_at_cap", "plan_notes", "sealed_budget",
-           "sealed_decision"]
+           "NOT_IN_VIDEO", "REFUSAL_CODE_MEANS_ONE_OF", "budget_root", "build_plan_notes", "kept_at_cap",
+           "kept_disclosure", "plan_notes", "sealed_budget", "sealed_decision"]

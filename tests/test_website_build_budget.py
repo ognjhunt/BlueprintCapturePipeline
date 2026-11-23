@@ -15,7 +15,8 @@ from blueprint_pipeline import website_task_context
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.hard_stops import JOB_SPEND_CAP, webapp_refusal
 from blueprint_pipeline.website_build_plan_notes import (DECISION_SCHEMA, JOB_OBJECT_RECORD, KEPT_AT_CAP_NOTE,
-                                                         budget_root, build_plan_notes, kept_at_cap, plan_notes)
+                                                         REFUSAL_CODE_MEANS_ONE_OF, budget_root, build_plan_notes,
+                                                         kept_at_cap, kept_disclosure, plan_notes)
 from blueprint_pipeline.website_job_spend_cap import SPENDING_CAP_REACHED, per_job_cap_usd
 
 CONTEXT = {"context_digest": "sha256:" + "1" * 64, "request_id": "req-1", "scene_id": "site-req-1",
@@ -43,12 +44,17 @@ def _micros(usd):
 class Ledger:
     """The job's WebApp ledger as ``reserveWebsitePreparationSpend`` and ``settleWebsitePreparationSpend`` keep it:
     each row at its settlement, else its quote, beside the scene intake's allowance held in full; a new quote must fit
-    under the cap (``checkWebsiteJobCeiling``), else the typed refusal every preparation lane reads; a repeated binding
-    answers the row it holds (``already_reserved``)."""
+    under the cap (``checkWebsiteJobCeiling``) and the native rows' paid-request count under its limit
+    (``preparationRequestLimit``), else the one typed refusal the WebApp sends for both; a repeated binding answers the
+    row it holds (``already_reserved``)."""
 
-    def __init__(self, *, scan=8.0, intake=20.0):
-        self.rows = {"scan": {"admission": {"maximum_cost_usd": scan}}}
-        self.intake, self.asked, self.down = intake, [], False
+    def __init__(self, *, scan=8.0, intake=20.0, request_limit=32):
+        self.rows = {"scan": {"admission": {"maximum_cost_usd": scan, "atlas_authorization_digest": "sha256:atlas"}}}
+        self.intake, self.request_limit, self.asked, self.down = intake, request_limit, [], False
+
+    def requests(self):
+        return sum(row["admission"]["request_count"] for row in self.rows.values()
+                   if "atlas_authorization_digest" not in row["admission"])
 
     def total_micros(self):
         return _micros(self.intake) + sum(_micros(row["settlement"]["actual_cost_usd"] if "settlement" in row
@@ -63,7 +69,8 @@ class Ledger:
             command, key = payload["spend"], payload["spend"]["allocation_binding_digest"][7:]
             if key in self.rows:
                 return {**self.rows[key]["admission"], "status": "already_reserved"}
-            if self.total_micros() + _micros(command["maximum_cost_usd"]) > _micros(float(per_job_cap_usd())):
+            if (self.requests() + command["request_count"] > self.request_limit
+                    or self.total_micros() + _micros(command["maximum_cost_usd"]) > _micros(float(per_job_cap_usd()))):
                 raise webapp_refusal(f"website_control_preparation-spend_http_409:{JOB_SPEND_CAP}", JOB_SPEND_CAP)
             self.rows[key] = {"admission": {**command, "schema_version": "paid_lane_admission.v1",
                 "status": "admitted", "blockers": [], "external_disclosure_allowed": True,
@@ -120,16 +127,20 @@ def test_each_extra_paid_object_reserves_its_own_share_in_the_plans_order_until_
     assert ledger.total_micros() == 40_000_000
     crate, drill = record["objects"][3], record["objects"][5]
     assert crate == {"rank": 3, "target_id": "crate", "name": "crate", "sourcing": "generate", "status": budget.KEPT,
-                     "reason": SPENDING_CAP_REACHED, "refused": True, "binding_digest": _binding("crate")}
+                     "reason": SPENDING_CAP_REACHED, "refused": True, "binding_digest": _binding("crate"),
+                     "refusal_code": JOB_SPEND_CAP, "refusal_code_means_one_of": ["job_dollar_cap", "paid_request_count"]}
+    # The drill was never asked: it is kept under the crate's refusal, its code as received.
     assert drill["refused"] is False and "binding_digest" not in drill
+    assert (drill["refusal_code"], drill["refusal_code_means_one_of"]) == (JOB_SPEND_CAP, list(REFUSAL_CODE_MEANS_ONE_OF))
     assert record["objects"][1]["maximum_cost_usd"] == 12.0
     assert record["objects"][1]["authoring_budget"]["scope"] == "whole_authoring_stage_cumulative_including_resume"
     assert record["kept_at_cap"] == ["crate", "drill"] and record["flags"] == [SPENDING_CAP_REACHED]
     assert record["digest"] == canonical_digest(record, digest_field="digest")
     assert json.loads((tmp_path / "build_budget.json").read_text()) == record
-    # The refusal is the object's own record, kept with the website's code.
+    # The refusal is the object's own record: the website's code exactly as received, and both limits it may mean.
     refused = json.loads((tmp_path / "reservations" / (_binding("crate")[7:] + ".json")).read_text())
-    assert refused["status"] == budget.REFUSED and refused["refusal"].endswith(":" + JOB_SPEND_CAP)
+    assert refused["status"] == budget.REFUSED and refused["refusal_code"] == "website_scene_preparation_budget_exhausted"
+    assert refused["refusal_code_means_one_of"] == ["job_dollar_cap", "paid_request_count"]
 
 
 def test_a_retry_or_a_resume_reuses_each_reservation_and_never_reserves_twice(tmp_path, ledger, monkeypatch):
@@ -299,17 +310,47 @@ def test_the_readme_names_each_object_the_cap_kept_out(tmp_path, ledger):
         "drill.",
         "The plan takes this out of the scan to build as its own object: blue tote.",
         "The plan keeps these in the scan as filmed, not built on their own: carton, open bin and mug.",
-        "Kept as filmed: crate, the job's spending cap was reached.",
-        "Kept as filmed: drill, the job's spending cap was reached."]
+        "Kept as filmed: crate, the job reached its limit on paid work.",
+        "Kept as filmed: drill, the job reached its limit on paid work."]
     assert KEPT_AT_CAP_NOTE.format(name="crate") in build_plan_notes(tmp_path)["plan_notes"]
     # A budget made for another plan is never read; without one the notes are today's.
     assert kept_at_cap({**record, "build_plan_digest": "sha256:" + "b" * 64}, decided) == []
     assert plan_notes(decided, {**record, "build_plan_digest": "sha256:" + "b" * 64}) == plan_notes(decided)
-    assert not any("spending cap" in note for note in plan_notes(decided))
+    assert not any("limit on paid work" in note for note in plan_notes(decided))
     # A record that does not seal itself is not read.
     path = budget_root(tmp_path) / "build_budget.json"
     path.write_text(json.dumps({**record, "kept_at_cap": []}))
-    assert not any("spending cap" in note for note in build_plan_notes(tmp_path)["plan_notes"])
+    assert not any("limit on paid work" in note for note in build_plan_notes(tmp_path)["plan_notes"])
+
+
+def test_a_refusal_by_the_paid_request_count_reads_exactly_as_one_by_the_dollar_cap(tmp_path, monkeypatch):
+    """The WebApp refuses its paid-request count with the dollar cap's code, so the Pipeline cannot tell them apart:
+    every record keeps the code as received with both limits it may mean, and every sentence is true of either."""
+    def kept_by(ledger, root):
+        monkeypatch.setattr(website_task_context, "preparation_webapp_request", ledger)
+        decided = _decided(root, OBJECTS, {"target_id": "tote", "name": "blue tote", "sourcing": "generate",
+                                           "editor_object_ids": ["e"]})
+        record = _admit(budget_root(root))
+        kept = [{key: row[key] for key in ("name", "reason", "refused", "refusal_code", "refusal_code_means_one_of")}
+                for row in record["objects"] if row["status"] == budget.KEPT]
+        return kept, kept_disclosure(record, decided), build_plan_notes(root)["plan_notes"]
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: [])
+    monkeypatch.setattr(admission, "_monthly_budget_blockers", lambda _resource_class: [])
+    monkeypatch.delenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", raising=False)
+    # $28 of $40 held, so one $12 fits; and a job with $40 free whose request count allows one more call.
+    dollars, counted = Ledger(), Ledger(scan=0.0, intake=0.0, request_limit=1)
+    by_dollars, by_count = kept_by(dollars, tmp_path / "dollars"), kept_by(counted, tmp_path / "count")
+    assert counted.total_micros() == 12_000_000  # dollars to spare: the count refused the crate
+    assert by_dollars == by_count
+    kept, disclosed, notes = by_count
+    assert [row["name"] for row in kept] == ["crate", "drill"]
+    assert {row["refusal_code"] for row in kept} == {"website_scene_preparation_budget_exhausted"}
+    assert disclosed == {"kept_at_spending_cap": ["crate", "drill"], "reason": SPENDING_CAP_REACHED,
+                         "refusal_code": "website_scene_preparation_budget_exhausted",
+                         "refusal_code_means_one_of": ["job_dollar_cap", "paid_request_count"]}
+    said = " ".join(notes)
+    assert "Kept as filmed: crate, the job reached its limit on paid work." in notes
+    assert "spending cap" not in said and "$" not in said and "request" not in said
 
 
 def test_the_handoff_discloses_each_object_the_cap_kept_out(tmp_path, monkeypatch):
@@ -322,10 +363,13 @@ def test_the_handoff_discloses_each_object_the_cap_kept_out(tmp_path, monkeypatc
                "kept_in_scan_target_ids": ["cup-2"]}
     kept = {"schema_version": "website_build_budget.v1", "build_plan_digest": PLAN_DIGEST, "objects": [
         {"rank": 0, "name": "cup", "status": budget.FIRST},
-        {"rank": 1, "name": "second cup", "status": budget.KEPT, "reason": SPENDING_CAP_REACHED}]}
+        {"rank": 1, "name": "second cup", "status": budget.KEPT, "reason": SPENDING_CAP_REACHED,
+         "refusal_code": JOB_SPEND_CAP, "refusal_code_means_one_of": list(REFUSAL_CODE_MEANS_ONE_OF)}]}
     monkeypatch.setattr(website_build_plan, "sealed_decision", lambda _root: decided)
     monkeypatch.setattr(website_build_plan_notes, "sealed_budget", lambda _root: kept)
     _job, _context, planned = room_job(tmp_path, monkeypatch, removal=CUPS, family="rigid_pick_place",
                                        description="Move the cup.", all_targets=True)
     assert planned["build_plan"] == {"digest": PLAN_DIGEST, "built": "cup-1", "kept_in_scan": 1,
-                                     "kept_at_spending_cap": ["second cup"]}
+                                     "kept_at_spending_cap": ["second cup"], "reason": SPENDING_CAP_REACHED,
+                                     "refusal_code": "website_scene_preparation_budget_exhausted",
+                                     "refusal_code_means_one_of": ["job_dollar_cap", "paid_request_count"]}
