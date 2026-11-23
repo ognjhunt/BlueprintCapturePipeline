@@ -470,12 +470,14 @@ def piece_of(code: str) -> str:
 def ships_at_once(code: str) -> bool:
     """Whether ``code`` is a fact about the job's own scene or wording that compile found
     (``website_task_preparation.SCENE_FACT_BLOCKERS``), or the end of a provider's bound of unanswered sends, which
-    no later run can change (``website_gemini_receipts.EXHAUSTED``, #3636). Judged on its head: a coverage blocker
+    no later run can change (``website_gemini_receipts.EXHAUSTED``, #3636), or a fit or facing stop found once the
+    room was built (``website_recapture_required.ROOM_BUILT_CODES``), which the same video always repeats. Judged on its head: a coverage blocker
     may name its target after a ``:``."""
     from .website_gemini_receipts import EXHAUSTED
+    from .website_recapture_required import ROOM_BUILT_CODES
     from .website_task_preparation import SCENE_FACT_BLOCKERS
     head = code.split(":", 1)[0]
-    return head in SCENE_FACT_BLOCKERS or code == EXHAUSTED
+    return head in SCENE_FACT_BLOCKERS or head in ROOM_BUILT_CODES or code == EXHAUSTED
 
 
 def defect(error: BaseException) -> bool:
@@ -532,7 +534,8 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
     job ships what it has, flagged ``spending_cap_reached`` (``shipped_code``), and waits for no one. Otherwise
     it holds on a wall (``hard_stops.is_wall``, or a code the retry policy reads as privacy, rights or money, the
     authoring admissions among them, or as the owner's closing of the run: ``website_preparation_retry.classify``),
-    on the job's sentence still to come, on a stop only a new video clears (``website_recapture_required``), on a
+    on the job's sentence still to come, on a stop only a new video clears (``website_recapture_required``, a fit
+    or facing stop found once the room was built excepted: that one ships at once), on a
     code the room package would be wrong for (``keeps_holding``, any segment), and in a development test, which
     places the object on its own surface. Only facts about the job's own scene or wording ship at once
     (``ships_at_once``). Everything else, an unknown code included (a configuration fault, a missing key or
@@ -546,7 +549,8 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
     from .job_retry_policy import MONEY, PRIVACY_RIGHTS
     from .website_development_test import enabled
     from .website_preparation_retry import AWAITING_JOB_SENTENCE, OWNER_CLOSED, classify
-    from .website_recapture_required import CODES as RECAPTURE_CODES
+    from .website_recapture_required import CODES, ROOM_BUILT_CODES
+    RECAPTURE_CODES = CODES - ROOM_BUILT_CODES  # only these still need a new video: no room was built for them
     codes = [str(code) for code in codes]
     at_cap = bool(codes) and all(spending_cap_code(code) for code in codes)
     if not at_cap and (not codes or (error is not None and is_wall(error))
