@@ -297,11 +297,14 @@ def _range(value: Any) -> list[float] | None:
 
 
 def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None,
-                 packet: Path | None = None) -> dict[str, Any] | None:
+                 packet: Path | None = None, basis: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """The success-rule file: the criteria and the neutral facts to reproduce the run, or None without criteria.
 
     ``estimates``: the preparation's ``physics.bounds`` for the object, estimated from the video; when it holds a
     mass or friction range they go under ``object_estimates_from_video``. ``packet``: as for ``up_axis``.
+    ``basis``: for each number of the rule the preparation set, whether the site's own words state it
+    (``site_stated``), it is the goal area's radius (``destination_area``) or Blueprint's default (``assumed``); it
+    goes under ``criteria_basis``, by the preparation's field names. Never the site's words themselves.
     """
     criteria = ((plan.get("task_spec") or {}).get("task_success_contract") or {}).get("criteria")
     if not isinstance(criteria, Mapping):
@@ -332,6 +335,11 @@ def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None
         found = {key: value for key, value in found.items() if value is not None}
         if found:
             rule["object_estimates_from_video"] = found
+    if isinstance(basis, Mapping):
+        kept_basis = {str(key): value for key, value in basis.items()
+                      if value in {"site_stated", "assumed", "destination_area"}}
+        if kept_basis:
+            rule["criteria_basis"] = kept_basis
     return rule
 
 

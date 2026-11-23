@@ -541,4 +541,17 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
             **({"atlas_route": "geometry_only", "subject_in_reconstruction": result["subject_in_reconstruction"]}
                if geometry_only else {}),
             **({"job_object_rule": result["job_object_rule"]} if result.get("job_object_rule") else {}),
+            **({"job_objects_kept": kept} if (kept := _job_objects_kept(result)) else {}),
             "alignment": "anchored" if anchor else "registration_search", **({"flags": flags} if flags else {})}
+
+
+def _job_objects_kept(result: Mapping[str, Any]) -> str | None:
+    """Why the job's own objects stayed in the scan (``website_atlas_pipeline.job_object_review``), wherever the
+    background result carries it: ``job_object_rule``, or the planner's not-applied record
+    (``website_atlas_pipeline.NOT_APPLIED_FIELD``) when people were erased from edited views. Either way the objects
+    are in the room as filmed, and the handoff must say so."""
+    for field in ("job_object_rule", "planner_removals_not_applied"):
+        rule = result.get(field)
+        if isinstance(rule, Mapping) and rule.get("job_objects_kept"):
+            return str(rule["job_objects_kept"])
+    return None

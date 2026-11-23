@@ -39,7 +39,8 @@ context grants consent, and ``sharing_statement.sharing_basis`` gives a basis. T
 shared with the clip (its ``statement_check.json``), so a capture that may not be shared is read once a window,
 not once per package.
 
-It runs in the Atlas preview timer's pass, after the clip (``website_atlas_preview.company_simulation_tick``):
+It runs in the Atlas preview timer's pass, after the clip, both before any job's paid Atlas step and again after
+them (``website_atlas_preview.company_simulation_tick``), so a ready room waits behind no Atlas work:
 local files and ``pxr`` only, no model, provider or paid resource. Nothing here raises out of the pass or holds a
 job: every outcome is a returned status, retried on the next pass.
 """
@@ -131,7 +132,8 @@ BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: well under this; one that does not is recorded and tried again after the live-statement window.
 BUILD_DEADLINE_SECONDS = 900
 #: The pass starts no capture after this. It runs after the company clip's pass (up to 900 s, plus one encode of
-#: at most 900 s) in the same unit, whose start timeout is 2 h: 600 s plus one build keeps both well inside it.
+#: at most 900 s) in the same unit, whose start timeout is 2 h, before the Atlas steps and again after them: 600 s
+#: plus one build keeps each run inside it (``website_atlas_preview.STEP_START_BUDGET_SECONDS``).
 TICK_BUDGET_SECONDS = 600
 QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
 DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/team-scene-packets"
@@ -373,7 +375,8 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
             statuses.append((path.stat().st_mtime_ns, path.name, status))
     for _mtime, _name, status in sorted(statuses, reverse=True):
         source = _half(Path(status["team_scene_inputs_path"]).parent, status, estimates=object_estimates(root),
-                       generated=generated_patch(root), look=look_views(root), capture=root)
+                       generated=generated_patch(root), look=look_views(root), capture=root,
+                       basis=success_basis(root))
         if source is not None:
             return source
     # Else the room package the scene handoff wrote (``website_scene_handoff.write_room_package``), when sealed.
@@ -550,16 +553,35 @@ def object_estimates(capture_root: Path) -> Mapping[str, Any] | None:
 
     Read from the preparation the scene handoff names (inside the capture), else the default preparation record.
     """
+    bounds = (_preparation(capture_root).get("physics") or {}).get("bounds")
+    return bounds if isinstance(bounds, Mapping) else None
+
+
+def _preparation(capture_root: Path) -> dict[str, Any]:
+    """The preparation the job's scene handoff names (inside the capture), else the default preparation record."""
     root = Path(capture_root)
     preparation = root / "pipeline" / "website_scene_preparation" / "preparation.json"
     named = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json").get("preparation_path")
     if isinstance(named, str):
-        candidate = Path(named)
-        candidate = candidate if candidate.is_absolute() else root / candidate
-        if _inside(root, candidate) is not None:
-            preparation = candidate
-    bounds = (_read(preparation).get("physics") or {}).get("bounds")
-    return bounds if isinstance(bounds, Mapping) else None
+        candidate = Path(named) if Path(named).is_absolute() else root / named
+        preparation = candidate if _inside(root, candidate) is not None else preparation
+    return _read(preparation)
+
+
+def success_basis(capture_root: Path) -> dict[str, str] | None:
+    """For each number of the rule the preparation set, where it came from: ``site_stated`` (the site's own words),
+    ``destination_area`` or ``assumed``, from the preparation's ``success_rule_basis`` when the build choice read the
+    site's words (``website_task_preparation._rule_success``); None otherwise, so its package says what it said
+    before. Never the quotes: the site's words can name the site."""
+    record = _preparation(capture_root).get("success_rule_basis")
+    fields = record.get("fields") if isinstance(record, Mapping) and record.get("applied") is True else None
+    if not isinstance(fields, Mapping):
+        return None
+    # ``site_words`` is ``website_build_choice.SUCCESS_RULE_SITE``, named here: the package lane stays off its imports.
+    words = {"site_words": "site_stated", "assumed": "assumed", "destination_area": "destination_area"}
+    found = {str(key): words[row["basis"]] for key, row in fields.items()
+             if isinstance(row, Mapping) and row.get("basis") in words}
+    return found or None
 
 
 def generated_patch(capture_root: Path) -> str | None:
@@ -603,16 +625,11 @@ def size_notes(capture_root: Path) -> dict[str, bool]:
     """What the preparation the job's scene handoff names says of the object's size (``subject_extent``) and where it
     rests: read from its own points, an exact model's published size that disagrees, and a destination it
     overhangs (``destination_overhang``). Empty when none, so its package says what it said before."""
-    root = Path(capture_root)
-    preparation = root / "pipeline" / "website_scene_preparation" / "preparation.json"
-    named = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json").get("preparation_path")
-    if isinstance(named, str):
-        candidate = Path(named) if Path(named).is_absolute() else root / named
-        preparation = candidate if _inside(root, candidate) is not None else preparation
-    extent = _read(preparation).get("subject_extent")
+    preparation = _preparation(capture_root)
+    extent = preparation.get("subject_extent")
     extent = extent if isinstance(extent, Mapping) else {}
     check = extent.get("published_cross_check") if isinstance(extent.get("published_cross_check"), Mapping) else {}
-    overhang = _read(preparation).get("destination_overhang")
+    overhang = preparation.get("destination_overhang")
     return {**({"size_from_its_points": True} if extent.get("status") == "from_its_own_points" else {}),
             **({"size_disagrees_with_published": True} if check.get("status") == "disagrees" else {}),
             **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {})}
@@ -635,7 +652,8 @@ def surface_estimated(capture_root: Path) -> bool:
 
 
 def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None,
-          generated: str | None = None, look: bool = False, capture: Path | None = None) -> dict[str, Any] | None:
+          generated: str | None = None, look: bool = False, capture: Path | None = None,
+          basis: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """The half's plan and shipped files; a row that cannot be placed is kept as ``refusal`` naming its role. The
     look's row carries the splat it was authored from (``look_source``) when ``capture``'s records name one."""
     from .scene_package_stage import StageRefused, neutral_rule, placements, up_axis
@@ -663,7 +681,8 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
         try:
             rows = placements(plan)
             axis = up_axis(plan, packet=packet)
-            rule = neutral_rule(_with_sealed_rule(plan, scene, status), estimates=estimates, packet=packet)
+            rule = neutral_rule(_with_sealed_rule(plan, scene, status), estimates=estimates, packet=packet,
+                                basis=basis)
             room = source.get("room")
             if room is not None and (
                     name != SCENE_PACKAGE[0] or room["plan_digest"] != plan.get("plan_digest")
@@ -1203,6 +1222,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     if room is None and not withheld:
         lines += ["- success_rule.json: what counts as done, as numbers, with the run's timing and the object's",
                   "  start position and size where known."]
+        if isinstance(source.get("rule"), Mapping) and source["rule"].get("criteria_basis"):
+            lines += ["  criteria_basis says, for each number Blueprint set, whether the site's own words state it",
+                      "  (site_stated), it is the goal area's radius (destination_area) or Blueprint's default (assumed)."]
     elif room is not None and room["success_rule_defined"]:
         lines += ["- success_rule.json: the goal region (surface_target: radius_m around surface_position_world_m,",
                   "  the middle of the goal's footprint at the lowest point of it the video shows) and how long",

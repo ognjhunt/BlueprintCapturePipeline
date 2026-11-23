@@ -119,6 +119,13 @@ RIGIDITY_INSTRUCTION = (
     "Give 'rigidity_reason': the short visible evidence for it, such as its material or how it hangs, "
     "folds or rests. "
 )
+#: A liquid, paste, powder or loose material moved as one mass is soft too (owner direction 2026-11-23): it is no
+#: rigid body, so the room keeps it as filmed (``website_atlas_pipeline.job_object_review``). Names the property,
+#: never example objects. Its own sentence, so every earlier revision's text is still derived exactly.
+LOOSE_MATERIAL_INSTRUCTION = (
+    "Also give deformable when the task moves a liquid, a paste, a powder or loose pieces handled as one mass, "
+    "because it flows, pours, spreads or crumbles; the container it is in is a separate target. "
+)
 #: What a deployment company needs and a site rarely states (owner decision 2026-11-19): what each object is
 #: mostly made of and how much of its box that fills, for Blueprint's weight estimate, and how often a site like
 #: this one runs the job. Estimates, labelled so (``website_job_estimates``); the same call, no new one.
@@ -207,7 +214,7 @@ PROMPT_INSTRUCTION = (
     "(rebuild_and_compose or none), 'spatial_evidence' (a list of "
     "{timestamp_seconds, box_xywh_normalized:[x,y,w,h]} entries time-localizing the "
     "target), and 'confidence' in [0,1]. "
-    + RIGIDITY_INSTRUCTION + ESTIMATE_INSTRUCTION +
+    + RIGIDITY_INSTRUCTION + LOOSE_MATERIAL_INSTRUCTION + ESTIMATE_INSTRUCTION +
     "Always mark a person as remove. Mark a "
     "movable task-object as remove with rebuild_and_compose. Keep fixed clutter that "
     "is genuinely part of the environment (disposition keep, rebuild_intent none). "
@@ -216,9 +223,12 @@ PROMPT_INSTRUCTION = (
     "who is not visibly present."
 )
 PROMPT_TEMPLATE_SHA256 = hashlib.sha256(PROMPT_INSTRUCTION.encode("utf-8")).hexdigest()
+#: The instruction before loose material (2026-11-19 to 2026-11-23). An analysis bought under it stays the
+#: capture's answer: it lacks only that sentence, so a liquid it read as unknown is flagged as today.
+ESTIMATE_PROMPT_INSTRUCTION = PROMPT_INSTRUCTION.replace(LOOSE_MATERIAL_INSTRUCTION, "", 1)
 #: The instruction before the material and the operations estimate (2026-11-03 to 2026-11-19). An analysis
 #: bought under it stays the capture's answer, without them, and is never bought again.
-RIGIDITY_PROMPT_INSTRUCTION = PROMPT_INSTRUCTION.replace(ESTIMATE_INSTRUCTION, "", 1)
+RIGIDITY_PROMPT_INSTRUCTION = ESTIMATE_PROMPT_INSTRUCTION.replace(ESTIMATE_INSTRUCTION, "", 1)
 #: The instruction before rigidity (2026-10-31 to 2026-11-03). An analysis bought under it
 #: stays the capture's answer, unclassified, and is never bought again.
 REGION_PROMPT_INSTRUCTION = RIGIDITY_PROMPT_INSTRUCTION.replace(RIGIDITY_INSTRUCTION, "", 1)
@@ -227,7 +237,8 @@ REGION_PROMPT_INSTRUCTION = RIGIDITY_PROMPT_INSTRUCTION.replace(RIGIDITY_INSTRUC
 PRIOR_PROMPT_INSTRUCTION = REGION_PROMPT_INSTRUCTION.replace(DESTINATION_REGION_INSTRUCTION, "", 1)
 #: Each revision of the instruction by name. A plan records the one it was bought under
 #: (``prompt_revision``); a plan bought before names existed is known by its template digest.
-PROMPT_REVISION = "removal_analysis.r4"
+PROMPT_REVISION = "removal_analysis.r5"
+ESTIMATE_PROMPT_REVISION = "removal_analysis.r4"
 RIGIDITY_PROMPT_REVISION = "removal_analysis.r3"
 REGION_PROMPT_REVISION = "removal_analysis.r2"
 PRIOR_PROMPT_REVISION = "removal_analysis.r1"
@@ -235,6 +246,7 @@ PRIOR_PROMPT_REVISION = "removal_analysis.r1"
 OLDER_PROMPT_REVISION = "removal_analysis.r0"
 PROMPT_REVISIONS = {
     PROMPT_TEMPLATE_SHA256: PROMPT_REVISION,
+    hashlib.sha256(ESTIMATE_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): ESTIMATE_PROMPT_REVISION,
     hashlib.sha256(RIGIDITY_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): RIGIDITY_PROMPT_REVISION,
     hashlib.sha256(REGION_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): REGION_PROMPT_REVISION,
     hashlib.sha256(PRIOR_PROMPT_INSTRUCTION.encode("utf-8")).hexdigest(): PRIOR_PROMPT_REVISION,
@@ -255,8 +267,9 @@ def analysis_revision(plan: Mapping[str, Any]) -> str:
 def binds_current_job(plan: Mapping[str, Any]) -> bool:
     """Whether a retained analysis still decides the job, so it is never bought again.
 
-    One bought under the current revision always does, and so does one bought under the rigidity revision: it
-    lacks only the material and the operations estimate, which the job packet then says it does not have. One
+    One bought under the current revision always does, and so do one bought under the estimate revision (it lacks
+    only the loose-material sentence) and one bought under the rigidity revision: it lacks only the material and
+    the operations estimate, which the job packet then says it does not have. One
     bought under the destination-region
     revision does when it completed: it was asked for the instance choice and the named place, and
     lacks only the rigidity class, which the label backstop covers. Anything older, or an older one
@@ -264,7 +277,7 @@ def binds_current_job(plan: Mapping[str, Any]) -> bool:
     task let the analysis choose was left uncertain under an instruction without the choice rule).
     """
     revision = analysis_revision(plan)
-    return revision in (PROMPT_REVISION, RIGIDITY_PROMPT_REVISION) or (
+    return revision in (PROMPT_REVISION, ESTIMATE_PROMPT_REVISION, RIGIDITY_PROMPT_REVISION) or (
         revision == REGION_PROMPT_REVISION and plan.get("status") == "completed" and not plan.get("blockers"))
 
 
