@@ -44,21 +44,23 @@ def _job(tmp_path, code="website_registration_ambiguous"):
     return pipeline
 
 
+@pytest.mark.parametrize("code", ["website_registration_ambiguous", "website_front_normal_undetermined"])
 @pytest.mark.parametrize("release", ["a" * 40, "b" * 40])
-def test_a_registration_hold_is_reevaluated_once_per_release(tmp_path, monkeypatch, release):
+def test_a_registration_hold_is_reevaluated_once_per_release(tmp_path, monkeypatch, release, code):
+    """A fit or facing stop is found once the room was built; since 2026-11-22 it ships the room flagged, so a
+    hold an earlier release wrote for it is looked at again."""
     from blueprint_pipeline import team_scene_packet_worker
-    pipeline = _job(tmp_path)
+    pipeline = _job(tmp_path, code)
     monkeypatch.setattr(team_scene_packet_worker, "current_release_commit", lambda: release)
     assert held.held_kind(pipeline) == "registration_recapture"
     fact = held.arrived_fact(pipeline)
     assert fact["kind"] == "release" and fact["release_commit"] == release
-    assert fact["recapture_code"] == "website_registration_ambiguous"
+    assert fact["recapture_code"] == code
     # The fact is keyed by the release: the drain spends it once, and the next release brings a new one.
     assert fact["fact_digest"] == canonical_digest({key: value for key, value in fact.items() if key != "fact_digest"})
 
 
-@pytest.mark.parametrize("code", ["website_front_normal_undetermined", "website_task_object_not_observed",
-                                  "website_capture_frames_unusable"])
+@pytest.mark.parametrize("code", ["website_task_object_not_observed", "website_capture_frames_unusable"])
 def test_a_stop_decided_by_what_the_video_shows_is_not_reevaluated(tmp_path, monkeypatch, code):
     from blueprint_pipeline import team_scene_packet_worker
     pipeline = _job(tmp_path, code)

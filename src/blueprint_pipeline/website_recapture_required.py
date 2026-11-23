@@ -32,7 +32,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 
-__all__ = ["CODES", "FIELD", "FRONT_NORMAL_CODE", "ABSTENTION_CODES", "FRAMES_UNUSABLE_CODE", "NOT_OBSERVED_CODE", "REGISTRATION_CODES", "SCHEMA", "record",
+__all__ = ["CODES", "FIELD", "FRONT_NORMAL_CODE", "ABSTENTION_CODES", "FRAMES_UNUSABLE_CODE", "NOT_OBSERVED_CODE", "REGISTRATION_CODES", "ROOM_BUILT_CODES", "SCHEMA", "record",
            "retains_recapture_required"]
 
 SCHEMA = "website_recapture_required.v1"
@@ -51,6 +51,10 @@ NOT_OBSERVED_CODE = "website_task_object_not_observed"
 #: The scene review found no usable frame at all (``frames_unusable``).
 FRAMES_UNUSABLE_CODE = "website_capture_frames_unusable"
 CODES = REGISTRATION_CODES | {FRONT_NORMAL_CODE, NOT_OBSERVED_CODE, FRAMES_UNUSABLE_CODE}
+#: Since 2026-11-22 these no longer ask for a new video: they are found after the room was built, so the job ships
+#: the room package, flagged (``website_scene_handoff.goes_on``), as section 8 of the retry doc does for any other
+#: blocker. Only the scene review's abstentions, found before any room is bought, still ask the site to film again.
+ROOM_BUILT_CODES = REGISTRATION_CODES | {FRONT_NORMAL_CODE}
 #: A final scene-review abstention (``atlas_scene_planner.FINAL_ABSTENTION_REASONS``) and what the site is asked.
 ABSTENTION_CODES = {"task_object_or_region_not_visible": NOT_OBSERVED_CODE, "frames_unusable": FRAMES_UNUSABLE_CODE}
 
