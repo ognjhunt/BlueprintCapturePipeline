@@ -219,8 +219,12 @@ def _release_switching(error: BaseException) -> bool:
 def _outage(error: BaseException) -> bool:
     """A provider 429 or 5xx, a provider's refusal of Blueprint's own key or account (401, 402, 403:
     ``job_retry_policy.provider_account_refused``, paged once by ``preparation_fault_alert``), a changed task
-    context, a release switching (``_release_switching``), or a transport or OS error (timeouts included)."""
-    from .job_retry_policy import PROVIDER_ACCOUNT_STATUSES, provider_account_refused
+    context, a release switching (``_release_switching``), or a transport or OS error (timeouts included). A provider
+    SDK's own error (OpenAI's ``RateLimitError`` for ``insufficient_quota`` on 2026-11-23) is read by the rule the
+    preparation retry uses too (``job_retry_policy.provider_error_waits``)."""
+    from .job_retry_policy import PROVIDER_ACCOUNT_STATUSES, provider_account_refused, provider_error_waits
+    if provider_error_waits(error):
+        return True
     status = getattr(error, "status", None)
     if isinstance(status, int):
         return status == 429 or status >= 500 or status in PROVIDER_ACCOUNT_STATUSES
@@ -238,6 +242,15 @@ def _by_deadline(job: Mapping[str, Any], at: int) -> int:
 
 def _outage_retry(job: Mapping[str, Any], current: int, code: str, detail: Mapping[str, Any]) -> dict[str, Any]:
     failures = job.get("transient_failures", 0) + 1
+    job = dict(job)
+    streak = job.get("refusal_retries")
+    if code == job.get("last_refusal_reason") and isinstance(streak, int) and streak > 0:
+        # The same code's refusal streak was this outage read as a refusal (a provider SDK's 429 or "no credit"
+        # before 2026-11-23): the retries it took are given back, so it never ends the job early.
+        total = job.get("refusal_retries_total")
+        job.update(refusal_retries=0,
+                   refusal_retries_total=max(0, total - streak) if isinstance(total, int) else total)
+        job.pop("last_refusal_reason")
     return {**job, "transient_failures": failures, "last_transient_reason": code, **detail,
             "next_attempt_at_epoch": _by_deadline(job, current + outage_retry_delay(failures))}
 
@@ -321,7 +334,7 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     if request_cannot_succeed(code):
         # An outside service refused the request itself (a 413, a 400...), or it cannot be made
         # to fit: sending it again unchanged cannot succeed, so the step ends now with that code. A
-        # rate limit (429) is an outage above; an operator's retry reopens the job after a fix.
+        # rate limit (429), coded or raised by a provider SDK, is an outage above; an operator's retry reopens the job after a fix.
         return _transition(job, current, "failed", code, **detail)
     if not isinstance(error, ValueError):
         return _refusal_retry(job, current, code, detail)  # a defect: not proven permanent, not an outage

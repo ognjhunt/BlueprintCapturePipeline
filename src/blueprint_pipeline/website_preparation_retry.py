@@ -66,7 +66,15 @@ RECLAIM_DELAY_SECONDS = 600
 _OPERATION = re.compile(r"website_control_[a-z0-9-]+_http_")
 # An outage: a provider or WebApp 429/5xx, a timeout, a dropped connection, a full disk.
 _OUTAGE = re.compile(r"http_(?:429|5[0-9][0-9])(?![0-9])|timeout|timed out|connection|temporar|unavailable|quota"
-                     r"|no space left|disk_budget|capacity_insufficient", re.IGNORECASE)
+                     r"|no space left|disk_budget|capacity_insufficient"
+                     # A provider SDK's own text for its 429 or 5xx: "Error code: 500 - ...", "502 Bad Gateway",
+                     # "Server disconnected", "Rate limit reached", "Overloaded".
+                     r"|error code: (?:429|5[0-9][0-9])(?![0-9])|bad gateway|internal server error|server error '"
+                     r"|server disconnected|\brate.?limit|overloaded",
+                     re.IGNORECASE)
+# Google's status and its upper-case name ("500 INTERNAL.", "504 DEADLINE_EXCEEDED", "429 RESOURCE_EXHAUSTED"): the
+# name alone is too common (Blueprint's own codes end in "_resource_exhausted").
+_OUTAGE_STATUS_NAME = re.compile(r"(?<![0-9])(?:429|5[0-9][0-9]) [A-Z][A-Z_]{2,}\b")
 _CHAIN_LIMIT = 16
 OUTAGE, REFUSAL, DETERMINISTIC = "outage", "refusal", "deterministic"
 #: The WebApp's ``website_run_closed_by_owner``: the run is closed until the site gives a new instruction.
@@ -95,7 +103,7 @@ def classify(*texts: str) -> str:
     from .website_task_context_contracts import TASK_NOT_NAMED
     if any(text.endswith(TASK_NOT_NAMED) for text in stripped):
         return AWAITING_JOB_SENTENCE
-    return OUTAGE if any(_OUTAGE.search(text) for text in stripped) else REFUSAL
+    return OUTAGE if any(_OUTAGE.search(text) or _OUTAGE_STATUS_NAME.search(text) for text in stripped) else REFUSAL
 
 
 def retry_delay(kind: str, failures: int, *, deadline: bool = True) -> int | None:
@@ -187,6 +195,30 @@ def _texts(exc: BaseException) -> list[str]:
     return texts
 
 
+def _retry_after_seconds(exc: BaseException, now: datetime) -> int | None:
+    """Seconds the provider asked to wait (its response's ``Retry-After``: seconds or an HTTP date); None when the
+    error carries no response or no readable header."""
+    from email.utils import parsedate_to_datetime
+    from .job_retry_policy import error_chain
+    for link in error_chain(exc):
+        headers = getattr(getattr(link, "response", None), "headers", None)
+        try:
+            value = None if headers is None else (headers.get("retry-after") or headers.get("Retry-After"))
+        except Exception:  # noqa: BLE001 - headers of an unknown shape say nothing
+            value = None
+        if not isinstance(value, str) or not value.strip():
+            continue
+        value = value.strip()
+        try:
+            if value.isdigit():
+                return int(value)
+            when = parsedate_to_datetime(value)
+            return max(0, int((when.astimezone(timezone.utc) - now).total_seconds()))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return None
+
+
 def consecutive_failures(history: Sequence[Any]) -> int:
     """Failed attempts in a row at the end of the history; an explicit wait is no failure."""
     count = 0
@@ -268,11 +300,17 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
     """The retry record for a failed attempt, or None when the host does not own its retry. Never raises."""
     try:
         from .deterministic_refusal import find
+        from .job_retry_policy import provider_error_waits
         failures = max(1, consecutive_failures(history))
         kind = classify(*_texts(exc))
         deterministic = find(exc) if kind == REFUSAL else None
         if deterministic is not None:
             kind = DETERMINISTIC
+        elif kind == REFUSAL and provider_error_waits(exc):
+            # The provider's own 429 or 5xx, or its refusal of Blueprint's key, account or credit, whatever its text
+            # says: an outage (``job_retry_policy.provider_error_waits``, the room build's rule too). A privacy, rights or money reading of
+            # the text, the owner's closing and a deterministic refusal were decided above and still win.
+            kind = OUTAGE
         if _spent(kind, failures, deadline=has_deadline(capture_root)):
             kind = RETRIES_SPENT
         delay = retry_delay(kind, failures, deadline=has_deadline(capture_root))
@@ -284,8 +322,15 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
             return None
         from .website_preparation_terminal import _parse_utc
         at = _parse_utc(failed_at) or _now(None)
+        asked = _retry_after_seconds(exc, at) or 0
+        if delay > 0:
+            # Never sooner than the provider's own Retry-After (a gated wait, 0, keeps its gate).
+            delay = max(delay, asked)
         record = _record({"source_payload_sha256": payload_digest, "producer_delivery_key": producer_delivery_key},
                          failures=failures, error=str(exc), due=at + timedelta(seconds=delay), kind=kind)
+        if asked > 0:
+            # Kept apart from ``next_attempt_at``: the job's last call (``last_call_due``) waits for it too.
+            record[PROVIDER_NOT_BEFORE] = _iso(at + timedelta(seconds=asked))
         if kind == RETRIES_SPENT:
             # Already run on this release: the next one runs it again. With no release identity it runs on
             # the last timed interval instead (``spent_waiting``).
@@ -487,6 +532,17 @@ def _due(root: Path, ledger: Mapping[str, Any], record: Mapping[str, Any]) -> da
 LAST_CALL_SECONDS = 2 * 3600
 
 
+#: When the provider's own ``Retry-After`` lets the next attempt run; the last call never runs before it.
+PROVIDER_NOT_BEFORE = "provider_not_before"
+
+
+def _last_call(root: Path, ledger: Mapping[str, Any], record: Mapping[str, Any], now: datetime) -> bool:
+    """``last_call_due``, once the provider's own ``Retry-After`` (``PROVIDER_NOT_BEFORE``) has passed."""
+    from .website_preparation_terminal import _parse_utc
+    not_before = _parse_utc(record.get(PROVIDER_NOT_BEFORE))
+    return (not_before is None or not_before <= now) and last_call_due(root, ledger, now)
+
+
 def last_call_due(root: Path, ledger: Mapping[str, Any], now: datetime) -> bool:
     """Whether the job's window, read now (``retained_window_end``), ends within ``LAST_CALL_SECONDS`` and no
     attempt has started since that last stretch began: it runs once there. A window that cannot be read: no."""
@@ -511,7 +567,7 @@ def _redrive(listener: Any, root: Path, *, storage_root: Path, process_args: Map
              now: datetime) -> dict[str, Any] | None:
     before = listener._read_job_ledger(root)
     record = armed(before)
-    if record is None or (_due(root, before, record) > now and not last_call_due(root, before, now)):
+    if record is None or (_due(root, before, record) > now and not _last_call(root, before, record, now)):
         return None
     raw = retained_payload(listener, root, before)
     handoff = listener.parse_handoff_payload(raw)
@@ -584,7 +640,7 @@ def reconcile_preparation_retries(listener: Any, *, storage_root: Path, process_
                 ledger = committed
             when = _due(root, ledger, armed(ledger))
             if ((when > current or deterministic_waiting(armed(ledger)) or spent_waiting(armed(ledger)))
-                    and not last_call_due(root, ledger, current)):
+                    and not _last_call(root, ledger, armed(ledger), current)):
                 counts["waiting"] += 1
             else:
                 due.append((min(when, current), "ledger", root))
