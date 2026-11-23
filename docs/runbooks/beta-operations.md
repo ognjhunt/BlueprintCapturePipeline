@@ -71,7 +71,9 @@ The job-store checks also skip these cases:
   release while its grant is live and it can still finish in its window
   (`website_atlas_preview._reopen_parked_after_release`); a provider's 401,
   402 or 403 waits as an outage and pages once per service
-  (`website_provider_account_refused`). To speed one up, read
+  (`website_provider_account_refused`); since 2026-11-23 so does a provider's
+  answer that Blueprint's account has no credit left, and the page counts the
+  jobs waiting. To speed one up, read
   it with `door selected-handoff --selector-file <selector> --atlas-status --wait`
   (the selector from `--discover-selector`) and reopen it with `--atlas-retry
   --atlas-status-digest <digest> --wait` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)).
@@ -402,6 +404,12 @@ launch dispatcher uses. Every project in the organization counts.
   yesterday: about 48 h at most.
 - The balance and the recharge settings are on the OpenAI platform's billing
   page (owner login).
+- With no balance to read, an empty account shows only when a call is refused
+  (`insufficient_quota`, "You have no credits remaining"). Since 2026-11-23 the
+  room builds wait on it as on an outage, and the stall alarm pages
+  `website_provider_account_refused` once, naming the provider and how many jobs
+  wait (`preparation_fault_alert`). Adding credit is the fix; the jobs resume by
+  themselves.
 - Whether the WebApp's OpenAI key is in the same organization: owner to
   confirm. If it is not, the WebApp's OpenAI spend is not counted.
 
