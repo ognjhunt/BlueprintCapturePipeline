@@ -78,6 +78,7 @@ def test_a_provider_refusing_blueprints_key_pages_once_per_service_while_jobs_wa
     memory: dict = {}
     section, alerts = fault.check_preparation_faults(tmp_path, now=NOW, memory_out=memory)
     assert [row["code"] for row in alerts] == [fault.KEY_CODE] and alerts[0]["count"] == 1
-    assert alerts[0]["label"] == "world_labs" and section["provider_account_refusals_announced"] == 1
+    # Since 2026-11-23 the page names how many jobs wait on the service (the 413 is no account refusal).
+    assert alerts[0]["label"] == "world_labs (2 jobs waiting)" and section["provider_account_refusals_announced"] == 1
     assert capacity._severity(fault.KEY_CODE) == "page" and "key or account" in stall.describe(alerts[0])
     assert fault.check_preparation_faults(tmp_path, now=NOW + fault.ANNOUNCE_SECONDS, remembered=memory)[1] == []
