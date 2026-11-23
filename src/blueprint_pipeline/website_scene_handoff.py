@@ -937,9 +937,12 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         removal = json.loads(removal_path.read_text())
         # Capture truth applies to held families too. Reading this retained
         # manifest performs no mask, authoring or provider work.
-        # The editor could not take the job's object out cleanly, so the scene kept it as filmed
-        # (``website_atlas_pipeline.background_floor``): it is part of the room scan, never also built on its own.
-        in_scan = (bool((atlas.get("job_object_rule") or {}).get("background_not_cleaned"))
+        # The editor could not take the job's object out cleanly, or the job's objects are several or soft, so the
+        # scene kept them as filmed (``website_atlas_pipeline.background_floor``, ``job_object_review``): they are
+        # part of the room scan, never also built on their own.
+        kept_rule = atlas.get("job_object_rule") or {}
+        in_scan = (bool(kept_rule.get("background_not_cleaned") or kept_rule.get("job_objects_kept")
+                        or atlas.get("job_objects_kept"))
                    and any(row.get("task_effect") == "manipulated" for row in removal.get("entries") or []))
         room_ready = True  # from here a room package can be written (``room_package``)
         # A subject-origin conflict protects no privacy, rights or money: once the first retry cycle is spent it
@@ -974,6 +977,8 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         semantics_options = {"task_semantics": semantics, "source_video_digest": source_video_digest}
         # The model's object build, honoured in place of today's judgement rules (``website_build_choice``).
         override = None
+        # The numbers of the chosen rule the site's words state, from the same answer, honoured or not.
+        stated_success = None
         if allow_build_choice:
             from .website_build_choice import (RECORD, ROOM_FLAG, ROOM_ONLY, RULE_WITHHELD, RULE_WITHHELD_CODE,
                                                decide_build, rules_route)
@@ -992,6 +997,11 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                                         task_semantics=semantics, source_video_digest=source_video_digest)
                 if decision is not None and decided is not None:
                     decided.append(decision)
+                if decision is not None and (decision.get("choice") or {}).get("success_rule"):
+                    # Only numbers the words state: with none, the rule and the job's output are today's.
+                    stated_success = {"build": decision["choice"]["build"],
+                                      "fields": dict(decision["choice"]["success_rule"]),
+                                      "request_binding_digest": decision["request_binding_digest"]}
                 if decision is not None and decision["honoured"]:
                     chosen = decision["choice"]
                     result["build_choice"] = {"build": chosen["build"], "rules_build": rules["build"],
@@ -1210,6 +1220,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 **({"atlas_route": "geometry_only"} if geometry_only else {}),
                 **({"rule_withheld": result["rule_withheld"]} if "rule_withheld" in result else {}),
                 **({"build_choice": override} if override is not None else {}),
+                **({"success_rule": stated_success} if stated_success is not None else {}),
             )
         except ValueError as exc:
             from .website_build_choice import BINDING_INVALID

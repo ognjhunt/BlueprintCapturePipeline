@@ -60,7 +60,7 @@ def test_the_estimates_ride_the_existing_call_and_the_earlier_request_stays_exac
         "per_hour", "hours_per_day", "days_per_week", "basis"}
     assert "operations_estimate" not in RESPONSE_SCHEMA["required"]  # optional: it never fails an answer
     assert analysis.ESTIMATE_INSTRUCTION in analysis.PROMPT_INSTRUCTION
-    assert analysis.PROMPT_REVISION == "removal_analysis.r4"
+    assert analysis.PROMPT_REVISION == "removal_analysis.r5"  # r5 (2026-11-23): a liquid or loose material reads as soft
     # The schema and instruction every analysis from 2026-11-03 to 2026-11-19 was bought under (origin/main).
     assert canonical_digest(RIGIDITY_RESPONSE_SCHEMA) == (
         "sha256:209408cb8c89f8f45047a5ff421e75746d737cd596ebd61bc340ec7ebb43b7c3")

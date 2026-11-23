@@ -33,7 +33,7 @@ from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
-from .website_build_choice import chosen_destination_rows, chosen_mechanism  # the model's honoured object build
+from .website_build_choice import chosen_destination_rows, chosen_mechanism, success_with_site_numbers
 from .website_task_context_contracts import (GEOMETRY_ONLY_BLOCKER, authoring_admission_blockers,
                                              without_withheld_gap)
 from .website_preparation_contracts import scene_configuration_max_retries
@@ -1077,11 +1077,14 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       synthetic_authoring_backend: str = "pinned_cad_primitive_v1",
                                       atlas_route: str = "full",
                                       artisan_provider_choice: Any = None, build_choice: Any = None,
-                                      rule_withheld: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                                      rule_withheld: Mapping[str, Any] | None = None,
+                                      success_rule: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """``atlas_route="geometry_only"``: the Atlas job kept the scene as filmed
     (``website_atlas_pipeline.ROUTE_ENV``). The preparation is for the robot fit check
     only and never an intake (``GEOMETRY_ONLY_BLOCKER``); a captured rigid subject's box
     is cut out of the collider before any lookup.
+
+    ``success_rule``: the numbers of the rule the site's words state (``website_build_choice.success_with_site_numbers``).
     """
     if atlas_route not in ("full", "geometry_only"):
         raise ValueError("atlas_route_invalid")
@@ -1848,6 +1851,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6.1-sol",
             agents_api_policy=dict(spend["agents_api_policy"]))
     blockers.extend(admission)  # the Anthropic terms, the Agents API authority, the execution authority, the rights
+    rule_success, success_basis = success_with_site_numbers(articulated=articulated, destination=destination, defaults={
+        "rigid": SUCCESS, "opening": ARTICULATED_SUCCESS}, success_rule=success_rule, rule_withheld=rule_withheld)
     request = {
         "schema_version": intake.REQUEST_SCHEMA, "submission_id": capture_id, "owner": owner,
         "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
@@ -1866,12 +1871,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "complete_object_dimensions": body is not None or synthetic is not None},
                  "support": {"description": subject_entry.get("support_label") or "support surface under subject",
                              "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
-                 **({"articulation": mechanism, "success": dict(ARTICULATED_SUCCESS)} if articulated else
+                 **({"articulation": mechanism, "success": rule_success} if articulated else
                     {"destination": destination or {"needs_input": "task_destination_pose_required"},
-                     # The object's centre must end within the destination's area: its radius is the
-                     # scored tolerance, as the disc the robots see (``website_destination_area``).
-                     "success": {**SUCCESS, **({"maximum_final_planar_target_error_m": destination["radius_m"]}
-                                              if (destination or {}).get("radius_m") else {})}})},
+                     # The object's centre ends within the destination's area: its radius is the tolerance
+                     # (``website_destination_area``) unless the site's words ask for less.
+                     "success": rule_success})},
         "execution": {"purpose": "scene_preparation", "max_total_spend_usd": spend["max_total_spend_usd"],
                       "max_paid_attempts": spend["max_paid_attempts"],
                       "max_retries": scene_configuration_max_retries(spend),
@@ -1909,6 +1913,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "blockers": blockers, "claim_ceiling": CLAIM_CEILING,
         **({"task_semantics": dict(task_semantics)} if task_semantics is not None else {}),
         "owner_success_criteria": owner_targets,
+        **({"success_rule_basis": success_basis} if success_basis is not None else {}),
         **({"website_preparation_authority": dict(spend)} if task_context.get("confirmed") is False else {}),
         **({"authoring_provider_terms_reference": terms} if authoring_provider == "anthropic" and
             isinstance(terms, str) else {}),
