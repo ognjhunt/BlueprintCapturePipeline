@@ -723,3 +723,13 @@ def test_the_owner_success_confirmation_kind_is_gone():
                           "owner_user_id": "owner-uid", "owner_organization_id": "org-1",
                           "approved_by": "owner-uid", "approval_evidence": "approval", "apply": False,
                           "apply_ack": "", "ack": "confirm-owner-success-contract"})
+
+
+def test_a_retired_kinds_written_requests_stay_readable(config: DoorConfig) -> None:
+    """Retiring a kind keeps the outcomes its requests already wrote listable and showable."""
+    request_id = "20261103T150000Z-confirm-owner-success-contract-0000abcd"
+    completed = Path(config.spool_root) / "completed"
+    completed.mkdir(parents=True, exist_ok=True)
+    (completed / f"{request_id}.json").write_text(json.dumps({"id": request_id}), encoding="utf-8")
+    assert request_state(config, request_id)["state"] == "completed"
+    assert any(row["id"] == request_id for row in list_requests(config))

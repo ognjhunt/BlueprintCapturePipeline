@@ -155,8 +155,13 @@ _BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]")
 _DELIVERY_CAPTURE = re.compile(
     r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]/scenes/site-[A-Za-z0-9][A-Za-z0-9._-]{0,122}"
     r"/captures/(?:walkthrough|supplement)-[A-Za-z0-9][A-Za-z0-9._-]{0,114}")
+#: Kinds the door no longer admits. Their ids stay readable so ``requests`` and ``show``
+#: still list and read the outcomes those requests already wrote; nothing admits them.
+_RETIRED_KINDS = ("confirm-owner-success-contract",)
 _REQUEST_ID = re.compile(
-    r"[0-9]{8}T[0-9]{6}Z-(" + "|".join(re.escape(kind) for kind in sorted(_SCOPES)) + r")-[0-9a-f]{8}"
+    r"[0-9]{8}T[0-9]{6}Z-("
+    + "|".join(re.escape(kind) for kind in sorted({*_SCOPES, *_RETIRED_KINDS}))
+    + r")-[0-9a-f]{8}"
 )
 _UNIT_ACTIONS = ("start", "reset-failed", "stop", "restart")
 _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
