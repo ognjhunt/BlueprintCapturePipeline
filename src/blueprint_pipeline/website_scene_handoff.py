@@ -1120,7 +1120,11 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 blockers=[correction['reason']], visual_reconstruction_ready=False,
                 atlas_scene_source={'status': correction['status'], 'reason': correction['reason'],
                                     'stage': 'target_correction'})
-            return finish()
+            # No room floor here: this room was cleaned around the object the site has since corrected, so a
+            # floor would tell a company the wrong object was the job's. The corrected room ships when it is built.
+            result["digest"] = canonical_digest(result, digest_field="digest")
+            write_json(handoff_path, result)
+            return result
         if navigation:
             # The robot moves itself: the room, and the goal region lifted from the reading's goal mask.
             return room_package(resolved.profile_id, masks)
