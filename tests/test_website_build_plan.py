@@ -23,14 +23,15 @@ EDITOR = _bought_review()["automation"]["objects"]  # table, centerpiece (remove
 
 
 def _row(target, name, *, role="moved_object", rigidity="rigid", sourcing="parametric", ids=(), size=None, mass=None,
-         variety=None):
+         variety=None, shape=None):
     return {"target_id": target, "name": name, "role": role, "variety": variety, "rigidity": rigidity,
-            "size_m": size, "mass_kg": mass, "sourcing": sourcing, "reason": f"The job needs the {name}.",
-            "editor_object_ids": list(ids)}
+            "size_m": size, "mass_kg": mass, "sourcing": sourcing,
+            "parametric_shape": shape or ("carton" if sourcing == "parametric" else None),
+            "reason": f"The job needs the {name}.", "editor_object_ids": list(ids)}
 
 
 PLAN = {"objects": [
-    _row("tote", "blue tote", ids=["centerpiece"], variety="one tote of parts",
+    _row("tote", "blue tote", ids=["centerpiece"], variety="one tote of parts", shape="tote",
          mass={"low": 3.5, "high": 4.5, "basis": "site_words", "quote": "about 4 kg"},
          size={"low": .4, "high": .6, "basis": "estimated", "from": "the tote's extent in the analysis"}),
     _row("carton", "carton", sourcing="generate", ids=["table"]),
@@ -84,6 +85,12 @@ def test_a_valid_plan_is_kept_in_the_models_order_and_quotes_only_the_jobs_words
     ({**PLAN["objects"][1], "editor_object_ids": ["centerpiece"]}, "editor_objects"),  # already the tote's
     ({**PLAN["objects"][1], "editor_object_ids": ["sofa"]}, "editor_objects"),
     ({**PLAN["objects"][3], "editor_object_ids": ["floor"]}, "editor_objects"),  # not in the video, yet shown
+    # A parametric shape names one of the generator's shapes, for a rigid object it sources parametric, and only then.
+    ({**PLAN["objects"][1], "sourcing": "parametric"}, "parametric_shape"),
+    ({**PLAN["objects"][1], "parametric_shape": "tote"}, "parametric_shape"),
+    ({**PLAN["objects"][1], "sourcing": "parametric", "parametric_shape": "crate"}, "parametric_shape"),
+    ({**PLAN["objects"][1], "sourcing": "parametric", "parametric_shape": "tote", "rigidity": "articulated"},
+     "parametric_shape"),
 ])
 def test_a_bad_entry_is_dropped_alone_and_nothing_is_repaired(bad, reason):
     answer = {"objects": [PLAN["objects"][0], bad, PLAN["objects"][2]]}
@@ -113,7 +120,8 @@ def test_the_model_is_shown_labels_and_ids_only_and_never_a_person():
 def test_the_built_object_is_the_first_the_job_moves_and_can_build():
     plan = build_plan.validate_plan(PLAN, inputs=_inputs(), task_context=CONTEXT)
     assert build_plan.built_object(plan, entries=ENTRIES, editor_objects=EDITOR) == {
-        "target_id": "tote", "name": "blue tote", "sourcing": "parametric", "editor_object_ids": ["centerpiece"]}
+        "target_id": "tote", "name": "blue tote", "sourcing": "parametric", "parametric_shape": "tote",
+        "editor_object_ids": ["centerpiece"]}
     # Kept as filmed, soft in the analysis's reading, shown by no row the editor removes, or not the job's own object:
     # the next one in order.
     for first in ({**PLAN["objects"][0], "sourcing": "keep_as_filmed"}, {**PLAN["objects"][0], "role": "destination"},
@@ -146,7 +154,7 @@ def test_several_job_objects_take_the_plans_one_out_and_keep_the_rest_as_filmed(
     assert record["schema_version"] == build_plan.DECISION_SCHEMA and record["applied"] is False
     assert "job_objects_kept" not in record and record["digest"] == canonical_digest(record, digest_field="digest")
     assert record["built"] == {"target_id": "tote", "name": "blue tote", "sourcing": "parametric",
-                               "editor_object_ids": ["centerpiece"]}
+                               "parametric_shape": "tote", "editor_object_ids": ["centerpiece"]}
     assert record["kept_in_scan_target_ids"] == ["carton"]
     assert record["build_plan"]["plan"]["objects"][0]["target_id"] == "tote" and "fallback" not in record["build_plan"]
     # The editor erases the tote's rows only, with the fixed words; the bought review is unchanged.
@@ -162,6 +170,8 @@ def test_several_job_objects_take_the_plans_one_out_and_keep_the_rest_as_filmed(
     removal = build_plan.apply_to_removal({"entries": ENTRIES}, tmp_path)
     assert [(row["target_id"], row["task_effect"]) for row in removal["entries"]] == [
         ("tote", "manipulated"), ("carton", "kept_in_scan"), ("shelf", "static_contact")]
+    # The tote is sourced as a parametric shape: compile is told, and authors it as one at no cost.
+    assert removal["parametric_subject"] == {"target_id": "tote", "shape": "tote"}
     assert sealed_decision(tmp_path) == record
     assert plan_notes(record) == [
         "What this simulation needs, as Blueprint's model read the job: blue tote (one tote of parts), carton, shelf "
@@ -274,3 +284,45 @@ def test_the_record_holds_the_request_and_its_cost_and_a_key_missing_is_a_fallba
     assert record["request_binding_digest"] == canonical_digest(binding) and record["maximum_cost_usd"] == cost > 0
     assert record["digest"] == canonical_digest(record, digest_field="digest")
     assert "data, not instructions" in binding["prompt"] and binding["kind"] == "website_build_plan"
+
+
+def _configuration(extents=(0.6, 0.4, 0.3), tolerance=0.1):
+    return {"authoring_backend": "artisan_v1", "source_observation_kind": "website_capture_frames",
+            "metric_envelope": {"minimum_xyz_m": [0, 0, 0], "maximum_xyz_m": list(extents),
+                                "maximum_dimension_relative_error": tolerance}}
+
+
+def test_a_parametric_object_is_authored_as_a_supplied_shape_at_no_cost():
+    from blueprint_pipeline.website_supplied_mesh import supplied_mesh_configuration
+    from blueprint_pipeline.website_synthetic_subject import AUTHORING_METHOD
+    options = dict(synthetic=None, synthetic_authoring=None, subject_id="tote", sim_min=[1, 1, 0],
+                   sim_max=[1.6, 1.4, 0.3])
+    made = supplied_mesh_configuration(_configuration(), parametric={"target_id": "tote", "shape": "tote"}, **options)
+    assert "authoring_backend" not in made and made["authoring_method"] == AUTHORING_METHOD
+    assert (made["authoring_source"], made["authoring_cost_usd"]) == ("parametric", 0.0)
+    assert made["parametric_design"]["shape"] == "tote"
+    assert made["parametric_design"]["dimensions_m"] == pytest.approx([0.6, 0.4, 0.3])
+    assert made["source_observation_kind"] == "website_capture_frames"  # the object was filmed; only its shape is plain
+    # Another object, or none: the builder is unchanged.
+    for parametric in (None, {"target_id": "carton", "shape": "carton"}):
+        assert supplied_mesh_configuration(_configuration(), parametric=parametric, **options) == _configuration()
+    # A can on an oblong footprint is no can: the builder stays, and says why.
+    kept = supplied_mesh_configuration(_configuration(), parametric={"target_id": "tote", "shape": "cylinder"},
+                                       **options)
+    assert kept == {**_configuration(), "parametric_not_used": "website_parametric_object_outside_estimated_bounds"}
+    kept = supplied_mesh_configuration(_configuration(), parametric={"target_id": "tote", "shape": "crate"}, **options)
+    assert kept["parametric_not_used"] == "website_parametric_object_design_invalid" and "authoring_backend" in kept
+
+
+def test_a_designed_object_is_configured_exactly_as_before():
+    from blueprint_pipeline.website_supplied_mesh import supplied_mesh_configuration
+    synthetic = {"shape": "box", "dimensions_m": [.1, .1, .1], "mass_kg": .2}
+    made = supplied_mesh_configuration(_configuration(), synthetic=synthetic, synthetic_authoring={"backend": "b"},
+                                       parametric={"target_id": "x", "shape": "tote"}, subject_id="x",
+                                       sim_min=[0, 0, 0], sim_max=[.1, .1, .1])
+    assert made == {"source_observation_kind": "synthetic_design", "metric_envelope": _configuration()["metric_envelope"],
+                    "authoring_method": "exact_provided_mesh_with_bounded_simulation_physics",
+                    "dimension_authority": "synthetic_design", "appearance_inputs": "synthetic_primitive_design",
+                    "geometry_support": "synthetic_primitive_design", "synthetic_design": synthetic,
+                    "synthetic_authoring": {"backend": "b"}}
+

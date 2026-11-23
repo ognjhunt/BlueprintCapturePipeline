@@ -203,7 +203,8 @@ def preflight_website_authoring_request(*, envelope, configurations):
     if configuration.get("authoring_method") == AUTHORING_METHOD:
         # A designed subject's supplied mesh calls no provider: there is no request to translate.
         _require(stage.get("adapter", {}).get("id") == AUTHORING_ADAPTER and stage.get("execution_class") == "no_spend"
-                 and configuration.get("source_observation_kind") == ORIGIN and "authoring_backend" not in configuration,
+                 and (configuration.get("source_observation_kind") == ORIGIN) != ("parametric_design" in configuration)
+                 and "authoring_backend" not in configuration,
                  "designed_subject_authoring_invalid")
         _reference(envelope, PREFIX + ".candidate")
         return None

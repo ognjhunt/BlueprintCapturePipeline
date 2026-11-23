@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .website_parametric_object import SHAPES as PARAMETRIC_SHAPES
 from .website_build_plan_notes import DECISION_SCHEMA, NOT_IN_VIDEO, build_plan_notes, plan_notes, sealed_decision
 
 SCHEMA_VERSION = "website_build_plan.v1"
@@ -71,7 +72,9 @@ PROMPT = (
     "the analysis or the video it rests on}; size_m is the largest side in metres); sourcing (library for a common "
     "object an existing 3D asset library likely has, parametric for a plain box, carton, tote, bin, tray, can or "
     "cylinder made from its dimensions, generate for a specific object that needs its own 3D model, keep_as_filmed "
-    "for soft, liquid or loose material and for anything better left in the scan as filmed); reason (one sentence); "
+    "for soft, liquid or loose material and for anything better left in the scan as filmed); parametric_shape "
+    "(for parametric sourcing of a rigid object: carton for a closed box, tote, open_bin, tray, or cylinder for a can "
+    "or cylinder; otherwise null); reason (one sentence); "
     "editor_object_ids (the scene editor's object ids that show this same object, from its list; empty when none). "
     "Never estimate a number nothing supports: give null.\n"
 )
@@ -137,8 +140,8 @@ def validate_plan(answer: Any, *, inputs: Mapping[str, Any], task_context: Mappi
     sources = [_normalized(text) for text in task_text_sources(task_context)]
     known = {row["target_id"] for row in inputs["analysis_targets"]}
     editor = {row["object_id"] for row in inputs["editor_objects"]}
-    keys = {"target_id", "name", "role", "variety", "rigidity", "size_m", "mass_kg", "sourcing", "reason",
-            "editor_object_ids"}
+    keys = {"target_id", "name", "role", "variety", "rigidity", "size_m", "mass_kg", "sourcing", "parametric_shape",
+            "reason", "editor_object_ids"}
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     seen_targets: set[str] = set()
@@ -161,6 +164,11 @@ def validate_plan(answer: Any, *, inputs: Mapping[str, Any], task_context: Mappi
             continue
         if row["rigidity"] not in BUILDABLE_RIGIDITY and row["sourcing"] in ("parametric", "generate"):
             drop("soft_or_loose_built_rigid")
+            continue
+        shape = row["parametric_shape"]
+        if (shape is not None) != (row["sourcing"] == "parametric") or (
+                shape is not None and (shape not in PARAMETRIC_SHAPES or row["rigidity"] != "rigid")):
+            drop("parametric_shape")
             continue
         variety = row["variety"]
         if variety is not None and _text(variety, 160) is None:
@@ -185,7 +193,8 @@ def validate_plan(answer: Any, *, inputs: Mapping[str, Any], task_context: Mappi
         claimed |= set(ids)
         kept.append({"target_id": target, "name": name, "role": row["role"],
                      "variety": variety.strip() if isinstance(variety, str) else None, "rigidity": row["rigidity"],
-                     "size_m": size, "mass_kg": mass, "sourcing": row["sourcing"], "reason": reason,
+                     "size_m": size, "mass_kg": mass, "sourcing": row["sourcing"], "parametric_shape": shape,
+                     "reason": reason,
                      "editor_object_ids": list(ids)})
     return {"objects": kept, **({"dropped": dropped} if dropped else {})}
 
@@ -203,7 +212,9 @@ def built_object(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[st
         ids = [item for item in row["editor_object_ids"] if item in removable]
         if (row["role"] == "moved_object" and row["rigidity"] in BUILDABLE_RIGIDITY and row["sourcing"] != "keep_as_filmed"
                 and entry is not None and task_object_rigidity(entry)["rigidity"] != "deformable" and ids):
-            return {"target_id": row["target_id"], "name": row["name"], "sourcing": row["sourcing"], "editor_object_ids": ids}
+            return {"target_id": row["target_id"], "name": row["name"], "sourcing": row["sourcing"],
+                    **({"parametric_shape": row["parametric_shape"]} if row["parametric_shape"] else {}),
+                    "editor_object_ids": ids}
     return None
 
 
@@ -298,7 +309,9 @@ def decide_plan(*, task_context: Mapping[str, Any], targets: Sequence[Mapping[st
 def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
     """The removal manifest as the handoff builds it: with a plan that took one object out of the scan, every other
     object the analysis named as the job's stays in the room as filmed (``kept_in_scan``), so the build is the one
-    object's. Unchanged without such a plan."""
+    object's; one the plan sources as a parametric shape is named for compile (``PARAMETRIC_SUBJECT``), which authors
+    it as that shape at no cost (``website_supplied_mesh``). Unchanged without such a plan."""
+    from .website_supplied_mesh import PARAMETRIC_SUBJECT
     decided = sealed_decision(capture_root)
     built = (decided or {}).get("built")
     if not isinstance(built, Mapping) or not isinstance(built.get("target_id"), str):
@@ -306,7 +319,9 @@ def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str
     entries = [{**row, "task_effect": "kept_in_scan", "kept_in_scan_reason": "build_plan"}
                if row.get("task_effect") == "manipulated" and row.get("target_id") != built["target_id"] else row
                for row in removal.get("entries") or []]
-    return {**removal, "entries": entries}
+    shape = built.get("parametric_shape") if built.get("sourcing") == "parametric" else None
+    return {**removal, "entries": entries,
+            **({PARAMETRIC_SUBJECT: {"target_id": built["target_id"], "shape": shape}} if shape else {})}
 
 
 __all__ = ["DECISION_SCHEMA", "NOT_IN_VIDEO", "PARTIAL_REMOVAL_INSTRUCTION", "apply_to_removal", "build_plan_notes",
