@@ -19,7 +19,7 @@ from fastapi import Request
 
 from blueprint_pipeline import website_company_clip as clip
 from tests.test_website_company_clip import (
-    NOW, OLDER, SHARED, World, _Bucket, _capture, _manifest, _owned_list, _rights, _sha, _withdraw, _write,
+    NOW, OLDER, SHARED, World, _Bucket, _capture, _manifest, _rights, _sha, _withdraw, _write,
 )
 
 pytestmark = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
@@ -194,40 +194,25 @@ def _open(capture: Path, world: World, digest: str, *, storage_root: Path | None
                                   client=_Bucket(world.objects), bucket="b")
 
 
-def _owned_row(capture: Path) -> dict:
-    return {"capture_id": "walkthrough-req1", "approved_by": "owner", "approved_on": "2026-11-12", "evidence": "t",
-            "video_sha256_prefix": _sha(capture / "raw/walkthrough.mp4")[7:19]}
-
-
 def _published(tmp_path: Path, monkeypatch, case: str):
     """A published clip under the basis ``case`` ends, and what ends it."""
+    assert case == "live_not_sharing"
     capture = _capture(tmp_path, version=OLDER)
-    if case == "live_not_sharing":
-        world = World(rights=_rights(SHARED))  # the site accepted the sharing statement on its job page
+    world = World(rights=_rights(SHARED))  # the site accepted the sharing statement on its job page
 
-        def end():
-            world.rights = _rights(OLDER)
-    else:
-        monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, [_owned_row(capture)]))
-        world = World(rights=_rights(OLDER))
-
-        def end():
-            if case == "owned_row_removed":
-                monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, []))
-            else:
-                (tmp_path / "owned.json").write_text("{not json")
+    def end():
+        world.rights = _rights(OLDER)
     assert world.publish(capture)["status"] == "published"
     return capture, world, end
 
 
-@pytest.mark.parametrize("case", ["owned_row_removed", "owned_list_malformed", "live_not_sharing"])
+@pytest.mark.parametrize("case", ["live_not_sharing"])
 @pytest.mark.parametrize("later", [60, 7 * HOUR, 30 * DAY])
 def test_a_clip_whose_basis_ends_is_taken_back_and_the_route_refuses(tmp_path, monkeypatch, case, later):
     capture, world, end = _published(tmp_path, monkeypatch, case)
     manifest = _manifest(capture)
     digest = manifest["archive"]["digest"]
-    expected = "blueprint_owned_capture" if case != "live_not_sharing" else "site_sharing_statement"
-    assert manifest["permission"]["permission_basis"] == expected
+    assert manifest["permission"]["permission_basis"] == "site_sharing_statement"
     assert _open(capture, world, digest)[1] > 0
     end()
     result = world.publish(capture, now=lambda: NOW + later)
@@ -297,14 +282,6 @@ def test_an_unanswered_reread_keeps_the_clip_for_one_more_window_then_takes_it_b
     assert len(world.retracted) == 1
 
 
-def test_the_route_refuses_the_moment_blueprints_list_drops_the_capture(tmp_path, monkeypatch):
-    capture, world, end = _published(tmp_path, monkeypatch, "owned_row_removed")
-    digest = _manifest(capture)["archive"]["digest"]
-    end()  # no pass has run since: the route itself checks the list
-    with pytest.raises(clip.CompanyClipUnavailable):
-        _open(capture, world, digest)
-
-
 def test_a_live_revoked_answer_during_a_rebuild_takes_the_old_archive_back(tmp_path):
     capture = _capture(tmp_path)
     world = World()
@@ -339,20 +316,6 @@ def test_a_webapp_refusal_is_remembered_and_not_uploaded_again_every_pass(tmp_pa
     world.delivery_error = None
     assert world.publish(capture, now=lambda: NOW + 6 * HOUR)["status"] == "published"
     assert len(world.archived) == 2 and "refused_by_webapp" not in _manifest(capture)
-
-
-def test_a_webapp_refusal_is_offered_again_when_the_live_rights_change(tmp_path, monkeypatch):
-    # Blueprint's own capture, which the WebApp has no record of: it refuses. Nothing is uploaded again
-    # until the site's live rights change (here it accepts the sharing statement), then the clip is offered.
-    capture = _capture(tmp_path, version=OLDER)
-    monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, [_owned_row(capture)]))
-    world = World(rights=_rights(OLDER),
-                  delivery_error=ValueError("website_control_company-clip_http_409:website_company_clip_not_permitted"))
-    assert [world.publish(capture, now=lambda t=t: NOW + t)["status"] for t in (0, 60)] == ["refused"] * 2
-    assert len(world.archived) == 1
-    world.rights, world.delivery_error = _rights(SHARED), None
-    assert world.publish(capture, now=lambda: NOW + 120)["status"] == "published"
-    assert len(world.archived) == 2 and world.delivered[-1]["permission_basis"] == "site_sharing_statement"
 
 
 # --- SF1: the pass's limits ------------------------------------------------------------------------------
@@ -518,26 +481,7 @@ def test_a_retired_capture_is_not_served_even_while_its_object_is_stored(publish
     assert _app(capture, world, monkeypatch).get(_url(digest), headers=SIGNED).status_code == 404
 
 
-def test_a_retired_owned_capture_is_not_served_after_its_row_is_removed(tmp_path, monkeypatch):
-    capture, world, end = _published(tmp_path, monkeypatch, "owned_row_removed")
-    digest = _manifest(capture)["archive"]["digest"]
-    shutil.rmtree(capture)
-    end()
-    assert world.objects  # no pass can find the capture to take the object back
-    with pytest.raises(clip.CompanyClipUnavailable):
-        _open(capture, world, digest)
-    assert _app(capture, world, monkeypatch).get(_url(digest), headers=SIGNED).status_code == 404
-
-
-# --- the not-permitted pass and the after-write proofs -----------------------------------------------------
-
-def test_the_not_permitted_precheck_takes_an_archived_copy_back_without_a_live_read(tmp_path, monkeypatch):
-    capture, world, end = _published(tmp_path, monkeypatch, "owned_row_removed")
-    end()
-    reads = world.rights_reads
-    assert world.publish(capture, now=lambda: NOW + 60) == {"status": "not_permitted"}
-    assert world.rights_reads == reads and len(world.retracted) == 1
-
+# --- the after-write proofs ---------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("tags", [
     {"format_tags": {"encoder": "Lavf61.1.100 ENCSECRET"}, "streams": []},
@@ -559,20 +503,14 @@ def test_the_audio_count_after_encoding_is_enforced(tmp_path, monkeypatch):
     assert not (tmp_path / "out.mp4").exists()
 
 
-# --- Blueprint's own list and the raw-upload fallback --------------------------------------------------------
+# --- the raw-upload fallback ----------------------------------------------------------------------------------
 
-def test_an_owned_capture_with_no_normalization_record_is_matched_by_its_raw_upload(tmp_path, monkeypatch):
-    capture = _capture(tmp_path, version=OLDER, normalized=False)
-    monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(tmp_path, [_owned_row(capture)]))
-    world = World(rights=_rights(OLDER))
+def test_a_capture_with_no_normalization_record_records_its_raw_upload(tmp_path):
+    capture = _capture(tmp_path, normalized=False)
+    world = World(rights=_rights(SHARED))
     assert world.publish(capture)["status"] == "published"
     manifest = _manifest(capture)
     assert manifest["source"] == "raw_upload" and manifest["upload_sha256"] == _sha(capture / "raw/walkthrough.mp4")
-    other = tmp_path / "other"
-    capture = _capture(other, version=OLDER, normalized=False)
-    monkeypatch.setattr(clip, "OWNED_CAPTURES_LIST", _owned_list(other, [{**_owned_row(capture),
-                                                                          "video_sha256_prefix": "0" * 12}]))
-    assert World(rights=_rights(OLDER)).publish(capture)["status"] == "not_permitted"
 
 
 def test_a_brand_new_capture_waits_for_normalization(tmp_path):
@@ -584,7 +522,3 @@ def test_a_brand_new_capture_waits_for_normalization(tmp_path):
     assert world.rights_reads == 0 and not capture.joinpath(*clip.DIRECTORY).exists()
 
 
-def test_the_shipped_allow_list_names_one_video_per_row():
-    from blueprint_pipeline.sharing_statement import owned_captures
-    owned, flag = owned_captures()
-    assert flag is None and owned and all(len(prefix) >= 12 for prefix in owned.values())
