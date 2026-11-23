@@ -33,7 +33,7 @@ CUPS = [{"target_id": f"cup-{i}", "semantic_label": "cup", "task_effect": "manip
 def room_job(tmp_path: Path, patches, *, family: str = "navigation", description: str = NAVIGATE,
              removal=(), goal: bool = True, all_targets: bool = False, route: str | None = None,
              articulated: bool = False, second_goal: bool = False, not_found: bool = False,
-             job_object_rule=None, clean_plate_flag: str = "task_relevant_target_not_observed"):
+             job_object_rule=None, clean_plate_flag: str = "task_relevant_target_not_observed", job_objects_kept=None):
     """One website job through the real handoff onto the company builder's own test capture (``Job``).
 
     The capture's team scene status is removed: no half is compiled for a room package; the builder reads the
@@ -67,7 +67,8 @@ def room_job(tmp_path: Path, patches, *, family: str = "navigation", description
              "source_geometry": {**args["source_geometry"], "geometry_backend": "world_labs_atlas"},
              "source_pose_digest": "sha256:" + "1" * 64, "background_pose_digest": "sha256:" + "2" * 64,
              **({"atlas_route": route} if route else {}),
-             **({"job_object_rule": job_object_rule} if job_object_rule else {})}
+             **({"job_object_rule": job_object_rule} if job_object_rule else {}),
+             **({"job_objects_kept": job_objects_kept} if job_objects_kept else {})}
     patches.setattr(ATLAS, lambda **_: atlas)
     patches.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **kw: kw["task_masks"])
     descriptor = {"capture_id": CAPTURE, "scene_id": SITE, "metadata": {"site_task_context": context}}

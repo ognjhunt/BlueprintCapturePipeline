@@ -18,7 +18,14 @@ the pipeline can build for THIS job:
 - ``room_only_as_filmed``: the room as filmed, nothing built, no rule.
 
 The answer is structured, validated against the menu (``validate_choice``: a build the menu offers, a destination it
-lists, words quoted from the job) and recorded with its reasons (``RECORD``). The handoff honours a valid choice that
+lists, words quoted from the job) and recorded with its reasons (``RECORD``).
+
+The same answer sets the numbers of the chosen build's rule the site's own words state (owner direction 2026-11-23:
+the success rule from the site's words, not one template for every job; ``SUCCESS_FIELDS``). Each number is quoted
+from the job word for word and held to a range in plain code (``validate_success_rule``); a number the words do not
+state keeps Blueprint's default and is recorded as assumed. A number that fails its check is dropped alone, recorded,
+and never costs the build choice. The lift and the time one try may take are only ever raised from the default: the
+scripted run lifts by the minimum lift, and the site's cycle time is a production target, not a limit on one try. The handoff honours a valid choice that
 differs from today's rules (``rules_route``); a choice that matches them leaves the job's output unchanged.
 
 Fallback: an answer off the menu, or a call that fails or is refused (for money too: the rules spend nothing to
@@ -49,6 +56,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import subprocess
 from pathlib import Path
@@ -59,7 +67,7 @@ from .core.handoff_lease import handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "website_build_choice.v1"
-REVISION = "website_build_choice.r1"
+REVISION = "website_build_choice.r2"
 #: Written in the preparation workspace on every run that decides; the receipt beside it makes it free to rewrite.
 RECORD = "build_choice.json"
 RIGID, ARTICULATED = "rigid_pick_place", "articulated_open_close"
@@ -93,13 +101,39 @@ FRAME_TOKENS = 3168
 MEDIA_RESOLUTION = "MEDIA_RESOLUTION_MEDIUM"
 FRAME_WIDTH = 1024
 
+#: The numbers of Blueprint's two rules the site's own words may set, by build: each is a field of the intake's
+#: ``task.success`` (``website_task_preparation.SUCCESS`` / ``ARTICULATED_SUCCESS`` hold the defaults), with the range
+#: plain code holds it to. Lift and episode time never go below the default: the scripted run lifts by the minimum lift
+#: and must finish inside the episode. The opening is a fraction of the estimated travel, and the scripted run opens to
+#: exactly that fraction (``executable_opening_threshold``), so 0.95 is as far as "fully" can be asked. Closing is no
+#: field: the opening rule starts closed and scores no closing (``closing_required: False``).
+SUCCESS_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
+    RIGID: {
+        "minimum_lift_m": {"unit": "m", "range": (0.05, 0.3),
+                           "means": "how high the object must be lifted off where it starts"},
+        "maximum_final_planar_target_error_m": {"unit": "m", "range": (0.02, 0.5),
+                                                "means": "how far from the target spot the object may end, at most"},
+        "maximum_episode_seconds": {"unit": "s", "range": (24.0, 120.0), "whole": True,
+                                    "means": "the most time one try may take"},
+    },
+    ARTICULATED: {
+        "minimum_opening_fraction_of_estimated_stroke": {"unit": "fraction of the part's travel", "range": (0.2, 0.95),
+                                                         "means": "how far the part must open"},
+        "minimum_hold_seconds": {"unit": "s", "range": (0.5, 10.0), "means": "how long it must stay open"},
+        "maximum_episode_seconds": {"unit": "s", "range": (30.0, 120.0), "whole": True,
+                                    "means": "the most time one try may take"},
+    },
+}
+SUCCESS_RULE_SITE = "site_words"
+SUCCESS_RULE_ASSUMED = "assumed"
+
 _DESCRIPTIONS = {
     RIGID: ("Build the one object as a rigid body. Blueprint's rule: the object is lifted and set down within a "
             "target region on its destination; when the job names no destination, on a spot on the surface it "
             "starts on, flagged as a guess."),
     ARTICULATED: ("Build the one object as an assembly with its one moving part. Blueprint's rule: that part opens "
                   "to at least 60% of its estimated travel and holds for a second. It opens in place: no "
-                  "destination."),
+                  "destination. It scores opening only: a job that closes the part is not this rule."),
     RULE_WITHHELD: ("Build the one object as a rigid body in the room with no success rule of Blueprint's: "
                     "deployment companies read the job as the site wrote it."),
     ROOM_ONLY: "Build the room as filmed. No object is built and Blueprint states no rule.",
@@ -120,7 +154,13 @@ PROMPT = (
     "an object, a destination or a rule. Return compact JSON only, with exactly these keys: build (a menu build "
     "id), destination_target_id (a listed destination id or null), job_quote (the words of the job your choice "
     "rests on, copied verbatim), reasons (one or two sentences: why this build, from the job's words and the "
-    "frames), not_built (a list of short phrases: parts of the job this build leaves out; empty when none).\n"
+    "frames), not_built (a list of short phrases: parts of the job this build leaves out; empty when none), "
+    "success_rule (for rigid_pick_place or articulated_open_close, an object with one key per field listed under "
+    "success_rule_fields for that build, else null). For each field give null unless the site's own words state or "
+    "plainly mean a value for it; then give {\"value\": a number in the field's unit within its minimum and maximum, "
+    "\"quote\": the words that state it, copied verbatim from the job}. A field left null keeps Blueprint's default, "
+    "recorded as assumed. Never estimate a number the words do not state. A cycle time or rate is a production "
+    "target, not the time one try may take.\n"
 )
 
 
@@ -216,7 +256,8 @@ def build_menu(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], t
     own = str(rules["build"])
     why_not_object = (
         None if len(objects) == 1 and objects[0]["found_in_masks"] else
-        f"the analysis took {len(objects)} objects out of the room; a one-object build would leave the others out"
+        f"the analysis found {len(objects)} objects the job moves; Blueprint builds one object per job, so the room "
+        "keeps them as filmed"
         if len(objects) > 1 else "the analysis found no single object of the job in the video")
     if why_not_object is None and objects[0]["rigidity"] == "deformable":
         why_not_object = "the analysis read the object as soft: a rigid body cannot stand in for it"
@@ -250,8 +291,14 @@ def build_menu(*, task_context: Mapping[str, Any], removal: Mapping[str, Any], t
                           "steps": [{"operation": step.get("operation"), "description": step.get("description")}
                                     for step in reading.get("steps") or [] if isinstance(step, Mapping)],
                           "covers_entire_job": reading.get("covers_entire_job")}
+    from .website_task_preparation import ARTICULATED_SUCCESS, SUCCESS
+    defaults = {RIGID: SUCCESS, ARTICULATED: ARTICULATED_SUCCESS}
+    fields = {build: {name: {"means": spec["means"], "unit": spec["unit"], "default": defaults[build][name],
+                             "minimum": spec["range"][0], "maximum": spec["range"][1]}
+                      for name, spec in SUCCESS_FIELDS[build].items()}
+              for build in SUCCESS_FIELDS if build in available_builds({"builds": builds})}
     menu = {"schema_version": SCHEMA_VERSION, "job": job, "builds": builds, "objects": objects,
-            "destinations": destinations}
+            "destinations": destinations, **({"success_rule_fields": fields} if fields else {})}
     menu["menu_digest"] = canonical_digest(menu, digest_field="menu_digest")
     return menu
 
@@ -264,14 +311,131 @@ def _normalized(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def _quoted(quote: Any, sources: Sequence[str]) -> str | None:
+    """Why ``quote`` proves nothing about the job, or None: it must be the job's own words, long enough to mean them."""
+    if not isinstance(quote, str) or not quote.strip() or len(quote) > 1000 or not any(
+            _normalized(quote) in text for text in sources):
+        return "not_in_job"
+    said = _normalized(quote)
+    if (len(said) < MIN_QUOTE_CHARACTERS or len(said.split()) < MIN_QUOTE_WORDS) and said not in sources:
+        return "too_short"
+    return None
+
+
+def validate_success_rule(value: Any, *, build: str, task_context: Mapping[str, Any]
+                          ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """The numbers of ``build``'s rule the site's words state, each ``{value, quote}``, and why any other was dropped.
+
+    Only a build with a rule of Blueprint's has fields (``SUCCESS_FIELDS``). Each value is a finite number inside its
+    range (a whole number of seconds where the field says so), quoted from the job word for word. Nothing is
+    repaired: a value that fails is dropped alone, and its field keeps the default.
+    """
+    from .atlas_preparation_context import task_text_sources
+    fields = SUCCESS_FIELDS.get(build)
+    if value is None or fields is None:
+        return {}, {}
+    if not isinstance(value, Mapping):
+        return {}, {"success_rule": "shape"}
+    sources = [_normalized(text) for text in task_text_sources(task_context)]
+    kept: dict[str, dict[str, Any]] = {}
+    dropped: dict[str, str] = {}
+    for name, entry in value.items():
+        spec = fields.get(name) if isinstance(name, str) else None
+        if spec is None:
+            dropped[str(name)[:80]] = "not_a_field_of_this_rule"
+            continue
+        if entry is None:
+            continue
+        if not isinstance(entry, Mapping) or set(entry) != {"value", "quote"}:
+            dropped[name] = "shape"
+            continue
+        number = entry["value"]
+        if not isinstance(number, (int, float)) or isinstance(number, bool) or not math.isfinite(number):
+            dropped[name] = "not_a_number"
+            continue
+        if spec.get("whole") and number != int(number):
+            dropped[name] = "not_whole_seconds"
+            continue
+        low, high = spec["range"]
+        if not low <= number <= high:
+            dropped[name] = "out_of_range"
+            continue
+        why = _quoted(entry["quote"], sources)
+        if why is not None:
+            dropped[name] = "quote_" + why
+            continue
+        kept[name] = {"value": float(number), "quote": entry["quote"].strip()}
+    return kept, dropped
+
+
+def site_success(build: str, chosen: Mapping[str, Any] | None, defaults: Mapping[str, Any]
+                 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """``defaults`` (the rule's intake ``success``) with the site's stated numbers for ``build`` in place, re-checked
+    against ``SUCCESS_FIELDS``, and each field's basis: the site's words (with the quote) or assumed. Compile's
+    second look at what the handoff passed: a value out of range here is refused (``BINDING_INVALID``)."""
+    fields = SUCCESS_FIELDS[build]
+    success = dict(defaults)
+    basis: dict[str, dict[str, Any]] = {}
+    chosen = chosen or {}
+    if not isinstance(chosen, Mapping) or set(chosen) - set(fields):
+        raise ValueError(BINDING_INVALID)
+    for name, spec in fields.items():
+        entry = chosen.get(name)
+        if entry is None:
+            basis[name] = {"value": success[name], "basis": SUCCESS_RULE_ASSUMED}
+            continue
+        number = entry.get("value") if isinstance(entry, Mapping) else None
+        low, high = spec["range"]
+        if (not isinstance(number, (int, float)) or isinstance(number, bool) or not math.isfinite(number)
+                or not low <= number <= high or not isinstance(entry.get("quote"), str)
+                or (spec.get("whole") and number != int(number))):
+            raise ValueError(BINDING_INVALID)
+        success[name] = int(number) if spec.get("whole") else float(number)
+        basis[name] = {"value": success[name], "basis": SUCCESS_RULE_SITE, "quote": entry["quote"]}
+    return success, basis
+
+
+def success_with_site_numbers(*, articulated: bool, destination: Mapping[str, Any] | None,
+                              success_rule: Mapping[str, Any] | None, rule_withheld: Mapping[str, Any] | None,
+                              defaults: Mapping[str, Mapping[str, Any]]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Compile's intake ``task.success``: Blueprint's defaults (``defaults["rigid"]`` / ``["opening"]``) with the
+    numbers the site's words state in place, and each scored number's basis (None when the build choice gave none, so
+    such a job's record is unchanged). A rigid job's tolerance is the destination's radius (``website_destination_area``)
+    or the site's own where its words ask for less: the object still ends on the destination's area. A reading that
+    names another build, or a rule withheld, sets nothing; one that fails its second check (``site_success``) is
+    recorded and sets nothing."""
+    build = ARTICULATED if articulated else RIGID
+    radius = (destination or {}).get("radius_m")
+    base = dict(defaults["opening"]) if articulated else {
+        **defaults["rigid"], **({"maximum_final_planar_target_error_m": radius} if radius else {})}
+    if success_rule is None:
+        return base, None
+    applies = success_rule.get("build") == build and rule_withheld is None
+    record: dict[str, Any] = {"build": build, "applied": applies}
+    try:
+        success, basis = site_success(build, success_rule.get("fields") if applies else None, base)
+    except ValueError:
+        (success, basis), record = site_success(build, None, base), {**record, "applied": False, "refused": True}
+    tolerance = basis.get("maximum_final_planar_target_error_m")
+    if radius and tolerance is not None:
+        if tolerance["basis"] == SUCCESS_RULE_ASSUMED:
+            basis["maximum_final_planar_target_error_m"] = {"value": radius, "basis": "destination_area"}
+        elif tolerance["value"] > radius:
+            success["maximum_final_planar_target_error_m"] = radius
+            basis["maximum_final_planar_target_error_m"] = {**tolerance, "value": radius, "held_to": "destination_area"}
+    return success, {**record, "fields": basis}
+
+
 def validate_choice(answer: Any, *, menu: Mapping[str, Any], task_context: Mapping[str, Any]) -> dict[str, Any]:
-    """The model's answer as a choice from ``menu``, or ``INVALID`` naming what is wrong. Nothing is repaired."""
+    """The model's answer as a choice from ``menu``, or ``INVALID`` naming what is wrong. Nothing is repaired.
+
+    ``success_rule`` may be absent (an answer to the earlier prompt): every field of the rule is then assumed."""
     from .atlas_preparation_context import task_text_sources
 
     def refuse(why: str) -> ValueError:
         return ValueError(f"{INVALID}:{why}")
-    if not isinstance(answer, Mapping) or set(answer) != {"build", "destination_target_id", "job_quote", "reasons",
-                                                          "not_built"}:
+    if not isinstance(answer, Mapping) or set(answer) - {"success_rule"} != {
+            "build", "destination_target_id", "job_quote", "reasons", "not_built"}:
         raise refuse("shape")
     build, destination = answer["build"], answer["destination_target_id"]
     if not isinstance(build, str) or build not in available_builds(menu):
@@ -294,8 +458,11 @@ def validate_choice(answer: Any, *, menu: Mapping[str, Any], task_context: Mappi
     if (not isinstance(left, list) or len(left) > 8
             or any(not isinstance(item, str) or not item.strip() or len(item) > 300 for item in left)):
         raise refuse("not_built")
+    stated, dropped = validate_success_rule(answer.get("success_rule"), build=build, task_context=task_context)
     return {"build": build, "destination_target_id": destination if build in DESTINATION_BUILDS else None,
-            "job_quote": quote.strip(), "reasons": reasons.strip(), "not_built": [item.strip() for item in left]}
+            "job_quote": quote.strip(), "reasons": reasons.strip(), "not_built": [item.strip() for item in left],
+            **({"success_rule": stated} if build in SUCCESS_FIELDS else {}),
+            **({"success_rule_dropped": dropped} if dropped else {})}
 
 
 def differs(choice: Mapping[str, Any], rules: Mapping[str, Any]) -> bool:
@@ -541,6 +708,6 @@ def chosen_destination_rows(value: Mapping[str, Any] | None,
 
 
 __all__ = ["ARTICULATED", "BINDING_INVALID", "DESTINATION_BUILDS", "OBJECT_BUILDS", "RECORD", "RIGID", "ROOM_FLAG",
-           "ROOM_ONLY", "RULE_WITHHELD", "RULE_WITHHELD_CODE", "available_builds", "build_menu", "decide_build",
-           "differs", "read_rejected", "record_shipped", "reject_choice", "rules_route", "validate_choice",
-           "validate_compile_choice"]
+           "ROOM_ONLY", "RULE_WITHHELD", "RULE_WITHHELD_CODE", "SUCCESS_FIELDS", "available_builds", "build_menu",
+           "decide_build", "differs", "read_rejected", "record_shipped", "reject_choice", "rules_route", "site_success",
+           "success_with_site_numbers", "validate_choice", "validate_compile_choice", "validate_success_rule"]
