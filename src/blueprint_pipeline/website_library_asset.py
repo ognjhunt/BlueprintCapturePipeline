@@ -32,6 +32,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
+from .website_library_notes import topology_digest
 
 GENERATOR = "website_library_asset.v1"
 SOURCE = "library"
@@ -318,6 +319,8 @@ def library_design(subject: Mapping[str, Any], *, estimated_m: Sequence[float], 
               "model_file": {"path": str(path), "sha256": _sha256(path), "size_bytes": path.stat().st_size},
               "source_files": [{key: row[key] for key in ("role", "sha256", "size_bytes")} for row in files],
               "face_count": int(len(triangles)), "authoring_cost_usd": 0.0, "model_called_for_geometry": False,
+              # The model's mesh topology, so its copies are named in its credit even without its own file.
+              "model_topology": list(topology_digest([3] * len(triangles), triangles.ravel())),
               "physical_measurement": False, "claim": CLAIM}
     return design, None
 

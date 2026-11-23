@@ -14,7 +14,10 @@ job's object part and every USD layer it uses (the object is built from the mode
 and any other shipped USD file with a mesh of the model's own topology (a collision or physics copy). It keeps the
 copyright notice and the disclaimer of warranties the library supplies with the model, as written (CC BY 4.0
 3(a)(1)(A)(ii) and (iv)), and says nothing where none was supplied. A package with no library model has no such
-section.
+section. The credit never depends on the model's own file: when that file is gone or changed it is not shipped, and
+the credit names the files that are (the object, and any copy found by the topology recorded when the model was
+written). When the object was built from a library model whose credit cannot be read, the package may not leave with
+the object at all (``refusal``): library geometry never ships without its credit.
 """
 from __future__ import annotations
 
@@ -64,16 +67,33 @@ def changes(design: Mapping[str, Any]) -> str:
 
 def credit_text(row: Mapping[str, Any], files: Sequence[str]) -> str:
     """One model's credit: ``files`` named in order, its own copyright notice and disclaimer only where supplied."""
-    names = list(files) or [str(row.get("file") or MODEL_FILE)]
+    names = list(files) or ([str(row["file"])] if row.get("file") else ["the job's object"])
     joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     notice, disclaimer = row.get("copyright"), row.get("disclaimer")
     return CREDIT.format(**{**row, "files": joined, "copyright": f" ({notice})" if notice else "",
                             "disclaimer": f" Its own notice: {disclaimer}" if disclaimer else ""})
 
 
+#: The preparation authored the job's object from a library model but its credit cannot be read: the package may not
+#: leave with that object (rights is a hard stop), since its geometry would ship without its credit.
+CREDIT_UNREADABLE = "website_company_simulation_library_credit_unreadable"
+_CREDIT_FIELDS = (("title", "title"), ("author", "author"), ("library", "library_title"), ("link", "item_url"),
+                  ("license", "license_name"), ("license_url", "license_url"))
+
+
+def topology_digest(counts: Any, indices: Any) -> tuple[int, str]:
+    """A mesh's topology, as ``mesh_topologies`` finds it: its face-vertex index count and a digest of its face counts
+    and indices."""
+    import numpy as np
+    return len(indices), hashlib.sha256(np.asarray(counts, dtype=np.int64).tobytes() + b"|"
+                                        + np.asarray(indices, dtype=np.int64).tobytes()).hexdigest()
+
+
 def library_models(capture_root: Path) -> dict[str, Any]:
-    """The library model the preparation the job's handoff names was authored from, when it was and its file is
-    still the one recorded: ``{"library_models": [...]}``, else empty, so the package says what it said before."""
+    """The library model the preparation the job's handoff names authored the job's object from: ``{"library_models":
+    [row]}`` whenever it did and its credit reads, so the credit never depends on the model's own file (a file missing
+    or changed since it was written is not shipped, and the credit names the files that are); ``{"library_refusal":
+    CREDIT_UNREADABLE}`` when it did but the credit cannot be read; empty when no library model was used."""
     root = Path(capture_root)
     folder = root / "pipeline" / "website_scene_preparation"
     named = _read(folder / "handoff.json").get("preparation_path")
@@ -81,24 +101,39 @@ def library_models(capture_root: Path) -> dict[str, Any]:
     if isinstance(named, str):
         candidate = (Path(named) if Path(named).is_absolute() else root / named).resolve()
         path = candidate if candidate.is_relative_to(root.resolve()) else path
-    design = ((_read(path).get("authoring_inputs") or {}).get("configuration") or {}).get("library_design")
-    if not isinstance(design, Mapping):
+    configuration = (_read(path).get("authoring_inputs") or {}).get("configuration") or {}
+    if not isinstance(configuration, Mapping) or "library_design" not in configuration:
         return {}
+    design = configuration["library_design"]
     try:
-        model, credit = design["model_file"], design["attribution"]
-        row = {"file": MODEL_FILE, "path": str(model["path"]), "sha256": str(model["sha256"]),
-               "title": str(credit["title"]), "author": str(credit["author"]), "library": str(credit["library_title"]),
-               "link": str(credit["item_url"]), "license": str(credit["license_name"]),
-               "license_url": str(credit["license_url"]), "changes": changes(design),
-               # The library's own words, as supplied; absent when it supplied none.
-               "copyright": str(credit["copyright"]) if credit.get("copyright") else None,
-               "disclaimer": str(credit["disclaimer"]) if credit.get("disclaimer") else None}
-    except (KeyError, TypeError):
-        return {}
-    model_path = Path(row["path"]).resolve()
-    if not model_path.is_relative_to(root.resolve()) or _sha256(model_path) != row["sha256"]:
-        return {}
+        credit = design["attribution"]
+        row = {key: str(credit[field]).strip() for key, field in _CREDIT_FIELDS}
+        if not all(row.values()):
+            raise ValueError("credit_field_empty")
+        row.update(changes=changes(design),
+                   # The library's own words, as supplied; absent when it supplied none.
+                   copyright=str(credit["copyright"]) if credit.get("copyright") else None,
+                   disclaimer=str(credit["disclaimer"]) if credit.get("disclaimer") else None)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return {"library_refusal": CREDIT_UNREADABLE}
+    model = design.get("model_file") if isinstance(design.get("model_file"), Mapping) else {}
+    topology = design.get("model_topology")
+    row["topology"] = list(topology) if isinstance(topology, (list, tuple)) and len(topology) == 2 else None
+    model_path = Path(str(model.get("path") or ""))
+    if (model.get("path") and model_path.resolve().is_relative_to(root.resolve())
+            and _sha256(model_path) == model.get("sha256")):
+        row.update(file=MODEL_FILE, path=str(model_path), sha256=str(model["sha256"]))
+    else:
+        row.update(file=None, path=None, sha256=None, model_file_not_shipped=True)
     return {"library_models": [row]}
+
+
+def refusal(source: Mapping[str, Any]) -> str | None:
+    """Why the package may not leave with the job's object in it: the object was built from a library model whose
+    credit cannot be read (``CREDIT_UNREADABLE``). A package without the object (the room) is not refused."""
+    files = source.get("files") or {}
+    with_object = any(isinstance(row, Mapping) and row.get("role") == "task_object" for row in files.values())
+    return str(source["library_refusal"]) if with_object and source.get("library_refusal") else None
 
 
 def shipped(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -115,6 +150,8 @@ def place(source: Mapping[str, Any], staging: Path, write: Callable[[Path, Path,
     caller. Returns the names written."""
     names = []
     for row in shipped(source):
+        if not row.get("file"):
+            continue  # its own file is gone or changed: the credit still names every file that ships
         if _sha256(Path(row["path"])) != row["sha256"]:
             raise ValueError("website_company_simulation_library_model_changed")
         target = Path(staging) / row["file"]
@@ -157,9 +194,7 @@ def mesh_topologies(path: Path, lengths: set[int] | None = None) -> set[tuple[in
             if counts is None or indices is None or not len(indices) or (lengths is not None
                                                                           and len(indices) not in lengths):
                 continue
-            digest = hashlib.sha256(np.asarray(counts, dtype=np.int64).tobytes() + b"|"
-                                    + np.asarray(indices, dtype=np.int64).tobytes())
-            found.add((len(indices), digest.hexdigest()))
+            found.add(topology_digest(np.asarray(counts), np.asarray(indices)))
     return found
 
 
@@ -177,17 +212,20 @@ def _uses(staging: Path, path: Path) -> set[str]:
 
 
 def credited_files(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -> list[str]:
-    """Every shipped file holding the library model's geometry, its own file first: the job's object part and the
-    USD layers it uses, and any other shipped USD file with a mesh of the model's topology. Empty without a model."""
+    """Every shipped file holding the library model's geometry, its own file first when it ships: the job's object
+    part and the USD layers it uses, and any other shipped USD file with a mesh of the model's topology (read from
+    its own file, or as recorded when it was written). Empty without a model."""
     rows = shipped(source)
     if not rows:
         return []
     staging = Path(staging)
-    names = {str(row["file"]) for row in rows}
+    first = [str(row["file"]) for row in rows if row.get("file") and (staging / str(row["file"])).is_file()]
+    names = set(first)
     for prim, row in (source.get("files") or {}).items():
         if isinstance(row, Mapping) and row.get("role") == "task_object" and prim in placed:
             names |= _uses(staging, staging / placed[prim])
-    model = set().union(*(mesh_topologies(staging / str(row["file"])) for row in rows))
+    model = set().union(*(mesh_topologies(staging / name) for name in first))
+    model |= {(int(row["topology"][0]), str(row["topology"][1])) for row in rows if row.get("topology")}
     lengths = {length for length, _ in model}
     for path in sorted(item for item in staging.rglob("*") if item.is_file()):
         relative = path.relative_to(staging).as_posix()
@@ -195,7 +233,6 @@ def credited_files(source: Mapping[str, Any], staging: Path, placed: Mapping[str
             continue
         if mesh_topologies(path, lengths) & model:
             names.add(relative)
-    first = [str(row["file"]) for row in rows]
     return [*first, *sorted(names - set(first))]
 
 
@@ -213,5 +250,5 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     return [*lines, "", *textwrap.wrap(CARVE_OUT, width=width)]
 
 
-__all__ = ["CARVE_OUT", "CREDIT", "HEADING", "MODEL_FILE", "changes", "credit_text", "credited_files",
-           "library_models", "mesh_topologies", "place", "readme_lines", "shipped"]
+__all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "MODEL_FILE", "changes", "credit_text", "credited_files",
+           "library_models", "mesh_topologies", "place", "readme_lines", "refusal", "shipped", "topology_digest"]

@@ -492,17 +492,15 @@ def _library_topologies(path: Path) -> list[tuple]:
             for prim in Usd.PrimRange(stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()) if prim.IsA(UsdGeom.Mesh)]
 
 
-def test_every_shipped_file_holding_the_models_geometry_is_named_in_its_credit(tmp_path):
-    """The object part built from the model and a collision copy of it, as well as the model's own file: each file a
-    company receives that holds the model's geometry is named in the model's credit, under the settled carve-out."""
+def _job_with_a_library_object(tmp_path: Path):
+    """A job whose object part is construction's no-spend authoring of a library model, with a copy of the model in
+    the room's collision file, and the preparation that names the model; returns the job and the model's topology."""
     from pxr import Usd, UsdGeom
-    from blueprint_pipeline import website_company_simulation as sim
     from blueprint_pipeline.task_evaluation_completed_scene_adapters import execute_provided_mesh_authoring
     from tests.test_website_company_simulation import Job
     job = Job(tmp_path / "job")
     configuration, stage = _library_stage(tmp_path)
     design = configuration["library_design"]
-    # The job's object as construction authors it from the model (no provider), shipped as the object part.
     candidate = tmp_path / "source_object_candidate.library.usda"
     asset.write_candidate(design, center_xyz_m=[1.0, 2.0, 0.15], path=candidate)
     data = candidate.read_bytes()
@@ -513,7 +511,6 @@ def test_every_shipped_file_holding_the_models_geometry_is_named_in_its_credit(t
                                     configuration_path=tmp_path / "stage-3.json", dependency_results=(dependency,),
                                     output_root=tmp_path / "authored")
     job.object.write_bytes((tmp_path / "authored" / "provided_mesh_candidate.usdz").read_bytes())
-    # A copy of the model in the room's collision file too: it must be named as well.
     model_stage = Usd.Stage.Open(design["model_file"]["path"])
     model = UsdGeom.Mesh(model_stage.GetPrimAtPath("/LibraryModel/Mesh"))
     collision = Usd.Stage.Open(str(job.collision))
@@ -522,12 +519,33 @@ def test_every_shipped_file_holding_the_models_geometry_is_named_in_its_credit(t
         getattr(copy, f"Create{name}Attr")(getattr(model, f"Get{name}Attr")().Get())
     collision.GetRootLayer().Save()
     job.seal()
-    model_root = job.capture / "pipeline/website_scene_preparation/model"
     made = supplied_mesh_configuration(_configuration(), synthetic=None, synthetic_authoring=None, parametric=None,
                                        subject_id="tote", sim_min=[0.7, 1.8, 0.0], sim_max=[1.3, 2.2, 0.3],
-                                       library=_subject(job.capture / "lib"), library_root=model_root)
+                                       library=_subject(job.capture / "lib"),
+                                       library_root=job.capture / "pipeline/website_scene_preparation/model")
     (job.capture / "pipeline/website_scene_preparation/preparation.json").write_text(
         json.dumps({"authoring_inputs": {"configuration": made}}))
+    return job, made, set(_library_topologies(Path(design["model_file"]["path"])))
+
+
+#: Every file a company receives holding the model's geometry, by the state of the model's own file at packaging.
+HOLDING = {"kept": ["object.usdz", "scene/files/library_model.usda", "scene/room_collision.usdc"],
+           "deleted": ["object.usdz", "scene/room_collision.usdc"], "changed": ["object.usdz", "scene/room_collision.usdc"]}
+
+
+@pytest.mark.parametrize("model_file", ["kept", "deleted", "changed"])
+def test_every_shipped_file_holding_the_models_geometry_is_named_in_its_credit(tmp_path, model_file):
+    """The object part built from the model and a collision copy of it, as well as the model's own file: each file a
+    company receives that holds the model's geometry is named in the model's credit, under the settled carve-out.
+    The credit never depends on the model's own file: gone or changed since it was written, that file is not
+    shipped, and the credit still names every file that is."""
+    from blueprint_pipeline import website_company_simulation as sim
+    job, made, reference = _job_with_a_library_object(tmp_path)
+    model_path = Path(made["library_design"]["model_file"]["path"])
+    if model_file == "deleted":
+        model_path.unlink()
+    elif model_file == "changed":
+        model_path.write_text(model_path.read_text() + "\n")
     sim.build_package(sim.simulation_source(job.capture, queue_root=job.queue), tmp_path / "package.zip", literals=[])
     with zipfile.ZipFile(tmp_path / "package.zip") as archive:
         readme = " ".join(archive.read("README.txt").decode().split())
@@ -535,13 +553,56 @@ def test_every_shipped_file_holding_the_models_geometry_is_named_in_its_credit(t
     bullet = next(line for line in readme.split(" - ") if "by Google (Copyright 2020 Google LLC.)" in line)
     named = bullet.split(": ", 1)[0].replace(" and ", ", ").split(", ")
     unpacked = tmp_path / "unpacked"
-    reference = set(_library_topologies(unpacked / "scene/files/library_model.usda"))
     holding = sorted(path.relative_to(unpacked).as_posix() for path in unpacked.rglob("*")
                      if path.suffix in (".usd", ".usda", ".usdc", ".usdz") and path.name != "scene.usda"
                      and reference & set(_library_topologies(path)))
-    assert holding == ["object.usdz", "scene/files/library_model.usda", "scene/room_collision.usdc"]
+    assert holding == HOLDING[model_file]
     missing = [name for name in holding if name not in named]
     assert not missing, f"shipped files with the model's geometry the credit does not name: {missing}"
-    assert named[0] == "scene/files/library_model.usda" and "scene/room.usdc" not in named
+    assert sorted(named) == holding and "scene/room.usdc" not in named  # and no file that is not shipped
+    assert (unpacked / "scene/files/library_model.usda").is_file() is (model_file == "kept")
     assert ("These files stay under their own license. Blueprint does not own them, and the terms Blueprint shares "
             "this package under do not restrict them.") in readme
+
+
+@pytest.mark.parametrize("break_credit", [lambda design: design.pop("attribution"),
+                                          lambda design: design["attribution"].pop("author"),
+                                          lambda design: design["attribution"].update(title=" "),
+                                          lambda design: design.update(attribution="Google")])
+def test_an_object_from_a_library_model_whose_credit_cannot_be_read_never_leaves(tmp_path, break_credit):
+    """Rights is a hard stop: without its credit, the object built from a library model may not leave in a package
+    (refused as a package that may not leave, not shipped bare); a package without the object is not refused."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline import website_library_notes as notes
+    from tests.test_website_company_simulation import World
+    job, made, _ = _job_with_a_library_object(tmp_path)
+    break_credit(made["library_design"])
+    (job.capture / "pipeline/website_scene_preparation/preparation.json").write_text(
+        json.dumps({"authoring_inputs": {"configuration": made}}))
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert source["library_refusal"] == notes.CREDIT_UNREADABLE and not source.get("library_models")
+    with pytest.raises(sim.PackageRefused) as refused:
+        sim.build_package(source, tmp_path / "package.zip", literals=[])
+    assert refused.value.reason == notes.CREDIT_UNREADABLE and not isinstance(refused.value, sim.ShapeRefused)
+    world = World(job)
+    result = world.publish()
+    assert result["status"] == "refused" and result.get("reason") == notes.CREDIT_UNREADABLE and not world.delivered
+    room = {**source, "files": {prim: row for prim, row in source["files"].items() if row["role"] != "task_object"}}
+    assert notes.refusal(room) is None
+
+
+def test_both_library_indexes_ship_in_the_wheel_and_the_sdist():
+    """An installed package carries both indexes: matched by the package data and by MANIFEST.in, so a library is
+    never silently empty."""
+    import fnmatch
+    import tomllib
+    root = Path(__file__).resolve().parents[1]
+    package = root / "src" / "blueprint_pipeline"
+    data = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]
+    manifest = [line.split(None, 1)[1].strip() for line in (root / "MANIFEST.in").read_text().splitlines()
+                if line.startswith("include ")]
+    for path in library.INDEXES.values():
+        assert path.is_file(), path
+        relative = path.relative_to(package).as_posix()
+        assert any(fnmatch.fnmatch(relative, pattern) for pattern in data["blueprint_pipeline"]), relative
+        assert any(fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern) for pattern in manifest), relative

@@ -840,7 +840,8 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room", "plan_notes",
                                         "generated_patch", "look_views", "surface_estimated", "size_from_its_points",
-                                        "size_disagrees_with_published", "destination_overhang", "library_models")
+                                        "size_disagrees_with_published", "destination_overhang", "library_models",
+                                        "library_refusal")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
@@ -1330,6 +1331,8 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
     over = [] if over is None else over
     if source.get("refusal"):
         raise ShapeRefused(source["refusal"])
+    if library_notes.refusal(source):  # an object built from a library model never leaves without its credit
+        raise PackageRefused(library_notes.refusal(source), "task_object")
     if sum(row["size_bytes"] for row in source["files"].values()) > MAX_SOURCE_BYTES:
         raise ValueError(OVER_CAP)
     options = {"literals": literals, "words": words, "max_bytes": max_bytes, "deadline": deadline}
