@@ -345,11 +345,9 @@ dispatcher-hold-only profile on 2026-11-02 ("approve adding preparation-reissue
 to the operator door's restricted profile"): it acts only on a grant the owner
 renewed and buys nothing.
 
-The same profile admits `confirm-owner-success-contract` (below): a preview,
-then an apply bound to the preview's digest, that
-writes one sealed record naming the owner as approver. It changes no
-threshold, starts no compute and moves no money. It was added to the profile
-in its own commit for the owner's explicit sign-off.
+The door no longer has a `confirm-owner-success-contract` kind: submitting a
+job is the owner's confirmation of its success thresholds (owner direction
+2026-11-07). The door change reaches the host only with a root upgrade.
 
 Since 2026-11-18 the profile also admits `retire-scene-workspace` and
 `restore-scene-workspace`. The owner approved adding them to free disk by
@@ -396,7 +394,6 @@ python3 scripts/operator_door.py purge-experiment-folder flora-episode-benchmark
 | `purge-experiment-folder` | operate | `folder` (`atlas-beta-dishwasher-20261021` or `flora-episode-benchmarks`), `apply` (default `false`) | `door-purge-experiment-folder.sh`: the door's own `experiment_purge.py`, as root with no network, writing only inside that folder on apply. Outcome `planned`, `emptied`, `already_empty`, `absent`, `refused` (code = first stop) or `failed`; the full receipt is `results/<id>.purge-experiment-folder.json` |
 | `provider-output-resume` | operate | `run` (a canary dispatch directory), `attempt` (1–999), `ingest` (default `false`) | `door-provider-output-resume.sh`: the active release's `provider_output_promotion resume --attempt-root <run>/allocator/attempts/attempt_NNN [--ingest]` for one streamed policy-canary attempt, run as `blueprint` with umask 0077 (the attempt tree is the service user's): promotion to B2, the gated cleanup, the staged-object absence proof and, with `ingest`, the needed members' ingestion, which short-circuits once materialized. It refuses, touching nothing, until the attempt's teardown manifest records `continuing_spend_from_this_run: false` (`provider_output_resume_attempt_not_torn_down`). Outcome `completed`, or `blocked` with the first blocker as its code; the module's summary is `results/<id>.provider-output-resume.json` |
 | `extend-scene-execution-window` | operate | `intent_id` (`scene-<64 hex>`), `intent_digest`, `expires_at` (UTC `YYYY-MM-DDTHH:MM:SSZ`), `authorization_reference` (names the owner's approval, ≤ 500 printable chars), `ack` = `extend-scene-execution-window`, `apply` | `door-extend-scene-execution-window.sh`: the active release's `task_evaluation_scene_execution_window_door`, as `blueprint`. It reads the capture's current rights from the WebApp and refuses a revoked intent, a digest mismatch, a withdrawn capture or revoked consent, and any expiry not after now, more than 7 days ahead, or more than 7 days past the intent's original expiry. Without `apply` it only plans. With `apply` it writes one sealed `authorized_via: operator_door` extension (door caller, door request id, the owner's reference, every execution bound unchanged) and sends it to the WebApp's signed internal endpoint, retrying a transport failure twice. An equal or earlier expiry is `already_covered`; with `apply` it re-sends the covering extension, and a plan never writes or POSTs. Outcome `planned`, `extended`, `already_covered`, `refused` (code) or `failed` (`webapp_notice_failed`); the full result is `results/<id>.scene-window.json` |
-| `confirm-owner-success-contract` | operate | `intent_id` (`scene-<64 hex>`), `owner_user_id`, `owner_organization_id`, `approved_by` (must be the owner user), `approval_evidence` (≤ 500 printable chars), `apply`, `apply_ack` (the preview's `apply_ack` digest with `apply`, else empty), `ack` = `confirm-owner-success-contract`; no threshold is a field | `door-confirm-owner-success-contract.sh`: the active release's `task_evaluation_owner_success_confirmation_door`, as `blueprint`, with no network and every secret hidden. It finds the intent's published job from retained host records only: the progression's completion names the launch, the launch's validated result names the revision (its bytes must be the progression's published result), and the success criteria and task template are the copies the completion join retained under the launch's `robot-free-readiness/documents/`, each checked against the revision. Without `apply` it only previews: the revision digest, the success document, the thresholds exactly as built, the `proposal_only` authority they carry, any existing confirmation, and an `apply_ack` digest of the binding, owner, approver and evidence. With `apply` and that digest it writes one sealed `task_evaluation_owner_success_contract_confirmation.v1` record under `<intent>/owner-success-confirmations/<digest>.json` (exclusive; a matching record already there is returned as `already_confirmed` and nothing is written). It refuses another owner, an approver who is not the owner, a revoked intent, a job not yet published, missing or changed retained documents and an authority that is not `proposal_only`. It changes no threshold, starts no compute and moves no money. Outcome `planned`, `confirmed`, `already_confirmed`, `refused` (code) or `failed`; the full result is `results/<id>.owner-success.json` |
 
 **`deploy` is root-equivalent.** Whoever holds it can get code that is on
 `origin/main` running as root, which is what a deploy is. Give it only to
@@ -783,11 +780,6 @@ python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --int
 python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
     --expires-at <UTC instant> --authorization-reference "<owner approval>" \
     --apply --ack extend-scene-execution-window --wait                                             # record + tell WebApp
-python3 scripts/operator_door.py confirm-owner-success-contract <intent_id> --owner-user-id <uid> \
-    --owner-organization-id <org> --approved-by <uid> --approval-evidence "<owner approval>" --wait   # preview only
-python3 scripts/operator_door.py confirm-owner-success-contract <intent_id> --owner-user-id <uid> \
-    --owner-organization-id <org> --approved-by <uid> --approval-evidence "<owner approval>" \
-    --apply --apply-ack sha256:<preview apply_ack> --ack confirm-owner-success-contract --wait     # record
 ```
 
 
@@ -811,10 +803,11 @@ recorded (`website_owner_success_assumption`):
   digest of the contract it was scored under, so a result scored under the
   assumption stays labelled so.
 
-The owner can still accept those exact thresholds at any time: run the
-preview, show the owner the `preview.configured_success_criteria` it returns,
-and apply with its `apply_ack` and the owner's verbatim approval as
-`--approval-evidence`. The confirmation changes no threshold.
+Nothing for an operator to run: the operator door's
+`confirm-owner-success-contract` kind is gone. The owner can still accept those
+exact thresholds on the website job page (below); records the door wrote
+earlier (`issuer_channel` `operator_door`) still read back exactly as before.
+The confirmation changes no threshold.
 
 The team packet worker reads the record from the request's own intent
 (`team_scene_packet_worker.owner_success_confirmation_scope`: the intent must be
