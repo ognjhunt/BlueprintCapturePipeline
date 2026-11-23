@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 import types
@@ -286,6 +287,11 @@ class _Stop(Exception):
 def bridge(tmp_path, monkeypatch):
     from blueprint_pipeline import task_object_artisan_bridge as module
 
+    # The bridge's main() writes the scoped keys into this process's environment, and monkeypatch.delenv on an absent
+    # name records nothing to undo, so the environment is put back whole afterwards: a later test in the same process
+    # saw the leaked OPENAI_API_KEY (CI shard 3, 2026-11-23).
+    environment = dict(os.environ)
+
     for name in ("artisan", "pipeline", "pipeline.llm"):
         package = types.ModuleType(name)
         package.__path__ = []
@@ -345,7 +351,9 @@ def bridge(tmp_path, monkeypatch):
         monkeypatch.setenv("BLUEPRINT_ARTISAN_BRIDGE_CONTEXT_FILE", str(path))
         with pytest.raises(_Stop):
             module.main()
-    return SimpleNamespace(run=run, seen=seen)
+    yield SimpleNamespace(run=run, seen=seen)
+    os.environ.clear()
+    os.environ.update(environment)
 
 
 def test_the_openai_bridge_checks_and_meters_exactly_as_today(bridge):
