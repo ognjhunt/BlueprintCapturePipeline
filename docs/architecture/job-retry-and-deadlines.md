@@ -146,7 +146,9 @@ extension. The WebApp half landed as WebApp #1257.
    (`website_preparation_retry.py`). Every claimed website attempt keeps its
    message bytes beside its ledger, and the listener's tick re-runs a
    `failed_retryable` preparation on this policy: an outage or a money refusal
-   until the grant's expiry, anything unclassified on the six timed retries,
+   until the grant's expiry (a provider's own 429 or 5xx is an outage, read
+   from the error's status before its text, and never re-run sooner than its
+   `Retry-After`), anything unclassified on the six timed retries,
    then left for the grant-expiry ending and the WebApp's window sweep. A
    privacy or rights refusal is never re-run. A dead process's attempt is
    recorded `failed_retryable` once its lease has expired and its process is
