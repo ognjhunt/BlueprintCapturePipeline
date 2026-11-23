@@ -492,10 +492,16 @@ def _floor_source(root: Path, *, queue_root: Path, now: float, reason: str | Non
     """The job's room floor as a source, when its object path stopped (``reason`` given: its half was refused)."""
     handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
     floor = handoff.get("room_floor") if isinstance(handoff.get("room_floor"), Mapping) else {}
-    record = (_inside(root, Path(str(floor.get("path") or ""))) if handoff.get("status") == "intake_ready"
+    # A preparation stopped on a blocker that is no wall, its room built, names it on its floor
+    # (``website_scene_handoff.floor_ships``): that floor ships at once, flagged with it, while the job retries.
+    blocked = (handoff.get("status") not in ("intake_ready", "room_package_written") and bool(handoff.get("blockers"))
+               and floor.get("blockers") == handoff.get("blockers"))
+    record = (_inside(root, Path(str(floor.get("path") or ""))) if (handoff.get("status") == "intake_ready" or blocked)
               and handoff.get("digest") == canonical_digest(handoff, digest_field="digest") else None)
     if record is None or _read(record).get("inputs_digest") != floor.get("inputs_digest"):
         return None
+    if blocked and reason is None:
+        reason = FLOOR_FLAG + ":" + ",".join(str(code) for code in handoff["blockers"])
     reason = reason or object_path_stopped(root, handoff, queue_root=queue_root, now=now)
     if reason is None or not reason.startswith("object_not_built:"):
         if reason is not None and notes is not None:

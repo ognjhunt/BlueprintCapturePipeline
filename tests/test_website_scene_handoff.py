@@ -1099,7 +1099,8 @@ def test_credits_out_ships_the_room_package_only_near_the_window_end_read_when_t
 def test_a_wall_or_another_code_at_the_same_step_is_never_the_room_package(tmp_path, monkeypatch, ready_atlas):
     """Only a provider's bound, credits out at the window's end, or the job's spending cap sends the job on: another
     money wall raised there, or any other code, keeps ``awaiting_inputs`` as before, and a room that cannot be
-    packaged keeps the code."""
+    packaged keeps the code. A code that is no wall ships the room floor meanwhile (owner, 2026-11-23); a money
+    wall ships nothing."""
     from blueprint_pipeline.hard_stops import MoneyStop
     from blueprint_pipeline.website_gemini_receipts import EXHAUSTED
     kwargs = inputs(tmp_path)
@@ -1113,7 +1114,8 @@ def test_a_wall_or_another_code_at_the_same_step_is_never_the_room_package(tmp_p
                             lambda error=error, **_: (_ for _ in ()).throw(error))
         result = handoff.prepare_website_scene_handoff(**kwargs)
         assert result["status"] == "awaiting_inputs" and result["blockers"] == [str(error)]
-    assert packaged == []
+        assert (handoff.ROOM_FLOOR in result) is (not isinstance(error, MoneyStop))
+    assert [row["output_root"].name for row in packaged] == [handoff.ROOM_FLOOR]  # never the room package
     monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
                         lambda **_: (_ for _ in ()).throw(ValueError(EXHAUSTED)))
     monkeypatch.setattr(handoff, "write_room_package",
@@ -1355,10 +1357,14 @@ def test_a_compile_blocker_ships_the_room_package_at_once_and_names_the_piece(tm
 def test_a_raised_refusal_ships_at_once_and_a_transient_failure_waits_for_the_window_end(
         tmp_path, monkeypatch, ready_atlas):
     """``website_scene_handoff``: a step's refusal (no wall) ships the room package now; a timeout waits, retried,
-    until the job's window, read when it fails, ends within two hours, then ships the same; a wall waits."""
+    until the job's window, read when it fails, ends within two hours, then ships the same, its room floor shipping
+    meanwhile (owner, 2026-11-23); a wall waits, with no floor."""
     from blueprint_pipeline.hard_stops import MoneyStop
     kwargs = _drawer_job(tmp_path, monkeypatch)
-    packaged = room_recorder(monkeypatch)
+    recorded = room_recorder(monkeypatch)
+
+    def rooms():  # the room packages written, never the room floors
+        return [row for row in recorded if row["output_root"].name != handoff.ROOM_FLOOR]
 
     def failing(error):
         monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
@@ -1366,22 +1372,26 @@ def test_a_raised_refusal_ships_at_once_and_a_transient_failure_waits_for_the_wi
         return handoff.prepare_website_scene_handoff(**kwargs)
     result = failing(ValueError("website_gemini_unanswered_dispatches_exhausted"))
     assert result["status"] == "room_package_written"
-    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": "website_gemini_unanswered_dispatches_exhausted"}]
-    shipped = len(packaged)
-    assert failing(TimeoutError("timed out"))["status"] == "awaiting_inputs"  # no grant: no window to read
+    assert rooms()[-1]["not_prepared"] == [{"piece": "object", "code": "website_gemini_unanswered_dispatches_exhausted"}]
+    shipped = len(rooms())
+    waiting = failing(TimeoutError("timed out"))
+    assert waiting["status"] == "awaiting_inputs"  # no grant: no window to read
+    assert waiting[handoff.ROOM_FLOOR][handoff.ROOM_FLOOR_BLOCKERS] == ["timed out"]  # the room ships meanwhile
     _granted(tmp_path, kwargs, ends_in=3 * 86400)
     assert failing(TimeoutError("timed out"))["status"] == "awaiting_inputs"
     _granted(tmp_path, kwargs, ends_in=3600)
     assert failing(TimeoutError("timed out"))["status"] == "room_package_written"
-    assert len(packaged) == shipped + 1 and packaged[-1]["flags"] == ["timed out"]
+    assert len(rooms()) == shipped + 1 and rooms()[-1]["flags"] == ["timed out"]
     # A wall waits: the account's monthly limit.
+    floors = len(recorded)
     result = failing(MoneyStop("account_monthly_spend_limit_reached"))
-    assert result["status"] == "awaiting_inputs" and len(packaged) == shipped + 1
+    assert result["status"] == "awaiting_inputs" and len(rooms()) == shipped + 1
+    assert handoff.ROOM_FLOOR not in result and len(recorded) == floors  # and no floor
     # The job's spending cap waits for no one (owner, 2026-11-19): the room package ships now, plainly flagged.
     result = failing(MoneyStop("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted"))
-    assert result["status"] == "room_package_written" and len(packaged) == shipped + 2
-    assert packaged[-1]["flags"] == ["spending_cap_reached"]
-    assert packaged[-1]["not_prepared"] == [{"piece": "object", "code": "spending_cap_reached"}]
+    assert result["status"] == "room_package_written" and len(rooms()) == shipped + 2
+    assert rooms()[-1]["flags"] == ["spending_cap_reached"]
+    assert rooms()[-1]["not_prepared"] == [{"piece": "object", "code": "spending_cap_reached"}]
 
 
 def test_a_development_test_still_takes_its_own_path(tmp_path, monkeypatch, ready_atlas):
@@ -1432,8 +1442,9 @@ def test_the_room_package_names_each_piece_it_could_not_prepare(tmp_path, monkey
 
 def test_a_defect_waits_named_and_paged_and_ships_only_at_the_window_end(tmp_path, monkeypatch, ready_atlas):
     """A KeyError in a preparation step is Blueprint's bug: the job waits under ``website_preparation_defect:KeyError``
-    (which pages the owner) with the message kept, so a fix release can still find it; only when the job's window
-    ends within two hours does the room package ship, the code named on its record."""
+    (which pages the owner) with the message kept, so a fix release can still find it. Its room floor ships at once,
+    flagged with the code (owner, 2026-11-23); only when the job's window ends within two hours does the room package
+    end the job, the code named on its record."""
     from blueprint_pipeline import preparation_fault_alert as fault
     kwargs = _drawer_job(tmp_path, monkeypatch)
     packaged = room_recorder(monkeypatch)
@@ -1447,7 +1458,10 @@ def test_a_defect_waits_named_and_paged_and_ships_only_at_the_window_end(tmp_pat
             _granted(tmp_path, kwargs, ends_in=ends_in)
         result = handoff.prepare_website_scene_handoff(**kwargs)
         assert result["status"] == "awaiting_inputs" and result["blockers"] == [code]
-        assert result["defect"] == "KeyError: 'frames'" and packaged == []
+        assert result["defect"] == "KeyError: 'frames'" and "room_package" not in result
+        assert result[handoff.ROOM_FLOOR][handoff.ROOM_FLOOR_BLOCKERS] == [code]
+        assert packaged[-1]["output_root"].name == handoff.ROOM_FLOOR
+        assert packaged[-1]["flags"] == [handoff.ROOM_FLOOR_FLAG, code]
     _granted(tmp_path, kwargs, ends_in=3600)
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["status"] == "room_package_written"
@@ -1667,13 +1681,18 @@ def test_the_readme_names_the_right_piece_and_never_a_builder_s_or_an_exception_
 
 @pytest.mark.parametrize("code", ["website_some_code_nobody_classified", "website_subject_origin_conflict",
                                   "website_preparation_defect:KeyError"])
-def test_a_blocker_that_is_no_wall_ships_once_its_first_retry_cycle_is_spent(monkeypatch, code):
-    """No wait for the window's end: the last run of the first retry cycle ships the room package, flagged."""
+def test_a_blocker_that_is_no_wall_ships_its_room_floor_at_once_and_the_room_package_ends_its_retry_cycle(
+        monkeypatch, code):
+    """Owner, 2026-11-23 (it replaces the 2026-11-22 timing): the room floor ships flagged at once, on the first
+    run that stops on the blocker; the job keeps retrying, and only the last run of its first retry cycle ends it
+    as the room package, flagged."""
     monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    assert handoff.floor_ships([code], task_context=CONTEXT)
     for spent, ships in ((False, False), (True, True)):
         assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, window_end=lambda: 7 * 86400.0,
                                retries_spent=lambda spent=spent: spent) is ships
-    # A wall still holds after the cycle.
+    # A wall ships neither, before or after the cycle.
+    assert not handoff.floor_ships(["website_capture_withdrawn"], task_context=CONTEXT)
     assert handoff.goes_on(["website_capture_withdrawn"], task_context=CONTEXT, now=0.0,
                            retries_spent=lambda: True) is False
 
@@ -1697,3 +1716,79 @@ def test_the_first_retry_cycle_is_spent_after_six_failures_in_a_row_over_its_who
     ledger(len(REFUSAL_RETRY_DELAYS_SECONDS))
     assert handoff.first_retry_cycle_spent(tmp_path, start.timestamp() + schedule - 1) is False  # an outage, fast
     assert handoff.first_retry_cycle_spent(tmp_path, start.timestamp() + schedule) is True
+
+
+# --- 2026-11-23: once the room is built, a blocker that is no wall ships the room floor at once ---------------------
+
+NO_WALL = ["website_some_code_nobody_classified", "website_subject_origin_conflict",
+           "website_retained_static_view_plan_missing"]
+
+
+@pytest.mark.parametrize("code", NO_WALL)
+def test_a_blocker_that_is_no_wall_writes_the_room_floor_on_its_first_run_and_the_job_keeps_retrying(
+        tmp_path, monkeypatch, ready_atlas, code):
+    """Case 1: the room is reconstructed and registered (``room_ready``), and a later step stops on a blocker that
+    is no wall, far from the end of the first retry cycle. The handoff stays blocked (the job retries on its
+    schedule) and carries the room floor, flagged with the blocker, for the company pass to ship now."""
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError(code)))
+    monkeypatch.setattr(handoff, "first_retry_cycle_spent", lambda *_a, **_k: False)
+    packaged = room_recorder(monkeypatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "awaiting_inputs" and result["blockers"] == [code]
+    assert "room_package" not in result
+    [floor] = packaged
+    assert floor["output_root"].name == handoff.ROOM_FLOOR and floor["task_profile"] is None
+    assert floor["flags"] == [handoff.ROOM_FLOOR_FLAG, code]
+    assert floor["not_prepared"] == [{"piece": "object", "code": code}]
+    assert result[handoff.ROOM_FLOOR][handoff.ROOM_FLOOR_BLOCKERS] == [code]
+    written = json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text())
+    assert written == result and written["digest"] == canonical_digest(written, digest_field="digest")
+
+
+def test_a_defect_writes_the_room_floor_under_its_code(tmp_path, monkeypatch, ready_atlas):
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: {}["missing"])
+    packaged = room_recorder(monkeypatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["website_preparation_defect:KeyError"] and "defect" in result
+    assert [call["flags"] for call in packaged] == [[handoff.ROOM_FLOOR_FLAG, "website_preparation_defect:KeyError"]]
+
+
+@pytest.mark.parametrize("code", ["website_assembly_coverage_binding_mismatch",  # privacy: another job's record
+                                  "website_gemini_requires_reconciliation",  # money: spend not yet proven
+                                  "website_capture_withdrawn",  # the site withdrew
+                                  "authoring_admission_spend_limit_reached"])  # money: an admission refused
+def test_a_privacy_rights_or_money_hold_writes_no_room_floor(tmp_path, monkeypatch, ready_atlas, code):
+    """Case 3: nothing ships, as before."""
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError(code)))
+    packaged = room_recorder(monkeypatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == [code] and packaged == [] and handoff.ROOM_FLOOR not in result
+
+
+def test_no_room_floor_before_the_room_is_built(tmp_path, monkeypatch):
+    """Case 2 (the provider's room exists, but its source pose could not be established): the scene source is not
+    ready, so no base scene with a scale and a levelled floor exists and no floor is written."""
+    kwargs = inputs(tmp_path)
+    monkeypatch.setattr(ATLAS, lambda **_: {"status": "needs_input", "reason": "website_atlas_source_pose_unavailable",
+                                            "job_reason": "website_atlas_pose_attempt_failed"})
+    packaged = room_recorder(monkeypatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["website_atlas_source_pose_unavailable"]
+    assert packaged == [] and handoff.ROOM_FLOOR not in result
+
+
+def test_a_floor_that_cannot_be_written_stops_nothing_on_a_blocked_run(tmp_path, monkeypatch, ready_atlas):
+    kwargs = _drawer_job(tmp_path, monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage",
+                        lambda **_: (_ for _ in ()).throw(ValueError(NO_WALL[0])))
+    monkeypatch.setattr(handoff, "write_room_package",
+                        lambda **_: (_ for _ in ()).throw(ValueError("website_base_scene_changed")))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "awaiting_inputs" and result["blockers"] == [NO_WALL[0]]
+    assert result[handoff.ROOM_FLOOR] == {"status": "not_written", "reason": "website_base_scene_changed"}

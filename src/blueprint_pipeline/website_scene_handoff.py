@@ -326,6 +326,9 @@ ROOM_FLOOR, ROOM_FLOOR_FLAG = "room_floor", "object_not_built"
 #: Beside the floor's half: when this floor (by its record's digest) was first written. A handoff that runs again
 #: writes the same record and keeps it, so the wait before an unstarted object path is listed never restarts.
 ROOM_FLOOR_FIRST_WRITTEN = "first_written.json"
+#: On the handoff's room floor of a preparation stopped on a blocker that is no wall (``floor_ships``): its blockers.
+#: The company pass ships that floor at once, flagged with them, while the job keeps retrying (owner, 2026-11-23).
+ROOM_FLOOR_BLOCKERS = "blockers"
 
 
 def write_room_floor(*, now: float, output_root: Path, **room: Any) -> dict[str, Any]:
@@ -572,6 +575,14 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
         return True
     window = window_end()
     return window is not None and window - now <= LAST_CALL_SECONDS
+
+
+def floor_ships(codes: Sequence[str], *, task_context: Mapping[str, Any], error: BaseException | None = None) -> bool:
+    """Whether a preparation stopped on ``codes``, its room built, ships its room floor flagged now (owner,
+    2026-11-23: "once the room is built and the sharing rights hold, the room floor ships flagged immediately;
+    retries continue, and a better package replaces it"): exactly when its first retry cycle, once spent, would
+    ship the room package (``goes_on``), so a wall, a privacy or money hold or a development test never does."""
+    return goes_on(codes, task_context=task_context, now=0.0, error=error, retries_spent=lambda: True)
 
 
 def sealed_rule_withheld(capture_root: Path | None) -> dict[str, Any] | None:
@@ -838,19 +849,24 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         write_json(handoff_path, result)
         return result
 
-    def room_floor() -> None:
+    def room_floor(blockers: Sequence[str] = ()) -> None:
         # Kept beside the object's own route, CPU only: the company builder ships it, flagged, while that route
         # runs or once it stops (``website_company_simulation.object_path_stopped``). Never a stop of its own.
+        # ``blockers``: the preparation stopped on them, none a wall (``floor_ships``); flagged and named so.
         try:
             record = write_room_floor(now=now, task_context=context, base_scene=base,
                                       source_geometry=atlas["source_geometry"], removal=removal,
                                       output_root=root / ROOM_FLOOR, task_profile=None,
-                                      objects_in_scan=geometry_only, flags=package_flags([ROOM_FLOOR_FLAG]))
-        except (ValueError, KeyError, OSError) as exc:
+                                      objects_in_scan=geometry_only,
+                                      flags=package_flags([ROOM_FLOOR_FLAG, *map(shipped_code, blockers)]),
+                                      not_prepared=[{"piece": piece_of(code), "code": code} for code in dict.fromkeys(
+                                          shipped_code(code).split(":", 1)[0] for code in blockers)])
+        except (ValueError, KeyError, TypeError, OSError) as exc:
             result[ROOM_FLOOR] = {"status": "not_written", "reason": str(exc)[:200]}
             return
         result[ROOM_FLOOR] = {"path": str(root / ROOM_FLOOR / "half" / ROOM_RECORD),
-                              "inputs_digest": record["inputs_digest"]}
+                              "inputs_digest": record["inputs_digest"],
+                              **({ROOM_FLOOR_BLOCKERS: list(blockers)} if blockers else {})}
 
     def room_for(gap: Mapping[str, Any]) -> dict[str, Any]:
         # A gap that says Blueprint has no model for the job, by code: the job's declared profile, flagged.
@@ -895,6 +911,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         return receipt
 
     room_ready = dispatching = False
+    failure: BaseException | None = None
     keep_outbox_receipt(capture_root)
     try:
         if clean_plate.get("privacy_verified") is not True or clean_plate.get("status") not in {"noop", "objects_removed"}:
@@ -1337,6 +1354,14 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 str(exc), task_context_digest=stopped_context["context_digest"])})
         else:
             result.update(status="awaiting_inputs", blockers=[code])
+        failure = exc
+    if (room_ready and result["status"] not in ("intake_ready", ROOM_PACKAGE) and result["blockers"]
+            and ROOM_FLOOR not in result and may_fall_back()
+            and floor_ships(result["blockers"], task_context=metadata.get("site_task_context") or {},
+                            error=failure)):
+        # The room is built (``room_ready``) and the preparation stopped on no wall: its room floor ships flagged
+        # at once, the job keeps retrying, and the package a later run writes replaces it (owner, 2026-11-23).
+        room_floor([str(code) for code in result["blockers"]])
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(handoff_path, result)
     return result
