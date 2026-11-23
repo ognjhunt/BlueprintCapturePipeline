@@ -83,11 +83,13 @@ UNIT_TIMEOUT_SECONDS = 2 * 3600
 #: still be running when the start budget below is spent, however many rounds a step has.
 LONGEST_STEP_SECONDS = 20 * 60
 #: What the unit runs after the Atlas passes, each at its own bound (a test pins them): the company clip pass
-#: (its budget and one encode) and the company simulation pass (its budget and one build).
+#: (its budget and one encode) and the company simulation pass (its budget and one build). The unit runs the
+#: same two passes before the Atlas passes too (``main``), so a new job's video waits behind no paid step.
 LATER_PASSES_SECONDS = 900 + 900 + 600 + 900
-#: A tick starts no job step, and no paid stage inside a step, after this long, so what it starts and the passes
-#: after it end inside the unit's limit: a tick the limit killed mid-step left a paid edit's receipt ``submitting``
-#: (2026-11-16, 16:23).
+#: A tick starts no job step, and no paid stage inside a step, after this long from the unit's start, so what it
+#: starts and the passes after it end inside the unit's limit: a tick the limit killed mid-step left a paid
+#: edit's receipt ``submitting`` (2026-11-16, 16:23). The passes run first count against it, so the unit still
+#: ends in time: they leave the tick less, or (past this budget) no step at all.
 STEP_START_BUDGET_SECONDS = UNIT_TIMEOUT_SECONDS - LONGEST_STEP_SECONDS - LATER_PASSES_SECONDS
 #: The running tick's clock and the moment past which no paid stage starts (``tick`` sets it).
 _PAID_STAGE_DEADLINE: contextvars.ContextVar[tuple[Callable[[], float], float] | None] = contextvars.ContextVar(
@@ -888,13 +890,15 @@ def _advanced(before: Any, after: Any, current: float) -> bool:
 
 def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_seconds: float = 0,
          stop_reason: Callable[[], str | None] = lambda: None,
-         clock: Callable[[], float] = time.monotonic) -> dict[str, int]:
+         clock: Callable[[], float] = time.monotonic, budget_started: float | None = None) -> dict[str, int]:
     """Step every job once; while a pass advances jobs, step those again within ``continue_seconds``.
 
     Each step takes the job's own lock, as one tick always did. ``stop_reason``
     is asked before every further pass; any reason (an operator hold, a deploy's
     quiesce) ends the tick. Counts are each job's last outcome. Jobs are stepped
-    least recently ticked first, and no step starts after ``STEP_START_BUDGET_SECONDS``:
+    least recently ticked first, and no step starts after ``STEP_START_BUDGET_SECONDS``,
+    counted from ``budget_started`` (the unit's start, so the publication passes the
+    unit runs before the tick count against it) or else from the tick's own start:
     the jobs left are counted ``deferred`` and go first on the next tick.
 
     The steps are serial, one job at a time. A job whose own step ran longer than
@@ -908,17 +912,19 @@ def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_s
                     if capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name)),
                    key=lambda path: (_last_tick(path), str(path)))
     started = clock()
+    deadline = (started if budget_started is None else budget_started) + STEP_START_BUDGET_SECONDS
     # Paid stages inside a step ask the tick's checkpoint first: none starts past the same budget.
-    token = _PAID_STAGE_DEADLINE.set((clock, started + STEP_START_BUDGET_SECONDS))
+    token = _PAID_STAGE_DEADLINE.set((clock, deadline))
     try:
         return _tick_passes(paths, started=started, now=now, continue_seconds=continue_seconds,
-                            stop_reason=stop_reason, clock=clock)
+                            stop_reason=stop_reason, clock=clock, deadline=deadline)
     finally:
         _PAID_STAGE_DEADLINE.reset(token)
 
 
 def _tick_passes(paths: list[Path], *, started: float, now: Callable[[], float], continue_seconds: float,
-                 stop_reason: Callable[[], str | None], clock: Callable[[], float]) -> dict[str, int]:
+                 stop_reason: Callable[[], str | None], clock: Callable[[], float],
+                 deadline: float) -> dict[str, int]:
     outcomes: dict[Path, str] = {}
     passes, deferred, spent = 1, 0, False
     # The continuation window opens at the tick's start, and again where a step ends that alone outran it.
@@ -927,7 +933,7 @@ def _tick_passes(paths: list[Path], *, started: float, now: Callable[[], float],
         advanced, starts = [], []
         for index, path in enumerate(paths):
             at = clock()
-            if at - started >= STEP_START_BUDGET_SECONDS:
+            if at >= deadline:
                 # In the first pass these jobs were not stepped at all this tick; later, only not again.
                 spent, deferred = True, len(paths) - index if passes == 1 else 0
                 logger.info("website_atlas_preview_step_budget_spent pass=%d jobs_left=%d", passes,
@@ -1142,7 +1148,7 @@ def scene_preview_tick(storage_root: Path) -> dict[str, int]:
     try:
         from .website_scene_preview import tick as publish_scene_previews
         return publish_scene_previews(storage_root)
-    except Exception as error:  # noqa: BLE001 - previews are optional; the Atlas tick has finished
+    except Exception as error:  # noqa: BLE001 - previews are optional; never stops the unit's other passes
         logger.warning("website_scene_preview_tick_failed type=%s", type(error).__name__)
         return {"tick_failed": 1}
 
@@ -1162,7 +1168,8 @@ def job_thumbnail_tick(storage_root: Path, stop_reason: Callable[[], str | None]
 
 
 def company_clip_tick(storage_root: Path, stop_reason: Callable[[], str | None] | None = None) -> dict[str, int]:
-    """The silent clip approved deployment companies watch (``website_company_clip``), made by the same timer.
+    """The silent clip approved deployment companies watch (``website_company_clip``), made by the same timer before
+    and after the Atlas steps (``main``), so it never waits behind a paid step.
 
     Local ffmpeg on retained clips; it pays for nothing and never touches a job. It stops between
     captures for a hold, a quiesce or a new release (``stop_reason``) and keeps to its own time budget.
@@ -1171,14 +1178,15 @@ def company_clip_tick(storage_root: Path, stop_reason: Callable[[], str | None] 
     try:
         from .website_company_clip import tick as publish_company_clips
         return publish_company_clips(storage_root, stop_reason=stop_reason)
-    except Exception as error:  # noqa: BLE001 - clips are optional; the Atlas tick has finished
+    except Exception as error:  # noqa: BLE001 - clips are optional; never stops the unit's other passes
         logger.warning("website_company_clip_tick_failed type=%s", type(error).__name__)
         return {"tick_failed": 1}
 
 
 def company_simulation_tick(storage_root: Path, stop_reason: Callable[[], str | None] | None = None
                             ) -> dict[str, int]:
-    """The simulation package deployment companies download (``website_company_simulation``), after the clip.
+    """The simulation package deployment companies download (``website_company_simulation``), after the clip, before
+    and after the Atlas steps (``main``).
 
     Local files and ``pxr`` on compiled team scene halves; it pays for nothing and never touches a job. A
     failure is counted, never raised into the tick, and retried by the next one.
@@ -1186,7 +1194,7 @@ def company_simulation_tick(storage_root: Path, stop_reason: Callable[[], str | 
     try:
         from .website_company_simulation import tick as publish_company_simulations
         return publish_company_simulations(storage_root, stop_reason=stop_reason)
-    except Exception as error:  # noqa: BLE001 - packages are optional; the Atlas tick has finished
+    except Exception as error:  # noqa: BLE001 - packages are optional; never stops the unit's other passes
         logger.warning("website_company_simulation_tick_failed type=%s", type(error).__name__)
         return {"tick_failed": 1}
 
@@ -1214,16 +1222,33 @@ def main(argv: list[str] | None = None) -> int:
         counts.update({"owned_" + key: value for key, value in poll_from_environment().items()})
         print(json.dumps(counts, sort_keys=True), flush=True)
         return 0
-    stop_reason = trigger_stop_reason()
-    counts = tick(args.storage_root, continue_seconds=continue_seconds_from_environment(), stop_reason=stop_reason)
-    from .owned_capture_atlas_worker import tick_from_environment
-    counts.update({"owned_" + key: value for key, value in tick_from_environment().items()})
+    unit_started, stop_reason = time.monotonic(), trigger_stop_reason()
+    counts: dict[str, int] = {}
+
+    def publish(prefix: str) -> None:
+        """The cheap, rights-gated passes: each re-reads its own rights per capture and never raises."""
+        counts.update({prefix + "company_clip_" + key: value
+                       for key, value in company_clip_tick(args.storage_root, stop_reason).items()})
+        counts.update({prefix + "company_simulation_" + key: value
+                       for key, value in company_simulation_tick(args.storage_root, stop_reason).items()})
+    # First, so a job handed off a minute ago is shown to companies without waiting behind any job's paid
+    # Atlas steps; again after them, so a room or video that became ready in this pass is published in it.
+    publish("before_atlas_")
+    failure: Exception | None = None
+    try:
+        counts.update(tick(args.storage_root, continue_seconds=continue_seconds_from_environment(),
+                           stop_reason=stop_reason, budget_started=unit_started))
+        from .owned_capture_atlas_worker import tick_from_environment
+        counts.update({"owned_" + key: value for key, value in tick_from_environment().items()})
+    except Exception as error:  # noqa: BLE001 - re-raised below, after the publication passes have run
+        logger.warning("website_atlas_preview_tick_failed type=%s", type(error).__name__)
+        failure = error
     counts.update({"scene_preview_" + key: value for key, value in scene_preview_tick(args.storage_root).items()})
     counts.update({"job_thumbnail_" + key: value for key, value in job_thumbnail_tick(args.storage_root, stop_reason).items()})
-    counts.update({"company_clip_" + key: value for key, value in company_clip_tick(args.storage_root, stop_reason).items()})
-    counts.update({"company_simulation_" + key: value
-                   for key, value in company_simulation_tick(args.storage_root, stop_reason).items()})
+    publish("")
     print(json.dumps(counts, sort_keys=True), flush=True)
+    if failure is not None:
+        raise failure
     return 0
 
 

@@ -55,9 +55,10 @@ every read): at once when the snapshot already covers sharing, and otherwise at 
 agrees later gets its clip within that window and a capture that never agrees costs one read
 per window.
 
-It runs in the Atlas preview timer's pass, after the scene preview pass
-(``website_atlas_preview.company_clip_tick``): local ffmpeg only, no model, provider or paid
-resource. It stops between captures for a hold, a quiesce or a new release, and keeps to
+It runs in the Atlas preview timer's pass, first, before any job's paid Atlas step, and again after
+them (``website_atlas_preview.company_clip_tick``, called twice by its ``main``), so a new job's clip
+waits behind no Atlas work: local ffmpeg only, no model, provider or paid resource. Each run reads
+every capture's rights afresh as described above. It stops between captures for a hold, a quiesce or a new release, and keeps to
 ``TICK_BUDGET_SECONDS``. It never touches a job: every failure is a returned status, retried on the next pass.
 The Pipeline runs no privacy screen on a website video itself (faces are blurred only in the
 frames sent to World Labs), so consent, withdrawal and the takedown gate are the screen.
@@ -124,9 +125,10 @@ ENCODE_TIMED_OUT = "website_company_clip_encode_timed_out"
 #: One clip's whole build (both encodes and the checks). A 30-minute source, the longest the bitrate floor
 #: allows, encodes in about 12 minutes at the measured 0.4x real time on the host's two threads.
 ENCODE_TIMEOUT_SECONDS = 900
-#: One pass of the clip tick starts no new capture after this. The pass runs last in the Atlas preview unit
-#: (``TimeoutStartSec=2h``) after up to an hour of continued Atlas steps that hold paid work, so it is kept to
-#: at most this plus one build (900 + 900 s, about 30 minutes): the unit still ends well inside its 2 hours.
+#: One pass of the clip tick starts no new capture after this. The pass runs in the Atlas preview unit
+#: (``TimeoutStartSec=2h``) before the Atlas steps and again after them, so each run is kept to at most this plus
+#: one build (900 + 900 s, about 30 minutes); the Atlas steps' start budget counts the first run, so the unit
+#: still ends inside its 2 hours (``website_atlas_preview.STEP_START_BUDGET_SECONDS``).
 TICK_BUDGET_SECONDS = 900
 #: The highest frame rate a clip may carry, as the contract states it.
 MAX_CLIP_FPS = MAX_FPS + 0.0001
