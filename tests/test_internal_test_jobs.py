@@ -113,7 +113,7 @@ def test_a_test_jobs_grant_is_kept_through_no_answer_for_its_lifetime_only(tmp_p
     failure = OSError("timeout") if second_read == "unanswered" else second_read
     check = permission.record_live(capture, identity, lambda _identity: (_ for _ in ()).throw(failure), 1_000 + age)
     assert permission.internal_test_holds(check, 1_000 + age) is holds
-    assert permission.basis_holds(capture, identity["capture_id"], "internal_test", None, 1_000 + age) is holds
+    assert permission.basis_holds(capture, identity["capture_id"], "internal_test", 1_000 + age) is holds
 
 
 # ---------------------------------------------------------------------- P2: the intake read

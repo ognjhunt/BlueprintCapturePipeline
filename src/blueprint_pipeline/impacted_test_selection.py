@@ -30,6 +30,10 @@ DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_WORKER_COUNT = 4
 MAX_CHANGED_FILES = 50
 MAX_IMPACTED_TEST_FILES = 40
+# The bounded lane's wall-time budget (ci.yml passes it as --timeout-seconds). A
+# selection the duration baseline estimates above it goes to the wide lane, as a
+# selection of more than MAX_IMPACTED_TEST_FILES files does.
+BOUNDED_LANE_BUDGET_SECONDS = 480
 # Only an impact set this broad still needs the full suite. The 26 budget-only
 # full suites of 2026-10-31 selected a median of 66 files (maximum 99), a median
 # 8 of the suite's 161 test-minutes.
@@ -416,6 +420,15 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
             impacted.clear()
         else:
             requires_wide_impacted = True
+    if impacted and not requires_full_suite and not requires_wide_impacted:
+        estimated = sum(
+            _estimated_seconds(root, files=sorted(impacted), test_sources=test_sources).values()
+        )
+        if estimated > BOUNDED_LANE_BUDGET_SECONDS:
+            requires_wide_impacted = True
+            reasons.append(
+                f"impacted_estimated_seconds_exceed_budget:{estimated:.0f}>{BOUNDED_LANE_BUDGET_SECONDS}"
+            )
     if WIDE_LANE_WORKFLOW in changed and not requires_full_suite:
         # A change to the lane runs the lane, as a change to the full lane runs that.
         requires_wide_impacted = True
