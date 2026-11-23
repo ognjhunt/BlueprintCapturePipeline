@@ -933,13 +933,15 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         removal = json.loads(removal_path.read_text())
         # Capture truth applies to held families too. Reading this retained
         # manifest performs no mask, authoring or provider work.
-        if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
-            raise ValueError("website_subject_origin_conflict")
         # The editor could not take the job's object out cleanly, so the scene kept it as filmed
         # (``website_atlas_pipeline.background_floor``): it is part of the room scan, never also built on its own.
         in_scan = (bool((atlas.get("job_object_rule") or {}).get("background_not_cleaned"))
                    and any(row.get("task_effect") == "manipulated" for row in removal.get("entries") or []))
         room_ready = True  # from here a room package can be written (``room_package``)
+        # A subject-origin conflict protects no privacy, rights or money: once the first retry cycle is spent it
+        # ships the room flagged (``goes_on``), so it is raised once the room can be packaged.
+        if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
+            raise ValueError("website_subject_origin_conflict")
         from .website_job_spend_cap import SPENDING_CAP_REACHED
         if SPENDING_CAP_REACHED in (atlas.get("flags") or []):
             if not may_fall_back():

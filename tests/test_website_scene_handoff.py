@@ -134,6 +134,22 @@ def test_unknown_family_cannot_hide_a_subject_origin_conflict(tmp_path, monkeypa
     assert result["provider_mutation_performed"] is False
 
 
+def test_a_subject_origin_conflict_ships_the_room_flagged_once_the_retry_cycle_is_spent(tmp_path, monkeypatch,
+                                                                                          ready_atlas):
+    """The conflict is raised once the room can be packaged, so the retry-cycle fallback reaches it."""
+    kwargs = inputs(tmp_path)
+    kwargs["descriptor"]["metadata"]["site_task_context"]["context_digest"] = "sha256:" + "c" * 64
+    ready_atlas["subject_origin"] = "synthetic_design"
+    write_json(tmp_path / "pipeline/removal.json", {"entries": []})
+    packaged = room_recorder(monkeypatch)
+    monkeypatch.setattr(handoff, "first_retry_cycle_spent", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **_: pytest.fail("a conflict precedes the compile"))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written" and result["blockers"] == []
+    assert [call["flags"] for call in packaged] == [["website_subject_origin_conflict"]]
+
+
 @pytest.mark.parametrize("family", ["rigid_pick_and_place", "articulated_open_close"])
 def test_synthetic_subject_profile_ignores_its_supports_mechanism(tmp_path, monkeypatch, ready_atlas, family):
     from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
