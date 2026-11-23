@@ -1,4 +1,4 @@
-"""A failed unit is recorded, and reported once and then hourly on the capacity alert route."""
+"""A failed unit is recorded, and reported when it starts or changes cause, then daily, on the capacity alert route."""
 
 from __future__ import annotations
 
@@ -26,19 +26,47 @@ def _fail(root: Path, now: float, posted: list, *, environ=TIMEOUT, unit: str = 
     )
 
 
-def test_a_unit_failing_every_minute_posts_once_and_then_hourly(tmp_path: Path) -> None:
+def test_a_unit_failing_every_minute_posts_once_and_then_daily(tmp_path: Path) -> None:
     posted: list = []
     start = 1_800_000_000.0
     for minute in range(121):
         record = _fail(tmp_path, start + 60 * minute, posted)
-    assert [report["alerts"][0]["failure_count"] for _url, report in posted] == [1, 61, 121]
+    assert [report["alerts"][0]["failure_count"] for _url, report in posted] == [1]
     assert all(url == HOOK for url, _report in posted)
-    assert record["failure_count"] == 121 and record["alert_posted"] is True
-    assert record["first_failure_epoch"] == start and record["last_alert_epoch"] == start + 7200
+    assert record["failure_count"] == 121 and record["alert_posted"] is False
+    assert record["first_failure_epoch"] == start and record["last_alert_epoch"] == start
+    assert record["last_alert_cause"] == "timeout"
     saved = json.loads((tmp_path / f"{UNIT}.json").read_text(encoding="utf-8"))
     assert saved == record and saved["schema_version"] == notifier.SCHEMA_VERSION
     assert saved["result"] == "timeout" and saved["exit_status"] == "TERM"
-    assert cap.ALERT_REPEAT_SECONDS == 3600  # the controller's own repeat interval is the dedupe
+    # A day after the last post, the same failure is posted once more as a reminder.
+    _fail(tmp_path, start + notifier.REMINDER_SECONDS - 1, posted)
+    assert len(posted) == 1
+    record = _fail(tmp_path, start + notifier.REMINDER_SECONDS, posted)
+    assert len(posted) == 2 and record["alert_posted"] is True
+    assert notifier.REMINDER_SECONDS == 24 * 3600
+
+
+def test_a_new_cause_posts_at_once(tmp_path: Path) -> None:
+    posted: list = []
+    exit_two = {"MONITOR_UNIT": UNIT, "MONITOR_SERVICE_RESULT": "exit-code", "MONITOR_EXIT_STATUS": "2"}
+    exit_one = {**exit_two, "MONITOR_EXIT_STATUS": "1"}
+    _fail(tmp_path, 1000.0, posted, environ=exit_two)
+    _fail(tmp_path, 1060.0, posted, environ=exit_two)
+    _fail(tmp_path, 1120.0, posted, environ=exit_one)
+    _fail(tmp_path, 1180.0, posted, environ=exit_one)
+    _fail(tmp_path, 1240.0, posted)
+    assert [report["alerts"][0]["code"] for _url, report in posted] == [
+        f"unit_failed:{UNIT}:exit-code:2", f"unit_failed:{UNIT}:exit-code:1", f"unit_failed:{UNIT}:timeout"]
+
+
+def test_a_record_from_before_the_cause_field_is_not_posted_again(tmp_path: Path) -> None:
+    posted: list = []
+    record = _fail(tmp_path, 1000.0, posted)
+    record.pop("last_alert_cause")
+    (tmp_path / f"{UNIT}.json").write_text(json.dumps(record), encoding="utf-8")
+    _fail(tmp_path, 1060.0, posted)
+    assert len(posted) == 1
 
 
 def test_each_unit_is_deduplicated_on_its_own(tmp_path: Path) -> None:
@@ -64,7 +92,7 @@ def test_a_failed_post_is_recorded_and_retried_on_the_next_failure(tmp_path: Pat
     assert len(posted) == 1 and second["alert_posted"] is True and second["alert_error"] is None
     assert second["failure_count"] == 2
     _fail(tmp_path, 1120.0, posted)
-    assert len(posted) == 1, "delivered: the hourly repeat applies again"
+    assert len(posted) == 1, "delivered: the daily reminder applies again"
 
 
 def test_without_a_webhook_the_failure_is_still_recorded(tmp_path: Path) -> None:
@@ -87,6 +115,10 @@ def test_what_systemd_did_not_say_stays_unknown(tmp_path: Path) -> None:
     assert notifier.observed_failure(UNIT, {**TIMEOUT, "MONITOR_SERVICE_RESULT": "a b\nc"})["result"] is None
     coded = notifier.alert_report({"unit": UNIT, "result": "exit-code", "exit_status": "2"})
     assert coded["alerts"][0]["code"] == f"unit_failed:{UNIT}:exit-code:2"
+    # A different signal is a different cause, so it posts at once, not a day later.
+    assert notifier.failure_cause({"result": "core-dump", "exit_status": "SEGV"}) == "core-dump:SEGV"
+    assert notifier.failure_cause({"result": "core-dump", "exit_status": "ABRT"}) == "core-dump:ABRT"
+    assert notifier.failure_cause({"result": "signal", "exit_status": "TERM"}) == "signal:TERM"
 
 
 @pytest.mark.parametrize("unit", ["../etc/passwd.service", "ssh.service", "blueprint-x.socket", "blueprint-a/b.service", ""])

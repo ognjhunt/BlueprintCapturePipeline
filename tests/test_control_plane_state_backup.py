@@ -350,13 +350,19 @@ def test_the_deletion_receipt_schema_is_the_deletion_tool_s():
 # --------------------------------------------------------------------------- the stall alarm's backup check
 
 
-def test_a_backup_that_stopped_pages_and_a_host_never_set_up_stays_quiet(tmp_path, monkeypatch):
+def test_a_backup_that_stopped_pages_and_a_host_never_set_up_warns(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_capacity_controller as capacity
     from blueprint_pipeline import control_plane_stall_alarm as stall
 
     report = tmp_path / "report"
     monkeypatch.setenv(backup.REPORT_ROOT_ENV, str(report))
     now = time.time()
-    assert stall._check_state_backup(now=now) == ({"status": "not_configured"}, [])
+    # F-01: never set up is a standing warning, not silence and not a page.
+    assert stall._check_state_backup(now=now) == (
+        {"status": "not_configured"},
+        [{"code": backup.NOT_CONFIGURED_CODE, "target": str(backup.ledger_path(report))}])
+    assert backup.NOT_CONFIGURED_CODE not in stall.PAGE_CODES
+    assert capacity._severity(backup.NOT_CONFIGURED_CODE) == "warn"
     report.mkdir()
     ledger = backup.ledger_path(report)
     backup._write_ledger(ledger, [{"id": "g-a", "started_at_epoch": now - 3 * 3600, "status": "sealed"},

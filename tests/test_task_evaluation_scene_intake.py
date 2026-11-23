@@ -216,6 +216,20 @@ def test_owner_revocation_is_idempotent_and_stops_future_reservation(tmp_path):
     assert scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=104)["status"] == "revoked"
     with pytest.raises(SceneIntakeError, match="authority_revoked"):
         attempt(tmp_path, intent)
+    assert receipt["revocation_cause"] == "unknown"  # G-05: the caller named no cause
+
+
+@pytest.mark.parametrize("cause", ["source_revoked", "website_task_context_not_confirmed"])
+def test_a_revocation_receipt_records_its_cause(tmp_path, cause):
+    intent = stage(tmp_path)
+    arguments = dict(queue_root=tmp_path, intent_id=intent["intent_id"], intent_digest=intent["intent_digest"],
+                     owner=request()["owner"], now=102)
+    with pytest.raises(SceneIntakeError, match="revocation_cause_invalid"):
+        revoke_scene_intent(**arguments, revocation_cause="Not A Code/..")
+    assert not (tmp_path / intent["intent_id"] / "revoked.json").exists()
+    receipt = revoke_scene_intent(**arguments, revocation_cause=cause)
+    assert receipt["revocation_cause"] == cause
+    assert json.loads((tmp_path / intent["intent_id"] / "revoked.json").read_text())["revocation_cause"] == cause
 
 
 @pytest.mark.parametrize("authority", ["expiry", "revocation"])

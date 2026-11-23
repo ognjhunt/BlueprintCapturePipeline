@@ -549,11 +549,13 @@ def _mark(generations: list[dict[str, Any]], ids: Sequence[str], status: str, no
 
 
 STALE_CODE = "control_plane_backup_stale"
+# No ledger: no backup ever ran on this host. A warning (not a page) on every capacity tick until one does.
+NOT_CONFIGURED_CODE = "control_plane_backup_not_configured"
 STALE_AFTER_SECONDS = 2 * 3600
 
 
 def backup_freshness(ledger: Path, *, now: float) -> dict[str, Any]:
-    """For the stall alarm: ``not_configured`` (no ledger, so never set up: quiet), ``unreadable``, ``fresh``, or
+    """For the stall alarm: ``not_configured`` (no ledger, so never set up: a standing warning), ``unreadable``, ``fresh``, or
     ``stale`` with the age of the newest complete generation (or of the first attempt, if none ever completed)."""
 
     try:

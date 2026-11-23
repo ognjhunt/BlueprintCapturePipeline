@@ -405,6 +405,23 @@ def test_refusal_reasons_reach_the_run_result_but_not_the_recorded_blocker(conte
     assert "blocker_detail" not in engine.process_scene_intents(config_path=config)["results"][0]
 
 
+def test_a_disk_budget_refusal_names_its_role_and_bytes_in_the_run_result(context, monkeypatch):
+    """C-12: on 2026-11-18 a disk refusal held a job and its journal line said only the code."""
+    from blueprint_pipeline.control_plane_disk_ledger import ControlPlaneDiskBudgetError
+
+    config = configuration(context, monkeypatch)
+    refusal = ("control_plane_disk_budget_exceeded:launch_preparation:need_bytes=2147483648:"
+               "available_bytes=1073741824:free_bytes=17179869184:floor_bytes=15032385536:reserved_bytes=0")
+
+    def refuse(*args, **kwargs):
+        raise ControlPlaneDiskBudgetError(refusal)
+
+    monkeypatch.setattr(engine, "_source", refuse)
+    row = engine.process_scene_intents(config_path=config)["results"][0]
+    assert row["blockers"] == ["control_plane_disk_budget_exceeded"]
+    assert row["blocker_detail"][0] == refusal.partition(":")[2]
+
+
 def test_a_dependency_failure_records_its_type_and_code_location_but_not_its_message(context, monkeypatch):
     """2026-11-13: a FileNotFoundError parked a website job as
     ``scene_progression_dependency_unavailable`` and nothing said which call raised it."""

@@ -529,9 +529,17 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
 
 
 def revoke_scene_intent(*, queue_root: str | Path, intent_id: str, intent_digest: str,
-                        owner: Mapping[str, Any], now: float | None = None) -> dict[str, Any]:
-    """Revoke future admissions without deleting evidence or pretending to stop a GPU."""
+                        owner: Mapping[str, Any], now: float | None = None,
+                        revocation_cause: str | None = None) -> dict[str, Any]:
+    """Revoke future admissions without deleting evidence or pretending to stop a GPU.
+
+    The receipt records why (G-05): ``revocation_cause`` is the code the WebApp revoked for
+    (``source_revoked`` is the site's own withdrawal; any other code is Blueprint's), or
+    ``unknown`` when the caller named none. The cause changes nothing the revocation does."""
     _require(_identifier(intent_id), "intent_id_invalid")
+    _require(revocation_cause is None or (isinstance(revocation_cause, str)
+                                          and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", revocation_cause) is not None),
+             "revocation_cause_invalid")
     root = Path(queue_root)
     directory = root / intent_id
     _require(root.is_dir() and not root.is_symlink() and not directory.is_symlink(), "root_unsafe")
@@ -545,7 +553,8 @@ def revoke_scene_intent(*, queue_root: str | Path, intent_id: str, intent_digest
         receipt = _seal({"schema_version": "task_evaluation_scene_intent_revocation.v1",
             "intent_id": intent_id, "intent_digest": intent_digest, "owner": dict(owner),
             "status": "revoked", "revoked_at_epoch": datetime.now(timezone.utc).timestamp() if now is None else now,
-            "scope": "future_execution", "provider_mutation_performed": False}, "receipt_digest")
+            "scope": "future_execution", "provider_mutation_performed": False,
+            "revocation_cause": revocation_cause or "unknown"}, "receipt_digest")
         write_exclusive(path, receipt)
         return receipt
 

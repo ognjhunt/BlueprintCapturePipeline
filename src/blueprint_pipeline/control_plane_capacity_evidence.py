@@ -52,12 +52,14 @@ def capacity_eta(shortfall_bytes: int, *, summary: Mapping[str, Any] | None, now
 
 
 
+# The roles a new scene attempt's chain reserves. The retired robot-team canary
+# dispatcher (policy_canary_dispatch) no longer counts (C-12): its 2 GiB declared
+# footprint was held against every new attempt though nothing reserves it.
 CHAIN_ROLES: tuple[str, ...] = (
     "launch_preparation",
     "episode_compilation",
     "launch_activation",
     "launch_dispatch",
-    "policy_canary_dispatch",
 )
 
 

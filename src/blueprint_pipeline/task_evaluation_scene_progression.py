@@ -1032,12 +1032,15 @@ def _blocker_detail(exc):
     2026-11-02 a recovery refused while a deploy paused the spend guard showed
     only ``recovery_provider_zero_required``, not ``gpu_spend_guard_stale``.
     Only identifier-like reasons are kept, so a path or free text never
-    reaches the journal.
+    reaches the journal. ``name=number`` pairs are kept too: a disk-budget
+    refusal names its role and the bytes that refused it
+    (``launch_preparation:need_bytes=...:available_bytes=...``, C-12); on
+    2026-11-18 its journal line said only the code.
     """
     _, _, rest = str(exc).partition(":")
     reasons = [part for part in rest.split(";") if part]
     return [part for part in reasons
-            if len(part) <= 120 and all(c.islower() or c.isdigit() or c in "_:.-" for c in part)][:16]
+            if len(part) <= 200 and all(c.islower() or c.isdigit() or c in "_:.-=" for c in part)][:16]
 
 
 @scene_participant('config_path')

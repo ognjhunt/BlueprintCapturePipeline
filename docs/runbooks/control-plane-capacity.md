@@ -71,7 +71,9 @@ measured above its byte budget (`release` 15, `cache` 20, `work` 25,
 Something in that class grows with no cap. Read `usage.top_roots` and
 `usage.top_owners` for the class, then decide its retention; the alert itself
 changes nothing. It and `orphan_scratch_large` warn: on a healthy disk neither
-needs action today. On a critical mount the GC cannot relieve, the single page is
+needs action today. These usage findings (and every `usage_*` one) sit in
+`usage.warnings`, not in the capacity alerts: they never raise the level and
+are never posted. On a critical mount the GC cannot relieve, the single page is
 `reclaim_ineffective`, which carries the mount, `free_bytes`, `floor_bytes`,
 `available_bytes` and `top_retained_reasons`; the webhook's `cites` lists these
 usage warnings so the reader knows where the bytes are. When the GC summary

@@ -125,7 +125,8 @@ def test_a_handed_off_row_waits_out_a_downstream_run_before_paging(tmp_path: Pat
     ("awaiting_execution", "paused", ["scene_intent_paused"], "operator_pause"),
     ("awaiting_execution", "publication_ready", ["scene_submission_paused"], "operator_pause"),
     ("awaiting_execution", "construction_prepared", [], "operator_pause"),
-    ("blocked", "authority", ["scene_intake_authority_revoked"], "rights"),
+    # G-05: a revocation is a rights stop only when its receipt says the site withdrew (below).
+    ("blocked", "authority", ["scene_intake_authority_revoked"], "revoked"),
     ("blocked", "authority", ["scene_intake_authority_expired"], "execution_window"),
     ("blocked", "preparation", ["scene_intake_spend_cap_exhausted"], "spending_cap"),
     ("blocked", "preparation", ["scene_intake_attempt_cap_exhausted"], "spending_cap"),
@@ -151,10 +152,15 @@ def test_expired_or_revoked_windows_are_excluded_but_an_unreadable_intent_is_not
     blocked = [(NOW - 5 * 3600, "blocked", "policy_canary_blocked", ["provider_output_upload_marker_missing"])]
     _intent(root, blocked, name="scene-expired", expires_at=NOW - 1)
     (_intent(root, blocked, name="scene-revoked") / "revoked.json").write_text("{}")
+    (_intent(root, blocked, name="scene-withdrawn") / "revoked.json").write_text(
+        json.dumps({"revocation_cause": "source_revoked"}))
+    (_intent(root, blocked, name="scene-unconfirmed") / "revoked.json").write_text(
+        json.dumps({"revocation_cause": "website_task_context_not_confirmed"}))
     unreadable = _intent(root, blocked, name="scene-unknown-window")
     (unreadable / "intent.json").write_text("not json")
     section, alerts = _progressions(tmp_path)
-    assert section["dispositions"] == {"execution_window": 1, "rights": 1, "watched": 1}
+    # G-05: only the site's own withdrawal counts as rights; no cause or Blueprint's own cause is "revoked".
+    assert section["dispositions"] == {"execution_window": 1, "rights": 1, "revoked": 2, "watched": 1}
     assert alerts[0]["targets"] == ["scene-unknown-window"] and "label" not in alerts[0]
 
 
@@ -512,10 +518,13 @@ def test_unconfigured_roots_are_reported_as_incomplete(tmp_path: Path) -> None:
     assert all(result["checks"][name] == {"status": "not_configured"}
                for name in ("atlas_preview", "team_scene_packets", "rigid_probes",
                             "preparation_faults", "state_backup"))
-    assert [row["reason"] for row in result["alerts"]] == [
+    incomplete = [row for row in result["alerts"] if row["code"] == stall.INCOMPLETE_CODE]
+    assert [row["reason"] for row in incomplete] == [
         "threshold_invalid:X", "scene_intent_root_unconfigured", "launch_roots_unconfigured",
         "deploy_tool_unconfigured"]
-    assert all(row["code"] == stall.INCOMPLETE_CODE for row in result["alerts"])
+    # F-01: a host whose state backup never ran warns; it is not quiet.
+    assert [row["code"] for row in result["alerts"] if row not in incomplete] == [
+        "control_plane_backup_not_configured"]
 
 
 def _stall_page(target: str = INTENT) -> dict:
