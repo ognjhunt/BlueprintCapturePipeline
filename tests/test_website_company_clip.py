@@ -149,9 +149,10 @@ def _manifest(capture: Path) -> dict:
 
 
 def test_the_sharing_statement_is_matched_exactly():
-    assert SHARING_STATEMENT_VERSIONS == ("2026-11-12.v4",)
-    assert covers_sharing("2026-11-12.v4")
-    assert not any(map(covers_sharing, (OLDER, "2026-11-12.v4 ", "2026-11-12.V4", None, ["2026-11-12.v4"])))
+    assert SHARING_STATEMENT_VERSIONS == ("2026-11-12.v4", "2026-11-23.v6")
+    assert covers_sharing("2026-11-12.v4") and covers_sharing("2026-11-23.v6")
+    assert not any(map(covers_sharing, (OLDER, "2026-11-12.v4 ", "2026-11-12.V4", "2026-11-23.V6", "2026-11-23.v5",
+                                         None, ["2026-11-23.v6"])))
 
 
 def test_the_clip_has_no_audio_no_tags_is_seekable_and_is_never_the_upload(tmp_path):
@@ -256,6 +257,15 @@ def test_a_site_that_accepts_the_sharing_statement_later_gets_its_clip(tmp_path)
     world = World(rights=_rights(SHARED))
     assert world.publish(capture)["status"] == "published"
     assert world.delivered[0]["statement_version"] == SHARED
+
+
+def test_a_job_under_the_city_and_state_statement_gets_the_same_clip_as_one_under_v4(tmp_path):
+    # 2026-11-23.v6 is the v4 sentence with the job's city and state added; the clip is the same.
+    capture = _capture(tmp_path, version="2026-11-23.v6")
+    world = World(rights=_rights("2026-11-23.v6"))
+    assert world.publish(capture)["status"] == "published"
+    assert world.delivered[0]["permission_basis"] == "site_sharing_statement"
+    assert world.delivered[0]["statement_version"] == "2026-11-23.v6"
 
 
 def test_a_live_older_statement_takes_back_a_clip_made_under_the_sharing_one(capture):

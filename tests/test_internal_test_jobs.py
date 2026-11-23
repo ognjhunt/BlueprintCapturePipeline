@@ -45,6 +45,7 @@ def _module(path: Path, name: str):
     ("2026-11-11.v3", MARKER, None),                         # the marker without the version
     (TEST, {"label": "library-aisle"}, None),                # a marker that names no footage
     ("2026-11-12.v4", MARKER, {"permission_basis": "site_sharing_statement", "statement_version": "2026-11-12.v4"}),
+    ("2026-11-23.v6", MARKER, {"permission_basis": "site_sharing_statement", "statement_version": "2026-11-23.v6"}),
 ])
 def test_the_internal_test_basis_needs_both_the_version_and_the_marker(version, marker, basis):
     context = {"capture_rights": {"statement_version": version}, **({"internal_test": marker} if marker else {})}
@@ -52,7 +53,7 @@ def test_the_internal_test_basis_needs_both_the_version_and_the_marker(version, 
 
 
 def test_internal_test_is_never_a_sharing_version():
-    assert statement.SHARING_STATEMENT_VERSIONS == ("2026-11-12.v4",) and not statement.covers_sharing(TEST)
+    assert statement.SHARING_STATEMENT_VERSIONS == ("2026-11-12.v4", "2026-11-23.v6") and not statement.covers_sharing(TEST)
 
 
 def _test_context(capture: Path, *, marker=MARKER, version=TEST) -> None:
