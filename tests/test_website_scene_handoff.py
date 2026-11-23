@@ -1792,3 +1792,48 @@ def test_a_floor_that_cannot_be_written_stops_nothing_on_a_blocked_run(tmp_path,
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["status"] == "awaiting_inputs" and result["blockers"] == [NO_WALL[0]]
     assert result[handoff.ROOM_FLOOR] == {"status": "not_written", "reason": "website_base_scene_changed"}
+
+
+def _wiping_job(tmp_path, monkeypatch):
+    """A wiping job through the family route (its runtime installed) and the real compile, its room built."""
+    from tests.test_task_family_preparation import _arguments_for_family
+    (tmp_path / "pipeline").mkdir(parents=True)
+    install_family_runtimes(tmp_path, monkeypatch)
+    args = _arguments_for_family(tmp_path, "wiping")
+    args["source_geometry"]["geometry_backend"] = "fixture-native-depth"
+    args["source_geometry"]["digest"] = canonical_digest(args["source_geometry"], digest_field="digest")
+    args["task_masks"]["source_geometry_digest"] = args["source_geometry"]["digest"]
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    write_json(tmp_path / "pipeline/removal.json", args["removal_manifest"])
+    monkeypatch.setattr(ATLAS, lambda **_: {"status": "ready", "base_scene": args["base_scene"],
+        "source_geometry": args["source_geometry"], "source_pose_digest": "sha256:" + "b" * 64,
+        "background_pose_digest": "sha256:" + "c" * 64, "alignment": "anchored"})
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **kw: kw["task_masks"])
+    return dict(descriptor={"scene_id": args["task_context"]["scene_id"], "capture_id": args["task_context"]["capture_id"],
+                            "metadata": {"site_task_context": args["task_context"]}},
+                clean_plate={"privacy_verified": True, "status": "objects_removed",
+                             "removal_manifest_path": str(tmp_path / "pipeline/removal.json"),
+                             "task_masks": args["task_masks"]}, capture_root=tmp_path, now=args["now"])
+
+
+def test_a_family_preparation_blocked_on_no_wall_ships_its_room_floor_and_a_wall_ships_none(tmp_path, monkeypatch):
+    """The family route returns on its own: its blocked preparation still carries the room floor (review of #3708),
+    and a withdrawal among its blockers is a wall that writes none."""
+    kwargs = _wiping_job(tmp_path / "open", monkeypatch)
+    packaged = room_recorder(monkeypatch)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    codes = ["website_task_family_success_contract_required", "website_task_family_native_runtime_inputs_required"]
+    assert result["status"] == "needs_input" and result["blockers"] == codes
+    assert "source_registration" not in result and "website_intake_outbox" not in result
+    [floor] = packaged
+    assert floor["output_root"].name == handoff.ROOM_FLOOR and floor["flags"] == [handoff.ROOM_FLOOR_FLAG, *codes]
+    assert result[handoff.ROOM_FLOOR][handoff.ROOM_FLOOR_BLOCKERS] == codes
+    written = json.loads((tmp_path / "open/pipeline/website_scene_preparation/handoff.json").read_text())
+    assert written == result and written["digest"] == canonical_digest(written, digest_field="digest")
+    kwargs, packaged[:] = _wiping_job(tmp_path / "wall", monkeypatch), []
+    real = handoff.compile_website_scene_preparation
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", lambda **kw: (lambda prepared: {
+        **prepared, "blockers": [*prepared["blockers"], "website_capture_withdrawn"]})(real(**kw)))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"][-1] == "website_capture_withdrawn"
+    assert packaged == [] and handoff.ROOM_FLOOR not in result

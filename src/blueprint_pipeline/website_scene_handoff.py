@@ -803,9 +803,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
 
     def retain_gap(gap: Mapping[str, Any]) -> dict[str, Any]:
         result.update(status="needs_input", blockers=[gap["code"]], native_task_preparation_gap=dict(gap))
-        result["digest"] = canonical_digest(result, digest_field="digest")
-        write_json(handoff_path, result)
-        return result
+        return finish()
 
     def scan_taken_out() -> int:
         # Whether the scan that ships lost anything: the Atlas result is the one source of truth. A scene kept
@@ -867,6 +865,19 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         result[ROOM_FLOOR] = {"path": str(root / ROOM_FLOOR / "half" / ROOM_RECORD),
                               "inputs_digest": record["inputs_digest"],
                               **({ROOM_FLOOR_BLOCKERS: list(blockers)} if blockers else {})}
+
+    def finish() -> dict[str, Any]:
+        # Every handoff this run writes itself. The room is built (``room_ready``) and the preparation stopped on no
+        # wall: its room floor ships flagged at once, the job keeps retrying, and the package a later run writes
+        # replaces it (owner, 2026-11-23).
+        if (room_ready and result["status"] not in ("intake_ready", ROOM_PACKAGE) and result.get("blockers")
+                and ROOM_FLOOR not in result and may_fall_back()
+                and floor_ships(result["blockers"], task_context=metadata.get("site_task_context") or {},
+                                error=failure)):
+            room_floor([str(code) for code in result["blockers"]])
+        result["digest"] = canonical_digest(result, digest_field="digest")
+        write_json(handoff_path, result)
+        return result
 
     def room_for(gap: Mapping[str, Any]) -> dict[str, Any]:
         # A gap that says Blueprint has no model for the job, by code: the job's declared profile, flagged.
@@ -933,9 +944,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 native_geometry_requirements={
                     "source_aligned_depth_and_camera_poses": "required_for_mask_lifting_and_scene_registration",
                     "measured_scale": "unknown", "atlas_required": True})
-            result["digest"] = canonical_digest(result, digest_field="digest")
-            write_json(handoff_path, result)
-            return result
+            return finish()
         base = dict(atlas["base_scene"])
         # A base scene the job's earlier Atlas result built is replaced: its records are kept first.
         retain_superseded_records(capture_root=capture_root, root=root,
@@ -1111,9 +1120,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 blockers=[correction['reason']], visual_reconstruction_ready=False,
                 atlas_scene_source={'status': correction['status'], 'reason': correction['reason'],
                                     'stage': 'target_correction'})
-            result['digest'] = canonical_digest(result, digest_field='digest')
-            write_json(handoff_path, result)
-            return result
+            return finish()
         if navigation:
             # The robot moves itself: the room, and the goal region lifted from the reading's goal mask.
             return room_package(resolved.profile_id, masks)
@@ -1126,9 +1133,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # The fit check models one rigid subject; a family task is recorded, never assessed.
             result.update(status="needs_input", blockers=[GEOMETRY_ONLY_BLOCKER],
                           fit_check={"status": "not_run", "reason": "task_family_not_modelled"})
-            result["digest"] = canonical_digest(result, digest_field="digest")
-            write_json(handoff_path, result)
-            return result
+            return finish()
         if family is not None:
             # Family tasks compile all retained targets and their native
             # measurements. The single rigid-subject authoring path cannot
@@ -1160,9 +1165,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                     task_context_path=context_path, root=binding_root(), now=now)
                 if (metadata.get("website_scene_execution_authority") or {}).get("schema_version") == "website_scene_sponsorship.v1":
                     result["website_intake_outbox"] = send(preparation["intake_request"])
-            result["digest"] = canonical_digest(result, digest_field="digest")
-            write_json(handoff_path, result)
-            return result
+            return finish()
         targets = {row["target_id"]: row for row in masks.get("targets", [])}
         subjects = [row for row in removal.get("entries", []) if row.get("task_effect") == "manipulated"]
         synthetic = removal.get("synthetic_subject")
@@ -1282,9 +1285,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         if geometry_only:
             result["fit_check"] = geometry_only_fit_check(preparation=preparation, base_scene=base,
                                                           native_root=root / "fit_check")
-            result["digest"] = canonical_digest(result, digest_field="digest")
-            write_json(handoff_path, result)
-            return result
+            return finish()
         if preparation["status"] == "intake_ready":
             room_floor()
         # A missing execution authority must not stop this CPU-only geometry
@@ -1355,13 +1356,4 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         else:
             result.update(status="awaiting_inputs", blockers=[code])
         failure = exc
-    if (room_ready and result["status"] not in ("intake_ready", ROOM_PACKAGE) and result["blockers"]
-            and ROOM_FLOOR not in result and may_fall_back()
-            and floor_ships(result["blockers"], task_context=metadata.get("site_task_context") or {},
-                            error=failure)):
-        # The room is built (``room_ready``) and the preparation stopped on no wall: its room floor ships flagged
-        # at once, the job keeps retrying, and the package a later run writes replaces it (owner, 2026-11-23).
-        room_floor([str(code) for code in result["blockers"]])
-    result["digest"] = canonical_digest(result, digest_field="digest")
-    write_json(handoff_path, result)
-    return result
+    return finish()
