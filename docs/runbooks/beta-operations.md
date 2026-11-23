@@ -65,8 +65,12 @@ The job-store checks also skip these cases:
 
 - an Atlas job that is `ready`, `failed` or `withdrawn`, or `needs_input`
   with no scheduled recheck or waiting on privacy, rights or money. Parked
-  jobs stay visible under `dispositions` in the Atlas stall summary. Nothing
-  steps a parked job again: once its cause is fixed in the live release, read
+  jobs stay visible under `dispositions` in the Atlas stall summary. Since
+  2026-11-22 a job parked on no wall runs once more by itself on each new
+  release while its grant is live and it can still finish in its window
+  (`website_atlas_preview._reopen_parked_after_release`); a provider's 401,
+  402 or 403 waits as an outage and pages once per service
+  (`website_provider_account_refused`). To speed one up, read
   it with `door selected-handoff --selector-file <selector> --atlas-status --wait`
   (the selector from `--discover-selector`) and reopen it with `--atlas-retry
   --atlas-status-digest <digest> --wait` ([`../OPERATOR_DOOR.md`](../OPERATOR_DOOR.md)).
@@ -136,8 +140,9 @@ before it pulls messages:
   `next_attempt_at`, on the one retry policy (`job_retry_policy.py`). An
   outage (429, 5xx, timeout, disk) or a money refusal is retried every 2
   minutes, growing to every hour, until the job's grant ends it. Any other
-  failure gets six retries (15 min, 1 h, 3 h, 6 h, 12 h, 24 h) and is then left
-  as it is; the grant-expiry ending and the WebApp's window sweep end it.
+  failure gets six retries (15 min, 1 h, 3 h, 6 h, 12 h, 24 h) and then, since
+  2026-11-22, keeps retrying hourly on the outage schedule until the grant ends
+  it (a job with no grant runs once more on each new release).
   Each paid call keeps its own intent and receipt, so a re-run buys nothing that
   was already bought.
 - A delivery refused before its claim (the WebApp's rights check, a disk or

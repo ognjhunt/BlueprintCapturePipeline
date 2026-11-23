@@ -23,6 +23,7 @@ import re
 __all__ = [
     "MONEY",
     "OWNER_CLOSED_CODE",
+    "PROVIDER_ACCOUNT_STATUSES",
     "PRIVACY_RIGHTS",
     "REFUSAL_RETRY_DELAYS_SECONDS",
     "RELEASE_SWITCHING_BLOCKERS",
@@ -31,6 +32,7 @@ __all__ = [
     "owner_closed_refusal",
     "outage_retry_delay",
     "RETRY_LATER_STATUSES",
+    "provider_account_refused",
     "provider_answer",
     "provider_says_retry_later",
     "refusal_retry_delay",
@@ -183,6 +185,18 @@ _UNSENDABLE_REQUEST_CODES = frozenset({"meta_sam_inline_clip_exceeds_request_cei
                                        "meta_sam_caller_grant_covers_another_clip"})
 
 
+#: An outside service refusing Blueprint's own key or account: unauthenticated (401), unpaid (402) or not permitted
+#: (403). Nothing about the job's request is wrong, so it is an outage until the key or account is fixed: the
+#: controller retries it on the outage schedule up to the job's deadline, and Blueprint is paged. A refused request
+#: does no work at the provider; every retry still asks the job's own money admissions again.
+PROVIDER_ACCOUNT_STATUSES = frozenset({401, 402, 403})
+
+
+def provider_account_refused(code: object) -> bool:
+    """Whether an outside service refused Blueprint's own key or account (``PROVIDER_ACCOUNT_STATUSES``)."""
+    return provider_answer(code) in PROVIDER_ACCOUNT_STATUSES
+
+
 def provider_says_retry_later(code: object) -> bool:
     """Whether an outside service's answer means "try again later" (``RETRY_LATER_STATUSES`` or any 5xx)."""
     status = provider_answer(code)
@@ -191,12 +205,13 @@ def provider_says_retry_later(code: object) -> bool:
 
 def request_cannot_succeed(code: object) -> bool:
     """Whether sending this request again unchanged cannot succeed: an outside service refused the
-    request itself (a 4xx that does not mean "try again later"), or the request cannot be sent at all."""
+    request itself (a 4xx that does not mean "try again later" and is no refusal of Blueprint's own key or
+    account, ``provider_account_refused``), or the request cannot be sent at all."""
     if not isinstance(code, str):
         return False
     status = provider_answer(code)
     if status is not None:
-        return 400 <= status < 500 and status not in RETRY_LATER_STATUSES
+        return 400 <= status < 500 and status not in RETRY_LATER_STATUSES | PROVIDER_ACCOUNT_STATUSES
     return code.partition(":")[0].strip().lower() in _UNSENDABLE_REQUEST_CODES
 
 

@@ -45,6 +45,11 @@ _FAULT = re.compile(r"\b(" + "|".join(FAULT_CODES) + r")\b")
 #: capture, on the same route and memory as the faults above; it gates nothing.
 LOOK_CODE = "website_atlas_look_draft_final"
 ATLAS_JOB_GLOB = "*/scenes/site-*/captures/*/pipeline/atlas/preview_job.json"
+#: Since 2026-11-22: an outside service refused Blueprint's own key or account (401, 402, 403) and a room build
+#: waits on it as on an outage (``job_retry_policy.provider_account_refused``). Paged once per service while any
+#: job waits on it; the jobs resume by themselves once the key or account works. It gates nothing.
+KEY_CODE = "website_provider_account_refused"
+_ATLAS_API_ACCOUNT = re.compile(r"website_atlas_api_40[123]")
 _STOPPED = frozenset({"failed_retryable", "retryable_blocked", "failed_terminal"})
 
 
@@ -97,7 +102,9 @@ def check_preparation_faults(root: Path | None, *, now: float, remembered: Mappi
                "stopped": stopped, "announced": len(offenders), "unreadable": unreadable,
                "draft_looks_announced": len(looks), "draft_looks_unreadable": look_unreadable}
     alerts: list[dict[str, Any]] = []
-    for code, rows in ((CODE, offenders), (LOOK_CODE, looks)):
+    keys = _account_refusals(Path(root), now=now, remembered=remembered, memory_out=memory_out)
+    section["provider_account_refusals_announced"] = len(keys)
+    for code, rows in ((CODE, offenders), (LOOK_CODE, looks), (KEY_CODE, keys)):
         if rows:
             rows.sort(key=lambda row: row["target"])
             alerts.append({"code": code, "count": len(rows), "targets": [row["target"] for row in rows[:10]], **rows[0]})
@@ -139,10 +146,44 @@ def _draft_looks(root: Path, *, now: float, remembered: Mapping[str, Any],
     return rows, unreadable, len(paths) > MAX_LEDGERS
 
 
+def _account_refusals(root: Path, *, now: float, remembered: Mapping[str, Any],
+                      memory_out: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """One row per outside service whose refusal of Blueprint's key or account a waiting Atlas job last met."""
+    from .job_retry_policy import provider_account_refused
+    services: dict[str, str] = {}
+    for path in sorted(root.glob(ATLAS_JOB_GLOB))[:MAX_LEDGERS]:
+        try:
+            if path.is_symlink() or path.stat().st_size > MAX_LEDGER_BYTES:
+                continue
+            job = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # counted by the draft-look read of the same files
+        reason = job.get("last_transient_reason") if isinstance(job, Mapping) else None
+        if (isinstance(reason, str) and job.get("transient_failures") and job.get("state") == "processing"
+                and (provider_account_refused(reason) or _ATLAS_API_ACCOUNT.fullmatch(reason))):
+            head = reason.partition(":")[0]
+            services.setdefault(head.rsplit("_http_", 1)[0] if "_http_" in head else head[:-4], head)
+    rows = []
+    for service, head in sorted(services.items()):
+        key = f"provider:{service}:{KEY_CODE}"
+        prior = remembered.get(key) if isinstance(remembered.get(key), Mapping) else {}
+        since = prior.get("since")
+        since = since if isinstance(since, (int, float)) and not isinstance(since, bool) else now
+        if memory_out is not None:
+            memory_out[key] = {"since": since}
+        if now - since < ANNOUNCE_SECONDS:
+            rows.append({"target": key, "label": service[:120], "status": "processing", "blockers": [head[:120]],
+                         "age_seconds": round(now - since)})
+    return rows
+
+
 def describe(alert: Mapping[str, Any]) -> str:
     more = int(alert.get("count") or 1) - 1
     tail = f" (+{more} more)" if more > 0 else ""
     blockers = alert.get("blockers") or ["?"]
+    if alert.get("code") == KEY_CODE:
+        return (f"an outside service refused Blueprint's own key or account [{blockers[0]}]; room builds wait on it "
+                f"as on an outage and resume by themselves once it works: {alert.get('label')}{tail}")
     if alert.get("code") == LOOK_CODE:
         return (f"website job ready with the depth-fused draft as its room's look [{blockers[0]}]; no refined splat "
                 f"within its allowance or window: {alert.get('label') or alert.get('target')}{tail}")

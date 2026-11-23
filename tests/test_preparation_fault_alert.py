@@ -66,3 +66,18 @@ def test_more_ledgers_than_one_tick_reads_is_unknown_not_nothing(tmp_path, monke
     section, alerts = fault.check_preparation_faults(tmp_path, now=NOW)
     assert section["truncated"] is True
     assert [row["code"] for row in alerts] == [stall.INCOMPLETE_CODE]
+
+
+def test_a_provider_refusing_blueprints_key_pages_once_per_service_while_jobs_wait(tmp_path):
+    """2026-11-22: a 401, 402 or 403 from an outside service is an outage the room builds wait on; one page."""
+    for capture, reason in (("a", "world_labs_http_401:invalid key"), ("b", "world_labs_http_402"),
+                            ("c", "world_labs_http_413")):
+        path = tmp_path / f"bucket/scenes/site-{capture}/captures/walkthrough-{capture}/pipeline/atlas/preview_job.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"state": "processing", "transient_failures": 2, "last_transient_reason": reason}))
+    memory: dict = {}
+    section, alerts = fault.check_preparation_faults(tmp_path, now=NOW, memory_out=memory)
+    assert [row["code"] for row in alerts] == [fault.KEY_CODE] and alerts[0]["count"] == 1
+    assert alerts[0]["label"] == "world_labs" and section["provider_account_refusals_announced"] == 1
+    assert capacity._severity(fault.KEY_CODE) == "page" and "key or account" in stall.describe(alerts[0])
+    assert fault.check_preparation_faults(tmp_path, now=NOW + fault.ANNOUNCE_SECONDS, remembered=memory)[1] == []

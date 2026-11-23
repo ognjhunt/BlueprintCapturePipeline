@@ -13,8 +13,9 @@ about ten minutes apart, then a dead-letter queue nothing reads. Now:
   an outage or a money refusal backs off from 2 minutes to an hour until the
   job's deadline (the grant's expiry ends it as a delivery would, and
   ``end_expired_preparation`` ends a silent one); a failure nobody classified
-  gets six timed retries (15 min to 24 h) and is then left as it is, so a
-  deterministic failure never occupies the serial listener for days. A
+  gets six timed retries (15 min to 24 h) and then, with a grant, retries
+  hourly on the outage schedule until the grant ends (without one it waits for
+  the next release). A deterministic failure never occupies the serial listener. A
   ``DeterministicRefusal`` (``deterministic_refusal``: the same inputs and code
   repeat it) gets no timed retry at all: it waits, and runs again once, only
   when the running release decides its step differently.
@@ -109,6 +110,10 @@ def retry_delay(kind: str, failures: int, *, deadline: bool = True) -> int | Non
     from .job_retry_policy import MONEY, outage_retry_delay, refusal_retry_delay
     if kind in (OUTAGE, MONEY, AWAITING_JOB_SENTENCE) and deadline:
         return outage_retry_delay(failures)  # The job's deadline, not a count, ends these.
+    if kind == REFUSAL and deadline:
+        # Since 2026-11-22: past its six timed retries a refusal keeps retrying on the outage schedule (hourly)
+        # until the grant ends, instead of waiting for a release. Each run asks every admission again.
+        return refusal_retry_delay(max(0, failures - 1)) or outage_retry_delay(failures)
     if kind in (OUTAGE, MONEY, REFUSAL, AWAITING_JOB_SENTENCE):
         return refusal_retry_delay(max(0, failures - 1))
     if kind in (DETERMINISTIC, RETRIES_SPENT):
