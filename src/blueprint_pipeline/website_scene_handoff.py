@@ -356,22 +356,19 @@ NOT_LOCATED = "task_target_not_located"
 ROOM_AS_FILMED = (NOT_FOUND, NOT_LOCATED)
 RUNTIME_GAP = "website_task_family_runtime_preparation_required"
 #: Owner direction 2026-11-17: accept every job, then decide what is needed. A preparation blocker that is no wall
-#: ships the room package, flagged, and buys nothing more (``goes_on``). These codes keep the job waiting all the
-#: same, because the room package would be wrong: the job's record or inputs are bad or unsafe to read (a new
-#: delivery or a fresh run answers them), or the room's own inputs are not ready yet (the earlier stage does).
-KEEP_HOLDING = frozenset({
-    "website_subject_origin_conflict", "website_retained_static_view_plan_missing",
-    "website_authoring_backend_invalid", "website_authoring_provider_invalid",
-    "website_task_context_family_invalid"})
-#: Read from the codes' own definitions: an integrity check of a record Blueprint keeps (a digest or binding that
-#: changed or does not match, a path outside the capture, a stored value out of range, a receipt that is invalid,
-#: missing or needs reconciling), or an earlier step still running. Every such code on the preparation path ends
-#: in one of these (``tests/test_website_scene_handoff``, which reads them from the source).
-KEEP_HOLDING_SUFFIXES = ("_changed", "_mismatch", "_binding_invalid", "_outside_capture", "_scale_invalid", "_receipt_invalid", "_receipts_invalid", "_receipt_missing",
-                         "_result_missing", "_requires_reconciliation", "_settlement_invalid", "_pending",
-                         "_not_ready")
-#: Intake validation (``task_evaluation_scene_intent_contracts``): the job's own request is not a valid one.
-KEEP_HOLDING_PREFIXES = ("scene_intake_",)
+#: ships the room package, flagged, and buys nothing more (``goes_on``). Since 2026-11-22 only codes that protect
+#: privacy or money keep the job waiting for good; any other bad record or input ships, flagged, once its first
+#: retry cycle is spent, like every other blocker that is no wall.
+KEEP_HOLDING = frozenset()
+#: Read from the codes' own definitions. Privacy: a digest or binding that changed or does not match, or a path
+#: outside the capture, may be another job's or capture's record; a step still pending covers the clean plate's
+#: privacy check (``website_scene_preparation_pending``). Money: a receipt that is invalid or missing, a paid
+#: result that is missing, a call that needs reconciling or a settlement that is invalid is spend not yet proven.
+#: Every such code on the preparation path ends in one of these (``tests/test_website_scene_handoff``, which reads
+#: them from the source).
+KEEP_HOLDING_SUFFIXES = ("_changed", "_mismatch", "_binding_invalid", "_outside_capture", "_receipt_invalid", "_receipts_invalid", "_receipt_missing",
+                         "_result_missing", "_requires_reconciliation", "_settlement_invalid", "_pending")
+KEEP_HOLDING_PREFIXES: tuple[str, ...] = ()
 
 
 #: Written beside the handoff just before the prepared scene is sent to the website (``prepared-scene``), whose
@@ -508,8 +505,29 @@ def blocker_code(error: BaseException) -> str:
     return f"{DEFECT}:{type(error).__name__}" if defect(error) else str(error)
 
 
+def first_retry_cycle_spent(capture_root: Path, now: float) -> bool:
+    """Whether the attempt now running is the last of the job's first retry cycle (``job_retry_policy``): its ledger
+    shows at least as many failed attempts in a row as the policy has timed retries, the first of them failed at least
+    the whole schedule (about 46 hours) ago. An outage, retried more often, reaches it after as long. An unreadable
+    ledger or time: no (the window's end still ships the job)."""
+    from .handoff_job_state import _read_job_ledger
+    from .job_retry_policy import REFUSAL_RETRY_DELAYS_SECONDS
+    from .website_preparation_retry import consecutive_failures
+    from .website_preparation_terminal import _parse_utc
+    history = _read_job_ledger(Path(capture_root)).get("attempt_history")
+    if type(history) is not list:
+        return False
+    failures = consecutive_failures(history)
+    if failures < len(REFUSAL_RETRY_DELAYS_SECONDS):
+        return False
+    first = history[-failures]
+    ended = _parse_utc(first.get("failed_at")) if isinstance(first, Mapping) else None
+    return ended is not None and now - ended.timestamp() >= sum(REFUSAL_RETRY_DELAYS_SECONDS)
+
+
 def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float,
-            window_end: Any = lambda: None, error: BaseException | None = None) -> bool:
+            window_end: Any = lambda: None, error: BaseException | None = None,
+            retries_spent: Any = lambda: False) -> bool:
     """Whether a preparation stopped on ``codes`` ships the room package (owner, 2026-11-17), or keeps waiting.
 
     At the job's spending cap it never holds (owner, 2026-11-19): the refusal already stopped the purchase, so the
@@ -521,9 +539,10 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
     code the room package would be wrong for (``keeps_holding``, any segment), and in a development test, which
     places the object on its own surface. Only facts about the job's own scene or wording ship at once
     (``ships_at_once``). Everything else, an unknown code included (a configuration fault, a missing key or
-    profile, a website refusal, an outage, a defect), waits until the job's window, read when asked
-    (``window_end()``), ends within ``LAST_CALL_SECONDS``, so a fix or the next run can still prepare the job; a
-    window that cannot be read keeps it waiting. Faults ours to fix are paged (``preparation_fault_alert``). A code
+    profile, a website refusal, an outage, a defect), ships once this run is the last of its first retry cycle
+    (``retries_spent()``: the six timed retries of ``job_retry_policy``), or once the job's window, read when
+    asked (``window_end()``), ends within ``LAST_CALL_SECONDS``; until then a fix or the next run can still
+    prepare the job. A later fix rebuilds it (``website_held_handoff_replay``). Faults ours to fix are paged (``preparation_fault_alert``). A code
     whose "budget" is a request's size (``REQUEST_SIZE_CODES``) is not read as money.
     """
     from .hard_stops import is_wall
@@ -548,6 +567,8 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
     if at_cap:
         return True
     if all(ships_at_once(code) for code in codes) and (error is None or not defect(error)):
+        return True
+    if retries_spent():
         return True
     window = window_end()
     return window is not None and window - now <= LAST_CALL_SECONDS
@@ -839,6 +860,10 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
     def window_end() -> float | None:
         return retained_window_end(capture_root, scene_id=descriptor["scene_id"], capture_id=descriptor["capture_id"])
 
+    def retries_spent() -> bool:
+        # This run is the last of the first retry cycle: if it fails too, the cycle is spent.
+        return first_retry_cycle_spent(capture_root, now)
+
     def may_fall_back() -> bool:
         # Preparation and compile only: never once the prepared scene is being, or may have been, sent.
         return not dispatching and not prepared_scene_may_exist(
@@ -912,13 +937,15 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         removal = json.loads(removal_path.read_text())
         # Capture truth applies to held families too. Reading this retained
         # manifest performs no mask, authoring or provider work.
-        if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
-            raise ValueError("website_subject_origin_conflict")
         # The editor could not take the job's object out cleanly, so the scene kept it as filmed
         # (``website_atlas_pipeline.background_floor``): it is part of the room scan, never also built on its own.
         in_scan = (bool((atlas.get("job_object_rule") or {}).get("background_not_cleaned"))
                    and any(row.get("task_effect") == "manipulated" for row in removal.get("entries") or []))
         room_ready = True  # from here a room package can be written (``room_package``)
+        # A subject-origin conflict protects no privacy, rights or money: once the first retry cycle is spent it
+        # ships the room flagged (``goes_on``), so it is raised once the room can be packaged.
+        if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
+            raise ValueError("website_subject_origin_conflict")
         from .website_job_spend_cap import SPENDING_CAP_REACHED
         if SPENDING_CAP_REACHED in (atlas.get("flags") or []):
             if not may_fall_back():
@@ -1203,7 +1230,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 and may_fall_back()
                 and ("rule_withheld" in result and not set(preparation["blockers"]) & REGISTRATION_REFUSALS
                      or not geometry_only and goes_on(preparation["blockers"], task_context=context, now=now,
-                                                      window_end=window_end))):
+                                                      window_end=window_end, retries_spent=retries_spent))):
             # Anything else that stops the object (no internal place, no support, a size the published figures
             # refute, an authoring admission unmet: nothing was spent or sent for it): the room package, as main
             # ships this job, the object left out and the reason a flag. A registration refusal is a blocker only
@@ -1265,7 +1292,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
             code = blocker_code(exc)
             if may_fall_back() and goes_on([*preparation["blockers"], code], task_context=context, now=now,
-                                           error=exc, window_end=window_end):
+                                           error=exc, window_end=window_end, retries_spent=retries_spent):
                 # The object's inputs cannot be made, and nothing the preparation holds is a wall: the room
                 # package, flagged (``goes_on``).
                 return room_package(None, flags=[shipped_code(code)], not_prepared=[shipped_code(code)])
@@ -1277,7 +1304,8 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         code = blocker_code(exc)
         stopped_task = metadata.get("site_task_context") or {}
         if room_ready and may_fall_back() and (
-                goes_on([code], task_context=stopped_task, now=now, error=exc, window_end=window_end)
+                goes_on([code], task_context=stopped_task, now=now, error=exc, window_end=window_end,
+                        retries_spent=retries_spent)
                 or isinstance(exc, CreditDepleted) and last_money_recheck(exc, now, window_end())):
             # A step of this preparation failed for no wall (``goes_on``): the job goes on as the room package,
             # flagged, and buys nothing. Gemini's answer that Blueprint's credits are depleted is a money wait

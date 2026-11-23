@@ -135,6 +135,22 @@ def test_unknown_family_cannot_hide_a_subject_origin_conflict(tmp_path, monkeypa
     assert result["provider_mutation_performed"] is False
 
 
+def test_a_subject_origin_conflict_ships_the_room_flagged_once_the_retry_cycle_is_spent(tmp_path, monkeypatch,
+                                                                                          ready_atlas):
+    """The conflict is raised once the room can be packaged, so the retry-cycle fallback reaches it."""
+    kwargs = inputs(tmp_path)
+    kwargs["descriptor"]["metadata"]["site_task_context"]["context_digest"] = "sha256:" + "c" * 64
+    ready_atlas["subject_origin"] = "synthetic_design"
+    write_json(tmp_path / "pipeline/removal.json", {"entries": []})
+    packaged = room_recorder(monkeypatch)
+    monkeypatch.setattr(handoff, "first_retry_cycle_spent", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **_: pytest.fail("a conflict precedes the compile"))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["status"] == "room_package_written" and result["blockers"] == []
+    assert [call["flags"] for call in packaged] == [["website_subject_origin_conflict"]]
+
+
 @pytest.mark.parametrize("family", ["rigid_pick_and_place", "articulated_open_close"])
 def test_synthetic_subject_profile_ignores_its_supports_mechanism(tmp_path, monkeypatch, ready_atlas, family):
     from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
@@ -1168,7 +1184,7 @@ CONTEXT = {"context_digest": "sha256:" + "a" * 64}
     *[(["support_surface_not_found_under_subject", code], False, False) for code in ADMISSIONS],
     # A development test places the object on its own authored surface.
     (["support_surface_not_found_under_subject"], True, False),
-    # The job's own request is not a valid one, or its inputs are not ready or unsafe: kept.
+    # A bad request or record waits for its first retry cycle (none spent here); a pending privacy check is kept.
     (["scene_intake_owner_invalid"], False, False), (["website_scene_preparation_pending"], False, False),
     (["website_subject_origin_conflict"], False, False),
     # A stop only a new video clears keeps its own hold; a fit stop found once the room was built ships at once.
@@ -1612,9 +1628,10 @@ def test_a_fault_of_our_own_waits_is_paged_and_ships_only_at_the_window_end(code
 
 
 def test_the_codes_the_room_package_would_be_wrong_for_are_read_from_their_definitions():
-    """Every integrity code raised or appended on the preparation path, found in the source by its own wording (a
-    digest or binding that changed or does not match, a path outside the capture, a stored value out of range, a
-    receipt invalid or missing or needing reconciliation, a step still pending), keeps the job waiting."""
+    """Every code raised or appended on the preparation path that protects privacy or money, found in the source by
+    its own wording (a digest or binding that changed or does not match, a path outside the capture, a receipt
+    invalid or missing or needing reconciliation, a step still pending), keeps the job waiting, even once its first
+    retry cycle is spent. A bad record that protects neither ships then, flagged."""
     import re
     from pathlib import Path
     root = Path(handoff.__file__).parent
@@ -1625,16 +1642,20 @@ def test_the_codes_the_room_package_would_be_wrong_for_are_read_from_their_defin
                  "website_gemini_receipts", "website_task_grounding", "website_object_spec_research"):
         source = (root / f"{name}.py").read_text()
         codes |= set(re.findall(r'(?:Error|Refusal|blockers\.append)\("([a-z][a-z0-9_]+)"', source))
-    integrity = re.compile(r".*(_changed|_mismatch|_binding_invalid|_outside_capture|_scale_invalid|_receipt_invalid"
-                           r"|_receipts_invalid|_receipt_missing|_result_missing|_requires_reconciliation|_pending"
-                           r"|_not_ready)$")
+    integrity = re.compile(r".*(_changed|_mismatch|_binding_invalid|_outside_capture|_receipt_invalid"
+                           r"|_receipts_invalid|_receipt_missing|_result_missing|_requires_reconciliation|_pending)$")
     found = sorted(code for code in codes if integrity.match(code))
-    assert {"website_assembly_coverage_binding_mismatch", "website_base_scene_scale_invalid",
+    assert {"website_assembly_coverage_binding_mismatch", "website_scene_preparation_pending",
             "website_scene_task_identity_mismatch", "website_scene_removal_manifest_outside_capture",
             "website_gemini_requires_reconciliation"} <= set(found)
     assert all(handoff.keeps_holding(code) for code in found)
-    assert all(handoff.goes_on([code], task_context=CONTEXT, now=0.0) is False for code in found)
-    assert handoff.keeps_holding("website_subject_origin_conflict")
+    assert all(handoff.goes_on([code], task_context=CONTEXT, now=0.0, retries_spent=lambda: True) is False
+               for code in found)
+    for code in ("website_subject_origin_conflict", "website_retained_static_view_plan_missing",
+                 "website_authoring_backend_invalid", "website_authoring_provider_invalid",
+                 "website_task_context_family_invalid", "website_base_scene_scale_invalid",
+                 "website_task_family_preparation_not_ready", "scene_intake_record_unreadable"):
+        assert not handoff.keeps_holding(code)
     assert not handoff.keeps_holding("website_object_spec_dimension_conflict")  # a finding, not a bad record
 
 
@@ -1642,3 +1663,37 @@ def test_the_readme_names_the_right_piece_and_never_a_builder_s_or_an_exception_
     assert handoff.piece_of("website_articulated_task_has_no_destination") == "success rule"
     assert handoff.piece_of("task_destination_surface_contact_required") == "destination"
     assert handoff.piece_of("website_assembly_builder_refused:the hinge axis 'z' is degenerate") == "object"
+
+
+@pytest.mark.parametrize("code", ["website_some_code_nobody_classified", "website_subject_origin_conflict",
+                                  "website_preparation_defect:KeyError"])
+def test_a_blocker_that_is_no_wall_ships_once_its_first_retry_cycle_is_spent(monkeypatch, code):
+    """No wait for the window's end: the last run of the first retry cycle ships the room package, flagged."""
+    monkeypatch.setattr("blueprint_pipeline.website_development_test.enabled", lambda *_: False)
+    for spent, ships in ((False, False), (True, True)):
+        assert handoff.goes_on([code], task_context=CONTEXT, now=0.0, window_end=lambda: 7 * 86400.0,
+                               retries_spent=lambda spent=spent: spent) is ships
+    # A wall still holds after the cycle.
+    assert handoff.goes_on(["website_capture_withdrawn"], task_context=CONTEXT, now=0.0,
+                           retries_spent=lambda: True) is False
+
+
+def test_the_first_retry_cycle_is_spent_after_six_failures_in_a_row_over_its_whole_schedule(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from blueprint_pipeline.handoff_job_state import JOB_LEDGER_FILENAME
+    from blueprint_pipeline.job_retry_policy import REFUSAL_RETRY_DELAYS_SECONDS
+    start = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    schedule = sum(REFUSAL_RETRY_DELAYS_SECONDS)
+
+    def ledger(failures):
+        rows = [{"status": "completed"}] + [
+            {"status": "failed_retryable", "failed_at": (start + timedelta(seconds=60 * n)).isoformat()}
+            for n in range(failures)]
+        write_json(tmp_path / JOB_LEDGER_FILENAME, {"status": "processing", "attempt_history": rows})
+
+    assert handoff.first_retry_cycle_spent(tmp_path, start.timestamp() + 10 * schedule) is False  # no ledger
+    ledger(len(REFUSAL_RETRY_DELAYS_SECONDS) - 1)
+    assert handoff.first_retry_cycle_spent(tmp_path, start.timestamp() + 10 * schedule) is False
+    ledger(len(REFUSAL_RETRY_DELAYS_SECONDS))
+    assert handoff.first_retry_cycle_spent(tmp_path, start.timestamp() + schedule - 1) is False  # an outage, fast
+    assert handoff.first_retry_cycle_spent(tmp_path, start.timestamp() + schedule) is True
