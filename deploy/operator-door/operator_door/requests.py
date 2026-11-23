@@ -26,10 +26,6 @@ for good once no process, mount or recent write touches it.
 ``provider_output_promotion resume`` for one streamed policy-canary attempt,
 as the service user: promotion, the gated cleanup, the absence proof and, with
 ``ingest``, the needed members' ingestion. It runs no new code.
-``extend-scene-execution-window`` (``operate``) plans, or with ``apply`` records,
-one owner-approved time-only extension of a sealed scene intent (at most 7 days)
-through the active release, then tells the WebApp. Spend caps, attempts,
-providers, task and rights are not request fields and cannot change.
 ``confirm-owner-success-contract`` (``operate``) previews, or with ``apply`` and the
 preview's digest records, one owner confirmation that a published website job's
 success thresholds, exactly as built, are the owner's, through the active
@@ -85,8 +81,6 @@ _SCOPES = {
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
     "selected-handoff": "operate",
-    # One owner-approved, time-only extension of a sealed scene intent's window.
-    "extend-scene-execution-window": "operate",
     # One owner-approved spend/attempt ceiling grant for a sealed scene intent.
     # One owner confirmation of a published website job's built success thresholds.
     "confirm-owner-success-contract": "operate",
@@ -149,7 +143,6 @@ if DISPATCHER_HOLD_ONLY:
     # inputs still point at it. It starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "extend-scene-execution-window",
                            "confirm-owner-success-contract", "retire-parked-delivery", "test-job",
                            "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -177,10 +170,8 @@ _LANE_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _LEASE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # A policy-canary dispatch directory name (the activation id).
 _CANARY_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-# A scene intent id, and the whole-second UTC expiry an operator may ask for.
+# A scene intent id.
 _INTENT_ID = re.compile(r"scene-[0-9a-f]{64}\Z")
-_UTC_SECOND = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
-SCENE_WINDOW_ACK = "extend-scene-execution-window"
 OWNER_SUCCESS_ACK = "confirm-owner-success-contract"
 # An owner's user or organization id, as the sealed intent records it.
 _OWNER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z")
@@ -532,25 +523,6 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(ingest, bool):
             raise RequestRefused("provider_output_resume_ingest_invalid")
         return {"kind": kind, "run": run, "attempt": attempt, "ingest": ingest}
-    if kind == "extend-scene-execution-window":
-        fields = {"kind", "intent_id", "intent_digest", "expires_at", "authorization_reference", "ack", "apply"}
-        intent, digest, expires = body.get("intent_id"), body.get("intent_digest"), body.get("expires_at")
-        reference = body.get("authorization_reference")
-        if (set(body) != fields or not isinstance(intent, str) or not _INTENT_ID.fullmatch(intent)
-                or not isinstance(digest, str) or not _LEASE_DIGEST.fullmatch(digest)
-                or not isinstance(expires, str) or not _UTC_SECOND.fullmatch(expires)
-                or type(body["apply"]) is not bool):
-            raise RequestRefused("scene_window_fields_invalid")
-        try:
-            _dt.datetime.strptime(expires, "%Y-%m-%dT%H:%M:%SZ")
-        except ValueError as error:
-            raise RequestRefused("scene_window_expiry_invalid") from error
-        if (not isinstance(reference, str) or reference != reference.strip()
-                or not 1 <= len(reference) <= 500 or not reference.isprintable()):
-            raise RequestRefused("scene_window_authorization_reference_invalid")
-        if body["ack"] != SCENE_WINDOW_ACK:
-            raise RequestRefused("scene_window_unacknowledged")
-        return {key: body[key] for key in sorted(fields)}
     if kind == "confirm-owner-success-contract":
         # The owner fields and acknowledgements; no threshold is a request field.
         fields = {"kind", "intent_id", "owner_user_id", "owner_organization_id", "approved_by",

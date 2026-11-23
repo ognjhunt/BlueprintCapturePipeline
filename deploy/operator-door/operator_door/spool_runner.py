@@ -246,12 +246,6 @@ def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) ->
             "UMask=0077", f"ReadWritePaths={writable}")
 
 
-def _scene_window_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
-    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
-            "DOOR_SERVICE_USER": "blueprint",
-            "DOOR_SCENE_WINDOW_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
-
-
 def _scene_window_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
     """Writes one record under the scene intents and its result. The signed WebApp
     notice needs the network and the Pipeline sync token in provider-secrets;
@@ -417,11 +411,6 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
                                           "2h", lambda request: hashlib.sha256(
                                               f"{request['run']}/{request['attempt']}".encode("utf-8"))
                                           .hexdigest()[:12], _output_resume_environment, _output_resume_properties),
-    # Named by a hash of the intent id; the caller text never reaches a unit name.
-    "extend-scene-execution-window": _LaunchSpec(
-        "blueprint-operator-door-scene-window", "door-extend-scene-execution-window.sh", "5min",
-        lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
-        _scene_window_environment, _scene_window_properties),
     # Named by a hash of the intent id; the caller text never reaches a unit name. It writes one
     # confirmation under the scene intents and its result.
     "confirm-owner-success-contract": _LaunchSpec(
@@ -568,8 +557,7 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
         **_stage_release_provenance(config, request_id, request),
         **(extra or {}),
     }
-    callers = {"extend-scene-execution-window": "scene_window_caller_invalid",
-               "confirm-owner-success-contract": "owner_success_caller_invalid",
+    callers = {"confirm-owner-success-contract": "owner_success_caller_invalid",
                "retire-parked-delivery": "parked_delivery_caller_invalid"}
     if request["kind"] in callers:
         # The authenticated token name, recorded in the extension or confirmation as who asked.

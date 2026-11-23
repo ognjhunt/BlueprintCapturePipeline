@@ -20,6 +20,7 @@ from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import website_task_context as context
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
+from tests import scene_window_extension_records as records
 from tests.test_website_preparation_contract_v2 import NOW, VECTOR, retained_source
 
 DAY = 86400
@@ -121,8 +122,8 @@ def test_the_owner_extension_still_adds_up_to_seven_days_past_the_longer_window(
                   trusted_clients={"blueprint-webapp"}, capture_rights=RIGHTS, now=raw + 30)
     # The extension's bound is relative to the issued expiry, so it is unchanged by the longer window.
     with pytest.raises(ValueError, match="expiry_beyond_original_window"):
-        window.extend_scene_execution_window_by_operator(**common, expires_at_epoch=raw + WEEK + 1, apply=False)
-    window.extend_scene_execution_window_by_operator(**common, expires_at_epoch=raw + 6 * DAY, apply=True)
+        records.extend_scene_execution_window_by_operator(**common, expires_at_epoch=raw + WEEK + 1, apply=False)
+    records.extend_scene_execution_window_by_operator(**common, expires_at_epoch=raw + 6 * DAY, apply=True)
     reserved = _reserve(root, staged, now=raw + 60)
     assert reserved["status"] == "reserved" and reserved["maximum_spend_usd"] == grant["max_total_spend_usd"]
 

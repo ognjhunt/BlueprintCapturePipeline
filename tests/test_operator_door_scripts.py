@@ -9,7 +9,6 @@
 #   deploy/operator-door/door-provider-output-resume.sh
 #   deploy/operator-door/door-retire-parked-delivery.sh
 #   deploy/operator-door/door-selected-handoff.sh
-#   deploy/operator-door/door-extend-scene-execution-window.sh
 #   deploy/operator-door/door-repair-notifier-binding.sh
 #   deploy/operator-door/install.sh
 
@@ -308,7 +307,6 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
                                     "door-lane-scratch.sh", "door-provider-output-resume.sh",
                                     "door-retire-parked-delivery.sh",
-                                    "door-extend-scene-execution-window.sh",
                                     "door-confirm-owner-success-contract.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
@@ -1314,62 +1312,13 @@ def test_parked_delivery_retirement_refuses_another_kinds_request_id(parked_deli
     assert rc == 2 and not calls and not list(Path(parked_delivery_env["DOOR_RESULTS_DIR"]).iterdir())
 
 
-# --- extend-scene-execution-window ---------------------------------------------------------------
+# --- extend-scene-execution-window (gone) ---------------------------------------------------------
 
-WINDOW_ID = "20261031T120000Z-extend-scene-execution-window-0000abcd"
-
-
-@pytest.fixture()
-def window_env(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
-    _write_stub(tmp_path / "window-python", '''#!/bin/bash
-{ printf 'window %s\\n' "$*"; echo "intake-root ${BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT:-unset}"; } >> "$STUB_LOG"
-printf '%s\\n' "${FAKE_WINDOW:-}"
-exit "${FAKE_TOOL_RC:-0}"
-''')
-    return {**env, "DOOR_VENV_PYTHON": str(tmp_path / "window-python"), "DOOR_CONTROL_PLANE_REPO": str(repository),
-            "DOOR_SERVICE_USER": "blueprint", "DOOR_REQUESTED_BY": "cloud-scene-runs",
-            "DOOR_SCENE_WINDOW_REQUEST": json.dumps({"kind": "extend-scene-execution-window",
-                                                     "authorization_reference": "approval $(touch pwned)"})}
-
-
-@pytest.mark.parametrize(("report", "rc", "status", "code"), [
-    ({"door_outcome": "planned"}, 0, "planned", None),
-    ({"door_outcome": "extended"}, 0, "extended", None),
-    ({"door_outcome": "already_covered"}, 0, "already_covered", None),
-    ({"door_outcome": "webapp_notice_failed"}, 1, "failed", "webapp_notice_failed"),
-    ({"door_outcome": "refused", "code": "scene_execution_window_intent_revoked"}, 2, "refused",
-     "scene_execution_window_intent_revoked"),
-])
-def test_scene_window_runs_the_release_module_as_the_service_user(window_env, tmp_path, report, rc, status, code):
-    done, outcome, calls = _run("door-extend-scene-execution-window.sh", window_env, DOOR_REQUEST_ID=WINDOW_ID,
-                                FAKE_WINDOW=json.dumps(report), FAKE_TOOL_RC=str(rc))
-    assert (done, outcome["status"], outcome["code"], outcome["exit_code"]) == (rc, status, code, rc)
-    assert calls[0] == "setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --"
-    assert calls[1] == "umask 0077"
-    assert calls[2].startswith("window -m blueprint_pipeline.task_evaluation_scene_execution_window_door --request-json ")
-    assert calls[2].endswith(f"--door-caller cloud-scene-runs --door-request-id {WINDOW_ID}")
-    assert not (tmp_path / "pwned").exists()
-    result = Path(window_env["DOOR_RESULTS_DIR"]) / f"{WINDOW_ID}.scene-window.json"
-    assert json.loads(result.read_text()) == report and outcome["result"] == str(result)
-
-
-@pytest.mark.parametrize(("overrides", "code"), [
-    ({"DOOR_SERVICE_USER": "root"}, "scene_window_user_invalid"),
-    ({"DOOR_REQUESTED_BY": "../root"}, "scene_window_caller_invalid"),
-    ({"DOOR_REQUESTED_BY": "a b"}, "scene_window_caller_invalid"),
-])
-def test_scene_window_rechecks_its_inputs(window_env, overrides, code):
-    rc, outcome, calls = _run("door-extend-scene-execution-window.sh", window_env, DOOR_REQUEST_ID=WINDOW_ID,
-                              **overrides)
-    assert rc == 2 and outcome["code"] == code and not calls
-
-
-def test_scene_window_script_is_installed_with_the_door():
+def test_scene_window_script_is_no_longer_installed_with_the_door():
+    """No person extends a job's work window any more (ledger verdict, owner question 21)."""
     installer = (DOOR / "install.sh").read_text(encoding="utf-8")
-    assert '"$source_dir"/door-extend-scene-execution-window.sh' in installer
+    assert "door-extend-scene-execution-window.sh" not in installer
+    assert not (DOOR / "door-extend-scene-execution-window.sh").exists()
 
 
 # ------------------------------------------------- scene-configuration activation hold

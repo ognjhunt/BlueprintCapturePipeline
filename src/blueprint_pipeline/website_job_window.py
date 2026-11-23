@@ -12,9 +12,9 @@ issue a longer window, so neither side refuses the other's grants. Lowering it
 refuses grants already issued under the old bound.
 
 Only time is bounded here. Caps, attempt counts, rights and consent are checked
-where they always were. An owner-approved extension (door
-``extend-scene-execution-window``) is separate: up to 7 days past the issued
-expiry (``task_evaluation_scene_execution_window_evidence.MAXIMUM_EXTENSION_SECONDS``).
+where they always were. No person extends a window any more; extension records
+written earlier still count, up to 7 days past the issued expiry
+(``task_evaluation_scene_execution_window_evidence.MAXIMUM_EXTENSION_SECONDS``).
 """
 
 # 7 days, owner-approved 2026-11-03 (up from one day).

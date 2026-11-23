@@ -695,7 +695,7 @@ def test_an_attempt_in_flight_keeps_a_revoked_or_expired_intent_live(tmp_path: P
 
 
 def test_an_owner_can_extend_an_expired_intent_and_keep_its_release(tmp_path: Path) -> None:
-    from blueprint_pipeline.task_evaluation_scene_execution_window import (
+    from tests.scene_window_extension_records import (
         ACK,
         extend_scene_execution_window,
     )

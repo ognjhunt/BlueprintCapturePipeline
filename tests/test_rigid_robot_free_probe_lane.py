@@ -528,9 +528,9 @@ def _stage_intent(root: Path, grant: dict[str, Any], *, name: str) -> dict[str, 
 
 
 def _extend(root: Path, intent: dict[str, Any], until: float) -> dict[str, Any]:
-    """The operator door's sealed, time-only extension (the real writer)."""
+    """A sealed, time-only extension as the retired operator-door writer left it."""
 
-    from blueprint_pipeline.task_evaluation_scene_execution_window import ACK, extend_scene_execution_window_by_operator
+    from tests.scene_window_extension_records import ACK, extend_scene_execution_window_by_operator
 
     return extend_scene_execution_window_by_operator(
         queue_root=root, intent_id=intent["intent_id"], intent_digest=intent["intent_digest"], expires_at_epoch=until,

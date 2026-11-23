@@ -5,6 +5,7 @@ import pytest
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import task_evaluation_scene_execution_authority as authority
 from blueprint_pipeline import task_evaluation_scene_execution_window as window
+from tests import scene_window_extension_records as records
 from tests.test_task_evaluation_scene_intake import stage, attempt, request
 
 
@@ -13,7 +14,7 @@ def extend(root, owner_record, **overrides):
         owner=request()['owner'], authenticated_client='webapp', trusted_clients={'webapp'},
         expires_at_epoch=2000, authorization_reference='explicit-owner-time-only-approval', ack=window.ACK, now=1001)
     args.update(overrides)
-    return window.extend_scene_execution_window(**args)
+    return records.extend_scene_execution_window(**args)
 
 
 def test_explicit_extension_preserves_intent_attempts_spend_and_retry_caps(tmp_path, monkeypatch):

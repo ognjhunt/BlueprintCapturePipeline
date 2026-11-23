@@ -1,16 +1,16 @@
-"""Owner-approved, time-only renewal of an expired scene intent through the operator door."""
+"""Time-only extension records of a scene intent's window, as the retired operator-door writer sealed them.
+
+No person extends a window any more; these records, where they already exist, still count for every reader."""
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_evaluation_scene_execution_window.py
 #   src/blueprint_pipeline/task_evaluation_scene_execution_window_evidence.py
-#   src/blueprint_pipeline/task_evaluation_scene_execution_window_door.py
 #   src/blueprint_pipeline/website_preparation_authority.py
 #   src/blueprint_pipeline/website_preparation_contracts.py
 #   src/blueprint_pipeline/task_evaluation_scene_lifecycle_finished.py
 
 from __future__ import annotations
 
-import calendar
 import copy
 import hashlib
 import json
@@ -18,8 +18,8 @@ import json
 import pytest
 
 from blueprint_pipeline import task_evaluation_scene_execution_window as window
-from blueprint_pipeline import task_evaluation_scene_execution_window_door as door
 from blueprint_pipeline import task_evaluation_scene_intake as intake
+from tests import scene_window_extension_records as records
 from tests.test_task_evaluation_scene_intake import attempt, request, stage
 
 RIGHTS = {"consent_revoked": False, "derived_scene_generation_allowed": True}
@@ -32,7 +32,7 @@ def extend(root, owner_record, **overrides):
                 ack=window.ACK, door_caller="cloud-scene-runs", door_request_id=REQUEST_ID,
                 trusted_clients={"webapp"}, capture_rights=RIGHTS, apply=True, now=1001)
     args.update(overrides)
-    return window.extend_scene_execution_window_by_operator(**args)
+    return records.extend_scene_execution_window_by_operator(**args)
 
 
 def _records(root, owner_record):
@@ -57,7 +57,7 @@ def test_operator_extension_reopens_an_expired_intent_inside_its_original_caps(t
     # The door never claims the WebApp's issuer identity; it only binds to it.
     assert "authenticated_issuer" not in record and record["intent_authenticated_issuer"] == "webapp"
     intent = _intent(tmp_path, owner)
-    assert record["unchanged_execution_bounds"] == window.operator_bounds(intent)
+    assert record["unchanged_execution_bounds"] == records.operator_bounds(intent)
     assert record["unchanged_execution_bounds"]["execution"] == {
         key: value for key, value in request()["execution"].items() if key != "expires_at_epoch"}
     assert (tmp_path / owner["intent_id"] / "intent.json").read_bytes() == original
@@ -196,140 +196,6 @@ def test_lifecycle_finished_reader_accepts_the_same_operator_record(tmp_path):
         observe(forged, 2000 + 7 * 86400)
 
 
-# --- the door entry: rights read, one write, WebApp notice --------------------------------------
-
-
-def _door_request(owner, **changes):
-    return {"kind": "extend-scene-execution-window", "intent_id": owner["intent_id"],
-            "intent_digest": owner["intent_digest"], "expires_at": "1970-01-01T00:33:20Z",
-            "authorization_reference": "founder approval 2026-10-31 (time only)",
-            "ack": window.ACK, "apply": True, **changes}
-
-
-@pytest.fixture()
-def door_env(tmp_path, monkeypatch):
-    monkeypatch.setenv(intake.ROOT_ENV, str(tmp_path))
-    monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
-    return tmp_path
-
-
-def _rights(**rights):
-    return lambda **_kwargs: {"capture_rights": {**RIGHTS, **rights}, "capture_id": "walkthrough-r1",
-                              "request_id": "r1"}
-
-
-def test_door_apply_records_once_and_sends_the_exact_notice(door_env):
-    owner = stage(door_env)
-    sent = []
-
-    def transport(notice):
-        sent.append(dict(notice))
-        return {"status": "recorded", "intent_id": notice["intent_id"],
-                "extension_digest": notice["extension_digest"], "expires_at_epoch": notice["expires_at_epoch"]}
-
-    code, report = door.run(_door_request(owner), door_caller="cloud-scene-runs", door_request_id=REQUEST_ID,
-                            now=1001, rights_reader=_rights(), transport=transport, sleep=lambda _s: None)
-    assert code == 0 and report["door_outcome"] == "extended" and report["spend_caps_changed"] is False
-    record = report["result"]["extension"]
-    assert sent == [{"schema_version": door.NOTICE_SCHEMA, "intent_id": owner["intent_id"],
-                     "intent_digest": owner["intent_digest"], "extension_digest": record["extension_digest"],
-                     "original_expires_at_epoch": 1000, "expires_at_epoch": 2000,
-                     "authorization_reference": "founder approval 2026-10-31 (time only)",
-                     "authorized_via": "operator_door", "issued_at_epoch": 1001}]
-    assert report["webapp_notice"]["status"] == "acknowledged"
-    # A rerun is idempotent and re-sends the covering record.
-    code, again = door.run(_door_request(owner), door_caller="cloud-scene-runs", door_request_id=REQUEST_ID,
-                           now=1005, rights_reader=_rights(), transport=transport, sleep=lambda _s: None)
-    assert code == 0 and again["door_outcome"] == "already_covered" and sent[1] == sent[0]
-    assert len(_records(door_env, owner)) == 1
-
-
-def test_door_plan_sends_nothing(door_env):
-    owner = stage(door_env)
-    code, report = door.run(_door_request(owner, apply=False), door_caller="cloud-scene-runs",
-                            door_request_id=REQUEST_ID, now=1001, rights_reader=_rights(),
-                            transport=lambda _n: pytest.fail("a plan must not notify"))
-    assert code == 0 and report["door_outcome"] == "planned" and "webapp_notice" not in report
-    assert not _records(door_env, owner)
-
-
-def test_plan_never_notifies_even_when_already_covered_and_apply_resends(door_env):
-    owner = stage(door_env)
-    extend(door_env, owner)  # recorded earlier; its notice was never delivered
-    code, report = door.run(_door_request(owner, apply=False), door_caller="cloud-scene-runs",
-                            door_request_id=REQUEST_ID, now=1005, rights_reader=_rights(),
-                            transport=lambda _n: pytest.fail("a plan must never POST"))
-    assert code == 0 and report["door_outcome"] == "already_covered" and "webapp_notice" not in report
-    sent = []
-
-    def transport(notice):
-        sent.append(dict(notice))
-        return {"status": "recorded", "intent_id": notice["intent_id"],
-                "extension_digest": notice["extension_digest"], "expires_at_epoch": notice["expires_at_epoch"]}
-
-    code, report = door.run(_door_request(owner), door_caller="cloud-scene-runs", door_request_id=REQUEST_ID,
-                            now=1006, rights_reader=_rights(), transport=transport, sleep=lambda _s: None)
-    assert code == 0 and report["door_outcome"] == "already_covered"
-    assert report["webapp_notice"]["status"] == "acknowledged" and len(sent) == 1
-    assert len(_records(door_env, owner)) == 1
-
-
-def test_failed_notice_is_retried_then_visible_never_silent(door_env):
-    owner = stage(door_env)
-    calls, sleeps = [], []
-
-    def broken(_notice):
-        calls.append(1)
-        raise OSError("connection reset")
-
-    code, report = door.run(_door_request(owner), door_caller="cloud-scene-runs", door_request_id=REQUEST_ID,
-                            now=1001, rights_reader=_rights(), transport=broken, sleep=sleeps.append)
-    assert code == 1 and report["door_outcome"] == "webapp_notice_failed"
-    assert report["webapp_notice"] == {"status": "failed", "attempts": 3, "errors": ["connection reset"] * 3}
-    assert len(calls) == 3 and sleeps == [2, 4]
-    # The extension itself is durable; a rerun re-sends it.
-    assert len(_records(door_env, owner)) == 1
-
-
-def test_typed_webapp_refusal_is_not_retried(door_env):
-    owner = stage(door_env)
-    calls = []
-
-    def refused(_notice):
-        calls.append(1)
-        raise ValueError("scene_execution_window_webapp_http_409:scene_execution_window_capture_withdrawn")
-
-    code, report = door.run(_door_request(owner), door_caller="cloud-scene-runs", door_request_id=REQUEST_ID,
-                            now=1001, rights_reader=_rights(), transport=refused, sleep=lambda _s: None)
-    assert code == 1 and len(calls) == 1 and report["webapp_notice"]["attempts"] == 1
-
-
-def test_door_refuses_revoked_consent_before_writing(door_env):
-    owner = stage(door_env)
-    with pytest.raises(ValueError, match="capture_rights_revoked"):
-        door.run(_door_request(owner), door_caller="cloud-scene-runs", door_request_id=REQUEST_ID, now=1001,
-                 rights_reader=_rights(consent_revoked=True), transport=lambda _n: pytest.fail("no notice"))
-    assert not _records(door_env, owner)
-
-
-def test_main_prints_a_typed_refusal(monkeypatch, capsys):
-    def refuse(_request, **_kwargs):
-        raise ValueError("scene_execution_window_capture_rights_revoked")
-
-    monkeypatch.setattr(door, "run", refuse)
-    code = door.main(["--request-json", "{}", "--door-caller", "cloud-scene-runs", "--door-request-id", REQUEST_ID])
-    printed = json.loads(capsys.readouterr().out)
-    assert code == 2 and printed["door_outcome"] == "refused"
-    assert printed["code"] == "scene_execution_window_capture_rights_revoked"
-
-
-@pytest.mark.parametrize("value", ["2026-11-07T10:30:10", "2026-11-07 10:30:10Z", "2026-02-30T00:00:00Z", 5])
-def test_expiry_text_is_one_exact_utc_format(value):
-    with pytest.raises(ValueError, match="scene_execution_window_expiry_invalid"):
-        door.parse_expires_at(value)
-    assert door.parse_expires_at("2026-11-07T10:30:10Z") == calendar.timegm((2026, 11, 7, 10, 30, 10, 0, 0, 0))
-
-
 # --- retained preparation authority (task_confirmed false) ------------------------------------
 
 
@@ -357,7 +223,7 @@ def test_retained_preparation_authority_honours_the_same_effective_expiry(tmp_pa
     clock[0] = expiry + 60
     with pytest.raises(ValueError, match="scene_intake_preparation_authority_invalid"):
         intake.reserve_scene_attempt(**common, now=expiry + 60)
-    window.extend_scene_execution_window_by_operator(queue_root=root, intent_id=staged["intent_id"],
+    records.extend_scene_execution_window_by_operator(queue_root=root, intent_id=staged["intent_id"],
         intent_digest=staged["intent_digest"], expires_at_epoch=expiry + 3600,
         authorization_reference="founder approval (time only)", ack=window.ACK, door_caller="cloud-scene-runs",
         door_request_id=REQUEST_ID, trusted_clients={"blueprint-webapp"}, capture_rights=RIGHTS, apply=True,
