@@ -80,6 +80,16 @@ def _website_object_spec_agent_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_gemini_key_from_the_environment(monkeypatch):
+    """A developer's or CI's own Gemini key never reaches a test: with one set, a job's model calls (the build plan,
+    the build choice) would be real, paid calls on any test whose context is complete. A test that needs a key sets
+    its own fake one."""
+    for name in ("GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY", "GOOGLE_AI_API_KEY", "GEMINI_API_KEY_FILE",
+                 "GOOGLE_GENAI_API_KEY_FILE", "GOOGLE_AI_API_KEY_FILE"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _vast_credit_guard_off(monkeypatch):
     """The Vast credit guard is on by default (P-D01, 2026-11-05): with it on, every
     Vast launch first GETs the live account balance. Never let a test reach Vast

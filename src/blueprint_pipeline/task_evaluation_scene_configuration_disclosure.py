@@ -192,9 +192,12 @@ def render_inputs_disclosure_is_coherent(render_inputs: Mapping[str, Any]) -> bo
         binding = render_inputs.get("website_binding", {})
         # A designed subject (website_synthetic_subject) is bound by name and has no captured frames.
         designed = isinstance(binding, Mapping) and binding.get("subject_origin") == "synthetic_design"
+        # A supplied mesh (a designed subject or a plain parametric shape, ``website_supplied_mesh``) calls no
+        # provider: a captured subject authored that way keeps its frames, and none of them reaches a provider.
+        supplied = render_inputs.get("supplied_mesh_authoring") is True
         return (crossed is False and render_inputs.get("input_kind") == "website_capture_derivatives"
                 and render_inputs.get("raw_capture_video_in_provider_packet") is False
-                and render_inputs.get("captured_frame_derivatives_in_provider_packet") is (not designed)
+                and render_inputs.get("captured_frame_derivatives_in_provider_packet") is (not designed and not supplied)
                 and render_inputs.get("prepared_background_in_provider_packet") is True
                 and render_inputs.get("derived_frames") == [] and render_inputs.get("derived_frame_count") == 0
                 and render_inputs.get("renderer_qualified") is False

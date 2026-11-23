@@ -253,12 +253,16 @@ def materialize_website_inputs(*, envelope, stage_one_configuration, output_root
     _require(configurations[envelope["recipe"]["stage_sequence"][0]["stage_id"]] == stage_one_configuration,
              "stage_one_changed")
     binding = validate_website_native_inputs(envelope=envelope, configurations=configurations, require_render_inputs=False)
+    from .website_synthetic_subject import AUTHORING_METHOD
+    supplied_mesh = any(configuration.get("authoring_method") == AUTHORING_METHOD for configuration in configurations.values())
     result = {"schema_version": "task_evaluation_scene_configuration_render_inputs.v1", "status": INPUT_STATUS,
               "run_id": envelope["request"]["run_id"], "input_kind": "website_capture_derivatives", "website_binding": binding,
               "source_appearance_digest": runtime["appearance"]["digest"],
               "raw_interiorgs_bytes_in_provider_packet": False, "raw_capture_video_in_provider_packet": False,
-              # A designed subject was never captured: no frame of it reaches a provider.
-              "captured_frame_derivatives_in_provider_packet": binding["captured_frame_count"] > 0,
+              # A supplied mesh (a designed subject, or a plain parametric shape that keeps its observed frames) calls
+              # no provider, so no frame of it reaches one; the record says which, for the disclosure check.
+              "captured_frame_derivatives_in_provider_packet": binding["captured_frame_count"] > 0 and not supplied_mesh,
+              **({"supplied_mesh_authoring": True} if supplied_mesh else {}),
               "prepared_background_in_provider_packet": True,
               "derived_frames": [], "derived_frame_count": 0, "renderer_qualified": False,
               "physical_truth_claimed": False, "provider_render_required": False,

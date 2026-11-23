@@ -165,3 +165,8 @@ def test_a_designed_subject_render_input_is_coherent_only_when_frameless():
     assert not render_inputs_disclosure_is_coherent({**designed, "captured_frame_derivatives_in_provider_packet": True})
     assert not render_inputs_disclosure_is_coherent(
         {**designed, "website_binding": {"captured_frame_count": 2, "subject_origin": "synthetic_design"}})
+    # A captured subject authored as a plain parametric shape keeps its frames, and none reaches a provider.
+    parametric = {**captured, "captured_frame_derivatives_in_provider_packet": False, "supplied_mesh_authoring": True}
+    assert render_inputs_disclosure_is_coherent(parametric)
+    assert not render_inputs_disclosure_is_coherent({**parametric, "captured_frame_derivatives_in_provider_packet": True})
+    assert not render_inputs_disclosure_is_coherent({**captured, "captured_frame_derivatives_in_provider_packet": False})
