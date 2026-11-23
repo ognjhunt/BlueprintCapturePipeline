@@ -1,4 +1,7 @@
-"""The owner's confirmation of a website job's built thresholds: preview, then apply with the preview's digest."""
+"""The owner's confirmation of a website job's built thresholds: preview, then apply with the preview's digest.
+
+The operator door's ``confirm-owner-success-contract`` kind is gone; ``_door_record`` writes the record exactly as
+that door entry did (``issuer_channel`` ``operator_door``), so records it left behind keep reading back."""
 
 from __future__ import annotations
 
@@ -12,7 +15,6 @@ from typing import Any
 import pytest
 
 from blueprint_pipeline import task_evaluation_owner_success_confirmation as confirmation
-from blueprint_pipeline import task_evaluation_owner_success_confirmation_door as door
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_configured_controls_deferred_inputs import _document_name
@@ -145,9 +147,34 @@ def body(job: SimpleNamespace, **changes: Any) -> dict[str, Any]:
     return value
 
 
+def _door_record(request: dict[str, Any], *, door_caller: str, door_request_id: str) -> dict[str, Any]:
+    """A preview, or with ``apply`` one record, as the retired door entry wrote it."""
+
+    import os
+
+    intent_id = request["intent_id"]
+    confirmation._require(bool(intake._identifier(intent_id)), "not_authorized")
+    root = intake._root(Path(os.environ[ROOT_ENV]))
+    owner = {"user_id": request["owner_user_id"], "organization_id": request["owner_organization_id"]}
+    evidence = str(request["approval_evidence"]).strip()
+    planned = confirmation.preview_owner_success_confirmation(
+        queue_root=root, intent_id=intent_id, owner=owner, approved_by=request["approved_by"],
+        approval_evidence=evidence)
+    if not request["apply"]:
+        return {"door_outcome": "planned", "mode": "preview", **planned}
+    confirmation._require(request["apply_ack"] == planned["apply_ack"], "apply_ack_mismatch")
+    reference = (f"owner_approval:approved_by={request['approved_by']};evidence={evidence};"
+                 f"channel={confirmation.CHANNEL};door_caller={door_caller};door_request_id={door_request_id}")
+    result = confirmation.confirm_owner_success_contract(
+        queue_root=root, intent_id=intent_id, owner=owner, approved_by=request["approved_by"],
+        approval_evidence=evidence, apply_ack=request["apply_ack"], authorization_reference=reference,
+        ack=confirmation.ACK)
+    return {"door_outcome": result["status"], "mode": "applied", **result}
+
+
 def confirm(job: SimpleNamespace, request_id: str = "req-apply") -> dict[str, Any]:
-    preview = door.run(body(job), door_caller="cloud-scene-runs", door_request_id="req-preview")
-    return door.run(body(job, apply=True, apply_ack=preview["apply_ack"]), door_caller="cloud-scene-runs",
+    preview = _door_record(body(job), door_caller="cloud-scene-runs", door_request_id="req-preview")
+    return _door_record(body(job, apply=True, apply_ack=preview["apply_ack"]), door_caller="cloud-scene-runs",
                     door_request_id=request_id)
 
 
@@ -173,7 +200,7 @@ def compiled_task_spec(job: SimpleNamespace, revision: dict[str, Any] | None = N
 def test_preview_writes_nothing_and_apply_with_its_digest_records_one_confirmation(tmp_path, monkeypatch):
     job = publish(tmp_path, monkeypatch)
     success = json.loads((job.documents / _document_name(SUCCESS)).read_text())
-    preview = door.run(body(job), door_caller="cloud-scene-runs", door_request_id="req-1")
+    preview = _door_record(body(job), door_caller="cloud-scene-runs", door_request_id="req-1")
     assert preview["door_outcome"] == "planned" and preview["existing_confirmation_digest"] is None
     shown = preview["preview"]
     # The thresholds exactly as built, the revision and document they come from, and the proposal they carry.
@@ -185,9 +212,9 @@ def test_preview_writes_nothing_and_apply_with_its_digest_records_one_confirmati
     assert shown["owner"] == OWNER and shown["approval_evidence"] == EVIDENCE
     assert not (job.directory / confirmation.DIRECTORY).exists()
     with pytest.raises(ValueError, match="owner_success_confirmation_apply_ack_mismatch"):
-        door.run(body(job, apply=True, apply_ack="sha256:" + "0" * 64), door_caller="cloud", door_request_id="r")
+        _door_record(body(job, apply=True, apply_ack="sha256:" + "0" * 64), door_caller="cloud", door_request_id="r")
     assert not (job.directory / confirmation.DIRECTORY).exists()
-    applied = door.run(body(job, apply=True, apply_ack=preview["apply_ack"]), door_caller="cloud-scene-runs",
+    applied = _door_record(body(job, apply=True, apply_ack=preview["apply_ack"]), door_caller="cloud-scene-runs",
                        door_request_id="req-3")
     assert applied["door_outcome"] == "confirmed" and applied["mode"] == "applied"
     [path] = (job.directory / confirmation.DIRECTORY).glob("*.json")
@@ -215,11 +242,11 @@ def test_reapplying_is_idempotent_and_never_overwrites(tmp_path, monkeypatch):
     assert again["door_outcome"] == "already_confirmed"
     assert again["confirmation_digest"] == first["confirmation_digest"]
     assert list((job.directory / confirmation.DIRECTORY).glob("*.json")) == [path] and path.read_bytes() == before
-    preview = door.run(body(job), door_caller="cloud", door_request_id="req-c")
+    preview = _door_record(body(job), door_caller="cloud", door_request_id="req-c")
     assert preview["existing_confirmation_digest"] == first["confirmation_digest"]
     # A different approval of the same thresholds is already covered too: nothing more is written.
-    other = door.run(body(job, approval_evidence="second approval"), door_caller="cloud", door_request_id="p")
-    repeat = door.run(body(job, approval_evidence="second approval", apply=True, apply_ack=other["apply_ack"]),
+    other = _door_record(body(job, approval_evidence="second approval"), door_caller="cloud", door_request_id="p")
+    repeat = _door_record(body(job, approval_evidence="second approval", apply=True, apply_ack=other["apply_ack"]),
                       door_caller="cloud", door_request_id="req-d")
     assert repeat["door_outcome"] == "already_confirmed" and path.read_bytes() == before
 
@@ -232,7 +259,7 @@ def test_reapplying_is_idempotent_and_never_overwrites(tmp_path, monkeypatch):
 def test_an_approval_that_is_not_the_owners_is_refused(tmp_path, monkeypatch, changes):
     job = publish(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="owner_success_confirmation_owner_or_revocation_mismatch"):
-        door.run(body(job, **changes), door_caller="cloud", door_request_id="r")
+        _door_record(body(job, **changes), door_caller="cloud", door_request_id="r")
     assert not (job.directory / confirmation.DIRECTORY).exists()
 
 
@@ -245,7 +272,7 @@ def test_a_revoked_intent_cannot_be_confirmed_and_loses_its_confirmation(tmp_pat
     (job.directory / "revoked.json").write_text("{}")
     assert confirmation.confirmed_owner_authority(task_spec=task_spec, revision=job.revision, **scope) is None
     with pytest.raises(ValueError, match="owner_or_revocation_mismatch"):
-        door.run(body(job), door_caller="cloud", door_request_id="r")
+        _door_record(body(job), door_caller="cloud", door_request_id="r")
 
 
 def test_the_confirmation_binds_the_exact_revision_thresholds_and_proposal(tmp_path, monkeypatch):
@@ -296,18 +323,18 @@ def test_a_changed_published_job_is_refused_before_any_write(tmp_path, monkeypat
     original = success.read_bytes()
     success.write_bytes(original.replace(b"maximum_task_contact_force_n", b"maximum_task_contact_force_N"))
     with pytest.raises(ValueError, match="success_document_unavailable"):
-        door.run(body(job), door_caller="cloud", door_request_id="r")
+        _door_record(body(job), door_caller="cloud", door_request_id="r")
     success.write_bytes(original)
     revision = job.run / "configured_scene_revision.v1.json"
     revision.write_bytes(revision.read_bytes() + b"\n")
     with pytest.raises(ValueError, match="revision_not_the_published_result"):
-        door.run(body(job), door_caller="cloud", door_request_id="r")
+        _door_record(body(job), door_caller="cloud", door_request_id="r")
     assert not (job.directory / confirmation.DIRECTORY).exists()
 
 
 def test_a_preview_taken_before_the_thresholds_changed_cannot_be_applied(tmp_path, monkeypatch):
     job = publish(tmp_path, monkeypatch)
-    preview = door.run(body(job), door_caller="cloud", door_request_id="p")
+    preview = _door_record(body(job), door_caller="cloud", door_request_id="p")
     # The job is republished with another threshold: the owner never saw these.
     configured, references = rethreshold(job.revision, job.references, tmp_path / "case",
                                          maximum_task_contact_force_n=50.0)
@@ -324,17 +351,5 @@ def test_a_preview_taken_before_the_thresholds_changed_cannot_be_applied(tmp_pat
         "configured_scene_revision_path": str(job.run / "configured_scene_revision.v1.json"),
         "configured_scene_revision_digest": configured["revision_digest"]}, {}, {}))
     with pytest.raises(ValueError, match="apply_ack_mismatch"):
-        door.run(body(job, apply=True, apply_ack=preview["apply_ack"]), door_caller="cloud", door_request_id="a")
+        _door_record(body(job, apply=True, apply_ack=preview["apply_ack"]), door_caller="cloud", door_request_id="a")
     assert not (job.directory / confirmation.DIRECTORY).exists()
-
-
-def test_main_reports_a_refusal_as_a_door_outcome(tmp_path, monkeypatch, capsys):
-    job = publish(tmp_path, monkeypatch)
-    arguments = ["--request-json", json.dumps(body(job, approved_by="someone-else")), "--door-caller", "cloud",
-                 "--door-request-id", "r"]
-    assert door.main(arguments) == 2
-    assert json.loads(capsys.readouterr().out) == {
-        "door_outcome": "refused", "code": "owner_success_confirmation_owner_or_revocation_mismatch"}
-    assert door.main(["--request-json", json.dumps(body(job)), "--door-caller", "cloud",
-                      "--door-request-id", "r"]) == 0
-    assert json.loads(capsys.readouterr().out)["door_outcome"] == "planned"

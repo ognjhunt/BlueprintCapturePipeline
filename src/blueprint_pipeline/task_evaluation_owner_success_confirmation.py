@@ -7,11 +7,13 @@ own bar. The website team packet compiles the job on them all the same, at
 once, marked as assumed and not confirmed by the site
 (``website_owner_success_assumption``); an operator's compile still refuses
 with ``configured_owner_success_contract_authority_missing``. The owner can
-accept those exact thresholds through the operator door
-(``task_evaluation_owner_success_confirmation_door``, kind
-``confirm-owner-success-contract``): a preview names the published job, the
+accept those exact thresholds on the website job page
+(``website_owner_success_confirmation``): a preview names the published job, the
 thresholds and an ``apply_ack`` digest; an apply repeating that digest writes
 one record here, under ``<intent>/owner-success-confirmations/<digest>.json``.
+The operator door's ``confirm-owner-success-contract`` kind is gone (submitting
+the job is the confirmation); records it wrote, with ``issuer_channel``
+``operator_door``, still read back exactly as before.
 
 The record is bound to the intent (id, digest, owner, issuer), the published
 configured scene revision, the exact success-criteria document the job was
@@ -22,11 +24,6 @@ back for the team packet, which recomputes every binding from what it already
 reads and only then compiles the owner contract as the owner's. A changed
 revision, document, threshold or proposal, another owner or a revoked intent
 finds no confirmation, and the job is compiled, or stays, as unconfirmed.
-
-The job's owner can also confirm on the website job page
-(``website_owner_success_confirmation``). That writes this same record through
-``confirm_owner_success_contract`` and these same validators, with
-``issuer_channel`` ``website`` instead of ``operator_door``.
 
 A confirmation changes no threshold: it records only that the owner accepted
 the thresholds as built. Nothing here starts compute, calls a provider or moves
