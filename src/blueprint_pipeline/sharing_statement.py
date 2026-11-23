@@ -16,7 +16,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-SHARING_STATEMENT_VERSIONS: tuple[str, ...] = ("2026-11-12.v4",)
+#: Owner decision 2026-11-23: ``2026-11-23.v6`` is the v4 sentence with the job's city and state added to what is
+#: shared. A v6 job is treated exactly as a v4 job.
+SHARING_STATEMENT_VERSIONS: tuple[str, ...] = ("2026-11-12.v4", "2026-11-23.v6")
 #: An internal test job's recording grant (WebApp ``internalTestJob.ts``): never a sharing version. With the job's
 #: ``internal_test`` marker it is the ``internal_test`` basis: the clip and zip are built and published to the website,
 #: which shows a test job to no company.
