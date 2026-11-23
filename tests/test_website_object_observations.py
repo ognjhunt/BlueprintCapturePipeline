@@ -93,3 +93,42 @@ def test_articulated_builder_receives_the_coverage_views(tmp_path):
     Path(selected[0]['path']).write_bytes(b'changed')
     with pytest.raises(ValueError, match='source_changed'):
         materialize_object_observations(**kwargs)
+
+
+def test_a_parametric_object_is_authored_from_its_shape_where_it_stood_and_its_frames_stay_observed(tmp_path):
+    """The build plan sourced the job's object as a plain carton (owner direction 2026-11-23): compile authors it as a
+    supplied shape at no cost, sized from its estimated bounds; its candidate is that shape, its frames still observed."""
+    from pxr import Usd, UsdGeom
+    from blueprint_pipeline.website_parametric_object import SOURCE
+    args = _arguments(tmp_path)
+    subject = next(row for row in args['removal_manifest']['entries'] if row.get('task_effect') == 'manipulated')
+    args['removal_manifest'] = {**args['removal_manifest'],
+                                'parametric_subject': {'target_id': subject['target_id'], 'shape': 'carton'}}
+    preparation = compile_website_scene_preparation(**args)
+    config = preparation['authoring_inputs']['configuration']
+    assert preparation['authoring_inputs']['adapter'] == 'provided_mesh_rigid_authoring'
+    assert 'authoring_backend' not in config and config['authoring_cost_usd'] == 0.0
+    assert config['authoring_source'] == SOURCE and config['source_observation_kind'] == 'website_capture_frames'
+    lower, upper = preparation['subject']['aabb_min_xyz'], preparation['subject']['aabb_max_xyz']
+    assert config['parametric_design']['dimensions_m'] == pytest.approx([b - a for a, b in zip(lower, upper)], abs=1e-6)
+    kwargs = dict(preparation=preparation, source_geometry=args['source_geometry'], task_masks=args['task_masks'],
+                  output_root=tmp_path / 'observations')
+    result = materialize_object_observations(**kwargs)
+    manifest, frames = validate_observation_handoff(Path(result['manifest']['path']), configuration=result['configuration'])
+    assert frames and manifest['complete_object_geometry'] is False and manifest['dimension_authority'] == 'estimated'
+    assert manifest['candidate_geometry']['source'] == SOURCE and manifest['candidate_geometry']['authoring_cost_usd'] == 0
+    stage = Usd.Stage.Open(str(Path(result['manifest']['path']).parent / manifest['candidate']['path']))
+    shapes = [prim for prim in stage.GetPrimAtPath('/Root/SourceObjectCandidate').GetChildren()]
+    assert [prim.GetName() for prim in shapes] == ['Parametric']
+    xs, ys, zs = zip(*UsdGeom.Mesh(shapes[0]).GetPointsAttr().Get())
+    assert [min(xs), min(ys), min(zs)] == pytest.approx(lower, abs=1e-4)
+    assert [max(xs), max(ys), max(zs)] == pytest.approx(upper, abs=1e-4)
+    assert materialize_object_observations(**kwargs) == result  # reused as it stands
+    # The candidate must be the configured shape, and only a parametric configuration takes one.
+    other = {**result['configuration'], 'parametric_design': {**config['parametric_design'], 'shape': 'tray'}}
+    with pytest.raises(ValueError, match='website_parametric_candidate_binding_invalid'):
+        validate_observation_handoff(Path(result['manifest']['path']), configuration=other)
+    plain = {key: value for key, value in result['configuration'].items() if key != 'parametric_design'}
+    with pytest.raises(ValueError, match='website_parametric_candidate_binding_invalid'):
+        validate_observation_handoff(Path(result['manifest']['path']), configuration=plain)
+

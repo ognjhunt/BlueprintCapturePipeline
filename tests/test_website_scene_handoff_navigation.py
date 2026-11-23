@@ -333,3 +333,25 @@ def test_a_job_with_both_flags_reads_as_two_plain_sentences_in_order(tmp_path, m
     said = _said(members["README.txt"])
     assert said.endswith(" ".join([sim.NOT_FOUND, sim.NOTHING_TAKEN_OUT]))
     assert said.count("taken out of the room scan") == 1
+
+
+def test_a_sealed_build_plan_builds_its_one_object_and_keeps_the_other_in_the_scan(tmp_path, monkeypatch):
+    """The build plan (owner direction 2026-11-23) took one of two cups out of the scan: the handoff takes the job
+    as that cup's alone, the other in the room as filmed, so it is no longer the several-objects room."""
+    from blueprint_pipeline import website_build_plan
+    from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+    monkeypatch.delenv(CATALOG_PATH_ENV, raising=False)
+    options = dict(family="rigid_pick_place", description="Move the cup.", all_targets=True)
+    _job, _context, several = room_job(tmp_path / "several", monkeypatch, removal=CUPS, **options)
+    assert several["status"] == "room_package_written" and _record(several).get("flags") == [MULTI_OBJECT_GAP]
+    _job, _context, one = room_job(tmp_path / "one", monkeypatch, removal=CUPS[:1], **options)
+    decided = {"build_plan": {"digest": "sha256:" + "3" * 64},
+               "built": {"target_id": "cup-1", "name": "cup", "sourcing": "generate", "editor_object_ids": ["e"]},
+               "kept_in_scan_target_ids": ["cup-2"]}
+    monkeypatch.setattr(website_build_plan, "sealed_decision", lambda _root: decided)
+    _job, _context, planned = room_job(tmp_path / "planned", monkeypatch, removal=CUPS, **options)
+    assert planned["build_plan"] == {"digest": "sha256:" + "3" * 64, "built": "cup-1", "kept_in_scan": 1}
+    # The same route as a job whose analysis named the one cup.
+    for key in ("status", "blockers", "flags", "task_object_rigidity"):
+        assert planned.get(key) == one.get(key), key
+    assert planned["task_object_rigidity"]["target_id"] == "cup-1"

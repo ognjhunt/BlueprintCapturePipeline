@@ -119,7 +119,8 @@ def execute_provided_mesh_authoring(*, envelope, stage, configuration, configura
         "status": "authored_candidate_pending_qualification", "replacement_identity": identity,
         "source_candidate_digest": source_record["digest"],
         "source_candidate_claim": ("synthetic_design_candidate_geometry" if configuration.get("source_observation_kind")
-                                   == "synthetic_design" else "owner_provided_geometry_candidate"),
+                                   == "synthetic_design" else "parametric_shape_candidate_geometry"
+                                   if "parametric_design" in configuration else "owner_provided_geometry_candidate"),
         **({"cad_authoring_manifest_digest": cad_evidence["manifest_digest"],
             "cad_authoring_evidence": cad_evidence["evidence"]} if cad_evidence else {}),
         "source_normalization": normalization, "authoring_method": configuration["authoring_method"],

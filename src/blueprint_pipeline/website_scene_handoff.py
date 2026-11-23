@@ -935,6 +935,13 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
             raise ValueError("website_scene_removal_manifest_outside_capture")
         removal = json.loads(removal_path.read_text())
+        # The build plan took one object out of the scan: the job's other objects stay in it as filmed (owner, 2026-11-23).
+        from .website_build_plan import apply_to_removal, sealed_decision
+        removal, planned = apply_to_removal(removal, capture_root), sealed_decision(capture_root)
+        if planned is not None:
+            result["build_plan"] = {"digest": planned["build_plan"]["digest"],
+                                    "built": (planned.get("built") or {}).get("target_id"),
+                                    "kept_in_scan": len(planned.get("kept_in_scan_target_ids") or [])}
         # Capture truth applies to held families too. Reading this retained
         # manifest performs no mask, authoring or provider work.
         # The editor could not take the job's object out cleanly, or the job's objects are several or soft, so the
