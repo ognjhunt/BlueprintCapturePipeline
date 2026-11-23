@@ -37,14 +37,11 @@ website capture and publishes it exactly as the scene preview is published
 
 Rights are a hard stop. Nothing is made unless the capture is unwithdrawn, the delivery-time
 takedown gate allows it, the WebApp's current task context grants consent, and the recording
-statement version covers sharing or the capture is Blueprint's own, as
-``sharing_statement.sharing_basis`` decides (``config/blueprint_owned_captures.v1.json``, its row's
-video digest prefix matched against the digest of the upload the clip is made from). A
+statement version covers sharing, as ``sharing_statement.sharing_basis`` decides. A
 capture under an older statement gets nothing, and nothing about it is sent anywhere.
 
 A basis that ends takes the clip back (host copy and stored versions) and closes the route:
-Blueprint's list is re-read on every pass and every route read, and a published clip's live
-rights at least once every ``LIVE_STATEMENT_RECHECK_SECONDS``, each answer recorded. A WebApp
+a published clip's live rights are re-read at least once every ``LIVE_STATEMENT_RECHECK_SECONDS``, each answer recorded. A WebApp
 refusal is remembered: nothing is uploaded again until the live rights differ or a window passes.
 
 Which statement: the capture's files keep the one accepted at submission
@@ -300,10 +297,6 @@ def clip_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_CLIP_BYTES)
                              "max_long_edge": MAX_LONG_EDGE, "max_fps": MAX_FPS, "source_digest": source["digest"]})
 
 
-#: Read at call time, so a test can point it at a temporary list.
-OWNED_CAPTURES_LIST: Path | None = None
-
-
 def recorded_video_sha256(capture_root: Path) -> str | None:
     """The uploaded video's digest as normalization recorded it (``original.sha256``)."""
     from .website_source_video import read_record
@@ -316,17 +309,10 @@ def recorded_video_sha256(capture_root: Path) -> str | None:
 
 
 def upload_sha256(capture_root: Path, source: Mapping[str, Any]) -> str | None:
-    """The digest of the upload the clip is made from, which Blueprint's own list names by prefix: the
+    """The digest of the upload the clip is made from: the
     original normalization recorded, or for a capture with no record the raw upload itself."""
     return source.get("digest") if source.get("source") == "raw_upload" else recorded_video_sha256(capture_root)
 
-
-def owned_basis_holds(capture_id: str, video_sha256: str | None) -> bool:
-    """The capture is on Blueprint's own list and its row's prefix names this upload (``company_share_permission``)."""
-    return permission.owned_basis_holds(capture_id, video_sha256, OWNED_CAPTURES_LIST)
-
-def _on_owned_list(capture_id: str) -> bool:
-    return permission.on_owned_list(capture_id, OWNED_CAPTURES_LIST)
 
 recorded_statement_version = permission.recorded_statement_version
 
@@ -339,7 +325,7 @@ _live_due = permission.live_due
 live_grant_holds = permission.live_grant_holds
 
 def _may_be_permitted(root: Path, identity: Mapping[str, str], now: float) -> bool:
-    return permission.may_be_permitted(root, identity, now, OWNED_CAPTURES_LIST)
+    return permission.may_be_permitted(root, identity, now)
 
 _decided_basis = permission.decided_basis
 
@@ -681,17 +667,15 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
                 return {"status": "no_source"}
         revision = clip_revision(source, max_bytes=max_bytes)
         upload = upload_sha256(root, source)
-        owned = owned_basis_holds(identity["capture_id"], upload)
         check = _read(directory / STATEMENT_CHECK_FILE)
         if _current(manifest, revision, clip_path):
-            # A published clip keeps its basis or goes: Blueprint's list every pass (a local read), the live
-            # rights at least once a window. A definite "no" takes the clip back at once.
+            # A published clip keeps its basis or goes: the live rights at least once a window. A definite "no" takes the clip back at once.
             if _live_due(check, now(), root):
                 check = _record_live(root, identity, check_rights, now())
                 if check["outcome"] == "rights_refused":
                     return _refused_live(check, manifest, manifest_path, retract)
             # A recorded definite "no" (this pass's read or the simulation package's) stops any basis.
-            if check.get("outcome") != "rights_refused" and (owned or live_grant_holds(check, now())
+            if check.get("outcome") != "rights_refused" and (live_grant_holds(check, now())
                                                              or permission.internal_test_holds(check, now())):
                 return {"status": "current", "clip_revision": revision}
             if check.get("outcome") == "rights_refused":
@@ -707,7 +691,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
             return ({"status": "encode_timed_out"} if refused == ENCODE_TIMED_OUT
                     else {"status": "failed", "reason": refused})
         # A definite "no" from this window's live read stands until the window passes: no request every pass.
-        if not owned and not _live_due(check, now(), root) and check.get("outcome") in ("not_sharing", "rights_refused"):
+        if not _live_due(check, now(), root) and check.get("outcome") in ("not_sharing", "rights_refused"):
             if manifest:
                 _take_back(manifest, manifest_path, retract)
             return ({"status": "not_permitted"} if check["outcome"] == "not_sharing"
@@ -717,7 +701,7 @@ def _publish(root, now, check_rights, archive, retract, deliver, max_bytes):
         stopped = _refused_live(check, manifest, manifest_path, retract)
         if stopped is not None:
             return stopped
-        basis = _decided_basis(check, owned)
+        basis = _decided_basis(check)
         if basis is None:
             if manifest:
                 _take_back(manifest, manifest_path, retract)
@@ -858,7 +842,7 @@ def _wall_clock() -> float:
 
 
 def _basis_still_holds(root: Path, capture_id: str, manifest: Mapping[str, Any]) -> bool:
-    return permission.basis_still_holds(root, capture_id, manifest, _wall_clock(), OWNED_CAPTURES_LIST)
+    return permission.basis_still_holds(root, capture_id, manifest, _wall_clock())
 
 def open_company_clip(*, request_id: str, capture_id: str, digest: str, storage_root: Path | None,
                       range_header: str | None = None, client: Any = None,
@@ -867,7 +851,7 @@ def open_company_clip(*, request_id: str, capture_id: str, digest: str, storage_
 
     While the workspace exists the capture must be unwithdrawn, the takedown gate must allow it,
     its manifest must name this digest as archived and not taken back, and its basis must still hold:
-    Blueprint's own list names it, or the last live read granted sharing and nothing has said no since.
+    the last live read granted sharing and nothing has said no since.
     Once the capture's folder is gone (retirement, withdrawal deletion) nothing can be checked, so nothing
     is served, even while the stored object still exists; likewise with no storage root configured.
     Withdrawal deletion still deletes the stored versions by name without the folder.

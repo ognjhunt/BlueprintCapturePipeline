@@ -107,12 +107,13 @@ def test_late_openai_costs_for_yesterday_still_page_today(tmp_path):
     assert (page["spend_usd"], page["window"]) == (90.5, "utc_day:2026-11-19")
 
 
-def test_openai_month_to_date_over_the_line_pages(tmp_path):
+def test_openai_month_to_date_is_reported_but_never_pages_on_its_own(tmp_path):
+    # G-07: the month page sat above the account monthly limit, which refuses paid work first.
     result = _observe(tmp_path, Transport(_page(_month(today=30.0, yesterday=30.0, other=30.0))))
-    page = _codes(result)["openai_spend_month_high"]
-    assert page == {"code": "openai_spend_month_high", "provider": "openai", "spend_usd": 600.0,
-                    "threshold_usd": spend.OPENAI_MONTH_PAGE_USD, "window": "utc_month:2026-11"}
+    assert result["providers"]["openai"]["month_to_date_usd"] == 600.0
+    assert "openai_spend_month_high" not in _codes(result)
     assert "openai_spend_24h_high" not in _codes(result)
+    assert not hasattr(spend, "OPENAI_MONTH_PAGE_USD") and not hasattr(spend, "OPENAI_MONTH_PAGE_ENV")
 
 
 def test_the_first_of_the_month_reads_yesterday_without_counting_it_in_the_month(tmp_path):
@@ -336,14 +337,14 @@ def test_each_world_labs_charge_names_the_reservation_it_settles(tmp_path):
         str(_job(root) / "automation/splat/native").encode()).hexdigest()
 
 
-def test_world_labs_spend_over_either_line_pages(tmp_path):
+def test_world_labs_spend_over_the_day_line_pages_and_the_month_never_does(tmp_path):
     env = {spend.ATLAS_STORAGE_ROOT_ENV: str(_world_labs(tmp_path)),
-           spend.WORLD_LABS_24H_PAGE_ENV: "5.75", spend.WORLD_LABS_MONTH_PAGE_ENV: "7"}
+           spend.WORLD_LABS_24H_PAGE_ENV: "5.75", "BLUEPRINT_WORLD_LABS_SPEND_MONTH_PAGE_USD": "7"}
     codes = _codes(_observe(tmp_path, Transport(_page({})), env=env), "world_labs")
     assert codes["world_labs_spend_24h_high"] == {
         "code": "world_labs_spend_24h_high", "provider": "world_labs", "spend_usd": 5.75,
         "threshold_usd": 5.75, "window": "rolling_24h"}
-    assert codes["world_labs_spend_month_high"]["window"] == "utc_month:2026-11"
+    assert "world_labs_spend_month_high" not in codes
 
 
 def test_world_labs_prices_an_attempt_from_its_binding_when_the_admission_is_gone(tmp_path):
@@ -444,16 +445,13 @@ def test_default_lines_follow_the_b03_job_costs():
     # ARTISAN's $25 + $0.91 measured Atlas planner/reviews + the $5 upstream ledger.
     assert spend.OPENAI_JOB_USD == pytest.approx(30.91)
     assert spend.WORLD_LABS_JOB_USD == 25.0
-    assert (spend.BETA_JOBS_PER_DAY, spend.BETA_JOBS_PER_MONTH, spend.LINE_MARGIN) == (2, 15, 1.2)
+    assert (spend.BETA_JOBS_PER_DAY, spend.LINE_MARGIN) == (2, 1.2)
     for line, jobs, job_usd in (
         (spend.OPENAI_24H_PAGE_USD, spend.BETA_JOBS_PER_DAY, spend.OPENAI_JOB_USD),
-        (spend.OPENAI_MONTH_PAGE_USD, spend.BETA_JOBS_PER_MONTH, spend.OPENAI_JOB_USD),
         (spend.WORLD_LABS_24H_PAGE_USD, spend.BETA_JOBS_PER_DAY, spend.WORLD_LABS_JOB_USD),
-        (spend.WORLD_LABS_MONTH_PAGE_USD, spend.BETA_JOBS_PER_MONTH, spend.WORLD_LABS_JOB_USD),
     ):
         assert 0 <= line - jobs * job_usd * spend.LINE_MARGIN < 5
-    assert (spend.OPENAI_24H_PAGE_USD, spend.OPENAI_MONTH_PAGE_USD) == (75, 560)
-    assert (spend.WORLD_LABS_24H_PAGE_USD, spend.WORLD_LABS_MONTH_PAGE_USD, spend.GCP_PAGE_FRACTION) == (60, 450, 0.8)
+    assert (spend.OPENAI_24H_PAGE_USD, spend.WORLD_LABS_24H_PAGE_USD, spend.GCP_PAGE_FRACTION) == (75, 60, 0.8)
 
 
 def test_lines_load_from_the_environment_and_a_bad_value_keeps_the_default(tmp_path):
