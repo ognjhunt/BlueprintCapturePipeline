@@ -38,12 +38,12 @@ def ships_unscaled(source_pose: Mapping[str, Any]) -> bool:
     """Whether a background whose source pose did not complete ships unscaled: never after a wall.
 
     A wall is recorded on the pose by its type (``wall``, ``website_atlas_pipeline._source_pose``); a pose stored
-    before that is read by its code's words (``website_preparation_retry.classify``)."""
-    from .job_retry_policy import MONEY, PRIVACY_RIGHTS
-    from .website_preparation_retry import OWNER_CLOSED, classify
+    before that is read by its code's words, as the retry policy reads them (``job_retry_policy``). Kept free of
+    the retry module itself: the company builder imports this module and must not reach the GPU lane."""
+    from .job_retry_policy import hard_stop_kind, owner_closed_refusal
     reason = str(source_pose.get("reason") or "")
-    return bool(reason) and not source_pose.get("wall") and classify(reason) not in {PRIVACY_RIGHTS, MONEY,
-                                                                                      OWNER_CLOSED}
+    return (bool(reason) and not source_pose.get("wall") and hard_stop_kind(reason) is None
+            and not owner_closed_refusal(reason))
 
 
 def is_unscaled(base_scene: Mapping[str, Any]) -> bool:
@@ -54,11 +54,11 @@ def relative_frame(base_scene: Mapping[str, Any]) -> tuple[float, Any, None]:
     """``website_scene_handoff._sim_frame`` for an unscaled room: its units one to one, Z up, no registration."""
     import numpy as np
 
-    from .website_task_preparation import _UP_INDEX
     up_sign = -1 if base_scene["up_axis"] == "-Y" else 1
     runtime_to_sim = np.eye(4)
+    # Y up turns to Z up as ``_sim_frame`` turns it; a Z-up room keeps its axes.
     runtime_to_sim[:3, :3] = LEVELLING_UNITS * (np.array([[1, 0, 0], [0, 0, -up_sign], [0, up_sign, 0]])
-                                                if _UP_INDEX[base_scene["up_axis"]] == 1 else np.eye(3))
+                                                if base_scene["up_axis"] in {"Y", "-Y"} else np.eye(3))
     return LEVELLING_UNITS, runtime_to_sim, None
 
 
