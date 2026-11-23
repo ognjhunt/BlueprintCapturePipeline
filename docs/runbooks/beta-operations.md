@@ -130,7 +130,8 @@ What frequent states mean:
 The handoff listener owns the retry of a website preparation; it no longer
 depends on Pub/Sub's five deliveries
 (`src/blueprint_pipeline/website_preparation_retry.py`). Each listener tick,
-before it pulls messages:
+after it has pulled and run its new messages (so a new job's first step never
+waits behind these re-runs), and even when the pull fails:
 
 - An attempt whose process died holding its lease (an out-of-memory kill) is
   recorded as `failed_retryable` once its 15-minute lease has expired and its

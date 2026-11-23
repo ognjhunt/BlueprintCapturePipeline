@@ -474,11 +474,10 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     return {'schema_version': 'v1', 'status': 'processed' if terminal_success else 'retryable_blocked', 'queue_disposition': 'terminal_success' if terminal_success else 'retryable', 'blockers': result_blockers, 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'run_e2e': result, 'control_plane_staging': control_plane_staging, 'output_commit': output_commit}
 
 
-def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider, max_messages, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, ack_deadline_seconds, max_delivery_attempts):
-    if type(max_delivery_attempts) is not int or max_delivery_attempts < 1:
-        raise ValueError('pubsub_handoff_max_delivery_attempts_invalid')
+def _reconcile_due_reruns(_listener, /, *, storage_root, process_args):
     # This existing scheduled drain is also the durable delivery retry owner.
     # It reads committed ledgers; no provider processing is reopened by delivery.
+    # Each pass may re-run one whole preparation of a job already on the host.
     from .website_preparation_status import reconcile_preparation_wakeups
     from .website_preparation_recovery import note_recovery
     try:
@@ -487,11 +486,6 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
         note_recovery(_listener, storage_root, key='pass:preparation_wakeups', recovery='preparation_wakeups', error=error)
     from .website_assessment_resume import reconcile_waiting_assessments
     from .website_reconstruction_resume import reconcile_waiting_reconstructions
-    process_args = {
-        'provider': provider, 'run_evaluation_prep': run_evaluation_prep, 'run_e2e_enabled': run_e2e_enabled,
-        'stage_control_plane': stage_control_plane, 'control_plane_manifest_path': control_plane_manifest_path,
-        'control_plane_work_dir': control_plane_work_dir, 'control_plane_staged_inputs_path': control_plane_staged_inputs_path,
-        'overwrite_control_plane_input': overwrite_control_plane_input}
     reconcile_waiting_assessments(_listener, storage_root=storage_root, limit=1, process_args=process_args)
     try:
         reconcile_waiting_reconstructions(_listener, storage_root=storage_root, limit=1, process_args=process_args)
@@ -513,11 +507,32 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
     except Exception as error:
         note_recovery(_listener, storage_root, key='pass:held_handoff_replay', recovery='held_handoff_replay', error=error)
     # The host owns the retry of a failed preparation: dead attempts, then one due retry.
-    from .website_preparation_retry import reconcile_preparation_retries, spool_unclaimed
+    from .website_preparation_retry import reconcile_preparation_retries
     try:
         reconcile_preparation_retries(_listener, storage_root=storage_root, limit=1, process_args=process_args)
     except Exception as error:
         note_recovery(_listener, storage_root, key='pass:preparation_retry', recovery='preparation_retry', error=error)
+
+
+def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider, max_messages, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, ack_deadline_seconds, max_delivery_attempts):
+    if type(max_delivery_attempts) is not int or max_delivery_attempts < 1:
+        raise ValueError('pubsub_handoff_max_delivery_attempts_invalid')
+    process_args = {
+        'provider': provider, 'run_evaluation_prep': run_evaluation_prep, 'run_e2e_enabled': run_e2e_enabled,
+        'stage_control_plane': stage_control_plane, 'control_plane_manifest_path': control_plane_manifest_path,
+        'control_plane_work_dir': control_plane_work_dir, 'control_plane_staged_inputs_path': control_plane_staged_inputs_path,
+        'overwrite_control_plane_input': overwrite_control_plane_input}
+    # New deliveries are pulled and run first, so a fresh job's first step never waits behind
+    # other jobs' re-runs; the re-runs follow in the same tick, even when the pull fails.
+    # Each message is acknowledged or deferred before the next pull, so none is held while they run.
+    try:
+        return _pull_new_deliveries(_listener, subscription=subscription, storage_root=storage_root, provider=provider, max_messages=max_messages, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, ack_deadline_seconds=ack_deadline_seconds, max_delivery_attempts=max_delivery_attempts)
+    finally:
+        _reconcile_due_reruns(_listener, storage_root=storage_root, process_args=process_args)
+
+
+def _pull_new_deliveries(_listener, /, *, subscription, storage_root, provider, max_messages, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, ack_deadline_seconds, max_delivery_attempts):
+    from .website_preparation_retry import spool_unclaimed
     from google.cloud import pubsub_v1
     from .pubsub_retry_deferrals import clear_deferral, record_deferral, wake_older_release_deferrals
     subscriber = pubsub_v1.SubscriberClient()
