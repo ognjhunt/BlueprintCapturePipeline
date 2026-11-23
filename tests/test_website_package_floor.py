@@ -1,5 +1,5 @@
-"""The package floor: a routed job's room ships while its object is built or once its path stops, and gives way
-to the half.
+"""The package floor: a routed job's room ships flagged at once, whatever its object path says or fails to say
+(owner decision 2026-11-23), and gives way to the half.
 
 The job's own scene intent decides (``website_company_simulation.object_path_stopped``); the floor record is the
 real room writer's (``website_scene_handoff.write_room_package``) on the shared appearance fixture, and the company
@@ -148,20 +148,42 @@ def test_a_room_ships_flagged_while_its_object_is_still_being_built(tmp_path, mo
     assert world.publish()["status"] == "current" and len(world.delivered) == 1
 
 
-MOVING = {
+NOT_YET_KNOWN = {
     "intent_not_yet_made": lambda floor: floor.age(DAY - 60),
     "half_retry_armed": lambda floor: (floor.completed({"status": "enqueued", "request_key": "k" * 32}),
                                        _write(floor.job.queue / "status" / f"{'k' * 32}.json",
                                               {"status": "blocked", "blockers": ["team_scene_packet_failed:x"]})),
+}
+
+
+@pytest.mark.parametrize("state", sorted(NOT_YET_KNOWN))
+def test_a_room_ships_flagged_while_its_object_path_is_not_yet_known(tmp_path, monkeypatch, state):
+    """Owner decision 2026-11-23: no wait on an intent not made yet or a build whose timed retries are armed; the
+    room ships now, flagged, and the package README says only what is missing (the object, a success rule)."""
+    floor = Floor(tmp_path, monkeypatch)
+    monkeypatch.setattr(sim, "SCREENING_ROOT", tmp_path / "no-screening")
+    NOT_YET_KNOWN[state](floor)
+    world = World(floor.job)
+    assert world.publish()["status"] == "published"
+    manifest = _manifest(floor.job)
+    assert manifest["source_kind"] == "floor"
+    assert manifest["floor_reason"] == {"intent_not_yet_made": "object_not_built:intent_missing",
+                                        "half_retry_armed": "object_not_built:team_scene_blocked_unheld"}[state]
+    readme = _readme(floor.job)
+    assert sim.OBJECTS_TAKEN_OUT_ONE in readme and sim.NO_RULE in readme
+    assert world.publish()["status"] == "current" and len(world.delivered) == 1
+
+
+ENDED_BY_RIGHTS = {
     "withdrawn": lambda floor: floor.started(reason="authority_revoked"),
     "site_consent": lambda floor: floor.started(reason="site_consent_required"),
 }
 
 
-@pytest.mark.parametrize("state", sorted(MOVING))
-def test_an_object_path_not_yet_known_or_ended_by_rights_ships_nothing(tmp_path, monkeypatch, state):
+@pytest.mark.parametrize("state", sorted(ENDED_BY_RIGHTS))
+def test_an_object_path_ended_by_rights_ships_nothing(tmp_path, monkeypatch, state):
     floor = Floor(tmp_path, monkeypatch)
-    MOVING[state](floor)
+    ENDED_BY_RIGHTS[state](floor)
     world = World(floor.job)
     assert world.publish() == {"status": "no_source"}
     assert world.delivered == [] and not _package(floor.job).exists()
@@ -179,28 +201,33 @@ UNCLEAR = {
 
 
 @pytest.mark.parametrize("state", sorted(UNCLEAR))
-def test_a_path_we_cannot_tell_is_stopped_is_listed_after_a_day_and_never_ships(tmp_path, monkeypatch, state):
-    """No intent made, a half neither queued nor started, a block the scene stage never recorded: the floor
-    ships only for a reason that can be named, so these are listed (``floor_unclassified``) and nothing ships."""
+def test_a_path_we_cannot_tell_is_stopped_ships_the_floor_and_names_what_the_records_show(tmp_path, monkeypatch,
+                                                                                           state):
+    """No intent made, a half neither queued nor started, a block the scene stage never recorded: until
+    2026-11-23 these were listed after a day (``floor_unclassified``) and never shipped. The owner's rule ships the
+    room flagged at once; the manifest keeps what the records show, and the pass no longer lists the capture."""
     floor = Floor(tmp_path, monkeypatch)
     monkeypatch.setattr(sim, "SCREENING_ROOT", tmp_path / "no-screening")
     UNCLEAR[state](floor)
     world = World(floor.job)
-    assert world.publish() == {"status": "no_source", "reason": "floor_unclassified:" + state}
-    assert world.delivered == []
+    assert world.publish()["status"] == "published"
+    assert _manifest(floor.job)["floor_reason"] == "object_not_built:" + state
+    assert len(world.delivered) == 1
 
 
-def test_a_handoff_that_runs_again_keeps_the_floors_first_writing(tmp_path, monkeypatch):
-    """Written at hour 0, written again at hour 23 (a release, a replay): its wait ends at hour 24, not 47."""
+def test_a_floor_written_again_ships_at_once_whatever_its_age(tmp_path, monkeypatch):
+    """Written a day ago and again an hour ago (a release, a replay), with no intent yet: the floor ships now; the
+    handoff still keeps its first writing (``website_scene_handoff``), which this pass no longer waits on."""
     floor = Floor(tmp_path, monkeypatch)
     first = floor.workspace / handoff.ROOM_FLOOR / handoff.ROOM_FLOOR_FIRST_WRITTEN
-    first.unlink()  # the floor as its first handoff writes it, a day ago
+    first.unlink()
     floor.write(NOW - DAY)
     floor.write(NOW - 3600)
     os.utime(floor.record, (NOW - 3600, NOW - 3600))
     assert json.loads(first.read_text())["first_written_epoch"] == NOW - DAY
-    assert World(floor.job).publish() == {"status": "no_source", "reason": "floor_unclassified:intent_missing"}
-    assert sim.FLOOR_FIRST_WRITTEN == handoff.ROOM_FLOOR_FIRST_WRITTEN
+    world = World(floor.job)
+    assert world.publish()["status"] == "published"
+    assert _manifest(floor.job)["floor_reason"] == "object_not_built:intent_missing"
 
 
 @pytest.mark.parametrize("fault", ["unbound", "outcome_invalid"])
@@ -227,7 +254,7 @@ def test_a_final_team_scene_block_ships_the_floor_and_a_new_release_changes_noth
     assert world.publish()["status"] == "published"
     assert _manifest(floor.job)["floor_reason"] == "object_not_built:team_scene_packet_blocked"
     _hold(floor, monkeypatch, "released")  # a new release tries the half again: nothing new, nothing taken back
-    assert world.publish() == {"status": "no_source"}
+    assert world.publish()["status"] == "current"
     assert world.retracted == [] and len(world.delivered) == 1
     _hold(floor, monkeypatch, "held")
     assert world.publish()["status"] == "current" and len(world.delivered) == 1
@@ -252,7 +279,8 @@ def test_the_hold_store_read_is_the_scene_stages_own(tmp_path, monkeypatch):
     _hold(floor, monkeypatch, "held", intent="scene-" + "e" * 64)  # another intent's hold says nothing here
     floor.completed({"status": "enqueued", "request_key": "k" * 32})
     _write(floor.job.queue / "status" / f"{'k' * 32}.json", {"status": "blocked", "blockers": ["x"]})
-    assert World(floor.job).publish() == {"status": "no_source"}
+    assert World(floor.job).publish()["status"] == "published"
+    assert _manifest(floor.job)["floor_reason"] == "object_not_built:team_scene_blocked_unheld"
 
 
 # --- the half, before and after -----------------------------------------------------------------------------------
@@ -432,15 +460,15 @@ def test_a_served_floor_whose_path_moves_again_still_follows_revoked_rights(tmp_
         _hold(floor, monkeypatch, "released")
     else:
         (floor.directory / "outcome.json").unlink()  # the row moves again: its outcome is removed
-    # Rights still hold: it stays out (a row building again keeps its room as the source, C-01).
-    after = "current" if moves == "money_granted" else "no_source"
-    assert _at(world, 3600)["status"] == after
+    # Rights still hold: it stays out (a row building again keeps its room as the source, C-01; a released hold
+    # ships the floor flagged too, owner decision 2026-11-23).
+    assert _at(world, 3600)["status"] == "current"
     assert world.retracted == []
     world.rights = REVOKED
     assert _at(world, 7 * 3600)["status"] == "refused"
     assert len(world.retracted) == 1
     for hours in (13, 30, 72):
-        assert _at(world, hours * 3600)["status"] == ("refused" if moves == "money_granted" else "no_source")
+        assert _at(world, hours * 3600)["status"] == "refused"
     assert len(world.retracted) == 1
 
 
@@ -488,7 +516,8 @@ def test_a_delivered_half_whose_status_went_still_follows_revoked_rights(tmp_pat
 
 
 def test_a_hold_that_does_not_seal_itself_holds_nothing(tmp_path, monkeypatch):
-    """A hand-edited or torn hold file reads as no hold: the half counts as moving (and is listed after a day)."""
+    """A hand-edited or torn hold file reads as no hold: the room ships flagged as a block with no hold, never with
+    the edited reason."""
     from blueprint_pipeline import scene_stage_holds as holds
     floor = Floor(tmp_path, monkeypatch)
     floor.completed({"status": "enqueued", "request_key": "k" * 32})
@@ -498,15 +527,18 @@ def test_a_hold_that_does_not_seal_itself_holds_nothing(tmp_path, monkeypatch):
     record = json.loads(path.read_text())
     record["publication"]["reason_code"] = "edited_by_hand"
     _write(path, record)
-    assert World(floor.job).publish() == {"status": "no_source"}
+    assert World(floor.job).publish()["status"] == "published"
+    assert _manifest(floor.job)["floor_reason"] == "object_not_built:team_scene_blocked_unheld"
 
 
 def test_a_floor_the_pass_cannot_decide_is_named_in_its_journal_and_counted(tmp_path, monkeypatch, caplog):
     """The review's round-2 probe: a listed floor reason reaches the operator, by capture id and code only, under
-    its own count; a plain ``no_source`` stays a bare count."""
+    its own count; a plain ``no_source`` stays a bare count. Since 2026-11-23 only records that cannot be read or
+    tied to this job are listed (the intent here names another job's request)."""
     import logging
     floor = Floor(tmp_path, monkeypatch)
-    floor.age(2 * DAY)  # the intent was never made: listed ``floor_unclassified:intent_missing``
+    floor.started(reason="spend_cap_reached")
+    _write(floor.directory / "intent.json", {**floor.intent, "request": {"task": {"task_id": "website-other"}}})
     world = World(floor.job)
     options = {"now": lambda: NOW, "check_rights": world.check_rights, "archive": world.archive,
                "retract": world.retract, "deliver": world.deliver, "queue_root": floor.job.queue}
@@ -514,9 +546,9 @@ def test_a_floor_the_pass_cannot_decide_is_named_in_its_journal_and_counted(tmp_
     assert sim.tick(floor.job.capture.parents[4], **options) == {"floor_unclassified": 1}
     said = [record.getMessage() for record in caplog.records]
     assert said == [f"website_company_simulation_outcome capture={CAPTURE} status=no_source "
-                    "reason=floor_unclassified:intent_missing"]
+                    "reason=floor_unclassified:intent_unbound"]
     caplog.clear()
-    floor.age(60)  # within the day: still waiting, a bare count, nothing named
+    floor.started(reason="authority_revoked")  # ended by rights: a bare count, nothing named
     assert sim.tick(floor.job.capture.parents[4], **options) == {"no_source": 1}
     assert caplog.records == []
 

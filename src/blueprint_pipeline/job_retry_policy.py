@@ -24,6 +24,7 @@ __all__ = [
     "MONEY",
     "OWNER_CLOSED_CODE",
     "PROVIDER_ACCOUNT_STATUSES",
+    "PROVIDER_OUTAGE_STATUSES",
     "PRIVACY_RIGHTS",
     "REFUSAL_RETRY_DELAYS_SECONDS",
     "RELEASE_SWITCHING_BLOCKERS",
@@ -33,7 +34,11 @@ __all__ = [
     "outage_retry_delay",
     "RETRY_LATER_STATUSES",
     "provider_account_refused",
+    "error_chain",
     "provider_answer",
+    "provider_error_status",
+    "provider_error_waits",
+    "provider_funding_refused",
     "provider_says_retry_later",
     "refusal_retry_delay",
     "release_refusal",
@@ -195,6 +200,60 @@ PROVIDER_ACCOUNT_STATUSES = frozenset({401, 402, 403})
 def provider_account_refused(code: object) -> bool:
     """Whether an outside service refused Blueprint's own key or account (``PROVIDER_ACCOUNT_STATUSES``)."""
     return provider_answer(code) in PROVIDER_ACCOUNT_STATUSES
+
+
+#: A provider's own answer that means "try again later" when its SDK error carries it as a status: 429 or any 5xx.
+PROVIDER_OUTAGE_STATUSES = frozenset({429}) | frozenset(range(500, 600))
+#: A provider's words for an account with no money left on it (OpenAI's ``insufficient_quota``, "You have no
+#: credits remaining"; Anthropic's "credit balance is too low"). Only the owner can fix it; the job waits as for
+#: an outage and Blueprint is paged (``preparation_fault_alert``).
+_FUNDING_REFUSAL = re.compile(r"insufficient_quota|no credits remaining|credit balance is too low"
+                              r"|exceeded your current quota", re.IGNORECASE)
+_CHAIN_LIMIT = 16
+
+
+def error_chain(exc: BaseException):
+    """``exc`` and the errors it was raised from or while handling, at most ``_CHAIN_LIMIT``, each once."""
+    seen, current = set(), exc
+    while current is not None and id(current) not in seen and len(seen) < _CHAIN_LIMIT:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+
+
+def provider_error_status(exc: BaseException) -> int | None:
+    """The HTTP status a provider answered with, read from the error's own ``code``, ``status_code`` or ``status``
+    along its chain (as ``website_gemini_receipts._http_status`` reads it); None when no link carries one."""
+    for link in error_chain(exc):
+        for name in ("code", "status_code", "status"):
+            value = getattr(link, name, None)
+            if _is_int(value) and 100 <= value < 600:
+                return value
+    return None
+
+
+def provider_funding_refused(text: object) -> bool:
+    """Whether a provider's answer says Blueprint's account has no credit left (``_FUNDING_REFUSAL``)."""
+    return isinstance(text, str) and _FUNDING_REFUSAL.search(text) is not None
+
+
+def provider_error_waits(exc: BaseException) -> bool:
+    """The one rule both website retry classifiers use for a provider SDK's error: it waits as an outage (2 min
+    doubling to 1 h, never past the job's deadline, no refusal counted) when the provider answered 429 or a 5xx,
+    refused Blueprint's own key or account (``PROVIDER_ACCOUNT_STATUSES``, from an error that carries the
+    provider's response), or said the account has no credit left. A retry still asks every admission again."""
+    status = provider_error_status(exc)
+    if status in PROVIDER_OUTAGE_STATUSES:
+        return True
+    for link in error_chain(exc):
+        if status in PROVIDER_ACCOUNT_STATUSES and getattr(link, "response", None) is not None:
+            return True
+        try:
+            if provider_funding_refused(str(link)) or provider_funding_refused(getattr(link, "code", None)):
+                return True
+        except Exception:  # noqa: BLE001 - an unprintable error says nothing
+            continue
+    return False
 
 
 def provider_says_retry_later(code: object) -> bool:
