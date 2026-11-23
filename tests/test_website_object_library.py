@@ -591,9 +591,18 @@ def test_an_object_from_a_library_model_whose_credit_cannot_be_read_never_leaves
     assert notes.refusal(room) is None
 
 
+def _index_files() -> list[Path]:
+    """Every file a library reads: each index, and each part an index lists."""
+    files = []
+    for path in library.INDEXES.values():
+        files.append(path)
+        files += [path.parent / part["file"] for part in json.loads(path.read_text()).get("parts") or []]
+    return files
+
+
 def test_both_library_indexes_ship_in_the_wheel_and_the_sdist():
-    """An installed package carries both indexes: matched by the package data and by MANIFEST.in, so a library is
-    never silently empty."""
+    """An installed package carries both indexes and every part of them: matched by the package data and by
+    MANIFEST.in, so a library is never silently empty."""
     import fnmatch
     import tomllib
     root = Path(__file__).resolve().parents[1]
@@ -601,8 +610,75 @@ def test_both_library_indexes_ship_in_the_wheel_and_the_sdist():
     data = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["setuptools"]["package-data"]
     manifest = [line.split(None, 1)[1].strip() for line in (root / "MANIFEST.in").read_text().splitlines()
                 if line.startswith("include ")]
-    for path in library.INDEXES.values():
+    files = _index_files()
+    assert len(files) > len(library.INDEXES)  # the SimReady index is in parts
+    for path in files:
         assert path.is_file(), path
         relative = path.relative_to(package).as_posix()
         assert any(fnmatch.fnmatch(relative, pattern) for pattern in data["blueprint_pipeline"]), relative
         assert any(fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern) for pattern in manifest), relative
+
+
+def test_every_library_index_file_fits_the_release_source_leaf_budget():
+    """The release source manifest refuses any tracked file over its leaf budget; every object library file,
+    listed or not, stays under it (read from the manifest builder, never copied)."""
+    from scripts.release_source_manifest import MAX_LEAF_BYTES
+    found = sorted((library.DATA).glob("object_library_*"))
+    assert set(_index_files()) <= set(found)
+    for path in found:
+        assert path.stat().st_size <= MAX_LEAF_BYTES, (path.name, path.stat().st_size)
+
+
+@pytest.mark.parametrize("damage, reason", [("delete", library.PART_MISSING), ("change", library.PART_MISMATCH),
+                                            ("truncate", library.PART_MISMATCH), ("count", library.PART_MISMATCH)])
+def test_a_missing_or_changed_index_part_makes_that_library_unavailable_never_partial(tmp_path, monkeypatch, damage,
+                                                                                     reason):
+    """A library is read whole or not at all: a part missing, changed or not the count its index names leaves that
+    library out, said why where the choice records its catalog, while the other library still answers."""
+    import shutil
+    from scripts import build_simready_object_index as builder
+    (tmp_path / "gso").mkdir()
+    indexes = _index(tmp_path / "gso")
+    simready = tmp_path / "simready" / "object_library_simready.v1.json"
+    simready.parent.mkdir()
+    index = {"schema_version": "object_library_simready_index.v1", "library": "nvidia_simready",
+             "library_title": "NVIDIA SimReady",
+             "item_url": "https://huggingface.co/datasets/{repo}/resolve/{commit}/{asset}/x.json",
+             "file_url": "https://huggingface.co/datasets/{repo}/resolve/{commit}/{asset}/{path}",
+             "sources": [{"repo": "nvidia/simready-assets", "commit": "6" * 40}],
+             "rights": [{"package_license": "CC-BY-4.0", "asset_license": "CC-BY 4.0", "author": "NVIDIA"}],
+             "records": [{"asset": f"storage_tote_{i:03d}", "root": "simready_usd/r.usd", "size_m": [0.6, 0.4, 0.3],
+                          "bom": {"sha256": "a" * 64, "size_bytes": 10}, "source": 0, "rights": 0}
+                         for i in range(40)], "unreadable": []}
+    parts = builder.write_index(index, simready, max_part_bytes=2000)
+    assert len(parts) > 2 and all(part["size_bytes"] <= 2000 for part in parts)
+    both = {**indexes, "nvidia_simready": simready}
+    assert len(library.catalog(both)) == 5 + 40  # whole, in the index's order
+    assert [entry["title"] for entry in library.catalog(both)[5:]] == [row["asset"] for row in index["records"]]
+    damaged = tmp_path / "damaged"
+    shutil.copytree(simready.parent, damaged)
+    target = damaged / parts[1]["file"]
+    if damage == "delete":
+        target.unlink()
+    elif damage == "change":
+        target.write_text(target.read_text().replace("storage_tote", "storage_tank", 1))
+    elif damage == "truncate":
+        target.write_text(target.read_text()[:-40])
+    else:
+        listed = json.loads((damaged / simready.name).read_text())
+        listed["parts"][1]["record_count"] += 1
+        (damaged / simready.name).write_text(json.dumps(listed))
+    partial = {**indexes, "nvidia_simready": damaged / simready.name}
+    entries = library.catalog(partial)
+    assert {entry["library"] for entry in entries} == {"google_scanned_objects"}  # none of SimReady, not some
+    status = {row["library"]: row for row in library.catalog_status(partial)}
+    assert status["nvidia_simready"]["status"] == "unavailable"
+    assert status["nvidia_simready"]["reason"] == f"{reason}:{parts[1]['file']}"
+    assert status["google_scanned_objects"]["status"] == "read"
+    # The job's choice records it beside its other reasons: the catalog it read, and why a library offered nothing.
+    monkeypatch.setattr(library, "INDEXES", partial)
+    record = library.decide_library_object(task_context=TASK, plan_row={**ROW, "name": "forklift", "variety": None},
+                                           output_root=tmp_path / "choice", fetch=Fetcher())
+    assert {row["library"]: row["status"] for row in record["catalog_libraries"]} == {
+        "google_scanned_objects": "read", "nvidia_simready": "unavailable"}
+    assert record["fallback"] == f"{library.NO_CANDIDATE}:unavailable:nvidia_simready={reason}:{parts[1]['file']}"

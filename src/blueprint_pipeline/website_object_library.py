@@ -212,14 +212,54 @@ READERS: dict[str, Callable[[Mapping[str, Any]], list[dict[str, Any]]]] = {"goog
                                                                            "nvidia_simready": _simready_entries}
 
 
+#: Why a library offers nothing (``catalog_status``): its index, or one of the parts it lists, is unreadable, missing
+#: or not the bytes or record count the index names. Never a partial library.
+INDEX_UNREADABLE, PART_MISSING, PART_MISMATCH = ("library_index_unreadable", "library_index_part_missing",
+                                                 "library_index_part_mismatch")
+
+
+def read_index(path: Path) -> dict[str, Any]:
+    """A library's index with its records: in the file itself, or in the parts it lists beside it (``parts``: each
+    file's name, sha256 and record count), each read and checked. Raises with ``INDEX_UNREADABLE``, ``PART_MISSING``
+    or ``PART_MISMATCH`` and the part's name: a library is read whole or not at all."""
+    import hashlib
+    path = Path(path)
+    try:
+        index = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise ValueError(INDEX_UNREADABLE) from exc
+    if "parts" not in index:
+        return index
+    records: list[Any] = []
+    for part in index["parts"]:
+        name = str(part.get("file") or "")
+        target = path.parent / name
+        if not name or "/" in name or target.is_symlink() or not target.is_file():
+            raise ValueError(f"{PART_MISSING}:{name}")
+        data = target.read_bytes()
+        try:
+            rows = json.loads(data)["records"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"{PART_MISMATCH}:{name}") from exc
+        if (hashlib.sha256(data).hexdigest() != part.get("sha256") or not isinstance(rows, list)
+                or len(rows) != part.get("record_count")):
+            raise ValueError(f"{PART_MISMATCH}:{name}")
+        records += rows
+    return {**index, "records": records}
+
+
 @lru_cache(maxsize=4)
-def _catalog(paths: tuple[tuple[str, str], ...]) -> tuple[dict[str, Any], ...]:
+def _catalog(paths: tuple[tuple[str, str], ...]) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
     entries: list[dict[str, Any]] = []
+    status: list[dict[str, Any]] = []
     for library, path in paths:
         try:
-            index = json.loads(Path(path).read_text())
-        except (OSError, ValueError):
-            continue  # a library whose index cannot be read offers nothing; the others still do
+            index = read_index(Path(path))
+        except ValueError as exc:
+            # A library whose index or any part of it cannot be read offers nothing, said why; the others still do.
+            status.append({"library": library, "status": "unavailable", "reason": str(exc)[:200]})
+            continue
+        status.append({"library": library, "status": "read", "records": len(index["records"])})
         for entry in READERS[library](index):
             spdx, refused = license_of(entry["license_statements"])
             if spdx is not None and not entry.get("author"):
@@ -231,7 +271,7 @@ def _catalog(paths: tuple[tuple[str, str], ...]) -> tuple[dict[str, Any], ...]:
             elif spdx is not None and not credit_shippable(entry, spdx):
                 spdx, refused = None, "credit_not_shippable"  # a credit the package scan would refuse is never owed
             entries.append({**entry, "license": spdx, **({"license_refused": refused} if refused else {})})
-    return tuple(entries)
+    return tuple(entries), tuple(status)
 
 
 #: Datasets left out whole for now, listed but never used (rights is a hard stop). M-XR's attribution files ask for
@@ -282,9 +322,18 @@ def credit_shippable(entry: Mapping[str, Any], spdx: str) -> bool:
     return scan_stream(io.BytesIO(_credit(entry, spdx).encode()), [], text=True) is None
 
 
+def _paths(indexes: Mapping[str, Path] | None) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((key, str(path)) for key, path in (indexes or INDEXES).items()))
+
+
 def catalog(indexes: Mapping[str, Path] | None = None) -> list[dict[str, Any]]:
     """Every entry of every library, each with its license read (``license``) or why it is refused."""
-    return list(_catalog(tuple(sorted((key, str(path)) for key, path in (indexes or INDEXES).items()))))
+    return list(_catalog(_paths(indexes))[0])
+
+
+def catalog_status(indexes: Mapping[str, Path] | None = None) -> list[dict[str, Any]]:
+    """Each library's state: ``read`` with its record count, or ``unavailable`` with why (``read_index``)."""
+    return list(_catalog(_paths(indexes))[1])
 
 
 def _largest(size: Any) -> float | None:
@@ -479,13 +528,17 @@ def decide_library_object(*, task_context: Mapping[str, Any], plan_row: Mapping[
     record: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "revision": REVISION, "target_id": target,
                               "task_context_digest": task_context.get("context_digest"),
                               "object": object_inputs(plan_row), "catalog_size": len(every),
+                              # Each library read, or why it offered nothing (a missing or changed index part).
+                              **({"catalog_libraries": catalog_status()} if entries is None else {}),
                               "license_refused": sum(1 for entry in every if entry.get("license") is None),
                               "candidates": [{**row, "entry_id": found[i]["entry"]["id"], "score": found[i]["score"]}
                                              for i, row in enumerate(listed)]}
     chosen = reason = fallback = result = None
     source = None
     if not found:
-        fallback = NO_CANDIDATE
+        unavailable = [f"{row['library']}={row['reason']}" for row in record.get("catalog_libraries") or []
+                       if row["status"] == "unavailable"]
+        fallback = NO_CANDIDATE + (f":unavailable:{','.join(unavailable)}"[:300] if unavailable else "")
     else:
         from .website_library_asset import thumbnail_jpeg
         pictures: list[str | None] = []

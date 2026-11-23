@@ -315,15 +315,60 @@ def build_index(submissions: list[Path], fetch: Callable[[str, int], bytes], *, 
             "records": records, "unreadable": unreadable}
 
 
-def write_index(index: dict[str, Any], path: Path) -> None:
-    """Compact JSON, one record per line, so a diff shows the records that changed."""
+#: Each part of the index stays under this, a margin under the release source manifest's leaf budget
+#: (``scripts/release_source_manifest.MAX_LEAF_BYTES``, 1 MiB): no checked-in file may exceed it.
+MAX_PART_BYTES = 900_000
+PART_SCHEMA = "object_library_simready_part.v1"
+
+
+def part_name(path: Path, number: int) -> str:
+    return f"{path.stem}.part-{number:02d}.json"
+
+
+def _part_text(number: int, rows: list[dict[str, Any]]) -> str:
+    lines = [json.dumps({"schema_version": PART_SCHEMA, "part": number}, sort_keys=True)[:-1] + ',"records":[']
+    lines += [json.dumps(row, sort_keys=True, separators=(",", ":")) + ("," if i < len(rows) - 1 else "")
+              for i, row in enumerate(rows)]
+    return "\n".join([*lines, "]}"]) + "\n"
+
+
+def write_index(index: dict[str, Any], path: Path, *, max_part_bytes: int = MAX_PART_BYTES) -> list[dict[str, Any]]:
+    """The index as a small file (``path``: every table, the unreadable packages, and each part with its sha256 and
+    record count) and its records in parts beside it (``<stem>.part-NN.json``), in the index's order, each under
+    ``max_part_bytes``; compact JSON, one record per line, so a diff shows the records that changed. Earlier parts are
+    removed first. Returns the parts written."""
+    path = Path(path)
+    for stale in path.parent.glob(f"{path.stem}.part-*.json"):
+        stale.unlink()
+    parts: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        text = _part_text(len(parts) + 1, rows)
+        name = part_name(path, len(parts) + 1)
+        (path.parent / name).write_text(text, encoding="utf-8")
+        data = text.encode()
+        parts.append({"file": name, "sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data),
+                      "record_count": len(rows)})
+
+    for row in index["records"]:
+        if rows and len(_part_text(len(parts) + 1, [*rows, row]).encode()) > max_part_bytes:
+            flush()
+            rows = []
+        rows.append(row)
+    if rows:
+        flush()
+    if any(part["size_bytes"] > max_part_bytes for part in parts):
+        raise ValueError("index_part_over_budget")
     head = {key: value for key, value in index.items() if key not in ("records", "unreadable")}
-    lines = ["{" + json.dumps(head, sort_keys=True)[1:-1] + ',"records":[']
-    lines += [json.dumps(row, sort_keys=True, separators=(",", ":")) + ("," if i < len(index["records"]) - 1 else "")
-              for i, row in enumerate(index["records"])]
-    lines.append('],"unreadable":' + json.dumps(index["unreadable"], sort_keys=True, separators=(",", ":")) + "}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    head.update(parts=parts, part_schema=PART_SCHEMA)
+    text = json.dumps(head, sort_keys=True, separators=(",", ":"))[:-1] + ',"unreadable":' + json.dumps(
+        index["unreadable"], sort_keys=True, separators=(",", ":")) + "}\n"
+    path.write_text(text, encoding="utf-8")
+    if len(text.encode()) > max_part_bytes:
+        raise ValueError("index_file_over_budget")
     json.loads(path.read_text())
+    return parts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -338,9 +383,10 @@ def main(argv: list[str] | None = None) -> int:
     files = [args.mirror / "submissions" / name for name in (args.dataset or DEFAULT_DATASETS)]
     index = build_index(files, fetcher(), workers=args.workers, cache=args.cache, mirror_commit=args.mirror_commit,
                         log=lambda text: print(text, file=sys.stderr, flush=True))
-    write_index(index, args.output)
+    parts = write_index(index, args.output)
     print(json.dumps({"records": index["record_count"], "unreadable": len(index["unreadable"]),
-                      "bytes": args.output.stat().st_size}))
+                      "index_bytes": args.output.stat().st_size,
+                      "parts": [{key: part[key] for key in ("file", "size_bytes", "record_count")} for part in parts]}))
     return 0
 
 
