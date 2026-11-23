@@ -974,6 +974,8 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         semantics_options = {"task_semantics": semantics, "source_video_digest": source_video_digest}
         # The model's object build, honoured in place of today's judgement rules (``website_build_choice``).
         override = None
+        # The numbers of the chosen rule the site's words state, from the same answer, honoured or not.
+        stated_success = None
         if allow_build_choice:
             from .website_build_choice import (RECORD, ROOM_FLAG, ROOM_ONLY, RULE_WITHHELD, RULE_WITHHELD_CODE,
                                                decide_build, rules_route)
@@ -992,6 +994,11 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                                         task_semantics=semantics, source_video_digest=source_video_digest)
                 if decision is not None and decided is not None:
                     decided.append(decision)
+                if decision is not None and (decision.get("choice") or {}).get("success_rule"):
+                    # Only numbers the words state: with none, the rule and the job's output are today's.
+                    stated_success = {"build": decision["choice"]["build"],
+                                      "fields": dict(decision["choice"]["success_rule"]),
+                                      "request_binding_digest": decision["request_binding_digest"]}
                 if decision is not None and decision["honoured"]:
                     chosen = decision["choice"]
                     result["build_choice"] = {"build": chosen["build"], "rules_build": rules["build"],
@@ -1210,6 +1217,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 **({"atlas_route": "geometry_only"} if geometry_only else {}),
                 **({"rule_withheld": result["rule_withheld"]} if "rule_withheld" in result else {}),
                 **({"build_choice": override} if override is not None else {}),
+                **({"success_rule": stated_success} if stated_success is not None else {}),
             )
         except ValueError as exc:
             from .website_build_choice import BINDING_INVALID
