@@ -22,9 +22,6 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py legacy-owner-census --wait
     python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
         --approval-evidence "<owner approval>" [--apply] --wait
-    python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
-        --expires-at 2026-11-07T10:30:00Z --authorization-reference "<owner approval>" --wait   # plan only
-    python3 scripts/operator_door.py extend-scene-execution-window ... --apply --ack extend-scene-execution-window --wait
     python3 scripts/operator_door.py test-job --idempotency-key K --label L --footage-id F --description "..." --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
@@ -80,10 +77,8 @@ DEPLOY_RECEIPTS = "/var/lib/blueprint/pipeline-control-plane/deploy-receipts"
 ATTESTED_SEARCH_RUNS = 30
 # Unauthenticated, the API allows 60 requests an hour for everyone on this address.
 ATTESTED_JOB_READS = 8
-SCENE_WINDOW_ACK = "extend-scene-execution-window"
 # selected-handoff modes that only read; every other mode acts.
 SELECTED_HANDOFF_READ_MODES = frozenset({"inspect", "atlas-status", "discover-selector"})
-MAX_SCENE_WINDOW_SECONDS = 7 * 86400
 
 
 #: Paths no code that runs on the host reads: a deploy that changes only these changes
@@ -693,32 +688,6 @@ def _add_wait(parser: argparse.ArgumentParser, timeout: float) -> None:
     parser.add_argument("--poll", type=float, default=15.0)
 
 
-def _scene_window_body(args: argparse.Namespace, *, now: float | None = None) -> dict[str, Any]:
-    """A plan unless --apply; the host re-checks every bound against the sealed intent."""
-    if re.fullmatch(r"scene-[0-9a-f]{64}", args.intent_id) is None:
-        raise DoorError(2, "scene_window_intent_id_invalid")
-    if re.fullmatch(r"sha256:[0-9a-f]{64}", args.intent_digest) is None:
-        raise DoorError(2, "scene_window_intent_digest_invalid")
-    try:
-        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", args.expires_at) is None:
-            raise ValueError
-        expires = dt.datetime.strptime(args.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
-    except ValueError:
-        raise DoorError(2, "scene_window_expires_at_invalid: use YYYY-MM-DDTHH:MM:SSZ (UTC)") from None
-    moment = time.time() if now is None else now
-    if not moment < expires.timestamp() <= moment + MAX_SCENE_WINDOW_SECONDS:
-        raise DoorError(2, "scene_window_expires_at_out_of_bounds: must be after now and at most 7 days ahead")
-    reference = args.authorization_reference
-    if reference != reference.strip() or not 1 <= len(reference) <= 500 or not reference.isprintable():
-        raise DoorError(2, "scene_window_authorization_reference_invalid")
-    if args.apply and args.ack != SCENE_WINDOW_ACK:
-        raise DoorError(2, f"scene_window_apply_requires --ack {SCENE_WINDOW_ACK}")
-    if not args.apply and args.ack not in (None, SCENE_WINDOW_ACK):
-        raise DoorError(2, "scene_window_ack_invalid")
-    # A plan writes nothing, so it carries the fixed acknowledgement the door's schema requires.
-    return {"kind": "extend-scene-execution-window", "intent_id": args.intent_id,
-            "intent_digest": args.intent_digest, "expires_at": args.expires_at,
-            "authorization_reference": reference, "ack": SCENE_WINDOW_ACK, "apply": bool(args.apply)}
 
 
 def _hold_duration(value: str) -> int:
@@ -839,17 +808,6 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         if action == "retire-scene":
             lifecycle.add_argument("--apply", action="store_true")
         _add_wait(lifecycle, 2 * 3600 + 600)
-    window = commands.add_parser(
-        "extend-scene-execution-window",
-        help="plan an owner-approved, time-only extension of one scene intent; --apply records it and tells the WebApp",
-    )
-    window.add_argument("intent_id", help="scene-<64 hex>, the sealed intent")
-    window.add_argument("--intent-digest", required=True, help="the intent's exact sha256: digest")
-    window.add_argument("--expires-at", required=True, help="new expiry, UTC YYYY-MM-DDTHH:MM:SSZ, at most 7 days ahead")
-    window.add_argument("--authorization-reference", required=True, help="names the owner's approval (<= 500 chars)")
-    window.add_argument("--apply", action="store_true", help="record it; without this only a plan is made")
-    window.add_argument("--ack", help=f"required with --apply: {SCENE_WINDOW_ACK}")
-    _add_wait(window, 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
     parked = commands.add_parser(
@@ -988,8 +946,6 @@ def run(args: argparse.Namespace) -> int:
     elif command == "retire-parked-delivery":
         return _submit({"kind": "retire-parked-delivery", "capture": args.capture,
                         "approval_evidence": args.approval_evidence, "apply": args.apply}, args)
-    elif command == "extend-scene-execution-window":
-        return _submit(_scene_window_body(args), args)
     elif command == "test-job":
         body = {"kind": "test-job", "idempotency_key": args.idempotency_key, "label": args.label,
                 "footage_id": args.footage_id, "description": args.description}

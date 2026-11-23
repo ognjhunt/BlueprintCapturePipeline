@@ -12,7 +12,6 @@ import json
 import re
 import sys
 import threading
-import time
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Iterator
@@ -896,31 +895,10 @@ def test_selected_handoff_cli_discovers_original_selectors_without_execution(doo
     assert _run(*args, "--resume-request", "20261009T154718Z-selected-handoff-9ef60661")[0] == 2
 
 
-def _scene_window_args(*extra: str, expires: str | None = None) -> list[str]:
-    instant = expires or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3 * 86400))
-    return ["extend-scene-execution-window", "scene-" + "a" * 64, "--intent-digest", "sha256:" + "b" * 64,
-            "--expires-at", instant, "--authorization-reference", "founder approval 2026-10-31 (time only)", *extra]
-
-
-def test_scene_window_client_plans_by_default_and_applies_only_with_ack(door: dict[str, Any]) -> None:
-    code, out = _run(*_scene_window_args())
-    assert code == 0
-    request_id = json.loads(out)["id"]
-    spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
-    assert spooled["requested_by"] == "cloud"
-    assert spooled["request"]["apply"] is False and spooled["request"]["ack"] == "extend-scene-execution-window"
-    assert set(spooled["request"]) == {"kind", "intent_id", "intent_digest", "expires_at",
-                                       "authorization_reference", "ack", "apply"}
-    assert _run(*_scene_window_args("--apply"))[0] == 2
-    code, out = _run(*_scene_window_args("--apply", "--ack", "extend-scene-execution-window"))
-    applied = json.loads((door["state"] / "requests" / "pending" / f"{json.loads(out)['id']}.json").read_text())
-    assert code == 0 and applied["request"]["apply"] is True
-
-
-@pytest.mark.parametrize("expires", ["2020-01-01T00:00:00Z", "2099-01-01T00:00:00Z", "tomorrow"])
-def test_scene_window_client_refuses_out_of_bounds_expiry_before_http(expires: str, monkeypatch) -> None:
-    monkeypatch.setattr(client, "_json", lambda *a, **k: pytest.fail("no request may be sent"))
-    assert _run(*_scene_window_args(expires=expires))[0] == 2
+def test_the_client_has_no_scene_window_extension_command() -> None:
+    """No person extends a job's work window any more (ledger verdict, owner question 21)."""
+    with pytest.raises(SystemExit):
+        client.build_parser().parse_args(["extend-scene-execution-window", "scene-" + "a" * 64])
 
 
 def test_the_client_has_no_owner_success_confirmation_command() -> None:

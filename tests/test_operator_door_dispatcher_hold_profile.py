@@ -35,14 +35,11 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "extend-scene-execution-window", "retire-parked-delivery", "test-job", "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}
-# The owner-approved, time-only scene window extension passes the fence.
-assert r.required_scope("extend-scene-execution-window") == "operate"
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "retire-parked-delivery", "test-job", "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}
+# The scene window extension is gone: no person extends a job's window.
+assert "extend-scene-execution-window" not in r._SCOPES
+# Ids of requests it already wrote stay readable.
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
-window = {"kind":"extend-scene-execution-window", "intent_id":"scene-"+"a"*64, "intent_digest":"sha256:"+"b"*64,
-          "expires_at":"2026-11-07T10:30:00Z", "authorization_reference":"owner approval fixture",
-          "ack":"extend-scene-execution-window", "apply":False}
-assert r.validate_request(window) == window
 # The owner's scene budget grant is gone (one cap at $40 per job, 2026-11-19): refused before any unit runs.
 assert "extend-scene-execution-budget" not in r._SCOPES
 budget = {"kind":"extend-scene-execution-budget", "intent_id":"scene-"+"a"*64, "owner_user_id":"owner-uid",

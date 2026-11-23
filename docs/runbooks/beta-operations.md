@@ -121,7 +121,7 @@ What frequent states mean:
 | `blocked` / `preparation`, blocker `preallocation_capacity_recovery_cap_exhausted` | Six $0 recoveries were spent. The job has ended (`capacity_recovery_cap_exhausted`). | Find out why the market, storage or guard kept refusing. |
 | `blocked` / `preparation`, blocker `retry_cap_exhausted` | A rented machine was lost and the intent had no retry left: one retry for an intent issued since 2026-11-10, none before. The job has ended. | Read the dead machine's launch receipt. |
 | blocker `scene_intake_spend_cap_exhausted` or `scene_intake_attempt_cap_exhausted` | The scene's budget (never above the job's $40 cap) or its paid attempts are used up. Nothing extends them (owner, 2026-11-19): the job has ended with what it has, outcome `spending_cap_reached` (or `setup_repair` for the attempt count). It does not page. | Nothing to approve. If it happens often, find what the attempts spent (`python -m blueprint_pipeline.paid_spend_meter_sources --job <request id>`); changing the cap is an owner money decision in `config/website_job_spend_cap.v1.json` and its WebApp mirror. |
-| blocker `scene_intake_authority_expired` | The execution window expired. | Owner decision. Plan, then apply, `door extend-scene-execution-window`. |
+| blocker `scene_intake_authority_expired` | The execution window expired. | Nothing to approve: no person extends a window. The job ends its paid work with what it has and the room ships flagged. |
 
 ### A website preparation failed
 

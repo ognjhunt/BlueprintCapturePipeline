@@ -382,6 +382,11 @@ freed. The empty folder stays. Nothing can be restored.
 python3 scripts/operator_door.py purge-experiment-folder flora-episode-benchmarks --wait
 ```
 
+The door has no `extend-scene-execution-window` kind any more: no person
+extends a job's work window. A job whose window ends, ends its paid work with
+what it has. Extension records already written still count for every reader.
+The door change reaches the host only with a root upgrade.
+
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |
@@ -393,7 +398,6 @@ python3 scripts/operator_door.py purge-experiment-folder flora-episode-benchmark
 | `restore-scene-workspace` | operate | `scene_id`, required `bucket` | `door-restore-scene-workspace.sh`: replays the retired receipt to the canonical workspace path, checks every byte and moves the historical receipt aside. Outcome `restored` or `failed`; the module's full result is `results/<id>.restore.json` |
 | `purge-experiment-folder` | operate | `folder` (`atlas-beta-dishwasher-20261021` or `flora-episode-benchmarks`), `apply` (default `false`) | `door-purge-experiment-folder.sh`: the door's own `experiment_purge.py`, as root with no network, writing only inside that folder on apply. Outcome `planned`, `emptied`, `already_empty`, `absent`, `refused` (code = first stop) or `failed`; the full receipt is `results/<id>.purge-experiment-folder.json` |
 | `provider-output-resume` | operate | `run` (a canary dispatch directory), `attempt` (1–999), `ingest` (default `false`) | `door-provider-output-resume.sh`: the active release's `provider_output_promotion resume --attempt-root <run>/allocator/attempts/attempt_NNN [--ingest]` for one streamed policy-canary attempt, run as `blueprint` with umask 0077 (the attempt tree is the service user's): promotion to B2, the gated cleanup, the staged-object absence proof and, with `ingest`, the needed members' ingestion, which short-circuits once materialized. It refuses, touching nothing, until the attempt's teardown manifest records `continuing_spend_from_this_run: false` (`provider_output_resume_attempt_not_torn_down`). Outcome `completed`, or `blocked` with the first blocker as its code; the module's summary is `results/<id>.provider-output-resume.json` |
-| `extend-scene-execution-window` | operate | `intent_id` (`scene-<64 hex>`), `intent_digest`, `expires_at` (UTC `YYYY-MM-DDTHH:MM:SSZ`), `authorization_reference` (names the owner's approval, ≤ 500 printable chars), `ack` = `extend-scene-execution-window`, `apply` | `door-extend-scene-execution-window.sh`: the active release's `task_evaluation_scene_execution_window_door`, as `blueprint`. It reads the capture's current rights from the WebApp and refuses a revoked intent, a digest mismatch, a withdrawn capture or revoked consent, and any expiry not after now, more than 7 days ahead, or more than 7 days past the intent's original expiry. Without `apply` it only plans. With `apply` it writes one sealed `authorized_via: operator_door` extension (door caller, door request id, the owner's reference, every execution bound unchanged) and sends it to the WebApp's signed internal endpoint, retrying a transport failure twice. An equal or earlier expiry is `already_covered`; with `apply` it re-sends the covering extension, and a plan never writes or POSTs. Outcome `planned`, `extended`, `already_covered`, `refused` (code) or `failed` (`webapp_notice_failed`); the full result is `results/<id>.scene-window.json` |
 
 **`deploy` is root-equivalent.** Whoever holds it can get code that is on
 `origin/main` running as root, which is what a deploy is. Give it only to
@@ -775,11 +779,6 @@ python3 scripts/operator_door.py restore-scene-workspace <scene_id> --bucket <bu
 python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion-plan.service  # plan the deployed owner-approved deletions
 python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion.service       # delete what that plan found eligible
 python3 scripts/operator_door.py provider-output-resume <run> <attempt> --ingest --wait
-python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
-    --expires-at <UTC instant> --authorization-reference "<owner approval>" --wait                    # plan only
-python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
-    --expires-at <UTC instant> --authorization-reference "<owner approval>" \
-    --apply --ack extend-scene-execution-window --wait                                             # record + tell WebApp
 ```
 
 
