@@ -658,6 +658,71 @@ def test_a_failed_job_resumes_once_an_operator_retries_it_after_a_fix(monkeypatc
         preview.retry_failed_job(site.job, now=world.now)
 
 
+def test_a_provider_refusing_blueprints_key_or_account_waits_as_an_outage_and_resumes(monkeypatch, site):
+    """2026-11-22: a 401, 402 or 403 no longer fails the job for good; it waits on the outage schedule."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("world_labs_http_401:invalid api key"),
+                                      ValueError("world_labs_http_402"), _completed])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert job["transient_failures"] == 1 and job["last_transient_reason"].startswith("world_labs_http_401")
+    assert job["next_attempt_at_epoch"] == world.clock + 120 and not job.get("refusal_retries")
+    world.clock = job["next_attempt_at_epoch"]
+    assert world.advance() == "processing" and _job(site)["transient_failures"] == 2
+    world.clock = _job(site)["next_attempt_at_epoch"]
+    assert world.advance() == "ready" and len(world.runs) == 3
+
+
+def _live_grant(site, expires_at_epoch):
+    from blueprint_pipeline.website_preparation_terminal import GRANT_FILE
+    (site.capture / GRANT_FILE).parent.mkdir(parents=True, exist_ok=True)
+    (site.capture / GRANT_FILE).write_text(json.dumps({"expires_at_epoch": expires_at_epoch}))
+
+
+def test_a_parked_job_runs_once_more_on_each_new_release_by_itself(monkeypatch, site):
+    """2026-11-22: before, only an operator's --atlas-retry reopened a job parked for no wall."""
+    from blueprint_pipeline import website_preparation_retry as retry
+    _enqueue(site)
+    stopped = {"status": "needs_input", "reason": "atlas_object_mask_view_coverage_incomplete"}
+    world = World(monkeypatch, site, [stopped, stopped, _completed])
+    _live_grant(site, world.clock + 3 * 86400)
+    release = {"commit": None}
+    monkeypatch.setattr(retry, "_release", lambda: release["commit"])
+    assert world.advance() == "needs_input"
+    assert world.advance() == "needs_input" and len(world.runs) == 1  # no release identity: nothing reopens
+    release["commit"] = "a" * 40
+    assert world.advance() == "needs_input" and len(world.runs) == 2  # reopened once on this release
+    assert _job(site)["release_reopened"] == "a" * 40
+    assert _job(site)["retries"][-1]["reason"] == "release_reopened"
+    assert world.advance() == "needs_input" and len(world.runs) == 2  # not again on the same release
+    release["commit"] = "b" * 40
+    assert world.advance() == "ready" and len(world.runs) == 3
+
+
+@pytest.mark.parametrize("reason", ["atlas_insufficient_overlapping_distinct_views", "website_capture_withdrawn",
+                                    "atlas_source_rights_unverified", "spending_cap_reached", "atlas_preview_expired"])
+def test_a_job_parked_on_a_wall_or_a_new_video_ask_is_never_reopened_by_a_release(monkeypatch, site, reason):
+    from blueprint_pipeline import website_preparation_retry as retry
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed])
+    _live_grant(site, world.clock + 3 * 86400)
+    monkeypatch.setattr(retry, "_release", lambda: "a" * 40)
+    site.job.write_text(json.dumps({**_job(site), "state": "failed", "reason": reason}))
+    world.advance()
+    assert _job(site)["state"] == "failed" and world.runs == []
+
+
+def test_a_parked_job_past_its_grant_is_left_as_it_is(monkeypatch, site):
+    from blueprint_pipeline import website_preparation_retry as retry
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed])
+    _live_grant(site, world.clock - 1)
+    monkeypatch.setattr(retry, "_release", lambda: "a" * 40)
+    site.job.write_text(json.dumps({**_job(site), "state": "failed", "reason": "atlas_scene_planner_transients_invalid"}))
+    world.advance()
+    assert _job(site)["state"] == "failed" and world.runs == []
+
+
 def test_a_job_stopped_for_background_review_resumes_but_one_needing_a_new_capture_does_not(monkeypatch, site):
     """2026-10-24: a cleanup stopped at needs_input could not resume once its cause was fixed."""
     _enqueue(site)

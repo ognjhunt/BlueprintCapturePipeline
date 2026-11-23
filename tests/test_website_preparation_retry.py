@@ -89,8 +89,11 @@ def test_one_retry_policy_classifies_and_schedules():
     # An outage or a money refusal backs off to an hour with no count; the deadline ends it.
     assert [retry.retry_delay(retry.OUTAGE, n) // 60 for n in range(1, 9)] == [2, 4, 8, 16, 32, 60, 60, 60]
     assert retry.retry_delay("money", 40) == 3600
-    # Anything unclassified: six timed retries, then none.
-    assert [retry.retry_delay(retry.REFUSAL, n) for n in range(1, 8)] == [900, 3600, 10800, 21600, 43200, 86400, None]
+    # Anything unclassified: six timed retries, then hourly on the outage schedule until the grant ends; with no
+    # grant (no deadline), none after the six.
+    assert [retry.retry_delay(retry.REFUSAL, n) for n in range(1, 9)] == [900, 3600, 10800, 21600, 43200, 86400,
+                                                                           3600, 3600]
+    assert retry.retry_delay(retry.REFUSAL, 7, deadline=False) is None
     assert retry.retry_delay("privacy_rights", 1) is None
     assert retry.classify(TRANSIENT) == retry.OUTAGE  # the operation's name ("preparation-spend") is no reason
     assert retry.classify("meta_sam_http_429") == retry.OUTAGE
@@ -171,7 +174,8 @@ def test_a_money_refusal_waits_and_asks_again(failed, error):
 
 def test_an_unclassified_failure_gets_six_timed_retries_then_runs_once_per_release(failed, monkeypatch):
     """Part 6 (2026-11-12): after its six timed retries the job was left with no next run and the site was
-    told Blueprint would resolve it. Now it runs again once on each new release, never on a timer."""
+    told Blueprint would resolve it. Since 2026-11-22 a job with a grant then retries hourly on the outage
+    schedule until the grant ends; one without a grant runs again once on each new release, never on a timer."""
     release = {"commit": "a" * 40}
     monkeypatch.setattr(retry, "_release", lambda: release["commit"])
     root, raw, _ = failed
@@ -180,13 +184,21 @@ def test_an_unclassified_failure_gets_six_timed_retries_then_runs_once_per_relea
         listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
                                          run_e2e=_fail("meta_sam_submission_requires_reconciliation"))
     gaps = []
-    while (record := retry.armed(listener._read_job_ledger(root))) is not None and record["kind"] == retry.REFUSAL:
+    for _ in range(6):
         ledger = listener._read_job_ledger(root)
+        assert retry.armed(ledger)["kind"] == retry.REFUSAL
         gaps.append((_due(root) - _parse_utc(ledger["last_failed_at"])).total_seconds())
         assert ledger["last_error"] == error
         assert _tick(root, _fail("meta_sam_submission_requires_reconciliation"), _due(root))["redriven"] == 1
-    # The delivery's failure followed the outage before it (count 2), then five more retries.
-    assert gaps == [3600, 10800, 21600, 43200, 86400]
+    # The delivery's failure followed the outage before it (count 2), then five more retries; past the six, with
+    # a grant, hourly on the outage schedule, still a refusal.
+    assert gaps == [3600, 10800, 21600, 43200, 86400, 3600]
+    ledger = listener._read_job_ledger(root)
+    assert retry.armed(ledger)["kind"] == retry.REFUSAL
+    assert (_due(root) - _parse_utc(ledger["last_failed_at"])).total_seconds() == 3600
+    # Without a grant (no deadline to end it): it waits for the next release.
+    (root / GRANT_FILE).unlink()
+    assert _tick(root, _fail("meta_sam_submission_requires_reconciliation"), _due(root))["redriven"] == 1
     ledger = listener._read_job_ledger(root)
     record = retry.armed(ledger)
     # Never left with no next run: it waits for the next release.
