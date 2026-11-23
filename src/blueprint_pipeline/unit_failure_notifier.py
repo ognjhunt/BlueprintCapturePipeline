@@ -85,10 +85,10 @@ def _number(value: Any) -> float | None:
 
 
 def failure_cause(record: Mapping[str, Any]) -> str:
-    """The failure's cause as the alert names it: the result, with the exit status for an exit code."""
+    """The failure's cause as the alert names it: the result, with the exit status or signal."""
 
     detail = str(record.get("result") or "unknown")
-    if detail == "exit-code" and record.get("exit_status"):
+    if detail in ("exit-code", "signal", "core-dump") and record.get("exit_status"):
         detail += f":{record['exit_status']}"
     return detail
 

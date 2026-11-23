@@ -115,6 +115,10 @@ def test_what_systemd_did_not_say_stays_unknown(tmp_path: Path) -> None:
     assert notifier.observed_failure(UNIT, {**TIMEOUT, "MONITOR_SERVICE_RESULT": "a b\nc"})["result"] is None
     coded = notifier.alert_report({"unit": UNIT, "result": "exit-code", "exit_status": "2"})
     assert coded["alerts"][0]["code"] == f"unit_failed:{UNIT}:exit-code:2"
+    # A different signal is a different cause, so it posts at once, not a day later.
+    assert notifier.failure_cause({"result": "core-dump", "exit_status": "SEGV"}) == "core-dump:SEGV"
+    assert notifier.failure_cause({"result": "core-dump", "exit_status": "ABRT"}) == "core-dump:ABRT"
+    assert notifier.failure_cause({"result": "signal", "exit_status": "TERM"}) == "signal:TERM"
 
 
 @pytest.mark.parametrize("unit", ["../etc/passwd.service", "ssh.service", "blueprint-x.socket", "blueprint-a/b.service", ""])
