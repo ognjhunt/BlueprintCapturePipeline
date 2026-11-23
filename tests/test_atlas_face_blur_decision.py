@@ -1,4 +1,5 @@
-"""Faces are blurred unless the capture's sealed grant names a listed Privacy version (owner decision 2026-11-17)."""
+"""Faces are blurred unless the capture's sealed grant names a Privacy version on or after 2026-11-17.1
+(owner decision 2026-11-17)."""
 import json
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -12,7 +13,9 @@ from blueprint_pipeline import atlas_video_inputs as video
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
-LISTED = sorted(privacy.NO_FACE_BLUR_PRIVACY_VERSIONS)
+# The six versions the hand-kept list named before the one rule replaced it (C-09); each decides
+# exactly as it did then: not blurred.
+LISTED = ["2026-11-17.1", "2026-11-18.1", "2026-11-19.1", "2026-11-20.1", "2026-11-21.1", "2026-11-22.1"]
 BLURRED_PIXEL = (0, 0, 0)
 
 
@@ -60,13 +63,33 @@ def test_a_listed_version_skips_the_blur_and_names_why(tmp_path, version):
     assert privacy.face_blur_required(pipeline / "atlas/splat-rebuild/x/pose")[0] is False
 
 
-def test_the_listed_set_is_exactly_the_two_candidate_versions():
-    assert privacy.NO_FACE_BLUR_PRIVACY_VERSIONS == frozenset({"2026-11-17.1", "2026-11-18.1", "2026-11-19.1", "2026-11-20.1",
-                                                              "2026-11-21.1", "2026-11-22.1"})
+def test_one_rule_replaces_the_list():
+    assert privacy.FIRST_NO_FACE_BLUR_PRIVACY_VERSION == "2026-11-17.1"
+    assert not hasattr(privacy, "NO_FACE_BLUR_PRIVACY_VERSIONS")
 
 
-@pytest.mark.parametrize("version", ["absent", None, "", "2026-11-13.1", "2026-11-12.2", "2026-11-25.1",
-                                     "2026-11-17.2", " 2026-11-17.1", 20261117, ["2026-11-17.1"]])
+TODAY = datetime(2026, 11, 23, tzinfo=timezone.utc).date()
+
+
+@pytest.mark.parametrize("version,expected", [
+    # Every version the old list named: identical (not blurred).
+    *[(version, True) for version in LISTED],
+    # A later Privacy version needs no Pipeline change.
+    ("2026-11-17.2", True), ("2026-11-23.1", True), ("2026-11-24.1", True),
+    # Earlier versions blur.
+    ("2026-11-17.0", False), ("2026-11-16.9", False), ("2026-11-13.1", False), ("2025-12-31.1", False),
+    # Unknown: dated after tomorrow (UTC), or not a real calendar day.
+    ("2026-11-25.1", False), ("2999-01-01.1", False), ("2026-02-30.1", False), ("2026-13-01.1", False),
+    # Missing or unparseable.
+    (None, False), ("", False), (" 2026-11-17.1", False), ("2026-11-17", False), ("2026-11-17.12345", False),
+    ("2026-11-17.x", False), (20261117, False), (["2026-11-17.1"], False),
+])
+def test_the_one_rule_fails_to_the_private_side(version, expected):
+    assert privacy.is_no_face_blur_version(version, today=TODAY) is expected
+
+
+@pytest.mark.parametrize("version", ["absent", None, "", "2026-11-13.1", "2026-11-12.2", "2999-01-01.1",
+                                     "2026-11-17.0", "2026-02-30.1", " 2026-11-17.1", 20261117, ["2026-11-17.1"]])
 def test_every_other_version_blurs(tmp_path, version):
     pipeline = _pipeline(tmp_path)
     _grant(pipeline, version)
@@ -341,7 +364,7 @@ def _task_source_job(tmp_path, monkeypatch, original_privacy=None):
 def test_task_views_are_blurred_when_required(tmp_path, monkeypatch):
     from blueprint_pipeline import atlas_source_pose_inputs as source_inputs
     pipeline, pose_root, original, _ = _task_source_job(tmp_path, monkeypatch)
-    _grant(pipeline, "2026-11-25.1")
+    _grant(pipeline, "2026-11-13.1")
     calls = []
     monkeypatch.setattr(privacy, "blur_faces", _blur(calls))
     root, result = source_inputs.task_source_inputs(pose_root, original)

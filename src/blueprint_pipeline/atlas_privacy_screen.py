@@ -12,7 +12,7 @@ day no longer promise face blurring. Footage a site sent under such a version is
 not blurred; footage sent under any earlier version is still blurred whenever it
 is processed. ``face_blur_required`` is the one place that decides, and it
 answers "not required" only when the capture's sealed Atlas authority or website
-grant names a version in ``NO_FACE_BLUR_PRIVACY_VERSIONS`` (and the other does not
+grant names a version that ``is_no_face_blur_version`` accepts (and the other does not
 disagree); every other case blurs.
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ import os
 import re
 import secrets
 from collections.abc import Mapping
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,15 +40,11 @@ SCORE_THRESHOLD = 0.5
 FACE_MARGIN = 0.35
 MAXIMUM_DETECTION_SIDE = 4096
 
-#: Privacy Policy versions whose footage is not face-blurred (owner decision 2026-11-17).
-#: The website names a version for the UTC day its change deploys, so each change lists
-#: both days it could land on; the unused one never appears in a sealed grant. 2026-11-17
-#: (or -18) stopped blurring; 2026-11-19 (or -20) removed the early trial (owner,
-#: 2026-11-19) and keeps no blurring; 2026-11-21 (or -22) corrected the launch wording
-#: (owner, 2026-11-21) and keeps no blurring. A later Privacy Policy version must be added
-#: here deliberately when it is written, or its footage is blurred.
-NO_FACE_BLUR_PRIVACY_VERSIONS = frozenset({"2026-11-17.1", "2026-11-18.1", "2026-11-19.1", "2026-11-20.1",
-                                           "2026-11-21.1", "2026-11-22.1"})
+#: The first Privacy Policy version whose footage is not face-blurred (owner decision
+#: 2026-11-17). One rule, not a hand-kept list (C-09, F-08): a job started under a version
+#: on or after this one is not blurred; a job under an earlier version is. A new Privacy
+#: version needs no Pipeline change.
+FIRST_NO_FACE_BLUR_PRIVACY_VERSION = "2026-11-17.1"
 NO_FACE_BLUR_METHOD = "no_face_blur"
 #: The grant the capture's delivery retained beside its pipeline (``website_task_evidence``).
 GRANT_FILE = "website_scene_sponsorship.json"
@@ -57,6 +54,32 @@ CONFIGURATION_FILE = "atlas/configuration.json"
 ATLAS_AUTHORITY_SCHEMAS = frozenset({"website_atlas_authorization.v1", "website_atlas_authorization.v2"})
 #: The website's Privacy version format (``server/agents/provider-privacy.ts``), e.g. ``2026-11-17.1``.
 PRIVACY_VERSION_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\.[0-9]{1,4}")
+
+
+def _version_key(version: Any) -> tuple[date, int] | None:
+    """``(day, revision)`` of a Privacy version, or None when it is not one: not a string,
+    not the website's format, or not a real calendar day."""
+    if not isinstance(version, str) or PRIVACY_VERSION_PATTERN.fullmatch(version) is None:
+        return None
+    day, _, revision = version.partition(".")
+    try:
+        return date.fromisoformat(day), int(revision)
+    except ValueError:
+        return None
+
+
+def is_no_face_blur_version(version: Any, *, today: date | None = None) -> bool:
+    """True only for a Privacy version on or after ``FIRST_NO_FACE_BLUR_PRIVACY_VERSION``.
+
+    A privacy stop that fails to the private side: a version that is missing, cannot be
+    parsed, is not a real day, or is dated after tomorrow (UTC; the website names a version
+    for the day its change deploys, so a later one is unknown) answers False, and blurs."""
+    key = _version_key(version)
+    if key is None:
+        return False
+    latest = (today or datetime.now(timezone.utc).date()) + timedelta(days=1)
+    first = _version_key(FIRST_NO_FACE_BLUR_PRIVACY_VERSION)
+    return first is not None and first <= key and key[0] <= latest
 #: The job's first decision, sealed beside the configuration the first time a frame is prepared.
 DECISION_FILE = "atlas/face_blur_decision.json"
 DECISION_SCHEMA = "atlas_face_blur_decision.v1"
@@ -172,7 +195,7 @@ def _listed_version(output_root: Path) -> str | None:
     if from_authority is not None and from_grant is not None and from_authority != from_grant:
         return None
     version = from_authority if from_authority is not None else from_grant
-    return version if version in NO_FACE_BLUR_PRIVACY_VERSIONS else None
+    return version if is_no_face_blur_version(version) else None
 
 
 def face_blur_required(output_root: Path) -> tuple[bool, dict]:
@@ -181,10 +204,10 @@ def face_blur_required(output_root: Path) -> tuple[bool, dict]:
     The capture is the one whose ``pipeline`` directory is nearest above the root. Its version is
     read from the website's sealed Atlas authority (``pipeline/atlas/configuration.json``) and then
     from its retained grant (``pipeline/website_scene_sponsorship.json``). Not required only when a
-    version comes from one of them, the other does not name a different one, and it is in
-    ``NO_FACE_BLUR_PRIVACY_VERSIONS``. Required for: neither record; a present record that is not
+    version comes from one of them, the other does not name a different one, and
+    ``is_no_face_blur_version`` accepts it. Required for: neither record; a present record that is not
     a small JSON object, fails its digest or shape, or names another capture or scene; a version
-    that is malformed, missing, unknown, earlier, or an unlisted later one; the two disagreeing; a
+    that is malformed, missing, unknown, earlier, or dated in the future; the two disagreeing; a
     path that is not a website capture; and any error while deciding.
     """
     try:
@@ -209,7 +232,7 @@ def _valid_seal(value: Any) -> bool:
                                                        "privacy_policy_version", "digest"}
             and value["schema_version"] == DECISION_SCHEMA and type(value["face_blur_required"]) is bool
             and (value["privacy_policy_version"] is None if value["face_blur_required"]
-                 else value["privacy_policy_version"] in NO_FACE_BLUR_PRIVACY_VERSIONS)
+                 else is_no_face_blur_version(value["privacy_policy_version"]))
             and value["digest"] == canonical_digest(value, digest_field="digest"))
 
 
