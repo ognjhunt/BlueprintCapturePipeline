@@ -941,7 +941,8 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         # scene kept them as filmed (``website_atlas_pipeline.background_floor``, ``job_object_review``): they are
         # part of the room scan, never also built on their own.
         kept_rule = atlas.get("job_object_rule") or {}
-        in_scan = (bool(kept_rule.get("background_not_cleaned") or kept_rule.get("job_objects_kept"))
+        in_scan = (bool(kept_rule.get("background_not_cleaned") or kept_rule.get("job_objects_kept")
+                        or atlas.get("job_objects_kept"))
                    and any(row.get("task_effect") == "manipulated" for row in removal.get("entries") or []))
         room_ready = True  # from here a room package can be written (``room_package``)
         # A subject-origin conflict protects no privacy, rights or money: once the first retry cycle is spent it

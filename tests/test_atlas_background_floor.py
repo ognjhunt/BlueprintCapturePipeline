@@ -426,3 +426,26 @@ def test_several_or_soft_job_objects_ship_as_part_of_the_room_scan_and_nothing_i
     assert result["status"] == "room_package_written"
     assert "website_intake_outbox" not in result and "source_registration" not in result  # no object built
     assert _record(result)["job_objects"] == {"count": len(removal), "in_package": "part_of_room_scan"}
+
+
+@pytest.mark.parametrize("kept", ["several_job_objects", "soft_job_object"])
+def test_kept_job_objects_stay_part_of_the_room_scan_when_people_were_erased_from_edited_views(tmp_path, monkeypatch,
+                                                                                                 kept):
+    """With people in an edited view the kept-object fact rides the planner's not-applied record, not
+    ``job_object_rule``; the scene source forwards it either way, so the package never says the objects were taken out."""
+    from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+    from blueprint_pipeline.website_atlas_pipeline import NOT_APPLIED_FIELD
+    from blueprint_pipeline.website_atlas_scene_source import _job_objects_kept
+    from tests.test_website_scene_handoff_navigation import _record, room_job
+    rule = {"code": JOB_OBJECT_RULE, "planner_remove_count": 2, "removed_count": 0, "job_objects_kept": kept}
+    assert _job_objects_kept({NOT_APPLIED_FIELD: rule}) == kept
+    assert _job_objects_kept({"job_object_rule": rule}) == kept
+    assert _job_objects_kept({NOT_APPLIED_FIELD: {**rule, "job_objects_kept": ""}}) is None
+    assert _job_objects_kept({}) is None
+    monkeypatch.delenv(CATALOG_PATH_ENV, raising=False)
+    removal = [*DRAWER, {**DRAWER[0], "target_id": "second_cabinet", "semantic_label": "cabinet"}]
+    _job_, _context, result = room_job(tmp_path, monkeypatch, family="articulated_open_close",
+                                       description="Open the top drawer.", removal=removal, all_targets=True,
+                                       job_objects_kept=kept)
+    assert result["status"] == "room_package_written"
+    assert _record(result)["job_objects"] == {"count": len(removal), "in_package": "part_of_room_scan"}
