@@ -322,11 +322,15 @@ def failure_retry(*, exc: BaseException, capture_root: Path, payload_digest: str
             return None
         from .website_preparation_terminal import _parse_utc
         at = _parse_utc(failed_at) or _now(None)
+        asked = _retry_after_seconds(exc, at) or 0
         if delay > 0:
             # Never sooner than the provider's own Retry-After (a gated wait, 0, keeps its gate).
-            delay = max(delay, _retry_after_seconds(exc, at) or 0)
+            delay = max(delay, asked)
         record = _record({"source_payload_sha256": payload_digest, "producer_delivery_key": producer_delivery_key},
                          failures=failures, error=str(exc), due=at + timedelta(seconds=delay), kind=kind)
+        if asked > 0:
+            # Kept apart from ``next_attempt_at``: the job's last call (``last_call_due``) waits for it too.
+            record[PROVIDER_NOT_BEFORE] = _iso(at + timedelta(seconds=asked))
         if kind == RETRIES_SPENT:
             # Already run on this release: the next one runs it again. With no release identity it runs on
             # the last timed interval instead (``spent_waiting``).
@@ -528,6 +532,17 @@ def _due(root: Path, ledger: Mapping[str, Any], record: Mapping[str, Any]) -> da
 LAST_CALL_SECONDS = 2 * 3600
 
 
+#: When the provider's own ``Retry-After`` lets the next attempt run; the last call never runs before it.
+PROVIDER_NOT_BEFORE = "provider_not_before"
+
+
+def _last_call(root: Path, ledger: Mapping[str, Any], record: Mapping[str, Any], now: datetime) -> bool:
+    """``last_call_due``, once the provider's own ``Retry-After`` (``PROVIDER_NOT_BEFORE``) has passed."""
+    from .website_preparation_terminal import _parse_utc
+    not_before = _parse_utc(record.get(PROVIDER_NOT_BEFORE))
+    return (not_before is None or not_before <= now) and last_call_due(root, ledger, now)
+
+
 def last_call_due(root: Path, ledger: Mapping[str, Any], now: datetime) -> bool:
     """Whether the job's window, read now (``retained_window_end``), ends within ``LAST_CALL_SECONDS`` and no
     attempt has started since that last stretch began: it runs once there. A window that cannot be read: no."""
@@ -552,7 +567,7 @@ def _redrive(listener: Any, root: Path, *, storage_root: Path, process_args: Map
              now: datetime) -> dict[str, Any] | None:
     before = listener._read_job_ledger(root)
     record = armed(before)
-    if record is None or (_due(root, before, record) > now and not last_call_due(root, before, now)):
+    if record is None or (_due(root, before, record) > now and not _last_call(root, before, record, now)):
         return None
     raw = retained_payload(listener, root, before)
     handoff = listener.parse_handoff_payload(raw)
@@ -625,7 +640,7 @@ def reconcile_preparation_retries(listener: Any, *, storage_root: Path, process_
                 ledger = committed
             when = _due(root, ledger, armed(ledger))
             if ((when > current or deterministic_waiting(armed(ledger)) or spent_waiting(armed(ledger)))
-                    and not last_call_due(root, ledger, current)):
+                    and not _last_call(root, ledger, armed(ledger), current)):
                 counts["waiting"] += 1
             else:
                 due.append((min(when, current), "ledger", root))
