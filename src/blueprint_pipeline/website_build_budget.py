@@ -6,14 +6,22 @@ spends first. The first object the build plan builds, its top-ranked one, is bui
 exactly as today: the WebApp holds that allowance in full on the job's ledger, and the Pipeline holds each scene
 attempt to it (``task_evaluation_scene_intake.scene_spend_budget``). Then, one object at a time in the plan's order:
 
-- an object the plan sources as ``generate`` (ARTISAN, at its frozen per-object cap: $12 today,
+- an object compile builds with ARTISAN (at its frozen per-object cap: $12 today,
   ``task_object_authoring_backend.new_authoring_budget``) reserves that cap as its own row on the job's WebApp ledger,
   through the existing preparation reservation (``website_task_context.reserve_website_preparation_spend``: the
   account-limit precheck, then WebApp ``reserveWebsitePreparationSpend``, whose ``checkWebsiteJobCeiling`` counts
   everything the job holds or has settled on every ledger, then the paid chokepoint). The row is an ordinary OpenAI
   preparation row, ARTISAN's one OpenAI gate whichever provider writes its text: no new money channel;
-- a library object (Google Scanned Objects, SimReady) or a parametric shape (a box, tote, bin, tray or can) costs
-  nothing and reserves nothing.
+- an object compile builds from a library model (Google Scanned Objects, SimReady) or a parametric shape (a box,
+  tote, bin, tray or can) costs nothing and reserves nothing.
+
+Which it is, is read from compile's own result for the object (``configurations``: its stage-3 configuration,
+``website_supplied_mesh.supplied_mesh_configuration``), never from the plan's ``sourcing`` (stress round 2,
+2026-11-24): the library comes first whatever the plan said, so an object the plan calls ``generate`` that the
+library builds for free reserves nothing, and a "free" parametric shape that does not fit the object's bounds, which
+compile hands to ARTISAN, is reserved like any paid object. An extra object is authored with ARTISAN only under its
+own admitted reservation (``authoring_allocation`` refuses any other entry): one compile has not decided cannot be
+budgeted at all.
 
 Raising the scene allowance up front instead was tried and reverted: the scan can spend past its nominal figure (a
 $20.50 Atlas hold) and the WebApp holds the intake's whole allowance up front, so a bigger allowance was refused at the
@@ -30,10 +38,13 @@ never stops it, and nothing spends past the cap. A refusal is final: money a lat
 refused object back. Any other refusal (the account's monthly limit, privacy, rights, an outage) is raised exactly as
 the reservation raises it, so the job's own retry asks again.
 
-Each object's reservation is written once (``reservations/<binding>.json``), keyed by the job, the sealed plan and the
-object, so a retry or a resume reuses it and never reserves twice; the WebApp keys its row by the same binding. It is
-written as soon as the WebApp admits it, before the local paid recheck, so a run that stops after the row was held
-still finds it. An admitted reservation stays admitted. A resumed authoring run spends only what its reservation's
+Each object's reservation is written once (``reservations/<binding>.json``), keyed by the job and the object (its
+target and name), never by the plan: a retry, a resume or a new plan (a new Atlas result, a correction) reuses it and
+never reserves twice, so a superseded plan's $12 is never held beside the new plan's for the same object; the WebApp
+keys its row by the same binding. It is written as soon as the WebApp admits it, before the local paid recheck, so a
+run that stops after the row was held still finds it. An admitted reservation stays admitted; before it counts again,
+the capture's current source is read (a site that withdrew is never authored for under an earlier hold) and the
+local limits are asked again (``_recheck_retained``). A resumed authoring run spends only what its reservation's
 frozen cap leaves (``authoring_allocation``: the rule the first object's successor uses). When the object's authoring
 has ended, its row settles at what it cost (``settle_object``: the existing OpenAI ``preparation-settlement``), never
 above the reservation; until then it holds its whole quote.
@@ -65,11 +76,14 @@ from .website_build_plan_notes import (BUDGET_RECORD, BUDGET_SCHEMA, KEPT_AT_CAP
 from .website_job_spend_cap import SPENDING_CAP_REACHED
 
 RESERVATION_SCHEMA = "website_build_object_reservation.v1"
-REVISION = "website_build_budget.r1"
+#: r2 (stress round 2): a reservation is keyed by the job and the object, no longer by the sealed plan.
+REVISION = "website_build_budget.r2"
 #: The plan's sourcing for an object that costs nothing to build: a licensed library asset or a parametric shape.
 FREE_SOURCING = frozenset({"library", "parametric"})
 #: The plan's sourcing for an object that needs its own generated model (ARTISAN): the paid one.
 PAID_SOURCING = "generate"
+#: Compile's builders that generate a model and are paid (``website_half_preparation.GENERATING_BACKENDS``).
+GENERATING_BACKENDS = frozenset({"artisan_v1", "astra_cad_blender_v1"})
 #: An object's status: the first (the scene intake's allowance, as today), free, its own reservation admitted, or kept
 #: as filmed at a limit on the job's paid work (``KEPT``). A reservation record is admitted or ``REFUSED`` there.
 FIRST, FREE, ADMITTED, REFUSED = "first_object", "free", "admitted", "refused_at_cap"
@@ -81,12 +95,24 @@ SETTLEMENT_INVALID = "website_build_budget_settlement_invalid"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
-def reservation_binding(*, task_context: Mapping[str, Any], build_plan_digest: str,
-                        row: Mapping[str, Any]) -> dict[str, Any]:
-    """The one reservation an object may hold: its job, the sealed plan and the object. A retry, a resume and a later
-    task context name the same one."""
+def reservation_binding(*, task_context: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
+    """The one reservation an object may hold: its job and the object (target and name). A retry, a resume, a later
+    task context and a new plan name the same one."""
     return {"kind": "website_build_extra_object", "revision": REVISION, "request_id": str(task_context["request_id"]),
-            "build_plan_digest": build_plan_digest, "target_id": str(row["target_id"]), "name": str(row["name"])}
+            "target_id": str(row["target_id"]), "name": str(row["name"])}
+
+
+def route_of(configuration: Any) -> str:
+    """What compile builds an object with, by its stage-3 configuration (``website_supplied_mesh``): ``library`` or
+    ``parametric`` (supplied geometry, free) or ``generate`` (a paid generating builder). Raises ``OBJECTS_INVALID``
+    for anything else: an object compile has not decided is never budgeted, so never authored as free."""
+    if isinstance(configuration, Mapping):
+        source = configuration.get("authoring_source")
+        if source in FREE_SOURCING and "authoring_backend" not in configuration:
+            return str(source)
+        if configuration.get("authoring_backend") in GENERATING_BACKENDS:
+            return PAID_SOURCING
+    raise ValueError(OBJECTS_INVALID)
 
 
 def _path(root: Path, digest: str, suffix: str = ".json") -> Path:
@@ -184,8 +210,10 @@ def _reserve(*, root: Path, digest: str, value: Mapping[str, Any], task_context:
     return record
 
 
-def _recheck_retained(record: Mapping[str, Any], digest: str) -> None:
-    """A reservation written by an earlier run is a hold, not a grant: before it counts as admitted again, the same
+def _recheck_retained(record: Mapping[str, Any], digest: str, task_context: Mapping[str, Any]) -> None:
+    """A reservation written by an earlier run is a hold, not a grant: before it counts as admitted again, the
+    capture's current source is read (``require_current_website_source``, as ``retained_gemini_call`` does before it
+    sends anything under an earlier hold: a site that withdrew raises its privacy stop, stress round 2), then the same
     local checks a new reservation passes run again (the account's month, the resource's monthly budget and its class,
     as ``require_paid_resource_budget`` reads them), and its admission must still be this binding's, admitted, with no
     blockers. A refusal is raised as the first run's was; the hold stays written for the next run, so the website is
@@ -193,6 +221,8 @@ def _recheck_retained(record: Mapping[str, Any], digest: str) -> None:
     that refusal into an admission on the retry). No grant is issued and nothing is metered here: dispatch still
     takes its own grant."""
     from .paid_resource_admission import require_paid_resource_budget
+    from .website_task_context import require_current_website_source
+    require_current_website_source(task_context)
     held = record.get("admission")
     if (not isinstance(held, Mapping) or held.get("allocation_binding_digest") != digest
             or held.get("status") != "admitted" or held.get("schema_version") != "paid_lane_admission.v1"
@@ -205,20 +235,23 @@ def _recheck_retained(record: Mapping[str, Any], digest: str) -> None:
 
 
 def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: Mapping[str, Any],
-                        build_plan_digest: str, root: Path, reserve: Callable[..., Any] | None = None,
+                        build_plan_digest: str, root: Path, configurations: Mapping[str, Any],
+                        reserve: Callable[..., Any] | None = None,
                         now: Callable[[], float] = time.time) -> dict[str, Any]:
     """Admit or refuse each extra paid object the build will build; returns the job's budget record, also written to
     ``root`` (``budget_root(capture_root)``, where the readers look).
 
     ``objects`` are the build plan's objects the build will build, in the plan's order, each as ``validate_plan`` kept
-    it (``target_id``, ``name``, ``sourcing``); ``build_plan_digest`` is the sealed plan's record digest. The first is
-    the first object, under the scene intake's allowance as today: nothing is reserved for it here. Each later one is
-    free (``FREE_SOURCING``) or, sourced ``generate``, reserved on the job's ledger (``reserve``, by default
-    ``reserve_website_preparation_spend``), unless a paid object ranked above it was refused at a limit on the job's
-    paid work: then it is kept as filmed without asking, under that refusal's code. A refusal there keeps that object as
-    filmed too, and is final. Any other failure is raised as the reservation raised it, after the objects before it
-    were recorded in their reservations. A rerun reuses every written reservation and asks only for paid objects never
-    asked. Call it only once the scene intake's allowance is held.
+    it (``target_id``, ``name``, ``sourcing``); ``build_plan_digest`` is the sealed plan's record digest, kept on the
+    record. ``configurations`` is compile's stage-3 configuration of each extra object, by its ``target_id``: what it
+    is built with (``route_of``) decides what it costs, never the plan's ``sourcing``. The first is the first object,
+    under the scene intake's allowance as today: nothing is reserved for it here. Each later one is free (compile
+    builds it from a library model or a parametric shape) or, built with ARTISAN, reserved on the job's ledger
+    (``reserve``, by default ``reserve_website_preparation_spend``), unless a paid object ranked above it was refused
+    at a limit on the job's paid work: then it is kept as filmed without asking, under that refusal's code. A refusal
+    there keeps that object as filmed too, and is final. Any other failure is raised as the reservation raised it,
+    after the objects before it were recorded in their reservations. A rerun, and a new plan, reuse every written
+    reservation and ask only for paid objects never asked. Call it only once the scene intake's allowance is held.
     """
     rows = [dict(row) for row in objects if isinstance(row, Mapping)]
     try:
@@ -227,25 +260,29 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
         raise ValueError(OBJECTS_INVALID) from None
     if (not rows or len(rows) != len(objects) or len(set(identities)) != len(identities)
             or any(row.get("sourcing") not in FREE_SOURCING | {PAID_SOURCING} for row in rows)
-            or not isinstance(build_plan_digest, str) or not _DIGEST.fullmatch(build_plan_digest)):
+            or not isinstance(build_plan_digest, str) or not _DIGEST.fullmatch(build_plan_digest)
+            or not isinstance(configurations, Mapping)):
         raise ValueError(OBJECTS_INVALID)
+    # What compile builds each extra object with, decided before anything is asked: library, parametric, or ARTISAN.
+    routes = {str(row["target_id"]): route_of(configurations.get(str(row["target_id"]))) for row in rows[1:]}
     root = Path(root)
 
     def named(rank: int, row: Mapping[str, Any]) -> dict[str, Any]:
-        return {"rank": rank, "target_id": str(row["target_id"]), "name": str(row["name"]), "sourcing": row["sourcing"]}
+        return {"rank": rank, "target_id": str(row["target_id"]), "name": str(row["name"]), "sourcing": row["sourcing"],
+                **({"route": routes[str(row["target_id"])]} if rank else {})}
 
     entries: list[dict[str, Any]] = [{**named(0, rows[0]), "status": FIRST}]
     with _locked(root):
         capped = None  # the refusal that keeps every later paid object as filmed, once there is one
         for rank, row in enumerate(rows[1:], start=1):
-            if row["sourcing"] in FREE_SOURCING:
+            if routes[str(row["target_id"])] in FREE_SOURCING:
                 entries.append({**named(rank, row), "status": FREE})
                 continue
-            value = reservation_binding(task_context=task_context, build_plan_digest=build_plan_digest, row=row)
+            value = reservation_binding(task_context=task_context, row=row)
             digest = canonical_digest(value)
             record = _read_reservation(root, digest)
             if record is not None and record["status"] == ADMITTED:
-                _recheck_retained(record, digest)
+                _recheck_retained(record, digest, task_context)
             if record is None and capped is None:
                 record = _reserve(root=root, digest=digest, value=value, task_context=task_context, reserve=reserve,
                                   now=now)
@@ -274,7 +311,9 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
 def authoring_allocation(entry: Mapping[str, Any], carried: Mapping[str, Any] | None) -> float:
     """What one authoring run of an admitted object may spend: its reservation's frozen cap less what earlier runs
     under it spent (``carried``, as ``factory_carried_spend`` reports it), by the rule the first object's successor
-    uses (``resumed_authoring_allocation``). A resume never reserves again; it spends what its reservation left."""
+    uses (``resumed_authoring_allocation``). A resume never reserves again; it spends what its reservation left. Any
+    entry but an admitted one (a free object, one kept as filmed) raises: an extra object is never authored with
+    ARTISAN without its own reservation."""
     from .task_object_authoring_backend import frozen_authoring_cap, resumed_authoring_allocation
     if entry.get("status") != ADMITTED:
         raise ValueError(OBJECTS_INVALID)
@@ -323,5 +362,6 @@ def settle_object(*, binding_digest: str, task_context: Mapping[str, Any], root:
         return receipt
 
 
-__all__ = ["ADMITTED", "FIRST", "FREE", "FREE_SOURCING", "KEPT", "PAID_SOURCING", "REFUSED", "admit_extra_objects",
-           "authoring_allocation", "budget_root", "reservation_binding", "settle_object"]
+__all__ = ["ADMITTED", "FIRST", "FREE", "FREE_SOURCING", "GENERATING_BACKENDS", "KEPT", "PAID_SOURCING", "REFUSED",
+           "admit_extra_objects", "authoring_allocation", "budget_root", "reservation_binding", "route_of",
+           "settle_object"]

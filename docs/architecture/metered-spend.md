@@ -642,10 +642,15 @@ under it.
 - **The first object is unchanged.** The build plan's first object (its
   top-ranked buildable one, `website_build_plan.built_object`) is built under
   the scene intake's allowance, held in full on the job's ledger as before.
-- **Each extra paid object is its own reservation.** Every further object the
-  plan builds and sources `generate` (ARTISAN, at its frozen per-object cap,
-  $12) reserves that cap on the job's WebApp ledger, one object at a time in the
-  plan's order, once the scene intake is held:
+- **Each extra paid object is its own reservation.** Every further object
+  compile builds with ARTISAN (at its frozen per-object cap, $12) reserves that
+  cap on the job's WebApp ledger, one object at a time in the plan's order, once
+  the scene intake is held. What an object is built with is read from compile's
+  own stage-3 configuration for it (`configurations`, `route_of`), never from
+  the plan's `sourcing` (stress round 2, 2026-11-24): the library comes first
+  whatever the plan said, and a parametric shape that does not fit hands its
+  object to ARTISAN. An extra object is authored with ARTISAN only under its own
+  admitted reservation (`authoring_allocation` refuses any other entry):
   `website_build_budget.admit_extra_objects` →
   `website_task_context.reserve_website_preparation_spend` (resource
   `openai_api_candidate`, provider `openai`, one request) → WebApp
@@ -680,11 +685,15 @@ under it.
 - **Partial spend.** An admitted row settles at what the object's authoring
   cost (`settle_object`, the existing OpenAI `preparation-settlement`), never
   above its reservation; until then it holds its whole quote.
-- **Retries and resumes.** Each reservation is written once
-  (`reservations/<binding>.json`, keyed by the job, the sealed plan and the
-  object) as soon as the WebApp admits it, before the local paid recheck. A
-  rerun reuses it and never asks again, and the WebApp keys its row by the same
-  binding. A resumed run of an object spends only what its reservation's frozen
+- **Retries, resumes and new plans.** Each reservation is written once
+  (`reservations/<binding>.json`, keyed by the job and the object, its target
+  and name, never by the plan, revision `website_build_budget.r2`) as soon as
+  the WebApp admits it, before the local paid recheck. A rerun or a new plan
+  reuses it and never asks again, so a superseded plan's $12 is never held
+  beside the new plan's for the same object, and the WebApp keys its row by the
+  same binding. Before a written reservation counts again, the capture's
+  current source is read (`require_current_website_source`): after the site
+  withdrew, nothing is authored under it. A resumed run of an object spends only what its reservation's frozen
   cap leaves (`authoring_allocation`, the same `resumed_authoring_allocation`
   the first object's successor uses in `website_native_submission`).
 
