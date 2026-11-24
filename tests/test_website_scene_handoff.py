@@ -1500,7 +1500,8 @@ def test_a_room_package_says_why_no_spot_on_the_estimated_destination_held_the_o
         write_json(kw["output_root"] / "base_scene.json",
                    {**kw["base_scene"], "scene_estimates": [*kw["base_scene"].get("scene_estimates", []), row]})
         return {"status": "needs_input", "blockers": [code], "destination_surface_estimate": {"status": "estimated"},
-                "destination_unheld": {"status": "no_spot_holds_it", **({"cause": cause} if cause else {})}}
+                "destination_unheld": {"status": "no_spot_holds_it", **({"cause": cause} if cause else {})},
+                "digest": "sha256:" + "e" * 64}
 
     monkeypatch.setattr(handoff, "compile_website_scene_preparation", compiled)
     lamp = {"target_id": "cup-1", "task_effect": "manipulated", "semantic_label": "table lamp"}
@@ -1509,6 +1510,7 @@ def test_a_room_package_says_why_no_spot_on_the_estimated_destination_held_the_o
     assert result["status"] == "room_package_written"
     record = json.loads(Path(result["room_package"]["path"]).read_text())
     assert record["not_prepared"] == [{"piece": "destination", "code": code, **({"cause": cause} if cause else {})}]
+    assert record["preparation_digest"] == "sha256:" + "e" * 64  # the company's page reads the object's estimates there
     _status, members = _published(job)
     said = _said(members["README.txt"])
     sentence = {

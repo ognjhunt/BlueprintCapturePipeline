@@ -70,6 +70,7 @@ from .decision_evidence_contracts import canonical_digest, cross_runtime_canonic
 from .outbound_file_scan import capture_site_identity
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 from . import website_half_preparation as half_preparation
+from . import website_destination_unheld as unheld
 from . import website_library_notes as library_notes
 from .website_half_preparation import (COLLISION_ONLY, THRESHOLDS_ASSUMED, THRESHOLDS_CONFIRMED_LATER, generated_patch,
                                        look_views, surface_estimated)
@@ -208,22 +209,9 @@ SURFACE_ESTIMATED_ROOM_NOTE = ("The job's destination shelf or surface did not s
 SURFACE_ESTIMATED_ROOM_NO_LOOK_NOTE = ("The job's destination shelf or surface did not show in the scan (glass and "
                                        "other see-through or shiny surfaces often do not); it was estimated from its "
                                        "visible edges in the video. That estimate is in the collision file.")
-#: Said for the destination piece instead of ``NOT_PREPARED`` when that surface was estimated and the only code the
-#: piece was left out for is compile's ``task_destination_surface_contact_required``: no spot on the estimated surface
-#: held the object (``website_destination_overhang``; job move-the-lamp-2, 24 Nov). Without a cause recorded, only
-#: that. It no longer says the object's "footprint" was not held: the box judged takes in the whole object (the
-#: lamp's shade, 21 to 27 cm across in the frames), and its foot, about 6.5 cm across, would fit on the 16 cm shelf.
+#: For the destination piece of an estimated surface left out only for ``task_destination_surface_contact_required``,
+#: with why in ``website_destination_unheld``'s words where compile recorded it (job move-the-lamp-2, 24 Nov).
 NOT_PLACED_ON_ESTIMATED_SURFACE = "Blueprint could not place the job's object on that estimated surface."
-#: ... and with the cause compile's search recorded (``destination_unheld``, carried on the room package's row): at
-#: every spot tested where the success disc lay on the surface and half the object over it, other geometry stood in
-#: the object's box (the wall behind the lamp's glass shelf); or no spot had both.
-NOT_PLACED_IN_THE_WAY = ("Blueprint could not place the job's object on that estimated surface: at every spot it "
-                         "tried with the object's centre at least {radius} inside the surface's edges and at least "
-                         "half of the object over the surface, the object's estimated box, which takes in the whole "
-                         "object and not only its base, reached into another surface of the room.")
-NOT_PLACED_TOO_SMALL = ("Blueprint could not place the job's object on that estimated surface: no spot it tried had "
-                        "room for the object's centre at least {radius} inside the surface's edges with at least half "
-                        "of the object's estimated box over the surface.")
 DESTINATION_CONTACT_CODE = "task_destination_surface_contact_required"
 #: The job's object was sized from its own points across the frames, its masks' spill left out (``website_object_extent``,
 #: read from the preparation the job's scene handoff names). A room package holds no object and says nothing of it.
@@ -703,8 +691,6 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
     """What the half's sealed record says the package must tell: furniture moved for the arm, a look file that
     failed its quality gate, a support that does not hold the object. Empty for a half that has none of them, so
     its package is as before."""
-    from .website_destination_overhang import CAUSES as unheld_causes
-
     record = _sealed_record(scene, status)
     access = record.get("robot_access_removal") if isinstance(record.get("robot_access_removal"), Mapping) else {}
     items = access.get("items") if access.get("status") == "applied" and access.get("station_after") else None
@@ -725,11 +711,8 @@ def _record_notes(scene: Path, status: Mapping[str, Any]) -> dict[str, Any]:
                  if isinstance(row, Mapping) and row.get("piece") in NOT_PREPARED_PIECES
                  and isinstance(row.get("code"), str)
                  and row["code"] not in OBJECT_NOT_PREPARED_FLAGS | OBJECT_NOT_PLACED_FLAGS]) else {}),
-             # Why no spot held the object at its destination: only a cause compile's search types, never free text.
-             **({"destination_unheld": cause} if (cause := next(
-                 (row.get("cause") for row in record.get("not_prepared") or []
-                  if isinstance(row, Mapping) and row.get("code") == DESTINATION_CONTACT_CODE), None))
-                in unheld_causes else {}),
+             **{"destination_unheld": row["cause"] for row in record.get("not_prepared") or [] if isinstance(row, Mapping)
+                and row.get("code") == DESTINATION_CONTACT_CODE and row.get("cause") in unheld.CAUSES},  # typed only
              **({"nothing_taken_out": True} if JOB_OBJECT_RULE in (record.get("flags") or []) else {}),
              **({"scale_not_measured": True} if SCALE_NOT_MEASURED in (record.get("flags") or []) else {}),
              **({"not_filled_in": True} if "scene_completion_not_admitted" in (record.get("flags") or []) else {})}
@@ -1132,17 +1115,11 @@ def _counted(many: str, one: str, count: int) -> str:
 
 
 def _not_prepared(piece: str, codes: Sequence[str], *, surface_estimated: bool, cause: str | None = None) -> str:
-    """A room package's sentence for one piece it left out, for the codes it was left out for; ``cause``: why no spot
-    held the object at the destination, where compile's search recorded it."""
-    from .website_destination_overhang import IN_THE_WAY, TOO_SMALL
-    from .website_surface_target_admission import WEBSITE_TARGET_TOLERANCE_M
-
+    """A room package's sentence for one piece it left out, for the codes it was left out for (and ``cause``)."""
     if all(code == SPENDING_CAP_REACHED for code in codes):
         return NOT_PREPARED_AT_CAP.format(piece=piece)
     if piece == "destination" and surface_estimated and all(code == DESTINATION_CONTACT_CODE for code in codes):
-        radius = f"{WEBSITE_TARGET_TOLERANCE_M * 100:g} cm"
-        return {IN_THE_WAY: NOT_PLACED_IN_THE_WAY, TOO_SMALL: NOT_PLACED_TOO_SMALL}.get(
-            cause, NOT_PLACED_ON_ESTIMATED_SURFACE).format(radius=radius)
+        return unheld.sentence(cause, "that estimated surface") or NOT_PLACED_ON_ESTIMATED_SURFACE
     return NOT_PREPARED.format(piece=piece)
 
 
@@ -1262,8 +1239,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([OBJECT_NOT_PREPARED] if room.get("object_not_prepared") else []),
                 *([OBJECT_NOT_PLACED] if room.get("object_not_placed") else []),
                 *[_not_prepared(piece, [code for named, code in room["not_prepared"] if named == piece],
-                                surface_estimated=bool(source.get("surface_estimated")),
-                                cause=room.get("destination_unheld"))
+                                surface_estimated=bool(source.get("surface_estimated")), cause=room.get("destination_unheld"))
                   for piece in NOT_PREPARED_PIECES if any(named == piece for named, _code in room.get("not_prepared") or [])],
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"]
                    else _counted(OBJECTS_TAKEN_OUT, OBJECTS_TAKEN_OUT_ONE, room["objects"])]

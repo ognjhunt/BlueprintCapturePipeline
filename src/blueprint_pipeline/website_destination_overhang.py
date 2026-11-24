@@ -42,7 +42,7 @@ again there (``Placement.settle``): a spot that holds all of it drops the record
 to the nearest spot near it that does, or back to the spot first placed, recorded. A job that had a spot that
 holds the object never stops for it. A footprint with no such spot returns None, and compile stops exactly as
 before; given ``why``, it is filled with what the search found (``unheld``), which compile keeps as
-``destination_unheld`` and a room package's README words (``website_company_simulation``): no surface under its
+``destination_unheld`` and every reader words (``website_destination_unheld``): no surface under its
 centre; no spot with the disc on the surface and half the footprint over it; or, at every such spot tested, other
 geometry in its box (job move-the-lamp-2: the wall behind the glass shelf). Every value is an estimate, never a
 measurement.
@@ -58,6 +58,7 @@ from .task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M
 from .website_support_geometry import (FITTED_MAX_FACE_TILT_DEGREES, REGION_EDGE_ROUNDING_M, RESTING_OUTLINE_GRID_STEPS,
                                        RESTING_OUTLINE_MIN_SHARE, destination_clear_of_start, same_support_surface,
                                        search_window_m, support_outline, support_under)
+from .website_destination_unheld import CAUSES, IN_THE_WAY, NO_SURFACE, TOO_SMALL  # noqa: F401 - CAUSES for callers
 from .website_surface_target_admission import WEBSITE_TARGET_TOLERANCE_M
 
 BASIS = "centre_and_disc_over_the_surface_box_clear"
@@ -66,11 +67,6 @@ CLUTTER_SEEDS = 24
 #: Why a spot does not hold the object: the first rule it fails, in ``_Spot.holds``' order.
 NEAR_START, TOO_LITTLE_OVER, NEAR_AN_EDGE, IN_ITS_BOX = (
     "near_its_start", "too_little_of_it_over_the_surface", "disc_past_an_edge", "other_geometry_in_its_box")
-#: Why no spot held it (``unheld``): no surface under its centre; no spot tested with the disc on the surface and
-#: half the footprint over it; at every such spot tested, other geometry in its box. Any other mix names none.
-NO_SURFACE, TOO_SMALL, IN_THE_WAY = ("no_surface_under_its_centre", "no_spot_with_the_disc_and_half_of_it_on_the_surface",
-                                     "other_geometry_in_its_box_wherever_it_would_rest")
-CAUSES = frozenset({NO_SURFACE, TOO_SMALL, IN_THE_WAY})
 
 
 def _plan(up: int) -> list[int]:
