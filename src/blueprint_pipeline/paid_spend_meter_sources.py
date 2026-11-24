@@ -25,6 +25,7 @@ from .paid_spend_meter import (
     MAX_LEDGER_BYTES,
     SCREENING_QUEUE_ROOT_ENV,
     SOURCE_SCREENING,
+    UNPRICED_HOLD_BASIS,
     _epoch,
     atlas_rows,
     job_key,
@@ -32,6 +33,7 @@ from .paid_spend_meter import (
     meter_root,
     meter_view,
     money,
+    month_of,
     openai_rows,
     overhead_rows,
     public_view,
@@ -167,28 +169,37 @@ def _once(journal: list[dict[str, Any]], openai: Mapping[str, Any] | None,
             whole.add(job)
     rows = []
     for row in journal:
-        if ((row.get("status") == "settled" and row.get("provider") == "openai"
+        # A grant held at its maximum cost (``UNPRICED_HOLD_BASIS``) that the scan already counts is the scan's too.
+        counted = row.get("status") == "settled" or (row.get("status") == "held"
+                                                     and row.get("hold_basis") == UNPRICED_HOLD_BASIS)
+        if ((counted and row.get("provider") == "openai"
                 and not row["meter_key"].startswith(ARTISAN_OPENAI_METER_PREFIX)
                 and (row["job_id"] in whole or (row["job_id"], row["meter_key"]) in covered))
-                or (row.get("status") == "settled" and row.get("provider") == "world_labs"
+                or (counted and row.get("provider") == "world_labs"
                     and (row["job_id"] in atlas_whole or (row["job_id"], row["meter_key"]) in atlas))):
-            row = {**row, "status": "unpriced", "settled_usd": None, "settled_at_epoch": None}
+            row = {**row, "status": "unpriced", "settled_usd": None, "settled_at_epoch": None, "held_usd": None}
         rows.append(row)
     return rows
 
 
 def collect_meter_view(*, now: float, world_labs: Mapping[str, Any] | None = None,
                        openai: Mapping[str, Any] | None = None, overhead: Mapping[str, Any] | None = None,
-                       environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+                       environ: Mapping[str, str] | None = None,
+                       bills: Mapping[str, float] | None = None) -> dict[str, Any]:
     """The meter for this month from every source this host records.
 
     ``openai`` is the capacity tick's OpenAI reading; its ``job_charges`` put each job's settled OpenAI calls
     in the meter. A reading without them (an older tick) shows no per-job OpenAI, as before. ``overhead`` is
     its reading of the WebApp's own agent runs (``observe_webapp_overhead``), metered as named overhead.
+    ``bills``: when each provider's bill was last read (``paid_spend_meter.covered_by_bill``). The view names how
+    far each journal file of the month was read (``journal.read_bytes``), for the admissions after it.
     """
 
     env = os.environ if environ is None else environ
-    events, journal_gaps = read_journal(meter_root(env))
+    marks: dict[str, int] = {}
+    events, journal_gaps = read_journal(meter_root(env), marks=marks)
+    month = month_of(now)
+    marks = {name: end for name, end in marks.items() if name.startswith(month + "/")}
     queue = Path(str(env.get(SCREENING_QUEUE_ROOT_ENV) or DEFAULT_SCREENING_QUEUE_ROOT))
     screening, screening_gaps = screening_rows(queue if queue.is_dir() else None)
     gaps = [*journal_gaps, *screening_gaps]
@@ -203,7 +214,8 @@ def collect_meter_view(*, now: float, world_labs: Mapping[str, Any] | None = Non
     elif overhead is not None and overhead.get("complete") is not True:
         gaps.append("paid_spend_meter_webapp_overhead_partial")
     return meter_view([*_once(journal_rows(events), openai, world_labs), *screening, *atlas_rows(world_labs),
-                       *openai_rows(openai), *overhead_rows(overhead)], now=now, gaps=gaps)
+                       *openai_rows(openai), *overhead_rows(overhead)], now=now, gaps=gaps, bills=bills,
+                      journal_marks=marks)
 
 
 def main(argv: list[str] | None = None, *, now: float | None = None) -> int:

@@ -211,24 +211,46 @@ refused only once the count reaches the limit; no amount is made up for it.
 journal line under one lock (`paid_spend_meter.admission_lock`, a file in the
 meter root), so two processes are never judged at one count.
 
-Limits of this:
+Round 2 of the stress run (2026-11-24) closed what this left open:
 
-- After the next report, a grant's cost counts only once a hold, a settlement
-  or a bill shows it. The provider lag below still applies.
-- The journal stays best effort. A unit that cannot write the meter root (for
-  example `blueprint-team-scene-packet-remote`, whose sandbox does not list it)
-  neither journals its grants nor takes the lock. A journal file another
-  account wrote (mode 0600) is skipped, as the report skips it.
+- A grant that names its cost and no held price is a hold at that cost in
+  every report after it (`paid_spend_meter.UNPRICED_HOLD_BASIS`), until its
+  settlement is journaled or a reading of its provider's bill taken a day
+  after it (`BILL_COVERS_AFTER_SECONDS`, the age to which billing evidence is
+  accepted) can show it; past its month it is the call it was. Before, it
+  stopped counting at the next report, so at $380 of $400 a $12 call a minute
+  was judged at $380 each time.
+- The report names how far it read each journal file
+  (`meter.journal.read_bytes`); the admissions after it count the lines it did
+  not read, so a report stamped ahead of the journal's clock hides nothing and
+  a grant counts once. A report that names none counts the grants from its
+  `generated_at` less the accepted 60 s skew. A reservation judged again is not
+  counted beside its own hold (`meter.journal.holds_usd`).
+- The journal is no longer best effort where it exists: a grant whose line
+  cannot be written while the meter root exists is refused
+  (`paid_spend_meter_journal_unwritable`); a clear stop never is.
+  `blueprint-team-scene-packet-remote` now lists the meter root among its
+  writable paths. A process with no meter root journals nothing, as before.
+- Each account writes its month in files of at most 8 MiB
+  (`ROLL_JOURNAL_FILE_BYTES`, `uid-<uid>.<n>.jsonl` after the first), so no file
+  reaches the readers' 16 MiB cap; a file past 12 MiB is flagged
+  (`account_spend_journal_near_cap`, warn) and one that cannot be read whole
+  pages (`account_spend_journal_unreadable`).
+- Last month's report on the 1st refuses as stale, whatever its month's limit.
+
+The provider lag below still applies.
 
 | Refusal | When |
 |---|---|
 | `account_monthly_spend_limit_reached` | The count (the report's `counted_usd` plus the admissions since it) is at or over the month's limit, or the count plus this call's maximum cost is over it. |
 | `account_monthly_spend_call_cost_invalid` | The call named a maximum cost that is not an amount (negative, not finite, not a number). |
-| `account_monthly_spend_report_stale` | The report is older than 15 min (`REPORT_MAX_AGE_SECONDS`) or is for another month. |
+| `account_monthly_spend_report_stale` | The report is older than 15 min (`REPORT_MAX_AGE_SECONDS`), more than 60 s ahead, or is for another month (on the 1st, whatever that month's limit was). |
 | `account_monthly_spend_report_missing_or_invalid` | The report is unreadable, not bound to this config's sha256 and limit, or not `cap_status: set`. |
 | `account_monthly_spend_limit_config_invalid` | The config exists but does not validate. |
 | `account_monthly_spend_limit_not_configured` | No config file, on the production control plane. |
 | `account_monthly_spend_limit_unavailable` | The check itself raised. |
+| `account_monthly_spend_journal_unreadable` | A journal file of the month cannot be read whole: its grants cannot be counted. |
+| `paid_spend_meter_journal_unwritable` | The grant's journal line could not be written while the meter root exists: it would go uncounted. |
 
 **Stops are never blocked.** `require_paid_resource_admission` takes
 `spend_effect`, which defaults to `new_spend`, so an unmarked caller is

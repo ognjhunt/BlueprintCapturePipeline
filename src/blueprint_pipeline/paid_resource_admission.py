@@ -252,7 +252,8 @@ def require_paid_resource_admission(
     the journal line are taken under one lock (``paid_spend_meter.admission_lock``).
     """
     from .core.handoff_lease import handoff_lease_checkpoint, current_handoff_lease_check
-    from .paid_spend_meter import admission_lock, admission_meter_key, meter_chokepoint_admission, money
+    from .paid_spend_meter import (JOURNAL_UNWRITABLE, JournalUnwritable, admission_lock, admission_meter_key,
+                                   meter_chokepoint_admission, money)
 
     handoff_lease_checkpoint("paid_resource_admission")
     effect_blockers, clear_stop = _spend_effect_blockers(admission, spend_effect)
@@ -286,10 +287,17 @@ def require_paid_resource_admission(
                                                             meter_key=admission_meter_key(admission), now=moment))
         if blockers:
             raise PaidResourceAdmissionBlocked(sorted(set(blockers)))
-        # Every grant is metered against its job (``paid_spend_meter``); never raises.
-        meter_chokepoint_admission(admission, resource_class=resource_class, schema_version=expected_schema_version,
-                                   spend_effect=SPEND_EFFECT_STOP if clear_stop else SPEND_EFFECT_NEW_SPEND,
-                                   now=moment, maximum_cost_usd=money(cost))
+        # Every grant is metered against its job (``paid_spend_meter``). The account's month counts the grants it
+        # journals, so new spend whose line cannot be written while the meter root exists is refused (stress round 2:
+        # a full disk let every grant through unseen); a clear stop is never refused for it.
+        try:
+            meter_chokepoint_admission(admission, resource_class=resource_class,
+                                       schema_version=expected_schema_version,
+                                       spend_effect=SPEND_EFFECT_STOP if clear_stop else SPEND_EFFECT_NEW_SPEND,
+                                       now=moment, maximum_cost_usd=money(cost))
+        except JournalUnwritable:
+            if not clear_stop:
+                raise PaidResourceAdmissionBlocked([JOURNAL_UNWRITABLE]) from None
     return PaidResourceAdmissionGrant(
         resource_class=resource_class,
         schema_version=expected_schema_version,

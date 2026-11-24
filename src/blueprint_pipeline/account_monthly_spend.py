@@ -67,8 +67,22 @@ Admission (stress finding 2026-11-24)
     count plus its cost fits under the limit, as the job's $40 cap admits a
     call; one that names none is refused once the count reaches the limit.
     The chokepoint holds one lock from the check to the grant's journal line
-    (``paid_spend_meter.admission_lock``). After the next report a grant's cost
-    counts again only once a hold, a settlement or a bill shows it.
+    (``paid_spend_meter.admission_lock``), and a grant whose line cannot be
+    written is refused (``paid_spend_meter.JOURNAL_UNWRITABLE``).
+
+Round 2 (stress finding 2026-11-24)
+    In the reports after it, a grant that named its cost is a hold at that
+    cost until it settles or a bill of its provider can show it
+    (``paid_spend_meter.UNPRICED_HOLD_BASIS``); before, it stopped counting at
+    the next report. The report names how far it read each journal file
+    (``meter.journal.read_bytes``): the admissions after it count the lines it
+    did not read, so no clock decides, a report stamped ahead of the journal's
+    clock hides nothing, and a grant counts once. A report that names none
+    (written by hand, or before this) counts the grants journaled from its
+    ``generated_at`` less the accepted skew (``REPORT_CLOCK_SKEW_SECONDS``),
+    which can only count a grant twice, never miss one. A reservation judged
+    again is not counted beside its own hold (``meter.journal.holds_usd``).
+    Last month's report reads as stale on the 1st, whatever its limit was.
 """
 
 from __future__ import annotations
@@ -87,7 +101,8 @@ from pathlib import Path
 from typing import Any
 
 from .launch_proof_policy import production_launch_mode
-from .paid_spend_meter import JournalUnreadable, admitted_since, meter_root, money, month_of, month_start, usd
+from .paid_spend_meter import (NEAR_CAP_GAP, JournalUnreadable, admitted_since, meter_root, money, month_of, month_start,
+                               usd)
 
 POLICY_SCHEMA = "blueprint.account_monthly_spend_limit.v1"
 REPORT_SCHEMA = "blueprint.account_monthly_spend_report.v1"
@@ -105,6 +120,8 @@ REPORT_FILENAME = "report.json"
 OBSERVATION_FILENAME = "provider_observation.json"
 #: The spend guard rewrites the report every minute; slow runs under load took 5.5 min.
 REPORT_MAX_AGE_SECONDS = 15 * 60
+#: A report stamped up to this far ahead of the admitting process's clock is accepted (two clocks of one host).
+REPORT_CLOCK_SKEW_SECONDS = 60
 #: The capacity tick observes OpenAI and World Labs every ten minutes.
 OBSERVATION_MAX_AGE_SECONDS = 30 * 60
 #: The spend admission lock refuses billing evidence older than this.
@@ -395,31 +412,51 @@ def read_report(path: Path) -> dict[str, Any]:
     return _json_object(_regular_bytes(Path(path), MAX_REPORT_BYTES, reject_writable=True))
 
 
+def _report_journal(report: Mapping[str, Any], period: str) -> Mapping[str, Any]:
+    """What the report says it read of this month's journal (``paid_spend_meter.meter_view``'s ``journal``), or
+    nothing when it says nothing of this month."""
+
+    meter = report.get("meter") if isinstance(report.get("meter"), Mapping) else {}
+    journal = meter.get("journal") if isinstance(meter.get("journal"), Mapping) else {}
+    return journal if journal.get("period") == period else {}
+
+
+def _own_hold(report: Mapping[str, Any], period: str, meter_key: str | None) -> Decimal:
+    """The hold the report counted for the reservation being judged again, whose own cost the caller adds."""
+
+    holds = _report_journal(report, period).get("holds_usd")
+    return (money(holds.get(meter_key)) or Decimal(0)) if meter_key and isinstance(holds, Mapping) else Decimal(0)
+
+
 def admitted_since_report(report: Mapping[str, Any], *, now: float | None = None,
                           environ: Mapping[str, str] | None = None,
                           exclude_meter_key: str | None = None) -> Decimal | None:
-    """What the paid admissions journaled since ``report`` was written were admitted for; None without its time.
+    """What the paid admissions journaled since ``report`` read the journal were admitted for; None without its time.
 
-    The report counts the month as it read it; every grant the chokepoint journaled from its ``generated_at``
-    on is in none of its figures (``paid_spend_meter.admitted_since``, read from the meter root of ``environ``).
+    The report counts the month as it read it; every grant the chokepoint journaled after that is in none of its
+    figures (``paid_spend_meter.admitted_since``, read from the meter root of ``environ``): the lines after what it
+    read of each file (``journal.read_bytes``), else the grants from its ``generated_at`` less the accepted skew.
     """
 
     generated = _epoch(report.get("generated_at"))
     if generated is None:
         return None
     moment = _clock() if now is None else float(now)
-    return admitted_since(meter_root(environ), generated, now=moment, exclude_meter_key=exclude_meter_key)
+    marks = _report_journal(report, month_of(moment)).get("read_bytes")
+    return admitted_since(meter_root(environ), generated - REPORT_CLOCK_SKEW_SECONDS, now=moment,
+                          exclude_meter_key=exclude_meter_key, after=marks if isinstance(marks, Mapping) else None)
 
 
 def admission_blockers(*, now: float | None = None, environ: Mapping[str, str] | None = None,
                        maximum_cost_usd: Any = None, exclude_meter_key: str | None = None) -> list[str]:
     """``[]`` when the call fits under the month's limit, or no limit is configured where none is required.
 
-    The month is the report's ``counted_usd`` plus the admissions journaled since it was written
+    The month is the report's ``counted_usd`` plus the admissions journaled since it read the journal
     (``admitted_since_report``). ``maximum_cost_usd`` is the most the call being judged can cost: with it, that
     count plus the call must fit under the limit, as the job's $40 cap admits a call; without it (a caller that
     knows no amount), the count must only be under the limit. ``exclude_meter_key`` is the call's own
-    reservation, so an earlier grant of it is not counted beside its cost. Otherwise the named refusal. With no
+    reservation, so an earlier grant of it (journaled since, or held in the report) is not counted beside its cost.
+    Otherwise the named refusal. With no
     limit file, the production control plane refuses (``limit_required``); any other process has no limit.
     """
 
@@ -442,18 +479,22 @@ def admission_blockers(*, now: float | None = None, environ: Mapping[str, str] |
         counted = money(report.get("counted_usd"))
         generated = _epoch(report.get("generated_at"))
         if (report.get("schema_version") != REPORT_SCHEMA or report.get("cap_status") != "set"
-                or report.get("policy_sha256") != policy["policy_sha256"] or counted is None or generated is None
-                or Decimal(str(report.get("limit_usd"))) != limit):
+                or report.get("policy_sha256") != policy["policy_sha256"] or counted is None or generated is None):
+            return [REPORT_INVALID]
+        if report.get("period") != period:
+            # Last month's report on the 1st (a new month): stale, whatever its own month's limit was.
+            return [REPORT_STALE]
+        if Decimal(str(report.get("limit_usd"))) != limit:
             return [REPORT_INVALID]
     except (OSError, ValueError, UnicodeDecodeError, ArithmeticError):
         return [REPORT_INVALID]
-    if report.get("period") != period or not -60 <= moment - generated <= REPORT_MAX_AGE_SECONDS:
+    if not -REPORT_CLOCK_SKEW_SECONDS <= moment - generated <= REPORT_MAX_AGE_SECONDS:
         return [REPORT_STALE]
     try:
         since = admitted_since_report(report, now=moment, environ=env, exclude_meter_key=exclude_meter_key)
     except JournalUnreadable:
         return [JOURNAL_UNREADABLE]
-    count = counted + (since or Decimal(0))
+    count = max(Decimal(0), counted - _own_hold(report, period, exclude_meter_key)) + (since or Decimal(0))
     if count >= limit or (quote is not None and count + quote > limit):
         return [LIMIT_REACHED]
     return []
@@ -521,6 +562,12 @@ def account_alerts(row: Mapping[str, Any]) -> list[dict[str, Any]]:
         alerts.append({"code": FORECAST_CODE, **base, "reaches_limit_on": forecast.get("reaches_limit_on"),
                        "daily_rate_usd": forecast.get("daily_rate_usd"), "spend_usd": usd(counted),
                        "limit_usd": row.get("limit_usd")})
+    gaps_seen = [str(item) for item in row.get("gaps") or []]
+    if any(gap.startswith("paid_spend_meter_journal_file_unreadable") for gap in gaps_seen):
+        # A journal file cannot be read whole: while it is this month's, every new paid admission is refused.
+        alerts.append({"code": JOURNAL_UNREADABLE_CODE, **base})
+    if NEAR_CAP_GAP in gaps_seen:
+        alerts.append({"code": JOURNAL_NEAR_CAP_CODE, **base})
     reconciliation = row.get("reconciliation") if isinstance(row.get("reconciliation"), Mapping) else {}
     if reconciliation.get("outside_tolerance"):
         alerts.append({"code": RECONCILIATION_CODE, **base,
@@ -536,11 +583,15 @@ def account_alerts(row: Mapping[str, Any]) -> list[dict[str, Any]]:
 FORECAST_CODE = "account_spend_forecast_reaches_limit_this_month"
 #: Warn: a provider's settled ledger and its billing delta differ past tolerance (``account_spend_reconciliation``).
 RECONCILIATION_CODE = "account_spend_reconciliation_outside_tolerance"
+#: Page: a spend journal file cannot be read whole (``paid_spend_meter.read_journal``); this month's refuses new spend.
+JOURNAL_UNREADABLE_CODE = "account_spend_journal_unreadable"
+#: Warn: a spend journal file is near the readers' cap (``paid_spend_meter.NEAR_CAP_GAP``): its writer did not roll.
+JOURNAL_NEAR_CAP_CODE = "account_spend_journal_near_cap"
 ACCOUNT_PAGE_CODES = frozenset({"account_spend_month_80pct", "account_spend_month_limit_reached",
                                 "account_spend_limit_config_invalid", "account_spend_limit_missing",
-                                "account_spend_report_stale"})
+                                "account_spend_report_stale", JOURNAL_UNREADABLE_CODE})
 ACCOUNT_WARN_CODES = frozenset({"account_spend_month_50pct", "account_spend_limit_not_set", "account_spend_unverifiable",
-                                FORECAST_CODE, RECONCILIATION_CODE})
+                                FORECAST_CODE, RECONCILIATION_CODE, JOURNAL_NEAR_CAP_CODE})
 
 
 def describe(alert: Mapping[str, Any]) -> str | None:
@@ -553,6 +604,8 @@ def describe(alert: Mapping[str, Any]) -> str | None:
         return "Account monthly limit config missing on the control plane: every new paid admission is refused"
     if code == "account_spend_report_stale":
         return "Account monthly spend report stale or unreadable: new paid admissions refused until the spend guard rewrites it"
+    if code == JOURNAL_UNREADABLE_CODE:
+        return "A spend journal file cannot be read whole: while it is this month's, new paid admissions are refused"
     if code in {"account_spend_month_80pct", "account_spend_month_limit_reached"}:
         line = f"Account ${float(spent or 0):.2f} of ${float(alert.get('limit_usd') or 0):.2f} in UTC month {month}"
         if code == "account_spend_month_limit_reached":
@@ -587,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "ACCOUNT_PAGE_CODES", "ACCOUNT_WARN_CODES", "CALL_COST_INVALID", "CONFIG_ENV", "CONFIG_INVALID",
-    "JOURNAL_UNREADABLE",
+    "JOURNAL_NEAR_CAP_CODE", "JOURNAL_UNREADABLE", "JOURNAL_UNREADABLE_CODE", "REPORT_CLOCK_SKEW_SECONDS",
     "INSTALLED_CONFIG_PATH",
     "LIMIT_NOT_CONFIGURED", "LIMIT_REACHED", "POLICY_SCHEMA", "REPORT_INVALID", "REPORT_SCHEMA", "REPORT_STALE",
     "ROOT_ENV", "SHIPPED_CONFIG_PATH", "UNAVAILABLE", "account_alerts", "admission_blockers",

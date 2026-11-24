@@ -255,26 +255,74 @@ def test_a_grant_taken_again_for_the_same_reservation_counts_once(month):
         _admit(12.0, allocation_binding_digest=third)  # $370 + $24 + $12 = $406
 
 
+def _read_through(env: dict, report_counted: str) -> None:
+    """Rewrite the report as one that read the journal as it stands now (``meter.journal.read_bytes``)."""
+    marks: dict = {}
+    meter.read_journal(Path(env[meter.METER_ROOT_ENV]), marks=marks)
+    path = Path(account.load_policy(Path(env[account.CONFIG_ENV]))["report_path"])
+    report = json.loads(path.read_text())
+    report.update(counted_usd=report_counted, meter={"journal": {"period": account.month_of(NOVEMBER_29),
+                                                                 "read_bytes": marks, "holds_usd": {}}})
+    path.write_text(json.dumps(report))
+    os.chmod(path, 0o644)
+
+
 def test_a_grant_made_before_the_report_is_not_added_on_top_of_it(month, tmp_path):
-    month("395.00", generated_ago_seconds=0)
+    """A grant the report read (its count holds it) is not counted again by the admissions after it."""
+    env = month("395.00", generated_ago_seconds=0)
     meter.meter_chokepoint_admission(build_paid_lane_admission(resource_class="evaluator_api"),
                                      resource_class="evaluator_api", schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
                                      now=NOVEMBER_29 - 30, maximum_cost_usd=5.0)
+    _read_through(env, "395.00")
     assert _admit(5.0).resource_class == "evaluator_api"
 
 
-def test_a_journaled_quote_is_no_hold_in_the_meter_the_report_reads(tmp_path):
-    """The report's figures are unchanged: a grant's quote is only for the admissions judged before the next report;
-    it is never a hold, so an unsettled call does not count for the rest of the month on top of its bill."""
-    root = tmp_path / "meter"
+def test_a_report_that_says_nothing_of_what_it_read_counts_the_grants_within_the_accepted_skew(month, tmp_path):
+    """Stress round 2: a report written up to 60 s ahead of the journal's clock is accepted; one that names no read of
+    the journal counts every grant from its stamp less those 60 s, so none between is hidden (and one may count
+    twice, never less)."""
+    month("390.00", generated_ago_seconds=-50)  # stamped 50 s ahead
     meter.meter_chokepoint_admission(build_paid_lane_admission(resource_class="evaluator_api"),
                                      resource_class="evaluator_api", schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                     now=NOVEMBER_29 - 5, maximum_cost_usd=5.0)
+    with pytest.raises(PaidResourceAdmissionBlocked, match=REACHED):
+        _admit(6.0)  # $390 + $5 + $6
+    assert _admit(5.0).resource_class == "evaluator_api"  # $390 + $5 + $5 = $400: fits
+
+
+def test_a_journaled_quote_is_a_hold_until_it_settles_or_its_bill_can_show_it(tmp_path):
+    """Stress round 2: a grant's quote only counted until the next report, so at $380 of $400 one $12 call a report
+    was judged at $380 each time. Now it is a hold until its settlement is journaled or a bill of its provider read a
+    day after it can show it, and past its month it is the call it was."""
+    root = tmp_path / "meter"
+    meter.meter_chokepoint_admission(build_paid_lane_admission(resource_class="openai_api_candidate"),
+                                     resource_class="openai_api_candidate",
+                                     schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
                                      environ={meter.METER_ROOT_ENV: str(root)}, now=NOVEMBER_29, maximum_cost_usd=12)
     events, _gaps = meter.read_journal(root)
     rows = meter.journal_rows(events)
-    assert [(row["status"], row["held_usd"]) for row in rows] == [("unpriced", None)]
-    totals = meter.meter_view(rows, now=NOVEMBER_29)["totals"]
-    assert (totals["held_usd"], totals["settled_usd"], totals["unpriced_admissions"]) == (0, 0, 1)
+    assert [(row["status"], row["held_usd"], row["hold_basis"]) for row in rows] == [
+        ("held", Decimal(12), meter.UNPRICED_HOLD_BASIS)]
+    view = meter.meter_view(rows, now=NOVEMBER_29)
+    assert (view["totals"]["held_usd"], view["totals"]["settled_usd"], view["totals"]["unpriced_admissions"]) == (12, 0, 0)
+    [key] = view["journal"]["holds_usd"]
+    assert view["journal"]["holds_usd"][key] == "12"
+    # A bill of its provider read an hour after it cannot show it yet; one read a day after can.
+    early = meter.meter_view(rows, now=NOVEMBER_29, bills={"openai": NOVEMBER_29 + 3600})["totals"]
+    late = meter.meter_view(rows, now=NOVEMBER_29, bills={"openai": NOVEMBER_29 + meter.BILL_COVERS_AFTER_SECONDS})
+    assert early["held_usd"] == 12 and late["totals"]["held_usd"] == 0 and late["totals"]["unpriced_admissions"] == 1
+    assert late["journal"]["holds_usd"] == {}
+    # Another provider's bill shows nothing of it.
+    other = meter.meter_view(rows, now=NOVEMBER_29, bills={"vast": NOVEMBER_29 + 2 * meter.BILL_COVERS_AFTER_SECONDS})
+    assert other["totals"]["held_usd"] == 12
+    # December: the call it was, never an old hold for someone to settle.
+    december = meter.meter_view(rows, now=NOVEMBER_29 + 3 * 86400)
+    assert december["totals"]["held_usd"] == 0 and december["old_unsettled_holds"] == []
+    # Settled: its settlement counts, not its quote.
+    meter.record_settlement(job_id=rows[0]["job_id"], meter_key=rows[0]["meter_key"], settled_usd="4.25",
+                            basis="test", provider="openai", root=root, now=NOVEMBER_29 + 60)
+    settled = meter.meter_view(meter.journal_rows(meter.read_journal(root)[0]), now=NOVEMBER_29 + 60)["totals"]
+    assert (settled["held_usd"], settled["settled_usd"]) == (0, 4.25)
     assert meter.admitted_since(root, NOVEMBER_29, now=NOVEMBER_29) == Decimal(12)
     assert meter.admitted_since(root, NOVEMBER_29 + 1, now=NOVEMBER_29) == 0
 
@@ -460,13 +508,13 @@ def test_a_journal_file_that_cannot_be_read_whole_refuses_new_spend_rather_than_
     if damage == "too_large":
         monkeypatch.setattr(meter, "MAX_JOURNAL_FILE_BYTES", -1)
     if damage == "another_accounts_file":  # mode 0600 under another account: this process is refused, as on the host
-        real = Path.read_text
+        real = os.open
 
-        def refused(self, *args, **kwargs):
-            if self.name == "uid-0.jsonl":
-                raise PermissionError(13, "Permission denied", str(self))
-            return real(self, *args, **kwargs)
-        monkeypatch.setattr(Path, "read_text", refused)
+        def refused(path, flags, *args, **kwargs):
+            if str(path).endswith("uid-0.jsonl") and not flags & (os.O_WRONLY | os.O_RDWR):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, flags, *args, **kwargs)
+        monkeypatch.setattr(os, "open", refused)
     assert account.admission_blockers(now=NOVEMBER_29, environ=env, maximum_cost_usd="1.00") == [
         account.JOURNAL_UNREADABLE]
     assert account.admission_blockers(now=NOVEMBER_29, environ=env) == [account.JOURNAL_UNREADABLE]
