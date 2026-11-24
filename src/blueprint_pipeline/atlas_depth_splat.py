@@ -1004,10 +1004,11 @@ def _weighted_quantities(sample: Mapping[str, np.ndarray]):
 
 def _malloc_trim() -> Callable[[int], int] | None:
     import ctypes
-    import ctypes.util
 
     try:
-        return ctypes.CDLL(ctypes.util.find_library("c") or None).malloc_trim
+        # The process's own symbols, libc's among them: ``ctypes.util.find_library`` would start ``ldconfig``, ``gcc``
+        # and ``ld`` at every import, which the $0 test job matrix refuses and records as reaching out (2026-11-24).
+        return ctypes.CDLL(None).malloc_trim
     except (AttributeError, OSError):
         return None
 
@@ -1192,49 +1193,83 @@ def depth_fused_splat(fused: Mapping[str, np.ndarray], voxel: float) -> SplatDat
                      quats=quats.astype(np.float32), properties=PLY_PROPERTIES)
 
 
-def _disc_normals(splat: SplatData) -> np.ndarray:
-    """Each disc's rotated local z axis: the normal depth_fused_splat turned it onto."""
-    w, x, y, z = (splat.quats[:, index].astype(np.float64) for index in range(4))
+def _quat_normals(quats: np.ndarray) -> np.ndarray:
+    """Each wxyz rotation's turned local z axis, normalised: row by row, so any run of rows gives its own rows."""
+    w, x, y, z = (quats[:, index].astype(np.float64) for index in range(4))
     normal = np.stack([2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)], axis=1)
     return normal / np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
+
+
+def _disc_normals(splat: SplatData) -> np.ndarray:
+    """Each disc's rotated local z axis: the normal depth_fused_splat turned it onto."""
+    return _quat_normals(splat.quats)
+
+
+#: Gaussians whose voxel keys and disc normals ``splats2mesh_input`` works out at once.
+MESH_INPUT_CHUNK_ROWS = 1 << 20
+
+
+def _mesh_input_grid(splat: SplatData, voxel: float, limit: int,
+                     runs: Sequence[tuple[int, int]]) -> tuple[float, int, np.ndarray]:
+    """The finest of the coarser grids with at most ``limit`` occupied voxels: its voxel size, how many it
+    occupies, and each Gaussian's voxel among them (``np.unique``'s inverse of its keys)."""
+    cells = np.empty(splat.count, np.int64)
+    for multiple in _MESH_INPUT_GRID_MULTIPLES:
+        size = voxel * multiple
+        for start, stop in runs:
+            cells[start:stop] = _voxel_keys(splat.xyz[start:stop].astype(np.float64), size)
+        keys, inverse = np.unique(cells, return_inverse=True)
+        if len(keys) <= limit:
+            return size, len(keys), inverse.reshape(-1)
+        keys = inverse = None  # this grid's keys go before the next grid's are made
+    raise ValueError("atlas_depth_splat_mesh_input_exceeds_limit")
 
 
 def splats2mesh_input(splat: SplatData, voxel: float, *, limit: int | None = None) -> tuple[SplatData, float]:
     """Merge discs on the finest coarser grid within the size splats2Mesh has meshed.
 
     Only the mesh input is merged; the full draft stays the viewing and download splat.
+
+    A draft's every Gaussian is in each merged quantity, so a 16 M-Gaussian draft once held its
+    positions widened, every grid's keys with their temporaries, and the six normal products side by
+    side (3.34 GiB on itest-cce2beee's draft, 2026-11-24). Keys and normals are now worked out
+    ``MESH_INPUT_CHUNK_ROWS`` Gaussians at a time, and each quantity is widened and summed a column at
+    a time. Every value is the one the whole-array arithmetic gave, and each voxel's sum adds the same
+    terms in the same order, so the merged splat is the same to the bit.
     """
     limit = SPLATS2MESH_MAX_GAUSSIANS if limit is None else limit
     if splat.count <= limit:
         return splat, voxel
-    points = splat.xyz.astype(np.float64)
-    for multiple in _MESH_INPUT_GRID_MULTIPLES:
-        size = voxel * multiple
-        keys, inverse = np.unique(_voxel_keys(points, size), return_inverse=True)
-        if len(keys) <= limit:
-            break
-    else:
-        raise ValueError("atlas_depth_splat_mesh_input_exceeds_limit")
-    inverse = inverse.reshape(-1)
+    count = splat.count
+    runs = [(start, min(count, start + MESH_INPUT_CHUNK_ROWS)) for start in range(0, count, MESH_INPUT_CHUNK_ROWS)]
+    size, voxels, inverse = _mesh_input_grid(splat, voxel, limit, runs)
     weight = np.clip((splat.opacity_sigmoid.astype(np.float64) - 0.5) / 0.49, 1e-3, 1.0)
-    total = np.bincount(inverse, weights=weight, minlength=len(keys))
+    total = np.bincount(inverse, weights=weight, minlength=voxels)
 
-    def mean(values):
-        return np.stack([np.bincount(inverse, weights=weight * values[:, column], minlength=len(keys))
-                         for column in range(values.shape[1])], axis=1) / total[:, None]
+    def mean(column: Callable[[int], np.ndarray], width: int) -> np.ndarray:
+        """Each voxel's weighted mean of the ``width`` per-Gaussian quantities ``column`` gives, one at a time."""
+        return np.stack([np.bincount(inverse, weights=weight * column(index), minlength=voxels)
+                         for index in range(width)], axis=1) / total[:, None]
 
+    xyz = mean(lambda index: splat.xyz[:, index].astype(np.float64), 3)
+    rgb = mean(lambda index: splat.f_dc[:, index].astype(np.float64) * SH_C0 + 0.5, 3)
+    # Each disc's tangent sigma records the row spacing it had to bridge.
+    slant = mean(lambda _: np.exp(splat.scales[:, 0].astype(np.float64)) / DISC_SIGMA_PER_VOXEL, 1)[:, 0]
     # Disc normals are flipped towards +z, so a wall's neighbours can point either
     # way: merge their sign-free principal axis, not their vector mean. Agreement
     # is that axis's anisotropy: 1 for parallel normals, 0 for an even spread.
-    normals = _disc_normals(splat)
+    normals = np.empty((count, 3))
+    for start, stop in runs:
+        normals[start:stop] = _quat_normals(splat.quats[start:stop])
     pairs = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
-    second = mean(np.stack([normals[:, i] * normals[:, j] for i, j in pairs], axis=1))
+    second = mean(lambda index: normals[:, pairs[index][0]] * normals[:, pairs[index][1]], len(pairs))
+    confidence = total / np.bincount(inverse, minlength=voxels)
+    # The per-Gaussian columns go before the merged discs are built.
+    normals = inverse = weight = None
     values, vectors = np.linalg.eigh(second[:, [0, 1, 2, 1, 3, 4, 2, 4, 5]].reshape(-1, 3, 3))
-    # Each disc's tangent sigma records the row spacing it had to bridge.
-    spans = np.exp(splat.scales[:, :1].astype(np.float64)) / DISC_SIGMA_PER_VOXEL
-    fused = {"xyz": mean(points), "rgb": mean(splat.f_dc.astype(np.float64) * SH_C0 + 0.5),
-             "normal": vectors[:, :, 2], "normal_agreement": np.clip((3 * values[:, 2] - 1) / 2, 0.0, 1.0),
-             "confidence": total / np.bincount(inverse, minlength=len(keys)), "slant": mean(spans)[:, 0]}
+    fused = {"xyz": xyz, "rgb": rgb, "normal": vectors[:, :, 2],
+             "normal_agreement": np.clip((3 * values[:, 2] - 1) / 2, 0.0, 1.0),
+             "confidence": confidence, "slant": slant}
     return depth_fused_splat(fused, size), size
 
 

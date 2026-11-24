@@ -1,0 +1,368 @@
+{
+ "schema_version": "blueprint_test_clip_mix.v1",
+ "written_on": "2026-11-24",
+ "use": "scripts/test_jobs.py submit --matrix docs/test-footage/clip-mix-v1.json -k 2 --state run.json (docs/runbooks/test-jobs.md). Rows with footage_uploaded false, or no footage_id, are skipped; a row the website finds no clip for is named and skipped. Rows run in order: the paths most likely to break and the cheapest first.",
+ "adding_a_clip": "For a row that needs the owner: download the clip from its source_page, make walkthrough.mp4 with the row's prepare command (the bucket takes only walkthrough.mp4 or .mov; Commons serves WebM and Ogg), write source.json beside it (source_page, licence_text: the row's licence_line, sha256 of walkthrough.mp4, added_by, added_at), upload both to internal-test-footage/<footage_id>/, then set footage_uploaded to true. A clip is added only on the owner's word (docs/runbooks/test-jobs.md).",
+ "money": "About $10-15 a job, under the $40 cap. The runner stops before a row when the month's counted spend plus $20 reaches the $400 November limit: with about $310 counted, that is about four more jobs this month; the limit is $300 again from December.",
+ "licences": "Licence lines are copied from each Commons file page's Licensing section, read on 2026-11-24. The Pexels rows' pages could not be read from this network (HTTP 403) and are marked licence not checked; the readiness plan already asks counsel about the Pexels stock clips (docs/launch-readiness/2026-11-beta-readiness-plan.md, O-07).",
+ "descriptions": "Each description is one sentence as a site would write it, drafted from the source page's own description; none of these clips was watched here.",
+ "jobs": [
+  {
+   "order": 1,
+   "label": "truck-carton-unload",
+   "footage_id": "pexels-37546341",
+   "description": "Unload the cartons from the back of the truck.",
+   "job_type": "unloading (depalletize); several objects in one job",
+   "footage_uploaded": "unknown",
+   "needs_owner_upload": "only if the runner reports no clip under this id",
+   "source_page": null,
+   "licence_line": "licence not checked: pexels.com refused this network (HTTP 403), so the clip's page could not be read here",
+   "licence_checked": false,
+   "why_here": "Named by the owner as the truck carton unload clip and never run; no upload if it is in the bucket. The several-objects route (the build plan, a parametric carton, the rest kept in the scan) has never run on a real job.",
+   "code_path": [
+    "routing: no task profile names unloading (task_profile_contracts.TASK_PROFILES, task_family_scoring.FAMILY_ALIASES): a reading of its own kind ships the room package with no rule; a rigid_pick_place reading takes the cartons as its objects (website_task_semantics._operation_profile)",
+    "Atlas planner: subject_origin captured, the cartons removed (atlas_scene_planner.proposal_review)",
+    "several manipulated cartons: website_atlas_pipeline.job_object_review -> _kept_job_objects SEVERAL_JOB_OBJECTS; the build plan (website_build_plan.decide_plan, one paid Gemini call) builds the most important carton and keeps the rest (partial_review), or with no plan every carton stays in the scan (job_objects_kept)",
+    "handoff: in_scan -> room package (website_scene_handoff, 'job_objects_kept'), or the one carton on the rigid route as a parametric carton (website_supplied_mesh, website_parametric_object)"
+   ],
+   "matrix_rows": [
+    "several-objects-kept-in-scan",
+    "several-objects-taken-out-of-the-scan",
+    "depalletize-one-carton-parametric"
+   ],
+   "expected": "a zip either way; which route is the build plan's (a model's) choice, not known in advance"
+  },
+  {
+   "order": 2,
+   "label": "people-at-the-tables",
+   "footage_id": "commons-le-loft-paris",
+   "description": "Walk from the entrance to the far table and stop beside it.",
+   "job_type": "people in shot (privacy path); navigation-only route",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "source_page": "https://commons.wikimedia.org/wiki/File:Walkthrough_of_Le_Loft_at_the_Wikimania_2026_venue_in_Paris.webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution-Share Alike 4.0 International license.",
+   "licence_checked": true,
+   "author": "Dev Jadiya",
+   "clip": "WebM, VP9/Opus, length 53 s, 1,080 x 1,920 pixels (the page's file information)",
+   "page_says": "Attendees work and talk at the tables.",
+   "prepare": "ffmpeg -i Walkthrough_of_Le_Loft_at_the_Wikimania_2026_venue_in_Paris.webm -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac walkthrough.mp4",
+   "why_here": "The page says attendees work and talk at the tables. A preserved scene erases nothing, so every frame the review lists as showing a person is left out; a coverage row or anchor only such frames show refuses. The likeliest real-video stop not yet seen.",
+   "code_path": [
+    "Atlas planner: no_manipulated_subject; transient frames left out, never inputs (atlas_scene_planner.proposal_review: transient_frames_left_out, required_frames_left_out); a row or anchor left with no view -> atlas_scene_requires_preserved_capture (atlas_preparation_job_control._NEEDS_TASK_INPUT)",
+    "faces: blurred in the frames sent to World Labs only when the job's grant names a Privacy version before 2026-11-17.1 (atlas_privacy_screen.face_blur_required); otherwise not blurred",
+    "the company clip carries the video with its people (website_company_clip: no privacy screen; consent, withdrawal and the takedown gate are the screen); a test job is never shown to a company (docs/runbooks/test-jobs.md)",
+    "navigation: room package with the goal region from the goal mask (website_scene_handoff.write_room_package)"
+   ],
+   "matrix_rows": [],
+   "caveat": "Identifiable attendees: their frames go to the providers (World Labs, Gemini, Meta SAM, OpenAI) unblurred under the current Privacy version. The owner's rule of 2026-11-15 allows any video for internal tests; privacy is a hard stop, so this row is the owner's call.",
+   "expected": "a navigation room package, or needs_input atlas_scene_requires_preserved_capture if the goal is only seen behind people"
+  },
+  {
+   "order": 3,
+   "label": "phone-portrait-rotation",
+   "footage_id": "commons-ladakhi-kitchen-rot90",
+   "description": "Walk into the kitchen and stop by the stove.",
+   "job_type": "rotated video (a quarter-turn display rotation, as a phone filming upright writes it)",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "derived_from": "commons-ladakhi-kitchen",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Traditional_Ladakhi_kitchen_interior_at_Central_Asian_Museum,_Leh,_Ladakh,_India.webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution-Share Alike 4.0 International license.",
+   "licence_checked": true,
+   "author": "Rajani Gairshail",
+   "prepare": "ffmpeg -i <the kitchen clip> -vf transpose=2,fps=30 -c:v libx264 -crf 18 -pix_fmt yuv420p -an stored.mp4 && ffmpeg -display_rotation -90 -i stored.mp4 -c copy walkthrough.mp4 (stored 1920 x 1080 with rotation -90, shown upright 1080 x 1920; inside the 1920 px / 30 fps bounds, so normalization does not re-encode it and the rotation reaches every stage)",
+   "why_here": "Every phone filming upright writes landscape pixels and a rotation. Checked at $0 on a synthetic clip with these commands (ffmpeg 6.1 here): the real Atlas survey reads it upright. The rest of the chain (SAM tracks by frame index, the source geometry's pixel transform, the company clip) has not seen one.",
+   "code_path": [
+    "website_source_video.probe_video swaps width and height for a quarter turn; within_bounds -> read as uploaded, the rotation kept",
+    "atlas_video_inputs.survey_video: frames decoded with -noautorotate (local_reconstruction_adapters) and turned by the stream's rotation",
+    "atlas_source_geometry: the exact source-to-geometry pixel transform, including the display rotation (docs/website-atlas-scene-source.md)"
+   ],
+   "matrix_rows": [],
+   "expected": "the same end as the unrotated control (row 13)"
+  },
+  {
+   "order": 4,
+   "label": "rotation-stop",
+   "footage_id": "commons-ladakhi-kitchen-rot45",
+   "description": "Walk into the kitchen and stop by the stove.",
+   "job_type": "rotated video (the source rotation stop)",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "derived_from": "commons-ladakhi-kitchen",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Traditional_Ladakhi_kitchen_interior_at_Central_Asian_Museum,_Leh,_Ladakh,_India.webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution-Share Alike 4.0 International license.",
+   "licence_checked": true,
+   "author": "Rajani Gairshail",
+   "prepare": "ffmpeg -i <the kitchen clip> -vf fps=30 -c:v libx264 -crf 18 -pix_fmt yuv420p -an base.mp4 && ffmpeg -display_rotation 45 -i base.mp4 -c copy walkthrough.mp4",
+   "why_here": "The stop itself, cheaply: it ends in the Atlas survey, before the planner. Checked at $0 on a synthetic clip: survey_video refuses atlas_source_rotation_unsupported. Not checked: whether stages that start beside the Atlas job (the clean plate's analysis) spend first.",
+   "code_path": [
+    "atlas_video_inputs.survey_video: a rotation that is not a quarter turn -> atlas_source_rotation_unsupported",
+    "atlas_preparation_job_control._NEEDS_NEW_CAPTURE: the job ends at once and the website asks the site for a new video"
+   ],
+   "matrix_rows": [],
+   "expected": "needs_input atlas_source_rotation_unsupported"
+  },
+  {
+   "order": 5,
+   "label": "designed-bin-in-the-aisle",
+   "footage_id": "pexels-854533",
+   "description": "Put a new storage bin on the top shelf at the end of the aisle.",
+   "job_type": "synthetic or designed object (an object the video never showed)",
+   "footage_uploaded": "unknown",
+   "needs_owner_upload": "only if the runner reports no clip under this id",
+   "source_page": null,
+   "licence_line": "licence not checked: pexels.com refused this network (HTTP 403), so the clip's page could not be read here",
+   "licence_checked": false,
+   "why_here": "The runbook's library-aisle clip, so no new upload if it is in the bucket. The launch tracker records no live job on the designed-object route.",
+   "code_path": [
+    "Atlas planner: subject_origin synthetic_design, every object kept, the interaction areas as task_region (atlas_scene_planner.SUBJECT_ORIGIN_INSTRUCTIONS)",
+    "handoff: website_subject_origin_conflict when the planner's origin and the removal manifest's synthetic_subject disagree; the synthetic subject's start support (website_scene_handoff, website_synthetic_subject.choose_start)",
+    "package: website_half_preparation.object_source 'designed' -> DESIGNED_NOTE"
+   ],
+   "matrix_rows": [
+    "designed-object-not-filmed"
+   ],
+   "expected": "a zip whose object is a designed shape; or a room package flagged website_synthetic_subject_start_unplaceable"
+  },
+  {
+   "order": 6,
+   "label": "cathedral-4k-60fps",
+   "footage_id": "commons-bristol-cathedral-4k60",
+   "description": "Walk through the cathedral into the chapter house and stop in the middle of it.",
+   "job_type": "4K video at 60 frames a second; a large room",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "source_page": "https://commons.wikimedia.org/wiki/File:Bristol_Cathedral_interior_(4K,_60_FPS,_2023.08.12).webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution 3.0 Unported license.",
+   "licence_note": "The page also says: \"This video, screenshot or audio excerpt was released under the Creative Commons license option on YouTube until July 31, 2025.\"",
+   "licence_checked": true,
+   "author": "George Si",
+   "clip": "WebM, VP9/Opus, length 1 min 19 s, 3,840 x 2,160 pixels, 203.25 MB (the page's file information)",
+   "page_says": "Anglican cathedral with 12th-century heritage, including a vaulted chapter house.",
+   "prepare": "ffmpeg -i Bristol_Cathedral_interior_(4K,_60_FPS,_2023.08.12).webm -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac walkthrough.mp4 (keep 3840 x 2160 and 60 fps: the point is the normalizer)",
+   "why_here": "The normalizer exists because a 3840 x 2160 clip was killed for memory (website_source_video docstring); the $0 matrix cannot run it. A large room too.",
+   "code_path": [
+    "website_source_video.normalize_video: downscale to a 1920 px long edge and cap at 30 fps (fps_mode cfr), once, before the first stage",
+    "large room: pose inputs trimmed to the reviewed allowance (atlas_video_inputs.select_coverage_views, trim_to_allowance); the scale review reads one view's depth at a time (atlas_scene_measurements.load_views, the 204-view job); look views at most 24 (atlas_look_views.MAX_VIEWS)"
+   ],
+   "matrix_rows": [],
+   "expected": "a navigation room package"
+  },
+  {
+   "order": 7,
+   "label": "long-tour-6-minutes",
+   "footage_id": "commons-monrovia-medical-unit",
+   "description": "Walk through the medical unit and stop at the far end.",
+   "job_type": "long video (over 5 minutes)",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "source_page": "https://commons.wikimedia.org/wiki/File:Monrovia_Medical_Unit_Walkthrough_141104-A-LJ197-001.webm",
+   "licence_line": "This file is a work of a U.S. Army soldier or employee, taken or made as part of that person's official duties. As a work of the U.S. federal government, it is in the public domain in the United States.",
+   "licence_checked": true,
+   "author": "Sgt. Zila Winstead (the page's author field)",
+   "clip": "WebM, VP8/Vorbis, length 6 min 42 s, 1,280 x 720 pixels (the page's file information)",
+   "page_says": "Includes soundbites from Lt. Shane Deckert ... and Cmdr. Tom Janisko",
+   "prepare": "ffmpeg -i Monrovia_Medical_Unit_Walkthrough_141104-A-LJ197-001.webm -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac walkthrough.mp4",
+   "why_here": "Over the 300 s line, Gemini's analysis switches to its agentic mode; the survey takes a frame every 0.5 s (about 800) and the planner sees every one.",
+   "code_path": [
+    "clean_plate_removal_analysis_gemini._video_processing: duration over STATIC_MAX_DURATION_SECONDS (300) -> agentic",
+    "atlas_video_inputs.initial_survey_count: one candidate per 0.5 s; atlas_scene_planner._input sends every survey frame; preflight_review_input refuses atlas_scene_planner_context_budget_exceeded or atlas_scene_planner_token_budget_exceeded (money stops, tests/test_hard_stops.py)",
+    "website_company_clip.video_kbps: the clip's bitrate falls below 3500 kbps past about 130 s"
+   ],
+   "matrix_rows": [],
+   "caveat": "A produced piece with cuts and interviews, not one continuous take: the planner may find no overlapping still interval. Named people speak in it.",
+   "expected": "unknown: a room package, or a stop at the planner's budget or at overlap"
+  },
+  {
+   "order": 8,
+   "label": "dim-and-soft-kitchen",
+   "footage_id": "commons-ladakhi-kitchen-dim",
+   "description": "Walk into the kitchen and stop by the stove.",
+   "job_type": "low light and blur",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "derived_from": "commons-ladakhi-kitchen",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Traditional_Ladakhi_kitchen_interior_at_Central_Asian_Museum,_Leh,_Ladakh,_India.webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution-Share Alike 4.0 International license.",
+   "licence_checked": true,
+   "author": "Rajani Gairshail",
+   "prepare": "ffmpeg -i <the kitchen clip> -vf eq=brightness=-0.25:gamma=0.6,gblur=sigma=3,fps=30 -c:v libx264 -crf 18 -pix_fmt yuv420p -an walkthrough.mp4",
+   "why_here": "Shows whether a dim, soft clip goes on with fewer views and flags, or stops for a new video. The filter strength is a guess: the outcome is not known until it runs.",
+   "code_path": [
+    "atlas_video_inputs.survey_video: sharpness (Laplacian variance of a 640 px preview) and clipped share (pixels darker than 5 or brighter than 250)",
+    "atlas_video_inputs.select_views: eligible only at sharpness >= 25 and clipped <= 0.45; fewer than two -> atlas_insufficient_sharp_static_views (atlas_preparation_job_control._NEEDS_NEW_CAPTURE)",
+    "atlas_scene_planner.proposal_review: the review's selection_policy minimum_sharpness; RELATIVE_SHARPNESS_FRACTION 0.6 of the clip's median for added views"
+   ],
+   "matrix_rows": [],
+   "expected": "unknown: a room package with fewer views, or needs_input atlas_insufficient_sharp_static_views"
+  },
+  {
+   "order": 9,
+   "label": "lamp-to-the-glass-shelf",
+   "footage_id": null,
+   "description": "Move the lamp from the round bedside table to the glass shelf on the wall.",
+   "job_type": "glass, shiny or see-through destination surface; moving one captured object",
+   "footage_uploaded": "unknown",
+   "needs_owner_upload": "no: the owner names the footage id of the move-the-lamp clip",
+   "source_page": null,
+   "licence_line": "licence not checked: the clip's footage id and source are not in the repository",
+   "licence_checked": false,
+   "why_here": "The job words are test job 4's, as quoted in website_unscanned_surface (its glass wall shelf had level collider faces over about 5% of its area). The repo does not record whether move-the-lamp-2 reached the estimated surface. The runner skips this row until footage_id is filled in.",
+   "code_path": [
+    "website_unscanned_surface: the destination's top estimated from its masks and the frames' cameras when less than half its area holds level collider faces; sealed in the base scene as scene_estimate:destination_surface_estimated",
+    "package: SURFACE_ESTIMATED_NOTE (website_company_simulation); when no estimate holds, compile raises task_destination_surface_contact_required and the room package ships"
+   ],
+   "matrix_rows": [
+    "glass-destination-surface-estimated"
+   ],
+   "expected": "a zip with the estimated shelf in the collision file, or a room package"
+  },
+  {
+   "order": 10,
+   "label": "kitchen-utensils-to-the-stove",
+   "footage_id": "commons-ladakhi-kitchen",
+   "description": "Move the utensils from the storage to the stove.",
+   "job_type": "several objects in one job",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "source_page": "https://commons.wikimedia.org/wiki/File:Traditional_Ladakhi_kitchen_interior_at_Central_Asian_Museum,_Leh,_Ladakh,_India.webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution-Share Alike 4.0 International license.",
+   "licence_checked": true,
+   "author": "Rajani Gairshail",
+   "clip": "WebM, VP9/Opus, length 33 s, 1,080 x 1,920 pixels (the page's file information)",
+   "page_says": "The kitchen shows traditional utensils, stove (thab), low seating and storage typical of Ladakhi households.",
+   "prepare": "ffmpeg -i Traditional_Ladakhi_kitchen_interior_at_Central_Asian_Museum,_Leh,_Ladakh,_India.webm -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac walkthrough.mp4",
+   "why_here": "The same several-objects route as row 1 on a small room; the upload also serves rows 3, 4, 8 and 13.",
+   "code_path": [
+    "as row 1: job_object_review SEVERAL_JOB_OBJECTS, the build plan, or every object kept in the scan"
+   ],
+   "matrix_rows": [
+    "several-objects-kept-in-scan",
+    "several-objects-taken-out-of-the-scan"
+   ],
+   "caveat": "The description was drafted from the page's text, not from watching the clip: check it before submitting.",
+   "expected": "a zip either way"
+  },
+  {
+   "order": 11,
+   "label": "metro-corridor-4k-portrait",
+   "footage_id": "commons-moscow-metro-corridor",
+   "description": "Walk to the end of the corridor and stop there.",
+   "job_type": "navigation-only route; 4K portrait",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "source_page": "https://commons.wikimedia.org/wiki/File:Moscow_metro_Krasnoselskaya_vestibule_corridor_2023-03.webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution 4.0 International license.",
+   "licence_checked": true,
+   "author": "Svetlov Artem",
+   "clip": "WebM, VP9, length 27 s, 2,160 x 3,840 pixels (the page's file information)",
+   "page_says": "Walk on Krasnoselskaya metro station. Gopro timewarp vertical video.",
+   "prepare": "ffmpeg -i Moscow_metro_Krasnoselskaya_vestibule_corridor_2023-03.webm -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac walkthrough.mp4",
+   "why_here": "The normalizer's portrait branch (a 3840 px tall clip) and a corridor route with a goal at its end.",
+   "code_path": [
+    "website_source_video.target_dimensions: the portrait branch (even(width), 1920)",
+    "navigation: website_scene_handoff.write_room_package, the goal region from one goal mask; two or none -> no rule (matrix navigation-two-goal-masks-no-rule)"
+   ],
+   "matrix_rows": [
+    "navigation",
+    "navigation-two-goal-masks-no-rule"
+   ],
+   "caveat": "A TimeWarp clip is sped up: neighbouring frames may overlap too little (atlas_insufficient_overlapping_distinct_views). A metro station will have passers-by.",
+   "expected": "a navigation room package, or needs_input atlas_insufficient_overlapping_distinct_views"
+  },
+  {
+   "order": 12,
+   "label": "library-floor-walk",
+   "footage_id": "commons-deichmanske-library",
+   "description": "Walk through the library from the entrance and stop at the far end of the floor.",
+   "job_type": "a large room",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "source_page": "https://commons.wikimedia.org/wiki/File:Deichmanske_library_Oslo_walkthrough.ogg",
+   "licence_line": "This file is licensed under the Creative Commons Attribution-Share Alike 4.0 International license.",
+   "licence_checked": true,
+   "author": "Asav",
+   "clip": "Ogg, Theora/Vorbis, length 2 min 6 s, 1,920 x 1,080 pixels, 243.42 MB (the page's file information)",
+   "page_says": "A March 2021 video tour of the new Deichmanske library building in Oslo, Norway. Music by the Czech National Symphony Orchestra.",
+   "prepare": "ffmpeg -i Deichmanske_library_Oslo_walkthrough.ogg -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac walkthrough.mp4",
+   "why_here": "A second large room after Austin's 204 views, now that the scale review reads one view at a time.",
+   "code_path": [
+    "as row 6's large-room branch points"
+   ],
+   "matrix_rows": [],
+   "caveat": "A video tour may have cuts between rooms.",
+   "expected": "a navigation room package"
+  },
+  {
+   "order": 13,
+   "label": "kitchen-walk-control",
+   "footage_id": "commons-ladakhi-kitchen",
+   "description": "Walk into the kitchen and stop by the stove.",
+   "job_type": "control for rows 3, 4 and 8 (the same clip, upright, sharp)",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "source_page": "https://commons.wikimedia.org/wiki/File:Traditional_Ladakhi_kitchen_interior_at_Central_Asian_Museum,_Leh,_Ladakh,_India.webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution-Share Alike 4.0 International license.",
+   "licence_checked": true,
+   "author": "Rajani Gairshail",
+   "prepare": "as row 10 (the same walkthrough.mp4)",
+   "why_here": "Run it only if row 3 or row 8 stops, to tell the property from the clip.",
+   "code_path": [
+    "navigation room package"
+   ],
+   "matrix_rows": [
+    "navigation"
+   ],
+   "expected": "a navigation room package"
+  },
+  {
+   "order": 14,
+   "label": "pallets-stacked-by-the-vehicle",
+   "footage_id": "commons-jungheinrich-pallets",
+   "description": "Stack the pallets on top of each other.",
+   "job_type": "palletizing (a stacking job)",
+   "footage_uploaded": false,
+   "needs_owner_upload": true,
+   "source_page": "https://commons.wikimedia.org/wiki/File:Jungheinrich_ERC_213a_217a_Automated_Guided_Vehicle_stacking_pallet.webm",
+   "licence_line": "This file is licensed under the Creative Commons Attribution 4.0 International license.",
+   "licence_checked": true,
+   "author": "Marc Auledas Noguera (Auledas)",
+   "clip": "WebM, VP9, length 1 min 19 s, 1,920 x 1,080 pixels (the page's file information)",
+   "page_says": "A Jungheinrich automated guided vehicle, ERC 213a 217a model, stacking pallets.",
+   "prepare": "ffmpeg -i Jungheinrich_ERC_213a_217a_Automated_Guided_Vehicle_stacking_pallet.webm -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac walkthrough.mp4",
+   "why_here": "A stacking reading takes the family route: no host installs a family runtime, so it ships the room package. The same branch as floor wiping (Austin), so low value; the moving vehicle is a transient.",
+   "code_path": [
+    "routing: stacking is a family (task_family_scoring.FAMILY_ALIASES) -> website_early_task_hold.task_family_runtime_gap -> room package flagged with the runtime gap (website_scene_handoff)"
+   ],
+   "matrix_rows": [
+    "floor-wiping-kept-as-filmed"
+   ],
+   "expected": "a room package with no rule"
+  },
+  {
+   "order": 15,
+   "label": "kitchen-push-control",
+   "footage_id": "pexels-3773483",
+   "description": "Push the tray across the surface it sits on.",
+   "job_type": "moving one captured object (control)",
+   "footage_uploaded": "unknown",
+   "needs_owner_upload": "only if the runner reports no clip under this id",
+   "source_page": null,
+   "licence_line": "licence not checked: pexels.com refused this network (HTTP 403), so the clip's page could not be read here",
+   "licence_checked": false,
+   "why_here": "The runbook's kitchen-push clip; the captured-object route already ran live (move-the-lamp-2), so this is a control.",
+   "code_path": [
+    "Atlas planner: captured, the tray removed; handoff: one rigid subject (native_task_subject_profile), object library, parametric shape or ARTISAN (website_object_library, website_supplied_mesh)"
+   ],
+   "matrix_rows": [
+    "planar-push-not-run",
+    "one-object-library-model",
+    "one-object-parametric-tote",
+    "one-object-artisan-generated"
+   ],
+   "caveat": "The description was written without seeing the clip; the runbook says only \"Push the tray ...\".",
+   "expected": "a zip with the tray as its object"
+  }
+ ]
+}

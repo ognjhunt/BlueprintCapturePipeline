@@ -116,6 +116,83 @@ def test_completed_atlas_pose_does_not_require_generation_or_imply_native_geomet
     assert not calls
 
 
+def _as_an_earlier_release_wrote_it(path, **changes):
+    """The record at ``path`` with ``changes`` (``None`` drops a field), its digest made again."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    record = json.loads(path.read_text())
+    for key, value in changes.items():
+        if value is None:
+            record.pop(key, None)
+        else:
+            record[key] = value
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    path.write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
+def test_a_pending_pose_record_an_earlier_release_wrote_for_the_same_inputs_is_kept(geometry_case):
+    """Every Atlas step reads the pending record again; a release that changes only its wording is no refusal.
+
+    The pose request binds the record's digest, so the record is kept as that release wrote it.
+    """
+    kwargs, _ = geometry_case
+    geometry.run_website_scene_geometry(**kwargs)
+    path = kwargs["output_root"] / "atlas_pose_inputs.json"
+    earlier = _as_an_earlier_release_wrote_it(path, physical_evidence=None,
+                                              blockers=["website_atlas_pose_operation_required"])
+    written = path.read_bytes()
+    result = geometry.run_website_scene_geometry(**kwargs)
+    assert result == earlier
+    assert path.read_bytes() == written
+
+
+@pytest.mark.parametrize("change", ["frames", "binding", "digest"])
+def test_a_pending_pose_record_for_other_inputs_still_refuses(geometry_case, change):
+    kwargs, _ = geometry_case
+    pending = geometry.run_website_scene_geometry(**kwargs)
+    path = kwargs["output_root"] / "atlas_pose_inputs.json"
+    if change == "frames":
+        _as_an_earlier_release_wrote_it(path, frames=pending["frames"][:1])
+    elif change == "binding":
+        _as_an_earlier_release_wrote_it(path, binding={**pending["binding"], "geometry_input_digest": "sha256:" + "1" * 64})
+    else:
+        path.write_text(json.dumps({**pending, "blockers": []}))
+    with pytest.raises(ValueError, match="website_atlas_pose_input_identity_conflict"):
+        geometry.run_website_scene_geometry(**kwargs)
+
+
+@pytest.mark.parametrize("change", [None, "pose_operation_id"])
+def test_a_returned_pose_record_an_earlier_release_wrote_is_kept_and_one_for_another_pose_refuses(
+        geometry_case, change):
+    from copy import deepcopy
+
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    kwargs, _ = geometry_case
+    pending = geometry.run_website_scene_geometry(**kwargs)
+    # Synthetic returned bundle; this is not a real provider receipt or usage.
+    camera = {"intrinsics": {"width": 640, "height": 480, "fx": 500, "fy": 500, "cx": 320, "cy": 240},
+              "extrinsics": {"coordinateSystem": "rdf", "position": [0, 0, 0], "quaternion": [0, 0, 0, 1]}}
+    pose = {"schema_version": "website_atlas_pose_result.v1", "endpoint": pending["endpoint"],
+            "binding": pending["binding"],
+            "operation": {"id": "synthetic-pose", "done": True, "response": {"frames": [
+                {"imageAsset": {"assetId": f"synthetic-rgb-{i}"},
+                 "depth": {"depthAsset": {"assetId": f"synthetic-depth-{i}"}}, "camera": deepcopy(camera)}
+                for i in range(2)]}}}
+    pose["digest"] = canonical_digest(pose, digest_field="digest")
+    (kwargs["output_root"] / "atlas_posed_rgbd_result.json").write_text(json.dumps(pose))
+    geometry.run_website_scene_geometry(**kwargs)
+    path = kwargs["output_root"] / "atlas_posed_rgbd_handoff.json"
+    if change is None:
+        earlier = _as_an_earlier_release_wrote_it(path, native_geometry_available=None)
+        assert geometry.run_website_scene_geometry(**kwargs) == earlier
+    else:
+        _as_an_earlier_release_wrote_it(path, pose_operation_id="another-pose")
+        with pytest.raises(ValueError, match="website_atlas_generation_input_identity_conflict"):
+            geometry.run_website_scene_geometry(**kwargs)
+
+
 def test_cpu_preparation_exports_only_candidate_views(geometry_case):
     kwargs, calls = geometry_case
     inputs = geometry.prepare_website_geometry_inputs(**kwargs)

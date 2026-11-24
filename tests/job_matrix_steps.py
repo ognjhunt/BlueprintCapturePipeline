@@ -284,14 +284,30 @@ def website_compile(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPa
 def room_handoff(row: Mapping[str, Any], work: Path, patches: pytest.MonkeyPatch) -> dict[str, Any]:
     """The real scene handoff of a room package job (``website_scene_handoff.write_room_package``) on the real
     fixture geometry, written onto the company builder's own test capture."""
-    from tests.test_website_scene_handoff_navigation import room_job
+    from blueprint_pipeline.atlas_automation_plan import JOB_OBJECT_RULE
+    from blueprint_pipeline.task_family_native_runtime import CATALOG_PATH_ENV
+    from tests.test_website_scene_handoff_navigation import CUPS, room_job
 
-    reading = row["reading"]
+    reading, spec = row["reading"], row["compile"]
+    # No host installs a family runtime (``website_atlas_pipeline._kept_job_objects``), so no variation has one either:
+    # a family job (wiping, stacking) takes the route it takes on the host, whatever the caller's environment says.
+    patches.delenv(CATALOG_PATH_ENV, raising=False)
+    removed = spec.get("planner_removals_not_applied")
+    options = {
+        # The clean plate's manipulated entries: the fixture's own cups, the only objects its masks name.
+        "removal": {"none": (), "one_cup": CUPS[:1], "two_cups": CUPS}[spec.get("removal", "none")],
+        "all_targets": bool(spec.get("all_targets")), "articulated": bool(spec.get("object_opens")),
+        "second_goal": bool(spec.get("second_goal")),
+        # The scene source's own forwarded fields (``website_atlas_scene_source._job_objects_kept``, ``job_object_rule``).
+        "job_objects_kept": spec.get("job_objects_kept"),
+        "job_object_rule": ({"code": JOB_OBJECT_RULE, "planner_remove_count": removed, "removed_count": 0}
+                            if removed else None)}
     _job, _context, result = room_job(work, patches, family=reading["task_family"],
                                      description=reading["steps"][0]["task_quote"],
-                                     not_found=bool(row["compile"].get("nothing_found")))
+                                     not_found=bool(spec.get("nothing_found")), **options)
     feed = ("fixture:tests/test_website_scene_handoff_navigation.room_job (the real handoff on "
-            "tests/test_website_task_preparation geometry and a real splat)")
+            "tests/test_website_task_preparation geometry and a real splat)"
+            + "".join(f", {key}={value}" for key, value in sorted(spec.items()) if key != "handoff"))
     if result.get("status") != "room_package_written":
         return _row("stopped", stop=_stop("refusal", str((result.get("blockers") or [result.get("status")])[0])),
                     fed_from=feed)
@@ -380,6 +396,13 @@ def company_zip(row: Mapping[str, Any], compiled: Mapping[str, Any], work: Path)
         folder.mkdir(parents=True, exist_ok=True)
         if source == "generated":
             configuration = _configuration()
+        elif source == "designed":
+            # A task that adds an object the video never showed (``synthetic_design``): the synthetic-subject tests'
+            # own designed ball, authored as supplied geometry; its authoring selection is not built here.
+            from tests.test_website_synthetic_subject import BALL
+            configuration = supplied_mesh_configuration(
+                _configuration(), synthetic=BALL, synthetic_authoring=None, parametric=None, subject_id="ball",
+                sim_min=[0, 0, 0], sim_max=list(BALL["dimensions_m"]))
         else:
             configuration = supplied_mesh_configuration(
                 _configuration(), synthetic=None, synthetic_authoring=None,
@@ -391,6 +414,15 @@ def company_zip(row: Mapping[str, Any], compiled: Mapping[str, Any], work: Path)
         preparation.write_text(json.dumps({"authoring_inputs": {"configuration": configuration}}))
         change["preparation_sha256"] = "sha256:" + hashlib.sha256(preparation.read_bytes()).hexdigest()
         feed += f" + the half bound to a preparation whose object source is {source}"
+        if zip_spec.get("surface_estimated"):
+            # The destination surface the scan did not show (glass, shiny), estimated from its edges and sealed in the
+            # base scene beside the preparation (``website_unscanned_surface``): only its estimate row is written here.
+            from blueprint_pipeline.atlas_scene_estimates import DESTINATION_SURFACE_ESTIMATED
+            (folder / "base_scene.json").write_text(json.dumps({"scene_estimates": [
+                {"code": DESTINATION_SURFACE_ESTIMATED, "source": "website_unscanned_surface", "evidence": {}}]}))
+            feed += " + a base scene beside it recording an estimated destination surface"
+    elif zip_spec.get("surface_estimated"):
+        raise ValueError("matrix zip.surface_estimated needs zip.object_source: it is read beside the bound preparation")
     if change:
         value = {**json.loads(record_path.read_text()), **change, "inputs_digest": ""}
         value = {key: item for key, item in value.items() if item is not None or key not in change}

@@ -50,6 +50,16 @@ resizing pixels, relabelling axes, assuming measured scale or making a request.
 Input usage is reported only from the producer's `operation_receipt`, and only
 while that receipt still binds these frames and its retained output bytes.
 
+Every Atlas step reads the pending `atlas_pose_inputs.json` again, and the pose
+request binds its digest. A record an earlier release wrote for the same inputs
+(the same schema, status, endpoint, binding and frames) is kept as written, as
+is a returned-pose record that also names the same pose operation and result:
+a release that changes only the code's wording around them does not refuse a
+resumed or retried job (2026-11-24). A record for other inputs, or one whose
+digest does not match it, still refuses with
+`website_atlas_pose_input_identity_conflict` or
+`website_atlas_generation_input_identity_conflict`.
+
 See [images2PosedRGBD](https://atlas-beta.worldlabs.ai/docs/images-to-posed-images),
 [cameras and posed images](https://atlas-beta.worldlabs.ai/docs/cameras-and-posed-images)
 and the [API reference](https://atlas-beta.worldlabs.ai/docs/api-reference).

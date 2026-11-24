@@ -15,6 +15,34 @@ from copy import deepcopy
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
+#: What a pending pose-input record says about the request, and what it was made from: the paid pose binds the
+#: record's digest (``website_atlas_pose.atlas_pose_request_binding``), and its reader reads these fields.
+_POSE_INPUT_IDENTITY = ("schema_version", "status", "endpoint", "binding", "frames")
+#: The same for the record of a returned pose: the pending record it extends and the operation it names.
+_POSED_HANDOFF_IDENTITY = (*_POSE_INPUT_IDENTITY, "pose_operation_id", "pose_result_digest")
+
+
+def _kept_or_written(path: Path, value: Mapping[str, Any], *, identity: Sequence[str], code: str) -> dict[str, Any]:
+    """The record kept at ``path`` for the same inputs as ``value``; ``value`` itself, written, when there is none.
+
+    The fields named by ``identity`` say what the record is for. A record an earlier release wrote with those
+    fields equal to ``value``'s was made from the same inputs, so it can differ only in what that release's code
+    wrote beside them (a field it did not yet copy from the inputs, a blocker's wording). It is kept as written
+    and returned, as a purchase may already be bound to its digest; a retried or resumed job is not refused for a
+    release changing that code. A record for anything else, or one whose digest does not match it, still
+    refuses with ``code``.
+    """
+    if not path.is_file():
+        write_json(path, value)
+        return dict(value)
+    retained = json.loads(path.read_text())
+    if retained == value:
+        return retained
+    if (not isinstance(retained, dict) or retained.get("digest") != canonical_digest(retained, digest_field="digest")
+            or any(retained.get(key) != value.get(key) for key in identity)):
+        raise ValueError(code)
+    return retained
+
 
 def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
                               output_root: Path) -> dict[str, Any]:
@@ -45,12 +73,8 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
     if inputs.get("full_view_sources") is not None:
         result["full_view_sources"] = deepcopy(inputs["full_view_sources"])
     result["digest"] = canonical_digest(result, digest_field="digest")
-    path = output_root / "atlas_pose_inputs.json"
-    if path.is_file():
-        if json.loads(path.read_text()) != result:
-            raise ValueError("website_atlas_pose_input_identity_conflict")
-    else:
-        write_json(path, result)
+    result = _kept_or_written(output_root / "atlas_pose_inputs.json", result, identity=_POSE_INPUT_IDENTITY,
+                              code="website_atlas_pose_input_identity_conflict")
     pose_path = output_root / "atlas_posed_rgbd_result.json"
     if pose_path.is_file():
         # A producer must retain the real admitted operation with its exact
@@ -97,12 +121,8 @@ def prepare_atlas_pose_inputs(*, inputs: Mapping[str, Any], input_root: Path,
         context["digest"] = canonical_digest(context, digest_field="digest")
         context_path = output_root / ("atlas_generation_inputs.json" if "generation_request" in context
                                       else "atlas_posed_rgbd_handoff.json")
-        if context_path.is_file():
-            if json.loads(context_path.read_text()) != context:
-                raise ValueError("website_atlas_generation_input_identity_conflict")
-        else:
-            write_json(context_path, context)
-        return context
+        return _kept_or_written(context_path, context, identity=_POSED_HANDOFF_IDENTITY,
+                                code="website_atlas_generation_input_identity_conflict")
     return _with_atlas_producer_status(result, output_root)
 
 

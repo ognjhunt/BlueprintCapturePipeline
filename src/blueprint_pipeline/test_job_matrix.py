@@ -285,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(report['variations']) - len([f for f in report['failed'] if ':' not in f])}/"
           f"{len(report['variations'])} variations ended where expected in {report['elapsed_seconds']}s "
           f"(-j {args.jobs}; replay set {report['replay_set']['seconds']}s; synthetic fixtures, $0)")
+    for attempt in report["replay_set"]["network_attempts"]:
+        print(f"FAIL  replay set reached out: {attempt['call']} {attempt['target']}")
     if args.report:
         Path(args.report).write_text(json.dumps(report, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return 0 if report["passed"] else 1

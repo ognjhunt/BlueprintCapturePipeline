@@ -52,6 +52,13 @@ Write a matrix file:
 
 Under another Python it says so in one line and exits 2 before doing anything.
 
+`docs/test-footage/clip-mix-v1.json` is a matrix too: the job types the $0 matrix cannot model (rotation, 4K, a
+long clip, low light, people in shot, a large room) and the ones no real job has run, in the order to run them,
+each with its source page and licence line. `submit --matrix docs/test-footage/clip-mix-v1.json` skips a row marked
+`"footage_uploaded": false` or with no `footage_id`, and a row the website finds no clip for
+(`internal_test_footage_not_found`: nothing was made) is named and skipped; any other refusal still stops the run.
+The file says how to add a row's clip.
+
 `submit` starts the rows in order, never more than two at a time. Before each one it reads `door status` and
 stops when the month's counted spend (spend plus held reservations) plus one job's expected spend ($20) would
 reach the stop line; the door checks the same against the host's own spend report and refuses
