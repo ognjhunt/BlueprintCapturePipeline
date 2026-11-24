@@ -473,8 +473,10 @@ def observe_webapp_overhead(*, now: float, environ: Mapping[str, str],
                             fetch: Callable[[str, str], Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """What the WebApp's own paid agent runs cost this UTC month, per run kind and provider.
 
-    Owner rule 2026-11-20: the first look and brief reading (and the WebApp's other agent runs) stay outside every
-    job's $40 cap and count toward the account's month as named overhead. Each row names the run kind
+    Owner rule 2026-11-20: the first look and brief reading stay outside every job's $40 cap. The WebApp's other
+    runs for a job (the free-text pass, the follow-up picker) are held against that job's cap on the WebApp's own
+    ledger since 2026-11-24 (WebApp ``jobLaneSpend.ts``). Every run, held or not, counts toward the account's month
+    once, here, as named overhead: a hold is a stop on the job, not a second count. Each row names the run kind
     (``name``), the provider that served it, the cost the WebApp recorded for its runs and how many runs had no
     cost recorded (``unpriced_runs``). A failed or malformed read says so; it never reads as zero.
     """
@@ -620,7 +622,8 @@ def observe_provider_spend(now: float, *, environ: Mapping[str, str] | None = No
         "account": observe_account_spend(now=now, environ=env),
     }
     if str(env.get("PIPELINE_SYNC_WEBAPP_URL") or "").strip():
-        # Named overhead: the WebApp's own agent runs, outside every job's cap, counted toward the account.
+        # Named overhead: the WebApp's own agent runs, each counted toward the account once. The first look and
+        # brief reading are outside every job's cap; the WebApp holds its other runs for a job against that job's cap.
         # A host with no WebApp to read (development, tests) has none to report.
         providers["webapp_overhead"] = observe_webapp_overhead(now=now, environ=env)
     alerts.extend(spend_alerts(providers, lines))

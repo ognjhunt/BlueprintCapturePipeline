@@ -26,14 +26,20 @@ _MISSING = frozenset({
 })
 
 
-#: Three switches, one per website contract, because the website's readers are strict: a reason or a
-#: question kind it does not know refuses the job's whole status (review 2026-11-12).
+#: Three switches, one per website contract. They were added because the website's readers were strict: a
+#: reason or a question kind it did not know refused the job's whole status (review 2026-11-12). That is no
+#: longer so (checked 2026-11-24): the website words both endings below and the place question
+#: (``taskPreparationOutcome.ts``, ``taskTargetChoiceContract.ts``), and a code it does not know is flagged
+#: to staff while the read goes on (``websitePreparationStatus.unknownPreparationCodes``). The defaults stay
+#: as they were: the host's value is in its environment file, which the operator door does not show, and no
+#: retained record on the host showed either contract live, so no default here changes what the host does;
+#: turning one on is a host setting, not a code change.
 #: (i) ``NEW_REASONS_ENV``, ON unless set to ``false``: the reasons the live website already words,
 #: ``website_task_object_not_observed``, ``website_capture_frames_unusable`` and ``website_task_not_named``
 #: (with its waiting status). Off, each travels as the nearest reason the older website words.
 NEW_REASONS_ENV = "BLUEPRINT_WEBSITE_ACCEPTS_STAGE6_RECAPTURE_REASONS"
 #: (ii) OFF unless ``true``: ``website_preparation_not_possible`` (with ``cause``) and
-#: ``website_preparation_retries_spent``, until the website's follow-up lists them.
+#: ``website_preparation_retries_spent``.
 ENDINGS_ENV = "BLUEPRINT_WEBSITE_ACCEPTS_PREPARATION_ENDINGS"
 #: (iii) OFF unless ``true``: the place question (``task_destination_choice``) and its picture.
 PLACE_QUESTION_ENV = "BLUEPRINT_WEBSITE_ACCEPTS_PLACE_QUESTION"
