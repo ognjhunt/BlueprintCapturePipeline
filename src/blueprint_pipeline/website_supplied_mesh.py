@@ -12,7 +12,7 @@ why (``library_not_used``, ``parametric_not_used``).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 #: The plan's parametric object, as the handoff names it on the removal manifest (``website_build_plan``).
 PARAMETRIC_SUBJECT = "parametric_subject"
@@ -22,8 +22,10 @@ LIBRARY_SUBJECT = "library_subject"
 
 
 def _library(configuration: dict[str, Any], library: Any, *, subject_id: str, extents: Sequence[float],
-             tolerance: float, library_root: Path | None) -> dict[str, Any] | None:
-    """The library model's design for this object, or None with why it is not used recorded on ``configuration``."""
+             tolerance: float, library_root: Path | None, fetch: Callable[..., Any] | None) -> dict[str, Any] | None:
+    """The library model's design for this object, or None with why it is not used recorded on ``configuration``.
+    Rights are a hard stop: the deployed catalog must still allow the model under the license it was chosen under
+    (``website_library_catalog.rights_now``), whatever the handoff sealed."""
     if not isinstance(library, Mapping) or library.get("target_id") != subject_id:
         return None
     if "mechanism" in configuration:  # supplied geometry is one rigid body: an opening part keeps its builder
@@ -32,8 +34,14 @@ def _library(configuration: dict[str, Any], library: Any, *, subject_id: str, ex
     if library.get("not_used") or library_root is None:
         configuration["library_not_used"] = str(library.get("not_used") or "website_object_library_no_output_root")
         return None
+    from .website_library_catalog import rights_now
+    refused = rights_now(library.get("attribution"))
+    if refused:
+        configuration["library_not_used"] = refused
+        return None
     from .website_library_asset import library_design
-    design, why = library_design(library, estimated_m=extents, tolerance=tolerance, output_root=library_root)
+    design, why = library_design(library, estimated_m=extents, tolerance=tolerance, output_root=library_root,
+                                 fetch=fetch)
     if design is None:
         configuration["library_not_used"] = why
     return design
@@ -42,9 +50,11 @@ def _library(configuration: dict[str, Any], library: Any, *, subject_id: str, ex
 def supplied_mesh_configuration(configuration: dict[str, Any], *, synthetic: Mapping[str, Any] | None,
                                 synthetic_authoring: Mapping[str, Any] | None, parametric: Any, subject_id: str,
                                 sim_min: Sequence[float], sim_max: Sequence[float], library: Any = None,
-                                library_root: Path | None = None) -> dict[str, Any]:
+                                library_root: Path | None = None,
+                                library_fetch: Callable[..., Any] | None = None) -> dict[str, Any]:
     """``configuration`` with a designed, library or parametric object authored as supplied geometry; unchanged
-    otherwise, but for why a library model or a shape named for this object was not used."""
+    otherwise, but for why a library model or a shape named for this object was not used. ``library_fetch``: how a
+    library file whose cached bytes changed is fetched again (by default the outbound download)."""
     from .website_synthetic_subject import AUTHORING_METHOD, ORIGIN
     if synthetic is not None:
         # The designed mesh is authored as supplied geometry: no generative
@@ -62,7 +72,7 @@ def supplied_mesh_configuration(configuration: dict[str, Any], *, synthetic: Map
     except (TypeError, ValueError):
         tolerance = 0.0  # an unreadable tolerance admits only an exact fit
     design = _library(configuration, library, subject_id=subject_id, extents=extents, tolerance=tolerance,
-                      library_root=library_root)
+                      library_root=library_root, fetch=library_fetch)
     if design is not None:
         configuration.pop("authoring_backend", None)
         configuration.update(authoring_method=AUTHORING_METHOD, appearance_inputs="library_model",

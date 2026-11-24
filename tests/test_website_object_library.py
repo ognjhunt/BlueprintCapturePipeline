@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import website_library_asset as asset
+from blueprint_pipeline import website_library_catalog as library_catalog
 from blueprint_pipeline import website_object_library as library
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.website_supplied_mesh import LIBRARY_SUBJECT, supplied_mesh_configuration
@@ -83,7 +84,17 @@ def _index(tmp_path: Path, records: list[dict] | None = None) -> dict[str, Path]
                  _record("Ceramic_Mug", "Ceramic Mug", size=(0.13, 0.1, 0.11), categories=["Bottles and Cans and Cups"])]}
     path = tmp_path / "object_library_gso.v1.json"
     path.write_text(json.dumps(index))
-    return {"google_scanned_objects": path}
+    return deploy({"google_scanned_objects": path})
+
+
+def deploy(indexes: dict[str, Path]) -> dict[str, Path]:
+    """Make ``indexes`` the deployed catalog for the rest of the test, as a release ships its own: compile and the
+    company package look a sealed model up in it (``website_library_catalog.rights_now``). A later index of the same
+    library replaces the earlier one, as a deploy would; ``tests/conftest.py`` restores the release's after the test."""
+    current = library_catalog.INDEXES
+    base = {} if current is library_catalog.SHIPPED_INDEXES else dict(current)
+    library_catalog.INDEXES = {**base, **indexes}
+    return indexes
 
 
 def _entries(tmp_path: Path) -> list[dict]:
@@ -343,9 +354,10 @@ def test_a_model_of_other_proportions_leaves_the_parametric_shape_then_the_paid_
     assert opening["library_not_used"] == "website_object_library_object_opens" and "authoring_backend" in opening
     assert supplied_mesh_configuration(_configuration(), parametric=None, **{**options, "subject_id": "carton"}) == \
         _configuration()
-    # A file changed since it was fetched is never used.
+    # A file changed since it was fetched is never used: its pinned bytes are fetched again first (stress round 2),
+    # and with the network down it leaves the next source.
     Path(subject["files"][0]["path"]).write_bytes(_box_obj(0.6, 0.4, 0.31))
-    changed = supplied_mesh_configuration(_configuration(), parametric=None,
+    changed = supplied_mesh_configuration(_configuration(), parametric=None, library_fetch=Fetcher(fail=True),
                                           **{**options, "sim_max": [0.6, 0.4, 0.3]})
     assert changed["library_not_used"] == "library_file_changed" and changed["authoring_backend"] == "artisan_v1"
 
@@ -598,7 +610,7 @@ def test_an_object_from_a_library_model_whose_credit_cannot_be_read_never_leaves
 def _index_files() -> list[Path]:
     """Every file a library reads: each index, and each part an index lists."""
     files = []
-    for path in library.INDEXES.values():
+    for path in library_catalog.SHIPPED_INDEXES.values():
         files.append(path)
         files += [path.parent / part["file"] for part in json.loads(path.read_text()).get("parts") or []]
     return files
@@ -615,7 +627,7 @@ def test_both_library_indexes_ship_in_the_wheel_and_the_sdist():
     manifest = [line.split(None, 1)[1].strip() for line in (root / "MANIFEST.in").read_text().splitlines()
                 if line.startswith("include ")]
     files = _index_files()
-    assert len(files) > len(library.INDEXES)  # the SimReady index is in parts
+    assert len(files) > len(library_catalog.SHIPPED_INDEXES)  # the SimReady index is in parts
     for path in files:
         assert path.is_file(), path
         relative = path.relative_to(package).as_posix()
@@ -680,7 +692,7 @@ def test_a_missing_or_changed_index_part_makes_that_library_unavailable_never_pa
     assert status["nvidia_simready"]["reason"] == f"{reason}:{parts[1]['file']}"
     assert status["google_scanned_objects"]["status"] == "read"
     # The job's choice records it beside its other reasons: the catalog it read, and why a library offered nothing.
-    monkeypatch.setattr(library, "INDEXES", partial)
+    monkeypatch.setattr(library_catalog, "INDEXES", partial)
     record = library.decide_library_object(task_context=TASK, plan_row={**ROW, "name": "forklift", "variety": None},
                                            output_root=tmp_path / "choice", fetch=Fetcher())
     assert {row["library"]: row["status"] for row in record["catalog_libraries"]} == {

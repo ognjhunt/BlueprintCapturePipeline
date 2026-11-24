@@ -19,7 +19,10 @@ the credit names the files that are (the object, and any copy found by the topol
 written). The credit is read from the preparation the shipped half was built from (``website_half_preparation``),
 never from a newer one. When the object was built from a library model whose credit cannot be read, or that
 preparation cannot be read at all, the package may not leave with the object (``refusal``): library geometry never
-ships without its credit, and the room floor ships instead.
+ships without its credit, and the room floor ships instead. So too when the deployed catalog no longer allows the
+model under the license it was built under (``LICENSE_REFUSED``: a newer index, a dataset refused since), whatever
+the preparation recorded: rights are read as they stand when the package is built
+(``website_library_catalog.rights_now``), never as they stood when the job chose the model.
 """
 from __future__ import annotations
 
@@ -75,6 +78,10 @@ def credit_text(row: Mapping[str, Any], files: Sequence[str]) -> str:
 #: itself cannot be read: the package may not leave with that object (rights is a hard stop), since a model's geometry
 #: could ship without its credit.
 CREDIT_UNREADABLE = "website_company_simulation_library_credit_unreadable"
+#: The preparation authored the job's object from a library model the deployed catalog no longer allows under the
+#: license it was chosen under (a newer index, a dataset refused since: ``website_library_catalog.rights_now``): the
+#: package may not leave with that object, and the room floor ships instead, flagged.
+LICENSE_REFUSED = "website_company_simulation_library_license_refused"
 _CREDIT_FIELDS = (("title", "title"), ("author", "author"), ("library", "library_title"), ("link", "item_url"),
                   ("license", "license_name"), ("license_url", "license_url"))
 
@@ -92,7 +99,8 @@ def credit(configuration: Mapping[str, Any], capture_root: Path) -> dict[str, An
     preparation (``website_half_preparation``): ``{"library_models": [row]}`` whenever it was and its credit reads,
     so the credit never depends on the model's own file (a file missing or changed since it was written, or outside
     ``capture_root``, is not shipped, and the credit names the files that are); ``{"library_refusal":
-    CREDIT_UNREADABLE}`` when it was but the credit cannot be read; empty when no library model was used."""
+    CREDIT_UNREADABLE}`` when it was but the credit cannot be read, ``LICENSE_REFUSED`` when the deployed catalog no
+    longer allows the model under that license; empty when no library model was used."""
     root = Path(capture_root)
     if not isinstance(configuration, Mapping) or "library_design" not in configuration:
         return {}
@@ -108,6 +116,10 @@ def credit(configuration: Mapping[str, Any], capture_root: Path) -> dict[str, An
                    disclaimer=str(credit["disclaimer"]) if credit.get("disclaimer") else None)
     except (KeyError, TypeError, ValueError, AttributeError):
         return {"library_refusal": CREDIT_UNREADABLE}
+    from .website_library_catalog import rights_now
+    if rights_now(credit):
+        # The deployed catalog no longer allows the model under the license it was built under: it never ships.
+        return {"library_refusal": LICENSE_REFUSED}
     model = design.get("model_file") if isinstance(design.get("model_file"), Mapping) else {}
     topology = design.get("model_topology")
     row["topology"] = list(topology) if isinstance(topology, (list, tuple)) and len(topology) == 2 else None
@@ -243,6 +255,7 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     return [*lines, "", *textwrap.wrap(CARVE_OUT, width=width)]
 
 
-__all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "MODEL_FILE", "SCALED", "changes", "credit",
+__all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "LICENSE_REFUSED", "MODEL_FILE", "SCALED",
+           "changes", "credit",
            "credit_text", "credited_files", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
            "topology_digest"]
