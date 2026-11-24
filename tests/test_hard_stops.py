@@ -265,11 +265,39 @@ TYPED_EXAMPLES = [
 ]
 
 
+#: Typed walls whose code's words name no wall, or another one, and the wall the step now stops them at by their type
+#: (2026-11-24). Raised plain, each takes the refusal schedule as a stop on no wall (the website's owner mismatch too),
+#: or, for the spend receipt that discloses nothing, the money wait its words name.
+BY_TYPE = {
+    "website_atlas_pose_disclosure_not_authorized": PRIVACY_RIGHTS,
+    "website_atlas_provider_retention_admission_mismatch": PRIVACY_RIGHTS,
+    "atlas_task_retention_admission_mismatch": PRIVACY_RIGHTS,
+    "website_atlas_source_owner_mismatch": PRIVACY_RIGHTS,
+    "website_atlas_pose_admission_expired": MONEY,
+}
+
+
 @pytest.mark.parametrize("error", TYPED_EXAMPLES, ids=lambda error: f"{type(error).__name__}:{error}")
-def test_a_typed_wall_ends_the_job_exactly_where_the_same_code_did_before(tmp_path, monkeypatch, error):
+def test_a_typed_wall_ends_the_job_where_its_words_do_or_at_the_wall_its_type_names(tmp_path, monkeypatch, error):
+    from blueprint_pipeline.atlas_preparation_job_control import WALL, _reason, parked_without_wall
     typed = _run(tmp_path, monkeypatch, "typed", error)
     plain = _run(tmp_path, monkeypatch, "plain", ValueError(str(error)))
-    assert typed == plain
+    states, job, pushed, deleted, runs = typed
+    code = _reason(error)
+    disclosure = isinstance(error, PrivacyRightsStop) and code == "website_preparation_spend_receipt_invalid"
+    if code not in BY_TYPE and not disclosure:
+        # Its words name the wall its type does: where the plain code ends, its wall kept beside it.
+        assert job.get(WALL) in (None, hard_stops.wall_kind(error))
+        assert (states, {key: value for key, value in job.items() if key != WALL}, pushed, deleted, runs) == plain
+        return
+    wall = PRIVACY_RIGHTS if disclosure else BY_TYPE[code]
+    assert job[WALL] == wall and job["reason"] == code and "refusal_retries" not in job
+    assert not parked_without_wall(job)  # never reopened as a stop on no wall
+    if wall == PRIVACY_RIGHTS:
+        assert states == ["failed", "failed"] and runs == 1 and pushed[-1]["state"] == "failed"
+    else:
+        assert states == ["needs_input", "needs_input"] and runs == 2 and job["retry_at_epoch"] > job["revised_at_epoch"]
+    assert plain[1].get(WALL) is None and plain[0] != states  # the same text raised plain is read by its words
 
 
 # --- Catches between a wall and the controller ------------------------------------------------------

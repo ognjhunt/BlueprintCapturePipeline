@@ -822,8 +822,11 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
         needed = splat_cost(policy) + float(policy.get("mesh_export_cost_usd", 0))
         if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) or remaining < needed:
             if rebuild:
+                # The job's allowance cannot carry the splat and mesh: a money wall, named as one since its
+                # words name none (``website_atlas_preview.advance_preparation_step`` keeps its code).
+                from .job_retry_policy import MONEY
                 return {"status": "needs_input", "stage": "refined_splat",
-                        "reason": "atlas_splat_rebuild_allowance_insufficient"}
+                        "reason": "atlas_splat_rebuild_allowance_insufficient", "wall": MONEY}
             return {"status": "completed", "basis": DRAFT_APPEARANCE,
                     "fallback_reason": "atlas_refined_splat_unaffordable"}
     sent = frames if selection is None else [f for f in frames if f["frame_id"] in set(selection["sent_frame_ids"])]

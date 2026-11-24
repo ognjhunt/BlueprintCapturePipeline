@@ -100,6 +100,14 @@ def test_one_retry_policy_classifies_and_schedules():
     assert retry.classify("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted") == "money"
     assert retry.classify("capture_rights_not_granted", "meta_sam_http_503") == "privacy_rights"
     assert retry.classify("meta_sam_submission_requires_reconciliation") == retry.REFUSAL
+    # The paid-resource chokepoint's refusal, recorded by its class name (the live Austin test job, 2026-11-24): the
+    # money wall it is by its type, never an ordinary refusal. Privacy and rights still come first.
+    assert retry.classify("clean_plate: PaidResourceAdmissionBlocked") == "money"
+    assert retry.classify("clean_plate: PaidResourceAlreadyReserved") == "money"
+    assert retry.classify("clean_plate: PaidResourceAdmissionBlocked", "capture_rights_not_granted") == "privacy_rights"
+    assert retry.classify("clean_plate: NotPaidResourceAdmissionBlocked") == retry.REFUSAL
+    # A probe count's "budget" is no money (``job_retry_policy.NOT_WALL_CODES``).
+    assert retry.classify("clean_plate: website_concept_probe_budget_invalid") == retry.REFUSAL
 
 
 def test_the_listener_tick_retries_without_any_delivery(failed, monkeypatch):
@@ -163,6 +171,10 @@ def test_a_privacy_rights_or_consent_failure_is_never_retried(failed, error):
 @pytest.mark.parametrize("error", [
     "website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted",
     "account_monthly_spend_limit_reached",
+    # The chokepoint's refusal with no typed blockers: by its class name as retained (Austin, 2026-11-24), and by
+    # the code the clean plate now records for it.
+    "PaidResourceAdmissionBlocked",
+    "paid_resource_admission_blocked",
 ])
 def test_a_money_refusal_waits_and_asks_again(failed, error):
     root, raw, _ = failed

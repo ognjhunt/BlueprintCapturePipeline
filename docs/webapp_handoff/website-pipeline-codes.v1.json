@@ -107,17 +107,6 @@
     ],
     "wall": null
    },
-   "atlas_observed_room_privacy_selection_invalid": {
-    "class": "wall",
-    "raised_in": [
-     "atlas_observed_room"
-    ],
-    "states": [
-     "failed",
-     "needs_input"
-    ],
-    "wall": "privacy_rights"
-   },
    "atlas_preserved_completion_not_admitted": {
     "class": "parked",
     "raised_in": [],
@@ -274,17 +263,6 @@
      "needs_input"
     ],
     "wall": null
-   },
-   "atlas_scene_planner_context_budget_exceeded": {
-    "class": "wall",
-    "raised_in": [
-     "atlas_scene_planner"
-    ],
-    "states": [
-     "failed",
-     "needs_input"
-    ],
-    "wall": "money"
    },
    "atlas_scene_planner_intervals_invalid": {
     "class": "deterministic",

@@ -89,8 +89,23 @@ _WORD_SPLIT = re.compile(r"[^0-9a-z]+")
 #:   raised (``atlas_scene_planner.proposal_review`` names each part since its r2). Read as a privacy wall, it ended
 #:   an Atlas job failed at once and no release could reopen it (the Austin test job, 2026-11-24). A reopened job
 #:   runs the review again, whose unsafe-frame rule still refuses before anything is sent.
+#: - ``atlas_scene_planner_context_budget_exceeded``: the scene review's request would count more than one million
+#:   tokens (``atlas_scene_planner.preflight_review_input``): "budget" is the request's size, as in
+#:   ``website_scene_handoff.REQUEST_SIZE_CODES``. Its dollars are ``atlas_scene_planner_token_budget_exceeded``
+#:   (the quote against the review's maximum), which stays a money wall. Read as one, it was rechecked every 30
+#:   minutes until the job's deadline, though the same inputs count the same tokens.
+#: - ``atlas_observed_room_privacy_selection_invalid``: the scene review's list of unsafe or transient frames is not
+#:   a list, or names a frame the survey does not have: an answer in the wrong form, as
+#:   ``atlas_scene_planner_unsafe_frames_invalid`` is for a proposal. Read as a privacy wall, it ended the job failed
+#:   at once and nothing reopened it. Every run checks it again before a room selection is kept or a frame is sent
+#:   (``atlas_observed_room.observation_review``).
+#: - ``website_concept_probe_budget_invalid``: a caller asked for more one-frame segmenter probes than
+#:   ``website_task_masks.MAXIMUM_CONCEPT_PROBES``, or fewer than none. "budget" counts probes; each probe is
+#:   reserved on the job's money as its own paid call (``meta_sam31``).
 NOT_WALL_CODES = ("atlas_coverage_exceeds_frame_budget", "website_atlas_consent_unconfigured",
-                  "website_scene_grant_policy_unconfigured", "atlas_scene_planner_coverage_or_privacy_invalid")
+                  "website_scene_grant_policy_unconfigured", "atlas_scene_planner_coverage_or_privacy_invalid",
+                  "atlas_scene_planner_context_budget_exceeded", "atlas_observed_room_privacy_selection_invalid",
+                  "website_concept_probe_budget_invalid")
 _NOT_WALL = re.compile(r"(?<![0-9a-z_])(?:" + "|".join(NOT_WALL_CODES) + r")(?![0-9a-z_])")
 
 

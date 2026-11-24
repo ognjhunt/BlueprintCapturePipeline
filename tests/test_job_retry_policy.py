@@ -96,6 +96,13 @@ def test_outage_backoff_invalid_bounds_raise(first: object, cap: object) -> None
         ("website_scene_grant_policy_unconfigured", None),
         # A planner answer in the wrong form, retained on jobs failed before proposal review r2.
         ("atlas_scene_planner_coverage_or_privacy_invalid", None),
+        # A request's token count, a review answer's frame list in the wrong form, a probe count (2026-11-24).
+        ("atlas_scene_planner_context_budget_exceeded", None),
+        ("atlas_observed_room_privacy_selection_invalid", None),
+        ("website_concept_probe_budget_invalid", None),
+        ("clean_plate: website_concept_probe_budget_invalid", None),
+        # The review's dollars against its maximum stay a money wall.
+        ("atlas_scene_planner_token_budget_exceeded", MONEY),
         # Only the whole token is taken out: the rest of a message, and a longer code, still count.
         ("website_atlas_consent_unconfigured:consent_revoked", PRIVACY_RIGHTS),
         ("atlas_coverage_exceeds_frame_budget_usd", MONEY),

@@ -739,6 +739,106 @@ def test_a_job_failed_on_the_old_planner_coverage_code_is_reopened_by_the_next_r
                                          "stopped_on": "atlas_scene_planner_coverage_or_privacy_invalid"}
 
 
+@pytest.mark.parametrize("code", ["website_atlas_pose_disclosure_not_authorized",
+                                  "website_atlas_provider_retention_admission_mismatch",
+                                  "atlas_task_retention_admission_mismatch"])
+def test_a_typed_privacy_wall_its_words_miss_ends_the_job_at_once_and_stays_on_its_wall(monkeypatch, site, code):
+    """2026-11-24: these walls are raised as ``PrivacyRightsStop`` and their words name none, so the step took the
+    refusal schedule, was run six more times by the clock, ended failed and was reopened by each release. Read by its
+    type, it ends at once with its own code, and neither the clock nor a new release reopens it."""
+    from blueprint_pipeline import website_preparation_retry as retry
+    from blueprint_pipeline.atlas_preparation_job_control import WALL
+    from blueprint_pipeline.hard_stops import PrivacyRightsStop
+    _enqueue(site)
+    world = World(monkeypatch, site, [PrivacyRightsStop(code), _completed])
+    _live_grant(site, world.clock + 3 * 86400)
+    release = {"commit": None}
+    monkeypatch.setattr(retry, "_release", lambda: release["commit"])
+    assert world.advance() == "failed" and len(world.runs) == 1
+    job = _job(site)
+    assert (job["reason"], job[WALL], job["retry_at_epoch"]) == (code, "privacy_rights", None)
+    assert "refusal_retries" not in job and (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("failed", code)
+    for commit in ("a" * 40, "b" * 40):
+        release["commit"] = commit
+        world.clock += preview.REFUSAL_RETRY_DELAYS_SECONDS[-1]
+        assert world.advance() == "failed" and len(world.runs) == 1
+    assert preview._parked_without_wall(_job(site)) is False
+
+
+def test_a_typed_money_wall_its_words_miss_waits_on_the_money_recheck_never_the_refusal_schedule(monkeypatch, site):
+    """``website_atlas_pose_admission_expired`` is raised as ``MoneyStop`` and its words name no money: it waits as
+    needs_input under its own code, re-asked every ``AUTHORITY_RECHECK_SECONDS``, as every money wait does. Once the
+    step gets past it, the job moves on and the wall it waited on goes with it."""
+    from blueprint_pipeline.atlas_preparation_job_control import WALL
+    from blueprint_pipeline.hard_stops import MoneyStop
+    code = "website_atlas_pose_admission_expired"
+    _enqueue(site)
+    world = World(monkeypatch, site, [MoneyStop(code), {"status": "processing", "stage": "pose"}])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["reason"], job[WALL]) == (code, "money") and "refusal_retries" not in job
+    assert job["retry_at_epoch"] == world.clock + preview.AUTHORITY_RECHECK_SECONDS
+    world.clock = job["retry_at_epoch"]
+    assert world.advance() == "processing" and len(world.runs) == 2
+    assert WALL not in _job(site) and _job(site)["reason"] is None
+
+
+@pytest.mark.parametrize("code", ["atlas_observed_room_privacy_selection_invalid",
+                                  "atlas_scene_planner_context_budget_exceeded"])
+def test_a_code_whose_words_misread_a_wall_takes_the_refusal_schedule_and_a_release_reopens_it(monkeypatch, site, code):
+    """2026-11-24: a review's frame list in the wrong form read as a privacy wall (ended failed at once, never
+    reopened), and a request's token count as a money wait (rechecked until the deadline). Neither guards a wall:
+    each takes the refusal schedule, and once it has ended the job a new release runs it once more."""
+    from blueprint_pipeline import website_preparation_retry as retry
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(code), _completed])
+    _live_grant(site, world.clock + 3 * 86400)
+    release = {"commit": None}
+    monkeypatch.setattr(retry, "_release", lambda: release["commit"])
+    assert world.advance() == "processing"
+    job = _job(site)
+    assert (job["refusal_retries"], job["last_refusal_reason"], job["retry_at_epoch"]) == (1, code, None)
+    site.job.write_text(json.dumps({**job, "state": "failed", "reason": code}))  # its schedule spent
+    release["commit"] = "a" * 40
+    world.clock = job["next_attempt_at_epoch"]
+    assert world.advance() == "ready" and len(world.runs) == 2
+    assert _job(site)["retries"][-1]["stopped_on"] == code
+
+
+@pytest.mark.parametrize(("result", "state", "retry"), [
+    # A money stop its words do not name, named by the result.
+    ({"status": "needs_input", "stage": "refined_splat", "reason": "atlas_splat_rebuild_allowance_insufficient",
+      "wall": "money"}, "needs_input", True),
+    # A money stop its words name.
+    ({"status": "needs_input", "stage": "refined_splat", "reason": "account_monthly_spend_limit_reached"},
+     "needs_input", True),
+    # A privacy stop the result names: it ends the job at once.
+    ({"status": "needs_input", "stage": "refined_splat", "reason": "website_atlas_pose_disclosure_not_authorized",
+      "wall": "privacy_rights"}, "failed", False),
+])
+def test_a_stop_the_result_names_as_a_wall_keeps_its_own_code_and_waits_on_its_wall(monkeypatch, site, result,
+                                                                                    state, retry):
+    """2026-11-24: a needs_input result with no blockers was given ``atlas_background_review_required`` whatever its
+    reason, so a money stop read to the site as a step on our side."""
+    from blueprint_pipeline.atlas_preparation_job_control import WALL
+    _enqueue(site)
+    world = World(monkeypatch, site, [result])
+    assert world.advance() == state
+    job = _job(site)
+    assert (job["reason"], job["stage"], job.get(WALL)) == (result["reason"], result["stage"], result.get("wall"))
+    assert job["retry_at_epoch"] == (world.clock + preview.AUTHORITY_RECHECK_SECONDS if retry else None)
+    assert preview._parked_without_wall(job) is False
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == (state, result["reason"])
+
+
+def test_a_stop_on_no_wall_with_no_blockers_still_waits_as_a_background_review(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "needs_input", "stage": "refined_splat",
+                                       "reason": "atlas_splat_rebuild_consistent_views_insufficient"}])
+    assert world.advance() == "needs_input"
+    assert _job(site)["reason"] == "atlas_background_review_required" and _job(site)["retry_at_epoch"] is None
+
+
 def test_a_parked_job_past_its_grant_is_left_as_it_is(monkeypatch, site):
     from blueprint_pipeline import website_preparation_retry as retry
     _enqueue(site)
