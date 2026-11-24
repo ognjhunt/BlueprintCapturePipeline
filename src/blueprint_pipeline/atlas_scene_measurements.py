@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .atlas_depth_splat import load_posed_rgbd
+from .atlas_depth_splat import frame_arrays, frame_shape, load_posed_rgbd
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
@@ -78,6 +78,13 @@ def source_to_posed(source: Path, rgb: np.ndarray) -> dict:
 
 
 def load_views(pose_root: Path, inputs: dict) -> tuple[dict, list[dict]]:
+    """The posed views, each checked against its source; their pixels stay in their files until read.
+
+    A pass over every view (``frame_points``) decodes one view's depth at a time and
+    keeps none: 204 views held 2 GB each time they were loaded, and the scale review's
+    second load and measurement throttled the worker at its memory bound for two
+    hours (2026-11-24, itest-cce2beee).
+    """
     from .atlas_context_fov import full_view_sources
     result, frames = load_posed_rgbd(pose_root)
     by_id = {r["frame_id"]: r for r in full_view_sources(inputs, pose_root)}
@@ -89,7 +96,7 @@ def load_views(pose_root: Path, inputs: dict) -> tuple[dict, list[dict]]:
         image = next(r for r in row["outputs"] if r["role"] == "image")
         frame.update(image_path=str(pose_root / image["path"]), image_digest=image["sha256"])
         try:
-            frame["pixel_alignment"] = source_to_posed(Path(source["image_path"]), frame["rgb"])
+            frame["pixel_alignment"] = source_to_posed(Path(source["image_path"]), frame_arrays(frame, "rgb")[0])
         except ValueError as exc:
             # Other views can still supply useful dimensions. A lost alignment
             # never becomes a guessed source box or reference endpoint.
@@ -119,23 +126,24 @@ def unproject(frame: dict, xy: np.ndarray, depth: np.ndarray) -> np.ndarray:
 
 def reference_point(frame: dict, xy: np.ndarray) -> np.ndarray:
     x, y = np.rint(xy).astype(int)
-    h, w = frame["depth"].shape
+    depth, confidence = frame_arrays(frame, "depth", "confidence")
+    h, w = depth.shape
     if not 0 <= x < w or not 0 <= y < h:
         raise ValueError("atlas_reference_outside_returned_view")
     radius = max(1, round(min(w, h) * 0.005))
     sl = np.s_[
         max(0, y - radius) : min(h, y + radius + 1), max(0, x - radius) : min(w, x + radius + 1)
     ]
-    values = frame["depth"][sl]
-    keep = np.isfinite(values) & (values > 0) & (frame["confidence"][sl] > 0)
+    values = depth[sl]
+    keep = np.isfinite(values) & (values > 0) & (confidence[sl] > 0)
     if not keep.any():
         raise ValueError("atlas_reference_depth_missing")
     return unproject(frame, np.array([[x, y]]), np.array([np.median(values[keep])]))[0]
 
 
 def frame_points(frame: dict, mask=None) -> np.ndarray:
-    depth = frame["depth"]
-    keep = np.isfinite(depth) & (depth > 0) & (frame["confidence"] > 0)
+    depth, confidence = frame_arrays(frame, "depth", "confidence")
+    keep = np.isfinite(depth) & (depth > 0) & (confidence > 0)
     if mask is not None:
         if mask.shape != depth.shape:
             raise ValueError("atlas_measurement_mask_grid_mismatch")
@@ -471,7 +479,7 @@ def surfaces_on_posed_views(frames: list[dict], inputs: dict, selection: dict) -
                     or not _same_aspect(mask_width, mask_height, source_width, source_height)
                     or not _same_aspect(row["width"], row["height"], source_width, source_height)):
                 continue
-            height, width = frame["depth"].shape
+            height, width = frame_shape(frame)
             # Mask pixel centres -> source grid -> posed grid, in OpenCV's centre convention.
             to_source = np.diag([source_width / mask_width, source_height / mask_height, 1.0])
             matrix = np.linalg.inv(centre) @ np.asarray(alignment["matrix"]) @ to_source @ centre
@@ -535,7 +543,7 @@ def _on_named_object(row: dict | None, pixels: np.ndarray, frame: dict) -> None:
 
     if row is None:
         raise ValueError("atlas_reference_object_unnamed")
-    height, width = frame["depth"].shape
+    height, width = frame_shape(frame)
     radius = max(ENDPOINT_MASK_MIN_PX, round(ENDPOINT_MASK_FRACTION * math.hypot(width, height)))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
     ends = np.rint(pixels).astype(int)
