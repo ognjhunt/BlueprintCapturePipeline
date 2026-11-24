@@ -123,14 +123,54 @@ def test_a_surrounding_view_past_the_frame_budget_is_left_out_and_reported_uncap
     assert rows == [{"code": estimates.SURROUNDING, "source": "view_selection", "evidence": {"frame_ids": ["5"]}}]
 
 
-def test_a_working_area_view_past_the_frame_budget_still_refuses(monkeypatch):
+def test_a_working_area_view_past_the_frame_budget_is_left_out_named_and_the_job_goes_on(monkeypatch):
+    """Stress round 2 (2026-11-24): this refused with ``atlas_coverage_exceeds_frame_budget``. The same video and
+    allowance repeat it and nothing raises the allowance, yet "budget" read as a money wait, rechecked every 30
+    minutes until the job's 7-day deadline. The view is left out and named like an unconnected one; the anchor
+    stays, and nothing past the budget is bought."""
     frames = [{"frame_id": str(i), "sharpness": 50, "clipped_fraction": 0} for i in range(6)]
     monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 25) if abs(a - b) == 1 else (0, 0))
     requirements = [{"role": "task_object", "label": "dishwasher", "required_frame_ids": ["0", "5"]},
                     {"role": "surrounding_scene", "label": "counter", "required_frame_ids": ["1"]}]
-    with pytest.raises(ValueError, match="atlas_coverage_exceeds_frame_budget"):
-        video.select_coverage_views(frames=frames, features=list(range(6)), maximum_frames=3,
-                                    requirements=requirements, anchor_id="0")
+    selected, diagnostics = video.select_coverage_views(frames=frames, features=list(range(6)), maximum_frames=3,
+                                                        requirements=requirements, anchor_id="0")
+    assert 0 in selected and 5 not in selected and len(selected) <= 3
+    assert {"frame_id": "5", "label": "dishwasher", "decision": video.TASK_AREA_OVER_FRAME_BUDGET} in diagnostics
+    assert video.TASK_AREA_OVER_FRAME_BUDGET in video.SURROUNDING_GAP_DECISIONS
+    assert video._covered({}, diagnostics) is False
+    rows = estimates.scene_estimates(levelling={}, registration={}, selection={"diagnostics": diagnostics})
+    assert rows == [{"code": estimates.TASK_VIEWS_DROPPED, "source": "view_selection", "evidence": {"frame_ids": ["5"]}}]
+
+
+def test_a_room_none_of_whose_views_fits_the_frame_budget_is_generated_from_the_task_area_and_named(monkeypatch):
+    """The other refusal of the same code: every surrounding view connected only past the budget. The room around
+    the task area is generated from its views, as when none connects, and named for the budget, not as unfilmed."""
+    from blueprint_pipeline.website_packet_facts import ESTIMATE_SENTENCES
+    frames = [{"frame_id": str(i), "sharpness": 50, "clipped_fraction": 0} for i in range(6)]
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 25) if abs(a - b) == 1 else (0, 0))
+    requirements = [{"role": "task_object", "label": "dishwasher", "required_frame_ids": ["0", "1"]},
+                    {"role": "surrounding_scene", "label": "far wall", "required_frame_ids": ["5"]}]
+    selected, diagnostics = video.select_coverage_views(frames=frames, features=list(range(6)), maximum_frames=3,
+                                                        requirements=requirements, anchor_id="0")
+    assert selected == [0, 1]
+    assert {"decision": video.SURROUNDINGS_PAST_FRAME_BUDGET, "frame_ids": ["5"]} in diagnostics
+    rows = estimates.scene_estimates(levelling={}, registration={}, selection={"diagnostics": diagnostics})
+    assert rows == [{"code": estimates.SURROUNDING, "source": "view_selection", "evidence": {"frame_ids": ["5"]}},
+                    {"code": estimates.SURROUNDINGS_PAST_BUDGET, "source": "view_selection",
+                     "evidence": {"frame_ids": ["5"]}}]
+    assert estimates.SURROUNDINGS_PAST_BUDGET in estimates.CODES and estimates.SURROUNDINGS_PAST_BUDGET in ESTIMATE_SENTENCES
+
+
+def test_the_frame_budget_code_is_not_read_as_money(monkeypatch):
+    """Where it can still be raised (``add_distinct_views`` given less room than its cover, a defect), it takes the
+    refusal schedule, never the 7-day money wait."""
+    from blueprint_pipeline.job_retry_policy import hard_stop_kind
+    from blueprint_pipeline.website_atlas_preview import SCHEMA, _failed_step
+    assert hard_stop_kind("atlas_coverage_exceeds_frame_budget") is None
+    job = {"schema_version": SCHEMA, "capture_id": "walkthrough-x", "state": "processing", "reason": None,
+           "revision": 3, "revised_at_epoch": 1, "updated_at_epoch": 1, "stage": "video_inputs", "enqueued_at_epoch": 1}
+    after = _failed_step(job, ValueError("atlas_coverage_exceeds_frame_budget"), 1000)
+    assert after["state"] == "processing" and after["refusal_retries"] == 1 and after.get("retry_at_epoch") is None
 
 
 # --- from the scene's records to the site's result -----------------------------------------------

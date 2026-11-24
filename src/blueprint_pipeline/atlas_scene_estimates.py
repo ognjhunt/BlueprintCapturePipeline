@@ -19,8 +19,11 @@ Codes, each ``scene_estimate:<kind>``:
 - ``review_citations_dropped``: the scene review cited frames that could not be inputs; those
   citations were left out.
 - ``surrounding_views_dropped``: surrounding views were left out to keep the frame budget.
-- ``task_views_left_out``: views of the task area too blurred or not connected were left out.
+- ``task_views_left_out``: views of the task area too blurred, not connected, or past the frame budget
+  were left out.
 - ``surroundings_not_connected``: no surrounding view connected; only the task area's views were used.
+- ``surroundings_past_frame_budget``: surrounding views connected, but none fitted the frame budget; only
+  the task area's views were used.
 - ``task_object_guessed``: the analysis of the video could not tell which object the robot moves;
   the job went on with its best supported candidate, which the site may correct.
 - ``target_role_kept``: the analysis could not decide a target's part in the task; it kept the
@@ -68,12 +71,15 @@ TASK_OBJECT_GUESSED, TARGET_ROLE_KEPT = "scene_estimate:task_object_guessed", "s
 TASK_REVIEW_ESTIMATED = "scene_estimate:task_review_estimated"
 DESTINATION_GUESSED, DESTINATION_NEAR_START = "scene_estimate:destination_guessed", "scene_estimate:destination_near_start"
 REGISTRATION_AMBIGUOUS = "scene_estimate:registration_ambiguous"
-#: A view of the task area that was too blurred or that no overlap path reached was left out
-#: (``atlas_video_inputs``).
+#: A view of the task area that was too blurred, that no overlap path reached, or whose path did not fit
+#: the frame budget was left out (``atlas_video_inputs``).
 TASK_VIEWS_DROPPED = "scene_estimate:task_views_left_out"
 #: No surrounding view connected: only the task area was filmed connectedly; the room around it is
 #: generated from that footage.
 SURROUNDINGS_GENERATED = "scene_estimate:surroundings_not_connected"
+#: Surrounding views connected, but none fitted the frame budget beside the task area's (2026-11-24): the room
+#: around it is generated from the task area's footage, as when none connected.
+SURROUNDINGS_PAST_BUDGET = "scene_estimate:surroundings_past_frame_budget"
 #: The registration's own residual near the task, above ``PLACEMENT_UNCERTAINTY_FLOOR_M``: where the
 #: object sits in the room is known only to within that (7.2 cm on capture-447ae4f4).
 PLACEMENT_UNCERTAINTY = "scene_estimate:placement_uncertainty"
@@ -110,7 +116,8 @@ PLACEMENT_UNCERTAINTY_FLOOR_M = 0.05
 CODES = frozenset({LEVEL, APPEARANCE, FLOOR, COLLIDER, CITATIONS, SURROUNDING, TASK_OBJECT_GUESSED,
                    TARGET_ROLE_KEPT, TASK_REVIEW_ESTIMATED, DESTINATION_GUESSED, DESTINATION_NEAR_START,
                    REGISTRATION_AMBIGUOUS, PLACEMENT_UNCERTAINTY, SUPPORT_HEIGHT, SUPPORT_GUESSED,
-                   TASK_VIEWS_DROPPED, SURROUNDINGS_GENERATED, DESTINATION_SURFACE_ESTIMATED,
+                   TASK_VIEWS_DROPPED, SURROUNDINGS_GENERATED, SURROUNDINGS_PAST_BUDGET,
+                   DESTINATION_SURFACE_ESTIMATED,
                    OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG})
 
 
@@ -140,17 +147,20 @@ def scene_estimates(*, levelling: Mapping[str, Any], registration: Mapping[str, 
     dropped = _mapping(review).get("automation_citations_dropped")
     if isinstance(dropped, list) and dropped:
         rows.append({"code": CITATIONS, "source": "scene_review", "evidence": {"frame_ids": list(dropped)}})
-    from .atlas_video_inputs import (OVER_FRAME_BUDGET, SURROUNDINGS_NOT_CONNECTED, TASK_AREA_BELOW_QUALITY,
-                                     TASK_AREA_UNCONNECTED)
+    from .atlas_video_inputs import (OVER_FRAME_BUDGET, SURROUNDINGS_NOT_CONNECTED, SURROUNDINGS_PAST_FRAME_BUDGET,
+                                     TASK_AREA_BELOW_QUALITY, TASK_AREA_OVER_FRAME_BUDGET, TASK_AREA_UNCONNECTED)
     diagnostics = [row for row in _mapping(selection).get("diagnostics") or [] if isinstance(row, Mapping)]
     for code, decisions in ((SURROUNDING, {OVER_FRAME_BUDGET}),
-                            (TASK_VIEWS_DROPPED, {TASK_AREA_UNCONNECTED, TASK_AREA_BELOW_QUALITY})):
+                            (TASK_VIEWS_DROPPED, {TASK_AREA_UNCONNECTED, TASK_AREA_BELOW_QUALITY,
+                                                  TASK_AREA_OVER_FRAME_BUDGET})):
         left_out = [row.get("frame_id") for row in diagnostics if row.get("decision") in decisions]
         if left_out:
             rows.append({"code": code, "source": "view_selection", "evidence": {"frame_ids": left_out}})
     for row in diagnostics:
-        if row.get("decision") == SURROUNDINGS_NOT_CONNECTED:
-            rows.append({"code": SURROUNDINGS_GENERATED, "source": "view_selection",
+        generated = {SURROUNDINGS_NOT_CONNECTED: SURROUNDINGS_GENERATED,
+                     SURROUNDINGS_PAST_FRAME_BUDGET: SURROUNDINGS_PAST_BUDGET}.get(row.get("decision"))
+        if generated is not None:
+            rows.append({"code": generated, "source": "view_selection",
                          "evidence": {"frame_ids": list(row.get("frame_ids") or [])}})
     return rows
 

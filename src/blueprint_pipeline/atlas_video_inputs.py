@@ -194,23 +194,37 @@ TASK_AREA_BELOW_QUALITY = "task_area_below_quality"
 #: No surrounding frame connected: the scene is the task area's own views, and the room around it is
 #: generated from that footage (``atlas_scene_estimates`` flags both).
 SURROUNDINGS_NOT_CONNECTED = "surrounding_scene_none_connected"
+#: A surrounding frame whose overlap path would take the selection past its frame budget is left out and
+#: reported as uncaptured, like an unconnected one (``atlas_scene_estimates`` flags it). Before 2026-11-10
+#: it ended the selection with ``atlas_coverage_exceeds_frame_budget``, which the same video repeats.
+OVER_FRAME_BUDGET = "surrounding_scene_over_frame_budget"
+#: The frame budget is how many views the reviewed pose dollars buy (``selection_frame_budget``), or an
+#: operator's lower limit. Until 2026-11-24 a working-area frame past it, and a room whose every surrounding
+#: frame was left out with some only for it, still refused with ``atlas_coverage_exceeds_frame_budget``. The
+#: same video and allowance repeat it, and nothing raises the allowance, yet its word "budget" read as a money
+#: wait, rechecked every 30 minutes until the job's 7-day deadline, for nothing. A shorter video need not fit
+#: either: the working area is what must fit. So Blueprint handles it: the frame is left out and named like an
+#: unconnected one (the anchor is always kept, so the object's start still comes from the views that see it),
+#: and a room none of whose views fits is generated from the task area's views, named for the budget. Nothing
+#: past the budget is bought.
+TASK_AREA_OVER_FRAME_BUDGET = "task_area_over_frame_budget"
+SURROUNDINGS_PAST_FRAME_BUDGET = "surrounding_scene_none_within_frame_budget"
+#: The two ways no surrounding frame is in the views: none connected, or none fitted the budget.
+NO_SURROUNDINGS_KEPT = frozenset({SURROUNDINGS_NOT_CONNECTED, SURROUNDINGS_PAST_FRAME_BUDGET})
 SURROUNDING_GAP_DECISIONS = {"surrounding_scene_below_quality": "below the reviewed sharpness or clipping policy",
                              "surrounding_scene_unconnected": "not connected by overlapping views",
                              TASK_AREA_UNCONNECTED: "not connected by overlapping views",
                              TASK_AREA_BELOW_QUALITY: "below the reviewed sharpness or clipping policy",
-                             "surrounding_scene_over_frame_budget": "left out to keep the views within the frame budget"}
-#: A surrounding frame whose overlap path would take the selection past its frame budget is left out and
-#: reported as uncaptured, like an unconnected one (``atlas_scene_estimates`` flags it). Before 2026-11-10
-#: it ended the selection with ``atlas_coverage_exceeds_frame_budget``, which the same video repeats. A
-#: working-area frame past the budget still refuses: that budget is what the job's money buys.
-OVER_FRAME_BUDGET = "surrounding_scene_over_frame_budget"
+                             OVER_FRAME_BUDGET: "left out to keep the views within the frame budget",
+                             TASK_AREA_OVER_FRAME_BUDGET: "left out to keep the views within the frame budget"}
 
 
 def _covered(review, diagnostics) -> bool:
     """Whether every reviewed task frame and some surrounding frame are in the connected views."""
     return review.get('review_scope') != 'observed_room_only' and not any(
         isinstance(row, Mapping)
-        and row.get("decision") in {TASK_AREA_UNCONNECTED, TASK_AREA_BELOW_QUALITY, SURROUNDINGS_NOT_CONNECTED}
+        and row.get("decision") in {TASK_AREA_UNCONNECTED, TASK_AREA_BELOW_QUALITY, TASK_AREA_OVER_FRAME_BUDGET,
+                                    *NO_SURROUNDINGS_KEPT}
         for row in diagnostics)
 
 
@@ -293,8 +307,10 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
         while cursor not in selected:
             chain.append(cursor)
             cursor = parent[cursor]
-        if target in context and len(selected) + len(chain) > maximum_frames:
-            drop(target, OVER_FRAME_BUDGET)
+        if len(selected) + len(chain) > maximum_frames:
+            # The overlap path is already the fewest views (breadth first), so no other path fits:
+            # left out and named, the anchor kept (``TASK_AREA_OVER_FRAME_BUDGET``).
+            drop(target, OVER_FRAME_BUDGET if target in context else TASK_AREA_OVER_FRAME_BUDGET)
             continue
         cursor = target
         while cursor not in selected:
@@ -306,16 +322,11 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
                                 "inlier_matches": support, "median_displacement_preview_pixels": round(displacement, 3),
                                 "decision": "required_coverage_or_overlap_bridge"})
             cursor = previous
-        if len(selected) > maximum_frames:
-            raise ValueError("atlas_coverage_exceeds_frame_budget")
     over_budget = {row["frame_id"] for row in diagnostics if row.get("decision") == OVER_FRAME_BUDGET}
-    if context and context <= set(dropped) and over_budget:
-        # Every surrounding frame was left out, and some only for the budget: the video shows the
-        # room, but the budget the job's money sets cannot hold it.
-        raise ValueError("atlas_coverage_exceeds_frame_budget")
     if context and context <= set(dropped):
-        # No surrounding frame connects: build from the task area's views; the room is generated from them.
-        diagnostics.append({"decision": SURROUNDINGS_NOT_CONNECTED,
+        # No surrounding frame is in the views: build from the task area's views; the room is generated from
+        # them. Named for the budget when some surrounding frame connected but did not fit in it.
+        diagnostics.append({"decision": SURROUNDINGS_PAST_FRAME_BUDGET if over_budget else SURROUNDINGS_NOT_CONNECTED,
                             "frame_ids": [frames[i]["frame_id"] for i in sorted(context)]})
     if len(selected) < 2:
         # A room anchor may be one view. Find its genuinely overlapping,
@@ -589,7 +600,7 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
     reviewed = working | surrounding | set(review.get("additional_input_frame_ids") or [])
     require(recorded == {row.get("frame_id") for row in diagnostics if row.get("decision") in SURROUNDING_GAP_DECISIONS}
             and recorded <= reviewed and not recorded & set(ids))
-    none_connected = any(row.get("decision") == SURROUNDINGS_NOT_CONNECTED for row in diagnostics)
+    none_connected = any(row.get("decision") in NO_SURROUNDINGS_KEPT for row in diagnostics)
     require(review.get("anchor_frame_id") in ids and working <= set(ids) | recorded
             and (bool(surrounding & set(ids)) or (none_connected and surrounding <= recorded)))
     policy = plan.get("frame_policy") or {}

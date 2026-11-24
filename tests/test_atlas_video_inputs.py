@@ -50,9 +50,15 @@ def test_required_context_uses_overlap_bridges_and_never_silently_drops_context(
     selected, _ = video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=5,
         requirements=requirements, anchor_id="4")
     assert selected == list(range(5))
-    with pytest.raises(ValueError, match="coverage_exceeds_frame_budget"):
-        video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=4,
-            requirements=requirements, anchor_id="4")
+    # One view short of the room's bridge: the room is left out and named for the budget, never silently
+    # (before 2026-11-24 this refused with atlas_coverage_exceeds_frame_budget, read as a money wait).
+    selected, diagnostics = video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=4,
+        requirements=requirements, anchor_id="4")
+    # The anchor alone is no cover: distinct overlapping views fill it, within the budget.
+    assert selected == [1, 2, 3, 4]
+    assert {"frame_id": "0", "label": "counter and floor", "decision": video.OVER_FRAME_BUDGET} in diagnostics
+    assert {"decision": video.SURROUNDINGS_PAST_FRAME_BUDGET, "frame_ids": ["0"]} in diagnostics
+    assert video._covered({}, diagnostics) is False
     frames[2]["sharpness"] = 0
     # The room beyond the blurred frame is left out and named, not silently dropped (before 2026-11-16: coverage_gap).
     selected, diagnostics = video.select_coverage_views(frames=frames, features=list(range(5)), maximum_frames=5,
@@ -730,6 +736,31 @@ def test_a_left_out_view_survives_the_next_tick_and_an_unrecorded_one_does_not(t
     plan_path.write_text(json.dumps({**tampered, "input_digest": inputs["digest"]}))
     with pytest.raises(ValueError, match="atlas_retained_video_inputs_invalid"):
         video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose")
+
+
+@pytest.mark.parametrize("gap_role, decision, flag", [
+    ("support_surface", video.TASK_AREA_OVER_FRAME_BUDGET, "scene_estimate:task_views_left_out"),
+    ("surrounding_scene", video.OVER_FRAME_BUDGET, "scene_estimate:surroundings_past_frame_budget")])
+def test_a_view_past_the_frame_budget_is_left_out_and_the_retained_handoff_resumes(tmp_path, monkeypatch, gap_role,
+                                                                                   decision, flag):
+    """Stress round 2 (2026-11-24): frame 5 connects only through 3 and 4, one view past a limit of three. Before,
+    the selection refused (``atlas_coverage_exceeds_frame_budget``); now it is left out and named, and the next tick
+    reads the same retained handoff without selecting again."""
+    from blueprint_pipeline import atlas_scene_estimates as estimates
+    survey_path, review = _left_out_job(tmp_path, monkeypatch, gap_role)
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (100, 30) if abs(a - b) == 1 else (0, 0))
+    first = video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose",
+                                       maximum_frames=3)
+    assert first["left_out_frame_ids"] == ["5"] and len(first["frames"]) <= 3
+    assert "2" in {row["frame_id"] for row in first["frames"]}
+    monkeypatch.setattr(video, "_features", lambda *_: pytest.fail("tick 2 re-ran the selection"))
+    second = video.prepare_video_inputs(survey_path=survey_path, review=review, output_root=tmp_path / "pose",
+                                        maximum_frames=3)
+    assert second == first
+    plan = json.loads((tmp_path / "pose/atlas_view_selection.json").read_text())
+    assert {"frame_id": "5", "label": "the gap", "decision": decision} in plan["diagnostics"]
+    assert plan["task_and_surrounding_scene_covered"] is False
+    assert flag in {row["code"] for row in estimates.scene_estimates(levelling={}, registration={}, selection=plan)}
 
 
 def _rewrite_retained(root, *, inputs_change=None, plan_change=None):
