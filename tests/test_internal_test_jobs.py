@@ -553,9 +553,11 @@ def test_the_door_counts_the_paid_admissions_made_since_the_report_as_the_chokep
     monkeypatch.setattr(month, "read_report", lambda path: {"counted_usd": "270", "generated_at": "2026-11-29T12:00:00Z",
                                                             "alert_lines_usd": {door_job.STOP_LINE: "300"}})
     assert door_job.month_refusal() is None
+    # Granted before the report was written, past the 60 s a report's clock may run ahead (a report that names no read
+    # of the journal counts the grants from its stamp less that skew, stress round 2): not added on top of it.
     meter.record_admission(job_id="req-9", meter_key="before-the-report", resource_class="evaluator_api",
-                           root=tmp_path / "meter", now=generated - 60, maximum_cost_usd="15.00")
-    assert door_job.month_refusal() is None  # granted before the report was written: not added on top of it
+                           root=tmp_path / "meter", now=generated - 120, maximum_cost_usd="15.00")
+    assert door_job.month_refusal() is None
     meter.record_admission(job_id="req-9", meter_key="since-the-report", resource_class="evaluator_api",
                            root=tmp_path / "meter", now=generated + 60, maximum_cost_usd="15.00")
     assert door_job.month_refusal() == "test_job_month_stop_line"
