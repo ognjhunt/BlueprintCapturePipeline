@@ -91,6 +91,8 @@ LISTED_PULL_BYTES = 64 * 1024 * 1024
 #: Paths outside the capture a stage may name (a scene intent, the team scene queue); each is looked up once.
 MAXIMUM_OUTSIDE_LOOKUPS = 40
 INDEX_FILE = ".job_replay_index.json"
+#: Request ids replayed online and the capture roots they resolved to (``--offline`` by request id).
+TARGETS_FILE = "targets.json"
 SCENE_RETIREMENT_ROOT = "/var/lib/blueprint/scene-retirement"
 
 
@@ -272,10 +274,26 @@ class PullCache:
     def _listing_path(self, capture_root: str) -> Path:
         return self.root / ".job_replay_listings" / (hashlib.sha256(capture_root.encode()).hexdigest()[:32] + ".json")
 
-    def save_listing(self, capture_root: str, trees: Mapping[str, Any]) -> None:
+    def save_listing(self, capture_root: str, trees: Mapping[str, Any], *, target: str | None = None) -> None:
         path = self._listing_path(capture_root)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"capture_root": capture_root, "trees": trees}, sort_keys=True), encoding="utf-8")
+        if target and not target.startswith("/"):
+            # A request id replayed online names its capture root here, so ``--offline`` can replay it by the id.
+            targets = self.load_targets()
+            targets[target] = capture_root
+            temporary = path.parent / (TARGETS_FILE + ".partial")
+            temporary.write_text(json.dumps(targets, sort_keys=True), encoding="utf-8")
+            temporary.replace(path.parent / TARGETS_FILE)
+
+    def load_targets(self) -> dict[str, str]:
+        """The request ids replayed online here and the capture root each resolved to."""
+        try:
+            value = json.loads((self.root / ".job_replay_listings" / TARGETS_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {key: row for key, row in value.items() if isinstance(key, str) and isinstance(row, str)} \
+            if isinstance(value, dict) else {}
 
     def load_listing(self, capture_root: str) -> dict[str, Any]:
         """The door's last listing of this capture (``--offline`` replays from it and the cached files)."""
@@ -1409,7 +1427,9 @@ def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = No
     door = door or (None if offline else DoorReader())
     cache = PullCache(scratch / "cache")
     with _locked(scratch / "cache" / ".lock"):
-        capture_root = resolve_capture(door, target) if door is not None else target.rstrip("/")
+        capture_root = (resolve_capture(door, target) if door is not None
+                        else target.rstrip("/") if target.startswith("/")
+                        else cache.load_targets().get(target, target))
         pull = Pull(door, cache, capture_root)
         if door is not None:
             pull.list_roots([capture_root, pull.scene_root + "/website_withdrawal"])
@@ -1436,7 +1456,10 @@ def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = No
                               "files": after["files"], "bytes": after["bytes"], "unchanged": before == after}
         _finish(report, result, runs=runs, pull=pull, door=door, namespace=namespace, converged=False,
                 pending=[], started=started, scratch=scratch, report_to=report_to)
-        if door is None or not result["evidence"]["unchanged"]:
+        # A boundary breach ends the replay at once: a later round that pulls more and reaches no network must
+        # never overwrite the report of the round that did.
+        if (door is None or not result["evidence"]["unchanged"] or result.get("breaches")
+                or result.get("network_attempts")):
             break
         with _locked(scratch / "cache" / ".lock"):
             kept = dict(pull.wanted)
@@ -1453,7 +1476,7 @@ def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = No
             if followed:
                 pull.fetch(f"referenced_by_round_{index}", followed)
     if door is not None:
-        cache.save_listing(capture_root, pull.trees)
+        cache.save_listing(capture_root, pull.trees, target=target)
     return _finish(report, result, runs=runs, pull=pull, door=door, namespace=namespace, converged=converged,
                    pending=pending, started=started, scratch=scratch, report_to=report_to)
 

@@ -338,3 +338,49 @@ def test_a_replay_out_of_rounds_says_its_stops_may_be_the_pulls():
     assert "refusal:website_source_geometry_artifact_changed" in text and "2.0 MiB" in text
     assert "NOT CONVERGED: the last replay named 43 host files not pulled yet" in text
     assert "NOT CONVERGED" not in job_replay.table({**report, "converged": True})
+
+
+def _scripted_rounds(monkeypatch, results):
+    """``_replay_once`` answering from ``results`` in order, in a namespace stand-in; returns the rounds asked."""
+    asked = []
+
+    def once(pull, *, scratch, past, commit, steps, namespace, keep, index):
+        asked.append(index)
+        run_dir = Path(scratch) / "runs" / f"scripted-{index}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return {"run_dir": str(run_dir), "stages": [], "assumed": [], "clean": True, **results[index]}
+
+    monkeypatch.setattr(job_replay, "namespace_prefix", lambda _probe: [])
+    monkeypatch.setattr(job_replay, "_replay_once", once)
+    return asked
+
+
+def test_a_round_that_reaches_the_network_ends_the_replay_and_its_report_keeps_the_breach(site, tmp_path, monkeypatch):  # noqa: F811
+    """Codex, #3733: a later round that pulls more and reaches no network must not overwrite the breach."""
+    bulk = site.job.parent / "survey/frames.bin"  # over the record bound: pulled only once a round names it
+    bulk.write_bytes(b"\0" * (job_replay.SMALL_BYTES + 1))
+    named = str(bulk)
+    attempts = [{"kind": "connect", "address": "203.0.113.9:443"}]
+    asked = _scripted_rounds(monkeypatch, [
+        {"network_attempts": attempts, "breaches": ["network_attempt"], "wanted": [named]},
+        {"network_attempts": [], "breaches": [], "wanted": []}])
+    report = job_replay.replay_job(str(site.capture), door=_LocalDoor(), scratch=tmp_path / "scratch", rounds=2)
+    assert asked == [0]  # nothing more is pulled or replayed after the breach
+    assert report["passed"] is False and "network_attempt" in report["breaches"]
+    assert report["boundaries"]["network_attempts"] == attempts
+
+
+def test_a_request_id_replayed_online_replays_offline_by_the_same_id(site, tmp_path, monkeypatch):  # noqa: F811
+    """Codex, #3733: ``--offline`` with the request id finds the listing the online replay saved."""
+    _scripted_rounds(monkeypatch, [{"network_attempts": [], "breaches": [], "wanted": []}] * 2)
+    request_id = site.capture.parents[1].name.removeprefix("site-")
+    monkeypatch.setattr(job_replay, "resolve_capture", lambda _door, target: str(site.capture)
+                        if target == request_id else target)
+    scratch = tmp_path / "scratch"
+    online = job_replay.replay_job(request_id, door=_LocalDoor(), scratch=scratch, rounds=0)
+    assert online["capture_root"] == str(site.capture)
+    offline = job_replay.replay_job(request_id, scratch=scratch, rounds=0, offline=True)
+    assert "replay_unsupported" not in offline and offline["capture_root"] == str(site.capture)
+    # An id never replayed online here is still refused, as before.
+    unknown = job_replay.replay_job("itest-" + "0" * 40, scratch=scratch, rounds=0, offline=True)
+    assert unknown["replay_unsupported"] == "offline_without_an_earlier_pull"
