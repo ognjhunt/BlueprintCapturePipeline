@@ -26,6 +26,7 @@
   "notes": {
    "furniture_removed": "movable items the site agreed to move are not in the collision file; they still appear in the look file.",
    "appearance_quality_not_passed": "The look file did not pass Blueprint's image quality check; it is included as it is.",
+   "surface_estimated": "The destination shelf or surface the job's object is placed on did not show in the scan (glass and other see-through or shiny surfaces often do not); it was estimated from its visible edges in the video. That estimate is in the collision file, not in the look file.",
    "support_region_not_held": "At part of the destination area the surface in the collision file does not hold the object where the success rule counts it as placed: it would tip off an edge or rest higher or lower than the rule allows. Blueprint did not test this.",
    "support_not_held": "Where the object starts or is placed, the surface in the collision file does not hold it as the success rule expects. Blueprint did not test this.",
    "room_not_run": "The room is as reconstructed from the video; Blueprint ran no robot, policy or simulator in it.",
@@ -33,9 +34,13 @@
    "no_rule": "This package includes no success rule from Blueprint for this job; the job as the site described it is on the job's page.",
    "not_found": "Blueprint did not find what the job is about in the video.",
    "objects_taken_out": "objects the job involves were taken out of the room scan and are not in this package.",
+   "objects_taken_out_one": "object the job involves was taken out of the room scan and is not in this package.",
    "objects_in_scan": "The job's objects are part of the room scan; they are not separate files.",
+   "nothing_taken_out": "Nothing was taken out of the room scan.",
    "object_parametric_tote": "The job's object is a plain tote shape Blueprint made for it, sized from the video: it has none of the real object's detail, such as handles, labels or texture.",
+   "object_parametric_carton": "The job's object is a plain carton shape Blueprint made for it, sized from the video: it has none of the real object's detail, such as handles, labels or texture.",
    "object_generated": "The job's object is a 3D model Blueprint generated from frames of the video: its shape and look are the generator's estimate, not a scan or a measurement.",
+   "object_designed": "The job's object was not filmed: it is a simple shape Blueprint designed for the job.",
    "object_library": "The job's object is a model of the same kind of object from a public library, picked and sized from the video: it is not the site's own object.",
    "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video.",
    "thresholds_assumed": "The site has not confirmed the numbers in success_rule.json: where criteria_basis says assumed, the number is Blueprint's standard threshold, not the site's.",
@@ -786,6 +791,327 @@
      "object_generated"
     ],
     "readme_sha256": "sha256:5e35f80f66da4cfaf9448bff2663cede22e7b9ebf16f031126356d99934b56a3"
+   }
+  },
+  {
+   "label": "floor-wiping-kept-as-filmed",
+   "kind": "wiping",
+   "reading": {
+    "task_family": "wiping",
+    "steps": [
+     {
+      "operation": "wiping",
+      "description": "the job",
+      "task_quote": "Mop the floor"
+     }
+    ]
+   },
+   "scene": "none",
+   "compile": {
+    "handoff": "room_package",
+    "all_targets": true
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "no_rule"
+    ],
+    "readme_sha256": "sha256:8626fa3f44cf83b5b7f71ecde88857b2142871e59ef82d47c4bcf5dbe2952461"
+   }
+  },
+  {
+   "label": "floor-wiping-planner-removals-not-applied",
+   "kind": "wiping",
+   "reading": {
+    "task_family": "wiping",
+    "steps": [
+     {
+      "operation": "wiping",
+      "description": "the job",
+      "task_quote": "Mop the floor"
+     }
+    ]
+   },
+   "scene": "none",
+   "compile": {
+    "handoff": "room_package",
+    "all_targets": true,
+    "planner_removals_not_applied": 2
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "no_rule",
+     "nothing_taken_out"
+    ],
+    "readme_sha256": "sha256:c0f48dacfd93d8f25200d76f4c798520284cecd40f06a7b1dda9884b065b76f7"
+   }
+  },
+  {
+   "label": "several-objects-kept-in-scan",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Unload the cartons onto the pallet"
+     }
+    ]
+   },
+   "scene": "none",
+   "compile": {
+    "handoff": "room_package",
+    "removal": "two_cups",
+    "all_targets": true,
+    "job_objects_kept": "several_job_objects"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "no_rule",
+     "objects_in_scan"
+    ],
+    "readme_sha256": "sha256:08fb59694f1413389b1a65368c85c38f6578b37f3f0590d8312afb1808416d6d"
+   }
+  },
+  {
+   "label": "several-objects-taken-out-of-the-scan",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Unload the cartons onto the pallet"
+     }
+    ]
+   },
+   "scene": "none",
+   "compile": {
+    "handoff": "room_package",
+    "removal": "two_cups",
+    "all_targets": true
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "no_rule",
+     "objects_taken_out"
+    ],
+    "readme_sha256": "sha256:a27946e816de0108369f0b57a306117997cc58d5ab052071646026395b1024c8"
+   }
+  },
+  {
+   "label": "rigid-reading-but-the-object-opens",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the cup"
+     }
+    ]
+   },
+   "scene": "none",
+   "compile": {
+    "handoff": "room_package",
+    "removal": "one_cup",
+    "all_targets": true,
+    "object_opens": true
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "no_rule",
+     "objects_taken_out_one"
+    ],
+    "readme_sha256": "sha256:4ea2054fa4823c969d69236504c612f94825ce09c255861e1180c474dc1de365"
+   }
+  },
+  {
+   "label": "navigation-two-goal-masks-no-rule",
+   "kind": "goal_region_navigation",
+   "reading": {
+    "task_family": "goal_region_navigation",
+    "steps": [
+     {
+      "operation": "navigation",
+      "description": "the job",
+      "task_quote": "the job"
+     }
+    ]
+   },
+   "scene": "none",
+   "compile": {
+    "handoff": "room_package",
+    "second_goal": true
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "robot_free_probe": "not_queued",
+    "readme_variant": [
+     "no_check_sentence",
+     "room_not_run",
+     "no_rule"
+    ],
+    "readme_sha256": "sha256:8626fa3f44cf83b5b7f71ecde88857b2142871e59ef82d47c4bcf5dbe2952461"
+   }
+  },
+  {
+   "label": "depalletize-one-carton-parametric",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Unload the cartons onto the pallet"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "zip": {
+    "object_source": "parametric",
+    "shape": "carton",
+    "extents": [
+     0.5,
+     0.4,
+     0.3
+    ]
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run",
+     "object_parametric_carton"
+    ],
+    "readme_sha256": "sha256:d26b2091bd0367a6de73ad19e4b5ac45c84675c9317e3015cc9c5bd95e2470c5"
+   }
+  },
+  {
+   "label": "designed-object-not-filmed",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Put a ball on the shelf"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "zip": {
+    "object_source": "designed"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run",
+     "object_designed"
+    ],
+    "readme_sha256": "sha256:fa420f5eabe020ebabdba797bbac5f7c702a911a13665f94da45b7ae857a7292"
+   }
+  },
+  {
+   "label": "glass-destination-surface-estimated",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the lamp to the glass shelf"
+     }
+    ]
+   },
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "zip": {
+    "object_source": "generated",
+    "surface_estimated": true
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run",
+     "surface_estimated",
+     "object_generated"
+    ],
+    "readme_sha256": "sha256:c3443b5fa194b832da7228a6067796b1ad25bab6a72a1e0e168e458f95082cd0"
    }
   }
  ]

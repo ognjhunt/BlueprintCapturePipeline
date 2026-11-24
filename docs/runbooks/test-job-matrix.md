@@ -13,7 +13,7 @@ Run it from a git checkout of the Pipeline (the replay set reads the source comm
 fails two replay records), with `PYTHONPATH=src:.` if your editable install points at another checkout. Call it
 with `-m`: a script that imports `run_matrix` must guard its own code with `if __name__ == "__main__":`, because
 each variation is a spawned process that imports the caller again. It needs no host, no door, no key and no network,
-and exits 0 only when every variation ends where its row says. The whole matrix takes 35-75 s at `-j 3`.
+and exits 0 only when every variation ends where its row says. The whole matrix (31 rows) takes about 2-3 minutes at `-j 4`.
 
 ## What runs, and on what
 
@@ -44,10 +44,21 @@ read them), the plan's tote shape, a cylinder that does not fit and so leaves AR
 what the object is. They test the package's
 reaction, not how a job gets there.
 
+The job-type rows (2026-11-24, `docs/test-footage/clip-mix-v1.json` is their real-clip half) do the same. The room
+package rows run the real handoff with the fixture's own cups as the clean plate's objects: floor wiping (the family
+route with no runtime installed, as on every host, so `room_job` runs without
+`BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH`), the planner's removals not applied, several objects kept in the
+scan or taken out of it, a rigid reading whose object opens, and navigation with two goal masks.
+"depalletize-one-carton-parametric", "designed-object-not-filmed" (the synthetic-subject tests' designed ball) and
+"glass-destination-surface-estimated" (only the base scene's estimate row, beside the bound preparation) bind the
+half to a preparation as the one-object rows do.
+
 ## What it cannot show
 
 It runs no paid or scoring caller, so "only the package accepts a not-run stage 5" is the chain's own test
-(`test_every_paid_or_scoring_caller_refuses_a_not_run_scene`), not a row here. Providers (Atlas, SAM, ARTISAN, any GPU), a real video, room or object, and the host's disk, memory and time. The
+(`test_every_paid_or_scoring_caller_refuses_a_not_run_scene`), not a row here. Providers (Atlas, SAM, ARTISAN, any GPU), a real video, room or object, and the host's disk, memory and time. No row holds what only a real clip has: its rotation, resolution, frame rate, length, light, sharpness, the
+people in it or the size of the room; those are the clip mix's rows. The planner's handling of frames showing
+people is `tests/test_atlas_scene_planner.py`, not a row here. The
 network guard refuses and records, in every variation's process, `connect`, `connect_ex`, `sendto`,
 `create_connection`, `getaddrinfo`, `gethostbyname`, `gethostbyname_ex`, `gethostbyaddr` and any program started
 through `subprocess` except exactly `git -C <repo> rev-parse HEAD` and `git -C <repo> status --porcelain` (the
@@ -74,6 +85,9 @@ Add a row to `tests/fixtures/job_matrix_v1.json`: `label` (what it tests), `kind
 `steps`), optional `front_half` and `downstream` replay record ids, `scene` (`host_chain`, `destination`,
 `articulated`, `isaac` or `none`), `compile` (`handoff: room_package` for a room package row, optionally `nothing_found: true`, else `strategy`; `stage_5`: `not_run`, `not_run_static_passed`,
 `not_run_claiming_isaac`, `isaac_qualified` (the fixture's own passed Isaac record, saying Isaac ran) or `fixture`; `case`: `default`, `no_stance`, `quality_gate` or `owner`), optional `zip`
-(`furniture_moved`, or `support_held`: the support record's typed reasons), and `expected`: `last_stage` and any of `kind`, `code`, `zip_built`, `readme_variant`, `readme_sha256`,
+(`furniture_moved`, or `support_held`: the support record's typed reasons; `object_source`: `library`, `parametric`
+with `shape` and `extents`, `generated` or `designed`, optionally with `surface_estimated: true`), a room package row's
+`compile` may add `removal` (`one_cup` or `two_cups`), `all_targets`, `object_opens`, `second_goal`,
+`job_objects_kept` and `planner_removals_not_applied` (a count), and `expected`: `last_stage` and any of `kind`, `code`, `zip_built`, `readme_variant`, `readme_sha256`,
 `robot_station_absent`, `physics_authority`, `physics_check`, `robot_free_probe`, `assumed_thresholds`. Change a
 row's `expected` only with the change that moves it.

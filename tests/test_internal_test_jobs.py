@@ -705,6 +705,48 @@ def test_the_runner_waits_on_the_doors_two_slots_and_asks_again_under_the_same_k
     assert json.loads(state_path.read_text()) == state
 
 
+def test_the_runner_takes_a_clip_mix_and_skips_rows_whose_clip_is_not_uploaded(monkeypatch, tmp_path):
+    """A clip mix is a matrix: a row marked not uploaded, or with no footage id, is never asked; a row the website
+    finds no clip for made nothing, so the run goes on to the next row; the month still stops it."""
+    import argparse
+
+    runner = _runner()
+    mix = json.loads((ROOT / "docs" / "test-footage" / "clip-mix-v1.json").read_text())
+    assert all({"label", "footage_id", "description", "footage_uploaded"} <= set(row) for row in mix["jobs"])
+    matrix = tmp_path / "mix.json"
+    matrix.write_text(json.dumps({"jobs": [
+        {"label": "a", "footage_id": "f-a", "description": "Move the box.", "footage_uploaded": False},
+        {"label": "b", "footage_id": None, "description": "Move the bin.", "footage_uploaded": "unknown"},
+        {"label": "c", "footage_id": "f-c", "description": "Move the tray.", "footage_uploaded": "unknown"},
+        {"label": "d", "footage_id": "f-d", "description": "Move the cup.", "footage_uploaded": True},
+        {"label": "e", "footage_id": "f-e", "description": "Move the mug."}]}))
+    answers = [{"door_outcome": "refused", "code": runner.FOOTAGE_MISSING},
+               {"door_outcome": "submitted", "job_id": "itest-d", "capture_id": "walkthrough-itest-d"},
+               {"door_outcome": "refused", "code": "test_job_month_stop_line"}]
+    asked = []
+
+    def fake_json(method, path, body=None):
+        if method == "POST":
+            asked.append(body)
+            return {"id": f"r{len(asked)}"}
+        if path.startswith("/requests/"):
+            return {"outcome": {"result": path}}
+        return _status(10.0)
+
+    monkeypatch.setattr(runner.door, "_json", fake_json)
+    monkeypatch.setattr(runner.door, "_terminal", lambda request: "completed")
+    monkeypatch.setattr(runner, "cat_json", lambda path: answers[int(path.rsplit("r", 1)[1]) - 1])
+    monkeypatch.setattr(runner, "done", lambda report: True)
+    monkeypatch.setattr(runner, "job_report", lambda job, status: {})
+    monkeypatch.setattr(runner, "DEPLOY_WINDOW_HOUR_UTC", 99)
+    state = {"jobs": []}
+    runner.submit(argparse.Namespace(matrix=str(matrix), state=str(tmp_path / "run.json"), k=2, run_id="20261124",
+                                     poll=7), state)
+    assert [body["label"] for body in asked] == ["c", "d", "e"]
+    assert [(job["label"], job["outcome"]) for job in state["jobs"]] == [
+        ("c", "refused"), ("d", "submitted"), ("e", "refused")]  # c is asked again by a later submit
+
+
 @pytest.mark.parametrize("label", ["rigid pick 1080p", "a", "x" * 80, "A.b_c-d e"])
 def test_every_allowed_label_gives_a_key_the_door_accepts(label):
     from operator_door.requests import _TEST_JOB_KEY, _TEST_JOB_LABEL

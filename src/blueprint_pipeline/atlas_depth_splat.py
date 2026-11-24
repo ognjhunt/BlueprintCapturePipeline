@@ -1004,10 +1004,11 @@ def _weighted_quantities(sample: Mapping[str, np.ndarray]):
 
 def _malloc_trim() -> Callable[[int], int] | None:
     import ctypes
-    import ctypes.util
 
     try:
-        return ctypes.CDLL(ctypes.util.find_library("c") or None).malloc_trim
+        # The process's own symbols, libc's among them: ``ctypes.util.find_library`` would start ``ldconfig``, ``gcc``
+        # and ``ld`` at every import, which the $0 test job matrix refuses and records as reaching out (2026-11-24).
+        return ctypes.CDLL(None).malloc_trim
     except (AttributeError, OSError):
         return None
 

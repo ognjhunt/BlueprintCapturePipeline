@@ -7,7 +7,9 @@
     "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py report --state run.json
     "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py retry-now --state run.json --label L --reason "fix is live"
 
-A matrix row is ``{"label", "footage_id", "description"}``. Before each submit the month's counted spend (spend
+A matrix row is ``{"label", "footage_id", "description"}``. A clip mix (``docs/test-footage/clip-mix-v1.json``) is a
+matrix too: its rows marked ``"footage_uploaded": false`` are skipped, and a row the website finds no clip for is
+named and skipped (nothing was made). Before each submit the month's counted spend (spend
 plus held reservations, as ``door status`` reports it) plus one job's expected spend must stay under the account's
 existing alert line the door itself enforces (``internal_test_job_door.STOP_LINE``). The door also counts the paid
 admissions made since that report, which ``door status`` cannot show, so it can still refuse a job this check let
@@ -36,6 +38,21 @@ from blueprint_pipeline.website_preparation_revision_identity import capture_id 
 
 HANDOFFS = "/var/lib/blueprint/pubsub-handoffs"
 DEPLOY_WINDOW_HOUR_UTC = 15  # AGENTS.md D-08: the daily deploy window opens at 15:00 UTC
+#: The door's answer when the website finds no clip under the row's footage id (``internal-test-jobs.ts``
+#: ``findTestFootage``, before any job exists): nothing was made, so the run goes on to the next row.
+FOOTAGE_MISSING = "test_job_webapp_http_404:internal_test_footage_not_found"
+
+
+def rows_to_submit(matrix: dict) -> list[dict]:
+    """The rows to ask for, in order. A row of a clip mix (``docs/test-footage/clip-mix-v1.json``) whose clip is not
+    uploaded yet (``footage_uploaded`` false, or no ``footage_id``) is named and skipped; any other row is asked."""
+    rows = []
+    for row in matrix["jobs"]:
+        if row.get("footage_id") and row.get("footage_uploaded") is not False:
+            rows.append(row)
+        else:
+            print(f"skipped {row['label']}: its footage is not uploaded yet", file=sys.stderr)
+    return rows
 
 
 def cat_json(path: str) -> dict | None:
@@ -156,7 +173,7 @@ def done(report: dict) -> bool:
 
 
 def submit(args: argparse.Namespace, state: dict) -> None:
-    rows = json.loads(Path(args.matrix).read_text())["jobs"]
+    rows = rows_to_submit(json.loads(Path(args.matrix).read_text()))
     for row in rows:
         if any(job["label"] == row["label"] and job.get("job_id") for job in state["jobs"]):
             continue
@@ -170,6 +187,9 @@ def submit(args: argparse.Namespace, state: dict) -> None:
             # those end, and the refusal made nothing, so the same row is asked again under the same key.
             print(f"waiting before {row['label']}: the door has {MAX_IN_FLIGHT} test jobs in flight", file=sys.stderr)
             time.sleep(args.poll)
+        if result.get("door_outcome") == "refused" and result.get("code") == FOOTAGE_MISSING:
+            print(f"skipped {row['label']}: no clip at internal-test-footage/{row['footage_id']}/", file=sys.stderr)
+            continue  # nothing was made; a later submit asks it again once the clip is there
         if result.get("door_outcome") != "submitted":
             return  # a refusal (the month) or no answer: never go on to the next row blind
 
