@@ -29,14 +29,18 @@ from .website_track_mask_codec import (canonical_track_digest, decode_track_mask
 
 
 def _plain_ambiguity(function):
-    """An ambiguity refusal leaves with its instances' runs as plain lists, like every returned track."""
+    """An ambiguity refusal leaves with its instances' runs as plain lists, like every returned track.
+
+    A caller that asks for ``compact_runs`` receives them compact, as it receives the tracks.
+    """
 
     @functools.wraps(function)
     def plain(*args, **kwargs):
         try:
             return function(*args, **kwargs)
         except TaskTargetAmbiguous as exc:
-            exc.candidates = plain_runs(exc.candidates)
+            if not kwargs.get("compact_runs"):
+                exc.candidates = plain_runs(exc.candidates)
             raise
     return plain
 
@@ -498,7 +502,12 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                           compact_runs: bool = False) -> dict[str, Any]:
     """``target_guesses``, when given, receives each best supported guess made for an ambiguous object to move.
 
-    Returned source tracks carry plain lists of runs unless ``compact_runs`` asks for ``RunLengths``.
+    Returned source tracks, and each guess's candidates, carry plain lists of runs unless
+    ``compact_runs`` asks for ``RunLengths``. Each source track spans the whole video at full
+    resolution: a large object on a long 4K clip has millions of runs, about 256 bytes each as
+    plain dicts and 8 compact. A caller that asks for compact runs writes and hashes them with
+    ``website_track_mask_codec``, to the bytes and digests the plain lists give (the clean plate
+    and the scene handoff do).
     """
     targets = tracked_task_targets(plan)
     if not [target for target in targets if not is_person_removal(target)]:
@@ -671,6 +680,11 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     selected = []
     deferred_target_ids = []
     selected_track_ids = set()
+
+    def candidate_runs(tracks: list[Mapping[str, Any]]) -> list[Any]:
+        """A guess's candidates are whole tracks too: compact for a caller that handles compact runs."""
+        return tracks if compact_runs else plain_runs(tracks)
+
     for target in targets:
         if target["target_id"] in retained_targets:
             retained_target = retained_targets[target["target_id"]]
@@ -805,7 +819,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             if surface:
                 identity = {**identity, "selection_basis": "best_supported_guess"}
             elif target_guesses is not None:
-                target_guesses.append({"target": dict(target), "candidates": plain_runs(list(unresolved.candidates)),
+                target_guesses.append({"target": dict(target), "candidates": candidate_runs(list(unresolved.candidates)),
                                        "frames": list(unresolved.frames or identity_frames),
                                        "guessed_track_id": str(identity["track_id"])})
             if provider == "meta":
@@ -824,7 +838,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                             "site_choice_question_digest": site_choice["question_digest"]}
             elif target_guesses is not None and not any(
                     (row.get("target") or {}).get("target_id") == target["target_id"] for row in target_guesses):
-                target_guesses.append({"target": dict(target), "candidates": plain_runs(list(pool)),
+                target_guesses.append({"target": dict(target), "candidates": candidate_runs(list(pool)),
                                        "frames": list(identity_frames),
                                        "guessed_track_id": str(identity["track_id"])})
         track = {**next(row for row in tracks if row["track_id"] == identity["track_id"]),

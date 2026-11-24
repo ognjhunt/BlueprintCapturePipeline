@@ -508,7 +508,9 @@ def job_object_review(output_root: Path, review, task_context, source_digest: st
             status = "defers_to_atlas_selection"
         else:
             try:
-                status = json.loads((clean / STAGE_MANIFEST_FILENAME).read_text()).get("status")
+                # The stage manifest carries the task masks' full-video tracks: read with their runs compact.
+                from .website_track_mask_codec import load_track_json
+                status = load_track_json(clean / STAGE_MANIFEST_FILENAME).get("status")
                 entries = json.loads((clean / REMOVAL_MANIFEST_FILENAME).read_text()).get("entries")
             except (OSError, ValueError, AttributeError):
                 if _preparation_running(output_root.parent.parent):

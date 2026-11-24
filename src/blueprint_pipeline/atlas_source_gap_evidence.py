@@ -98,7 +98,10 @@ def with_task_source_views(*, survey_path, source_inputs, clean_root, output):
     digest = binding.get("task_source_frames_digest")
     if digest is None:
         return Path(survey_path)
-    manifest = json.loads((Path(clean_root) / "clean_plate_stage_manifest.json").read_text())
+    from .website_track_mask_codec import load_track_json
+
+    # The stage manifest carries the task masks' full-video tracks: read with their runs compact.
+    manifest = load_track_json(Path(clean_root) / "clean_plate_stage_manifest.json")
     sources = manifest.get("source_frames") or {}
     candidate = json.loads((Path(clean_root) / "source_geometry/worker_inputs/geometry_inputs.json").read_text())
     survey = json.loads(Path(survey_path).read_text())

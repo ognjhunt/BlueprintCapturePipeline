@@ -41,7 +41,10 @@ def task_source_inputs(pose_root: Path, original: dict) -> tuple[Path, dict]:
     manifest_path = clean_root / "clean_plate_stage_manifest.json"
     if not manifest_path.is_file():
         return pose_root, original
-    manifest = json.loads(manifest_path.read_text())
+    from .website_track_mask_codec import load_track_json
+
+    # The stage manifest carries the task masks' full-video tracks: read with their runs compact.
+    manifest = load_track_json(manifest_path)
     sources = manifest.get("source_frames")
     if sources is None:
         return pose_root, original

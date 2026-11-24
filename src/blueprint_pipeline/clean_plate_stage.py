@@ -540,6 +540,9 @@ def _run_clean_plate_stage(
         guesses: list[dict[str, Any]] = []
         try:
             handoff_lease_checkpoint("clean_plate_before_task_masks")
+            # The selected source tracks (and a guess's candidates) span the whole video at full
+            # resolution: they stay compact (``RunLengths``) here and on to the scene handoff, which
+            # writes and hashes them with ``website_track_mask_codec`` to the plain lists' bytes.
             task_masks = run_website_task_masks(plan=task_plan, source_geometry=source_geometry, defer_kept_static=True,
                                                 output_root=clean_plate_root / "task_masks",
                                                 meta_admission=meta_sam_admission,
@@ -547,7 +550,7 @@ def _run_clean_plate_stage(
                                                 task_context=task_context,
                                                 source_video=website_source_video,
                                                 target_choices=load_target_choices(ctx.pipeline_root),
-                                                target_guesses=guesses)
+                                                target_guesses=guesses, compact_runs=True)
             # Several instances of the object the robot moves: the run went on
             # with its best supported guess, which the site can correct. The
             # question is optional; failing to record it never holds the job.
@@ -621,7 +624,9 @@ def _run_clean_plate_stage(
     _keep_superseded_plan(clean_plate_root, plan)
     write_json(clean_plate_root / REMOVAL_PLAN_FILENAME, plan)
     write_json(clean_plate_root / REMOVAL_MANIFEST_FILENAME, removal_manifest)
-    write_json(clean_plate_root / STAGE_MANIFEST_FILENAME, stage_manifest)
+    # The task masks' compact runs are written from their arrays: the bytes ``write_json`` gives the plain lists.
+    from .core.handoff_lease import guarded_handoff_write_track_json
+    guarded_handoff_write_track_json(clean_plate_root / STAGE_MANIFEST_FILENAME, stage_manifest)
     write_json(
         clean_plate_root / CURRENT_POINTER_FILENAME,
         {
