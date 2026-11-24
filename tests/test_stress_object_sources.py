@@ -125,6 +125,24 @@ def _package_with(tmp_path: Path, configuration: dict) -> str:
     return " ".join(readme.split())
 
 
+def test_a_parametric_object_is_named_a_plain_shape_in_the_readme(tmp_path):
+    """The build plan made the tote as a plain parametric shape (floor, four walls, rim) sized from the video. The
+    README says the object is a plain shape stand-in (no handles, no texture), as it names a library model."""
+    made = supplied_mesh_configuration(_configuration(), synthetic=None, synthetic_authoring=None,
+                                       parametric={"target_id": "tote", "shape": "tote"}, subject_id="tote",
+                                       sim_min=[0, 0, 0], sim_max=[0.6, 0.4, 0.3], library=None, library_root=None)
+    assert made["authoring_source"] == "parametric"
+    readme = _package_with(tmp_path, made)
+    assert "shape" in readme.lower().split("how it was made")[1], readme
+
+
+def test_a_generated_object_is_named_generated_in_the_readme(tmp_path):
+    """The paid builder (ARTISAN) generated the object's mesh from the video's frames. The README says the
+    object's shape was generated from the video, not scanned or measured."""
+    readme = _package_with(tmp_path, {**_configuration(), "authoring_backend": "artisan_v1"})
+    assert "generated" in readme.lower(), readme
+
+
 def test_a_library_model_is_named_as_such(tmp_path):
     """Control: the library route does say what the object is (its credit)."""
     made = supplied_mesh_configuration(_configuration(), synthetic=None, synthetic_authoring=None, parametric=None,

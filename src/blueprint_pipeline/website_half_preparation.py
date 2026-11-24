@@ -6,9 +6,10 @@ The half's sealed record keeps that digest (``FIELD``; ``team_scene_packet`` and
 and the company package (``website_company_simulation``) reads every disclosure a preparation gives from the one under
 the capture whose bytes have it (``half_disclosures``), never from the one the job's handoff names now: a retry that
 prepared the job again (a correction, a renewal, a new Atlas result) changes nothing in a half compiled before it. So
-are the library model's credit (``website_library_notes``), the object's mass and friction estimates, its size notes
-and where the rule's numbers came from, and the base scene's notes (generated geometry, generated views, an estimated
-surface): from the base scene written beside that preparation, else the handoff's. The compile reads no preparation itself: the remote compile lane is never sent the site's records.
+are the library model's credit (``website_library_notes``), the object's mass and friction estimates, its size notes,
+where the rule's numbers came from, what the object is (``object_source``), and the base scene's notes (generated
+geometry, generated views, an estimated surface): from the base scene written beside that preparation, else the
+handoff's. The compile reads no preparation itself: the remote compile lane is never sent the site's records.
 
 A half sealed before the binding existed, or compiled from another kind of revision, reads the preparation the handoff
 names, else the default one, as before.
@@ -40,6 +41,16 @@ FIELD = "preparation_sha256"
 STAGED_NAME = "website/preparation.json"
 #: The two places ``generated_patch`` names.
 COLLISION_ONLY, LOOK_AND_COLLISION = GENERATED_IN_COLLISION_ONLY, "look_and_collision"
+#: What the job's object is, one plain note per source, read from the configuration it was authored from: a shape the
+#: build plan made for it (``website_parametric_object``), a model a builder generated (ARTISAN, or the CAD builder
+#: before it), or a shape designed for a test (``website_synthetic_subject``). A library model is named by its credit.
+PARAMETRIC_NOTE = ("The job's object is a plain {shape} shape Blueprint made for it, sized from the video: it has none "
+                   "of the real object's detail, such as handles, labels or texture.")
+GENERATED_NOTE = ("The job's object is a 3D model Blueprint generated from frames of the video: its shape and look are "
+                  "the generator's estimate, not a scan or a measurement.")
+DESIGNED_NOTE = "The job's object was not filmed: it is a simple shape Blueprint designed for the job."
+SHAPE_WORDS = {"carton": "carton", "tote": "tote", "open_bin": "open bin", "tray": "tray", "cylinder": "cylinder"}
+GENERATING_BACKENDS = frozenset({"artisan_v1", "astra_cad_blender_v1"})
 #: The site never confirmed the half's thresholds (``website_owner_success_assumption``): they are Blueprint's
 #: standard ones, and the rule says so for each number Blueprint set (owner direction 2026-11-07: "inferences are
 #: disclosed as assumptions").
@@ -180,6 +191,30 @@ def size_notes(preparation: Mapping[str, Any]) -> dict[str, bool]:
             **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {})}
 
 
+def object_source(configuration: Mapping[str, Any]) -> dict[str, str]:
+    """What the job's object is, as the configuration it was authored from says (``object_source``, and the parametric
+    shape's name): empty for a library model (its credit names it) and for a source this cannot tell."""
+    if "library_design" in configuration:
+        return {}
+    design = configuration.get("parametric_design")
+    if configuration.get("authoring_source") == "parametric" and isinstance(design, Mapping):
+        shape = SHAPE_WORDS.get(str(design.get("shape")))
+        return {"object_source": "parametric", **({"object_shape": shape} if shape else {})}
+    if isinstance(configuration.get("synthetic_design"), Mapping):
+        return {"object_source": "designed"}
+    if configuration.get("authoring_backend") in GENERATING_BACKENDS:
+        return {"object_source": "generated"}
+    return {}
+
+
+def object_note(source: Mapping[str, Any]) -> list[str]:
+    """The README's note of what the job's object is, or none."""
+    kind = source.get("object_source")
+    if kind == "parametric":
+        return [PARAMETRIC_NOTE.format(shape=source.get("object_shape") or "simple")]
+    return [GENERATED_NOTE] if kind == "generated" else [DESIGNED_NOTE] if kind == "designed" else []
+
+
 def handoff_base_scene(capture_root: Path) -> dict[str, Any]:
     """The base scene the job's sealed scene handoff names (inside the capture), else empty."""
     root = Path(capture_root)
@@ -229,7 +264,8 @@ def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str,
     configuration = (preparation.get("authoring_inputs") or {}).get("configuration") or {}
     base = (_beside(root, path) if isinstance(record.get(FIELD), str) and path is not None else {}) \
         or handoff_base_scene(root)
-    return {**base_scene_notes(base), **size_notes(preparation), **library_notes.credit(configuration, root), "estimates": object_estimates(preparation),
+    return {**base_scene_notes(base), **size_notes(preparation), **object_source(configuration),
+            **library_notes.credit(configuration, root), "estimates": object_estimates(preparation),
             "basis": success_basis(preparation)}
 
 
@@ -284,7 +320,8 @@ def surface_estimated(capture_root: Path) -> bool:
     return bool(base_scene_notes(handoff_base_scene(capture_root)).get("surface_estimated"))
 
 
-__all__ = ["COLLISION_ONLY", "FIELD", "LOOK_AND_COLLISION", "STAGED_NAME", "THRESHOLDS_ASSUMED", "base_scene_notes",
-           "binding", "generated_patch", "half_disclosures", "half_preparation", "handoff_base_scene", "look_views",
-           "named_path", "number_paths", "object_estimates", "preparation", "size_notes", "success_basis",
-           "surface_estimated", "thresholds_assumed", "with_assumed_basis"]
+__all__ = ["COLLISION_ONLY", "DESIGNED_NOTE", "FIELD", "GENERATED_NOTE", "LOOK_AND_COLLISION", "PARAMETRIC_NOTE",
+           "STAGED_NAME", "THRESHOLDS_ASSUMED", "base_scene_notes", "binding", "generated_patch", "half_disclosures",
+           "half_preparation", "handoff_base_scene", "look_views", "named_path", "number_paths", "object_estimates",
+           "object_note", "object_source", "preparation", "size_notes", "success_basis", "surface_estimated",
+           "thresholds_assumed", "with_assumed_basis"]

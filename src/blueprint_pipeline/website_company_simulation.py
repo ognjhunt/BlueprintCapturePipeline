@@ -754,7 +754,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room", "plan_notes",
                                         "generated_patch", "look_views", "surface_estimated", "size_from_its_points",
                                         "size_disagrees_with_published", "destination_overhang", "library_models",
-                                        "library_refusal", "thresholds_assumed")
+                                        "library_refusal", "thresholds_assumed", "object_source", "object_shape")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
@@ -1199,6 +1199,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_FILLED_IN] if room.get("not_filled_in") else []), *([SCALE_NOT_MEASURED_NOTE] if unscaled else [])]
                if room is not None else []),
              *([NO_RULE] if withheld else []),
+             *half_preparation.object_note(source),
              *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else []),
              *([THRESHOLDS_ASSUMED] if source.get("thresholds_assumed") and source.get("rule") and room is None
                else [])]
