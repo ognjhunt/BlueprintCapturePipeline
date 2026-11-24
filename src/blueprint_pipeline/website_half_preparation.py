@@ -56,6 +56,15 @@ GENERATING_BACKENDS = frozenset({"artisan_v1", "astra_cad_blender_v1"})
 #: disclosed as assumptions").
 THRESHOLDS_ASSUMED = ("The site has not confirmed the numbers in success_rule.json: where criteria_basis says "
                       "assumed, the number is Blueprint's standard threshold, not the site's.")
+#: The site confirmed exactly those thresholds after the half was compiled (stress round 2, 2026-11-24). The half's
+#: record is sealed and never changes, so the confirmation is read from the request's status, where the packet queue
+#: records it (``website_owner_success_assumption.noted_status``: ``confirmed_later``), or from a record compiled again
+#: after it. The package is a new revision then, and says both: assumed when built, confirmed since.
+THRESHOLDS_CONFIRMED_LATER = ("The numbers in success_rule.json are Blueprint's standard thresholds, assumed when this "
+                              "simulation was first built; the site has since confirmed the same numbers. Where "
+                              "criteria_basis says site_confirmed, the number is one of them.")
+#: ``criteria_basis`` for a number Blueprint assumed and the site later confirmed.
+SITE_CONFIRMED = "site_confirmed"
 #: ``website_owner_success_assumption.FIELD`` and ``ASSUMED``, named here: that module reaches the compile
 #: (``team_scene_packet``), which the package lane never imports (``tests/test_live_pipeline_import_isolation``).
 ASSUMPTION_FIELD = "owner_success_assumption"
@@ -288,13 +297,39 @@ def thresholds_assumed(record: Mapping[str, Any]) -> bool:
     return isinstance(marker, Mapping) and marker.get("status") == ASSUMED
 
 
-def with_assumed_basis(rule: dict[str, Any] | None, assumed: bool) -> dict[str, Any] | None:
+def thresholds_confirmed_later(record: Mapping[str, Any], status: Mapping[str, Any] | None) -> bool:
+    """Whether the site confirmed exactly the thresholds the half's sealed record assumed, after it was compiled.
+
+    The request's status records it under the same field for the same assumed contract (``confirmed_later``), or a
+    record compiled again after the confirmation carries it itself (``keep_assumed_thresholds``). "This is wrong"
+    is no confirmation, and a status of another contract says nothing of this one.
+    """
+    if not thresholds_assumed(record):
+        return False
+    sealed = record[ASSUMPTION_FIELD]
+    if isinstance(sealed.get("confirmed_later"), Mapping):
+        return True
+    marker = status.get(ASSUMPTION_FIELD) if isinstance(status, Mapping) else None
+    return (isinstance(marker, Mapping) and marker.get("status") == ASSUMED
+            and isinstance(marker.get("confirmed_later"), Mapping)
+            and marker.get("task_success_contract_digest") == sealed.get("task_success_contract_digest"))
+
+
+def with_assumed_basis(rule: dict[str, Any] | None, assumed: bool, *, confirmed: bool = False) -> dict[str, Any] | None:
     """The rule, with ``criteria_basis`` saying ``assumed`` for each of its numbers when its thresholds were assumed
-    and the preparation said nothing of where they came from (its own basis is kept as it is)."""
-    if rule is None or not assumed or rule.get("criteria_basis"):
+    and the preparation said nothing of where they came from (its own basis is kept as it is). Once the site has
+    confirmed them (``confirmed``), each number that basis calls ``assumed`` is ``site_confirmed`` instead."""
+    if rule is None or not assumed:
         return rule
+    own = rule.get("criteria_basis")
+    if own:
+        if not confirmed or not isinstance(own, Mapping):
+            return rule
+        return {**rule, "criteria_basis": {path: SITE_CONFIRMED if value == "assumed" else value
+                                           for path, value in own.items()}}
     paths = number_paths(rule.get("criteria"))
-    return {**rule, "criteria_basis": {path: "assumed" for path in paths}} if paths else rule
+    basis = SITE_CONFIRMED if confirmed else "assumed"
+    return {**rule, "criteria_basis": {path: basis for path in paths}} if paths else rule
 
 
 # --- the same lookups by capture, as the package read them before the binding (and for a room) -------------------
@@ -321,7 +356,7 @@ def surface_estimated(capture_root: Path) -> bool:
 
 
 __all__ = ["COLLISION_ONLY", "DESIGNED_NOTE", "FIELD", "GENERATED_NOTE", "LOOK_AND_COLLISION", "PARAMETRIC_NOTE",
-           "STAGED_NAME", "THRESHOLDS_ASSUMED", "base_scene_notes", "binding", "generated_patch", "half_disclosures",
+           "SITE_CONFIRMED", "STAGED_NAME", "THRESHOLDS_ASSUMED", "THRESHOLDS_CONFIRMED_LATER", "base_scene_notes", "binding", "generated_patch", "half_disclosures",
            "half_preparation", "handoff_base_scene", "look_views", "named_path", "number_paths", "object_estimates",
            "object_note", "object_source", "preparation", "size_notes", "success_basis", "surface_estimated",
-           "thresholds_assumed", "with_assumed_basis"]
+           "thresholds_assumed", "thresholds_confirmed_later", "with_assumed_basis"]

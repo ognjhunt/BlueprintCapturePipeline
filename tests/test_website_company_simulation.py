@@ -335,6 +335,8 @@ def test_a_clean_scene_makes_a_package_that_passes_the_scan_opens_and_is_stable(
     assert record["schema_version"].startswith("website_company_simulation.") and record["state"] == "ready"
     assert record["digest"] == _sha(package) and record["size_bytes"] == package.stat().st_size
     assert record["capture_id"] == CAPTURE and record["permission_basis"] == "site_sharing_statement"
+    # The job's object is in this package (2026-11-24, ``object_included``, read by the website when present).
+    assert record["object_included"] is True
     with zipfile.ZipFile(package) as archive:
         names = archive.namelist()
         assert names == sorted(names)
@@ -427,6 +429,41 @@ def _room_as_the_host_writes_it(job: Job, *, custom: str | None = None) -> str:
     assert documentation.startswith(sim.FLATTEN_PROVENANCE) and "/var/lib/blueprint/" in documentation
     job.seal()
     return str(source)
+
+
+def test_object_included_is_true_only_when_the_jobs_object_is_in_the_package():
+    half_parts = {"Room": "sha256:" + "1" * 64, "RoomCollision": "sha256:" + "2" * 64, "Object": "sha256:" + "3" * 64}
+    assert sim.object_included({"source": {"files": half_parts}}) is True
+    room_parts = {key: value for key, value in half_parts.items() if key != "Object"}
+    assert sim.object_included({"source": {"files": room_parts}}) is False  # a room package, or a floor
+    assert sim.object_included({}) is False
+
+
+def test_a_website_that_predates_object_included_still_gets_the_package_once(job):
+    """The website's reader of ``website_company_simulation.v1`` is strict: until it lists ``object_included`` it
+    answers 409 ``website_company_simulation_invalid``. The same package then goes without the field, that record
+    is the one recorded as out, and later passes find it current: no deploy, no request every pass."""
+    world = World(job)
+    shapes = []
+
+    def strict_website(record, *, identity):
+        shapes.append("object_included" in record)
+        if "object_included" in record:
+            raise ValueError("website_control_company-simulation_http_409:website_company_simulation_invalid")
+        World.deliver(world, record, identity=identity)
+    world.deliver = strict_website
+    assert world.publish()["status"] == "published"
+    assert shapes == [True, False] and "object_included" not in world.delivered[0]
+    manifest = _manifest(job)
+    assert manifest["delivered"]["simulation_digest"] == manifest["simulation_digest"] == world.delivered[0][
+        "simulation_digest"]
+    assert world.publish()["status"] == "current" and shapes == [True, False]
+
+
+def test_a_refusal_of_anything_but_the_records_shape_is_not_resent_without_the_field(job):
+    world = World(job, delivery_error=ValueError("website_control_company-simulation_http_503:"
+                                                 "website_company_simulation_unavailable"))
+    assert world.publish()["status"] == "failed" and world.delivered == []
 
 
 def test_a_room_written_the_way_the_host_writes_it_ships_without_the_host_path(tmp_path):
