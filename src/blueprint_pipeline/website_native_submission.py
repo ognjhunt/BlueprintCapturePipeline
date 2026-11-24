@@ -18,16 +18,11 @@ from .task_evaluation_launch_preparation_contract import (
     launch_preparation_request_digest, validate_launch_preparation_request,
 )
 from .task_evaluation_scene_configuration_runtime_budget import MAX_ASTRA_AUTHORING_SPEND_USD
-from .task_object_authoring_backend import ARTISAN_BACKEND, frozen_authoring_cap
+from .task_object_authoring_backend import ARTISAN_BACKEND, frozen_authoring_cap, resumed_authoring_allocation
 from .task_evaluation_scene_configuration_submission_inputs import (
     Staging, checked_file, read, release_inputs, require, sha, slug,
 )
 from .website_native_background import prepare_construction_stages, construction_rights_admission, PREFIX
-
-
-#: An attempt that reuses a finished ARTISAN run makes no model call; it keeps
-#: the smallest allocation the ARTISAN budget profile admits.
-MINIMUM_ARTISAN_ALLOCATION_USD = 0.01
 
 
 def _validate_development_opening_criterion(success, hypothesis):
@@ -144,21 +139,14 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     articulated = owner_task["strategy"] == "articulated_open_close"
     artisan_allocation = None
     if authoring.get("authoring_backend") == ARTISAN_BACKEND:
-        # The frozen cap is cumulative across resumes. A successor that will
-        # continue a source can spend only what the source left, so it
-        # reserves only that (capture-447ae4f4, 2026-11-02: a $30 reservation
-        # for $11.24 of possible spend did not fit the owner's $60).
+        # The frozen cap is cumulative across resumes: a successor that will continue a source
+        # reserves only what the source left (``resumed_authoring_allocation``, the rule every
+        # object the build plan generates resumes under too, ``website_build_budget``).
         from .task_evaluation_artisan_continuation import factory_carried_spend
-        artisan_allocation = frozen_authoring_cap(authoring)
+        cap = frozen_authoring_cap(authoring)
         carried = factory_carried_spend(intent_digest=intent["intent_digest"], configuration=authoring,
                                         intent_root=directory.parent)
-        remainder = (math.floor((artisan_allocation - carried["cost_usd"]) * 100) / 100
-                     if carried is not None else 0)
-        if carried is not None and carried.get("completed"):
-            # The source finished upstream; this attempt only exports it.
-            artisan_allocation = MINIMUM_ARTISAN_ALLOCATION_USD
-        elif remainder > 0:
-            artisan_allocation = remainder
+        artisan_allocation = resumed_authoring_allocation(cap, carried)
     try:
         spend = records.spend_block(authoring.get("authoring_backend", "content_agents"),
             authoring_max_cost_usd=(artisan_allocation
