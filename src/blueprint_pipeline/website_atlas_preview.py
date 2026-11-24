@@ -134,7 +134,14 @@ _AWAITING_AUTHORITY = frozenset({
     # The WebApp's own configuration states (stress round 2, 2026-11-24), once sent as the consent and
     # brief codes: Blueprint repairs them, never the site, so they wait here, rechecked, and the word
     # "consent" never makes one read as the site's privacy wall.
-    "website_atlas_consent_unconfigured", "website_scene_grant_policy_unconfigured"})
+    "website_atlas_consent_unconfigured", "website_scene_grant_policy_unconfigured",
+    # The WebApp's noncreating configuration read refuses to summarise a job's preparation ledger past its
+    # own bound (128 rows, then 200 KB: ``websitePreparationAccounting.ts``). A resumed step reads it every
+    # time and a row is never removed, so the same job repeats it until the WebApp's bound changes; it was
+    # unclassified, took the refusal schedule, ended failed and was reopened six times for nothing. It is
+    # the WebApp's limit, never money (each reservation is still judged on its own, against the $40), and
+    # a WebApp release lifts it with no Pipeline deploy: rechecked here until then or the deadline.
+    "website_atlas_reservation_summary_too_large", "website_atlas_accounting_response_too_large"})
 # A planner abstention can be re-examined after a source-review fix. It is not
 # proof that the recording must be replaced. Other selection failures keep
 # their existing non-retryable boundary.

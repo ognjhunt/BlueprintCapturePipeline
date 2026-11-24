@@ -222,6 +222,11 @@ def test_source_reconstruction_refusal_keeps_its_own_stage_and_reason(monkeypatc
     assert world.advance() == "needs_input"
     assert _job(site)["stage"] == "source_pose" and _job(site)["reason"] == "atlas_scale_review_unresolved"
     assert world.published == []
+    # Stress round 2 (2026-11-24): a stop on it is the new-video ask the website words, never a parked job the
+    # clock reopens six times for a paid scale review of the same views.
+    assert preview._parked_without_wall(_job(site)) is False
+    world.clock += 7 * 86400
+    assert world.advance() == "needs_input" and len(world.runs) == 1
 
 
 @pytest.mark.parametrize('blocker', [
@@ -280,6 +285,12 @@ def test_a_tombstone_seen_at_the_next_tick_ends_the_job_without_running(monkeypa
      "website_atlas_source_consent_required"),
     # A lapsed price review is the owner's to renew, like a missing grant.
     (ValueError("atlas_runtime_price_review_expired"), "atlas_runtime_price_review_expired"),
+    # Stress round 2 (2026-11-24): the WebApp's accounting read past its own bound. A WebApp release lifts it,
+    # so the job waits, rechecked, instead of ending failed and being reopened six times for nothing.
+    (ValueError("website_control_atlas-configuration_http_409:website_atlas_reservation_summary_too_large"),
+     "website_atlas_reservation_summary_too_large"),
+    (ValueError("website_control_atlas-configuration_http_409:website_atlas_accounting_response_too_large"),
+     "website_atlas_accounting_response_too_large"),
 ])
 def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypatch, site, refusal, reason):
     _enqueue(site)

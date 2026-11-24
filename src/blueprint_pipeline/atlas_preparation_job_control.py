@@ -24,10 +24,15 @@ _CODE = re.compile(r"[a-z][a-z0-9_]{0,99}")
 #: too dark (the website words it as frames it could not use), and ``atlas_source_rotation_unsupported``, a file
 #: whose display rotation is not a quarter turn (or not a number), which a phone's camera never writes: no upright
 #: picture can be told from it, and a video as the phone recorded it moves on.
+#: ``atlas_scale_review_unresolved`` too: no reference in the video gave a size. Where a room was built it ships
+#: unscaled, flagged (``atlas_unscaled_room``), and the job does not stop; a job that still stops on it (a rebuild,
+#: no built background) has no room to ship, the website already asks for a new video with a size reference in
+#: view, and before this the clock reopened it six times, each a paid scale review of the same views.
 _NEEDS_NEW_CAPTURE = frozenset({"atlas_insufficient_overlapping_distinct_views",
                                 "atlas_coverage_anchor_quality_insufficient",
                                 "atlas_mesh_not_registered_to_splat", "atlas_mesh_frame_ambiguous",
-                                "atlas_insufficient_sharp_static_views", "atlas_source_rotation_unsupported"})
+                                "atlas_insufficient_sharp_static_views", "atlas_source_rotation_unsupported",
+                                "atlas_scale_review_unresolved"})
 _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
 #: Written to the job file just before a step runs and removed by the write that follows it.
 #: Read under the job lock, it can only be left by a step whose process died before returning.
