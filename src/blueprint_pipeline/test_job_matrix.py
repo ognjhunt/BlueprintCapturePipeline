@@ -71,8 +71,10 @@ def _refuse(name: str):
     return refused
 
 
-def install_network_guard() -> list[dict[str, str]]:
-    """Refuse and record every outbound connection and name lookup in this process."""
+def install_network_guard(*, subprocesses: bool = True) -> list[dict[str, str]]:
+    """Refuse and record every outbound connection and name lookup in this process, and (``subprocesses``) every
+    program but the two git reads. ``job_replay`` replays real stages, which may run ffmpeg, so it keeps only the
+    socket half and refuses network tools in its harness instead."""
     socket.socket.connect = _refuse("connect")  # type: ignore[method-assign]
     socket.socket.connect_ex = _refuse("connect_ex")  # type: ignore[method-assign]
     socket.socket.sendto = _refuse("sendto")  # type: ignore[method-assign]
@@ -80,6 +82,8 @@ def install_network_guard() -> list[dict[str, str]]:
     socket.getaddrinfo = _refuse("getaddrinfo")  # type: ignore[assignment]
     for name in ("gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
         setattr(socket, name, _refuse(name))
+    if not subprocesses:
+        return _ATTEMPTS
     real = subprocess.Popen
 
     class Guarded(real):  # type: ignore[valid-type, misc]
