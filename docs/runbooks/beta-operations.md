@@ -67,9 +67,12 @@ The job-store checks also skip these cases:
 - an Atlas job that is `ready`, `failed` or `withdrawn`, or `needs_input`
   with no scheduled recheck or waiting on privacy, rights or money. Parked
   jobs stay visible under `dispositions` in the Atlas stall summary. Since
-  2026-11-22 a job parked on no wall runs once more by itself on each new
-  release while its grant is live and it can still finish in its window
-  (`website_atlas_preview._reopen_parked_after_release`); a provider's 401,
+  2026-11-24 a job parked for input on no wall runs once more by itself on
+  the six timed refusal retries (a new release brings the next one forward
+  and counts), and one that ended `failed` on each new release, six automatic
+  reopens in all, while its grant is live and it can still finish in its
+  window (`website_atlas_preview._reopen_parked`); then its stop is its end
+  and its preparation stops waiting on it; a provider's 401,
   402 or 403 waits as an outage and pages once per service
   (`website_provider_account_refused`); since 2026-11-23 so does a provider's
   answer that Blueprint's account has no credit left, and the page counts the

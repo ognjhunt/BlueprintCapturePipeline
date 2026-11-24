@@ -28,9 +28,13 @@ schedule: it waits as ``needs_input`` and its step runs again only once a
 release decides that step differently. One that only a new capture clears
 (``_NEEDS_NEW_CAPTURE``: a room mesh that lies on none of its splat, 2026-11-24)
 ends at once as ``needs_input`` instead, and the website asks the site for a
-new video; one an earlier release left waiting ends so at its next check. A
-retry re-asks every gate; it never bypasses one. No operator command is needed
-for a retry; ``retry_failed_job`` reopens a job that has already ended.
+new video; one an earlier release left waiting ends so at its next check. A job
+parked for input on no wall (``_reopen_parked``) is reopened by the clock on the
+same refusal schedule, a new release bringing the next reopen forward, six
+reopens in all; then its stop is its end (2026-11-24: only deploys reopened it,
+while its preparation waited seven days). A retry re-asks every gate; it never
+bypasses one. No operator command or deploy is needed for a retry;
+``retry_failed_job`` reopens a job that has already ended.
 """
 from __future__ import annotations
 
@@ -844,26 +848,41 @@ def _parked_without_wall(job: Mapping[str, Any]) -> bool:
                                | {"atlas_scene_planner_abstained", SPENDING_CAP_REACHED, JOB_SPEND_CAP}))
 
 
-def _reopen_parked_after_release(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:
-    """Run a parked job (``_parked_without_wall``) once more on each new release, by itself (2026-11-22: before,
-    only an operator's ``--atlas-retry`` did). Only while it can still finish inside its window and its grant
-    is live (``_may_reopen``); the step asks every consent, withdrawal and money admission again, and resumes
-    from its receipts, so nothing is bought twice. A release that cannot be read reopens nothing."""
-    from .atlas_preparation_job_control import _AUTOMATIC_RETRY_FIELDS
+def _reopen_parked(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:
+    """Run a parked job (``_parked_without_wall``) once more, by itself, on ``job_retry_policy``'s refusal schedule.
+
+    2026-11-22: a parked job ran once more on each new release, and only then (move-the-lamp-2 waited from
+    2026-11-19, reopened by three deploys, refusing alike on the same retained bytes while its preparation waited
+    for a reopen). Now a job parked for input is reopened by the clock: the k-th reopen is due
+    ``refusal_retry_delay(k)`` after it stopped (15 min, then 1 h, 3 h, 6 h, 12 h, 24 h). A new release reopens it
+    at once, since a release may decide the step differently, and counts as one of them. A job that ended failed
+    has had its own timed schedule: only a release reopens it, counted the same way. Once the count is spent
+    (``reopens_spent``) nothing reopens it by itself: the stop, with its own code, is the job's end, and the
+    preparation that waited on it goes on (``website_reconstruction_resume.reopenable``). Only while it can still
+    finish inside its window and its grant is live (``_may_reopen``); the step asks every consent, withdrawal and
+    money admission again and resumes from its receipts, so nothing is bought twice."""
+    from .atlas_preparation_job_control import _AUTOMATIC_RETRY_FIELDS, automatic_reopens
     from .website_preparation_retry import _release
     if not _parked_without_wall(job):
         return job
-    release = _release()
-    current = int(now())
-    if (release is None or job.get("release_reopened") == release
-            or not _may_reopen(job, capture_root=job_dir.parents[1], current=current)):
+    delay = refusal_retry_delay(automatic_reopens(job))
+    if delay is None:
         return job
-    retries = [*job.get("retries", []), {"reason": "release_reopened", "at_epoch": current}]
+    current = int(now())
+    release = _release()
+    released = release is not None and job.get("release_reopened") != release
+    stopped = job.get("revised_at_epoch")
+    due = (job.get("state") == "needs_input" and isinstance(stopped, (int, float)) and not isinstance(stopped, bool)
+           and current >= stopped + delay)
+    if not (released or due) or not _may_reopen(job, capture_root=job_dir.parents[1], current=current):
+        return job
+    retries = [*job.get("retries", []), {"reason": "release_reopened" if released else "parked_retry",
+                                         "at_epoch": current, "stopped_on": job.get("reason")}]
     cleanup = {**(job.get("provider_cleanup") or {}), "state": "pending", "attempts": 0, "next_attempt_at_epoch": 0}
     job = {key: value for key, value in job.items() if key not in _AUTOMATIC_RETRY_FIELDS}
     return _transition(job, current, "processing", None, stage="queued", transient_failures=0,
                        next_attempt_at_epoch=current, retries=retries, provider_cleanup=cleanup,
-                       release_reopened=release)
+                       **({"release_reopened": release} if release is not None else {}))
 
 
 def _may_reopen(job: Mapping[str, Any], *, capture_root: Path, current: int) -> bool:
@@ -906,7 +925,7 @@ def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: 
         step=lambda job: _keep_shipped_room(job, _restore_unfinished_reopen(
             _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now)), int(now()), path.parent),
         deliver=lambda job: _deliver(job, now=now),
-        refresh=lambda job: _ask_scale_review_again(_reopen_parked_after_release(
+        refresh=lambda job: _ask_scale_review_again(_reopen_parked(
             _reopen_observed_room(job, job_dir=path.parent, now=now), job_dir=path.parent, now=now),
             job_dir=path.parent, now=now),
         now=now, transport=transport)

@@ -121,7 +121,13 @@ def image_coverage(source: np.ndarray, returned: np.ndarray) -> dict:
         if da is None or db is None or len(da) < 8 or len(db) < 8:
             raise ValueError("atlas_context_pixel_mapping_unproven")
         pairs = cv2.BFMatcher().knnMatch(da, db, k=2)
-        good = [pair[0] for pair in pairs if len(pair) == 2 and pair[0].distance < .7 * pair[1].distance]
+        # Each returned point is the match of one source point and back (mutual nearest neighbours). Without
+        # it, many source points with no counterpart can all take one returned point as their nearest: in
+        # move-the-lamp-2's decoded-000000149 (2026-11-19) 178 of 373 matches named the same point, and their
+        # consensus was a mapping of scale 0, read as a 180 degree turn. Its pixels were the source resized.
+        back = cv2.BFMatcher().match(db, da)
+        good = [pair[0] for pair in pairs if len(pair) == 2 and pair[0].distance < .7 * pair[1].distance
+                and back[pair[0].trainIdx].trainIdx == pair[0].queryIdx]
         if len(good) < 8:
             raise ValueError("atlas_context_pixel_mapping_unproven")
         a = np.float32([ka[m.queryIdx].pt for m in good])
@@ -130,6 +136,9 @@ def image_coverage(source: np.ndarray, returned: np.ndarray) -> dict:
         matrix, mask = cv2.estimateAffinePartial2D(a, b, method=cv2.RANSAC,
             ransacReprojThreshold=2, maxIters=10000, confidence=.999)
         if matrix is None or mask is None or int(mask.sum()) < 8:
+            raise ValueError("atlas_context_pixel_mapping_unproven")
+        if not math.hypot(matrix[0, 0], matrix[1, 0]) > 1e-6:
+            # A mapping that sends every source point to one place is no registration at all.
             raise ValueError("atlas_context_pixel_mapping_unproven")
         angle = math.degrees(math.atan2(matrix[1, 0], matrix[0, 0]))
         if abs(angle) > .1:
@@ -168,8 +177,65 @@ def image_coverage(source: np.ndarray, returned: np.ndarray) -> dict:
             "full_source_field_of_view_preserved": fraction >= MIN_SOURCE_AREA_RETAINED}
 
 
+#: Where a pass re-proved under a changed method (this code or its libraries) records the binding it was proved
+#: under, beside the earlier pass it confirms (``verify_pose_context_fov``).
+CONFIRMATIONS = "context-fov-audit-confirmations"
+_CONFIRMATION_SCHEMA = "atlas_context_fov_confirmation.v1"
+#: What a binding names besides the method: the same posed pixels, the same sources and the same bound.
+_PIXEL_BINDING_KEYS = ("schema_version", "source_pose_inputs_digest", "minimum_retained_source_area_fraction",
+                       "sources", "returned")
+
+
+def _valid_pass(previous: dict, inputs: dict, by_id: dict) -> bool:
+    """A retained pass that still says what a pass of these inputs must say."""
+    prior_rows = previous.get("frames") or []
+    return not (previous.get("source_pose_inputs_digest") != inputs["digest"]
+                or type(previous.get("provider_calls")) is not int
+                or previous.get("provider_calls") != 0
+                or previous.get("minimum_retained_source_area_fraction") != MIN_SOURCE_AREA_RETAINED
+                or [row.get("frame_id") for row in prior_rows] != list(by_id)
+                or any(row.get("source_image_digest") != by_id[row["frame_id"]]["image_digest"]
+                       or row.get("full_source_field_of_view_preserved") is not True
+                       or type(row.get("retained_source_area_fraction")) not in (int, float)
+                       or not math.isfinite(row["retained_source_area_fraction"])
+                       or row["retained_source_area_fraction"] < MIN_SOURCE_AREA_RETAINED
+                       for row in prior_rows))
+
+
+def _same_pixels(left, right) -> bool:
+    """Two bindings of the same pixels, sources and bound: only the method that measured them differs."""
+    return (isinstance(left, dict) and isinstance(right, dict)
+            and all(left.get(key) == right.get(key) for key in _PIXEL_BINDING_KEYS))
+
+
+def _confirmation_path(output_root: Path, binding: dict) -> Path:
+    return output_root / CONFIRMATIONS / (canonical_digest(binding)[7:] + ".json")
+
+
+def _confirmed(output_root: Path, previous: dict, binding: dict) -> bool:
+    """This method already re-proved ``previous`` on these pixels (``CONFIRMATIONS``)."""
+    path = _confirmation_path(output_root, binding)
+    try:
+        record = None if path.is_symlink() or not path.is_file() else json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return (isinstance(record, dict) and record.get("schema_version") == _CONFIRMATION_SCHEMA
+            and record.get("digest") == canonical_digest(record, digest_field="digest")
+            and record.get("confirmed_audit_digest") == previous.get("digest")
+            and record.get("input_binding") == binding
+            and (record.get("audit") or {}).get("status") == "passed")
+
+
 def verify_pose_context_fov(*, pose_root: Path, frames: list, output_root: Path) -> dict:
-    """Retain the audit even on refusal. No uploads, model calls or pixel edits."""
+    """Retain the audit even on refusal. No uploads, model calls or pixel edits.
+
+    A refusal is raised with the audit's own reason (``atlas_context_field_of_view_lost`` only when a view kept
+    less than ``MIN_SOURCE_AREA_RETAINED`` of its source), and names the view that refused.
+
+    A pass is reused while its binding holds. When only the method changed (this code or its libraries), the
+    same pixels are measured again: a refusal replaces the pass, and a pass confirms it, so the record later
+    steps bound by its digest (a completion's plan inputs) stays the job's record.
+    """
     from PIL import Image
     from .website_atlas_pose import load_pending_atlas_pose_inputs
 
@@ -189,33 +255,26 @@ def verify_pose_context_fov(*, pose_root: Path, frames: list, output_root: Path)
                 or previous.get("schema_version") != "atlas_context_fov_audit.v1"
                 or previous.get("digest") != canonical_digest(previous, digest_field="digest")):
             raise ValueError("atlas_context_audit_invalid")
+    passed_before = bool(previous) and previous.get("status") == "passed"
     rows = []
     binding = None
+    measuring = None
     try:
         if [frame["frame_id"] for frame in frames] != list(by_id):
             raise ValueError("atlas_context_source_binding_invalid")
         binding = _audit_input_binding(inputs, sources, frames)
-        if previous and previous.get("status") == "passed" and previous.get("input_binding") == binding:
-            prior_rows = previous.get("frames") or []
-            if (previous.get("source_pose_inputs_digest") != inputs["digest"]
-                    or type(previous.get("provider_calls")) is not int
-                    or previous.get("provider_calls") != 0
-                    or previous.get("minimum_retained_source_area_fraction") != MIN_SOURCE_AREA_RETAINED
-                    or [row.get("frame_id") for row in prior_rows] != list(by_id)
-                    or any(row.get("source_image_digest") != by_id[row["frame_id"]]["image_digest"]
-                           or row.get("full_source_field_of_view_preserved") is not True
-                           or type(row.get("retained_source_area_fraction")) not in (int, float)
-                           or not math.isfinite(row["retained_source_area_fraction"])
-                           or row["retained_source_area_fraction"] < MIN_SOURCE_AREA_RETAINED
-                           for row in prior_rows)):
+        if passed_before and (previous.get("input_binding") == binding or _confirmed(output_root, previous, binding)):
+            if not _valid_pass(previous, inputs, by_id):
                 raise ValueError("atlas_context_audit_invalid")
             return previous
         for frame in frames:
+            measuring = frame["frame_id"]
             source = by_id[frame["frame_id"]]
             with Image.open(source["image_path"]) as image:
                 rgb = np.asarray(image.convert("RGB"))
             rows.append({"frame_id": frame["frame_id"], "source_image_digest": source["image_digest"],
                          **image_coverage(rgb, frame["rgb"])})
+        measuring = None
         passed = bool(rows) and all(row["full_source_field_of_view_preserved"] for row in rows)
         report = {"schema_version": "atlas_context_fov_audit.v1", "status": "passed" if passed else "refused",
                   "source_pose_inputs_digest": inputs["digest"], "frames": rows,
@@ -223,10 +282,19 @@ def verify_pose_context_fov(*, pose_root: Path, frames: list, output_root: Path)
                   "provider_calls": 0}
     except ValueError as error:
         report = {"schema_version": "atlas_context_fov_audit.v1", "status": "refused", "reason": str(error),
-                  "source_pose_inputs_digest": inputs["digest"], "frames": rows, "provider_calls": 0}
+                  "source_pose_inputs_digest": inputs["digest"], "frames": rows, "provider_calls": 0,
+                  **({"refused_frame_id": measuring} if measuring is not None else {})}
     if binding is not None:
         report["input_binding"] = binding
     report["digest"] = canonical_digest(report, digest_field="digest")
+    if (report["status"] == "passed" and passed_before and _same_pixels(previous.get("input_binding"), binding)
+            and _valid_pass(previous, inputs, by_id)):
+        # The same pixels passed again under the changed method: the earlier pass stands, with this proof beside it.
+        confirmation = {"schema_version": _CONFIRMATION_SCHEMA, "confirmed_audit_digest": previous["digest"],
+                        "input_binding": binding, "audit": report}
+        confirmation["digest"] = canonical_digest(confirmation, digest_field="digest")
+        write_json(_confirmation_path(output_root, binding), confirmation)
+        return previous
     if previous_bytes is not None:
         # A legacy audit has no posed-pixel binding: recompute it once, retaining
         # its exact original bytes rather than retroactively asserting one.
@@ -235,5 +303,7 @@ def verify_pose_context_fov(*, pose_root: Path, frames: list, output_root: Path)
         write_exclusive_private_bytes(history, previous_bytes)
     write_json(path, report)
     if report["status"] != "passed":
-        raise ValueError("atlas_context_field_of_view_lost")
+        # The audit's own reason (2026-11-19, move-the-lamp-2: a registration that failed was recorded as
+        # ``atlas_context_pixel_axes_changed`` and raised as a lost field of view).
+        raise ValueError(report.get("reason") or "atlas_context_field_of_view_lost")
     return report
