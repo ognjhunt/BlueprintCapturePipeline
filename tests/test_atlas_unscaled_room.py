@@ -222,3 +222,35 @@ def test_only_a_known_ordinary_pose_failure_ships_unscaled(tmp_path, monkeypatch
     monkeypatch.setattr(ATLAS, lambda **_: atlas)
     # Through the handoff it is no shipped room: the job waits, as for any pose stopped by a wall.
     assert job.rerun()["status"] == "needs_input"
+
+
+#: The README's "How it was made" paragraph for a measured room, word for word as it has always been.
+MEASURED_MADE = ("Built from one phone video of the site. Sizes, distances and positions are estimates from that video, "
+                 "not measurements. A result in this simulation is not a promise of what a robot does at the site, "
+                 "and says nothing about safety. No robot is included: bring your own.")
+#: The same paragraph for a room whose scale was not measured: shapes from the video, sizes relative, not metres.
+UNSCALED_MADE = ("Built from one phone video of the site. Shapes and proportions come from that video; sizes, "
+                 "distances and positions are relative, not in metres. A result in this simulation is not a promise "
+                 "of what a robot does at the site, and says nothing about safety. No robot is included: bring your "
+                 "own.")
+
+
+@pytest.mark.parametrize("scale", ["measured", "unscaled"])
+def test_the_readme_never_calls_an_unscaled_rooms_sizes_estimates_and_a_measured_room_reads_as_before(
+        tmp_path, monkeypatch, scale):
+    from tests.test_website_scene_handoff_navigation import _published, _said, room_job
+
+    if scale == "unscaled":
+        job, _result = shipped_room(tmp_path, monkeypatch)
+    else:
+        job, _context, _result = room_job(tmp_path, monkeypatch, family="wiping", description="Wipe the table.")
+    _status, files = _published(job)
+    readme = files["README.txt"]
+    said = _said(readme)
+    if scale == "measured":
+        assert said.startswith(MEASURED_MADE + " ")
+        assert SCALE_NOT_MEASURED_NOTE not in said and "scene.usda is in metres (1 unit is 1 metre)" in readme
+    else:
+        assert said.startswith(UNSCALED_MADE + " ")
+        assert "estimates from that video" not in " ".join(readme.split())
+        assert said.count(SCALE_NOT_MEASURED_NOTE) == 1
