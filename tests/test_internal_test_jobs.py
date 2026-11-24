@@ -140,6 +140,12 @@ def test_the_owner_read_admits_internal_test_only_with_its_marker(marker, admitt
 # ------------------------------------------------------------------------ P3: the door request
 
 sys.path.insert(0, str(ROOT / "deploy" / "operator-door"))
+# Bind the door package now, as test_scene_retirement_operator_bridge does. A module collected earlier in the same
+# worker can leave scripts/operator_door.py (the client, a plain module) under the same name, and the lazy
+# `from operator_door.requests import ...` below then fails with "'operator_door' is not a package".
+if not hasattr(sys.modules.get("operator_door"), "__path__"):
+    sys.modules.pop("operator_door", None)
+import operator_door  # noqa: E402,F401
 
 REQUEST = {"kind": "test-job", "idempotency_key": "20261201:library", "label": "library-aisle",
            "footage_id": "pexels-854533", "description": "Move the blue book to the top shelf."}
