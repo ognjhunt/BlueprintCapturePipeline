@@ -11,6 +11,7 @@ import fcntl
 import json
 import math
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
@@ -822,17 +823,21 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
                 # charges; only the failed request gets a new attempt identity.
                 # Key it by its predecessor so a successful recovery is reused
                 # by subsequent releases too.
-                if not operation_only and release_blockers is not None and receipt.get("source_commit"):
+                # A call stranded before its receipt kept the release that sent it is reopened once too: its
+                # outcome was never known, so no release can be shown to have decided it.
+                unknown = (receipt.get("error") or {}).get("type") == "submission_outcome_unknown"
+                if (not operation_only and release_blockers is not None
+                        and (receipt.get("source_commit") or unknown)):
                     commit, blockers = release_blockers()
                     if blockers:
                         raise ValueError("atlas_scene_planner_release_not_admitted:" + ",".join(blockers))
                     failed_digest = receipt["binding_digest"]
-                    if (commit != receipt["source_commit"] and failed_digest not in seen_failures
+                    if (commit != receipt.get("source_commit") and failed_digest not in seen_failures
                             and isinstance(commit, str) and len(commit) == 40
                             and set(commit) <= set("0123456789abcdef")):
                         seen_failures.add(failed_digest)
                         failed_output_recovery = {"failed_binding_digest": failed_digest,
-                                                  "failed_source_commit": receipt["source_commit"]}
+                                                  "failed_source_commit": receipt.get("source_commit")}
                         retry, repair = None, None
                         carried += receipt["cost_usd"]
                         continue
@@ -903,6 +908,48 @@ def _completed_legacy_scene_review(output_root: Path, binding: dict, schema):
             schema.model_validate(receipt["proposal"])
             return candidate
     return None
+
+
+#: A planner call the provider refused before any work (``job_retry_policy.provider_refusal_unbilled``).
+REFUSED_UNBILLED = "refused_unbilled"
+
+
+def _refused_receipts(output_root: Path, digest: str) -> list[Path]:
+    """This request's retired unbilled refusals, oldest first: ``<digest>.refused-<n>.json``."""
+    stem = re.escape(digest[7:])
+    return sorted((path for path in output_root.glob(digest[7:] + ".refused-*.json")
+                   if re.fullmatch(stem + r"\.refused-\d+\.json", path.name)),
+                  key=lambda path: int(path.name.rsplit("-", 1)[1].split(".")[0]))
+
+
+def _retire_unbilled_refusal(*, path: Path, receipt: dict, task_context) -> None:
+    """Settle a refused attempt at $0, which releases its hold, and move it and its run aside.
+
+    The refusal is first recorded in place, so a stop at any step finishes here on the next attempt and never
+    reads as a call of unknown outcome. Moved aside, it no longer answers for the request: the next attempt
+    reserves under its own allocation, through every admission again.
+    """
+    from .website_task_context import preparation_webapp_request
+    digest = receipt["binding_digest"]
+    allocation = receipt.get("allocation_binding_digest", digest)
+    settlement_path = path.with_suffix(".settlement.json")
+    if not settlement_path.exists():
+        settlement = preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
+            payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "settlement": {
+                "task_context_digest": task_context["context_digest"], "allocation_binding_digest": allocation,
+                "provider": "openai", "completed_request_count": 1, "provider_charge_amount_usd": 0,
+                "usage_receipt_digest": canonical_digest({"usage": receipt["usage"]})}})
+        if settlement.get("status") != "settled":
+            raise ValueError("atlas_scene_planner_settlement_invalid")
+        write_json(settlement_path, settlement)
+    index = len(_refused_receipts(path.parent, digest))
+    aside = path.parent / f"{digest[7:]}.refused-{index}"
+    run_root = path.parent / digest[7:]
+    if run_root.is_dir():
+        # Its reservation record would refuse the next attempt's reservation for the same run.
+        os.replace(run_root, aside)
+    os.replace(settlement_path, aside.with_name(aside.name + ".settlement.json"))
+    os.replace(path, aside.with_name(aside.name + ".json"))
 
 
 def _review_attempt(*, configuration, **attempt):
@@ -1152,6 +1199,13 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if path.exists():
             receipt = json.loads(path.read_text())
+            if receipt.get("status") == REFUSED_UNBILLED and receipt.get("binding_digest") == digest:
+                if receipt_only:
+                    return None
+                # A refusal recorded before a stop: finish retiring it, then this request is bought afresh.
+                _retire_unbilled_refusal(path=path, receipt=receipt, task_context=task_context)
+        if path.exists():
+            receipt = json.loads(path.read_text())
             if receipt.get("status") == "submitting" and receipt.get("binding_digest") == digest:
                 # This lock is held for the whole call, so no attempt is still in flight: the
                 # stranded call ended without a recorded outcome. Hold its reserved maximum.
@@ -1162,6 +1216,8 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
                            "cost_usd": min(maximum, ceiling + search_calls * search_fee),
                            "validation_repair": _repair_plan(validation_repair, "submission_outcome_unknown",
                                                              "the call ended without a recorded completion"),
+                           **{key: receipt[key] for key in ("source_commit", "allocation_binding_digest")
+                              if key in receipt},
                            "admission": receipt.get("admission"), "claim_ceiling": "development_only"}
                 temporary = path.with_suffix(".tmp")
                 write_json(temporary, receipt)
@@ -1183,6 +1239,11 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
                 raise ValueError("atlas_scene_planner_release_not_admitted:" + ",".join(blockers))
             if failed_output_recovery is not None and commit == failed_output_recovery["failed_source_commit"]:
                 raise ValueError("atlas_scene_planner_recovery_requires_changed_release")
+            # The WebApp grants one reservation per allocation: an attempt after a refused one takes its own.
+            refusals = len(_refused_receipts(output_root, digest))
+            allocation = digest if not refusals else canonical_digest({"binding_digest": digest,
+                                                                         "refused_attempt": refusals})
+            allocated = {} if allocation == digest else {"allocation_binding_digest": allocation}
             selected = invoker or OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(model=policy["model"], max_turns=1,
                 max_output_tokens=output_tokens, max_input_tokens=tokens, allow_live_invocation=True,
                 tracing_disabled=True, max_inference_cost_usd=maximum))
@@ -1205,20 +1266,22 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
 
             selected.configure_reservation_audit(record_reservation=record_reservation,
                 record_completion=record_completion, restored_reserved_cost_usd=carried_reserved_usd)
-            admission, grant = reserve_website_preparation_spend(task_context=task_context, binding_digest=digest,
+            admission, grant = reserve_website_preparation_spend(task_context=task_context, binding_digest=allocation,
                 maximum_cost_usd=maximum, request_count=1, resource_class="openai_api_candidate", provider="openai",
                 source_video_digest=survey["source_video_digest"])
             from .paid_resource_admission import require_paid_resource_admission_grant
             require_paid_resource_admission_grant(grant, resource_class="openai_api_candidate",
-                allocation_binding_digest=digest, require_allocation_binding=True)
+                allocation_binding_digest=allocation, require_allocation_binding=True)
             with path.open("x") as stream:
-                json.dump({"status": "submitting", "binding_digest": digest, "binding": binding, "admission": admission}, stream)
+                # The release that sends it is kept, so a new release can reopen a call that ends unanswered.
+                json.dump({"status": "submitting", "binding_digest": digest, "binding": binding, "admission": admission,
+                           "source_commit": commit, **allocated}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
             from agents import WebSearchTool
             from agents.exceptions import ModelBehaviorError
             from pydantic import ValidationError
-            truncated = invalid = None
+            truncated = invalid = refused = None
             try:
                 result = selected.invoke(AgentsSDKAgentSpec(run_id=digest[7:23], capability="atlas_scene_planner",
                     name="Blueprint Atlas Scene Planner", instructions=instructions, model=policy["model"], max_turns=1,
@@ -1244,8 +1307,30 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
                 truncated = _truncated_attempt(recorded, output_tokens)
                 if truncated is None:
                     invalid = exc
+            except Exception as exc:
+                from .job_retry_policy import provider_error_status, provider_refusal_unbilled
+                if recorded or not provider_refusal_unbilled(exc):
+                    # A 5xx, a timeout or a stop is not known to have billed nothing: its receipt stays
+                    # submitting and the next attempt holds it at its reservation (above).
+                    raise
+                refused = exc
             finally:
                 audit.write_manifest()
+            if refused is not None:
+                # The provider refused before any work (no credit, unpaid, a spend limit, a refused key): it bills
+                # nothing. Settled at $0, its hold released and no repair spent; the step waits as for an outage
+                # (``job_retry_policy.provider_error_waits``) and the next attempt reserves and asks afresh.
+                receipt = {"status": REFUSED_UNBILLED, "binding_digest": digest, "binding": binding,
+                    "error": {"type": type(refused).__name__, "http_status": provider_error_status(refused)},
+                    "usage": {"cost_basis": "provider_refused_before_work", "cost_is_actual": True,
+                              "http_status": provider_error_status(refused)},
+                    "cost_usd": 0, "source_commit": commit, **allocated, "admission": admission,
+                    "claim_ceiling": "development_only"}
+                temporary = path.with_suffix(".tmp")
+                write_json(temporary, receipt)
+                os.replace(temporary, path)
+                _retire_unbilled_refusal(path=path, receipt=receipt, task_context=task_context)
+                raise refused
             if truncated is not None:
                 attempt = (truncation_retry or {}).get("attempt", 0) + 1
                 retry = None
@@ -1260,7 +1345,7 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
                 cost = min(maximum, truncated["reconciled_actual_cost_usd"] + search_calls * search_fee)
                 receipt = {"status": "truncated", "binding_digest": digest, "binding": binding,
                     "usage": truncated["usage"], "cost_usd": cost, "truncation_retry": retry,
-                    "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
+                    "source_commit": commit, **allocated, "admission": admission, "claim_ceiling": "development_only"}
             elif invalid is not None:
                 # Settled at the recorded charge, or at the reservation when none was recorded.
                 charge = recorded[0].get("reconciled_actual_cost_usd") if len(recorded) == 1 else None
@@ -1272,7 +1357,7 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
                                                                     "cost_is_actual": False},
                     "cost_usd": min(maximum, (charge if held else ceiling) + search_calls * search_fee),
                     "validation_repair": _repair_plan(validation_repair, type(invalid).__name__, message),
-                    "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
+                    "source_commit": commit, **allocated, "admission": admission, "claim_ceiling": "development_only"}
             else:
                 proposal = schema.model_validate(result.output).model_dump(mode="json", exclude_none=True)
                 from .atlas_reference_research import retain_references
@@ -1284,7 +1369,7 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
                     "proposal": proposal, "proposal_digest": canonical_digest(proposal), "usage": dict(result.usage),
                     "cost_usd": cost, "model": result.model, "sdk_version": result.sdk_version,
                     "reference_sources": reference_sources,
-                    "source_commit": commit, "admission": admission, "claim_ceiling": "development_only"}
+                    "source_commit": commit, **allocated, "admission": admission, "claim_ceiling": "development_only"}
             temporary = path.with_suffix(".tmp")
             write_json(temporary, receipt)
             os.replace(temporary, path)
@@ -1292,7 +1377,8 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
     if not settlement_path.exists():
         settlement = preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
             payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "settlement": {
-                "task_context_digest": task_context["context_digest"], "allocation_binding_digest": digest,
+                "task_context_digest": task_context["context_digest"],
+                "allocation_binding_digest": receipt.get("allocation_binding_digest", digest),
                 "provider": "openai", "completed_request_count": 1, "provider_charge_amount_usd": receipt["cost_usd"],
                 "usage_receipt_digest": canonical_digest({"usage": receipt["usage"]})}})
         if settlement.get("status") != "settled":

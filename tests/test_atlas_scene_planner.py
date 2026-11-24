@@ -1143,19 +1143,41 @@ def test_a_call_ended_on_stranded_attempts_reopens_once_on_a_changed_release(tmp
     for _ in range(2):
         with pytest.raises(openai.InternalServerError):
             planner.review_survey(**stranding)
-    if legacy:
-        # Receipts stranded before this release recorded which release sent them.
-        for path in (tmp_path / "plans").glob("*.json"):
-            receipt = json.loads(path.read_text())
-            if receipt.get("status") == "submitting":
-                receipt.pop("source_commit", None)
-                path.write_text(json.dumps(receipt))
-    with pytest.raises(ValueError, match="atlas_scene_planner_output_invalid"):
-        planner.review_survey(**stranding)
-    assert len(calls["allowances"]) == 2 and len(calls["settled"]) == 2
+        if legacy:
+            # Before this release a stranded receipt did not record which release sent it.
+            for path in (tmp_path / "plans").glob("*.json"):
+                receipt = json.loads(path.read_text())
+                if receipt.get("status") == "submitting":
+                    receipt.pop("source_commit")
+                    path.write_text(json.dumps(receipt))
+    if not legacy:
+        # The same release cannot buy the same unanswered request again.
+        with pytest.raises(ValueError, match="atlas_scene_planner_output_invalid"):
+            planner.review_survey(**stranding)
+    assert len(calls["allowances"]) == 2 and len(calls["settled"]) == (1 if legacy else 2)
     answering = {**options, "invoker": RefusingThenAnswering(proposal, None, 0),
                  "release_blockers": lambda: ("d" * 40, [])}
     result = planner.review_survey(**answering)
     assert result["status"] == "completed" and result["source_commit"] == "d" * 40
     assert result["binding"]["failed_output_recovery"]["failed_source_commit"] == (None if legacy else "c" * 40)
     assert planner.review_survey(**answering) == result and len(calls["settled"]) == 3
+
+
+def test_a_refusal_recorded_before_a_stop_is_still_settled_at_nothing(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as control
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    _, _, proposal, _ = fixture(tmp_path)
+    options["invoker"] = RefusingThenAnswering(proposal, _provider_error(429, **NO_CREDIT), refusals=1)
+    settle = control.website_webapp_request
+
+    def unreachable(**_):
+        raise OSError("website unreachable")
+    monkeypatch.setattr(control, "website_webapp_request", unreachable)
+    with pytest.raises(OSError):
+        planner.review_survey(**options)
+    recorded = json.loads((tmp_path / "plans" / (calls["reserved"][0][7:] + ".json")).read_text())
+    assert recorded["status"] == "refused_unbilled" and recorded["cost_usd"] == 0
+    monkeypatch.setattr(control, "website_webapp_request", settle)
+    result = planner.review_survey(**options)
+    assert result["status"] == "completed" and "validation_repair" not in result["binding"]
+    assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [0, .03]

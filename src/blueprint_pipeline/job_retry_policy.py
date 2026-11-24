@@ -39,6 +39,7 @@ __all__ = [
     "provider_error_status",
     "provider_error_waits",
     "provider_funding_refused",
+    "provider_refusal_unbilled",
     "provider_says_retry_later",
     "refusal_retry_delay",
     "release_refusal",
@@ -250,6 +251,34 @@ def provider_error_waits(exc: BaseException) -> bool:
             return True
         try:
             if provider_funding_refused(str(link)) or provider_funding_refused(getattr(link, "code", None)):
+                return True
+        except Exception:  # noqa: BLE001 - an unprintable error says nothing
+            continue
+    return False
+
+
+#: A provider's code for an account past the spend limit set on it (Anthropic's 429, as
+#: ``task_object_artisan_metering.anthropic_no_funds`` reads it).
+_SPEND_LIMIT_CODES = frozenset({"enforced_spend_limit_reached"})
+
+
+def provider_refusal_unbilled(exc: BaseException) -> bool:
+    """Whether a provider SDK's error is a refusal known to have billed nothing: the account is unpaid (402), has
+    no credit left (``provider_funding_refused``: OpenAI's 429 ``insufficient_quota``) or is past its spend limit,
+    or the provider refused Blueprint's own key or account (401, 403, from an error that carries the provider's
+    response). Each is also an outage (``provider_error_waits``). A plain 429 rate limit, a 5xx or a timeout is not
+    known to be unbilled: a caller holds what it reserved for it."""
+    status = provider_error_status(exc)
+    if status == 402:
+        return True
+    for link in error_chain(exc):
+        if status in (401, 403) and getattr(link, "response", None) is not None:
+            return True
+        code = getattr(link, "code", None)
+        if isinstance(code, str) and code in _SPEND_LIMIT_CODES:
+            return True
+        try:
+            if provider_funding_refused(str(link)) or provider_funding_refused(code):
                 return True
         except Exception:  # noqa: BLE001 - an unprintable error says nothing
             continue
