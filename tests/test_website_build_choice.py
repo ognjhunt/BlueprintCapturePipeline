@@ -140,7 +140,10 @@ def test_a_valid_menu_choice_is_honoured(tmp_path, monkeypatch, ready):
     packaged = room_recorder(monkeypatch)
     _answering(monkeypatch, _answer(choice.ARTICULATED, quote="Open the box lid"))
     handoff.prepare_website_scene_handoff(**kwargs, allow_build_choice=True)
-    assert packaged == []
+    # The room-only package the mismatch rule would have shipped is not written. This fixture's compile stops on a
+    # blocker that is no wall, so the built room's floor is written flagged with it (owner, 2026-11-23).
+    assert [call["flags"] for call in packaged] == [["object_not_built", "website_task_context_family_invalid"]]
+    assert all(choice.ROOM_FLAG not in call["flags"] for call in packaged)
     [call] = compiled
     assert call["build_choice"]["build"] == choice.ARTICULATED and "rule_withheld" not in call
     record = _record(tmp_path)

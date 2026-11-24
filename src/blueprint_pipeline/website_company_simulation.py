@@ -481,11 +481,12 @@ def _floor_source(root: Path, *, queue_root: Path, now: float, reason: str | Non
     """The job's room floor as a source, when its object path stopped (``reason`` given: its half was refused)."""
     handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
     floor = handoff.get("room_floor") if isinstance(handoff.get("room_floor"), Mapping) else {}
-    record = (_inside(root, Path(str(floor.get("path") or ""))) if handoff.get("status") == "intake_ready"
+    blocked = floor.get("blockers") if handoff.get("status") != "intake_ready" and floor.get("blockers") == handoff.get("blockers") else None  # ``floor_ships``
+    record = (_inside(root, Path(str(floor.get("path") or ""))) if (handoff.get("status") == "intake_ready" or blocked)
               and handoff.get("digest") == canonical_digest(handoff, digest_field="digest") else None)
     if record is None or _read(record).get("inputs_digest") != floor.get("inputs_digest"):
         return None
-    reason = reason or object_path_stopped(root, handoff, queue_root=queue_root, now=now)
+    reason = reason or (blocked and f"{FLOOR_FLAG}:{','.join(map(str, blocked))}") or object_path_stopped(root, handoff, queue_root=queue_root, now=now)
     if reason is None or not reason.startswith("object_not_built:"):
         if reason is not None and notes is not None:
             notes["reason"] = reason  # cannot be read or bound to this job: nothing ships, the pass says why
