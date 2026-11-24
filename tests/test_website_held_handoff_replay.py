@@ -580,10 +580,9 @@ def _handed_off_unscaled(site) -> str:
 def test_a_room_shipped_unscaled_runs_again_by_itself_once_its_scale_is_measured(site):
     parent = _handed_off_unscaled(site)
     pipeline = site.root / "pipeline"
-    # Handed off on an unscaled room: the ledger keeps its bytes while a measured room may replace it.
-    assert replay.held_kind(pipeline) is None
-    assert listener._read_job_ledger(site.root)[replay.FIELD]["schema_version"] == replay.SCHEMA
-    assert site.reconcile() == {"replayed": 0, "held": 1, "already_replayed": 0} and len(site.runs) == 3
+    # Handed off on an unscaled room: no replay record, and nothing to run yet.
+    assert replay.held_kind(pipeline) is None and replay.FIELD not in listener._read_job_ledger(site.root)
+    assert site.reconcile() == {"replayed": 0, "held": 0, "already_replayed": 0} and len(site.runs) == 3
     # Asked again and still without a scale: no better room, nothing runs.
     _publish(site, "asked again", source_pose=UNSCALED)
     assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
@@ -591,17 +590,17 @@ def test_a_room_shipped_unscaled_runs_again_by_itself_once_its_scale_is_measured
     _publish(site, "measured", state="processing", source_pose=MEASURED)
     assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
     measured = _publish(site, "measured", source_pose=MEASURED)
-    fact = replay.measured_room(pipeline)
+    assert site.reconcile()["replayed"] == 1 and len(site.runs) == 4
+    fact = json.loads((site.work / replay.STATE_FILE).read_text())["fact"]
     assert fact["kind"] == "atlas_result_superseded" and fact["result_digest"] == measured
     assert fact["superseded_result_digest"] == parent
-    assert site.reconcile()["replayed"] == 1 and len(site.runs) == 4
     # The run read the measured result: the base scene names it and is no longer unscaled.
     base = json.loads(Path(_handoff(site)["base_scene_path"]).read_text())
     assert base == {"atlas_result_digest": measured}
     ledger = listener._read_job_ledger(site.root)
     assert ledger["status"] == "completed" and ledger["attempt_history"][-1][replay.MARK] == fact["fact_digest"]
-    # Measured and handed off: no bytes kept, nothing runs again.
-    assert replay.FIELD not in ledger and replay.measured_room(pipeline) is None
+    # Measured and handed off: nothing runs again.
+    assert replay.measured_room(pipeline) is None
     assert site.reconcile()["replayed"] == 0 and len(site.runs) == 4
     # The stage's paid inputs stayed bound to the sealed parent context: nothing was bought again.
     assert site.state["media"] == [site.parent["context_digest"]] * 4
@@ -624,14 +623,13 @@ def test_a_measured_room_never_runs_for_a_job_the_site_withdrew_or_the_owner_clo
 
 
 def test_a_measured_splat_rebuild_of_a_measured_room_stays_the_operators(site):
-    # A republish of a room that was already measured is caused by an operator (``--atlas-retry``): no bytes kept.
+    # A republish of a room that was already measured is caused by an operator (``--atlas-retry``), who replays it.
     _publish(site, "parent", source_pose=MEASURED)
     site.deliver()
     successor = _confirm(site)
     site.reconcile()
     site.bind_receipt(successor)
     site.reconcile()
-    assert replay.FIELD not in listener._read_job_ledger(site.root)
     _publish(site, "rebuilt", source_pose=MEASURED)
     assert replay.measured_room(site.root / "pipeline") is None
     assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
