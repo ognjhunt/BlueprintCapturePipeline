@@ -102,6 +102,14 @@ OVERHEAD_PROVIDERS = {"openai": "openai", "openai_responses": "openai", "gemini"
                       "anthropic": "anthropic"}
 _OVERHEAD_NAME = re.compile(r"[a-z][a-z0-9_.-]{0,79}")
 MAX_JOURNAL_FILE_BYTES = 16 * 1024 * 1024
+#: Each account's journal is readable by every account on the host, written only by its own (Codex review of #3716):
+#: a grant one account journals must count against the month for an admission another account judges.
+JOURNAL_FILE_MODE = 0o644
+
+
+class JournalUnreadable(OSError):
+    """A journal file of the month could not be read whole: its grants cannot be counted, so new spend waits."""
+
 MAX_LEDGER_BYTES = 32 * 1024 * 1024
 #: Optional on a held row: the last moment its attempt could be billed, from the attempt's own record.
 BILLABLE_UNTIL_FIELD = "billable_until_epoch"
@@ -204,8 +212,13 @@ def record_event(event: Mapping[str, Any], *, root: Path, now: float | None = No
     directory = Path(root) / "events" / month_of(at)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"uid-{os.geteuid()}.jsonl"
-    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                         JOURNAL_FILE_MODE)
     try:
+        # Every admitting account reads every account's grants (``admitted_since``): a file made before this rule, or
+        # under a stricter umask, is opened up by its own writer. It holds job ids, providers and amounts, no secret.
+        if stat.S_IMODE(os.fstat(descriptor).st_mode) != JOURNAL_FILE_MODE:
+            os.fchmod(descriptor, JOURNAL_FILE_MODE)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         os.write(descriptor, (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode())
     finally:
@@ -324,8 +337,8 @@ def admitted_since(root: Path | None, since_epoch: float, *, now: float,
     a grant issued since is in none of its figures. Each counts at the most it was admitted or held for
     (``MAXIMUM_COST_FIELD``, ``held_usd``), once per meter key. ``exclude_meter_key`` is the reservation being
     judged, whose own cost the caller adds. A stop counts nothing, nor does an admission that names no amount:
-    none is made up for it. A file this process cannot read is skipped, as ``read_journal`` skips it for the
-    report.
+    none is made up for it. A file of the month this process cannot read whole raises ``JournalUnreadable``: its
+    grants cannot be counted, so the caller refuses new spend.
     """
 
     if root is None:
@@ -335,13 +348,17 @@ def admitted_since(root: Path | None, since_epoch: float, *, now: float,
         return Decimal(0)
     amounts: dict[str, Decimal] = {}
     for path in sorted(directory.glob("uid-*.jsonl")):
+        # Fail closed (Codex review of #3716): a file of the month this process cannot read whole, another account's
+        # or a damaged one, may hold grants; counting it as nothing could admit spend past the limit.
         try:
             info = os.lstat(path)
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_JOURNAL_FILE_BYTES:
-                continue
+                raise JournalUnreadable(path.name)
             lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
-            continue
+        except JournalUnreadable:
+            raise
+        except (OSError, UnicodeDecodeError) as exc:
+            raise JournalUnreadable(path.name) from exc
         for number, line in enumerate(lines):
             try:
                 row = json.loads(line)
@@ -634,7 +651,8 @@ def public_view(view: Mapping[str, Any], *, max_jobs: int | None = None) -> dict
 
 
 __all__ = [
-    "ADMISSION_LOCK_FILENAME", "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV", "MAXIMUM_COST_FIELD",
+    "ADMISSION_LOCK_FILENAME", "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV", "JOURNAL_FILE_MODE",
+    "JournalUnreadable", "MAXIMUM_COST_FIELD",
     "METER_ROOT_ENV", "RESOURCE_CLASS_PROVIDERS",
     "BILLABLE_UNTIL_FIELD", "OVERHEAD_PREFIX", "OVERHEAD_PROVIDERS", "SOURCE_OPENAI", "SOURCE_OVERHEAD",
     "UNATTRIBUTED", "VIEW_SCHEMA", "admission_lock", "admission_meter_key", "admitted_since", "atlas_rows",

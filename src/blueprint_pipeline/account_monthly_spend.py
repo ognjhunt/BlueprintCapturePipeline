@@ -87,7 +87,7 @@ from pathlib import Path
 from typing import Any
 
 from .launch_proof_policy import production_launch_mode
-from .paid_spend_meter import admitted_since, meter_root, money, month_of, month_start, usd
+from .paid_spend_meter import JournalUnreadable, admitted_since, meter_root, money, month_of, month_start, usd
 
 POLICY_SCHEMA = "blueprint.account_monthly_spend_limit.v1"
 REPORT_SCHEMA = "blueprint.account_monthly_spend_report.v1"
@@ -120,6 +120,9 @@ REPORT_STALE = "account_monthly_spend_report_stale"
 UNAVAILABLE = "account_monthly_spend_limit_unavailable"
 #: A call named a maximum cost that is no amount (negative, not finite, not a number): it cannot be judged.
 CALL_COST_INVALID = "account_monthly_spend_call_cost_invalid"
+#: A journal file of the month could not be read whole, so the grants since the report cannot be counted: new spend
+#: waits, as for a stale report (Codex review of #3716).
+JOURNAL_UNREADABLE = "account_monthly_spend_journal_unreadable"
 MAX_POLICY_BYTES = 64 * 1024
 MAX_REPORT_BYTES = 1024 * 1024
 MAX_EXPORT_BYTES = 1024 * 1024
@@ -446,8 +449,11 @@ def admission_blockers(*, now: float | None = None, environ: Mapping[str, str] |
         return [REPORT_INVALID]
     if report.get("period") != period or not -60 <= moment - generated <= REPORT_MAX_AGE_SECONDS:
         return [REPORT_STALE]
-    count = counted + (admitted_since_report(report, now=moment, environ=env, exclude_meter_key=exclude_meter_key)
-                       or Decimal(0))
+    try:
+        since = admitted_since_report(report, now=moment, environ=env, exclude_meter_key=exclude_meter_key)
+    except JournalUnreadable:
+        return [JOURNAL_UNREADABLE]
+    count = counted + (since or Decimal(0))
     if count >= limit or (quote is not None and count + quote > limit):
         return [LIMIT_REACHED]
     return []
@@ -567,7 +573,10 @@ def main(argv: list[str] | None = None) -> int:
         report: Any = read_report(path) if path is not None else None
     except (OSError, ValueError, UnicodeDecodeError):
         report = None
-    since = admitted_since_report(report) if isinstance(report, Mapping) else None
+    try:
+        since = admitted_since_report(report) if isinstance(report, Mapping) else None
+    except JournalUnreadable:
+        since = None  # the decision above already names the refusal
     print(json.dumps({"config_path": str(config), "cap_status": cap_status(policy, error, required=limit_required()),
                       "report_path": str(path) if path else None,
         "admission_blockers": admission_blockers(),
@@ -578,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     "ACCOUNT_PAGE_CODES", "ACCOUNT_WARN_CODES", "CALL_COST_INVALID", "CONFIG_ENV", "CONFIG_INVALID",
+    "JOURNAL_UNREADABLE",
     "INSTALLED_CONFIG_PATH",
     "LIMIT_NOT_CONFIGURED", "LIMIT_REACHED", "POLICY_SCHEMA", "REPORT_INVALID", "REPORT_SCHEMA", "REPORT_STALE",
     "ROOT_ENV", "SHIPPED_CONFIG_PATH", "UNAVAILABLE", "account_alerts", "admission_blockers",

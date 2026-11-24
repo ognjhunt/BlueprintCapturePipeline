@@ -119,7 +119,10 @@ def month_refusal(environ: Mapping[str, str] | None = None) -> str | None:
     report = month.read_report(Path(policy["report_path"]))
     counted, line = month.money(report.get("counted_usd")), month.money((report.get("alert_lines_usd") or {})
                                                                           .get(STOP_LINE))
-    since = month.admitted_since_report(report, environ=environ)
+    try:
+        since = month.admitted_since_report(report, environ=environ)
+    except month.JournalUnreadable:
+        return "test_job_month_closed:" + month.JOURNAL_UNREADABLE
     if counted is None or line is None or since is None:
         return "test_job_month_closed:" + month.REPORT_INVALID
     return "test_job_month_stop_line" if counted + since + EXPECTED_JOB_USD >= line else None

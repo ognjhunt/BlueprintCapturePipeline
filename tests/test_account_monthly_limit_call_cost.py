@@ -423,3 +423,63 @@ def test_a_scene_configuration_attempt_is_judged_at_its_hard_cap(month, tmp_path
     assert (code == 0, len(runs)) == ((True, 1) if admitted else (False, 0))
     if not admitted:
         assert json.loads(Path(args.adapter_output).read_text())["blockers"] == [REACHED]
+
+
+# ----------------------------- every account's grants are read (Codex review of #3716) -----------------------------
+
+
+def test_each_accounts_journal_is_readable_by_every_account_and_an_older_strict_one_is_opened_up(tmp_path):
+    """Root-run operator commands and the ``blueprint`` services journal under different accounts. A grant one
+    journals must count for an admission the other judges, so each file is readable by every account: a new one is
+    made so, and one made earlier under the old rule is opened up by its own writer at its next grant."""
+    root = tmp_path / "meter"
+    meter.record_admission(job_id="req-1", meter_key="first", resource_class="evaluator_api", root=root,
+                           now=NOVEMBER_29, maximum_cost_usd="5.00")
+    path = root / "events" / account.month_of(NOVEMBER_29) / f"uid-{os.geteuid()}.jsonl"
+    assert os.stat(path).st_mode & 0o777 == meter.JOURNAL_FILE_MODE == 0o644
+    os.chmod(path, 0o600)  # as the earlier rule left it
+    meter.record_admission(job_id="req-1", meter_key="second", resource_class="evaluator_api", root=root,
+                           now=NOVEMBER_29 + 1, maximum_cost_usd="5.00")
+    assert os.stat(path).st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize("damage", ["another_accounts_file", "not_text", "too_large", "not_a_file"])
+def test_a_journal_file_that_cannot_be_read_whole_refuses_new_spend_rather_than_counting_nothing(
+        tmp_path, monkeypatch, damage):
+    """Codex review of #3716: a file of the month this process cannot read was skipped, so a root-issued $5 grant was
+    $0 to a service, which could then admit past the limit. Now the month cannot be counted, so new spend waits
+    (``JOURNAL_UNREADABLE``), the test-job door refuses too, and a stop still goes through."""
+    env = _limit(tmp_path, counted="100.00", generated_ago_seconds=0)
+    directory = tmp_path / "meter" / "events" / account.month_of(NOVEMBER_29)
+    directory.mkdir(parents=True)
+    other = directory / "uid-0.jsonl"
+    if damage == "not_a_file":
+        other.mkdir()
+    else:
+        other.write_bytes(b"\xff\xfe not text" if damage == "not_text" else b"")
+    if damage == "too_large":
+        monkeypatch.setattr(meter, "MAX_JOURNAL_FILE_BYTES", -1)
+    if damage == "another_accounts_file":  # mode 0600 under another account: this process is refused, as on the host
+        real = Path.read_text
+
+        def refused(self, *args, **kwargs):
+            if self.name == "uid-0.jsonl":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", refused)
+    assert account.admission_blockers(now=NOVEMBER_29, environ=env, maximum_cost_usd="1.00") == [
+        account.JOURNAL_UNREADABLE]
+    assert account.admission_blockers(now=NOVEMBER_29, environ=env) == [account.JOURNAL_UNREADABLE]
+    with pytest.raises(meter.JournalUnreadable):
+        meter.admitted_since(tmp_path / "meter", NOVEMBER_29 - 60, now=NOVEMBER_29)
+
+
+def test_the_test_job_door_waits_when_a_journal_file_cannot_be_read(tmp_path, monkeypatch):
+    from blueprint_pipeline import internal_test_job_door as door
+
+    env = _limit(tmp_path, counted="100.00", generated_ago_seconds=0)
+    monkeypatch.setattr(account, "_clock", lambda: NOVEMBER_29)
+    directory = tmp_path / "meter" / "events" / account.month_of(NOVEMBER_29)
+    directory.mkdir(parents=True)
+    (directory / "uid-0.jsonl").mkdir()
+    assert door.month_refusal(environ=env) == "test_job_month_closed:" + account.JOURNAL_UNREADABLE
