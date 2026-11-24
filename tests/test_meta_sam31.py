@@ -261,6 +261,76 @@ def test_an_expired_kept_hold_stays_counted_and_the_next_reservation_is_a_new_bi
     assert sam._superseded_reservations(root) == [pending]
 
 
+def _website_holds_without_record(monkeypatch, *, holding):
+    """A website that answers ``already_reserved`` for every binding in ``holding`` (it granted those to a run that
+    kept no record), and grants any other once, as the real reservation does."""
+    from blueprint_pipeline import website_task_context
+    from blueprint_pipeline.paid_resource_admission import PaidResourceAlreadyReserved
+
+    reservations = []
+
+    def reserve(**kwargs):
+        value = {**build_paid_lane_admission(resource_class="evaluator_api"), "provider": "meta",
+                 "allocation_binding_digest": kwargs["binding_digest"], "maximum_cost_usd": kwargs["maximum_cost_usd"],
+                 "external_disclosure_allowed": True, "expires_at_epoch": time.time() + 3600}
+        if kwargs["binding_digest"] in holding or kwargs["binding_digest"] in [r["binding_digest"] for r in reservations]:
+            raise PaidResourceAlreadyReserved(["paid_resource_admission_not_admitted"], {**value, "status": "already_reserved"})
+        reservations.append(kwargs)
+        kwargs["retain_admission"](value)
+        return value, require_paid_resource_admission(value, resource_class="evaluator_api",
+            expected_schema_version="paid_lane_admission.v1")
+
+    monkeypatch.setattr(website_task_context, "reserve_website_sam_spend", reserve)
+    return reservations
+
+
+def _pending_digest(args):
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=args["prompts"]))
+    return digest, canonical_digest({"kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
+                                     "pending_prompt_indices": [2]})
+
+
+def test_a_hold_the_website_keeps_with_no_record_here_is_set_aside_and_the_prompt_bought_once_more(tmp_path, monkeypatch):
+    """The owner's Austin job (2026-11-24): its pending prompt was reserved by a run that kept no record, then every
+    later run was answered ``already_reserved`` and refused for good. With no intent under it, nothing was sent: the
+    hold is set aside (still counted) and the prompt is reserved under a new binding, once."""
+    args, root, _reservations, _sources = _two_answered_one_pending(tmp_path, monkeypatch)
+    digest, pending = _pending_digest(args)
+    reservations = _website_holds_without_record(monkeypatch, holding={pending})
+    calls = []
+
+    def opener(request, **kwargs):
+        calls.append(json.loads(request.data)["input"][0]["content"][0]["text"])
+        return BytesIO(json.dumps(response()).encode())
+
+    result = sam.run_meta_sam31(**args, opener=opener)
+    assert result["status"] == "completed" and calls == ["object 2"]
+    assert len(reservations) == 1 and reservations[0]["binding_digest"] not in (pending, digest)
+    assert json.loads((root / f"held-reservation-{pending[7:]}.json").read_text())["status"] == "orphaned"
+    assert json.loads((root / "response-2.json").read_text())["allocation_binding_digest"] == reservations[0]["binding_digest"]
+
+
+def test_a_binding_set_aside_twice_is_refused_rather_than_bought_a_third_time(tmp_path, monkeypatch):
+    from blueprint_pipeline.paid_resource_admission import PaidResourceAlreadyReserved
+
+    args, root, _reservations, _sources = _two_answered_one_pending(tmp_path, monkeypatch)
+    _digest, pending = _pending_digest(args)
+
+    class Everything(set):
+        def __contains__(self, item):
+            return True
+
+    reservations = _website_holds_without_record(monkeypatch, holding=Everything())
+    for _ in range(sam.MAX_ORPHANED_RESERVATIONS):
+        with pytest.raises(PaidResourceAlreadyReserved):
+            sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("nothing is sent without a grant"))
+    assert reservations == [] and len(sam._superseded_reservations(root, frozenset({"orphaned"}))) == sam.MAX_ORPHANED_RESERVATIONS
+    with pytest.raises(PaidResourceAlreadyReserved):
+        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("nothing is sent without a grant"))
+    assert len(sam._superseded_reservations(root, frozenset({"orphaned"}))) == sam.MAX_ORPHANED_RESERVATIONS
+
+
 def test_partial_prompt_resume_refuses_uncertain_missing_prompt_before_reservation(tmp_path, monkeypatch):
     monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
     args = inputs(tmp_path)

@@ -117,6 +117,17 @@ class PaidResourceAdmissionBlocked(RuntimeError):
         super().__init__("paid_resource_admission_blocked:" + ",".join(blockers))
 
 
+class PaidResourceAlreadyReserved(PaidResourceAdmissionBlocked):
+    """The website already holds this exact reservation (``already_reserved``) and this run holds no record of it, so
+    the answer pays nothing here: the same refusal every caller has always seen (``paid_resource_admission_not_admitted``).
+    ``admission`` is the website's answer, kept so a caller that proves it sent nothing under that hold can set it aside
+    and reserve again under a new binding, the old hold still counted (``meta_sam31``)."""
+
+    def __init__(self, blockers: list[str], admission: Mapping[str, Any]):
+        super().__init__(blockers)
+        self.admission = dict(admission)
+
+
 def _monthly_budget_blockers(resource_class: str) -> list[str]:
     explicit = os.getenv("BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT", "").strip()
     reconstruction = (resource_class == "provider_reconstruction_api"

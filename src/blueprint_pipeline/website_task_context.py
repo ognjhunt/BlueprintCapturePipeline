@@ -253,6 +253,15 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
         # local budget. A restart must never turn a bare already_reserved
         # answer into authority or overwrite the original receipt with it.
         retain_admission(dict(value))
+    if value.get("status") == "already_reserved":
+        # The website lets only the first transaction dispatch, and this run holds no record of that one: no grant.
+        # The refusal is the one ``require_paid_resource_admission`` gives an admission that is not admitted, typed so
+        # a caller that proved it sent nothing under the hold can set it aside (``meta_sam31``, stress round 2).
+        # The lease is read first, as the chokepoint reads it: a worker that lost the capture says so, not this.
+        from .core.handoff_lease import handoff_lease_checkpoint
+        from .paid_resource_admission import PaidResourceAlreadyReserved
+        handoff_lease_checkpoint("paid_resource_admission")
+        raise PaidResourceAlreadyReserved(["paid_resource_admission_not_admitted"], value)
     grant = require_paid_resource_admission(
         metered_admission(value, job_id=task_context.get("request_id"), provider=provider),
         resource_class=resource_class, expected_schema_version="paid_lane_admission.v1")
