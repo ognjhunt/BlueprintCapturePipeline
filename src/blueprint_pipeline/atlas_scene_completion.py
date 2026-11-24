@@ -41,7 +41,7 @@ def _context_binding(context_basis, review, pose, context):
             'task_context_digest': context['context_digest']}
 
 
-def camera_candidates(frames):
+def camera_candidates(frames, *, without_context_depth=None):
     """A scene-relative candidate pool; the planner chooses count and viewpoints.
 
     Original-centre rotations follow the source field of view and need no
@@ -51,18 +51,29 @@ def camera_candidates(frames):
     A calibrated pixel/camera quarter-turn fits portrait photos to the native
     landscape grid without broadening the photographed horizontal field of view.
     These are generation hypotheses, not collision-cleared physical cameras.
+
+    A view with no valid context depth (no pixel of finite, positive depth and
+    positive confidence) proposes no camera and the others go on; its id is
+    appended to ``without_context_depth`` when a list is given. Austin
+    (itest-cce2beee, 2026-11-24): three of 204 views came back from the pose with
+    depth on 93-99% of their pixels and a confidence of zero on every one. Only a
+    pool where no view has any is refused (``atlas_completion_no_context_depth``,
+    a completion floor code).
     """
     from scipy.spatial.transform import Rotation
     from .atlas_depth_splat import frame_arrays
     from .atlas_scene_chisel import oriented_camera
 
-    candidates = []
+    candidates, kept = [], []
     for frame in frames:
         depth, confidence = frame_arrays(frame, "depth", "confidence")
         valid = np.isfinite(depth) & (depth > 0) & (confidence > 0)
         del depth, confidence
         if not np.any(valid):
-            raise ValueError("atlas_completion_no_context_depth")
+            if without_context_depth is not None:
+                without_context_depth.append(frame["frame_id"])
+            continue
+        kept.append(frame)
         camera, rotated = oriented_camera(frame)
         k = camera["intrinsics"]
         scale = min(1280 / k['width'], 720 / k['height'])
@@ -84,6 +95,8 @@ def camera_candidates(frames):
                                "source_frame_id": frame["frame_id"], "purpose": name,
                                "context_valid_depth_fraction": float(np.mean(valid)),
                                "rotation_radians": list(angles), "camera": target})
+    if not kept:
+        raise ValueError("atlas_completion_no_context_depth")
     wide = [row for row in candidates if row['purpose'] == 'wide']
     for first, second in zip(wide, wide[1:]):
         start = np.asarray(first['camera']['extrinsics']['position'])
@@ -96,7 +109,7 @@ def camera_candidates(frames):
         target['camera']['extrinsics']['position'] = (start + .25 * (end - start)).tolist()
         candidates.append(target)
     from .atlas_completion_cameras import disocclusion_candidates
-    candidates.extend(disocclusion_candidates(frames, wide))
+    candidates.extend(disocclusion_candidates(kept, wide))
     return candidates
 
 
@@ -175,7 +188,10 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         raise ValueError('atlas_completion_refreshed_context_identity_changed')
     from .atlas_depth_splat import read_in_turn
     fov = verify_pose_context_fov(pose_root=pixel_root, frames=read_in_turn(frames), output_root=root)
-    camera_pool = camera_candidates(frames)
+    without_depth = []
+    camera_pool = camera_candidates(frames, without_context_depth=without_depth)
+    # Named on the planner's inputs and every record this pass writes; absent when every view has depth.
+    left_out = {'frames_without_context_depth': without_depth} if without_depth else {}
     # The initial pass already surveyed the full topology. A feedback pass
     # checks every source/reviewed view, then aims at its remaining holes;
     # re-surveying every old translated hypothesis would repeat finished work.
@@ -256,7 +272,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                   'review': {'status': 'not_required', 'reason': 'no_eligible_geometry_gaps'},
                   'gap_survey_digest': gaps['digest'], 'completion_extent': 'identified_missing_geometry_only',
                   'generation_extent': extent, 'generated_geometry_ready': True, 'claim_ceiling': 'development_only',
-                  **binding}
+                  **binding, **left_out}
         report.update(whole_scene_complete=False, coverage_basis='surveyed_camera_gaps_only')
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'completion.json', report)
@@ -302,7 +318,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                 'gap_survey': {k: v for k, v in gaps.items() if k != 'previews'},
                 "input_basis": ('preserved_capture_context_with_estimated_depth' if binding else
                                 'generated_background_not_raw_capture'),
-                "claim_ceiling": "development_only", **binding}
+                "claim_ceiling": "development_only", **binding, **left_out}
     if coverage_feedback is not None:
         feedback['post_export_coverage'] = coverage_feedback
     if expected_frames:
@@ -389,7 +405,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                   'gap_assessment': proposal['gap_assessment'], 'whole_scene_complete': False,
                   'environment_surfaces': proposal.get('environment_surfaces', []),
                   'coverage_basis': 'task_prioritized_review_of_surveyed_export',
-                  'generated_geometry_ready': True, 'claim_ceiling': 'development_only', **binding}
+                  'generated_geometry_ready': True, 'claim_ceiling': 'development_only', **binding, **left_out}
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'completion.json', report)
         return [], report
@@ -413,7 +429,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         report = {'schema_version': 'atlas_source_gap_action.v1', 'status': 'source_recovery_required',
                   'reason': 'atlas_recorded_source_views_must_be_recovered_before_generation',
                   'source_evidence': audit, 'planner': planned, 'new_atlas_generation_calls': 0,
-                  'claim_ceiling': 'development_only', **binding}
+                  'claim_ceiling': 'development_only', **binding, **left_out}
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'source-action.json', report)
         return None, report
@@ -456,7 +472,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                      if unusable else {}),
                   'source_evidence': audit, 'new_atlas_generation_calls': 0,
                   'generated_geometry_ready': True, 'whole_scene_complete': False,
-                  'claim_ceiling': 'development_only', **binding}
+                  'claim_ceiling': 'development_only', **binding, **left_out}
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'completion.json', report)
         return [], report
@@ -527,7 +543,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "claim_ceiling": "development_only",
               "whole_scene_complete": False, "coverage_basis": "surveyed_camera_gaps_only",
               "simulation_qualified": False, "metric_measurement_proven": False, "physical_evidence": False,
-              **binding}
+              **binding, **left_out}
     if visual["status"] != "passed":
         report["reason"] = "atlas_completion_visual_review_required"
     report["digest"] = canonical_digest(report, digest_field="digest")

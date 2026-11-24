@@ -106,6 +106,42 @@ def test_completion_camera_pool_preserves_vertical_rays_and_observed_camera_cent
         completion.camera_candidates([first])
 
 
+def _walk(*positions):
+    frames = [frame(str(i)) for i in range(len(positions))]
+    for f, position in zip(frames, positions, strict=True):
+        f['position'] = np.array(position, dtype=float)
+        f['extrinsics']['position'] = list(position)
+    return frames
+
+
+def test_a_view_without_context_depth_proposes_no_camera_and_the_others_go_on():
+    """Austin (itest-cce2beee, 24 Nov): three of 204 posed views had depth on 93-99% of their pixels and a confidence
+    of zero on every one, and the room stopped at the camera pool. Such a view is named and left out, nothing more."""
+    frames = _walk([0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0])
+    frames[1]['confidence'][:] = 0
+    named = []
+    pool = completion.camera_candidates(frames, without_context_depth=named)
+    assert named == ['1']
+    assert '1' not in {row['source_frame_id'] for row in pool}
+    # The pool of the views that have depth, as if the view had not been sent: translated between its neighbours,
+    # and disocclusion hypotheses planned from those views alone.
+    others = completion.camera_candidates([frames[0], frames[2], frames[3]])
+    assert json.dumps(pool, default=list) == json.dumps(others, default=list)
+    assert {row['purpose'] for row in pool} >= {'wide', 'translated', 'disocclusion'}
+    # Naming is optional: the pool is the same without the list.
+    assert json.dumps(completion.camera_candidates(frames), default=list) == json.dumps(pool, default=list)
+
+
+def test_only_a_pool_where_no_view_has_context_depth_is_refused():
+    frames = _walk([0, 0, 0], [2, 0, 0])
+    frames[0]['confidence'][:] = 0
+    frames[1]['depth'][:] = np.nan
+    named = []
+    with pytest.raises(ValueError, match='^atlas_completion_no_context_depth$'):
+        completion.camera_candidates(frames, without_context_depth=named)
+    assert named == ['0', '1']
+
+
 def test_translated_hypotheses_follow_adjacent_baselines_instead_of_arbitrary_room_center():
     frames = [frame(str(i)) for i in range(4)]
     for f, position in zip(frames, ([0, 0, 0], [2, 0, 0], [2, 2, 0], [0, 2, 0]), strict=True):

@@ -231,3 +231,45 @@ def test_without_a_splat_fill_completion_keeps_every_frame_as_context(tmp_path, 
                         lambda **kw: seen.update(kw) or complete(**kw))
     report = worker.run_preserved_completion(**args)['admission']
     assert seen['reference_frames'] is seen['frames'] and 'registration_frame_ids' not in report
+
+
+def test_a_view_the_pose_gave_no_confident_depth_is_left_out_and_the_room_goes_on(tmp_path, monkeypatch):
+    """Austin (itest-cce2beee, 24 Nov): three of 204 posed views came back with depth on 93-99% of their pixels and a
+    confidence of zero on every one, and the preserved completion stopped at its camera pool each time it ran. Here
+    one of four synthetic views is posed that way: the completion runs through with the other three, every stand-in
+    for a paid call answered offline, and names the view it left out on the planner's inputs and its report."""
+    import json
+
+    import cv2
+
+    from blueprint_pipeline import atlas_observed_space, atlas_scene_preservation
+    from tests.atlas_preserved_completion_synthetic import Rehearsal
+
+    monkeypatch.setattr(atlas_scene_preservation, '_SUPPORT_MASKS', {})
+    monkeypatch.setattr(atlas_observed_space, '_SPACE', {})
+    rehearsal = Rehearsal(tmp_path, 4, width=160, height=96)
+    pose_path = rehearsal.pose_root / atlas_depth_splat.POSE_RESULT
+    result = json.loads(pose_path.read_text())
+    row = result['operation_receipt']['input_usage']['frames'][2]
+    output = next(value for value in row['outputs'] if value['role'] == 'confidence')
+    zeros = rehearsal.pose_root / 'zero-confidence.png'
+    assert cv2.imwrite(str(zeros), np.zeros((96, 160), np.uint8))
+    zeros.replace(rehearsal.pose_root / output['path'])
+    output['sha256'] = atlas_depth_splat._sha256_file(rehearsal.pose_root / output['path'])
+    pose_path.write_text(json.dumps(sealed({key: value for key, value in result.items() if key != 'digest'})))
+    pose, frames = atlas_depth_splat.load_posed_rgbd(rehearsal.pose_root)
+    left_out = row['frame_id']
+
+    completed, _ = rehearsal.run(frames, pose)
+    assert completed['status'] == 'completed'
+    report = completed['completion']
+    assert report['status'] == 'passed' and report['generated_roots'] and report['review']['status'] == 'passed'
+    assert report['frames_without_context_depth'] == [left_out]
+    (inputs,) = (tmp_path / 'preserved_completion/completion').glob('plan-inputs-source-*.json')
+    planned = json.loads(inputs.read_text())
+    assert planned['frames_without_context_depth'] == [left_out]
+    sources = {candidate['source_frame_id'] for candidate in planned['candidate_camera_ids']}
+    assert sources and left_out not in sources
+    # The view is still a photograph of the room: the planner is shown it.
+    survey = json.loads((tmp_path / 'preserved_completion/completion/survey.json').read_text())
+    assert left_out in {row['frame_id'] for row in survey['frames']}
