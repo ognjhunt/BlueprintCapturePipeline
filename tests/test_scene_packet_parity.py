@@ -266,7 +266,14 @@ def test_case_c_an_articulated_job_carries_its_success_rule_in_the_plan_and_is_p
     assert kept["status"] == "published", kept
     result, rule, names = _download(tmp_path / "dl-new", compiled["path"])
     assert result["status"] == "published", result
-    assert rule["up_axis"] == "Z" and rule["units"] == "metres, radians, seconds"
+    assert rule["up_axis"] == "Z"
+    # Which joint the interval is for, its kind and unit, read from the shipped object file (stress test, 2026-11-24).
+    assert rule["criteria"]["target_joint"] == {"prim_path": "/World/Object/Asset/joints/task_part_joint",
+                                                "kind": "prismatic", "unit": "metres"}
+    assert [joint["kind"] for joint in rule["criteria"]["locked_joints"]["joints"]] == ["fixed", "fixed"]
+    assert rule["units"]["criteria.opening.success_interval"] == "metres (the target joint is prismatic)"
+    assert rule["units"]["*window_samples"] == "control steps, 15 a second (timing.control_frequency_hz)"
+    assert rule["units"]["*_hz"] == "hertz"
     assert rule["criteria"]["opening"] == {"mode": "required", "success_interval": [0.216, 0.36],
                                            "joint_hard_limits": [0.0, 0.36], "reset_position": 0.0}
     assert rule["criteria"]["hold"] == {"mode": "required", "window_samples": 15,
@@ -275,8 +282,12 @@ def test_case_c_an_articulated_job_carries_its_success_rule_in_the_plan_and_is_p
     assert rule["criteria"]["safety"] == {"mode": "required"}
     assert "object_start" in rule and rule["timing"]
     assert "success_rule.json" in names and "scene.usda" in names
-    text = json.dumps(rule)
+    # Nothing of the plan as text: Blueprint's joint ids are not shipped, and a part's name appears only inside the
+    # prim path of a joint the shipped object file holds.
+    text = json.dumps({**rule, "criteria": {**rule["criteria"], "locked_joints": None}})
     assert "drawer" not in text and "joint_id" not in text
+    assert all(joint["prim_path"].startswith("/World/Object/Asset/joints/")
+               for joint in rule["criteria"]["locked_joints"]["joints"])
 
 
 def test_an_articulated_plan_whose_room_states_no_up_axis_is_still_refused(tmp_path):
