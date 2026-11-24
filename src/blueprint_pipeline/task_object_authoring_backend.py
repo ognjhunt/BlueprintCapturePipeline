@@ -84,6 +84,29 @@ def frozen_authoring_cap(configuration: Mapping[str, Any]) -> float:
     return positive_cost(budget.get("maximum_cost_usd"))
 
 
+#: An attempt that reuses a finished ARTISAN run makes no model call; it keeps
+#: the smallest allocation the ARTISAN budget profile admits.
+MINIMUM_ARTISAN_ALLOCATION_USD = 0.01
+
+
+def resumed_authoring_allocation(cap: float, carried: Mapping[str, Any] | None) -> float:
+    """What one run may spend under a frozen cumulative ``cap`` once ``carried`` is spent.
+
+    ``carried`` is what a resumable source already spent (``task_evaluation_artisan_continuation.
+    factory_carried_spend``), or ``None``. A successor that continues a source can spend only what
+    the source left, so it is allocated only that, to the cent below (capture-447ae4f4, 2026-11-02:
+    a $30 reservation for $11.24 of possible spend did not fit the owner's $60). A source that
+    finished upstream leaves only an export (``MINIMUM_ARTISAN_ALLOCATION_USD``). Nothing carried,
+    or nothing left to the cent: the whole cap, as before.
+    """
+    if carried is None:
+        return cap
+    remainder = math.floor((cap - carried["cost_usd"]) * 100) / 100
+    if carried.get("completed"):
+        return MINIMUM_ARTISAN_ALLOCATION_USD
+    return remainder if remainder > 0 else cap
+
+
 def request_authoring_cap(request: Mapping[str, Any]) -> float | None:
     if request.get("replacement_authoring_backend") != ARTISAN_BACKEND:
         return None

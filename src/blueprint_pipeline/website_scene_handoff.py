@@ -969,9 +969,13 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         from .website_build_plan import apply_to_removal, sealed_decision
         removal, planned = apply_to_removal(removal, capture_root), sealed_decision(capture_root)
         if planned is not None:
+            # An object the plan would build that a limit on the job's paid work kept as filmed, named, with the
+            # website's refusal code as received; it covers the dollar cap and the paid-request count alike (2026-11-23).
+            from .website_build_plan_notes import kept_disclosure, sealed_budget
             result["build_plan"] = {"digest": planned["build_plan"]["digest"],
                                     "built": (planned.get("built") or {}).get("target_id"),
-                                    "kept_in_scan": len(planned.get("kept_in_scan_target_ids") or [])}
+                                    "kept_in_scan": len(planned.get("kept_in_scan_target_ids") or []),
+                                    **kept_disclosure(sealed_budget(capture_root), planned)}
         # Capture truth applies to held families too. Reading this retained
         # manifest performs no mask, authoring or provider work.
         # The editor could not take the job's object out cleanly, or the job's objects are several or soft, so the

@@ -580,3 +580,86 @@ Known edges:
   nor WebApp overhead (operator and development runs, such as the 27
   `adp_run_operator` runs of November 2–12 with no recorded cost). It shows as
   `unattributed_usd`.
+
+## Extra objects inside the $40 (2026-11-23)
+
+Owner decision 2026-11-23: keep the $40 per-job cap
+(`config/website_job_spend_cap.v1.json`, mirrored byte for byte in the WebApp)
+and do not change the figure. The simulation may spend whatever the scan leaves
+under it.
+
+- **The first object is unchanged.** The build plan's first object (its
+  top-ranked buildable one, `website_build_plan.built_object`) is built under
+  the scene intake's allowance, held in full on the job's ledger as before.
+- **Each extra paid object is its own reservation.** Every further object the
+  plan builds and sources `generate` (ARTISAN, at its frozen per-object cap,
+  $12) reserves that cap on the job's WebApp ledger, one object at a time in the
+  plan's order, once the scene intake is held:
+  `website_build_budget.admit_extra_objects` →
+  `website_task_context.reserve_website_preparation_spend` (resource
+  `openai_api_candidate`, provider `openai`, one request) → WebApp
+  `reserveWebsitePreparationSpend` → `checkWebsiteJobCeiling`, which counts
+  everything the job holds or has settled on every ledger. It is the existing
+  preparation path: no new money channel and no WebApp code change.
+- **Free objects reserve nothing:** library objects (Google Scanned Objects,
+  SimReady) and parametric shapes (boxes, totes, bins, trays, cans).
+- **When the WebApp refuses** (`website_scene_preparation_budget_exhausted`),
+  the refused object and every paid object ranked below it are kept as filmed,
+  each by name, under the machine reason `spending_cap_reached`. The WebApp
+  sends that one code for both of the job's limits on paid work: the $40 dollar
+  cap (`checkWebsiteJobCeiling`) and the native ledger's paid-request count
+  (`preparationRequestLimit`, the sponsorship's `max_paid_attempts`, a host
+  value not verified). It does not say which one refused, and no record or
+  sentence claims one:
+  - the build budget record (`pipeline/atlas/build_plan/budget/build_budget.json`,
+    beside the plan) and each object's refused reservation keep
+    `refusal_code` exactly as received, with
+    `refusal_code_means_one_of: ["job_dollar_cap", "paid_request_count"]`;
+  - the handoff's `build_plan` disclosure carries the same fields beside
+    `kept_at_spending_cap` (`website_build_plan_notes.kept_disclosure`);
+  - the company README's plain notes say what is true of either limit:
+    "Kept as filmed: <name>, the job reached its limit on paid work."
+
+  The job goes on without them. A refusal is final: money a later settlement
+  frees brings no refused object back. The account's monthly limit, privacy,
+  rights and outages are raised exactly as every reservation raises them: a
+  wait or a wall, never a kept object.
+- **Partial spend.** An admitted row settles at what the object's authoring
+  cost (`settle_object`, the existing OpenAI `preparation-settlement`), never
+  above its reservation; until then it holds its whole quote.
+- **Retries and resumes.** Each reservation is written once
+  (`reservations/<binding>.json`, keyed by the job, the sealed plan and the
+  object) as soon as the WebApp admits it, before the local paid recheck. A
+  rerun reuses it and never asks again, and the WebApp keys its row by the same
+  binding. A resumed run of an object spends only what its reservation's frozen
+  cap leaves (`authoring_allocation`, the same `resumed_authoring_allocation`
+  the first object's successor uses in `website_native_submission`).
+
+Why not a bigger allowance: raising the grant's native allowance up front was
+tried and reverted (it broke nine money tests). The scan can spend past its
+nominal upstream figure (a $20.50 Atlas hold), and the WebApp holds the intake's
+whole allowance up front, so a bigger allowance is refused at the cap and builds
+nothing.
+
+Known edges:
+
+- **No live route calls it yet.** Today the route builds one object, so no
+  extra object is reserved.
+- **One code for two limits.** Above: the WebApp contract is unchanged, so the
+  Pipeline cannot tell a dollar-cap refusal from a paid-request-count one, and
+  says only what is true of both.
+
+Notes for the several-objects build:
+
+1. **Call `admit_extra_objects` only after the scene intake's allowance is
+   held.** The WebApp holds that allowance in full once the intake is admitted;
+   reserving an extra object before it would let the extra object take money
+   the first object's intake needs.
+2. **Settle an extra object's ARTISAN usage through `settle_object` only.** A
+   scene attempt's meter must never also record that usage: the object's row
+   and the job's journal would count it twice.
+3. **The lost-local-record gap exists here, as it does for every preparation
+   step.** A row whose local record was lost (a crash between the WebApp's
+   commit and the record) is never reserved twice: the WebApp answers the row
+   it holds, which pays for nothing, and the job's retry raises. Its hold stays
+   counted: over, never under.
