@@ -71,7 +71,7 @@ from .outbound_file_scan import capture_site_identity
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 from . import website_half_preparation as half_preparation
 from . import website_library_notes as library_notes
-from .website_half_preparation import COLLISION_ONLY, generated_patch, look_views, surface_estimated
+from .website_half_preparation import COLLISION_ONLY, THRESHOLDS_ASSUMED, generated_patch, look_views, surface_estimated
 from .website_build_plan_notes import build_plan_notes
 from .website_company_look import look_ply, look_source, reauthor_look
 
@@ -561,6 +561,7 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
     record, notes = _sealed_record(scene, status), _record_notes(scene, status)
     told = half_preparation.half_disclosures(capture, record) if capture is not None and "room" not in notes else {}
     estimates, basis = told.pop("estimates", None), told.pop("basis", None)
+    assumed = "room" not in notes and half_preparation.thresholds_assumed(record)  # the site confirmed none of them
     for name, plan_file in [*((name, PLAN_FILE) for name in PACKET_DIRECTORIES), SCENE_PACKAGE]:
         packet = scene / name
         plan_path = _inside(scene, packet / plan_file)
@@ -576,14 +577,15 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
                                   **({"look_views": True} if look else {}),
                                   **({"surface_estimated": True} if capture is not None and "room" in notes
                                      and surface_estimated(capture) else {}), **told,
+                                  **({"thresholds_assumed": True} if assumed else {}),
                                   **(build_plan_notes(capture) if capture is not None else {}),
                                   "physics_check": physics_check(
                                       packet, plan, rule_withheld="rule_withheld" in notes)}
         try:
             rows = placements(plan)
             axis = up_axis(plan, packet=packet)
-            rule = neutral_rule(_with_sealed_rule(plan, scene, status), estimates=estimates, packet=packet,
-                                basis=basis)
+            rule = half_preparation.with_assumed_basis(neutral_rule(
+                _with_sealed_rule(plan, scene, status), estimates=estimates, packet=packet, basis=basis), assumed)
             room = source.get("room")
             if room is not None and (
                     name != SCENE_PACKAGE[0] or room["plan_digest"] != plan.get("plan_digest")
@@ -752,7 +754,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room", "plan_notes",
                                         "generated_patch", "look_views", "surface_estimated", "size_from_its_points",
                                         "size_disagrees_with_published", "destination_overhang", "library_models",
-                                        "library_refusal")
+                                        "library_refusal", "thresholds_assumed")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
@@ -1197,7 +1199,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_FILLED_IN] if room.get("not_filled_in") else []), *([SCALE_NOT_MEASURED_NOTE] if unscaled else [])]
                if room is not None else []),
              *([NO_RULE] if withheld else []),
-             *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else [])]
+             *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else []),
+             *([THRESHOLDS_ASSUMED] if source.get("thresholds_assumed") and source.get("rule") and room is None
+               else [])]
     # One bullet per note, under its own heading, so a reader can pick out the ones that matter.
     lines += ["", "Notes on this simulation", ""] if notes else []
     for note in notes:

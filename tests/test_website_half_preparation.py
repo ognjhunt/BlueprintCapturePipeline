@@ -117,3 +117,42 @@ def test_the_compile_seals_a_website_revision_s_preparation_digest_in_the_half_s
     record = json.loads(Path(compiled["path"]).read_text())
     assert record.get(half.FIELD) == (WEBSITE["digest"] if website else None)
     assert record["inputs_digest"] == canonical_digest(record, digest_field="inputs_digest")
+
+
+def test_the_assumption_marker_is_the_compile_s_own():
+    from blueprint_pipeline import website_owner_success_assumption as assumption
+    assert (half.ASSUMPTION_FIELD, half.ASSUMED) == (assumption.FIELD, assumption.ASSUMED)
+
+
+def _assumed(job: Job) -> None:
+    from blueprint_pipeline import website_owner_success_assumption as assumption
+    job.seal_record(**{assumption.FIELD: {"status": assumption.ASSUMED, "thresholds_digest": "sha256:" + "b" * 64}})
+
+
+def test_an_assumed_half_s_rule_names_each_of_its_numbers_assumed_and_says_so(tmp_path):
+    """Owner direction 2026-11-07: inferences are disclosed as assumptions. Every number of the shipped criteria is
+    marked ``assumed`` by its place in them, and the README says the site has not confirmed them."""
+    import zipfile
+    job = Job(tmp_path / "job")
+    _assumed(job)
+    source = _source(job)
+    assert source["rule"]["criteria_basis"] == {
+        "destination_containment.position_bounds_world_m.minimum": "assumed",
+        "destination_containment.position_bounds_world_m.maximum": "assumed",
+        "settling.position_tolerance_m": "assumed", "motion.minimum_lift_m": "assumed"}
+    sim.build_package(source, tmp_path / "p.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "p.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    assert half.THRESHOLDS_ASSUMED in readme and "criteria_basis says" in readme
+    job.seal_record(owner_success_assumption=None)  # a half compiled on thresholds the site confirmed
+    assert "criteria_basis" not in _source(job)["rule"]
+
+
+def test_an_assumed_half_keeps_the_preparation_s_own_basis_for_its_numbers(tmp_path):
+    job = Job(tmp_path / "job")
+    _write(job.preparation, {"success_rule_basis": {"applied": True, "fields": {
+        "maximum_episode_seconds": {"value": 60, "basis": "site_words"}}}})
+    _assumed(job)
+    source = _source(job)
+    assert source["rule"]["criteria_basis"] == {"maximum_episode_seconds": "site_stated"}
+    assert source["thresholds_assumed"] is True

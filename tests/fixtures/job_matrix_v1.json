@@ -34,7 +34,8 @@
    "not_found": "Blueprint did not find what the job is about in the video.",
    "objects_taken_out": "objects the job involves were taken out of the room scan and are not in this package.",
    "objects_in_scan": "The job's objects are part of the room scan; they are not separate files.",
-   "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video."
+   "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video.",
+   "thresholds_assumed": "The site has not confirmed the numbers in success_rule.json: where criteria_basis says assumed, the number is Blueprint's standard threshold, not the site's."
   }
  },
  "notes": "Each row is one job variation from the repository's own synthetic fixtures. 'reading' is what the paid Atlas review's task_semantics would say. 'expected' is where the variation ends today: change it only with the change that moves it. 'readme_sentences' are the README's expected wording, kept here as literals: change them only on purpose.",
@@ -269,7 +270,7 @@
     "zip_built": true,
     "assumed_thresholds": true,
     "robot_free_probe": "not_queued",
-    "readme_sha256": "sha256:b8708ae87f449a839ac7266174f51a4f0d4074ec79e028eefda58bf50170723b"
+    "readme_sha256": "sha256:398cfba7098e74d639d53bbbc93247fcdbd5d186de142a65f924a782fed75c35"
    }
   },
   {

@@ -40,6 +40,15 @@ FIELD = "preparation_sha256"
 STAGED_NAME = "website/preparation.json"
 #: The two places ``generated_patch`` names.
 COLLISION_ONLY, LOOK_AND_COLLISION = GENERATED_IN_COLLISION_ONLY, "look_and_collision"
+#: The site never confirmed the half's thresholds (``website_owner_success_assumption``): they are Blueprint's
+#: standard ones, and the rule says so for each number Blueprint set (owner direction 2026-11-07: "inferences are
+#: disclosed as assumptions").
+THRESHOLDS_ASSUMED = ("The site has not confirmed the numbers in success_rule.json: where criteria_basis says "
+                      "assumed, the number is Blueprint's standard threshold, not the site's.")
+#: ``website_owner_success_assumption.FIELD`` and ``ASSUMED``, named here: that module reaches the compile
+#: (``team_scene_packet``), which the package lane never imports (``tests/test_live_pipeline_import_isolation``).
+ASSUMPTION_FIELD = "owner_success_assumption"
+ASSUMED = "blueprint_standard_thresholds_assumed_not_confirmed_by_site"
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 #: How deep under ``website_scene_preparation`` a preparation is looked for (``superseded_atlas_results/<result>/
 #: revisions/<hex>/renewals/<hex>/preparation.json`` is the deepest layout written).
@@ -224,6 +233,34 @@ def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str,
             "basis": success_basis(preparation)}
 
 
+def _number(item: Any) -> bool:
+    return isinstance(item, (int, float)) and not isinstance(item, bool)
+
+
+def number_paths(criteria: Any, prefix: str = "") -> list[str]:
+    """Each number of the shipped criteria (a lone one, or a list of them), by its place in ``criteria``."""
+    if isinstance(criteria, Mapping):
+        return [path for key, item in criteria.items() for path in number_paths(item, f"{prefix}{key}.")]
+    if _number(criteria) or (isinstance(criteria, list) and criteria and all(_number(item) for item in criteria)):
+        return [prefix.rstrip(".")]
+    return []
+
+
+def thresholds_assumed(record: Mapping[str, Any]) -> bool:
+    """Whether the half's sealed record says it was compiled on Blueprint's standard thresholds, unconfirmed."""
+    marker = record.get(ASSUMPTION_FIELD)
+    return isinstance(marker, Mapping) and marker.get("status") == ASSUMED
+
+
+def with_assumed_basis(rule: dict[str, Any] | None, assumed: bool) -> dict[str, Any] | None:
+    """The rule, with ``criteria_basis`` saying ``assumed`` for each of its numbers when its thresholds were assumed
+    and the preparation said nothing of where they came from (its own basis is kept as it is)."""
+    if rule is None or not assumed or rule.get("criteria_basis"):
+        return rule
+    paths = number_paths(rule.get("criteria"))
+    return {**rule, "criteria_basis": {path: "assumed" for path in paths}} if paths else rule
+
+
 # --- the same lookups by capture, as the package read them before the binding (and for a room) -------------------
 
 def preparation(capture_root: Path) -> dict[str, Any]:
@@ -247,6 +284,7 @@ def surface_estimated(capture_root: Path) -> bool:
     return bool(base_scene_notes(handoff_base_scene(capture_root)).get("surface_estimated"))
 
 
-__all__ = ["COLLISION_ONLY", "FIELD", "LOOK_AND_COLLISION", "STAGED_NAME", "base_scene_notes", "binding",
-           "generated_patch", "half_disclosures", "half_preparation", "handoff_base_scene", "look_views", "named_path",
-           "object_estimates", "preparation", "size_notes", "success_basis", "surface_estimated"]
+__all__ = ["COLLISION_ONLY", "FIELD", "LOOK_AND_COLLISION", "STAGED_NAME", "THRESHOLDS_ASSUMED", "base_scene_notes",
+           "binding", "generated_patch", "half_disclosures", "half_preparation", "handoff_base_scene", "look_views",
+           "named_path", "number_paths", "object_estimates", "preparation", "size_notes", "success_basis",
+           "surface_estimated", "thresholds_assumed", "with_assumed_basis"]
