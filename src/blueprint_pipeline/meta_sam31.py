@@ -829,7 +829,7 @@ def settle_answered_reservations(root: Path, *, task_context: Mapping[str, Any])
                 if answer.get("status") == "settled" and all(answer.get(key) == value for key, value in command.items()):
                     write_json(done, answer)
                     settled.append(dict(answer))
-        except Exception:  # noqa: BLE001 - the answers are bought; an unsettled reservation keeps its quote
+        except Exception:  # noqa: BLE001,S112 - the answers are bought; an unsettled reservation keeps its quote
             continue
     return settled
 

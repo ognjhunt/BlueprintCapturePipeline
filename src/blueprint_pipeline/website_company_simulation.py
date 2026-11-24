@@ -1832,7 +1832,7 @@ def _publish_built(root, identity, manifest, manifest_path, package_path, basis,
     try:
         try:
             deliver(record, identity=identity)
-        except Exception as error:  # noqa: BLE001 - only the record's shape is retried here
+        except Exception as error:  # only the record's shape is retried here
             if "object_included" not in record or not _record_refused(error):
                 raise
             # A website that predates ``object_included``: the same package, its record without the field. The
