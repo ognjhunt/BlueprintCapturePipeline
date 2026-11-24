@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from . import website_library_notes as library_notes
-from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, GENERATED_VIEWS_IN_LOOK
+from .atlas_automation_plan import (GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, GENERATED_VIEWS_IN_LOOK,
+                                    SCENE_COMPLETION_NOT_ADMITTED)
 from .decision_evidence_contracts import canonical_digest
 
 #: The half record's field: the sha256 of the preparation its revision was built from.
@@ -253,10 +254,13 @@ def base_scene_notes(base: Mapping[str, Any]) -> dict[str, Any]:
     """What a base scene says the package must tell: where it keeps admitted generated geometry (``generated_patch``:
     ``collision_only``, only in the scan its collision was made from beside a refined look; ``look_and_collision``,
     any other; jobs before 2026-11-17 record no marker), generated views in its look (``look_views``, owner
-    2026-11-18: checked against the filmed frames and their depth) and a destination surface the scan did not show,
-    estimated from its visible edges (``surface_estimated``). Empty for a base scene with none of them."""
+    2026-11-18: checked against the filmed frames and their depth), a destination surface the scan did not show,
+    estimated from its visible edges (``surface_estimated``), and generated gap views that were not admitted, so
+    the areas the video did not show were not filled in (``not_filled_in``, ``website_atlas_scene_source``). Empty for
+    a base scene with none of them."""
     from .atlas_scene_estimates import DESTINATION_SURFACE_ESTIMATED
     content, look = base.get("content_provenance"), base.get("look_provenance")
+    completion = base.get("scene_completion")
     rows = base.get("scene_estimates") if isinstance(base.get("scene_estimates"), list) else []
     patch = None
     if isinstance(content, Mapping) and content.get("basis") == GENERATED_ESTIMATES_BASIS:
@@ -266,7 +270,9 @@ def base_scene_notes(base: Mapping[str, Any]) -> dict[str, Any]:
                and look.get("generated_views_in") == GENERATED_VIEWS_IN_LOOK else {}),
             **({"surface_estimated": True} if any(isinstance(row, Mapping)
                                                   and row.get("code") == DESTINATION_SURFACE_ESTIMATED
-                                                  for row in rows) else {})}
+                                                  for row in rows) else {}),
+            **({"not_filled_in": True} if isinstance(completion, Mapping)
+               and completion.get("generated_geometry_rejected") == SCENE_COMPLETION_NOT_ADMITTED else {})}
 
 
 def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str, Any]:

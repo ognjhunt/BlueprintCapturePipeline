@@ -765,7 +765,8 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         # Only a wording that differs from the packages before it names a new revision.
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room", "plan_notes",
-                                        "generated_patch", "look_views", "surface_estimated", "size_from_its_points",
+                                        "generated_patch", "look_views", "surface_estimated", "not_filled_in",
+                                        "size_from_its_points",
                                         "size_disagrees_with_published", "destination_overhang", "library_models",
                                         "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
                                         "object_source", "object_shape")
@@ -1197,6 +1198,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([GENERATED_NO_LOOK_NOTE if source.get("look_left_out")
                 else GENERATED_COLLISION_ONLY_NOTE if source["generated_patch"] == COLLISION_ONLY
                 else GENERATED_LOOK_AND_COLLISION_NOTE] if source.get("generated_patch") else []),
+             # A package with the job's object in it, from its base scene (a room package says it with its room notes).
+             *([NOT_FILLED_IN] if source.get("not_filled_in") and room is None else []),
              *([SURFACE_ESTIMATED_NO_LOOK_NOTE if source.get("look_left_out") else SURFACE_ESTIMATED_NOTE]
                if source.get("surface_estimated") else []),
              *([SIZE_FROM_ITS_POINTS_NOTE] if source.get("size_from_its_points") else []),

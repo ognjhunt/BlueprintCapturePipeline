@@ -200,6 +200,62 @@ EDIT_SCOPES = ("required_and_additional", "all_selected_views")
 #: the next month's money recheck. Every other code keeps the class it had.
 MONEY_REFUSALS = frozenset({"account_monthly_spend_limit_reached"})
 
+#: The captured path's completion floor, as ``website_atlas_pipeline.completion_floor`` is the preserved path's:
+#: its generated views only fill areas no frame saw, around a room the editor already cleaned (the background behind
+#: the removed object is the editor's, reviewed in its own pass), so a refusal of them leaves that cleaned room, which
+#: goes on without them, flagged. Sealed on the first such stop and read back on every later step, so neither the
+#: completion's planner, its generation nor its review runs again for it.
+COMPLETION_FLOOR_RECORD = "completion_floor.json"
+
+
+def sealed_completion_floor(output_root: Path, completion_root: Path, pose_digest: str) -> dict | None:
+    """The floor this step sealed for the same completion and pose, else None (the completion decides)."""
+    path = output_root / COMPLETION_FLOOR_RECORD
+    if not path.is_file():
+        return None
+    record = json.loads(path.read_text())
+    if record.get("digest") != canonical_digest(record, digest_field="digest"):
+        raise ValueError("atlas_completion_floor_record_invalid")
+    if (record.get("completion_relative_path") != str(completion_root.relative_to(output_root))
+            or record.get("source_pose_digest") != pose_digest):
+        return None
+    if record.get("completion_digest") is not None:
+        report = completion_root / "completion.json"
+        if not report.is_file() or json.loads(report.read_text()).get("digest") != record["completion_digest"]:
+            return None
+    return record
+
+
+def seal_completion_floor(output_root: Path, completion_root: Path, pose_digest: str, completion) -> dict | None:
+    """Seal the floor for a completion stopped by a floor code (the preserved path's default-deny list); else None."""
+    from .atlas_automation_plan import (
+        COMPLETION_FLOOR_ERRORS,
+        COMPLETION_FLOOR_REASONS,
+        SCENE_COMPLETION_NOT_ADMITTED,
+    )
+
+    reason = completion.get("reason")
+    if completion.get("status") != "needs_input" or reason not in COMPLETION_FLOOR_REASONS | COMPLETION_FLOOR_ERRORS:
+        return None
+    record = {"schema_version": "atlas_completion_floor.v1", "generated_geometry_rejected": SCENE_COMPLETION_NOT_ADMITTED,
+              "not_admitted_reason": reason, "completion_relative_path": str(completion_root.relative_to(output_root)),
+              "source_pose_digest": pose_digest, "completion_digest": completion.get("digest"),
+              "generation_result_digest": completion.get("generation_result_digest"),
+              "remaining_unknowns": list(completion.get("remaining_unknowns") or [])}
+    record["digest"] = canonical_digest(record, digest_field="digest")
+    write_json(output_root / COMPLETION_FLOOR_RECORD, record)
+    return record
+
+
+def completion_floor_summary(record) -> dict:
+    """What the background, and the job's result after it, say of a floored completion."""
+    return {"status": "completed", "generated_geometry_admitted": False,
+            "generated_geometry_rejected": record["generated_geometry_rejected"],
+            "not_admitted_reason": record["not_admitted_reason"], "remaining_unknowns": record["remaining_unknowns"],
+            "floor_digest": record["digest"],
+            **({"rejected_generation_result_digest": record["generation_result_digest"]}
+               if record.get("generation_result_digest") else {})}
+
 
 def measurement_plan(review):
     """The reviewed automation plan with the scene facts size estimates are bound to."""
@@ -348,6 +404,7 @@ def run_automation(
                 visual_digest = background["visual_review_digest"]
             generated_roots = [Path(p) for p in background.get("stage_roots", [])]
             completion = None
+            floor = None  # a sealed completion floor (``COMPLETION_FLOOR_RECORD``)
             recovery = None
             coverage = None
             recovery_suffix = ""
@@ -430,20 +487,31 @@ def run_automation(
 
                 completion_root = source_completion_root(
                     output_root / f"scene_completion-{COMPLETION_REVISION}", output_root, recorded_reports)
-                while True:
-                    generated, completion = complete_scene(
-                        pose_root=effective_root, pose=effective_pose,
-                        frames=merge_source_frames(original_frames, recorded_frames),
-                        review=review, root=completion_root, context=task_context,
-                        configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
-                        planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint,
-                        existing_geometry_frames=[*prior_frames, *recorded_frames],
-                        source_survey_path=source_survey_path,
-                        **({'expected_frames': recorded_frames,
-                            'reference_frames': merge_source_frames(original_frames, recorded_frames)}
-                           if recorded_frames else {}),
-                        **({'context_pose_root': recovery_context_pose_root,
-                            'context_pose_digest': recovery_context_pose_digest} if recovery_context_pose_root else {}))
+                from .atlas_automation_plan import COMPLETION_FLOOR_ERRORS
+                # A floor sealed for this completion and pose stands: nothing is planned, generated or reviewed again.
+                floor = sealed_completion_floor(output_root, completion_root, effective_pose['digest'])
+                while floor is None:
+                    try:
+                        generated, completion = complete_scene(
+                            pose_root=effective_root, pose=effective_pose,
+                            frames=merge_source_frames(original_frames, recorded_frames),
+                            review=review, root=completion_root, context=task_context,
+                            configuration=configuration, task_runner=task_runner, release_blockers=release_blockers,
+                            planner_runner=planner_runner, max_polls=max_polls, checkpoint=checkpoint,
+                            existing_geometry_frames=[*prior_frames, *recorded_frames],
+                            source_survey_path=source_survey_path,
+                            **({'expected_frames': recorded_frames,
+                                'reference_frames': merge_source_frames(original_frames, recorded_frames)}
+                               if recorded_frames else {}),
+                            **({'context_pose_root': recovery_context_pose_root,
+                                'context_pose_digest': recovery_context_pose_digest}
+                               if recovery_context_pose_root else {}))
+                    except ValueError as exc:
+                        if str(exc) not in COMPLETION_FLOOR_ERRORS:
+                            raise
+                        # The planner's retained answer proposes nothing usable to fill in, or nothing more may be
+                        # bought for the review: nothing is filled in (the preserved path's same raised codes).
+                        generated, completion = None, {'status': 'needs_input', 'reason': str(exc)}
                     if completion.get('status') != 'source_recovery_required':
                         break
                     recovered, source_report = recover_sources(completion, [*original_frames, *recorded_frames])
@@ -465,48 +533,69 @@ def run_automation(
                     visual_digest = canonical_digest({'previous': visual_digest, 'recovery': source_report['digest']})
                     completion_root = output_root / 'source_conditioned_completion' / canonical_digest(
                         {'recoveries': [r['digest'] for r in recorded_reports]})[7:23]
-                if completion.get('status') in {'source_recovery_required', 'source_review_required'}:
-                    return completion
-                if completion["status"] == "processing":
-                    return completion
-                if generated is None:
-                    raise ValueError(completion["reason"])
-                derived_frames = [*original_frames, *prior_frames, *recorded_frames, *generated]
-                provenance = [*provenance, completion["generation_result_digest"]]
-                visual_digest = canonical_digest({"reviews": [visual_digest, completion["review"]]})
-                generated_roots.extend(Path(p) for p in completion.get("generated_roots", []) or
-                                       ([completion["generated_root"]] if completion.get('generated_root') else []))
-                from .atlas_scene_recovery import reviewed_completion_views, recover_reviewed_geometry
-                from .atlas_scene_task_regions import plan_task_regions
+                if floor is None:
+                    if completion.get('status') in {'source_recovery_required', 'source_review_required'}:
+                        return completion
+                    if completion["status"] == "processing":
+                        return completion
+                    if generated is None:
+                        floor = seal_completion_floor(output_root, completion_root, effective_pose['digest'],
+                                                      completion)
+                        if floor is None:
+                            # Any other stop (money, release, a changed binding) stays a stop.
+                            raise ValueError(completion["reason"])
+                if floor is not None:
+                    # The generated gap views were not admitted: the cleaned room, its recorded source views and any
+                    # completion an earlier revision admitted go on without them, flagged. Nothing further is bought
+                    # for them (no task regions, geometry recovery or coverage repair of the refused views).
+                    completion = None
+                    derived_frames = [*original_frames, *prior_frames, *recorded_frames]
+                    if recorded_reports:
+                        recovery_suffix += '-sources-' + canonical_digest(
+                            {'recoveries': [r['digest'] for r in recorded_reports]})[7:23]
+                        background['recorded_source_recoveries'] = recorded_reports
+                    background['scene_completion'] = completion_floor_summary(floor)
+                    background["reconstruction_frame_count"] = len(derived_frames)
+                else:
+                    derived_frames = [*original_frames, *prior_frames, *recorded_frames, *generated]
+                    provenance = [*provenance, completion["generation_result_digest"]]
+                    visual_digest = canonical_digest({"reviews": [visual_digest, completion["review"]]})
+                    generated_roots.extend(Path(p) for p in completion.get("generated_roots", []) or
+                                           ([completion["generated_root"]] if completion.get('generated_root') else []))
+                    from .atlas_scene_recovery import reviewed_completion_views, recover_reviewed_geometry
+                    from .atlas_scene_task_regions import plan_task_regions
 
-                reviewed_views = reviewed_completion_views([*prior_reports, completion])
-                region_plan = plan_task_regions(
-                    frames=original_frames, reviewed_views=reviewed_views, pose=effective_pose,
-                    context=task_context, configuration=configuration,
-                    root=output_root / "completion_task_regions", planner_runner=planner_runner,
-                    checkpoint=checkpoint,
-                    **({'segmenter': _offline_provider_call} if retained_only else {}))
-                recovered, recovery = recover_reviewed_geometry(
-                    frames=original_frames, geometry_frames=derived_frames,
-                    reviewed_views=reviewed_views, region_plan=region_plan,
-                    root=output_root / "completion_geometry_recovery", checkpoint=checkpoint)
-                if recovered:
-                    derived_frames.extend(recovered)
-                    provenance.append(recovery["digest"])
-                    recovery_suffix = "-recovered-" + recovery["digest"][7:23]
-                if recorded_reports:
-                    recovery_suffix += '-sources-' + canonical_digest(
-                        {'recoveries': [r['digest'] for r in recorded_reports]})[7:23]
-                    background['recorded_source_recoveries'] = recorded_reports
-                background["geometry_recovery"] = recovery
-                background["recovered_completion_frame_count"] = len(recovered)
-                background["completion"] = completion
-                background["reconstruction_frame_count"] = len(derived_frames)
-                background["generated_completion_frame_count"] = len(generated)
+                    reviewed_views = reviewed_completion_views([*prior_reports, completion])
+                    region_plan = plan_task_regions(
+                        frames=original_frames, reviewed_views=reviewed_views, pose=effective_pose,
+                        context=task_context, configuration=configuration,
+                        root=output_root / "completion_task_regions", planner_runner=planner_runner,
+                        checkpoint=checkpoint,
+                        **({'segmenter': _offline_provider_call} if retained_only else {}))
+                    recovered, recovery = recover_reviewed_geometry(
+                        frames=original_frames, geometry_frames=derived_frames,
+                        reviewed_views=reviewed_views, region_plan=region_plan,
+                        root=output_root / "completion_geometry_recovery", checkpoint=checkpoint)
+                    if recovered:
+                        derived_frames.extend(recovered)
+                        provenance.append(recovery["digest"])
+                        recovery_suffix = "-recovered-" + recovery["digest"][7:23]
+                    if recorded_reports:
+                        recovery_suffix += '-sources-' + canonical_digest(
+                            {'recoveries': [r['digest'] for r in recorded_reports]})[7:23]
+                        background['recorded_source_recoveries'] = recorded_reports
+                    background["geometry_recovery"] = recovery
+                    background["recovered_completion_frame_count"] = len(recovered)
+                    background["completion"] = completion
+                    background["reconstruction_frame_count"] = len(derived_frames)
+                    background["generated_completion_frame_count"] = len(generated)
             # Retain the earlier baseline rather than letting its existing
             # manifest silently bypass the newly generated geometry.
+            # A floored room has its own name: ``background_splat`` is the baseline a completion reads.
             splat_root = output_root / ((f"background_completed_splat-{COMPLETION_REVISION}" + recovery_suffix)
-                                        if completion else "background_splat")
+                                        if completion else
+                                        (f"background_splat-{COMPLETION_REVISION}-not-admitted" + recovery_suffix)
+                                        if floor else "background_splat")
             manifest_path = splat_root / "atlas_depth_splat_manifest.json"
             splat = (
                 json.loads(manifest_path.read_text())
@@ -600,7 +689,8 @@ def run_automation(
                 from .atlas_depth_splat import splats2mesh_attempt
 
                 spec, mesh_root = splats2mesh_attempt(splat_root, output_root / (
-                    (f"background_completed_mesh-{COMPLETION_REVISION}" if completion else "background_mesh")
+                    (f"background_completed_mesh-{COMPLETION_REVISION}" if completion else
+                     f"background_mesh-{COMPLETION_REVISION}-not-admitted" if floor else "background_mesh")
                     + recovery_suffix))
                 quote = {
                     "schema_version": "website_atlas_task_price_review.v1",
@@ -660,7 +750,14 @@ def run_automation(
                      [Path(p) for r in recorded_reports for p in r.get('preservation_paths', [])] +
                      [Path(p) for prior_report in prior_reports for p in prior_report.get('preservation_paths', [])]
                      if completion else []) + ([Path(p) for p in recovery["preservation_paths"]] if recovery else []) +
-                    ([Path(p) for p in coverage['preservation_paths']] if coverage else []),
+                    ([Path(p) for p in coverage['preservation_paths']] if coverage else []) +
+                    # A floored room carries the floor and the refused review's report, never the refused views.
+                    ([output_root / COMPLETION_FLOOR_RECORD,
+                      *[path for path in [output_root / floor["completion_relative_path"] / "completion.json"]
+                        if path.is_file()],
+                      *[Path(p) for r in recorded_reports for p in r.get('preservation_paths', [])],
+                      *[Path(p) for prior_report in prior_reports for p in prior_report.get('preservation_paths', [])]]
+                     if floor else []),
             )
             background.update(
                 status="completed",

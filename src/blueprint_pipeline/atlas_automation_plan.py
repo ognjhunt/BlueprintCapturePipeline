@@ -19,6 +19,24 @@ GENERATED_IN_COLLISION_ONLY = "collision_only"
 #: checked against the filmed frames and their depth (``atlas_look_views``, owner 2026-11-18). Written by the room
 #: step as ``look_provenance.generated_views_in``, read by the company package README.
 GENERATED_VIEWS_IN_LOOK = "look"
+#: A job whose generated gap views were not admitted goes on without them: the flag its result, the scene source,
+#: the base scene and the room record carry. A preserved capture goes on as filmed
+#: (``website_atlas_pipeline.completion_floor``); a captured object's job goes on with the room its editor cleaned
+#: (``atlas_scene_automation.COMPLETION_FLOOR_RECORD``), since there too the views only fill areas no frame saw.
+SCENE_COMPLETION_NOT_ADMITTED = "scene_completion_not_admitted"
+#: Completion outcomes that take that floor, by code: the review did not pass or its views did not register.
+#: Default-deny: any other stop (money, privacy, a changed binding, a source recovery) stays as it was.
+COMPLETION_FLOOR_REASONS = frozenset({"atlas_completion_visual_review_required",
+                                      "atlas_generated_view_registration_unresolved"})
+#: Raised codes that take it: nothing more may be bought for the review (``website_gemini_receipts``), or the
+#: completion planner's retained answer proposes nothing usable to fill in (``atlas_scene_completion``): it
+#: abstained, chose cameras that are not candidates, gave no gap plan, or cited evidence it was not given.
+#: Nothing is filled in; the captured room goes on. Every other raise (money, release, the canonical planner,
+#: a changed binding) stays a stop.
+COMPLETION_FLOOR_ERRORS = frozenset({"website_gemini_unanswered_dispatches_exhausted",
+                                     "atlas_completion_planner_abstained", "atlas_completion_camera_selection_invalid",
+                                     "atlas_completion_task_gap_plan_missing",
+                                     "atlas_coverage_environment_evidence_invalid"})
 
 
 def preserves_capture(value) -> bool:
