@@ -87,11 +87,11 @@ def _footprint(x: float, z: float, size_x: float, size_z: float, *, mpu: float =
 ELSEWHERE = (np.array([-1.0, 0.0, -1.0]), np.array([-0.9, 0.1, -0.9]))
 
 
-def _place(mesh, lower, upper, *, mpu=1.0, up_sign=1, start=ELSEWHERE, start_support=None, clearance=0.0):
+def _place(mesh, lower, upper, *, mpu=1.0, up_sign=1, start=ELSEWHERE, start_support=None, clearance=0.0, **extra):
     return overhang.centre_supported(mesh, lower, upper, list((lower + upper) / 2), up=1, meters_per_unit=mpu,
                                      up_sign=up_sign, radius=website_target_radius(meters_per_unit=mpu),
                                      runtime_to_sim=np.eye(4), start=start, start_support=start_support,
-                                     clearance=clearance)
+                                     clearance=clearance, **extra)
 
 
 def _shelf_share(centre_x: float, centre_z: float, size_x: float, size_z: float, depth: float) -> float:
@@ -261,6 +261,7 @@ def test_compile_places_the_wide_cup_on_the_shallow_shelf_clear_of_the_wall_and_
     value = preparation.compile_website_scene_preparation(
         **_arguments(tmp_path, shelf=SHALLOW, cup_box=WIDE_CUP, flipped=flipped))
     assert "task_destination_surface_contact_required" not in value["blockers"], value["blockers"]
+    assert "destination_unheld" not in value
     record = value["destination_overhang"]
     assert record["flag"] == DESTINATION_OVERHANG and record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE
     assert record["lattice_points"] == (3 * (RESTING_OUTLINE_GRID_STEPS - 1) + 1) ** 2  # it slid: a bounded search
@@ -287,11 +288,11 @@ def test_compile_places_the_wide_cup_on_the_shallow_shelf_clear_of_the_wall_and_
     assert any(line in text for text in _estimated(value))
 
 
-def _clear(mesh, lower, upper, whole, *, start=ELSEWHERE):
+def _clear(mesh, lower, upper, whole, *, start=ELSEWHERE, **extra):
     from blueprint_pipeline.website_support_geometry import support_under
     return overhang.placed_clear(mesh, lower, upper, list((lower + upper) / 2), whole, up=1, meters_per_unit=1.0,
                                  up_sign=1, radius=website_target_radius(meters_per_unit=1.0), runtime_to_sim=np.eye(4),
-                                 start=start, start_support=None, clearance=0.0, look=support_under)
+                                 start=start, start_support=None, clearance=0.0, look=support_under, **extra)
 
 
 def test_clutter_on_a_wholly_supported_surface_slides_the_object_clear_of_it():
@@ -426,3 +427,108 @@ def test_clutter_wider_than_the_object_where_only_its_centre_is_carried_is_searc
     x, _ = _metres(position, mpu=1.0, up_sign=1)
     assert x + 0.06 <= 0.15 + 1e-9 or x - 0.06 >= 0.45 - 1e-9  # clear of the clutter, on the shelf
     assert placement.record["slid_m"] >= 0.21 and placement.record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE
+
+
+def _turned_shelf(depth: float, degrees: float, *, mpu: float = 1.0, up_sign: int = 1, length: float = 0.6):
+    """``_mesh``'s level shelf, ``depth`` deep and ``length`` long at ``TOP``, turned ``degrees`` in plan about its
+    middle, over the floor: a narrow shelf running across the frame's axes (job move-the-lamp-2: 16 cm at 59 deg)."""
+    points, triangles = _grid(0.0, length, 0.0, depth, TOP)
+    angle = np.radians(degrees)
+    x, z = points[:, 0] - length / 2, points[:, 2] - depth / 2
+    points = np.column_stack([np.cos(angle) * x - np.sin(angle) * z, points[:, 1], np.sin(angle) * x + np.cos(angle) * z])
+    floor = np.array([[-2.0, 0, -2], [2, 0, -2], [2, 0, 2], [-2, 0, 2]])
+    vertices = np.concatenate([points, floor]) / mpu
+    faces = np.concatenate([triangles, np.array([[0, 2, 1], [0, 3, 2]]) + len(points)])
+    if up_sign == -1:
+        vertices = vertices @ FLIP.T
+    return trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+
+
+@pytest.mark.parametrize("mpu, up_sign", FRAMES)
+def test_a_narrow_shelf_turned_in_plan_is_searched_where_the_square_about_the_disc_reaches_past_it(mpu, up_sign):
+    """Job move-the-lamp-2 (24 Nov): the destination's first lookup probed the corners of the square about the 5 cm
+    disc, 7.1 cm from its centre, past the disc. On a 16 cm glass shelf running at 59 degrees in plan a corner fell off
+    the shelf while the disc lay wholly on it (6.4 cm from its nearest edge), and no spot was searched at all. Here a
+    13 cm shelf at 45 degrees: the square's corners reach 7.1 cm across it, past its 6.5 cm half-depth; the disc does
+    not. The surface is looked up again inside the disc and the object, 12 cm square, rests at its grounded centre."""
+    mesh = _turned_shelf(0.13, 45.0, mpu=mpu, up_sign=up_sign)
+    lower, upper = _footprint(0.0, 0.0, 0.12, 0.12, mpu=mpu, up_sign=up_sign)
+    assert support_under(mesh, lower, upper, up=1, meters_per_unit=mpu, up_sign=up_sign) is None
+    radius = website_target_radius(meters_per_unit=mpu)
+    square_low, square_high = lower.copy(), upper.copy()
+    square_low[[0, 2]], square_high[[0, 2]] = -radius, radius
+    assert support_under(mesh, square_low, square_high, up=1, meters_per_unit=mpu, up_sign=up_sign) is None
+    surface, placement, position = _place(mesh, lower, upper, mpu=mpu, up_sign=up_sign)
+    assert surface is not None and surface["top_runtime_units"] * mpu * up_sign == pytest.approx(TOP)
+    assert placement is not None
+    record = placement.record
+    assert record["flag"] == DESTINATION_OVERHANG and record["slid_m"] == 0.0
+    assert record["supported_share"] >= RESTING_OUTLINE_MIN_SHARE
+    assert _metres(position, mpu=mpu, up_sign=up_sign) == pytest.approx((0.0, 0.0), abs=1e-9)
+
+
+def test_a_disc_off_the_turned_shelf_is_still_no_surface():
+    # Inside the disc too, nothing under it: its centre 9 cm across a 13 cm shelf turned 45 degrees.
+    mesh = _turned_shelf(0.13, 45.0)
+    centre = 0.09 * np.array([-np.sin(np.radians(45.0)), np.cos(np.radians(45.0))])
+    lower, upper = _footprint(centre[0], centre[1], 0.12, 0.12)
+    why: dict = {}
+    assert _place(mesh, lower, upper, why=why)[:2] == (None, None)
+    assert why["cause"] == overhang.NO_SURFACE and why["spots_tested"] == 0
+
+
+def test_where_no_spot_holds_it_the_search_says_why():
+    """Compile keeps this as ``destination_unheld`` and a room package's README words its cause. Job move-the-lamp-2:
+    wherever the disc lay on the glass shelf with half the lamp over it, the wall behind stood in the lamp's box."""
+    # A wall behind a 12 cm shelf, a box 22 cm across it: the disc fits only 5 to 7 cm out, where the box's back
+    # is 4 to 6 cm inside the wall.
+    walled = _mesh(0.12, wall=True)
+    lower, upper = _footprint(0.3, 0.06, 0.20, 0.22)
+    why: dict = {}
+    assert _place(walled, lower, upper, why=why)[:2] == (None, None)
+    assert why["cause"] == overhang.IN_THE_WAY and why["status"] == "no_spot_holds_it"
+    assert why["refused"][overhang.IN_ITS_BOX] > 0 and overhang.NEAR_START not in why["refused"]
+    assert why["spots_tested"] == sum(why["refused"].values())
+    assert why["footprint_m"] == pytest.approx([0.20, 0.22]) and why["physical_measurement"] is False
+    # Across a 14 cm shelf, 30 cm deep: no spot has half of it over the shelf.
+    why = {}
+    lower, upper = _footprint(0.3, 0.07, 0.10, 0.30)
+    assert _place(_mesh(0.14), lower, upper, why=why)[:2] == (None, None)
+    assert why["cause"] == overhang.TOO_SMALL
+    # Its centre past the front edge: no surface under it.
+    why = {}
+    lower, upper = _footprint(0.3, 0.20, 0.21, 0.18)
+    assert _place(_mesh(0.16), lower, upper, why=why)[:2] == (None, None)
+    assert why["cause"] == overhang.NO_SURFACE
+    # A spot that holds it leaves ``why`` empty.
+    why = {}
+    lower, upper = _footprint(0.3, 0.08, 0.21, 0.18)
+    assert _place(_mesh(0.16), lower, upper, why=why)[1] is not None and why == {}
+
+
+def test_clutter_everywhere_on_a_wholly_supported_surface_says_why():
+    from blueprint_pipeline.website_support_geometry import support_under
+    lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
+    full = _mesh(0.3, boxes=[((0.0, TOP, 0.0), (0.6, TOP + 0.05, 0.3))])
+    whole = support_under(full, lower, upper, up=1, meters_per_unit=1.0)
+    assert whole is not None  # the shelf under it, a 5 cm board over all of it
+    why: dict = {}
+    assert _clear(full, lower, upper, whole, why=why)[:2] == (None, None)
+    assert why["cause"] == overhang.IN_THE_WAY and why["refused"][overhang.IN_ITS_BOX] > 0
+
+
+#: A cup 0.22 m across: wider than the 0.12 m shelf is deep by more than the 5 cm disc leaves room for.
+WIDER_CUP = ((-0.71, 0.75, 2.39), (-0.49, 0.87, 2.61))
+
+
+def test_compile_keeps_why_no_spot_on_the_shelf_held_the_object(tmp_path):
+    """Job move-the-lamp-2 in the ray-cast room: wherever the disc lies on the shallow shelf with half the cup over it,
+    the wall behind stands in the cup's box. Compile stops on the same code as before and keeps what its search
+    found, which the room package's README words."""
+    value = preparation.compile_website_scene_preparation(**_arguments(tmp_path, shelf=SHALLOW, cup_box=WIDER_CUP))
+    assert "task_destination_surface_contact_required" in value["blockers"]
+    unheld = value["destination_unheld"]
+    assert unheld["cause"] == overhang.IN_THE_WAY and unheld["spots_tested"] > 0
+    assert unheld["refused"][overhang.IN_ITS_BOX] > 0 and unheld["physical_measurement"] is False
+    assert min(unheld["footprint_m"]) > 0.2 and "destination_overhang" not in value
+    preparation.json.dumps(value, allow_nan=False)

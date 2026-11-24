@@ -1475,6 +1475,58 @@ def test_the_room_package_names_each_piece_it_could_not_prepare(tmp_path, monkey
     assert not any(code in members["README.txt"] for code in codes)
 
 
+@pytest.mark.parametrize("cause", ["other_geometry_in_its_box_wherever_it_would_rest",
+                                   "no_spot_with_the_disc_and_half_of_it_on_the_surface", None])
+def test_a_room_package_says_why_no_spot_on_the_estimated_destination_held_the_object(tmp_path, monkeypatch, cause):
+    """Job move-the-lamp-2 (24 Nov): the README said "no spot on it held the object's estimated footprint", but the
+    lamp's 6.5 cm foot would have fitted on the 16 cm glass shelf: what no spot held was its whole box, shade and all,
+    clear of the wall behind the shelf with its centre 5 cm inside the shelf's edges. Compile's search records why
+    (``destination_unheld``), the room package's row carries the cause, and the README says it; without one, only
+    that the object could not be placed there."""
+    from pathlib import Path
+
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline.atlas_scene_estimates import DESTINATION_SURFACE_ESTIMATED
+    from tests.test_website_scene_handoff_navigation import _published, _said, room_job
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    for name in ("website_assembly_coverage.attach_assembly_coverage",
+                 "website_object_spec_research.attach_object_specs"):
+        monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: kw["task_masks"])
+    code = "task_destination_surface_contact_required"
+
+    def compiled(**kw):
+        row = {"code": DESTINATION_SURFACE_ESTIMATED, "source": "website_unscanned_surface", "evidence": {}}
+        write_json(kw["output_root"] / "base_scene.json",
+                   {**kw["base_scene"], "scene_estimates": [*kw["base_scene"].get("scene_estimates", []), row]})
+        return {"status": "needs_input", "blockers": [code], "destination_surface_estimate": {"status": "estimated"},
+                "destination_unheld": {"status": "no_spot_holds_it", **({"cause": cause} if cause else {})}}
+
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", compiled)
+    lamp = {"target_id": "cup-1", "task_effect": "manipulated", "semantic_label": "table lamp"}
+    job, _context, result = room_job(tmp_path, monkeypatch, family="rigid_pick_place", removal=[lamp],
+                                     all_targets=True, description="Move the lamp to the glass shelf")
+    assert result["status"] == "room_package_written"
+    record = json.loads(Path(result["room_package"]["path"]).read_text())
+    assert record["not_prepared"] == [{"piece": "destination", "code": code, **({"cause": cause} if cause else {})}]
+    _status, members = _published(job)
+    said = _said(members["README.txt"])
+    sentence = {
+        "other_geometry_in_its_box_wherever_it_would_rest": (
+            "Blueprint could not place the job's object on that estimated surface: at every spot it tried with the "
+            "object's centre at least 5 cm inside the surface's edges and at least half of the object over the "
+            "surface, the object's estimated box, which takes in the whole object and not only its base, reached "
+            "into another surface of the room."),
+        "no_spot_with_the_disc_and_half_of_it_on_the_surface": (
+            "Blueprint could not place the job's object on that estimated surface: no spot it tried had room for the "
+            "object's centre at least 5 cm inside the surface's edges with at least half of the object's estimated "
+            "box over the surface."),
+        None: "Blueprint could not place the job's object on that estimated surface."}[cause]
+    assert said.endswith(f"{sim.SURFACE_ESTIMATED_ROOM_NOTE} {sim.ROOM_NOT_RUN} {sim.NO_RULE} {sentence} "
+                         f"{sim.OBJECTS_TAKEN_OUT_ONE}")
+    assert "footprint" not in said and code not in members["README.txt"] and (cause or code) not in said
+
+
 @pytest.mark.parametrize("estimated", [True, False])
 def test_a_room_package_holding_an_estimated_destination_says_the_object_was_not_placed_on_it(tmp_path, monkeypatch,
                                                                                              estimated):

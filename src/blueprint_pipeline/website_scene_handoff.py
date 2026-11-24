@@ -831,9 +831,10 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
 
     def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
                      flags: Sequence[str] = (), taken_out: int = 0,
-                     not_prepared: Sequence[str] = ()) -> dict[str, Any]:
+                     not_prepared: Sequence[str] = (), causes: Mapping[str, str] | None = None) -> dict[str, Any]:
         # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
-        # ``not_prepared``: the blockers it ships for, each with the piece of the job it leaves out (``piece_of``).
+        # ``not_prepared``: the blockers it ships for, each with the piece of the job it leaves out (``piece_of``),
+        # and ``causes``' typed cause for its code where compile recorded one.
         result.pop("rule_withheld", None)
         flags = package_flags(flags)
         geometry = atlas.get("source_geometry") or {}  # none for a room whose scale was not measured
@@ -841,7 +842,8 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only or in_scan, flags=flags,
                                     taken_out=taken_out, not_prepared=[
-                                        {"piece": piece_of(code), "code": code}
+                                        {"piece": piece_of(code), "code": code,
+                                         **({"cause": causes[code]} if code in (causes or {}) else {})}
                                         # The code alone, never its detail (a builder's or an exception's words).
                                         for code in dict.fromkeys(code.split(":", 1)[0] for code in not_prepared)])
         result.update(status=ROOM_PACKAGE, blockers=[], job_disposition="accepted",
@@ -1310,7 +1312,12 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # whose blockers are no wall ships the same room package (``goes_on``); a geometry-only job ends at its
             # fit check instead.
             shipped = [shipped_code(str(code)) for code in preparation["blockers"]]
-            return room_package(None, flags=shipped, not_prepared=shipped)
+            # Why no spot on the destination held the object, as compile's search found it: one of its typed causes,
+            # never free text, which the README words (``website_company_simulation._not_prepared``).
+            from .website_destination_overhang import CAUSES
+            cause = (preparation.get("destination_unheld") or {}).get("cause")
+            return room_package(None, flags=shipped, not_prepared=shipped,
+                                causes={"task_destination_surface_contact_required": cause} if cause in CAUSES else None)
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
                 or (preparation.get("subject_excision") or {}).get("status") == "excised"):
