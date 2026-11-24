@@ -71,7 +71,11 @@ has been delivered, when its preparation ended for good (`pipeline_job_ledger.js
 `completed`, or its `outcome.json` is terminal), when its preparation ended on a hold that waits outside the
 pipeline (the ledger reads `completed` and the handoff is one the preparation status reads as `awaiting_inputs`,
 `website_preparation_status.held_preparation`: a stop only a new video clears, a target correction, a place or
-owner question, no robot fitting; nobody answers a test job), or 7 days after it was asked for. A preparation
+owner question, no robot fitting; nobody answers a test job), when storage retention retired its workspace (the
+capture folder is gone and the scene's `<bucket>/scenes/<scene>.retired.v1.json` receipt verifies as retention
+writes it and records the capture's ledger as ended, with its proof:
+`website_scene_workspace_retention.retired_capture_ended`; a file by that name that does not verify frees no
+slot, and a capture a new delivery stages again counts from its live folder), or 7 days after it was asked for. A preparation
 waiting on Blueprint or the provider (the 3D reading, an Atlas job, an armed retry) keeps its slot. An ask whose
 answer was lost keeps its slot until it is asked again with the same key.
 
