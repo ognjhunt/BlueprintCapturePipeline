@@ -65,8 +65,9 @@ One more fact makes any completed preparation stale, held or handed off:
   result whose source pose completed (``measured_room``), the drain runs the preparation once more on it,
   from the delivery every claimed ledger keeps beside it (``website_preparation_retry.retained_payload``;
   nothing new is retained), claimed on the exact ledger it read (``RETAINED_SCHEMA``) after the same status
-  read as any replay (a withdrawal, a refilmed or closed run, revoked consent: nothing runs). The run asks
-  every admission and the job's cap again; the company package follows its new source on its own pass
+  read as any replay (a withdrawal, a refilmed or closed run, revoked consent: nothing runs). A paid step it
+  reaches (the job's object, now that the room has a scale) goes through the job's admissions and its $40 cap
+  as on any run; the company package follows its new source on its own pass
   (``website_company_simulation``: a new simulation revision is built and the copy it replaces retired).
 """
 from __future__ import annotations

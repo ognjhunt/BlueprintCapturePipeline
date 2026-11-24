@@ -140,8 +140,28 @@ rights stop. Kept means the job and its `result.json` together: the shipped
 result is copied to `shipped_result.json` before each ask and put back when the
 ask cannot finish (an archive outage, a money stop, a process killed mid-step),
 and the scene source reads that copy while an unfinished ask has overwritten
-`result.json` (`website_atlas_preview_store.job_result`). When the review answers, the job's result is the measured room; a
-handoff already sent is built again from it only when it is replayed
+`result.json` (`website_atlas_preview_store.job_result`). When the review answers, the job's result is the measured room.
+
+A room whose scale review ended with no valid answer from its planner call,
+`atlas_scene_planner_output_invalid` (before 2026-11-23 every review the
+provider refused for no credit ended so), is asked again once on each new
+release (`website_atlas_preview.RELEASE_REASKED`): the planner reopens such a
+call once on a changed release, and the ask keeps the shipped room exactly as
+the outage re-ask does. Never after a wall on the pose, the spending cap, a money
+stop or the owner's closing of the run on an earlier ask, a withdrawal, or once
+the job's window or grant has ended. `atlas_scale_review_unresolved` (the review
+answered; its receipt is reused) and `website_atlas_pose_attempt_failed` (a
+failed pose attempt is closed and never bought again) are not asked again.
+
+Once the measured room is the job's final result, the handoff built on the
+unscaled one runs again by itself, once, on the listener's drain
+(`website_held_handoff_replay.measured_room`), from the delivery kept beside the
+job ledger and after the same status read as any replay (a withdrawal, a
+refilmed or closed run: nothing runs). A paid step it reaches (the job's object,
+now that the room has a scale) goes through the job's admissions and its $40
+cap as on any run; the company package is built again from the new source on its
+own pass, and the copy it replaces is retired. Any other republished result is
+still replayed by the operator only
 (`website_held_handoff_replay.superseded_atlas_result`).
 
 A planner call the provider refuses before any work
