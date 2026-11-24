@@ -58,7 +58,7 @@ from .task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M
 from .website_support_geometry import (FITTED_MAX_FACE_TILT_DEGREES, REGION_EDGE_ROUNDING_M, RESTING_OUTLINE_GRID_STEPS,
                                        RESTING_OUTLINE_MIN_SHARE, destination_clear_of_start, same_support_surface,
                                        search_window_m, support_outline, support_under)
-from .website_destination_unheld import CAUSES, IN_THE_WAY, NO_SURFACE, TOO_SMALL  # noqa: F401 - CAUSES for callers
+from .website_destination_unheld import IN_THE_WAY, NO_SURFACE, TOO_SMALL
 from .website_surface_target_admission import WEBSITE_TARGET_TOLERANCE_M
 
 BASIS = "centre_and_disc_over_the_surface_box_clear"
