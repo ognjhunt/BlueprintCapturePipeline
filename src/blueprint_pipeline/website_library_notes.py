@@ -51,11 +51,15 @@ def _sha256(path: Path) -> str | None:
         return None
 
 
+#: The sizing that scaled the model (``website_library_asset.SCALED``, named here: this lane stays off its imports).
+SCALED = "scaled_to_video_estimate"
+
+
 def changes(design: Mapping[str, Any]) -> str:
-    """What Blueprint did to the model, in the credit's words: converted it from its own format, scaled it when it
-    was scaled."""
-    scaled = (design.get("sizing") or {}).get("status") != "as_is"
-    return f"converted it from {design['converted_from']}" + (" and scaled it" if scaled else "")
+    """What Blueprint did to the model, in the credit's words: converted it from its own format, and scaled it only
+    when its sizing record says so (``SCALED``); no record, no claim."""
+    sizing = design.get("sizing") if isinstance(design.get("sizing"), Mapping) else {}
+    return f"converted it from {design['converted_from']}" + (" and scaled it" if sizing.get("status") == SCALED else "")
 
 
 def credit_text(row: Mapping[str, Any], files: Sequence[str]) -> str:
@@ -239,6 +243,6 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     return [*lines, "", *textwrap.wrap(CARVE_OUT, width=width)]
 
 
-__all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "MODEL_FILE", "changes", "credit",
+__all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "MODEL_FILE", "SCALED", "changes", "credit",
            "credit_text", "credited_files", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
            "topology_digest"]

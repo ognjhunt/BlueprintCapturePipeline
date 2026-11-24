@@ -114,6 +114,15 @@ def test_an_unreadable_credit_still_ships_the_room_without_the_object(tmp_path, 
     assert manifest["source_kind"] == "floor" and manifest["floor_reason"] == "object_not_built:" + notes.CREDIT_UNREADABLE
 
 
+def test_the_credit_never_says_scaled_when_no_sizing_was_recorded():
+    """``changes`` says 'and scaled it' only when the sizing record says the model was scaled: never when there is
+    no sizing record at all, a claim about the model that nothing recorded."""
+    assert notes.changes({"converted_from": "OBJ"}) == "converted it from OBJ"
+    assert notes.changes({"converted_from": "OBJ", "sizing": {"status": "as_is"}}) == "converted it from OBJ"
+    assert notes.changes({"converted_from": "OBJ", "sizing": {"status": notes.SCALED}}) == (
+        "converted it from OBJ and scaled it")
+
+
 # --- wording: what the README says the object is --------------------------------------------------------------
 
 def _package_with(tmp_path: Path, configuration: dict) -> str:

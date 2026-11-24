@@ -259,6 +259,14 @@ OBJECT_NOT_PLACED_FLAGS = frozenset({"support_surface_not_found_under_subject",
 #: ``not_prepared``: the piece of the job it left out, never its code (the record keeps the codes) or a reason.
 NOT_PREPARED = "Blueprint could not prepare the job's {piece}."
 NOT_PREPARED_PIECES = ("object", "destination", "success rule")
+#: The same, when the job's spending cap is why (``website_scene_handoff.shipped_code`` ships the plain
+#: ``spending_cap_reached``, ``website_job_spend_cap.SPENDING_CAP_REACHED``, and ``piece_of`` names the piece): every
+#: code the piece left out for is the cap (AGENTS.md: the README says "the job reached its limit on paid work").
+NOT_PREPARED_AT_CAP = "Blueprint could not prepare the job's {piece}: the job reached its limit on paid work."
+SPENDING_CAP_REACHED = "spending_cap_reached"
+#: How many fields of the criteria the allow-list left out (``scene_package_stage.neutral_criteria``).
+FIELDS_LEFT_OUT_LINES = ["  criteria_fields_left_out counts the fields Blueprint left out of criteria: free text, which",
+                         "  could carry the site's own words, and any field outside the names it shares."]
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."
 #: The half's rule holds the object's mass and friction as ranges estimated from the video.
@@ -1135,12 +1143,15 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
         lines += ["- success_rule.json: the goal region (surface_target: radius_m around surface_position_world_m,",
                   "  the middle of the goal's footprint at the lowest point of it the video shows) and how long",
                   "  the robot must stay within it (settling.stable_seconds)."]
+    if "success_rule.json" in names and "criteria_fields_left_out" in (source.get("rule") or {}):
+        lines += FIELDS_LEFT_OUT_LINES
     lines += ["- README.txt: this file.", ""]
     lines += ["Each part's file is referenced on a child prim, /World/<part>/Asset, under the part's position and",
               "orientation in the simulation, which are on /World/<part>. The file keeps its own root transform."]
     for prim, note in sorted((offsets or {}).items()):
         lines += [f"/World/{prim}: this part's file carries its own offset (its root prim is moved or turned",
-                  "inside the file" + ("" if withheld else "; see part_notes in success_rule.json")
+                  "inside the file" + ("; see part_notes in success_rule.json" if "success_rule.json" in names
+                                       else "")
                   + "). Where a tool places a file's root at the",
                   "part's position instead of under it, this part lands somewhere else: check it."]
     for prim in hidden:
@@ -1190,8 +1201,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_LOCATED] if room.get("not_located") else []),
                 *([OBJECT_NOT_PREPARED] if room.get("object_not_prepared") else []),
                 *([OBJECT_NOT_PLACED] if room.get("object_not_placed") else []),
-                *[NOT_PREPARED.format(piece=piece) for piece in NOT_PREPARED_PIECES
-                  if any(named == piece for named, _code in room.get("not_prepared") or [])],
+                *[(NOT_PREPARED_AT_CAP if all(code == SPENDING_CAP_REACHED for named, code in room["not_prepared"]
+                                              if named == piece) else NOT_PREPARED).format(piece=piece)
+                  for piece in NOT_PREPARED_PIECES if any(named == piece for named, _code in room.get("not_prepared") or [])],
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"]
                    else _counted(OBJECTS_TAKEN_OUT, OBJECTS_TAKEN_OUT_ONE, room["objects"])]
                   if room.get("objects") else []),

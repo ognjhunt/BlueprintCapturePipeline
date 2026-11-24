@@ -49,3 +49,30 @@ def test_thresholds_the_site_never_confirmed_are_said_to_be_assumed(tmp_path):
     disclosed = "assum" in readme.split("How it was made", 1)[1].lower() and "assum" in json.dumps(rule).lower()
     assert disclosed, "assumed thresholds ship as the site's rule, with nothing saying they are assumed"
     assert set(rule["criteria_basis"].values()) == {"assumed"}
+
+
+def test_the_readme_explains_every_top_level_field_of_success_rule_json(tmp_path):
+    """success_rule.json carries ``criteria_fields_left_out`` (how many fields Blueprint removed) on every package;
+    the README names it, and what was removed and why, beside ``criteria_basis``."""
+    job = Job(tmp_path / "job")
+    readme, rule = _built(job, tmp_path)
+    unexplained = [key for key in rule if key not in readme and key not in ("criteria", "units", "up_axis",
+                                                                         # described in words: "start position", "size", "the run's timing"
+                                                                         "object_start", "object_size_m", "timing")]
+    assert not unexplained, f"fields of success_rule.json the README never names: {unexplained}"
+
+
+def test_a_room_package_without_a_rule_never_points_at_a_success_rule_json_it_does_not_ship():
+    """``_readme``'s note for a part whose file carries its own root offset says "see part_notes in success_rule.json"
+    only when that file ships; ``_build_once`` writes part_notes only into a rule that exists. A room package with
+    no rule (nothing found, an unknown kind) ships no success_rule.json, so the note never names it. Latent: today's
+    room parts are written with an identity root, so a real job needs a part with its own offset."""
+    source = {"room": {"success_rule_defined": False, "success_rule_assumed": False, "not_found": True},
+              "axis": "Z", "files": {"Room": {"role": "scene_appearance", "placement": {"visible": True}},
+                                     "RoomCollision": {"role": "scene_collision", "placement": {"visible": False}}}}
+    placed = {"Room": "scene/room.usdc", "RoomCollision": "scene/room_collision.usdc"}
+    units = {prim: ("Z", 1.0) for prim in placed}
+    offsets = {"Room": {"translation_m": [0.0, 0.0, 1.5], "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]}}
+    names = ["README.txt", "scene.usda", *placed.values()]  # what ships: no success_rule.json
+    readme = sim._readme(source, placed, names, units, offsets)
+    assert "success_rule.json" not in readme, "README points at success_rule.json, which this package does not ship"
