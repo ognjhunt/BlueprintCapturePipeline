@@ -174,7 +174,9 @@ def _coverage_gap(host_parent: Path) -> dict[str, Any]:
 
 
 def _waiting_refusal(host_parent: Path) -> dict[str, Any]:
-    """A job whose mesh registration refused on its retained inputs, as the controller records it."""
+    """A job whose mesh registration refused on its retained inputs, as a release before 2026-11-24 recorded it: a
+    wait on the refusal's key. This release ends it at its next check (``_NEEDS_NEW_CAPTURE``), so the record is
+    written as that release wrote it, not by today's controller."""
     from blueprint_pipeline import website_atlas_preview as preview
     from blueprint_pipeline.deterministic_refusal import DeterministicRefusal
 
@@ -182,10 +184,13 @@ def _waiting_refusal(host_parent: Path) -> dict[str, Any]:
     job = json.loads(site.job.read_text())
     refusal = DeterministicRefusal("atlas_mesh_not_registered_to_splat", step="atlas_mesh_registration", inputs={
         "source_glb_sha256": "sha256:" + "a" * 64, "splat_manifest_digest": "sha256:" + "b" * 64})
-    failed = preview._failed_step({**job, "stage": "mesh"}, refusal, int(time.time()))
-    if failed["state"] != "needs_input" or "deterministic_refusal" not in failed or not failed.get("retry_at_epoch"):
-        raise RuntimeError("the controller did not record the deterministic refusal as a wait")
-    site.job.write_text(json.dumps(failed))
+    current = int(time.time())
+    waiting = preview._transition({**job, "stage": "mesh"}, current, "needs_input", refusal.code,
+                                  last_error={"type": "blueprint_pipeline.deterministic_refusal.DeterministicRefusal",
+                                              "message": refusal.code},
+                                  deterministic_refusal=refusal.record(),
+                                  retry_at_epoch=current + preview.AUTHORITY_RECHECK_SECONDS)
+    site.job.write_text(json.dumps(waiting))
     return {"job": site.job.relative_to(site.host).as_posix()}
 
 
@@ -284,9 +289,11 @@ RECORDS: list[dict[str, Any]] = [
                        "final_state": "needs_input"}},
     {"record_id": "atlas-deterministic-refusal-waits", "job_kind": "website_scene_preparation",
      "input_variety": {"video_resolution": "not_applicable", "clip_length": "not_applicable"},
-     "description": "An Atlas preview job whose mesh registration refused on its retained inputs, recorded as a "
-                    "deterministic refusal under this release's revision. The controller does not run the "
-                    "step again: the job keeps waiting on its key, and nothing is bought.",
+     "description": "An Atlas preview job whose mesh registration refused on its retained inputs, left by a release "
+                    "before 2026-11-24 waiting on the refusal's key. Since then the refusal ends the job at once "
+                    "as a stop only a new video clears: its next check runs nothing, buys nothing, ends it as "
+                    "needs_input with no retry time and tells the website again, which asks the site for a new "
+                    "video.",
      "tool": ATLAS_PREVIEW, "build": _waiting_refusal, "until": "first_stop",
      "expected_stop": {"kind": "refusal", "stage": "mesh", "code": "atlas_mesh_not_registered_to_splat",
                        "final_state": "needs_input"}},

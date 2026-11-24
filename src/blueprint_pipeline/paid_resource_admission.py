@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 import os
+import time
 from typing import Any, Mapping
 
 
@@ -154,12 +156,15 @@ def _spend_effect_blockers(admission: Mapping[str, Any], spend_effect: str) -> t
     return [], True
 
 
-def _account_monthly_limit_blockers() -> list[str]:
+def _account_monthly_limit_blockers(*, maximum_cost_usd: Any = None, meter_key: str | None = None,
+                                    now: float | None = None) -> list[str]:
     """The account-wide monthly limit (``account_monthly_spend``).
 
-    ``[]`` while the month is under its limit. With no limit file the
-    production control plane refuses (``account_monthly_spend_limit_not_configured``);
-    any other process has no limit and gets ``[]``.
+    ``[]`` while the month, with the admissions journaled since its report,
+    has room for this call: for ``maximum_cost_usd`` when the call names one,
+    else while it is under its limit. With no limit file the production control
+    plane refuses (``account_monthly_spend_limit_not_configured``); any other
+    process has no limit and gets ``[]``.
 
     Checked where a new paid admission is made or about to be reserved, never
     for a clear stop (``spend_effect``) and never when an issued grant is
@@ -169,19 +174,57 @@ def _account_monthly_limit_blockers() -> list[str]:
     try:
         from blueprint_pipeline.account_monthly_spend import admission_blockers
 
-        return admission_blockers()
+        return admission_blockers(now=now, maximum_cost_usd=maximum_cost_usd, exclude_meter_key=meter_key)
     except Exception:
         return ["account_monthly_spend_limit_unavailable"]
 
 
-def require_paid_resource_budget(*, resource_class: str) -> None:
+def _account_clock() -> float:
+    """The clock the account's month is judged by, so a grant is journaled at the moment it was judged."""
+    try:
+        from blueprint_pipeline.account_monthly_spend import _clock
+
+        return float(_clock())
+    except Exception:
+        return time.time()
+
+
+def _call_cost(admission: Mapping[str, Any], maximum_cost_usd: Any) -> Any:
+    """The most the admitted call can cost, or None when nothing names it.
+
+    The larger of the caller's figure and the admission's own (a website
+    preparation receipt carries ``maximum_cost_usd``; a priced meter names
+    ``held_usd``). A figure that is no amount is returned as it is, so the
+    account check refuses it by name instead of judging the call without it.
+    """
+    from .paid_spend_meter import money
+
+    meter = admission.get("meter") if isinstance(admission.get("meter"), Mapping) else {}
+    named = [value for value in (maximum_cost_usd, admission.get("maximum_cost_usd"), meter.get("held_usd"))
+             if value is not None]
+    amounts = [money(value) for value in named]
+    for value, amount in zip(named, amounts):
+        if amount is None:
+            return value
+    return max(amounts) if amounts else None
+
+
+def require_paid_resource_budget(*, resource_class: str, maximum_cost_usd: Any = None,
+                                 allocation_binding_digest: str | None = None) -> None:
     """Refuse a known budget blocker before reserving external sponsorship.
 
     This issues no grant. Dispatch still checks the complete admission and
     current budget again after the remote transaction.
+
+    ``maximum_cost_usd`` is the most the call about to be reserved can cost:
+    with it the account's month must have room for that call; a caller with no
+    amount is refused only once the month reaches its limit.
+    ``allocation_binding_digest`` names that reservation, so a grant already
+    journaled for it is not counted beside its cost.
     """
     blockers = _monthly_budget_blockers(resource_class)
-    blockers.extend(_account_monthly_limit_blockers())
+    blockers.extend(_account_monthly_limit_blockers(maximum_cost_usd=maximum_cost_usd,
+                                                    meter_key=allocation_binding_digest))
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     blockers.extend(runpod_retirement_blockers(resource_class))
@@ -195,13 +238,22 @@ def require_paid_resource_admission(
     resource_class: str,
     expected_schema_version: str,
     spend_effect: str = SPEND_EFFECT_NEW_SPEND,
+    maximum_cost_usd: Any = None,
 ) -> PaidResourceAdmissionGrant:
     """Return an in-process grant or raise before a provider mutation.
 
     ``spend_effect="stop"`` marks an admission that only stops or destroys
     running spend; see ``SPEND_EFFECTS``.
+
+    ``maximum_cost_usd`` is the most this call can cost; the admission's own
+    figure counts too (``_call_cost``). With one, new spend is admitted only
+    when the account's month has room for it, and the grant is journaled at it,
+    so the calls judged before the next report count it. The account check and
+    the journal line are taken under one lock (``paid_spend_meter.admission_lock``).
     """
     from .core.handoff_lease import handoff_lease_checkpoint, current_handoff_lease_check
+    from .paid_spend_meter import admission_lock, admission_meter_key, meter_chokepoint_admission, money
+
     handoff_lease_checkpoint("paid_resource_admission")
     effect_blockers, clear_stop = _spend_effect_blockers(admission, spend_effect)
     blockers: list[str] = list(effect_blockers)
@@ -209,7 +261,6 @@ def require_paid_resource_admission(
         # A budget refuses new spend only. A stop refused for a budget reason
         # would leave the spend it was meant to end running.
         blockers.extend(_monthly_budget_blockers(resource_class))
-        blockers.extend(_account_monthly_limit_blockers())
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
     blockers.extend(runpod_retirement_blockers(resource_class))
@@ -226,13 +277,19 @@ def require_paid_resource_admission(
     raw_blockers = admission.get("blockers")
     if raw_blockers not in ([], None):
         blockers.append("paid_resource_admission_has_blockers")
-    if blockers:
-        raise PaidResourceAdmissionBlocked(sorted(set(blockers)))
-    # Every grant is metered against its job (``paid_spend_meter``); never raises.
-    from .paid_spend_meter import meter_chokepoint_admission
-
-    meter_chokepoint_admission(admission, resource_class=resource_class, schema_version=expected_schema_version,
-                               spend_effect=SPEND_EFFECT_STOP if clear_stop else SPEND_EFFECT_NEW_SPEND)
+    # A stop is judged against no budget, so it names no cost and waits on no lock.
+    cost = None if clear_stop else _call_cost(admission, maximum_cost_usd)
+    with nullcontext() if clear_stop else admission_lock():
+        moment = _account_clock()
+        if not clear_stop:
+            blockers.extend(_account_monthly_limit_blockers(maximum_cost_usd=cost,
+                                                            meter_key=admission_meter_key(admission), now=moment))
+        if blockers:
+            raise PaidResourceAdmissionBlocked(sorted(set(blockers)))
+        # Every grant is metered against its job (``paid_spend_meter``); never raises.
+        meter_chokepoint_admission(admission, resource_class=resource_class, schema_version=expected_schema_version,
+                                   spend_effect=SPEND_EFFECT_STOP if clear_stop else SPEND_EFFECT_NEW_SPEND,
+                                   now=moment, maximum_cost_usd=money(cost))
     return PaidResourceAdmissionGrant(
         resource_class=resource_class,
         schema_version=expected_schema_version,

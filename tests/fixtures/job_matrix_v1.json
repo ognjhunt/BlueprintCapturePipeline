@@ -584,6 +584,33 @@
     "kind": "refusal",
     "code": "atlas_insufficient_overlapping_distinct_views"
    }
+  },
+  {
+   "label": "room-mesh-on-none-of-its-splat-asks-new-video",
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "Move the bin",
+      "task_quote": "Move the bin"
+     }
+    ]
+   },
+   "front_half": [
+    "atlas-deterministic-refusal-waits"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "expected": {
+    "last_stage": "front_half",
+    "kind": "refusal",
+    "code": "atlas_mesh_not_registered_to_splat"
+   }
   }
  ]
 }

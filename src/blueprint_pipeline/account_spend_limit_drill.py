@@ -20,7 +20,10 @@ capacity tick pages on).
 It passes when, as the owner decided (E4 c): below 50 % no threshold alert; from
 50 % a warning; from 80 % a page; at 100 % a page and the refusal
 ``account_monthly_spend_limit_reached`` from both the check and the chokepoint;
-and nothing refused below 100 %. Every other alert is listed, not judged
+and nothing refused below 100 %. Each step also asks both for one call quoted at
+2 % of the limit (``QUOTED_CALL_PERCENT``): it must be refused by name once the
+month plus that quote no longer fits under the limit (from 99 %), and admitted
+before. Every other alert is listed, not judged
 (``account_spend_unverifiable`` is expected: the drill has no provider billing).
 
 ``--override-file`` names a JSON file ``{"monthly_limit_overrides": {"YYYY-MM": "amount"}}``:
@@ -53,9 +56,12 @@ THRESHOLD_CODES = {50: "account_spend_month_50pct", 80: "account_spend_month_80p
                    100: "account_spend_month_limit_reached"}
 FORBIDDEN_ROOTS = (Path("/var/lib/blueprint"), Path("/etc/blueprint"), Path("/mnt/blueprint-work"))
 #: Read by the chokepoint from the process environment; cleared for the drill so only the account limit decides.
-_CHOKEPOINT_ENV = (account.CONFIG_ENV, account.ROOT_ENV, "BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT",
+#: The meter root too: the chokepoint counts the admissions journaled since the report, and the drill's are its own.
+_CHOKEPOINT_ENV = (account.CONFIG_ENV, account.ROOT_ENV, METER_ROOT_ENV, "BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT",
                    "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG")
 DRILL_RESOURCE_CLASS = "vast_provider_adapter"
+#: Each step also asks for one call quoted at this share of the limit: refused once it no longer fits under it.
+QUOTED_CALL_PERCENT = 2
 
 
 class DrillRefused(ValueError):
@@ -90,7 +96,7 @@ def _chokepoint_environment(env: Mapping[str, str]) -> Iterator[None]:
     try:
         for name in _CHOKEPOINT_ENV:
             os.environ.pop(name, None)
-        os.environ.update({name: env[name] for name in (account.CONFIG_ENV, account.ROOT_ENV)})
+        os.environ.update({name: env[name] for name in (account.CONFIG_ENV, account.ROOT_ENV, METER_ROOT_ENV)})
         yield
     finally:
         for name, value in saved.items():
@@ -100,11 +106,11 @@ def _chokepoint_environment(env: Mapping[str, str]) -> Iterator[None]:
                 os.environ[name] = value
 
 
-def _chokepoint_blockers() -> list[str]:
+def _chokepoint_blockers(maximum_cost_usd: Decimal | None = None) -> list[str]:
     from .paid_resource_admission import PaidResourceAdmissionBlocked, require_paid_resource_budget
 
     try:
-        require_paid_resource_budget(resource_class=DRILL_RESOURCE_CLASS)
+        require_paid_resource_budget(resource_class=DRILL_RESOURCE_CLASS, maximum_cost_usd=maximum_cost_usd)
     except PaidResourceAdmissionBlocked as exc:
         return list(exc.blockers)
     return []
@@ -138,6 +144,7 @@ def run_drill(*, work_root: Path, config: Path | None = None, override_file: Pat
         name: {"status": "observed", "blockers": [], "month": period, "month_to_date_usd": 0, "complete": True,
                "charges": []} for name in ("openai", "world_labs")}}, environ=env)
     steps, failures, recorded = [], [], Decimal(0)
+    quote = limit * QUOTED_CALL_PERCENT / 100
     for index, percent in enumerate(STEPS_PERCENT):
         target = limit * percent / 100
         if target > recorded:
@@ -146,22 +153,30 @@ def run_drill(*, work_root: Path, config: Path | None = None, override_file: Pat
             recorded = target
         report = refresh_report(now=moment, environ=env)
         check = account.admission_blockers(now=moment, environ=env)
+        quoted = account.admission_blockers(now=moment, environ=env, maximum_cost_usd=quote)
         with _chokepoint_environment(env):
             chokepoint = _chokepoint_blockers()
+            quoted_chokepoint = _chokepoint_blockers(quote)
         alerts = account.account_alerts(account.observe_account_spend(now=moment, environ=env))
         rows = [{"code": row["code"], "severity": "page" if row["code"] in account.ACCOUNT_PAGE_CODES else "warn"} for row in alerts]
         line = _expected_threshold(percent)
         thresholds = [row for row in rows if row["code"] in THRESHOLD_CODES.values()]
         expected = [] if line is None else [{"code": THRESHOLD_CODES[line], "severity": "warn" if line == 50 else "page"}]
         refusal = [account.LIMIT_REACHED] if percent >= 100 else []
+        # A call quoted at QUOTED_CALL_PERCENT of the limit fits only while the month plus it stays under the limit.
+        quoted_refusal = [account.LIMIT_REACHED] if percent + QUOTED_CALL_PERCENT > 100 else []
         step = {"percent": percent, "counted_usd": report.get("counted_usd"), "limit_usd": usd(limit),
                 "threshold_alerts": thresholds, "other_alerts": [row for row in rows if row not in thresholds],
                 "admission_blockers": check, "chokepoint_blockers": chokepoint,
+                "quoted_call_usd": usd(quote), "quoted_admission_blockers": quoted,
+                "quoted_chokepoint_blockers": quoted_chokepoint,
                 "forecast": (report.get("forecast") or {}).get("reads")}
         if thresholds != expected:
             failures.append(f"step_{percent}pct_alerts:{json.dumps(thresholds)}!={json.dumps(expected)}")
         if check != refusal or chokepoint != refusal:
             failures.append(f"step_{percent}pct_refusal:{check}/{chokepoint}!={refusal}")
+        if quoted != quoted_refusal or quoted_chokepoint != quoted_refusal:
+            failures.append(f"step_{percent}pct_quoted_refusal:{quoted}/{quoted_chokepoint}!={quoted_refusal}")
         steps.append(step)
     return {"schema_version": "blueprint.account_spend_limit_drill.v1", "status": "failed" if failures else "passed",
             "period": period, "config_source": str(source), "limit_usd": usd(limit),

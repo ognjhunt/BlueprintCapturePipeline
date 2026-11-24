@@ -57,4 +57,6 @@ def admit_exact_request(
         admission,
         resource_class=PAID_RESOURCE_CLASS,
         expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+        # The request's own ceiling, which it was just rebuilt from: the account's month must have room for it.
+        maximum_cost_usd=rebuilt["maximum_cost_usd"],
     )

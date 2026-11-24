@@ -25,7 +25,10 @@ waits as ``needs_input`` with its own code, re-asked every
 Only a privacy or rights refusal fails at once. A deterministic refusal
 (``deterministic_refusal``: the same inputs and code repeat it) gets no timed
 schedule: it waits as ``needs_input`` and its step runs again only once a
-release decides that step differently. A
+release decides that step differently. One that only a new capture clears
+(``_NEEDS_NEW_CAPTURE``: a room mesh that lies on none of its splat, 2026-11-24)
+ends at once as ``needs_input`` instead, and the website asks the site for a
+new video; one an earlier release left waiting ends so at its next check. A
 retry re-asks every gate; it never bypasses one. No operator command is needed
 for a retry; ``retry_failed_job`` reopens a job that has already ended.
 """
@@ -358,6 +361,17 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     return _refusal_retry(job, current, code, detail)
 
 
+def _ended_for_a_new_video(job: Mapping[str, Any], current: int) -> dict[str, Any]:
+    """A job an earlier release left waiting on a deterministic refusal that now only a new capture clears
+    (``_NEEDS_NEW_CAPTURE``): ended as ``_failed_step`` ends a fresh one, with no retry time and no key to wait on.
+    Its state and reason are unchanged, so its revision moves on by hand: the website is told again (``_deliver``)."""
+    ended = _transition({key: value for key, value in job.items() if key != "deterministic_refusal"}, current,
+                        "needs_input", job["reason"])
+    if ended["revision"] == job["revision"]:
+        ended.update(revision=job["revision"] + 1, revised_at_epoch=current)
+    return ended
+
+
 def _archive(job: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any]:
     """Publish the bundle to the private B2 store, never the legacy fallback, and prove its bytes."""
     from .local_reconstruction_adapters import _sha256_file
@@ -441,6 +455,10 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
     from .website_job_spend_cap import SPENDING_CAP_REACHED
     current = int(now())
     if job["state"] == "needs_input" and "deterministic_refusal" in job:
+        if job.get("reason") in _NEEDS_NEW_CAPTURE:
+            # An earlier release left this stop waiting on its key; it now ends at once, as a fresh one does
+            # (``_failed_step``), and the website is told again so it asks the site for a new video.
+            return _ended_for_a_new_video(job, current)
         if deterministic_unchanged(job["deterministic_refusal"]):
             # Nothing it decided on has changed: the step is not run, so nothing is bought or redone.
             return {**job, "retry_at_epoch": _by_deadline(job, current + AUTHORITY_RECHECK_SECONDS)}

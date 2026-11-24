@@ -213,7 +213,10 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
         command["atlas_auxiliary"] = True
     # Avoid an orphaned remote hold when the local monitor already refuses.
     # A report can still expire during the RPC, so this is only a precheck.
-    require_paid_resource_budget(resource_class=resource_class)
+    # The account's month must have room for this purchase's quote; the grant
+    # below is judged again at the receipt's own ``maximum_cost_usd``.
+    require_paid_resource_budget(resource_class=resource_class, maximum_cost_usd=maximum_cost_usd,
+                                 allocation_binding_digest=binding_digest)
     operator_file = os.getenv("BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "").strip()
     if operator_file:
         if source_checkpoint is not None:

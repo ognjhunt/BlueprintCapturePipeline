@@ -3,8 +3,8 @@
 The website makes the job (``POST /api/internal/pipeline/test-jobs``, Blueprint-WebApp
 ``server/routes/internal-test-jobs.ts``) from footage in its test folder; this module only asks it, over the
 existing signed Pipeline -> WebApp transport, and keeps one ledger row per idempotency key under
-``internal-test-jobs/``. Before a new job it reads the month (``account_monthly_spend``) and the jobs already in
-flight, under one lock. The job then goes through every paid admission a site's job does; nothing here spends,
+``internal-test-jobs/``. Before a new job it reads the month (``account_monthly_spend``: the report plus the paid
+admissions made since it) and the jobs already in flight, under one lock. The job then goes through every paid admission a site's job does; nothing here spends,
 deletes or changes a limit. The result names the job, its capture and its label.
 """
 from __future__ import annotations
@@ -103,7 +103,11 @@ def in_flight(ledger_root: Path, handoff_root: Path, now: float, intent_root: Pa
 
 
 def month_refusal(environ: Mapping[str, str] | None = None) -> str | None:
-    """Why the month cannot take one more test job, from the host's own spend report, or None."""
+    """Why the month cannot take one more test job, from the host's own spend report, or None.
+
+    The month is counted as the paid chokepoint counts it: the report's figure plus the paid admissions
+    journaled since the report was written (``account_monthly_spend.admitted_since_report``).
+    """
     from . import account_monthly_spend as month
 
     blockers = month.admission_blockers(environ=environ)
@@ -115,9 +119,13 @@ def month_refusal(environ: Mapping[str, str] | None = None) -> str | None:
     report = month.read_report(Path(policy["report_path"]))
     counted, line = month.money(report.get("counted_usd")), month.money((report.get("alert_lines_usd") or {})
                                                                           .get(STOP_LINE))
-    if counted is None or line is None:
+    try:
+        since = month.admitted_since_report(report, environ=environ)
+    except month.JournalUnreadable:
+        return "test_job_month_closed:" + month.JOURNAL_UNREADABLE
+    if counted is None or line is None or since is None:
         return "test_job_month_closed:" + month.REPORT_INVALID
-    return "test_job_month_stop_line" if counted + EXPECTED_JOB_USD >= line else None
+    return "test_job_month_stop_line" if counted + since + EXPECTED_JOB_USD >= line else None
 
 
 def post_test_job(body: Mapping[str, Any]) -> dict[str, Any]:

@@ -53,7 +53,7 @@ defaults bound at import all read the replay clock). Rebuilding the set writes a
 | `navigation-4k-short` | navigation | `refusal` at `completion`, `preparation_completion_not_adopted` |
 | `navigation-1080p-long` | navigation | as above, under its own submission |
 | `atlas-coverage-gap-site-ask` | website scene preparation | `refusal` at `queued`, `atlas_insufficient_overlapping_distinct_views`, final state `needs_input` (one view and nothing overlapping it; ends at once; the website asks the site for a new video) |
-| `atlas-deterministic-refusal-waits` | website scene preparation | `refusal` at `mesh`, `atlas_mesh_not_registered_to_splat`, final state `needs_input` (the step is not run again while its key is unchanged) |
+| `atlas-deterministic-refusal-waits` | website scene preparation | `refusal` at `mesh`, `atlas_mesh_not_registered_to_splat`, final state `needs_input` (left by an earlier release waiting on its key; since 2026-11-24 its next check ends it at once, runs nothing and tells the website again, which asks the site for a new video) |
 | `levelling-provider-up-estimate` | website scene preparation | `estimate` at `levelling`, `scene_estimate:level` |
 | `levelling-view-dependent-splat` | website scene preparation | `estimate` at `levelling`, `scene_estimate:floor` (its view-dependent colour is kept, turned with the splat, since 2026-11-18) |
 | `mesh-registration-closest-frame-estimate` | website scene preparation | `estimate` at `mesh_registration`, `scene_estimate:collider_registration` |

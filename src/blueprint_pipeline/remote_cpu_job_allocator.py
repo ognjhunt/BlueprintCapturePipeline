@@ -340,15 +340,15 @@ def environment_blockers(root: Path, descriptor: Mapping[str, Any], *, image: st
     return []
 
 
-def admit_remote_cpu_job(*, blockers: list[str], binding: Mapping[str, Any],
-                         execute: bool) -> tuple[dict[str, Any], PaidResourceAdmissionGrant | None]:
-    """Admit one attempt as ``paid_resource_allocator.py`` admits a lane: build, then bind, then require."""
+def admit_remote_cpu_job(*, blockers: list[str], binding: Mapping[str, Any], execute: bool,
+                         maximum_cost_usd: float | None = None) -> tuple[dict[str, Any], PaidResourceAdmissionGrant | None]:
+    """Admit one attempt as ``paid_resource_allocator.py`` admits a lane: build, bind, require (at its worst case)."""
     admission = build_paid_lane_admission(resource_class=RESOURCE_CLASS, blockers=sorted(set(blockers)))
     admission.update({"allocation_binding": dict(binding), "allocation_binding_digest": canonical_digest(binding)})
     if not execute:
         return admission, None
     try:
-        grant = require_paid_resource_admission(admission, resource_class=RESOURCE_CLASS,
+        grant = require_paid_resource_admission(admission, resource_class=RESOURCE_CLASS, maximum_cost_usd=maximum_cost_usd,
                                                 expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
     except PaidResourceAdmissionBlocked:
         return admission, None
@@ -508,7 +508,8 @@ def _dispatch(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]:
         census = leases.slot_census(action.root)
         if census["slots_in_use"] >= action.config["max_live_executions"]:
             blockers.append("remote_cpu_live_execution_cap_reached")
-        admission, grant = admit_remote_cpu_job(blockers=blockers, binding=binding, execute=action.execute)
+        admission, grant = admit_remote_cpu_job(blockers=blockers, binding=binding, execute=action.execute,
+                                                maximum_cost_usd=worst)
         view = ("schema_version", "status", "resource_class", "blockers", "allocation_binding", "allocation_binding_digest")
         result = {"admission": {name: admission[name] for name in view}, "blockers": admission["blockers"], "job_id": job_id,
                   "attempt_id": attempt_id, "slots_in_use": census["slots_in_use"],

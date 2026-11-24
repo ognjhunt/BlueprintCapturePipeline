@@ -539,7 +539,9 @@ def run_rigid_robot_free_probe_allocator_lane(args: Any, control_context: tuple[
     if args.execute and not blockers and task_context is not None:
         try:
             # A refusal the local budget monitor already knows never leaves a remote hold behind.
-            require_paid_resource_budget(resource_class="vast_provider_adapter")
+            require_paid_resource_budget(resource_class="vast_provider_adapter",
+                                         maximum_cost_usd=args.adp_max_spend_usd,
+                                         allocation_binding_digest=binding_digest)
         except PaidResourceAdmissionBlocked as exc:
             blockers.extend(exc.blockers)
         else:
@@ -561,7 +563,8 @@ def run_rigid_robot_free_probe_allocator_lane(args: Any, control_context: tuple[
     if args.execute:
         try:
             grant = require_paid_resource_admission(admission, resource_class="vast_provider_adapter",
-                                                    expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+                                                    expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                                                    maximum_cost_usd=args.adp_max_spend_usd)
         except PaidResourceAdmissionBlocked as exc:
             write_json(Path(args.adapter_output), _blocked([*blockers, *exc.blockers]))
             print(json.dumps({"success": False}, sort_keys=True))

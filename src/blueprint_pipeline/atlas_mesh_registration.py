@@ -15,8 +15,11 @@ taken and only the faces near observed geometry are kept: what stays lies on wha
 The record names the estimate (``registration_estimate``, with the residual and the limit), and the
 scene carries ``COLLIDER_ESTIMATE_FLAG``. A mesh whose estimated frame keeps no face near the splat
 still refuses with its own reason, as a ``DeterministicRefusal``: the same mesh, splat and
-code repeat it, so it is not re-run on a timer. A registered frame whose support or depth filter keeps
-no face keeps the registered faces before that filter instead, flagged (``support_estimate``).
+code repeat it, so it is not re-run on a timer. With no collider nothing can ship, so the Atlas
+controller ends the job on it at once and the website asks the site for a new video, a new rebuild
+(``atlas_preparation_job_control._NEEDS_NEW_CAPTURE``, 2026-11-24). A registered frame whose support
+or depth filter keeps no face keeps the registered faces before that filter instead, flagged
+(``support_estimate``).
 """
 
 from __future__ import annotations

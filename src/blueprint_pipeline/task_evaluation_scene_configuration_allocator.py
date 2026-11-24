@@ -462,6 +462,9 @@ def run_scene_configuration_allocator_probe(
                 admission,
                 resource_class="vast_provider_adapter",
                 expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                # The attempt's whole hard cap (compute plus its external services): the account's month must
+                # have room for it. No authority, no cap: the admission is blocked by name already.
+                maximum_cost_usd=allocation_binding["hard_cap_usd"],
             )
         except PaidResourceAdmissionBlocked as exc:
             result = {

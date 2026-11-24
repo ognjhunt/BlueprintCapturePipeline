@@ -8,7 +8,9 @@
 
 A matrix row is ``{"label", "footage_id", "description"}``. Before each submit the month's counted spend (spend
 plus held reservations, as ``door status`` reports it) plus one job's expected spend must stay under the account's
-existing alert line the door itself enforces (``internal_test_job_door.STOP_LINE``). Nothing is deleted; every job
+existing alert line the door itself enforces (``internal_test_job_door.STOP_LINE``). The door also counts the paid
+admissions made since that report, which ``door status`` cannot show, so it can still refuse a job this check let
+through; a refusal stops the run. Nothing is deleted; every job
 is found again by its label. It needs the Pipeline's Python (its intent reader digests requests with ``rfc8785``);
 docs/runbooks/test-jobs.md.
 """
@@ -52,7 +54,10 @@ def ls(path: str) -> list[dict]:
 
 
 def spend_refusal(status: dict) -> str | None:
-    """Why the door would refuse one more job for the month (``internal_test_job_door.month_refusal``), or None."""
+    """Why the door would refuse one more job for the month (``internal_test_job_door.month_refusal``), or None.
+
+    From the report alone: the door adds the paid admissions made since it, so it decides, and may refuse more.
+    """
     month = (status.get("spend_guard") or {}).get("account_monthly_spend") or {}
     try:
         counted, line = float(month["counted_usd"]), float(month["alert_lines_usd"][STOP_LINE])

@@ -419,15 +419,41 @@ def test_a_new_job_is_refused_when_the_month_says_so_and_a_known_one_is_not(tmp_
     ([], None, "300", "test_job_month_closed:account_monthly_spend_report_missing_or_invalid"),
     ([], "no policy", "300", "test_job_month_closed:account_monthly_spend_limit_not_configured"),  # fail closed
 ])
-def test_the_door_reads_the_month_from_the_hosts_own_report(monkeypatch, blockers, counted, line, refusal):
+def test_the_door_reads_the_month_from_the_hosts_own_report(monkeypatch, tmp_path, blockers, counted, line, refusal):
     from blueprint_pipeline import account_monthly_spend as month
+    from blueprint_pipeline import paid_spend_meter as meter
 
     policy = None if counted == "no policy" else {"report_path": "r"}
+    monkeypatch.setenv(meter.METER_ROOT_ENV, str(tmp_path / "meter"))  # an empty journal: nothing admitted since
     monkeypatch.setattr(month, "admission_blockers", lambda environ=None: blockers)
     monkeypatch.setattr(month, "configured_policy", lambda environ=None: (policy, None, None))
-    monkeypatch.setattr(month, "read_report", lambda path: {"counted_usd": counted,
+    monkeypatch.setattr(month, "read_report", lambda path: {"counted_usd": counted, "generated_at": "2026-11-29T12:00:00Z",
                                                             "alert_lines_usd": {door_job.STOP_LINE: line}})
     assert door_job.month_refusal() == refusal
+
+
+def test_the_door_counts_the_paid_admissions_made_since_the_report_as_the_chokepoint_does(monkeypatch, tmp_path):
+    """At $270 of the $300 line a test job ($20 expected) fits; a $15 call granted after the report was written is
+    in none of its figures, and the door counts it as the chokepoint does: $285 + $20 reaches the line."""
+    from datetime import datetime, timezone
+
+    from blueprint_pipeline import account_monthly_spend as month
+    from blueprint_pipeline import paid_spend_meter as meter
+
+    generated = datetime(2026, 11, 29, 12, 0, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setenv(meter.METER_ROOT_ENV, str(tmp_path / "meter"))
+    monkeypatch.setattr(month, "_clock", lambda: generated + 120)
+    monkeypatch.setattr(month, "admission_blockers", lambda environ=None: [])
+    monkeypatch.setattr(month, "configured_policy", lambda environ=None: ({"report_path": "r"}, None, None))
+    monkeypatch.setattr(month, "read_report", lambda path: {"counted_usd": "270", "generated_at": "2026-11-29T12:00:00Z",
+                                                            "alert_lines_usd": {door_job.STOP_LINE: "300"}})
+    assert door_job.month_refusal() is None
+    meter.record_admission(job_id="req-9", meter_key="before-the-report", resource_class="evaluator_api",
+                           root=tmp_path / "meter", now=generated - 60, maximum_cost_usd="15.00")
+    assert door_job.month_refusal() is None  # granted before the report was written: not added on top of it
+    meter.record_admission(job_id="req-9", meter_key="since-the-report", resource_class="evaluator_api",
+                           root=tmp_path / "meter", now=generated + 60, maximum_cost_usd="15.00")
+    assert door_job.month_refusal() == "test_job_month_stop_line"
 
 
 def test_the_stop_line_is_an_existing_alert_line_read_by_door_and_runner():

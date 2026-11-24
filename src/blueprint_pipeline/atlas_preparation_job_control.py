@@ -12,8 +12,15 @@ from typing import Any
 from .common import write_json
 from .website_atlas_preview_store import LOCK_FILE, MAXIMUM_JOB_SECONDS
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,99}")
+#: Stops only a new capture moves on: the job ends at once and the website asks the site for a new video. The two
+#: mesh codes (2026-11-24) are no finding about the video: the room's mesh, made by the provider from the very splat it
+#: is compared with, lies near none of it in the frame of smallest residual (``atlas_mesh_registration``), so this
+#: rebuild has no collider, and the room's levelling, its base scene, the room package and the company README all need
+#: one. The same inputs always repeat it; before this the job waited, with nothing shipped and nothing asked, until a
+#: release or its deadline. A new video is a new rebuild: the only way on that needs no deploy.
 _NEEDS_NEW_CAPTURE = frozenset({"atlas_insufficient_overlapping_distinct_views",
-                                "atlas_coverage_anchor_quality_insufficient"})
+                                "atlas_coverage_anchor_quality_insufficient",
+                                "atlas_mesh_not_registered_to_splat", "atlas_mesh_frame_ambiguous"})
 _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
 #: Written to the job file just before a step runs and removed by the write that follows it.
 #: Read under the job lock, it can only be left by a step whose process died before returning.

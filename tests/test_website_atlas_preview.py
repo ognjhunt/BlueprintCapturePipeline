@@ -1639,26 +1639,76 @@ def test_a_retried_authority_check_does_not_retract_the_bundle_it_then_publishes
 
 
 def test_a_deterministic_refusal_waits_without_running_until_a_release_decides_it_differently(monkeypatch, site):
-    # The same mesh, splat and code repeat it: no timed schedule, no re-run, nothing bought again.
-    from blueprint_pipeline import atlas_mesh_registration
+    # The same proposal and code repeat it: no timed schedule, no re-run, nothing bought again.
+    from blueprint_pipeline import atlas_scene_planner
     from blueprint_pipeline.deterministic_refusal import DeterministicRefusal
     _enqueue(site)
-    refusal = DeterministicRefusal("atlas_mesh_not_registered_to_splat", step="atlas_mesh_registration",
-                                   inputs={"source_glb_sha256": "sha256:" + "1" * 64})
+    refusal = DeterministicRefusal("atlas_scene_planner_intervals_invalid", step="atlas_proposal_review",
+                                   inputs={"proposal_digest": "sha256:" + "1" * 64})
     world = World(monkeypatch, site, [refusal, _completed])
     assert world.advance() == "needs_input"
     job = _job(site)
-    assert job["reason"] == "atlas_mesh_not_registered_to_splat" and job["deterministic_refusal"] == refusal.record()
+    assert job["reason"] == "atlas_scene_planner_intervals_invalid" and job["deterministic_refusal"] == refusal.record()
     assert "refusal_retries" not in job and job["retry_at_epoch"] is not None
     revision = job["revision"]
     for _ in range(12):
         world.clock = _job(site)["retry_at_epoch"]
         assert world.advance() == "needs_input"
     assert len(world.runs) == 1 and _job(site)["revision"] == revision
-    monkeypatch.setattr(atlas_mesh_registration, "REGISTRATION_REVISION", "atlas_mesh_registration.r2")
+    monkeypatch.setattr(atlas_scene_planner, "PROPOSAL_REVIEW_REVISION", "atlas_proposal_review.r2")
     world.clock = _job(site)["retry_at_epoch"]
     assert world.advance() == "ready" and len(world.runs) == 2
     assert "deterministic_refusal" not in _job(site)
+
+
+MESH_CODES = ("atlas_mesh_not_registered_to_splat", "atlas_mesh_frame_ambiguous")
+
+
+@pytest.mark.parametrize("code", MESH_CODES)
+def test_a_mesh_that_lies_on_none_of_its_splat_ends_at_once_and_asks_for_a_new_video(monkeypatch, site, code):
+    """Stress test 2026-11-24 (matrix row ``stress-atlas-refused-deterministic``): this refusal waited until the job's
+    deadline, nothing shipped and nothing asked. The provider's mesh is made from the very splat it is compared with,
+    so it says nothing of the video; but without a collider nothing can truthfully ship, and only a new capture is a
+    new rebuild. The job ends at once, as the other stops only a new video clears do, and the website is told."""
+    from blueprint_pipeline.deterministic_refusal import DeterministicRefusal
+    _enqueue(site)
+    refusal = DeterministicRefusal(code, step="atlas_mesh_registration",
+                                   inputs={"source_glb_sha256": "sha256:" + "1" * 64})
+    world = World(monkeypatch, site, [refusal])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["state"], job["reason"], job["retry_at_epoch"]) == ("needs_input", code, None)
+    assert "deterministic_refusal" not in job and "refusal_retries" not in job
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("needs_input", code)
+    # Nothing runs it again: not the clock, not an operator's retry.
+    world.clock += 6 * 86400
+    assert world.advance() == "needs_input" and len(world.runs) == 1
+    with pytest.raises(ValueError, match="atlas_preview_retry_requires_recoverable_failure"):
+        preview.retry_failed_job(site.job)
+
+
+def test_a_mesh_refusal_an_earlier_release_left_waiting_ends_at_its_next_check_and_the_website_is_told(
+        monkeypatch, site):
+    """The replay set's ``atlas-deterministic-refusal-waits`` record: a job waiting on its key, written by a release
+    before this one. Its next check ends it, runs nothing, and moves its revision so the website hears it again."""
+    from blueprint_pipeline.deterministic_refusal import DeterministicRefusal
+    _enqueue(site)
+    refusal = DeterministicRefusal("atlas_mesh_not_registered_to_splat", step="atlas_mesh_registration",
+                                   inputs={"source_glb_sha256": "sha256:" + "1" * 64})
+    world = World(monkeypatch, site, [])
+    due = world.clock + preview.AUTHORITY_RECHECK_SECONDS
+    waiting = {**_job(site), "stage": "mesh", "state": "needs_input", "reason": "atlas_mesh_not_registered_to_splat",
+               "deterministic_refusal": refusal.record(), "retry_at_epoch": due, "revision": 2,
+               "delivered_revision": 2}
+    site.job.write_text(json.dumps(waiting))
+    world.clock = due
+    assert world.advance() == "needs_input" and world.runs == []
+    job = _job(site)
+    assert job["retry_at_epoch"] is None and "deterministic_refusal" not in job and job["revision"] == 3
+    assert [(row["state"], row["reason"], row["revision"]) for row in world.pushed] == [
+        ("needs_input", "atlas_mesh_not_registered_to_splat", 3)]
+    world.clock += 86400
+    assert world.advance() == "needs_input" and world.runs == [] and len(world.pushed) == 1
 
 
 def test_a_deterministic_refusal_still_ends_at_the_jobs_deadline(monkeypatch, site):

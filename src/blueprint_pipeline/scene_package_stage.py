@@ -25,7 +25,10 @@ guessed.
 run (physics and control rates, the episode length, the object's start pose and size, and the object's estimated
 mass and friction when the job has them) into the small success-rule file. The criteria pass through an
 allow-list: only keys listed here, holding numbers, true or false, or a word from a closed set, survive; anything
-else is left out and counted.
+else is left out and counted. An articulated rule's joints are the one exception, read from the shipped object file
+rather than the plan: the target joint ships as its prim path in scene.usda, its kind (prismatic or revolute) and the
+unit of its numbers, and each locked joint as its prim path and kind (``joint_prims``), never by Blueprint's joint id.
+``units`` names the unit of every number the file holds (``rule_units``), and what a window's samples count.
 """
 from __future__ import annotations
 
@@ -54,8 +57,33 @@ CRITERIA_KEYS = frozenset({
     "minimum_hold_seconds", "placement_relation", "interior_bounds_world_m", "success_rule",
     # An articulated open/close goal (``articulated_task_success_contract``): the target joint's success interval,
     # hard limits and reset position (metres for a slide, radians for a hinge), the settled speed and the motion
-    # threshold. Plain numbers; the joint ids beside them are text and stay out.
+    # threshold. Plain numbers; the joint ids beside them are Blueprint's own names, so the joint blocks
+    # (``JOINT_BLOCKS``) ship each joint as its prim path in scene.usda and its kind instead, and ``units`` names the
+    # unit of every number of the target joint's own (``rule_units``).
     "success_interval", "joint_hard_limits", "reset_position", "maximum_settled_target_speed", "movement_epsilon"})
+#: The articulated criteria's joint blocks: ``target_joint`` (``joint_id``) and ``locked_joints`` (``joint_ids``,
+#: ``mode``, ``motion_tolerance``). A joint ships only as read from the job's object file (``joint_prims``).
+JOINT_BLOCKS = ("target_joint", "locked_joints")
+#: A joint's kind, as its USD type says, and the unit of its own coordinate and of its speed.
+JOINT_KINDS = {"prismatic": ("metres", "metres per second"), "revolute": ("radians", "radians per second"),
+               "fixed": (None, None)}
+#: The target joint's own numbers: in its unit (``JOINT_KINDS``), and its speed in that unit per second.
+TARGET_JOINT_FIELDS = (("opening", "success_interval"), ("opening", "joint_hard_limits"),
+                       ("opening", "reset_position"), ("motion", "movement_epsilon"))
+TARGET_JOINT_SPEED_FIELDS = (("hold", "maximum_settled_target_speed"),)
+LOCKED_JOINT_UNIT = ("each locked joint's own unit: metres for a prismatic joint, radians for a revolute one; a fixed "
+                     "joint does not move")
+#: When the object's file names no target joint (it cannot be read), its numbers' unit is said as it is.
+UNKNOWN_JOINT_UNIT = "the target joint's own unit: metres for a prismatic joint, radians for a revolute one"
+UNKNOWN_JOINT_SPEED = ("the target joint's own unit a second: metres per second for a prismatic joint, radians per "
+                       "second for a revolute one")
+#: The unit each key suffix means, longest first; ``units`` lists those the shipped rule uses (``rule_units``).
+SUFFIX_UNITS = (("_m_s", "metres per second"), ("_rad_s", "radians per second"), ("_seconds", "seconds"),
+                ("_hz", "hertz"), ("_kg", "kilograms"), ("_rad", "radians"), ("_m", "metres"), ("_n", "newtons"))
+#: A settling or hold window is counted in the run's control steps (``native_task_arena_scene_plan._cadence``: the
+#: episode is its action steps and its settle window at the control rate).
+WINDOW_SAMPLES = "control steps"
+_PRIM_PATH = re.compile(r"/World/[A-Za-z_][A-Za-z0-9_]*/Asset(?:/[A-Za-z_][A-Za-z0-9_]*)*")
 #: The words a criterion's value may be, each read from the scorer, not guessed: the modes
 #: ``adp_rigid_task_scoring`` compares (``required``, ``ignored``, ``released``, ``cleared``, ``closed_at_most``,
 #: and ``forbidden`` for excursions), the target's shape, relation and rule (``task_evaluation_surface_target``:
@@ -197,6 +225,121 @@ def _target_prim(path: Path, role: str) -> str:
     return roots[0]
 
 
+def joint_prims(plan: Mapping[str, Any], packet: Path | None) -> dict[str, dict[str, str]]:
+    """Each joint of the job's object file (the plan's ``task_object`` row), by its prim name: its path in scene.usda
+    (``/World/Object/Asset/...``, where ``write_stage`` references the file) and its kind (``JOINT_KINDS``), both read
+    from the file itself, never from the plan. A name two joints share is neither's. Empty without a readable file."""
+    if packet is None:
+        return {}
+    try:
+        row = next((row for row in placements(plan) if row["role"] == "task_object"), None)
+    except StageRefused:
+        return {}
+    if row is None:
+        return {}
+    path = Path(packet).joinpath(*PurePosixPath(row["usd_path"]).parts)
+    if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(Path(packet).resolve()):
+        return {}
+    try:
+        from pxr import Sdf, Usd, UsdPhysics
+        target = _target_prim(path, row["role"])
+        stage = Usd.Stage.Open(str(path))
+        root = Sdf.Path(target) if target else stage.GetDefaultPrim().GetPath()
+        found: dict[str, dict[str, str]] = {}
+        shared: set[str] = set()
+        for prim in stage.Traverse():
+            kind = ("prismatic" if prim.IsA(UsdPhysics.PrismaticJoint) else "revolute"
+                    if prim.IsA(UsdPhysics.RevoluteJoint) else "fixed" if prim.IsA(UsdPhysics.FixedJoint) else None)
+            if kind is None or not prim.GetPath().HasPrefix(root) or prim.GetPath() == root:
+                continue
+            composed = f"/World/{row['prim']}/Asset/{prim.GetPath().MakeRelativePath(root).pathString}"
+            name = prim.GetName()
+            if name in found or not _PRIM_PATH.fullmatch(composed):
+                shared.add(name)
+            found[name] = {"prim_path": composed, "kind": kind}
+    except Exception:  # noqa: BLE001 - a file that cannot be read names no joint; the blocks are left out, counted
+        return {}
+    return {name: joint for name, joint in found.items() if name not in shared}
+
+
+def _joint_blocks(blocks: Mapping[str, Any], joints: Mapping[str, Mapping[str, str]] | None) -> tuple[dict, int]:
+    """The joint blocks (``JOINT_BLOCKS``) with each joint id as its prim path and kind (``joint_prims``), and how many
+    fields were left out. Without ``joints`` a block is left out whole, as one field; a target joint that is not
+    prismatic or revolute, or a locked joint the file does not name, is left out and counted."""
+    out: dict[str, Any] = {}
+    left_out = 0
+    for key, block in blocks.items():
+        if not joints or not isinstance(block, Mapping):
+            left_out += 1
+            continue
+        if key == "target_joint":
+            joint = joints.get(str(block.get("joint_id")))
+            kind = (joint or {}).get("kind")
+            if joint is None or kind not in ("prismatic", "revolute"):
+                left_out += 1
+                continue
+            out[key] = {"prim_path": joint["prim_path"], "kind": kind, "unit": JOINT_KINDS[kind][0]}
+            others = [item for item in block.get("joint_ids") or [] if item != block.get("joint_id")]
+            left_out += len(others) + len(set(block) - {"joint_id", "joint_ids"})
+            continue
+        ids = block.get("joint_ids") if isinstance(block.get("joint_ids"), list) else []
+        named = [joints[str(item)] for item in ids if str(item) in joints]
+        kept: dict[str, Any] = {"joints": [{"prim_path": joint["prim_path"], "kind": joint["kind"]} for joint in named]}
+        left_out += len(ids) - len(named)
+        if block.get("mode") in MODE_WORDS:
+            kept["mode"] = block["mode"]
+        if _number_like(block.get("motion_tolerance")) and not isinstance(block.get("motion_tolerance"), bool):
+            kept["motion_tolerance"] = block["motion_tolerance"]
+        left_out += len(set(block) - {"joint_ids"} - set(kept))
+        out[key] = kept
+    return out, left_out
+
+
+def rule_units(rule: Mapping[str, Any]) -> dict[str, str]:
+    """Every unit the shipped rule uses, and what its windows count: each key suffix it carries
+    (``SUFFIX_UNITS``, ``"*_m": "metres"``), ``*window_samples`` (control steps, at ``timing.control_frequency_hz``),
+    and, for an articulated rule, the target joint's own numbers by their path (``TARGET_JOINT_FIELDS``: metres for a
+    prismatic joint, radians for a revolute one) and the locked joints' tolerance."""
+    units: dict[str, str] = {}
+    windows = False
+
+    def walk(value: Any) -> bool:
+        """Whether ``value`` holds a number; each key that does names its unit."""
+        nonlocal windows
+        if isinstance(value, Mapping):
+            numeric = False
+            for key, item in value.items():
+                holds = walk(item)
+                numeric = numeric or holds
+                if not holds or not isinstance(key, str):
+                    continue
+                windows = windows or key == "window_samples"
+                suffix = next(((end, unit) for end, unit in SUFFIX_UNITS if key.endswith(end)), None)
+                if suffix is not None:
+                    units["*" + suffix[0]] = suffix[1]
+            return numeric
+        if isinstance(value, list):
+            return any([walk(item) for item in value])
+        return _number_like(value) and not isinstance(value, bool)
+
+    walk({key: value for key, value in rule.items() if key not in ("units", "criteria_basis")})
+    if windows:
+        rate = (rule.get("timing") or {}).get("control_frequency_hz")
+        units["*window_samples"] = (f"{WINDOW_SAMPLES}, {rate:g} a second (timing.control_frequency_hz)"
+                                    if _number_like(rate) and not isinstance(rate, bool) else WINDOW_SAMPLES)
+    criteria = rule.get("criteria") if isinstance(rule.get("criteria"), Mapping) else {}
+    target = criteria.get("target_joint") if isinstance(criteria.get("target_joint"), Mapping) else {}
+    unit, speed = JOINT_KINDS.get(str(target.get("kind")), (None, None))
+    for fields, said, unknown in ((TARGET_JOINT_FIELDS, unit, UNKNOWN_JOINT_UNIT),
+                                  (TARGET_JOINT_SPEED_FIELDS, speed, UNKNOWN_JOINT_SPEED)):
+        for block, key in fields:
+            if key in (criteria.get(block) or {}):
+                units[f"criteria.{block}.{key}"] = f"{said} (the target joint is {target['kind']})" if said else unknown
+    if "motion_tolerance" in (criteria.get("locked_joints") or {}):
+        units["criteria.locked_joints.motion_tolerance"] = LOCKED_JOINT_UNIT
+    return dict(sorted(units.items()))
+
+
 def _number(value: float) -> str:
     return repr(float(value))
 
@@ -243,13 +386,18 @@ def _number_like(value: Any) -> bool:
     return isinstance(value, bool) or (isinstance(value, (int, float)) and math.isfinite(value))
 
 
-def neutral_criteria(criteria: Mapping[str, Any], *, support_prim: str | None = None) -> tuple[dict[str, Any], int]:
+def neutral_criteria(criteria: Mapping[str, Any], *, support_prim: str | None = None,
+                     joints: Mapping[str, Mapping[str, str]] | None = None) -> tuple[dict[str, Any], int]:
     """The criteria through the allow-list, and how many fields were left out.
 
     ``support_prim_path`` names the support in Blueprint's scene; it becomes ``support_prim`` with the stage's own
-    prim (``/World/Support``) when the stage has one, and is left out otherwise.
+    prim (``/World/Support``) when the stage has one, and is left out otherwise. ``joints``: the object file's joints
+    (``joint_prims``); an articulated rule's joint blocks (``JOINT_BLOCKS``) ship each joint by its prim path and kind
+    from them, and are left out without them.
     """
-    left_out = 0
+    blocks = {key: criteria[key] for key in JOINT_BLOCKS if isinstance(criteria, Mapping) and key in criteria}
+    criteria = {key: value for key, value in criteria.items() if key not in blocks} if blocks else criteria
+    named, left_out = _joint_blocks(blocks, joints)
 
     def keep(value: Any) -> Any:
         nonlocal left_out
@@ -287,7 +435,7 @@ def neutral_criteria(criteria: Mapping[str, Any], *, support_prim: str | None = 
         left_out += 1
         return None
     kept = keep(criteria)
-    return (kept if isinstance(kept, dict) else {}), left_out
+    return {**(kept if isinstance(kept, dict) else {}), **named}, left_out
 
 
 def _range(value: Any) -> list[float] | None:
@@ -311,8 +459,9 @@ def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None
         return None
     rows = placements(plan)
     support = "/World/Support" if any(row["prim"] == "Support" for row in rows) else None
-    kept, left_out = neutral_criteria(criteria, support_prim=support)
-    rule: dict[str, Any] = {"units": "metres, radians, seconds", "up_axis": up_axis(plan, packet=packet), "criteria": kept,
+    joints = joint_prims(plan, packet) if any(key in criteria for key in JOINT_BLOCKS) else None
+    kept, left_out = neutral_criteria(criteria, support_prim=support, joints=joints)
+    rule: dict[str, Any] = {"units": {}, "up_axis": up_axis(plan, packet=packet), "criteria": kept,
                             "criteria_fields_left_out": left_out}
     cadence = plan.get("cadence") if isinstance(plan.get("cadence"), Mapping) else {}
     timing = {key: cadence[key] for key in ("physics_frequency_hz", "control_frequency_hz", "episode_length_seconds")
@@ -340,8 +489,10 @@ def neutral_rule(plan: Mapping[str, Any], *, estimates: Mapping[str, Any] | None
                       if value in {"site_stated", "assumed", "destination_area"}}
         if kept_basis:
             rule["criteria_basis"] = kept_basis
+    rule["units"] = rule_units(rule)
     return rule
 
 
-__all__ = ["CRITERIA_KEYS", "MODE_WORDS", "ROLE_PRIMS", "WORLD_FRAME_ROLES", "StageRefused", "neutral_criteria", "neutral_rule",
-           "package_name", "placements", "up_axis", "write_stage"]
+__all__ = ["CRITERIA_KEYS", "JOINT_BLOCKS", "JOINT_KINDS", "MODE_WORDS", "ROLE_PRIMS", "SUFFIX_UNITS", "WORLD_FRAME_ROLES",
+           "StageRefused", "joint_prims", "neutral_criteria", "neutral_rule", "package_name", "placements", "rule_units",
+           "up_axis", "write_stage"]
