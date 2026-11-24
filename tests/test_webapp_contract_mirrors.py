@@ -30,6 +30,11 @@ from pathlib import Path
 
 import pytest
 
+#: A sibling WebApp checkout is not installed on the hermetic CI runners, whose wide lane refuses a skipped test: the
+#: lane deselects these, and the WebApp's own CI compares the same mirrors with Pipeline main on every run
+#: (`npm run pipeline:mirrors:verify`). Locally, beside a WebApp checkout, they run.
+pytestmark = pytest.mark.external_data
+
 REPO = Path(__file__).resolve().parents[1]
 ROUTER = "docs/webapp_handoff/decision-evidence-router.v1"
 MIRRORS = (
