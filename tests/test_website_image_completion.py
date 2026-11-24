@@ -1182,3 +1182,82 @@ def test_a_cut_off_batch_counts_requests_it_never_sent_at_nothing(tmp_path, monk
     # One request was sent and cut off; the other was never sent (no intent exists for it).
     assert first["completed_request_count"] == 2 and first["provider_charge_amount_usd"] == 0.3
     assert ledger.rows[ledger.settle_calls[1]["allocation_binding_digest"]]["admission"]["request_count"] == 2
+
+
+# OpenAI's answers for a refusal that bills nothing (``job_retry_policy.provider_refusal_unbilled``), as the edit
+# adapter keeps them (``semantic_teacher_image_edit_worker._sanitized_http_failure``).
+NO_CREDIT = {"schema_version": "semantic_teacher_provider_failure.v1", "transport_error_type": "http_error",
+             "http_status": 429, "provider_error_type": "insufficient_quota", "provider_error_code": "insufficient_quota",
+             "provider_request_id": "req_fixture", "raw_provider_body_recorded": False,
+             "raw_provider_headers_recorded": False}
+UNPAID = {**NO_CREDIT, "http_status": 402, "provider_error_type": None, "provider_error_code": None}
+
+
+@pytest.mark.parametrize("failure", [NO_CREDIT, UNPAID], ids=["429_insufficient_quota", "402"])
+def test_a_refusal_that_bills_nothing_settles_at_nothing_and_the_next_run_asks_again(tmp_path, monkeypatch, failure):
+    from blueprint_pipeline import website_task_context as control
+    from blueprint_pipeline.job_retry_policy import provider_error_waits
+    frames, _ = _inputs(tmp_path)
+    ledger, calls = _Ledger(), []
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", ledger.reserve)
+    monkeypatch.setattr(control, "website_webapp_request", ledger.webapp)
+    answer = _blue_edit([])
+
+    def edit(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:  # The first edit is made and paid; the provider refuses the second.
+            return {"succeeded": False, "blocker": "semantic_teacher_provider_http_error", "provider_failure": failure}
+        return answer(**kwargs)
+
+    monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    context = {"context_digest": "task", "capture_id": "cap", "request_id": "req", "scene_id": "scene"}
+    task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    args = dict(frames=frames, task_digest=task_digest, task_context=context, output_root=tmp_path / "edits",
+                admission={}, token="test")
+    with pytest.raises(ValueError) as raised:
+        completion.complete_background_images(**args)
+    # The step waits as for an outage (the job's own retries ask again), never as a step for a person.
+    assert provider_error_waits(raised.value) and "requires_reconciliation" not in str(raised.value)
+    (first, _held), = ledger.rows.items()
+    receipts = [json.loads(path.read_text()) for path in (tmp_path / "edits" / first[7:]).glob("[0-9].json")]
+    done_cost = next(receipt["cost_usd"] for receipt in receipts if receipt["status"] == "completed")
+    refused = next(receipt for receipt in receipts if receipt["status"] != "completed")
+    assert refused["status"] == "refused_unbilled" and refused["cost_usd"] == 0
+    assert refused["provider_failure"] == failure and "requires_reconciliation" not in refused
+    # The batch's hold is settled at what was billed: the made edit at its receipted cost, the refused one at $0.
+    (settled,) = ledger.settle_calls
+    assert settled["allocation_binding_digest"] == first and settled["completed_request_count"] == 2
+    assert settled["provider_charge_amount_usd"] == round(done_cost, 6) and ledger.counted() == round(done_cost, 6)
+
+    outputs = completion.complete_background_images(**args)
+    assert len(calls) == 3 and len(ledger.rows) == 2  # Only the refused edit is asked again, under its own hold.
+    redo = ledger.settle_calls[1]["allocation_binding_digest"]
+    assert redo != first and ledger.rows[redo]["admission"]["request_count"] == 1
+    redo_cost = ledger.settle_calls[1]["provider_charge_amount_usd"]
+    assert ledger.counted() == round(done_cost + redo_cost, 6)
+    assert {Path(row["completion_receipt"]).parent.name for row in outputs} == {first[7:], redo[7:]}
+    assert completion.complete_background_images(**args) == outputs and len(calls) == 3
+
+
+def test_a_refusal_not_known_to_bill_nothing_keeps_its_full_hold(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as control
+    frames, _ = _inputs(tmp_path)
+    ledger = _Ledger()
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", ledger.reserve)
+    monkeypatch.setattr(control, "website_webapp_request", ledger.webapp)
+    for failure in ({**NO_CREDIT, "provider_error_type": "requests", "provider_error_code": "rate_limit_exceeded"},
+                    {**UNPAID, "http_status": 500}):
+        root = tmp_path / str(failure["http_status"])
+        monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: {
+            "succeeded": False, "blocker": "semantic_teacher_provider_http_error", "provider_failure": failure})
+        context = {"context_digest": "task", "capture_id": "cap", "request_id": "req", "scene_id": str(root)}
+        task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        args = dict(frames=frames, task_digest=task_digest, task_context=context, output_root=root,
+                    admission={}, token="test")
+        with pytest.raises(ValueError, match="semantic_teacher_provider_http_error"):
+            completion.complete_background_images(**args)
+        receipt = json.loads(next(root.glob("*/[0-9].json")).read_text())
+        assert receipt["status"] == "submitting" and receipt["requires_reconciliation"] is True
+        with pytest.raises(ValueError, match="requires_reconciliation"):
+            completion.complete_background_images(**args)
+    assert not ledger.settle_calls and ledger.counted() == 2 * 2 * 0.3

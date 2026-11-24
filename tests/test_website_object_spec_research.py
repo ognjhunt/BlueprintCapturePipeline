@@ -595,3 +595,83 @@ def test_a_verification_change_rebuilds_the_record_from_the_retained_receipt():
     # The purchased research binding is unchanged, so no second run is bought.
     assert "verification_revision" not in research.research_binding(
         identity={}, articulation_kind="revolute", frames=[], task_context={"context_digest": "sha256:" + "a" * 64})
+
+
+def _provider_error(status, *, code, message):
+    """The OpenAI SDK's own error for one HTTP answer, as its client raises it."""
+    import httpx
+    import openai
+    kind = {402: openai.APIStatusError, 429: openai.RateLimitError, 500: openai.InternalServerError}[status]
+    response = httpx.Response(status, request=httpx.Request("POST", "https://api.openai.com/v1/responses"))
+    return kind(f"Error code: {status}", response=response,
+                body={"message": message, "type": code, "param": None, "code": code})
+
+
+NO_CREDIT = dict(code="insufficient_quota",
+                 message="You have no credits remaining. Add credits to continue using the API.")
+
+
+class _ProviderRefusingThenWorking(_Invoker):
+    """The provider answers the first ``refusals`` calls with ``error`` after the harness reserved them."""
+
+    def __init__(self, findings, root, error, refusals=1):
+        super().__init__(findings)
+        self.root, self.error, self.refusals = root, error, refusals
+
+    def configure_reservation_audit(self, *, record_reservation, **_kwargs):
+        self.record_reservation = record_reservation
+
+    def invoke(self, spec, input_value):
+        # What the SDK invoker writes durably before its provider request: one reservation for this run.
+        from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import (
+            INFERENCE_RESERVATION_SCHEMA_VERSION)
+        identity = {"run_id": spec.run_id, "capability": spec.capability, "model": spec.model,
+                    "input_digest": "sha256:" + "1" * 64, "max_turns": spec.max_turns,
+                    "max_output_tokens": spec.max_output_tokens}
+        value = {"schema_version": INFERENCE_RESERVATION_SCHEMA_VERSION, **identity,
+                 "reservation_id": canonical_digest(identity), "projected_max_cost_usd": .2}
+        value["inference_reservation_digest"] = canonical_digest(value, digest_field="inference_reservation_digest")
+        self.record_reservation(value)
+        if self.refusals:
+            self.refusals -= 1
+            self.calls.append((spec, input_value))
+            raise self.error
+        return super().invoke(spec, input_value)
+
+
+@pytest.mark.parametrize("error", [_provider_error(429, **NO_CREDIT), _provider_error(402, code=None, message="unpaid")],
+                         ids=["429_insufficient_quota", "402"])
+def test_a_provider_refusal_that_bills_nothing_is_settled_at_nothing_and_asked_again(tmp_path, website, error):
+    root = tmp_path / "spec" / "dishwasher-1"
+    invoker = _ProviderRefusingThenWorking(_findings(), root, error, refusals=3)
+    records = [_research(tmp_path, website, invoker) for _ in range(3)]
+    # Each refusal holds the research for this run only; it never asks for reconciliation by a person.
+    assert [row["status"] for row in records] == ["held"] * 3
+    assert all("requires_reconciliation" not in row["research"]["reason"]
+               and "refusals_exhausted" not in row["research"]["reason"] for row in records)
+    # Each refused call's hold is settled at $0 on the job's ledger, under its own allocation.
+    allocations = [row["binding_digest"] for row in website["reserve"]]
+    assert len(set(allocations)) == 3
+    assert [(row["allocation_binding_digest"], row["provider_charge_amount_usd"]) for row in website["settle"]] == [
+        (allocation, 0) for allocation in allocations]
+    retired = sorted(root.glob("research-*.unbilled-*.json"))
+    assert [json.loads(path.read_text())["status"] for path in retired if "settlement" not in path.name] == [
+        "refused_unbilled"] * 3
+    # The job's own next run asks again, under a fresh allocation, and the made call settles at its cost.
+    record = _research(tmp_path, website, invoker)
+    assert record["status"] == "researched" and len(invoker.calls) == 4 and len(website["reserve"]) == 4
+    assert website["settle"][-1]["provider_charge_amount_usd"] == 0.21
+    assert website["settle"][-1]["allocation_binding_digest"] not in allocations
+    # A restart buys nothing again.
+    assert _research(tmp_path, website, invoker) == record and len(invoker.calls) == 4 and len(website["settle"]) == 4
+
+
+@pytest.mark.parametrize("error", [_provider_error(429, code="rate_limit_exceeded", message="Rate limit reached"),
+                                   _provider_error(500, code=None, message="server error"), TimeoutError("wall clock")],
+                         ids=["429_rate_limit", "500", "timeout"])
+def test_a_provider_failure_not_known_to_bill_nothing_keeps_its_hold(tmp_path, website, error):
+    root = tmp_path / "spec" / "dishwasher-1"
+    invoker = _ProviderRefusingThenWorking(_findings(), root, error)
+    assert _research(tmp_path, website, invoker)["research"]["reason"].startswith("website_object_spec_agent_failed:")
+    assert _research(tmp_path, website, invoker)["research"]["reason"] == "website_object_spec_agent_requires_reconciliation"
+    assert len(invoker.calls) == len(website["reserve"]) == 1 and website["settle"] == []
