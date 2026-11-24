@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -462,6 +464,9 @@ def test_static_source_crop_maps_masks_back_without_inventing_temporal_coverage(
     mask = masks.decode_track_mask(result["observations"][0])
     assert mask.shape == (100, 100) and mask.sum() == 200 and mask[30:40, 20:40].all()
     assert result["observations"][0]["source_frame_id"] == "decoded-41"
+    # The mask is the JSON it is kept as: its manifest is compared with the kept one on every retry.
+    assert type(result["observations"][0]["source_crop_box_pixels"]) is list
+    assert json.loads(json.dumps(result)) == result
 
 
 @pytest.mark.parametrize("support_disposition,support_effect", [("keep", "static_contact"), ("remove", "static_contact"), ("keep", "manipulated")])

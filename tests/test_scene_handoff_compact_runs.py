@@ -160,6 +160,19 @@ def test_detached_track_json_is_the_json_round_trip_with_runs_kept_compact():
             lambda: json.loads(json.dumps(value, allow_nan=False)))
 
 
+def test_a_kept_track_file_holds_the_value_it_was_written_from_and_nothing_else(tmp_path):
+    """Retained derivatives are compared as written: a tuple, or compact runs, read back as lists."""
+    value = {"box": (1, 0, 4, 3), "runs": RunLengths.from_runs([{"start": 2, "length": 2}]), "n": 1.5}
+    path = tmp_path / "task_masks.json"
+    codec.write_track_json(path, value)
+    assert load_track_json(path) != value  # Python's == calls the very same document changed
+    assert codec.holds_track_json(path, value)
+    assert codec.holds_track_json(path, {"n": 1.5, "runs": [{"start": 2, "length": 2}], "box": [1, 0, 4, 3]})
+    for changed in ({**value, "box": (1, 0, 4, 4)}, {**value, "runs": [{"start": 2, "length": 3}]},
+                    {**value, "n": 1.25}, {**value, "extra": None}, {"box": value["box"], "runs": value["runs"]}):
+        assert not codec.holds_track_json(path, changed)
+
+
 def _walk(value):
     yield value
     if type(value) is dict:

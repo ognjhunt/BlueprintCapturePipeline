@@ -32,6 +32,9 @@ delivery (``website_preparation_delivery_retirement``): one capture-relative pat
 of the shape the delivery index keys, and the owner's approval text. It moves
 that delivery's record to its terminal ``retired`` state, keeping every field;
 it changes nothing else, deletes nothing, starts no compute and moves no money.
+``test-job-retry-now`` (``operate``) runs the active release's ``internal_test_job_retry_now`` for one internal test
+job, as the service user, with no network: it sets that job's scheduled Atlas preview and preparation retries due now,
+at most once per release, and changes no count, wall, grant, spend or admission.
 """
 
 from __future__ import annotations
@@ -82,6 +85,8 @@ _SCOPES = {
     "retire-parked-delivery": "operate",
     # Starts one internal test job through the website's signed internal route; its spend passes every paid admission.
     "test-job": "operate",
+    # Brings one internal test job's next attempt forward to now, once per release; timing only, no network.
+    "test-job-retry-now": "operate",
     # Plans, or with apply empties, one owner-approved old experiment folder named in
     # experiment_purge.FOLDERS. It runs the door's own module; nothing can be restored.
     "purge-experiment-folder": "operate",
@@ -129,6 +134,7 @@ if DISPATCHER_HOLD_ONLY:
     # after proving no process, mount or recent write touches it, behind a
     # receipt. g1-841757-development is not admitted: the G1 trial's shared
     # inputs still point at it. It starts no compute and moves no money.
+    # test-job-retry-now is not admitted here: no owner approval of it is recorded yet.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "retire-parked-delivery", "test-job",
@@ -137,6 +143,8 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TEST_JOB_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
 _TEST_JOB_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}")
 _TEST_JOB_FOOTAGE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+# The website's id for a test job (Blueprint-WebApp server/routes/internal-test-jobs.ts internalTestJobId).
+_TEST_JOB_ID = re.compile(r"itest-[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
 ACTIVATION_HOLD_OVERRIDE = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
@@ -535,6 +543,16 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                 or not 1 <= len(body["description"].strip()) <= 2000):
             raise RequestRefused("test_job_fields_invalid")
         return {key: body[key] for key in sorted(body)}
+    if kind == "test-job-retry-now":
+        # The job by its website id, and why; the release module finds it in the door's own test-job records.
+        _only(body, ("kind", "job_id", "reason"))
+        job_id, reason = body.get("job_id"), body.get("reason")
+        if not isinstance(job_id, str) or not _TEST_JOB_ID.fullmatch(job_id):
+            raise RequestRefused("test_job_retry_now_job_invalid")
+        if (not isinstance(reason, str) or reason != reason.strip() or not 1 <= len(reason) <= 500
+                or not reason.isprintable()):
+            raise RequestRefused("test_job_retry_now_reason_invalid")
+        return {"kind": kind, "job_id": job_id, "reason": reason}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")

@@ -5,6 +5,7 @@
     "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py submit --matrix jobs.json -k 2 --state run.json
     "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py follow --state run.json --report report.json
     "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py report --state run.json
+    "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py retry-now --state run.json --label L --reason "fix is live"
 
 A matrix row is ``{"label", "footage_id", "description"}``. Before each submit the month's counted spend (spend
 plus held reservations, as ``door status`` reports it) plus one job's expected spend must stay under the account's
@@ -213,6 +214,25 @@ def _ask(args: argparse.Namespace, state: dict, row: dict) -> dict:
     return result
 
 
+def retry_now(args: argparse.Namespace, state: dict) -> int:
+    """Bring one job's scheduled retries forward to now through the door (``test-job-retry-now``): timing only."""
+    job = next((job for job in state["jobs"] if job["label"] == args.label and job.get("job_id")), None)
+    if job is None:
+        print(f"{args.label}: no started job of that label in {args.state}", file=sys.stderr)
+        return 2
+    accepted = door._json("POST", "/requests", body={"kind": "test-job-retry-now", "job_id": job["job_id"],
+                                                     "reason": args.reason})
+    for _ in range(120):
+        request = door._json("GET", f"/requests/{accepted['id']}")
+        verdict = door._terminal(request)
+        if verdict is not None:
+            print(json.dumps(cat_json(str((request.get("outcome") or {}).get("result") or "")) or request, indent=1))
+            return 0 if verdict else 1
+        time.sleep(5)
+    print(f"{args.label}: no answer to {accepted['id']} yet; read it with operator_door.py request", file=sys.stderr)
+    return 1
+
+
 def report(args: argparse.Namespace, state: dict) -> list[dict]:
     status = door._json("GET", "/status")
     rows = [job_report(job, status) for job in state["jobs"]]
@@ -241,10 +261,15 @@ def main(argv: list[str] | None = None) -> int:
     commands.choices["submit"].add_argument("--matrix", required=True)
     commands.choices["submit"].add_argument("-k", type=int, choices=range(1, MAX_IN_FLIGHT + 1), default=MAX_IN_FLIGHT)
     commands.choices["submit"].add_argument("--run-id", default=dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d"))
+    retry = commands.add_parser("retry-now", help="bring one job's scheduled retries forward to now (timing only)")
+    for flag in ("--state", "--label", "--reason"):
+        retry.add_argument(flag, required=True)
     args = parser.parse_args(argv)
     path = Path(args.state)
     state = json.loads(path.read_text()) if path.exists() else {"jobs": []}
     try:
+        if args.command == "retry-now":
+            return retry_now(args, state)
         if args.command == "submit":
             submit(args, state)
         while True:

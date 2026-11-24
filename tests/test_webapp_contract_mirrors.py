@@ -17,6 +17,8 @@ Mirrored, Pipeline file -> WebApp file:
   ``contracts/pipeline/website-task-target-choice.v1.schema.json``
 - every file of ``docs/webapp_handoff/decision-evidence-router.v1/`` -> ``contracts/pipeline/decision-evidence-router.v1/``
 - ``tests/fixtures/website-withdrawal-vector.json`` -> ``server/tests/fixtures/website-withdrawal-vector.json``
+- ``docs/webapp_handoff/website-pipeline-codes.v1.json`` -> ``contracts/pipeline/website-pipeline-codes.v1.json``
+  (every code the website is sent about a job's simulation: ``test_website_pipeline_codes``)
 
 Not mirrored from here: the WebApp's ``contracts/pipeline/decision-evidence-router.v1.json`` (its legacy public-reader
 schema, with no Pipeline source) and ``contracts/shared-doctrine.lock.json`` (generated from ``doctrine/``, checked
@@ -46,6 +48,7 @@ MIRRORS = (
     *((f"{ROUTER}/{path.name}", f"contracts/pipeline/decision-evidence-router.v1/{path.name}")
       for path in sorted((REPO / ROUTER).iterdir()) if path.is_file()),
     ("tests/fixtures/website-withdrawal-vector.json", "server/tests/fixtures/website-withdrawal-vector.json"),
+    ("docs/webapp_handoff/website-pipeline-codes.v1.json", "contracts/pipeline/website-pipeline-codes.v1.json"),
 )
 
 

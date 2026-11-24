@@ -270,6 +270,28 @@ def _test_job_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[
             f"BindReadOnlyPaths={secrets}/pipeline_sync_token")
 
 
+def _test_job_retry_now_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_TEST_JOB_RETRY_NOW_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
+
+
+def _test_job_retry_now_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
+    """As the user that owns the records, with no network and every secret hidden. Writable: the job's scene under
+    each handoff bucket (its Atlas job and preparation ledger; the id was validated with the request), the door's
+    test-job ledger, and the result."""
+    # "-": a scene retired before the unit starts must not stop it (226/NAMESPACE); the module says absent.
+    scenes = [f"-{path}" for path in sorted(Path(_PUBSUB_HANDOFFS).glob(f"*/scenes/site-{request['job_id']}"))]
+    writable = " ".join((*scenes, str(Path(config.control_plane_state) / "internal-test-jobs"),
+                         str(Path(config.spool_root) / "results")))
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+            "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            f"ReadWritePaths={writable}")
+
+
 def _output_resume_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
               "DOOR_CANARY_ROOT": _canary_root(config), "DOOR_RUN": request["run"],
@@ -406,6 +428,11 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
     "test-job": _LaunchSpec("blueprint-operator-door-test-job", "door-test-job.sh", "5min",
                             lambda request: hashlib.sha256(request["idempotency_key"].encode("utf-8")).hexdigest()[:12],
                             _test_job_environment, _test_job_properties),
+    # Named by a hash of the job id; the reason never reaches a unit name.
+    "test-job-retry-now": _LaunchSpec(
+        "blueprint-operator-door-test-job-retry-now", "door-test-job-retry-now.sh", "5min",
+        lambda request: hashlib.sha256(request["job_id"].encode("utf-8")).hexdigest()[:12],
+        _test_job_retry_now_environment, _test_job_retry_now_properties),
     # Named by the folder (an allowlisted constant) and the mode.
     "purge-experiment-folder": _LaunchSpec(
         "blueprint-operator-door-purge", "door-purge-experiment-folder.sh", "2h",
@@ -535,7 +562,8 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
         **_stage_release_provenance(config, request_id, request),
         **(extra or {}),
     }
-    callers = {"retire-parked-delivery": "parked_delivery_caller_invalid"}
+    callers = {"retire-parked-delivery": "parked_delivery_caller_invalid",
+               "test-job-retry-now": "test_job_retry_now_caller_invalid"}
     if request["kind"] in callers:
         # The authenticated token name, recorded in the record it writes as who asked.
         if not isinstance(requested_by, str) or _CALLER.fullmatch(requested_by) is None:

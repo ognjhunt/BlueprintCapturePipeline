@@ -1,0 +1,983 @@
+{
+ "atlas_preview": {
+  "prefixes": {
+   "account_monthly_spend_": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   }
+  },
+  "reasons": {
+   "atlas_automation_frames_not_selected": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_background_review_required": {
+    "class": "parked",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_completion_remaining_budget_insufficient": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_pricing"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_completion_request_budget_insufficient": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_pricing"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_completion_visual_review_required": {
+    "class": "parked",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_coverage_anchor_quality_insufficient": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_generated_view_registration_unresolved": {
+    "class": "parked",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_insufficient_overlapping_distinct_views": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_insufficient_sharp_static_views": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_mesh_frame_ambiguous": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_mesh_not_registered_to_splat": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_observed_room_privacy_selection_invalid": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_observed_room"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "atlas_preserved_completion_not_admitted": {
+    "class": "parked",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_preview_expired": {
+    "class": "ended",
+    "raised_in": [],
+    "states": [
+     "failed"
+    ],
+    "wall": null
+   },
+   "atlas_preview_source_video_unavailable": {
+    "class": "ended",
+    "raised_in": [],
+    "states": [
+     "failed"
+    ],
+    "wall": null
+   },
+   "atlas_preview_step_interrupted": {
+    "class": "ended",
+    "raised_in": [],
+    "states": [
+     "failed"
+    ],
+    "wall": null
+   },
+   "atlas_privacy_screen_decision_changed": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_recorded_source_recovery"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "atlas_privacy_screen_unavailable": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_privacy_screen"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "atlas_refined_splat_price_unreviewed": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_pricing"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_refinement_state_or_selection_invalid": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_reviewed_selection_budget_required": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_video_inputs"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_runtime_authority_or_policy_changed": {
+    "class": "wall",
+    "raised_in": [
+     "website_atlas_pipeline"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "atlas_runtime_budget_insufficient": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_observed_room",
+     "website_atlas_pipeline"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_runtime_budget_insufficient_for_pose_and_generation": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_scene_planner",
+     "website_atlas_pipeline"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_runtime_price_review_expired": {
+    "class": "recheck",
+    "raised_in": [
+     "website_atlas_pipeline"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_scale_review_unresolved": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_abstained": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_anchor_not_required": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_context_budget_exceeded": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_scene_planner_intervals_invalid": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_invoker_budget_exhausted": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_scene_planner_required_view_unsafe": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_required_views_outside_selection": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_task_or_room_coverage_missing": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_token_budget_exceeded": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_scene_planner_transients_invalid": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_transients_require_automation": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_planner_unsafe_frames_invalid": {
+    "class": "deterministic",
+    "raised_in": [
+     "atlas_scene_planner"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_requires_preserved_capture": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_subject_origin_changed": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_scene_subject_origin_uncertain": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_selection_budget_below_accurate_inputs": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_video_inputs"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_selection_budget_insufficient": {
+    "class": "wall",
+    "raised_in": [
+     "atlas_video_inputs"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "atlas_source_rotation_unsupported": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_synthetic_subject_requires_preserved_capture": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "atlas_task_retention_admission_mismatch": {
+    "class": "wall",
+    "raised_in": [
+     "website_atlas_tasks"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "atlas_task_reviewed_price_required": {
+    "class": "wall",
+    "raised_in": [
+     "website_atlas_tasks"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "consent_expired": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "gcp_monthly_budget_admission_blocked": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "gcp_monthly_budget_policy_invalid": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "gcp_monthly_budget_report_missing_or_invalid": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "gcp_monthly_budget_report_unavailable": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "meta_sam_authorization_missing": {
+    "class": "wall",
+    "raised_in": [
+     "meta_sam31"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "meta_sam_caller_grant_covers_another_clip": {
+    "class": "ended",
+    "raised_in": [],
+    "states": [
+     "failed"
+    ],
+    "wall": null
+   },
+   "meta_sam_inline_clip_exceeds_request_ceiling": {
+    "class": "ended",
+    "raised_in": [],
+    "states": [
+     "failed"
+    ],
+    "wall": null
+   },
+   "meta_sam_submission_requires_reconciliation": {
+    "class": "ended",
+    "raised_in": [],
+    "states": [
+     "failed"
+    ],
+    "wall": null
+   },
+   "paid_resource_admission_blocked": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_class_mismatch": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_grant_binding_mismatch": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_grant_binding_missing": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_grant_class_mismatch": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_grant_issuer_invalid": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_grant_missing": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_has_blockers": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_not_admitted": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_admission_schema_invalid": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_resource_class_invalid": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "paid_spend_meter_journal_unwritable": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "provider_terms_not_configured_or_changed": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "runpod_provider_retired": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "spending_cap_reached": {
+    "class": "ended",
+    "raised_in": [],
+    "states": [
+     "failed"
+    ],
+    "wall": "money"
+   },
+   "task_brief_missing": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_atlas_accounting_response_too_large": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_atlas_api_base_url_missing": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_atlas_api_key_missing": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_atlas_authorization_invalid": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_atlas_consent_expired": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_atlas_consent_unconfigured": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_atlas_planner_consent_required": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_atlas_pose_admission_expired": {
+    "class": "wall",
+    "raised_in": [
+     "website_atlas_pose"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "website_atlas_pose_budget_insufficient": {
+    "class": "wall",
+    "raised_in": [
+     "website_atlas_pose"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "website_atlas_pose_disclosure_not_authorized": {
+    "class": "wall",
+    "raised_in": [
+     "website_atlas_pose"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_atlas_pose_spend_binding_missing": {
+    "class": "wall",
+    "raised_in": [
+     "website_atlas_pose"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "website_atlas_provider_retention_admission_mismatch": {
+    "class": "wall",
+    "raised_in": [
+     "website_atlas_pose"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_atlas_provider_retention_decision_required": {
+    "class": "recheck",
+    "raised_in": [
+     "website_atlas_pose"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_atlas_reservation_summary_too_large": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_atlas_runtime_policy_required": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_atlas_source_consent_required": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_atlas_source_owner_mismatch": {
+    "class": "wall",
+    "raised_in": [],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_capture_frames_unusable": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_front_normal_undetermined": {
+    "class": "deterministic",
+    "raised_in": [
+     "website_task_preparation"
+    ],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_image_completion_authorization_missing": {
+    "class": "wall",
+    "raised_in": [
+     "website_image_completion"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_image_completion_budget_exceeded": {
+    "class": "wall",
+    "raised_in": [
+     "website_image_completion"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "website_image_completion_budget_exhausted": {
+    "class": "wall",
+    "raised_in": [
+     "website_image_completion"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "website_image_completion_budget_missing": {
+    "class": "wall",
+    "raised_in": [
+     "website_image_completion"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "website_job_spend_cap_unavailable": {
+    "class": "wall",
+    "raised_in": [
+     "website_job_spend_cap"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "money"
+   },
+   "website_preparation_spend_receipt_invalid": {
+    "class": "wall",
+    "raised_in": [
+     "website_task_context"
+    ],
+    "states": [
+     "failed",
+     "needs_input"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_run_closed_by_owner": {
+    "class": "ended",
+    "raised_in": [],
+    "states": [
+     "failed"
+    ],
+    "wall": "privacy_rights"
+   },
+   "website_scene_grant_policy_unconfigured": {
+    "class": "recheck",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_task_not_named": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   },
+   "website_task_object_not_observed": {
+    "class": "site_input",
+    "raised_in": [],
+    "states": [
+     "needs_input"
+    ],
+    "wall": null
+   }
+  }
+ },
+ "preparation_status": {
+  "outcome_categories": [
+   "insufficient_evidence",
+   "processing_failure",
+   "robot_incompatibility"
+  ],
+  "outcome_causes": [
+   "support_surface_not_found_under_subject",
+   "task_destination_interior_geometry_required",
+   "task_destination_pose_required",
+   "task_destination_relation_required",
+   "task_destination_surface_contact_required",
+   "website_assembly_whole_object_coverage_required",
+   "website_owner_success_criteria_translation_required",
+   "website_registration_scale_conflicts_declared",
+   "website_synthetic_subject_start_unplaceable"
+  ],
+  "outcome_reasons": [
+   "robot_carry_path_rejected",
+   "robot_fit_none",
+   "task_evidence_incomplete",
+   "website_capture_frames_unusable",
+   "website_front_normal_undetermined",
+   "website_preparation_not_possible",
+   "website_preparation_retries_spent",
+   "website_registration_ambiguous",
+   "website_registration_anchor_deviation",
+   "website_registration_conflicts_provider_anchor",
+   "website_registration_ground_plane_inconsistent",
+   "website_registration_poor_fit",
+   "website_task_not_named",
+   "website_task_object_not_observed"
+  ],
+  "terminal_reasons": [
+   "budget_exhausted",
+   "capacity_blocked",
+   "out_of_scope",
+   "permanent_invalid",
+   "retry_exhausted"
+  ]
+ },
+ "schema_version": "website_pipeline_codes.v1"
+}
