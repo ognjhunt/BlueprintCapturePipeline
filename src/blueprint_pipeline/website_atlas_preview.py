@@ -701,6 +701,18 @@ def _deliver(job: dict[str, Any], *, now: Callable[[], float]) -> dict[str, Any]
 #: (``atlas_unscaled_room.SCALE_REVIEW_WAITING``): when the job asks the review again, on the outage schedule.
 SCALE_REVIEW_DUE = "scale_review_due_at_epoch"
 _SCALE_REVIEW_ASKING = "scale_review_asking"
+#: A shipped room's scale review that ended with no valid answer from its planner call (before 2026-11-23, every
+#: review the provider refused for no credit ended so). The planner reopens such a call once on a changed release
+#: (``atlas_scene_planner.review_survey``), so the ready job asks once per release (``_ask_on_new_release``). Not
+#: ``atlas_scale_review_unresolved`` (the review answered: its receipt is reused and answers the same), nor
+#: ``website_atlas_pose_attempt_failed`` (a failed pose attempt is closed and never bought again,
+#: ``website_atlas_pose.refuse_closed_or_uncertain_attempt``); ``atlas_scale_review_waiting_on_provider`` is asked on
+#: the outage schedule (``_scale_review_wait``).
+RELEASE_REASKED = frozenset({"atlas_scene_planner_output_invalid"})
+#: On the ready job: the release that last asked (or made) its result for a ``RELEASE_REASKED`` review.
+SCALE_REVIEW_RELEASE = "scale_review_release"
+#: On the ready job: why a re-asked review stopped for good (money, the owner's closing of the run, the window).
+SCALE_REVIEW_STOPPED = "scale_review_stopped"
 
 
 def _scale_review_wait(job: Mapping[str, Any], result: Mapping[str, Any], current: int) -> dict[str, Any]:
@@ -710,7 +722,12 @@ def _scale_review_wait(job: Mapping[str, Any], result: Mapping[str, Any], curren
     from .website_job_spend_cap import SPENDING_CAP_REACHED
     if ((result.get("source_pose") or {}).get("reason") != SCALE_REVIEW_WAITING
             or result.get("reason") == SPENDING_CAP_REACHED):
-        return {key: None for key in (SCALE_REVIEW_DUE, "scale_review_waits") if job.get(key) is not None}
+        cleared = {key: None for key in (SCALE_REVIEW_DUE, "scale_review_waits") if job.get(key) is not None}
+        if (result.get("source_pose") or {}).get("reason") in RELEASE_REASKED:
+            from .website_preparation_retry import _release
+            # The release this result was made on has decided it: the next release asks (``_ask_on_new_release``).
+            cleared[SCALE_REVIEW_RELEASE] = _release() or job.get(SCALE_REVIEW_RELEASE)
+        return cleared
     waits = (job.get("scale_review_waits") or 0) + 1
     return {"scale_review_waits": waits, SCALE_REVIEW_DUE: _by_deadline(job, current + outage_retry_delay(waits))}
 
@@ -734,6 +751,29 @@ def _ask_scale_review_again(job: dict[str, Any], *, job_dir: Path, now: Callable
         return job
     _put_result(job_dir, "result.json", SHIPPED_RESULT_FILE, job.get("result_digest"))
     return {**job, "retry_at_epoch": current, _SCALE_REVIEW_ASKING: True}
+
+
+def _ask_on_new_release(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:
+    """A ready room whose scale review ended on a ``RELEASE_REASKED`` code is asked once on each new release: due now,
+    so ``_ask_scale_review_again`` runs it with the shipped room kept. Never after a wall on the pose, the spending
+    cap, a stop recorded by an earlier ask (``SCALE_REVIEW_STOPPED``), a withdrawal, the owner's closing of the run or
+    the job's window (``_may_reopen``); a release that cannot be read asks nothing."""
+    from .website_atlas_preview_store import job_result
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
+    from .website_preparation_retry import _release
+    if (job.get("state") != "ready" or job.get("retry_at_epoch") or job.get(SCALE_REVIEW_DUE) is not None
+            or job.get(SCALE_REVIEW_STOPPED) or job.get("reason") == SPENDING_CAP_REACHED):
+        return job
+    result = job_result(job_dir, job.get("result_digest"))
+    pose = result.get("source_pose") or {}
+    if (pose.get("reason") not in RELEASE_REASKED or pose.get("wall") or result.get("reason") == SPENDING_CAP_REACHED
+            or SPENDING_CAP_REACHED in (result.get("blockers") or ())):
+        return job
+    release, current = _release(), int(now())
+    if (release is None or job.get(SCALE_REVIEW_RELEASE) == release
+            or not _may_reopen(job, capture_root=job_dir.parents[1], current=current)):
+        return job
+    return {**job, SCALE_REVIEW_RELEASE: release, SCALE_REVIEW_DUE: current}
 
 
 def _put_result(job_dir: Path, source: str, target: str, digest: Any) -> None:
@@ -778,7 +818,7 @@ def _keep_shipped_room(before: Mapping[str, Any], after: dict[str, Any], current
     return {**kept, "retry_at_epoch": None, "last_tick_epoch": after.get("last_tick_epoch", current),
             "scale_review_last_outcome": {"state": after.get("state"), "at_epoch": current, "reason": (
                 reason or after.get("last_refusal_reason") or after.get("last_transient_reason"))},
-            **({SCALE_REVIEW_DUE: None} if stop else
+            **({SCALE_REVIEW_DUE: None, SCALE_REVIEW_STOPPED: reason or "stopped"} if stop else
                {"scale_review_waits": waits, SCALE_REVIEW_DUE: _by_deadline(before, current + outage_retry_delay(waits))})}
 
 
@@ -888,9 +928,9 @@ def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: 
         step=lambda job: _keep_shipped_room(job, _restore_unfinished_reopen(
             _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now)), int(now()), path.parent),
         deliver=lambda job: _deliver(job, now=now),
-        refresh=lambda job: _ask_scale_review_again(_reopen_parked_after_release(
+        refresh=lambda job: _ask_scale_review_again(_ask_on_new_release(_reopen_parked_after_release(
             _reopen_observed_room(job, job_dir=path.parent, now=now), job_dir=path.parent, now=now),
-            job_dir=path.parent, now=now),
+            job_dir=path.parent, now=now), job_dir=path.parent, now=now),
         now=now, transport=transport)
 
 
