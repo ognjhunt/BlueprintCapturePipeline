@@ -21,7 +21,7 @@ pytest.importorskip("pxr")
 from blueprint_pipeline import website_company_simulation as sim  # noqa: E402
 from blueprint_pipeline import website_library_notes as notes  # noqa: E402
 from blueprint_pipeline.website_supplied_mesh import supplied_mesh_configuration  # noqa: E402
-from tests.test_website_company_simulation import Job  # noqa: E402
+from tests.test_website_company_simulation import NOW, Job, World, _manifest  # noqa: E402
 from tests.test_website_object_library import (  # noqa: E402
     _configuration, _job_with_a_library_object, _library_topologies, _subject,
 )
@@ -89,6 +89,29 @@ def test_the_credit_follows_the_half_that_ships_not_the_newest_preparation(tmp_p
     holding = _holding_model(unpacked, reference)
     assert holding, "fixture: the shipped object holds the model's geometry"
     assert notes.HEADING in readme, f"half A's library geometry ships in {holding} with no credit"
+
+
+def test_an_unreadable_credit_still_ships_the_room_without_the_object(tmp_path, monkeypatch):
+    """The credit is sealed in the half's own preparation, so it never becomes readable. Rights stops the object; the
+    doctrine says everything else keeps going, and ``website_library_notes.refusal`` says a package without the
+    object is not refused. Two passes a window apart end with the job's room floor published (the object left out,
+    flagged with why), not with the job refused for good."""
+    from tests.test_website_package_floor import Floor
+    job, made, _ = _job_with_a_library_object(tmp_path)
+    made["library_design"]["attribution"].pop("author")
+    job.capture.joinpath(*PREPARATION).write_text(json.dumps({"authoring_inputs": {"configuration": made}}))
+    job.seal_record(bound_to=job.capture.joinpath(*PREPARATION))
+    Floor(tmp_path / "floor", monkeypatch, job=job, half=True)  # the room floor every routed job's handoff writes
+    world = World(job)
+    first = world.publish()
+    from blueprint_pipeline import company_share_permission as permission
+    later = sim.publish_company_simulation(
+        job.capture, now=lambda: NOW + permission.LIVE_STATEMENT_RECHECK_SECONDS + 1, check_rights=world.check_rights,
+        archive=world.archive, retract=world.retract, deliver=world.deliver, queue_root=job.queue)
+    outcomes = [(first.get("status"), first.get("reason")), (later.get("status"), later.get("reason"))]
+    assert later.get("status") == "published", f"the job never ships anything: {outcomes}"
+    manifest = _manifest(job)
+    assert manifest["source_kind"] == "floor" and manifest["floor_reason"] == "object_not_built:" + notes.CREDIT_UNREADABLE
 
 
 # --- wording: what the README says the object is --------------------------------------------------------------

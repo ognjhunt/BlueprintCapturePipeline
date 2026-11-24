@@ -304,7 +304,8 @@ class PackageRefused(ValueError):
 
 
 class ShapeRefused(PackageRefused):
-    """The half's own scene cannot be staged (a ``StageRefused``): the job's room floor ships instead."""
+    """The half's own scene cannot be staged (a ``StageRefused``), or its object may not leave (a library model's
+    credit cannot be read: ``website_library_notes.refusal``): the job's room floor ships instead, flagged."""
 
 
 def package_filename(capture_id: str, request_id: str) -> str:
@@ -1244,7 +1245,7 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
     if source.get("refusal"):
         raise ShapeRefused(source["refusal"])
     if library_notes.refusal(source):  # an object built from a library model never leaves without its credit
-        raise PackageRefused(library_notes.refusal(source), "task_object")
+        raise ShapeRefused(library_notes.refusal(source), "task_object")  # the room floor still ships
     if sum(row["size_bytes"] for row in source["files"].values()) > MAX_SOURCE_BYTES:
         raise ValueError(OVER_CAP)
     options = {"literals": literals, "words": words, "max_bytes": max_bytes, "deadline": deadline}

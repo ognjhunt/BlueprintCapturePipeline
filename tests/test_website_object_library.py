@@ -572,10 +572,11 @@ def test_every_shipped_file_holding_the_models_geometry_is_named_in_its_credit(t
                                           lambda design: design.update(attribution="Google")])
 def test_an_object_from_a_library_model_whose_credit_cannot_be_read_never_leaves(tmp_path, break_credit):
     """Rights is a hard stop: without its credit, the object built from a library model may not leave in a package
-    (refused as a package that may not leave, not shipped bare); a package without the object is not refused."""
+    (refused, never shipped bare); a package without the object is not refused, so the half gives way to the room
+    floor (``refused_half``), as a half whose own scene cannot be staged does."""
     from blueprint_pipeline import website_company_simulation as sim
     from blueprint_pipeline import website_library_notes as notes
-    from tests.test_website_company_simulation import World
+    from tests.test_website_company_simulation import World, _manifest
     job, made, _ = _job_with_a_library_object(tmp_path)
     break_credit(made["library_design"])
     preparation = job.capture / "pipeline/website_scene_preparation/preparation.json"
@@ -585,10 +586,11 @@ def test_an_object_from_a_library_model_whose_credit_cannot_be_read_never_leaves
     assert source["library_refusal"] == notes.CREDIT_UNREADABLE and not source.get("library_models")
     with pytest.raises(sim.PackageRefused) as refused:
         sim.build_package(source, tmp_path / "package.zip", literals=[])
-    assert refused.value.reason == notes.CREDIT_UNREADABLE and not isinstance(refused.value, sim.ShapeRefused)
+    assert refused.value.reason == notes.CREDIT_UNREADABLE and isinstance(refused.value, sim.ShapeRefused)
     world = World(job)
     result = world.publish()
     assert result["status"] == "refused" and result.get("reason") == notes.CREDIT_UNREADABLE and not world.delivered
+    assert _manifest(job)["refused_half"]["reason"] == notes.CREDIT_UNREADABLE  # its floor ships in its place
     room = {**source, "files": {prim: row for prim, row in source["files"].items() if row["role"] != "task_object"}}
     assert notes.refusal(room) is None
 
