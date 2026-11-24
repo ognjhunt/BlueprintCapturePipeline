@@ -18,9 +18,16 @@ _CODE = re.compile(r"[a-z][a-z0-9_]{0,99}")
 #: rebuild has no collider, and the room's levelling, its base scene, the room package and the company README all need
 #: one. The same inputs always repeat it; before this the job waited, with nothing shipped and nothing asked, until a
 #: release or its deadline. A new video is a new rebuild: the only way on that needs no deploy.
+#: Two more (stress round 2, 2026-11-24) are facts about the video file that the same file always repeats; before
+#: this each took the refusal schedule, ended failed and was reopened by the clock six times, for nothing:
+#: ``atlas_insufficient_sharp_static_views``, fewer than two frames of the whole survey sharp and not blown out or
+#: too dark (the website words it as frames it could not use), and ``atlas_source_rotation_unsupported``, a file
+#: whose display rotation is not a quarter turn (or not a number), which a phone's camera never writes: no upright
+#: picture can be told from it, and a video as the phone recorded it moves on.
 _NEEDS_NEW_CAPTURE = frozenset({"atlas_insufficient_overlapping_distinct_views",
                                 "atlas_coverage_anchor_quality_insufficient",
-                                "atlas_mesh_not_registered_to_splat", "atlas_mesh_frame_ambiguous"})
+                                "atlas_mesh_not_registered_to_splat", "atlas_mesh_frame_ambiguous",
+                                "atlas_insufficient_sharp_static_views", "atlas_source_rotation_unsupported"})
 _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
 #: Written to the job file just before a step runs and removed by the write that follows it.
 #: Read under the job lock, it can only be left by a step whose process died before returning.

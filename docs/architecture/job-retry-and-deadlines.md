@@ -247,6 +247,12 @@ retry: the same video and release give the same answer. Two changes answer it.
   earlier release left waiting on that key ends at its next check, and the website is told again.
   The website must word the ask without blaming the video (WebApp `RECAPTURE_SENTENCES`); until it
   lists these codes it shows its generic "a step on our side stopped" card.
+  Since the second stress round (2026-11-24) two facts about the video file end the same way, where
+  each took the refusal schedule, ended failed and was reopened six times for nothing: a survey
+  with fewer than two sharp, well-exposed frames (`atlas_insufficient_sharp_static_views`, worded by
+  the website as frames it could not use) and a file whose display rotation is not a quarter turn
+  (`atlas_source_rotation_unsupported`; a phone's camera writes only quarter turns, so a video as
+  the phone recorded it moves on).
 
 This replaces item 4 of section 5 for the refusals named here.
 

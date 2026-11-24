@@ -1815,6 +1815,25 @@ def test_a_mesh_that_lies_on_none_of_its_splat_ends_at_once_and_asks_for_a_new_v
         preview.retry_failed_job(site.job)
 
 
+@pytest.mark.parametrize("code", ["atlas_insufficient_sharp_static_views", "atlas_source_rotation_unsupported"])
+def test_a_video_file_the_same_video_always_refuses_asks_for_a_new_video_at_once(monkeypatch, site, code):
+    """Stress round 2 (2026-11-24): a survey with fewer than two sharp, well-exposed frames, and a file whose
+    display rotation is not a quarter turn, took the refusal schedule, ended failed and were reopened by the
+    clock six times; the same file repeats each every time. Each now ends at once as a new-video ask."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(code)])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["state"], job["reason"], job["retry_at_epoch"]) == ("needs_input", code, None)
+    assert "refusal_retries" not in job
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("needs_input", code)
+    assert preview._parked_without_wall(job) is False
+    world.clock += 6 * 86400
+    assert world.advance() == "needs_input" and len(world.runs) == 1
+    with pytest.raises(ValueError, match="atlas_preview_retry_requires_recoverable_failure"):
+        preview.retry_failed_job(site.job)
+
+
 def test_a_mesh_refusal_an_earlier_release_left_waiting_ends_at_its_next_check_and_the_website_is_told(
         monkeypatch, site):
     """The replay set's ``atlas-deterministic-refusal-waits`` record: a job waiting on its key, written by a release
