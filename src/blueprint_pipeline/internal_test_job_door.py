@@ -28,6 +28,8 @@ HANDOFF_ROOT = Path("/var/lib/blueprint/pubsub-handoffs")
 INTENT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents")
 #: The host has 8 GB of memory and no swap: two jobs' preparation and scene chains at once is the most it holds.
 MAX_IN_FLIGHT = 2
+#: The refusal when both slots are taken: nothing was made, so the same ask may come again under its key.
+SLOTS_TAKEN = "test_job_two_in_flight"
 #: A website scene grant lasts at most 7 days (AGENTS.md, scene sponsorship TTL); an older job no longer counts.
 IN_FLIGHT_FOR_SECONDS = 7 * 24 * 3600
 #: The account's existing alert line a new test job must stay under ("100" is the monthly limit itself; "80"
@@ -197,7 +199,7 @@ def _claim(path: Path, body: Mapping[str, Any], *, ledger_root: Path, handoff_ro
     unknown = (row.get("state") in ("submitting", "submit_failed")
                and now - float(row.get("requested_at_epoch") or 0) < IN_FLIGHT_FOR_SECONDS)
     if not unknown and len(in_flight(ledger_root, handoff_root, now, intent_root)) >= MAX_IN_FLIGHT:
-        raise Refused("test_job_two_in_flight")
+        raise Refused(SLOTS_TAKEN)
     row = {"schema_version": "internal_test_job_door_row.v1", "label": body["label"],
            "footage_id": body["footage_id"], "idempotency_key": body["idempotency_key"],
            "description_sha256": digest, "door_request_id": door_request_id, "state": "submitting",

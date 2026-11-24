@@ -639,6 +639,47 @@ def test_the_runner_reads_the_doors_stop_line_before_each_submit(status, refused
     assert (_runner().spend_refusal(status) is not None) == refused
 
 
+def test_the_runner_waits_on_the_doors_two_slots_and_asks_again_under_the_same_key(monkeypatch, tmp_path):
+    """The door counts every test job, other runs' too: a refusal for its two slots made nothing, so the runner
+    waits and asks again with the same key, keeps one row per label, and goes on to the next row once it is in."""
+    import argparse
+
+    runner = _runner()
+    matrix = tmp_path / "jobs.json"
+    matrix.write_text(json.dumps({"jobs": [{"label": "a", "footage_id": "f-a", "description": "Move the box."},
+                                           {"label": "b", "footage_id": "f-b", "description": "Move the bin."}]}))
+    answers = [{"door_outcome": "refused", "code": door_job.SLOTS_TAKEN},
+               {"door_outcome": "submitted", "job_id": "itest-a", "capture_id": "walkthrough-itest-a"},
+               {"door_outcome": "refused", "code": "test_job_month_stop_line"}]
+    asked, slept = [], []
+
+    def fake_json(method, path, body=None):
+        if method == "POST":
+            asked.append(body)
+            return {"id": f"r{len(asked)}"}
+        if path.startswith("/requests/"):
+            return {"outcome": {"result": path}}
+        return _status(10.0)
+
+    monkeypatch.setattr(runner.door, "_json", fake_json)
+    monkeypatch.setattr(runner.door, "_terminal", lambda request: "completed")
+    monkeypatch.setattr(runner, "cat_json", lambda path: answers[int(path.rsplit("r", 1)[1]) - 1])
+    monkeypatch.setattr(runner, "done", lambda report: True)
+    monkeypatch.setattr(runner, "job_report", lambda job, status: {})
+    monkeypatch.setattr(runner.time, "sleep", slept.append)
+    monkeypatch.setattr(runner, "DEPLOY_WINDOW_HOUR_UTC", 99)
+    state_path = tmp_path / "run.json"
+    state = {"jobs": []}
+    runner.submit(argparse.Namespace(matrix=str(matrix), state=str(state_path), k=2, run_id="20261124", poll=7),
+                  state)
+    assert [body["label"] for body in asked] == ["a", "a", "b"]
+    assert asked[0]["idempotency_key"] == asked[1]["idempotency_key"]
+    assert 7 in slept
+    assert [(job["label"], job["outcome"], job["code"]) for job in state["jobs"]] == [
+        ("a", "submitted", None), ("b", "refused", "test_job_month_stop_line")]  # the month stops the run
+    assert json.loads(state_path.read_text()) == state
+
+
 @pytest.mark.parametrize("label", ["rigid pick 1080p", "a", "x" * 80, "A.b_c-d e"])
 def test_every_allowed_label_gives_a_key_the_door_accepts(label):
     from operator_door.requests import _TEST_JOB_KEY, _TEST_JOB_LABEL
@@ -767,7 +808,8 @@ def test_the_runner_stops_at_a_refusal_and_follow_ends_on_it(tmp_path, monkeypat
             return {"id": "req-1"}
         return {"outcome": {"status": "refused", "result": "/r.json"}}
     monkeypatch.setattr(runner.door, "_json", door_json)
-    monkeypatch.setattr(runner, "cat_json", lambda path: {"door_outcome": "refused", "code": "test_job_two_in_flight"})
+    # A refusal waiting will not clear (the month); a refusal for the two slots waits instead (test above).
+    monkeypatch.setattr(runner, "cat_json", lambda path: {"door_outcome": "refused", "code": "test_job_month_stop_line"})
     monkeypatch.setattr(runner, "ls", lambda path: [])
     state = tmp_path / "run.json"
     assert runner.main(["submit", "--matrix", str(matrix), "--state", str(state), "--poll", "0"]) == 0

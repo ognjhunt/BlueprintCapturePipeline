@@ -30,7 +30,7 @@ _spec = importlib.util.spec_from_file_location("operator_door_client", Path(__fi
 door = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(door)
 from blueprint_pipeline.internal_test_job_door import (  # noqa: E402 - the door's own rule, one place
-    EXPECTED_JOB_USD, IN_FLIGHT_FOR_SECONDS, INTENT_ROOT, MAX_IN_FLIGHT, STOP_LINE)
+    EXPECTED_JOB_USD, IN_FLIGHT_FOR_SECONDS, INTENT_ROOT, MAX_IN_FLIGHT, SLOTS_TAKEN, STOP_LINE)
 from blueprint_pipeline.website_preparation_revision_identity import capture_id as intent_capture  # noqa: E402
 
 HANDOFFS = "/var/lib/blueprint/pubsub-handoffs"
@@ -160,37 +160,57 @@ def submit(args: argparse.Namespace, state: dict) -> None:
         if any(job["label"] == row["label"] and job.get("job_id") for job in state["jobs"]):
             continue
         while True:
-            status = door._json("GET", "/status")
-            busy = [job for job in state["jobs"] if job.get("job_id") and not done(job_report(job, status))]
-            hour = dt.datetime.now(dt.timezone.utc).hour
-            why = (f"{len(busy)} of {args.k} in flight" if len(busy) >= args.k else
-                   "inside the daily deploy window" if hour == DEPLOY_WINDOW_HOUR_UTC else None)
-            if why is None:
-                refusal = spend_refusal(status)
-                if refusal:
-                    print(f"stopped before {row['label']}: {refusal}", file=sys.stderr)
-                    return
+            if not _wait_for_slot(args, state, row):
+                return
+            result = _ask(args, state, row)
+            if not (result.get("door_outcome") == "refused" and result.get("code") == SLOTS_TAKEN):
                 break
-            print(f"waiting before {row['label']}: {why}", file=sys.stderr)
+            # The door counts every test job, other runs' too; this run counts only its own. A slot frees as
+            # those end, and the refusal made nothing, so the same row is asked again under the same key.
+            print(f"waiting before {row['label']}: the door has {MAX_IN_FLIGHT} test jobs in flight", file=sys.stderr)
             time.sleep(args.poll)
-        body = {"kind": "test-job", "idempotency_key": door_key(args.run_id, row["label"]),
-                "label": row["label"], "footage_id": row["footage_id"], "description": row["description"]}
-        accepted = door._json("POST", "/requests", body=body)
-        result = {}
-        for _ in range(120):
-            request = door._json("GET", f"/requests/{accepted['id']}")
-            if door._terminal(request) is not None:
-                result = cat_json(str((request.get("outcome") or {}).get("result") or "")) or {}
-                break
-            time.sleep(5)
-        state["jobs"].append({"label": row["label"], "footage_id": row["footage_id"], "door_request": accepted["id"],
-                              "job_id": result.get("job_id"), "capture_id": result.get("capture_id"),
-                              "outcome": result.get("door_outcome"), "code": result.get("code"),
-                              "submitted_at": int(time.time())})
-        Path(args.state).write_text(json.dumps(state, indent=1))
-        print(f"{row['label']}: {result.get('door_outcome') or 'no result'} {result.get('code') or ''}", file=sys.stderr)
         if result.get("door_outcome") != "submitted":
-            return  # a refusal (the month, two in flight) or no answer: never go on to the next row blind
+            return  # a refusal (the month) or no answer: never go on to the next row blind
+
+
+def _wait_for_slot(args: argparse.Namespace, state: dict, row: dict) -> bool:
+    """Wait until this run has a slot outside the deploy window; False when the month stops the run."""
+    while True:
+        status = door._json("GET", "/status")
+        busy = [job for job in state["jobs"] if job.get("job_id") and not done(job_report(job, status))]
+        hour = dt.datetime.now(dt.timezone.utc).hour
+        why = (f"{len(busy)} of {args.k} in flight" if len(busy) >= args.k else
+               "inside the daily deploy window" if hour == DEPLOY_WINDOW_HOUR_UTC else None)
+        if why is None:
+            refusal = spend_refusal(status)
+            if refusal:
+                print(f"stopped before {row['label']}: {refusal}", file=sys.stderr)
+                return False
+            return True
+        print(f"waiting before {row['label']}: {why}", file=sys.stderr)
+        time.sleep(args.poll)
+
+
+def _ask(args: argparse.Namespace, state: dict, row: dict) -> dict:
+    """Ask the door for the row's job and record its answer: one row per label, since a refusal made no job."""
+    body = {"kind": "test-job", "idempotency_key": door_key(args.run_id, row["label"]),
+            "label": row["label"], "footage_id": row["footage_id"], "description": row["description"]}
+    accepted = door._json("POST", "/requests", body=body)
+    result = {}
+    for _ in range(120):
+        request = door._json("GET", f"/requests/{accepted['id']}")
+        if door._terminal(request) is not None:
+            result = cat_json(str((request.get("outcome") or {}).get("result") or "")) or {}
+            break
+        time.sleep(5)
+    state["jobs"] = [job for job in state["jobs"] if job["label"] != row["label"]]
+    state["jobs"].append({"label": row["label"], "footage_id": row["footage_id"], "door_request": accepted["id"],
+                          "job_id": result.get("job_id"), "capture_id": result.get("capture_id"),
+                          "outcome": result.get("door_outcome"), "code": result.get("code"),
+                          "submitted_at": int(time.time())})
+    Path(args.state).write_text(json.dumps(state, indent=1))
+    print(f"{row['label']}: {result.get('door_outcome') or 'no result'} {result.get('code') or ''}", file=sys.stderr)
+    return result
 
 
 def report(args: argparse.Namespace, state: dict) -> list[dict]:
