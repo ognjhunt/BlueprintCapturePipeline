@@ -93,6 +93,31 @@ def test_a_network_attempt_fails_the_run(site, tmp_path, monkeypatch):  # noqa: 
     assert result["network_attempts"] and result["breaches"] == ["network_attempted"]
 
 
+def test_a_settlement_is_recorded_never_sent_and_answered_as_no_answer(site, tmp_path, monkeypatch):  # noqa: F811
+    """A settlement only releases what a bought call held beyond its cost; every caller keeps the hold when the
+    WebApp does not answer, so the replay records it and the stage goes on along that path."""
+    from blueprint_pipeline.website_task_context import preparation_webapp_request
+
+    kept = []
+
+    def step(*, task_context, **_options):
+        command = {"provider": "meta", "provider_charge_amount_usd": 0.0025, "completed_request_count": 1,
+                   "allocation_binding_digest": "sha256:" + "3" * 64}
+        try:
+            preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
+                                       payload={"request_id": "req1", "scene_id": "site-req1", "settlement": command})
+        except ValueError as error:
+            kept.append(str(error))  # the reservation keeps its hold, as the real callers do
+        raise ValueError("atlas_test_stop_after_the_settlement")
+    _controller(monkeypatch, step)
+    atlas = _stage(_in_place(site.capture, tmp_path), "atlas_preview")
+    assert kept == [job_replay.SETTLEMENT_NOT_SENT]
+    assert atlas["stop"]["code"] == "atlas_test_stop_after_the_settlement"
+    [unsent] = atlas["unsent_settlements"]
+    assert (unsent["operation"], unsent["provider"], unsent["provider_charge_amount_usd"]) == (
+        "preparation-settlement", "meta", 0.0025)
+
+
 def _room_job(tmp_path, monkeypatch):
     """The navigation room job, with the task context the WebApp would answer kept beside it, as a pull has it."""
     from blueprint_pipeline import run_e2e
@@ -237,6 +262,7 @@ def test_the_command_pulls_once_replays_in_its_namespace_and_never_changes_the_e
     atlas = _stage(report, "atlas_preview")
     assert atlas["stop"]["kind"] == "would_buy" and atlas["would_buy"][0]["maximum_cost_usd"] == .5
     assert report["boundaries"]["network_probe"]["interfaces"] == ["lo"]
+    assert report["boundaries"]["work_view"] in ("overlay", "copy")  # the stages wrote to their own layer only
     assert report["pull"]["pulled_files"] == len(door.reads) > 0
     # Nothing changed on the host: the next replay reuses every pulled file.
     door.reads.clear()
@@ -299,3 +325,16 @@ def test_a_dropped_door_connection_is_read_again(monkeypatch):
     door = job_replay.DoorReader(client=Flaky())
     assert door.list("/var/lib/blueprint") == {"type": "dir", "entries": []}
     assert door.retries == 2
+
+
+def test_a_replay_out_of_rounds_says_its_stops_may_be_the_pulls():
+    row = {"stage": "atlas_preview", "status": "ran", "would_buy": [], "duration_seconds": 1.0,
+           "peak_rss_bytes": 2 << 20, "stop": {"kind": "refusal", "code": "website_source_geometry_artifact_changed"}}
+    report = {"stages": [row], "clean": True, "converged": False, "named_not_pulled": {"files": 43},
+              "evidence": {"files": 9, "unchanged": True}, "boundaries": {"network_attempts": []}}
+    text = job_replay.table(report)
+    assert text.splitlines()[0].split() == ["stage", "ran/skipped/assumed", "stop", "kind:code", "would", "buy",
+                                            "(max", "USD)", "duration", "peak", "RSS"]
+    assert "refusal:website_source_geometry_artifact_changed" in text and "2.0 MiB" in text
+    assert "NOT CONVERGED: the last replay named 43 host files not pulled yet" in text
+    assert "NOT CONVERGED" not in job_replay.table({**report, "converged": True})

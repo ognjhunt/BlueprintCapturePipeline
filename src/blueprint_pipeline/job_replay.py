@@ -13,9 +13,10 @@ Input is a website request id (``itest-...``), found under the host's handoff ro
    stage names them: a missing input, or a path the code looked for and did not find, that exists on the host is
    pulled once (with its same-kind neighbours, for a frame set) and the replay runs again, at most ``--rounds``
    times. A cached file whose host size and mtime have not changed is reused, after its digest is checked.
-2. replays, in a private mount and network namespace (``unshare``, as ``atlas_preview_replay`` uses it) where a
-   scratch copy of the pulled files is bind-mounted over their own host paths, each remaining stage of the job's
-   website path in order, each in its own process:
+2. replays, in a private mount and network namespace (``unshare``, as ``atlas_preview_replay`` uses it) where the
+   pulled files stand at their own host paths (an overlay: the wanted cached files, hard-linked, as its read-only
+   layer, and a per-run upper layer for every write), each remaining stage of the job's website path in order,
+   each in its own process:
 
    - ``atlas_preview``: the Atlas preview controller, ``atlas_preview_replay.run_steps`` until it stops;
    - ``preparation``: once the preview is ready (or the job has none), the website preparation as the listener's
@@ -25,8 +26,8 @@ Input is a website request id (``itest-...``), found under the host's handoff ro
 
    Each stage says whether it ran, what it read, where it stopped, what it would buy, how long it took and its peak
    resident memory. A stage that stops ends the chain; later stages are ``skipped`` and say why.
-3. checks the pulled evidence's digest before and after: the replay process never sees the cache (a tmpfs is
-   mounted over it inside the namespace), so it cannot change it, and the check proves it did not.
+3. checks the pulled evidence's digest before and after: the replay process never sees the cache or its links (a
+   tmpfs is mounted over both inside the namespace), so it cannot change them, and the check proves it did not.
 
 ``--past <code>`` (repeatable) steps past a named stop, explicitly and on the record. Where a step has a known
 retained output (``SUBSTITUTIONS``: ``atlas_completion_gap_survey_changed``, the completion's own retained report;
@@ -38,9 +39,11 @@ so nobody mistakes it for a clean run.
 Boundaries; no flag lifts any of them: the namespace has no network (and every socket connection, name lookup and
 network tool in a stage's process is refused and recorded; any attempt fails the run, exit 2); credential-like
 variables are removed and the container's credential files are masked; WebApp reads are answered from the job's
-retained records (``atlas_preview_replay``: task context, Atlas configuration; here also the scene sponsorship) and
-every other WebApp, artifact-store or provider effect stops as ``external_effect``; every new purchase stops as
-``would_buy`` with its provider, operation and maximum USD, never made. The door is only read: nothing here holds,
+retained records (``atlas_preview_replay``: task context, Atlas configuration; here also the scene sponsorship); a
+settlement, which only releases what a bought call held beyond its cost, is recorded, never sent, and answered as
+no answer (every caller then keeps the hold, as when the WebApp does not answer); every other WebApp,
+artifact-store or provider effect stops as ``external_effect``; every new purchase stops as ``would_buy`` with its
+provider, operation and maximum USD, never made. The door is only read: nothing here holds,
 releases, deploys or starts anything. Without a private namespace the tool says so and replays nothing.
 
 What it cannot show: provider behaviour, the host's own memory and disk (peak RSS is this container's), and any
@@ -114,6 +117,8 @@ HOST_MODES = {SCENE_RETIREMENT_ROOT + "/generations": 0o700}
 #: tool logins) except these, which Python tooling reads; then these credential folders under them, and the host's.
 HOME_KEPT = frozenset({".cache", ".local", ".config", ".bashrc", ".profile", ".cargo", ".rustup"})
 CREDENTIAL_PATHS = ("~/.config/gcloud", "~/.config/gh", "~/.config/configstore", "/etc/blueprint/provider-secrets")
+#: A WebApp settlement in a replay: recorded, never sent, answered as an unanswered write.
+SETTLEMENT_NOT_SENT = "website_control_preparation-settlement_not_sent_in_replay"
 STOP_KINDS = ("completed", "would_buy", "refusal", "missing_input", "external_effect", "error", "waiting")
 _EXIT_BREACH, _EXIT_UNSUPPORTED = 2, 5
 
@@ -264,6 +269,22 @@ class PullCache:
         temporary.write_text(json.dumps(self.index, sort_keys=True), encoding="utf-8")
         temporary.replace(self.root / INDEX_FILE)
 
+    def _listing_path(self, capture_root: str) -> Path:
+        return self.root / ".job_replay_listings" / (hashlib.sha256(capture_root.encode()).hexdigest()[:32] + ".json")
+
+    def save_listing(self, capture_root: str, trees: Mapping[str, Any]) -> None:
+        path = self._listing_path(capture_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"capture_root": capture_root, "trees": trees}, sort_keys=True), encoding="utf-8")
+
+    def load_listing(self, capture_root: str) -> dict[str, Any]:
+        """The door's last listing of this capture (``--offline`` replays from it and the cached files)."""
+        try:
+            value = json.loads(self._listing_path(capture_root).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return value.get("trees") or {} if value.get("capture_root") == capture_root else {}
+
     def current(self, host_path: str, size: int, mtime: int) -> bool:
         """Pulled before, the host's size and mtime unchanged, and the local copy still its recorded bytes."""
         row, local = self.index.get(host_path), self.local(host_path)
@@ -354,6 +375,14 @@ class Pull:
         for path, row in self.host_files().items():
             if _is_record(path, row["size"]):
                 self.wanted.setdefault(path, row)
+
+    def select_cached(self, *, offline: bool = False) -> None:
+        """Every file an earlier replay pulled whose host size and mtime have not changed: reused, not found again.
+        ``offline``: every listed file the cache holds, as it holds it (one the host rewrote mid-pull is newer)."""
+        for path, row in self.host_files().items():
+            cached = self.cache.index.get(path)
+            if isinstance(cached, list) and (offline or cached[:2] == [row["size"], row["mtime"]]):
+                self.wanted.setdefault(path, {"size": cached[0], "mtime": cached[1]} if offline else row)
 
     def select_all(self) -> None:
         self.wanted.update(self.host_files())
@@ -759,6 +788,8 @@ def _harness_class() -> type:
     from .atlas_preview_replay import _Harness, _set
 
     class JobHarness(_Harness):
+        stub_modules = _Harness.stub_modules | {__name__}
+
         def __init__(self, *, watched: str, **options: Any) -> None:
             super().__init__(**options)
             self.watched = watched.rstrip("/")
@@ -774,8 +805,24 @@ def _harness_class() -> type:
                 self.answers.append({"operation": operation, "answered_from": str(path),
                                      "create": payload.get("create", True)})
                 return json.loads(path.read_text(encoding="utf-8"))
+            if operation == "preparation-settlement":
+                # It only releases what a bought call held beyond its cost. Recorded, never sent, and answered as no
+                # answer: the code's own path when the WebApp does not answer (the reservation keeps its hold).
+                settlement = payload.get("settlement") if isinstance(payload.get("settlement"), Mapping) else {}
+                self.effects.append({"operation": operation, "stage": self.stage,
+                                     "call_site": self.origin()["call_site"],
+                                     **{key: settlement.get(key) for key in (
+                                         "provider", "provider_charge_amount_usd", "completed_request_count",
+                                         "allocation_binding_digest")}})
+                raise ValueError(SETTLEMENT_NOT_SENT)
             if operation in ("task-context", "atlas-configuration"):
                 self.answers.append({"operation": operation, "answered_from": "retained"})
+            elif not (operation == "preparation-spend" and payload.get("create") is not False):
+                # A write nothing local can answer: named with where it was made and what it carried (keys only).
+                self.stop("external_effect", "webapp:" + operation, call_site=self.origin()["call_site"],
+                          payload_keys=sorted(payload)[:20],
+                          **{key: payload[key] for key in ("provider", "maximum_cost_usd", "settled_cost_usd",
+                                                           "allocation_binding_digest") if key in payload})
             return super().webapp(capture_id=capture_id, operation=operation, payload=payload,
                                   source_kind=source_kind)
 
@@ -834,15 +881,27 @@ def _atlas_group(capture_root: Path, *, past: Sequence[str], commit: str, steps:
     from .atlas_preview_replay import run_steps
     from .website_atlas_preview_store import JOB_FILE
 
+    from . import atlas_preview_replay
+
     job = capture_root / "pipeline" / "atlas" / JOB_FILE
     if not job.is_file():
         return [_row("atlas_preview", "skipped", reason="no_atlas_preview_job")]
-    clock, substituted = _Clock(), []
+    clock, substituted, made = _Clock(), [], []
+    base = _harness_class()
+
+    class AtlasHarness(base):  # type: ignore[misc, valid-type]
+        """The controller replay's own harness, with this tool's settlement, listing and probe records."""
+
+        def __init__(self, **options: Any) -> None:
+            super().__init__(watched=watched, **options)
+            made.append(self)
     with contextlib.ExitStack() as stack:
+        atlas_preview_replay._set(stack, atlas_preview_replay, "_Harness", AtlasHarness)
         _install_substitutions(stack, past, substituted, lambda: "atlas_preview")
         clock.start("atlas_preview")
         core = run_steps(job_path=job, capture_root=capture_root, workspace=capture_root, commit=commit, steps=steps)
         clock.stop()
+    harness = made[0] if made else None
     final = core.get("final_job") or {}
     stop = core.get("first_stop")
     if stop is None:
@@ -857,6 +916,8 @@ def _atlas_group(capture_root: Path, *, past: Sequence[str], commit: str, steps:
                  wanted=[*(core.get("absent_paths_probed") or []),
                          *([stop["code"]] if stop.get("kind") == "missing_input" else [])],
                  network_attempts=core.get("network_attempts") or [],
+                 unsent_settlements=harness.effects if harness else [],
+                 listed=list(harness.listed)[:2000] if harness else [],
                  **clock.rows["atlas_preview"])]
 
 
@@ -922,6 +983,9 @@ def _preparation_group(capture_root: Path, *, past: Sequence[str], commit: str, 
         unpulled = harness.unpulled()
     common = {"network_attempts": harness.network, "webapp_answers": harness.answers,
               "listed": list(harness.listed)[:2000]}
+
+    def settlements(stage: str) -> list[dict[str, Any]]:
+        return [row for row in harness.effects if row.get("stage") == stage]
     _name_unpulled(stop, unpulled)
     split, bought = marks.get("reads", len(reads)), marks.get("buys", len(harness.would_buy))
     reached = "scene_handoff" in clock.rows
@@ -933,7 +997,8 @@ def _preparation_group(capture_root: Path, *, past: Sequence[str], commit: str, 
     prep_buys, handoff_buys = _buys(harness.would_buy[:bought]), _buys(harness.would_buy[bought:])
     rows = [_row("preparation", "ran", prep_stop, would_buy=prep_buys, maximum_usd=_total(prep_buys),
                  reads=_reads(reads[:split]), substituted=[row for row in substituted if row["stage"] == "preparation"],
-                 wanted=wanted if not reached else [], **common, **clock.rows["preparation"])]
+                 wanted=wanted if not reached else [], unsent_settlements=settlements("preparation"), **common,
+                 **clock.rows["preparation"])]
     if reached:
         value = marks.get("handoff") if isinstance(marks.get("handoff"), Mapping) else {}
         handoff_stop = stop or {"kind": "completed", "stage": "scene_handoff",
@@ -941,12 +1006,28 @@ def _preparation_group(capture_root: Path, *, past: Sequence[str], commit: str, 
         mine = [row for row in substituted if row["stage"] == "scene_handoff"]
         rows.append(_row("scene_handoff", "assumed" if any(r["how"] == "retained_output" for r in mine) else "ran",
                          handoff_stop, would_buy=handoff_buys, maximum_usd=_total(handoff_buys),
-                         reads=_reads(reads[split:]), substituted=mine, wanted=wanted, **common,
-                         handoff={key: value.get(key) for key in ("status", "blockers", "digest", "job_disposition")
-                                  if key in value}, **clock.rows["scene_handoff"]))
+                         reads=_reads(reads[split:]), substituted=mine, wanted=wanted,
+                         unsent_settlements=settlements("scene_handoff"), **common,
+                         handoff=_handoff_summary(value), **clock.rows["scene_handoff"]))
     else:
         rows.append(_row("scene_handoff", "skipped", reason="not_reached_by_the_preparation"))
     return rows
+
+
+def _handoff_summary(value: Mapping[str, Any]) -> dict[str, Any]:
+    """What the handoff decided, and for a room package why (its record's flags and the pieces it leaves out)."""
+    summary = {key: value[key] for key in ("status", "blockers", "digest", "job_disposition", "dispatch_blockers",
+                                           "rule_withheld", "native_task_preparation_gap") if key in value}
+    package = value.get("room_package")
+    if isinstance(package, Mapping):
+        summary["room_package"] = {key: item for key, item in package.items() if key != "path"}
+        try:
+            record = json.loads(Path(str(package.get("path"))).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = {}
+        summary["room_package"].update({key: record[key] for key in ("flags", "not_prepared", "task_kind")
+                                        if key in record})
+    return summary
 
 
 def _company_group(capture_root: Path, *, commit: str, watched: str, **_: Any) -> list[dict[str, Any]]:
@@ -956,13 +1037,23 @@ def _company_group(capture_root: Path, *, commit: str, watched: str, **_: Any) -
     from . import website_company_simulation as simulation
     from .atlas_preview_replay import ReplayStop
 
-    clock, built = _Clock(), {}
+    from .atlas_preview_replay import _raised_at, _swap
+
+    clock, built, caught = _Clock(), {}, []
     harness = _harness(capture_root, watched=watched, commit=commit)
     package = capture_root.joinpath(*simulation.DIRECTORY) / simulation.PACKAGE_FILE
     before = _sha256_file(package) if package.is_file() else None
     stop: dict[str, Any] | None = None
-    with harness:
+    with harness, contextlib.ExitStack() as stack:
         harness.stage = "company_simulation"
+        own_reason = simulation._own_reason
+
+        def reason(error: BaseException | str) -> str:
+            # The pass never raises: what it turned into a status is kept for the report.
+            if isinstance(error, BaseException):
+                caught.append({"exception": f"{type(error).__name__}: {error}"[:600], "raised_at": _raised_at(error)})
+            return own_reason(error)
+        _swap(stack, simulation, "_own_reason", reason)
 
         def archive(path: Path, *, identity: Mapping[str, str]) -> dict[str, Any]:
             with zipfile.ZipFile(path) as zipped:
@@ -982,9 +1073,10 @@ def _company_group(capture_root: Path, *, commit: str, watched: str, **_: Any) -
                                                             deliver=deliver)
             status = str(outcome.get("status"))
             stop = {"kind": "completed" if status in ("published", "current") else
-                    "waiting" if status in ("no_source", "busy") else "refusal",
+                    "waiting" if status in ("no_source", "busy") else "error" if status == "failed" else "refusal",
                     "stage": "company_simulation", "code": ":".join(
-                        str(part) for part in (status, outcome.get("reason")) if part)}
+                        str(part) for part in (status, outcome.get("reason")) if part),
+                    **(caught[-1] if status == "failed" and caught else {})}
         except ReplayStop as error:
             stop = _stopped(harness, error, "company_simulation")
         except Exception as error:  # noqa: BLE001
@@ -999,7 +1091,7 @@ def _company_group(capture_root: Path, *, commit: str, watched: str, **_: Any) -
     buys = _buys(harness.would_buy)
     return [_row("company_simulation", "ran", stop, would_buy=buys, maximum_usd=_total(buys), reads=_reads(reads),
                  package=built or None, network_attempts=harness.network, webapp_answers=harness.answers,
-                 listed=listed,
+                 unsent_settlements=harness.effects, listed=listed,
                  wanted=[*unpulled, *([stop["code"]] if stop and stop.get("kind") == "missing_input" else [])],
                  **clock.rows["company_simulation"])]
 
@@ -1146,14 +1238,12 @@ def _inner_main(args: argparse.Namespace) -> int:
         raise SystemExit("job_replay --inner runs only inside the private namespace the replay creates")
     run_dir = Path(args.run_dir)
     plan = json.loads((run_dir / "inner_plan.json").read_text(encoding="utf-8"))
-    for root in plan["mount_roots"]:
-        subprocess.run(["mount", "--bind", str(Path(plan["work"]) / root.lstrip("/")), root], check=True)
-    # The replay never sees the pulled evidence, so nothing it runs can change it.
-    subprocess.run(["mount", "-t", "tmpfs", "-o", "ro,size=1k", "tmpfs", plan["cache"]], check=True)
+    view = _stand_work(plan, run_dir)
     masked = _mask_credentials()
     result = run_stages(Path(plan["capture_root"]), run_dir=run_dir, past=plan["past"], commit=plan["commit"],
                         steps=plan.get("steps"), watched=plan["watched"])
     result["masked_paths"] = masked
+    result["work_view"] = view
     result["network_probe"] = _network_probe()
     (run_dir / "inner_report.json").write_text(json.dumps(result, sort_keys=True, default=str), encoding="utf-8")
     return 0
@@ -1170,37 +1260,66 @@ def _network_probe() -> dict[str, Any]:
     return {"interfaces": names}
 
 
-def _copy_work(cache: PullCache, host_paths: Iterable[str], work: Path) -> None:
+def _link_work(cache: PullCache, host_paths: Iterable[str], lower: Path) -> None:
+    """The run's read-only layer: exactly the wanted cached files, hard-linked (a copy where a link cannot be made).
+    It is only ever an overlay's lower layer, which overlayfs never writes, and is hidden once mounted."""
     for path in sorted(set(host_paths)):
         source = cache.local(path)
         if not source.is_file():
             continue
-        target = work / path.lstrip("/")
+        target = lower / path.lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        try:
+            os.link(source, target)
+        except OSError:
+            shutil.copy2(source, target)
+
+
+def _stand_work(plan: Mapping[str, Any], run_dir: Path) -> str:
+    """Stand the run's view over each host root: an overlay of the linked layer and a fresh upper layer (writes go
+    there; nothing is copied), else a copy of the layer. Then the layer and the cache are hidden."""
+    lower = Path(plan["lower"])
+    mode = "overlay"
+    for root in plan["mount_roots"]:
+        relative = root.lstrip("/")
+        upper, work = run_dir / "upper" / relative, run_dir / "overlay_work" / relative
+        upper.mkdir(parents=True, exist_ok=True)
+        work.mkdir(parents=True, exist_ok=True)
+        options = f"lowerdir={lower / relative},upperdir={upper},workdir={work}"
+        mounted = subprocess.run(["mount", "-t", "overlay", "overlay", "-o", options, root], capture_output=True,
+                                 check=False)
+        if mounted.returncode != 0:  # no overlayfs here: the stages get a copy of the layer instead
+            mode = "copy"
+            copy = run_dir / "copy" / relative
+            shutil.copytree(lower / relative, copy, symlinks=True, dirs_exist_ok=True)
+            subprocess.run(["mount", "--bind", str(copy), root], check=True)
+    # The replay never sees the pulled evidence or its links, so nothing it runs can change them.
+    for hidden in (str(lower), plan["cache"]):
+        subprocess.run(["mount", "-t", "tmpfs", "-o", "ro,size=1k", "tmpfs", hidden], check=True)
+    return mode
 
 
 def _replay_once(pull: Pull, *, scratch: Path, past: Sequence[str], commit: str, steps: int | None,
                  namespace: list[str], keep: bool, index: int) -> dict[str, Any]:
     run_dir = Path(tempfile.mkdtemp(prefix=f"run{index}-", dir=scratch / "runs"))
-    work = run_dir / "work"
-    _copy_work(pull.cache, pull.wanted, work)
+    lower = run_dir / "lower"
+    _link_work(pull.cache, pull.wanted, lower)
     for path in pull.empty_dirs():
-        (work / path.lstrip("/")).mkdir(parents=True, exist_ok=True)
+        (lower / path.lstrip("/")).mkdir(parents=True, exist_ok=True)
     modes = {}
     for path, mode in HOST_MODES.items():
-        local = work / path.lstrip("/")
-        if local.is_dir():
+        local = lower / path.lstrip("/")
+        if local.is_dir():  # a folder of the run's own layer, never a cached file
             local.chmod(mode)
             modes[path] = oct(mode)
     roots = _mount_roots([pull.capture_root, *pull.wanted], avoid=scratch)
     created = []
     for root in roots:
-        (work / root.lstrip("/")).mkdir(parents=True, exist_ok=True)
+        (lower / root.lstrip("/")).mkdir(parents=True, exist_ok=True)
         if not Path(root).exists():
             Path(root).mkdir(parents=True)  # an empty mount point, only where the host folder is not here at all
             created.append(root)
-    plan = {"work": str(work), "cache": str(pull.cache.root), "mount_roots": roots, "capture_root": pull.capture_root,
+    plan = {"lower": str(lower), "cache": str(pull.cache.root), "mount_roots": roots, "capture_root": pull.capture_root,
             "past": list(past), "commit": commit, "steps": steps,
             "watched": next(root for root in roots if pull.capture_root.startswith(root + "/"))}
     (run_dir / "inner_plan.json").write_text(json.dumps(plan), encoding="utf-8")
@@ -1220,7 +1339,8 @@ def _replay_once(pull: Pull, *, scratch: Path, past: Sequence[str], commit: str,
                              "service_account": "the work copy's owner stands for the host's service account in "
                                                 "the scene retirement fence (a door pull carries no owner)"})
     if not keep:
-        shutil.rmtree(work, ignore_errors=True)
+        for name in ("lower", "upper", "overlay_work", "copy"):
+            shutil.rmtree(run_dir / name, ignore_errors=True)
     return result
 
 
@@ -1262,12 +1382,17 @@ def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = No
         if door is not None:
             pull.list_roots([capture_root, pull.scene_root + "/website_withdrawal"])
             pull.select_all() if pull_all else pull.select_records()
+            pull.select_cached()
             pull.select_globs(pull_globs)
             pull.fetch("records" if not pull_all else "all")
         else:
-            pull.wanted.update({path: row for path, row in _offline_index(cache, capture_root).items()})
+            pull.trees = cache.load_listing(capture_root)
+            if not pull.trees:
+                return {**report, "replay_unsupported": "offline_without_an_earlier_pull", "stages": [],
+                        "passed": False, "clean": False, "elapsed_seconds": round(time.time() - started, 3)}
+            pull.select_cached(offline=True)
     report["capture_root"] = capture_root
-    runs, result = [], {}
+    runs, result, converged, pending = [], {}, door is None, []
     for index in range(rounds + 1):
         before = evidence_digest(cache, pull.wanted)
         result = _replay_once(pull, scratch=scratch, past=past, commit=commit, steps=steps, namespace=namespace,
@@ -1277,16 +1402,24 @@ def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = No
                      "stops": [f"{row['stage']}:{(row.get('stop') or {}).get('kind')}" for row in result["stages"]]})
         result["evidence"] = {"digest_before": before["digest"], "digest_after": after["digest"],
                               "files": after["files"], "bytes": after["bytes"], "unchanged": before == after}
-        if door is None or index == rounds or not result["evidence"]["unchanged"]:
+        if door is None or not result["evidence"]["unchanged"]:
             break
         with _locked(scratch / "cache" / ".lock"):
+            kept = dict(pull.wanted)
             added = [*pull.expand(result.get("wanted") or []), *pull.listed(result.get("listed") or [])]
             if not added:
+                converged = True
+                break
+            if index == rounds:
+                pull.wanted = kept  # out of rounds: what the last replay named is reported, not pulled
+                pending = added
                 break
             pull.fetch(f"named_by_round_{index}", added)
             followed = pull.referenced(added)
             if followed:
                 pull.fetch(f"referenced_by_round_{index}", followed)
+    if door is not None:
+        cache.save_listing(capture_root, pull.trees)
     attempts = result.get("network_attempts") or []
     breaches = [*(result.get("breaches") or []),
                 *([] if (result.get("evidence") or {}).get("unchanged") else ["evidence_changed"])]
@@ -1295,25 +1428,19 @@ def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = No
                   evidence=result.get("evidence"), rounds=runs, pull=pull.report() if door is not None else None,
                   boundaries={"network_attempts": attempts, "masked_paths": result.get("masked_paths"),
                               "network_probe": result.get("network_probe"), "namespace": namespace,
-                              "mount_roots": result.get("mount_roots"),
+                              "mount_roots": result.get("mount_roots"), "work_view": result.get("work_view"),
                               "created_mount_points": result.get("created_mount_points"),
                               "stand_ins": result.get("stand_ins"),
                               "credentials_removed": sorted({name for row in result.get("stages", [])
                                                              for name in row.get("credentials_removed") or []}),
                               "new_paid_calls": 0},
-                  unpulled_named=result.get("wanted", [])[:100],
+                  unpulled_named=result.get("wanted", [])[:100], converged=converged,
+                  named_not_pulled={"files": len(pending), "paths": pending[:50]},
                   elapsed_seconds=round(time.time() - started, 3))
     path = Path(result.get("run_dir") or scratch) / "job_replay_report.v1.json"
     report["report_path"] = str(path)
     path.write_text(json.dumps(report, indent=1, sort_keys=True, default=str) + "\n", encoding="utf-8")
     return report
-
-
-def _offline_index(cache: PullCache, capture_root: str) -> dict[str, dict[str, Any]]:
-    """``--offline``: every file already pulled for this capture, as the index records it."""
-    return {path: {"size": row[0], "mtime": row[1]} for path, row in cache.index.items()
-            if path.startswith(capture_root + "/") or path.startswith(capture_root.rsplit("/captures/", 1)[0]
-                                                                      + "/website_withdrawal/")}
 
 
 @contextlib.contextmanager
@@ -1357,6 +1484,10 @@ def table(report: Mapping[str, Any]) -> str:
         lines.append(f"  ASSUMED {item.get('stage')}: {item.get('code')} ({item.get('how')}"
                      + (f", {item['path']}" if item.get("path") else "") + ")")
     evidence = report.get("evidence") or {}
+    pending = (report.get("named_not_pulled") or {}).get("files")
+    if report.get("converged") is False and pending:
+        lines.append(f"NOT CONVERGED: the last replay named {pending} host files not pulled yet, so its stops may be "
+                     "the pull's, not the job's; run again (pulls are cached) or raise --rounds")
     lines.append(("NOT A CLEAN RUN: assumed steps above. " if not report.get("clean") else "clean run. ")
                  + f"evidence {evidence.get('files')} files unchanged={evidence.get('unchanged')}; "
                  + f"network attempts {len((report.get('boundaries') or {}).get('network_attempts') or [])}; "

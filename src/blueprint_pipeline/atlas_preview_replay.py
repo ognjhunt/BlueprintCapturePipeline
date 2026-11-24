@@ -176,6 +176,9 @@ def _raised_at(error: BaseException) -> str | None:
 class _Harness:
     """Every stub of one replay, and what each saw."""
 
+    #: Modules whose frames are the replay's own, never a call site (a subclass adds its own).
+    stub_modules = _STUB_MODULES
+
     def __init__(self, *, capture_root: Path, workspace: Path, prefix: str | None, configuration: Any,
                  task_context: Any, commit: str) -> None:
         self.capture_root, self.workspace, self.prefix, self.commit = capture_root, workspace, prefix, commit
@@ -235,7 +238,7 @@ class _Harness:
         frame = sys._getframe(1)
         while frame is not None:
             module = frame.f_globals.get("__name__", "")
-            if module.startswith("blueprint_pipeline.") and module not in _STUB_MODULES:
+            if module.startswith("blueprint_pipeline.") and module not in self.stub_modules:
                 site = site or f"{module.removeprefix('blueprint_pipeline.')}.{frame.f_code.co_name}:{frame.f_lineno}"
                 value = frame.f_locals.get("task")
                 task = task or (value if isinstance(value, str) and value.isidentifier() else None)

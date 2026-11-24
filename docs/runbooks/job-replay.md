@@ -23,10 +23,14 @@ PYTHONPATH=src "$BLUEPRINT_PIPELINE_PYTHON" -m blueprint_pipeline.job_replay \
    less. Each is pulled once, with its frame set, and the replay runs again (`--rounds`, default 8). A cached file
    whose host size and mtime are unchanged is reused after its digest is checked, so a second replay of the same
    job pulls only what changed. `--pull <glob>` adds files; `--pull-all` takes the whole capture (GBs, about
-   1.7 MB/s through the door). `--offline` replays only what is already cached.
-2. **Replay**, each stage in its own process, in a mount and network namespace (`unshare`) where a scratch copy of
-   the pull stands at its own host paths (`/var/lib/blueprint` is bind-mounted over; a local folder of that name
-   is hidden, never touched):
+   1.7 MB/s through the door). `--offline` replays from the last listing and what is already cached. When the
+   rounds run out while a stage still names unpulled files, the table says `NOT CONVERGED` (its stops may be the
+   pull's, not the job's): run it again (cached) or raise `--rounds`. A first pull of a job at an Atlas stage can
+   be 1-2 GB of frame sets.
+2. **Replay**, each stage in its own process, in a mount and network namespace (`unshare`) where the pull stands
+   at its own host paths: an overlay over `/var/lib/blueprint` whose read-only layer is the wanted cached files
+   (hard links, hidden once mounted) and whose upper layer, per run, takes every write (`work_view: overlay`; a
+   plain copy where overlayfs is not allowed). A local folder of that name is hidden, never touched:
    - `atlas_preview`: the Atlas preview controller (`atlas_preview_replay.run_steps`);
    - `preparation`: once the preview is ready (or the job has none), `run_e2e.run_end_to_end` with
      `resume_completed_stages=True`, the call the listener's recovery makes once its claim and admission pass;
@@ -63,9 +67,13 @@ preparation does not run the handoff: nothing stands in for its clean plate resu
   `~/.config/gcloud`, `~/.ssh`, ...) are masked inside the namespace (`boundaries.masked_paths`).
 - Money: every new purchase stops as `would_buy` with its provider, operation and maximum USD; WebApp
   `preparation-spend` is admitted under the snapshot's ceiling exactly as the WebApp admits it, then stops. WebApp
-  reads are answered from the job's retained task context, Atlas configuration and scene sponsorship.
-- Evidence: the replay never sees the cache (a tmpfs covers it in the namespace); its digest is checked before and
-  after every round (`evidence.unchanged`; a change fails the run).
+  reads are answered from the job's retained task context, Atlas configuration and scene sponsorship. A
+  `preparation-settlement` (it only releases what a bought call held beyond its cost) is recorded under
+  `unsent_settlements`, never sent, and answered as no answer, so the code keeps the hold as it does when the
+  WebApp does not answer. Every other WebApp write stops as `external_effect` with its call site.
+- Evidence: the replay never sees the cache or its links (tmpfs covers both in the namespace, and overlayfs never
+  writes a lower layer); its digest is checked before and after every round (`evidence.unchanged`; a change fails
+  the run).
 - Door: only `/fs/list` and `/fs/read`. Nothing holds, releases, deploys or starts anything.
 - Stand-ins, listed in `boundaries.stand_ins`: a pull carries no owner, mode or inode, so the scene retirement
   fence reads the copy's owner as the service account, its generation store gets the host's mode (0700), and a
