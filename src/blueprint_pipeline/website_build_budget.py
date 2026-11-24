@@ -184,6 +184,24 @@ def _reserve(*, root: Path, digest: str, value: Mapping[str, Any], task_context:
     return record
 
 
+def _recheck_retained(record: Mapping[str, Any], digest: str) -> None:
+    """A reservation written by an earlier run is a hold, not a grant: before it counts as admitted again, the same
+    local checks a new reservation passes run again (the account's month, the resource's monthly budget and its class,
+    as ``require_paid_resource_budget`` reads them), and its admission must still be this binding's, admitted, with no
+    blockers. A refusal is raised as the first run's was; the hold stays written for the next run, so the website is
+    never asked twice (Codex review of #3713, 2026-11-24: a hold kept when the local recheck refused must not turn
+    that refusal into an admission on the retry). No grant is issued and nothing is metered here: dispatch still
+    takes its own grant."""
+    from .paid_resource_admission import require_paid_resource_budget
+    held = record.get("admission")
+    if (not isinstance(held, Mapping) or held.get("allocation_binding_digest") != digest
+            or held.get("status") != "admitted" or held.get("schema_version") != "paid_lane_admission.v1"
+            or held.get("blockers") not in ([], None) or held.get("resource_class") != RESOURCE_CLASS
+            or held.get("provider") != PROVIDER):
+        raise ValueError(RECORD_INVALID)
+    require_paid_resource_budget(resource_class=RESOURCE_CLASS)
+
+
 def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: Mapping[str, Any],
                         build_plan_digest: str, root: Path, reserve: Callable[..., Any] | None = None,
                         now: Callable[[], float] = time.time) -> dict[str, Any]:
@@ -224,6 +242,8 @@ def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: M
             value = reservation_binding(task_context=task_context, build_plan_digest=build_plan_digest, row=row)
             digest = canonical_digest(value)
             record = _read_reservation(root, digest)
+            if record is not None and record["status"] == ADMITTED:
+                _recheck_retained(record, digest)
             if record is None and capped is None:
                 record = _reserve(root=root, digest=digest, value=value, task_context=task_context, reserve=reserve,
                                   now=now)

@@ -204,6 +204,41 @@ def test_a_row_the_website_admitted_stays_reserved_when_the_local_recheck_then_r
     assert record["objects"][1]["status"] == budget.ADMITTED
 
 
+def test_a_retained_row_is_admitted_again_only_once_the_local_limits_clear(tmp_path, ledger, monkeypatch):
+    """Codex review of #3713: the hold kept when the local recheck refused is not an admission. While the account's
+    month stays reached, every retry raises as the first run did and asks the website nothing; once it clears, the
+    same hold is admitted, never reserved again."""
+    calls = []
+
+    def month():  # clear at the precheck, reached from the recheck on
+        calls.append(1)
+        return [] if len(calls) == 1 else ["account_monthly_spend_limit_reached"]
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", month)
+    two = OBJECTS[:2]  # the first object and one paid extra: nothing after it would raise in its place
+    with pytest.raises(admission.PaidResourceAdmissionBlocked):
+        _admit(tmp_path, two)
+    asked = len(ledger.reservations())
+    for _ in range(2):
+        with pytest.raises(admission.PaidResourceAdmissionBlocked, match="account_monthly_spend_limit_reached"):
+            _admit(tmp_path, two)
+    assert len(ledger.reservations()) == asked
+    assert not (tmp_path / budget.BUDGET_RECORD).exists()
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: [])
+    record = _admit(tmp_path, two)
+    assert [row["status"] for row in record["objects"]] == [budget.FIRST, budget.ADMITTED]
+    assert [spend["allocation_binding_digest"] for spend in ledger.reservations()].count(_binding("carton")) == 1
+
+
+def test_a_retained_row_whose_admission_is_not_this_bindings_fails_closed(tmp_path, ledger):
+    _admit(tmp_path)
+    path = tmp_path / "reservations" / (_binding("carton")[7:] + ".json")
+    written = json.loads(path.read_text())
+    written["admission"]["blockers"] = ["paid_resource_admission_has_blockers"]
+    path.write_text(json.dumps(written))
+    with pytest.raises(ValueError, match="website_build_budget_record_invalid"):
+        _admit(tmp_path)
+
+
 def test_a_partly_spent_reservation_settles_at_its_cost_and_a_refusal_stays_final(tmp_path, ledger):
     record = _admit(tmp_path)
     carton = record["objects"][1]
