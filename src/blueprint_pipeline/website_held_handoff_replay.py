@@ -49,13 +49,26 @@ One more fact makes any completed preparation stale, held or handed off:
   (``superseded_levelling``): a newer levelling changes the collider copy the navigation scene half is
   derived from, so the preparation runs once more per revision.
 
-  Only the operator replays it, and the drain keeps no bytes for it. Every republish of a ready job is
-  an operator reopening it (``atlas_preparation_job_control.retry_preparation_job``, the door's
-  ``selected-handoff --atlas-retry``), and the door's status then shows the completed preparation's stale
-  base scene (``native_preparation.atlas_result_superseded``). A handed-off job's ledger keeps no bytes
-  (``replay_record``), and keeping them for every completed job would retain each payload indefinitely
-  for an event only an operator causes. A held job the drain replays for its own fact reads the current
-  result like any run.
+  Only the operator replays it, and the drain keeps no bytes for it, with one exception below. A republish
+  of a ready job whose room was measured is an operator reopening it
+  (``atlas_preparation_job_control.retry_preparation_job``, the door's ``selected-handoff --atlas-retry``),
+  and the door's status then shows the completed preparation's stale base scene
+  (``native_preparation.atlas_result_superseded``). A handed-off job's ledger keeps no bytes for it
+  (``replay_record``): keeping them for every completed job would retain each payload indefinitely for an
+  event only an operator causes. A held job the drain replays for its own fact reads the current result
+  like any run.
+
+  The exception (owner, 2026-11-23: a built room ships flagged at once, retries continue, and a better
+  package replaces it): a room handed on unscaled (``atlas_unscaled_room``) is asked its scale again by the
+  job itself (``website_atlas_preview``: on the outage schedule, or once per release), so the job causes the
+  event, not an operator. Once the retained base scene is unscaled and the job's Atlas lane is final on a
+  result whose source pose completed (``measured_room``), the drain runs the preparation once more on it,
+  from the delivery every claimed ledger keeps beside it (``website_preparation_retry.retained_payload``;
+  nothing new is retained), claimed on the exact ledger it read (``RETAINED_SCHEMA``) after the same status
+  read as any replay (a withdrawal, a refilmed or closed run, revoked consent: nothing runs). A paid step it
+  reaches (the job's object, now that the room has a scale) goes through the job's admissions and its $40 cap
+  as on any run; the company package follows its new source on its own pass
+  (``website_company_simulation``: a new simulation revision is built and the copy it replaces retired).
 """
 from __future__ import annotations
 
@@ -328,6 +341,54 @@ def arrived_fact(pipeline_root: Path, *, load_current_context=None) -> dict[str,
     return fact
 
 
+def _base_scene(root: Path) -> dict[str, Any] | None:
+    """The base scene the retained handoff names, inside the preparation and not through a link; else None."""
+    import json
+
+    named = (_handoff(root) or {}).get("base_scene_path")
+    if not isinstance(named, str):
+        return None
+    try:
+        path, preparation = Path(named).absolute(), (root / "website_scene_preparation").absolute()
+        if (".." in path.parts or not path.is_relative_to(preparation) or not path.is_file()
+                or any(item.is_symlink() for item in (path, *path.parents) if item.is_relative_to(preparation))):
+            return None
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def unscaled_room(pipeline_root: Path) -> bool:
+    """Whether the retained handoff's base scene is a room whose scale was not measured (``atlas_unscaled_room``)."""
+    from .atlas_unscaled_room import is_unscaled
+
+    base = _base_scene(Path(pipeline_root))
+    return base is not None and is_unscaled(base)
+
+
+def measured_room(pipeline_root: Path) -> dict[str, Any] | None:
+    """The fact that an unscaled room's Atlas result was replaced by one whose source pose completed; else None.
+
+    ``superseded_atlas_result``'s fact, only while the retained base scene is unscaled and the job's final result
+    holds a completed source pose: a result asked again that is still unscaled is no better room. Read-only.
+    """
+    import json
+
+    root = Path(pipeline_root)
+    fact = superseded_atlas_result(root) if unscaled_room(root) else None
+    if fact is None:
+        return None
+    try:
+        result = json.loads((root / "atlas" / "result.json").read_text())
+    except (OSError, ValueError):
+        return None
+    pose = result.get("source_pose") if isinstance(result, dict) else None
+    if result.get("digest") != fact["result_digest"] or not isinstance(pose, dict) or pose.get("status") != "completed":
+        return None
+    return fact
+
+
 def superseded_atlas_result(pipeline_root: Path) -> dict[str, Any] | None:
     """The Atlas result that replaced the one the retained handoff's base scene was built from; None otherwise.
 
@@ -431,15 +492,19 @@ def replay_record(listener, *, payload, payload_digest, producer_delivery_key, c
 
 #: An operator's reviewed replay of a held ledger that keeps no bytes of its own (it predates them).
 OPERATOR_SCHEMA = "website_held_handoff_operator_replay.v1"
+#: The drain's replay of a completed ledger that keeps no replay bytes, for a measured room (``measured_room``),
+#: from the delivery kept beside the ledger; claimed on the exact ledger the drain read, as the operator's is.
+RETAINED_SCHEMA = "website_held_handoff_retained_replay.v1"
 
 
 def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) -> bool:
     """Inside the claim lock: still the held, completed ledger the drain (or operator) read, for the same delivery.
 
     The operator form names the exact reviewed ledger (its digest), the selected original payload the door
-    verified against the producer delivery, and the fact; the drain form names the ledger's own kept bytes.
+    verified against the producer delivery, and the fact; the retained form (``RETAINED_SCHEMA``) names the same,
+    the payload being the ledger's own delivery kept beside it; the drain form names the ledger's own kept bytes.
     """
-    if expected.get("review_schema") == OPERATOR_SCHEMA:
+    if expected.get("review_schema") in (OPERATOR_SCHEMA, RETAINED_SCHEMA):
         import re
 
         digest = expected.get("ledger_digest")
@@ -520,10 +585,15 @@ def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit
             _require(not (root / listener.JOB_LEDGER_FILENAME).is_symlink())
             before = listener._read_job_ledger(root)
             record = before.get(FIELD)
-            if type(record) is not dict or before.get("status") != "completed":
+            if before.get("status") != "completed":
                 continue
             pipeline = root / "pipeline"
-            fact = arrived_fact(pipeline, load_current_context=load_current_context)
+            # A measured room replacing the unscaled one first (any completed job, held or handed off: its bytes
+            # are the ones kept beside every claimed ledger); its run reads a held job's own fact again too.
+            fact = measured_room(pipeline)
+            if fact is None and type(record) is not dict:
+                continue
+            fact = fact or arrived_fact(pipeline, load_current_context=load_current_context)
             if fact is None:
                 counts["held"] += 1
                 continue
@@ -535,14 +605,27 @@ def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit
                     and spent.get("ledger_revision") != before.get("revision")):
                 counts["already_replayed"] += 1
                 continue
-            _require(set(record) == _RECORD_FIELDS and record.get("schema_version") == SCHEMA)
-            _require(type(record["payload_base64"]) is str and len(record["payload_base64"]) <= 4 * ((MAX_BYTES + 2) // 3))
-            raw = _payload_bytes(listener, base64.b64decode(record["payload_base64"], validate=True),
-                                 record["source_payload_sha256"])
+            if type(record) is dict:
+                _require(set(record) == _RECORD_FIELDS and record.get("schema_version") == SCHEMA)
+                _require(type(record["payload_base64"]) is str
+                         and len(record["payload_base64"]) <= 4 * ((MAX_BYTES + 2) // 3))
+                payload_sha256 = record["source_payload_sha256"]
+                raw = _payload_bytes(listener, base64.b64decode(record["payload_base64"], validate=True),
+                                     payload_sha256)
+                _require(before.get("producer_delivery_key") == record["producer_delivery_key"])
+                expected = {"revision": before["revision"], "record": record, "fact": fact}
+            else:
+                # The ledger's own delivery, kept beside it since the claim (``website_preparation_retry``); the
+                # claim re-checks this exact ledger, as for the operator's replay.
+                from .website_preparation_retry import retained_payload
+
+                payload_sha256 = before.get("source_payload_sha256")
+                raw = retained_payload(listener, root, before)
+                expected = {"review_schema": RETAINED_SCHEMA, "ledger_digest": canonical_digest(dict(before)),
+                            "selected_payload_sha256": payload_sha256, "fact": fact}
             handoff = listener.parse_handoff_payload(raw)
             _require(root == listener._handoff_capture_root(handoff, storage_root=storage_root)
-                     and before.get("source_payload_sha256") == record["source_payload_sha256"]
-                     and before.get("producer_delivery_key") == record["producer_delivery_key"])
+                     and before.get("source_payload_sha256") == payload_sha256)
             _require(handoff.source_finalize is not None and handoff.source_membership_selector is not None)
             require_still_open(root, revision=before["revision"])
             birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
@@ -556,9 +639,8 @@ def reconcile_held_handoffs(listener, *, storage_root: Path, process_args, limit
             from .website_rules_reopen import mark_reopened
 
             mark_reopened(pipeline, fact=fact, ledger_revision=before.get("revision"))
-            listener.process_handoff_payload(raw, storage_root=storage_root,
-                payload_digest=record["source_payload_sha256"],
-                expected_held_replay={"revision": before["revision"], "record": record, "fact": fact},
+            listener.process_handoff_payload(raw, storage_root=storage_root, payload_digest=payload_sha256,
+                expected_held_replay=expected,
                 **({"expected_preparation_purpose": "scene_preparation"}
                    if birth.get("capture_observation_purpose") == "scene_preparation" else {}), **process_args)
             counts["replayed"] += 1
@@ -610,7 +692,7 @@ def resume_held_preparation(listener, *, capture_root: Path, storage_root: Path,
                               "selected_payload_sha256": hashlib.sha256(handoff_payload).hexdigest(), "fact": fact})
 
 
-__all__ = ["CONSENT_HOLDS", "FIELD", "MARK", "OPERATOR_SCHEMA", "SCHEMA", "arrived_fact", "claim_matches",
-           "held_kind", "preparation_binding", "reconcile_held_handoffs", "replay_record", "require_still_open",
+__all__ = ["CONSENT_HOLDS", "FIELD", "MARK", "OPERATOR_SCHEMA", "RETAINED_SCHEMA", "SCHEMA", "arrived_fact", "claim_matches",
+           "held_kind", "measured_room", "preparation_binding", "reconcile_held_handoffs", "replay_record", "require_still_open",
            "resume_held_preparation",
-           "superseded_atlas_result", "superseded_levelling", "superseded_scene"]
+           "superseded_atlas_result", "superseded_levelling", "superseded_scene", "unscaled_room"]

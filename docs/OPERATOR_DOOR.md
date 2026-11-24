@@ -316,7 +316,10 @@ the navigation scene half beside the old ones. It first copies the records the
 old base scene named (the handoff, the base scene, the compiled specs) under
 `pipeline/website_scene_preparation/superseded_atlas_results/<old result>/`, so
 evidence made on the old scene still verifies. It runs once per new result
-digest, through the same claim, and the drain never starts it. The website and
+digest, through the same claim. The drain starts it by itself in one case only:
+a room handed on unscaled whose scale the job measured later (its new result's
+source pose completed; `website_held_handoff_replay.measured_room`), from the
+delivery kept beside the ledger, after the same status read. The website and
 the Pipeline intake keep one intake per submission, so a re-derived navigation
 job's new scene half sends the capture's intake re-issued in the same run: its
 own `website-reissue-` submission, a `website_navigation_reissue` marker naming

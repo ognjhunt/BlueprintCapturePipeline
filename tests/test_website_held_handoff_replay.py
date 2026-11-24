@@ -100,8 +100,13 @@ def site(prepared_source, monkeypatch, tmp_path):  # noqa: F811 - imported pytes
         if atlas.is_file():
             # The base scene names the job's current Atlas result, as the real scene source's does
             # (``base_from`` stands in for a run that kept an earlier one).
-            built = state.get("base_from") or json.loads(atlas.read_text())["digest"]
-            write_json(work / "base_scene.json", {"atlas_result_digest": built})
+            published = json.loads(atlas.read_text())
+            built = state.get("base_from") or published["digest"]
+            # A result whose source pose did not complete gives an unscaled room (``atlas_unscaled_room``).
+            pose = published.get("source_pose")
+            unscaled = ({"scale_status": "scale_not_measured", "meters_per_unit": None}
+                        if isinstance(pose, dict) and pose.get("status") != "completed" else {})
+            write_json(work / "base_scene.json", {"atlas_result_digest": built, **unscaled})
             # The real handoff's records change with its scene (its navigation record, specs and digests).
             result.update(base_scene_path=str(work / "base_scene.json"), scene_from_atlas_result=built)
         if state["registration"]:
@@ -382,11 +387,12 @@ def test_a_hold_left_bound_to_the_parent_after_its_context_became_the_confirmed_
 # rebuild): the door's --resume-preparation runs it once on the new result; the drain never does.
 
 
-def _publish(site, name: str, *, state: str = "ready") -> str:
+def _publish(site, name: str, *, state: str = "ready", source_pose: dict | None = None) -> str:
     """The job's Atlas lane on a sealed result (``website_atlas_preview_store``); the result's digest."""
     from blueprint_pipeline.website_atlas_preview_store import JOB_FILE, SCHEMA as JOB_SCHEMA
 
-    result = {"schema_version": "website_atlas_pipeline_result.v1", "name": name}
+    result = {"schema_version": "website_atlas_pipeline_result.v1", "name": name,
+              **({"source_pose": source_pose} if source_pose is not None else {})}
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(site.root / "pipeline/atlas/result.json", result)
     write_json(site.root / "pipeline/atlas" / JOB_FILE, {"schema_version": JOB_SCHEMA, "state": state,
@@ -551,3 +557,79 @@ def test_the_operator_resume_runs_a_preparation_levelled_by_an_older_revision_on
     state = json.loads((site.work / replay.STATE_FILE).read_text())
     assert state["fact"] == fact and state["operator"] is True
     assert listener._read_job_ledger(site.root)["attempt_history"][-1][replay.MARK] == fact["fact_digest"]
+
+
+# A room shipped unscaled (its scale review ended without an answer) whose review is answered later: the job's own
+# drain runs the preparation again on the measured room, once, so the company package is built from it.
+
+UNSCALED = {"status": "needs_input", "reason": "atlas_scene_planner_output_invalid"}
+MEASURED = {"status": "completed", "scale_status": "estimated"}
+
+
+def _handed_off_unscaled(site) -> str:
+    parent = _publish(site, "unscaled", source_pose=UNSCALED)
+    site.deliver()
+    successor = _confirm(site)
+    site.reconcile()
+    site.bind_receipt(successor)
+    site.reconcile()
+    assert _handoff(site)["status"] == "intake_ready" and len(site.runs) == 3
+    return parent
+
+
+def test_a_room_shipped_unscaled_runs_again_by_itself_once_its_scale_is_measured(site):
+    parent = _handed_off_unscaled(site)
+    pipeline = site.root / "pipeline"
+    # Handed off on an unscaled room: no replay record, and nothing to run yet.
+    assert replay.held_kind(pipeline) is None and replay.FIELD not in listener._read_job_ledger(site.root)
+    assert site.reconcile() == {"replayed": 0, "held": 0, "already_replayed": 0} and len(site.runs) == 3
+    # Asked again and still without a scale: no better room, nothing runs.
+    _publish(site, "asked again", source_pose=UNSCALED)
+    assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
+    # A rebuild in flight is no fact.
+    _publish(site, "measured", state="processing", source_pose=MEASURED)
+    assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
+    measured = _publish(site, "measured", source_pose=MEASURED)
+    assert site.reconcile()["replayed"] == 1 and len(site.runs) == 4
+    fact = json.loads((site.work / replay.STATE_FILE).read_text())["fact"]
+    assert fact["kind"] == "atlas_result_superseded" and fact["result_digest"] == measured
+    assert fact["superseded_result_digest"] == parent
+    # The run read the measured result: the base scene names it and is no longer unscaled.
+    base = json.loads(Path(_handoff(site)["base_scene_path"]).read_text())
+    assert base == {"atlas_result_digest": measured}
+    ledger = listener._read_job_ledger(site.root)
+    assert ledger["status"] == "completed" and ledger["attempt_history"][-1][replay.MARK] == fact["fact_digest"]
+    # Measured and handed off: nothing runs again.
+    assert replay.measured_room(pipeline) is None
+    assert site.reconcile()["replayed"] == 0 and len(site.runs) == 4
+    # The stage's paid inputs stayed bound to the sealed parent context: nothing was bought again.
+    assert site.state["media"] == [site.parent["context_digest"]] * 4
+
+
+@pytest.mark.parametrize("ending", ["withdrawn", "closed"])
+def test_a_measured_room_never_runs_for_a_job_the_site_withdrew_or_the_owner_closed(site, monkeypatch, ending):
+    from tests.test_registration_recapture_reevaluation import _website_refuses, _withdraw
+
+    _handed_off_unscaled(site)
+    _publish(site, "measured", source_pose=MEASURED)
+    if ending == "withdrawn":
+        _withdraw(SimpleNamespace(root=site.root))
+    else:
+        _website_refuses(monkeypatch, "website_run_closed_by_owner")
+    before = listener._read_job_ledger(site.root)
+    handoff = (site.work / "handoff.json").read_text()
+    assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
+    assert listener._read_job_ledger(site.root) == before and (site.work / "handoff.json").read_text() == handoff
+
+
+def test_a_measured_splat_rebuild_of_a_measured_room_stays_the_operators(site):
+    # A republish of a room that was already measured is caused by an operator (``--atlas-retry``), who replays it.
+    _publish(site, "parent", source_pose=MEASURED)
+    site.deliver()
+    successor = _confirm(site)
+    site.reconcile()
+    site.bind_receipt(successor)
+    site.reconcile()
+    _publish(site, "rebuilt", source_pose=MEASURED)
+    assert replay.measured_room(site.root / "pipeline") is None
+    assert site.reconcile()["replayed"] == 0 and len(site.runs) == 3
