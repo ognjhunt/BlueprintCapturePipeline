@@ -146,7 +146,9 @@ def admission_blockers() -> set[str]:
                 for text in _texts(value, constants):
                     if _CODE.fullmatch(text) and not text.startswith(ACCOUNT_PREFIX):
                         found.add(text)
-    from blueprint_pipeline.paid_spend_meter import JOURNAL_UNWRITABLE  # imported by name where it is raised
+    from blueprint_pipeline.paid_spend_meter import (
+        JOURNAL_UNWRITABLE,  # imported by name where it is raised
+    )
     return found | {JOURNAL_UNWRITABLE, "paid_resource_admission_blocked"}
 
 
@@ -156,8 +158,14 @@ def atlas_preview_reasons() -> dict[str, dict[str, object]]:
     from blueprint_pipeline.atlas_automation_plan import COMPLETION_FLOOR_REASONS
     from blueprint_pipeline.hard_stops import JOB_SPEND_CAP, WEBAPP_MONEY, WEBAPP_PRIVACY_RIGHTS
     from blueprint_pipeline.job_retry_policy import (
-        _UNSENDABLE_REQUEST_CODES, MONEY, OWNER_CLOSED_CODE, PRIVACY_RIGHTS, hard_stop_kind, provider_says_retry_later,
-        request_cannot_succeed)
+        _UNSENDABLE_REQUEST_CODES,
+        MONEY,
+        OWNER_CLOSED_CODE,
+        PRIVACY_RIGHTS,
+        hard_stop_kind,
+        provider_says_retry_later,
+        request_cannot_succeed,
+    )
     from blueprint_pipeline.website_job_spend_cap import SPENDING_CAP_REACHED
     from blueprint_pipeline.website_recapture_required import ABSTENTION_CODES
 
