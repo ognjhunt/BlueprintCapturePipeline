@@ -11,7 +11,7 @@ Now the scene source hands on that background as the room (``website_atlas_scene
 thresholds only (``LEVELLING_UNITS``); the base scene's ``meters_per_unit`` is None, and so is its source geometry:
 nothing is lifted onto it, so the job's object is not built. The room package (``website_scene_handoff.
 write_room_package``) records relative units and writes no metres value; the company package's README says
-``SCALE_NOT_MEASURED_NOTE``.
+``SCALE_NOT_MEASURED_NOTE``, and its "How it was made" calls sizes relative, not estimates in metres (``MADE_LINES``).
 
 Walls stay: only a pose attempt the provider itself failed hands on its room (``ships_unscaled``); a pose stopped
 by privacy, rights or money, or for any reason not on that list, hands on nothing; the spending cap answers as before; and a withdrawal, a takedown or revoked rights stop the company package as any other.
@@ -28,6 +28,11 @@ SCALE_NOT_MEASURED_NOTE = "Sizes in this room are relative; its scale was not me
 #: The README's units line for it, in place of "scene.usda is in metres (1 unit is 1 metre), radians and seconds.".
 UNITS_LINE = ("- scene.usda states 1 unit as 1 metre only so that tools can open it; the room's scale was not "
               "measured. Angles are in radians, times in seconds.")
+#: The README's "How it was made" lines for it, in place of "Sizes, distances and positions are estimates from that
+#: video, not measurements.", which a reader takes for estimates in metres.
+MADE_LINES = ("Built from one phone video of the site. Shapes and proportions come from that video; sizes,",
+              "distances and positions are relative, not in metres. A result in this simulation is not a promise",
+              "of what a robot does at the site, and says nothing about safety. No robot is included: bring your own.")
 #: The room's own units, read as metres by the levelling's thresholds and carried one to one into the package.
 LEVELLING_UNITS = 1.0
 #: The room package's coordinate frame for it: no metres per unit, its units relative.

@@ -64,7 +64,7 @@ from typing import Any
 from . import company_share_permission as permission
 from . import website_company_clip as clip
 from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, GENERATED_VIEWS_IN_LOOK, JOB_OBJECT_RULE
-from .atlas_unscaled_room import SCALE_NOT_MEASURED, SCALE_NOT_MEASURED_NOTE, UNITS_LINE
+from .atlas_unscaled_room import MADE_LINES, SCALE_NOT_MEASURED, SCALE_NOT_MEASURED_NOTE, UNITS_LINE
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .outbound_file_scan import capture_site_identity
@@ -1243,10 +1243,10 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     if source.get("appearance_representation") == "particlefield_3d_gaussian_splat" and not source.get("look_left_out"):
         lines += ["- The look file is a 3D Gaussian splat stored as USD particle fields. Some tools cannot show",
                   "  it; the hidden collision part holds the room's geometry."]
-    lines += ["", "How it was made", "",
+    lines += ["", "How it was made", "", *(MADE_LINES if unscaled else (
               "Built from one phone video of the site. Sizes, distances and positions are estimates from that",
               "video, not measurements. A result in this simulation is not a promise of what a robot does at the",
-              "site, and says nothing about safety. No robot is included: bring your own."]
+              "site, and says nothing about safety. No robot is included: bring your own."))]
     import textwrap
 
     notes = [*(source.get("plan_notes") or []), *([LOOK_LEFT_OUT] if source.get("look_left_out") else []),

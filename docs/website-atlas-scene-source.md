@@ -127,7 +127,9 @@ ending without a scale, the codes on
 (`atlas_unscaled_room`). The handoff ships it as the room package, the job's
 object not prepared; the package's sealed record and plan hold relative units
 and no metres value, and its README says "Sizes in this room are relative; its scale was not
-measured."
+measured." In place of "Sizes, distances and positions are estimates from that
+video, not measurements." it says "Shapes and proportions come from that video;
+sizes, distances and positions are relative, not in metres."
 
 A scale review its provider cannot answer now (a 429 or 5xx, or a refusal
 before any work such as no credit left: `job_retry_policy.provider_error_waits`)
