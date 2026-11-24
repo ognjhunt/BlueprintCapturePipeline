@@ -26,7 +26,7 @@ PYTHONPATH=src "$BLUEPRINT_PIPELINE_PYTHON" -m blueprint_pipeline.job_replay \
    1.7 MB/s through the door). `--offline` replays from the last listing and what is already cached. When the
    rounds run out while a stage still names unpulled files, the table says `NOT CONVERGED` (its stops may be the
    pull's, not the job's): run it again (cached) or raise `--rounds`. A first pull of a job at an Atlas stage can
-   be 1-2 GB of frame sets.
+   be 1-2 GB of frame sets, and one Atlas step can run 20+ minutes here.
 2. **Replay**, each stage in its own process, in a mount and network namespace (`unshare`) where the pull stands
    at its own host paths: an overlay over `/var/lib/blueprint` whose read-only layer is the wanted cached files
    (hard links, hidden once mounted) and whose upper layer, per run, takes every write (`work_view: overlay`; a
@@ -36,7 +36,8 @@ PYTHONPATH=src "$BLUEPRINT_PIPELINE_PYTHON" -m blueprint_pipeline.job_replay \
      `resume_completed_stages=True`, the call the listener's recovery makes once its claim and admission pass;
    - `scene_handoff`: the same run from its call of `website_scene_handoff.prepare_website_scene_handoff`;
    - `company_simulation`: `website_company_simulation.publish_company_simulation`, the package compile.
-3. **Report**: one JSON report (`--report`, and `job_replay_report.v1.json` in the run folder) and a table:
+3. **Report**: one JSON report (`--report`, and `job_replay_report.v1.json` in the run folder, rewritten after every
+   round, so a run stopped part way keeps its last complete round) and a table:
    stage, ran / skipped / assumed, stop kind and code, would-buy items with their maximum USD, duration, peak RSS.
    A stage that stops ends the chain; the later stages say `skipped` and why.
 

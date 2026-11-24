@@ -1356,9 +1356,41 @@ def _source_state() -> tuple[str, bool]:
     return state(CODE_ROOT)
 
 
+def _finish(report: dict[str, Any], result: Mapping[str, Any], *, runs: list[dict[str, Any]], pull: Pull,
+            door: Any, namespace: list[str], converged: bool, pending: Sequence[str], started: float,
+            scratch: Path, report_to: str | Path | None) -> dict[str, Any]:
+    """The report as it stands after a round, written beside that round's run (and to ``report_to``), so a run that
+    is stopped part way still leaves its last complete round."""
+    attempts = result.get("network_attempts") or []
+    breaches = [*(result.get("breaches") or []),
+                *([] if (result.get("evidence") or {}).get("unchanged") else ["evidence_changed"])]
+    report.update(stages=result.get("stages", []), assumed=result.get("assumed", []),
+                  clean=bool(result.get("clean")), passed=not breaches, breaches=breaches,
+                  evidence=result.get("evidence"), rounds=runs, pull=pull.report() if door is not None else None,
+                  boundaries={"network_attempts": attempts, "masked_paths": result.get("masked_paths"),
+                              "network_probe": result.get("network_probe"), "namespace": namespace,
+                              "mount_roots": result.get("mount_roots"), "work_view": result.get("work_view"),
+                              "created_mount_points": result.get("created_mount_points"),
+                              "stand_ins": result.get("stand_ins"),
+                              "credentials_removed": sorted({name for row in result.get("stages", [])
+                                                             for name in row.get("credentials_removed") or []}),
+                              "new_paid_calls": 0},
+                  unpulled_named=list(result.get("wanted", []))[:100], converged=converged,
+                  named_not_pulled={"files": len(pending), "paths": list(pending)[:50]},
+                  elapsed_seconds=round(time.time() - started, 3))
+    path = Path(result.get("run_dir") or scratch) / "job_replay_report.v1.json"
+    report["report_path"] = str(path)
+    text = json.dumps(report, indent=1, sort_keys=True, default=str) + "\n"
+    path.write_text(text, encoding="utf-8")
+    if report_to:
+        Path(report_to).write_text(text, encoding="utf-8")
+    return report
+
+
 def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = None, past: Sequence[str] = (),
                rounds: int = DEFAULT_ROUNDS, pull_all: bool = False, pull_globs: Sequence[str] = (),
-               steps: int | None = None, keep: bool = False, offline: bool = False) -> dict[str, Any]:
+               steps: int | None = None, keep: bool = False, offline: bool = False,
+               report_to: str | Path | None = None) -> dict[str, Any]:
     """Pull what the job's replay needs, replay its remaining stages in a private namespace, and report."""
     started = time.time()
     scratch = Path(scratch or os.environ.get("BLUEPRINT_JOB_REPLAY_SCRATCH")
@@ -1402,6 +1434,8 @@ def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = No
                      "stops": [f"{row['stage']}:{(row.get('stop') or {}).get('kind')}" for row in result["stages"]]})
         result["evidence"] = {"digest_before": before["digest"], "digest_after": after["digest"],
                               "files": after["files"], "bytes": after["bytes"], "unchanged": before == after}
+        _finish(report, result, runs=runs, pull=pull, door=door, namespace=namespace, converged=False,
+                pending=[], started=started, scratch=scratch, report_to=report_to)
         if door is None or not result["evidence"]["unchanged"]:
             break
         with _locked(scratch / "cache" / ".lock"):
@@ -1420,27 +1454,8 @@ def replay_job(target: str, *, door: Any = None, scratch: str | Path | None = No
                 pull.fetch(f"referenced_by_round_{index}", followed)
     if door is not None:
         cache.save_listing(capture_root, pull.trees)
-    attempts = result.get("network_attempts") or []
-    breaches = [*(result.get("breaches") or []),
-                *([] if (result.get("evidence") or {}).get("unchanged") else ["evidence_changed"])]
-    report.update(stages=result.get("stages", []), assumed=result.get("assumed", []),
-                  clean=bool(result.get("clean")), passed=not breaches, breaches=breaches,
-                  evidence=result.get("evidence"), rounds=runs, pull=pull.report() if door is not None else None,
-                  boundaries={"network_attempts": attempts, "masked_paths": result.get("masked_paths"),
-                              "network_probe": result.get("network_probe"), "namespace": namespace,
-                              "mount_roots": result.get("mount_roots"), "work_view": result.get("work_view"),
-                              "created_mount_points": result.get("created_mount_points"),
-                              "stand_ins": result.get("stand_ins"),
-                              "credentials_removed": sorted({name for row in result.get("stages", [])
-                                                             for name in row.get("credentials_removed") or []}),
-                              "new_paid_calls": 0},
-                  unpulled_named=result.get("wanted", [])[:100], converged=converged,
-                  named_not_pulled={"files": len(pending), "paths": pending[:50]},
-                  elapsed_seconds=round(time.time() - started, 3))
-    path = Path(result.get("run_dir") or scratch) / "job_replay_report.v1.json"
-    report["report_path"] = str(path)
-    path.write_text(json.dumps(report, indent=1, sort_keys=True, default=str) + "\n", encoding="utf-8")
-    return report
+    return _finish(report, result, runs=runs, pull=pull, door=door, namespace=namespace, converged=converged,
+                   pending=pending, started=started, scratch=scratch, report_to=report_to)
 
 
 @contextlib.contextmanager
@@ -1540,10 +1555,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--rounds must be 0 or more")
     report = replay_job(args.target, scratch=args.scratch, past=args.past, rounds=args.rounds,
                         pull_all=args.pull_all, pull_globs=args.pull, steps=args.steps, keep=args.keep,
-                        offline=args.offline)
-    text = json.dumps(report, indent=1, sort_keys=True, default=str)
-    if args.report:
-        Path(args.report).write_text(text + "\n", encoding="utf-8")
+                        offline=args.offline, report_to=args.report)
+    if args.report and report.get("replay_unsupported"):
+        Path(args.report).write_text(json.dumps(report, indent=1, sort_keys=True, default=str) + "\n",
+                                     encoding="utf-8")
     print(table(report))
     print(f"report: {report.get('report_path')}")
     if report.get("replay_unsupported"):
