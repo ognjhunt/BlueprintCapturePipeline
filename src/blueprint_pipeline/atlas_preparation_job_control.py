@@ -28,6 +28,26 @@ STEP_IN_FLIGHT = "step_in_flight"
 #: Automatic-retry state an operator's reopen starts afresh, with ``transient_failures``.
 _AUTOMATIC_RETRY_FIELDS = frozenset({STEP_IN_FLIGHT, "refusal_retries", "refusal_retries_total",
                                      "deterministic_refusal"})
+#: The ``retries`` rows of a parked job's automatic reopens (``website_atlas_preview._reopen_parked``): a new
+#: release's, or the clock's on ``job_retry_policy``'s refusal schedule.
+AUTOMATIC_REOPENS = frozenset({"release_reopened", "parked_retry"})
+
+
+def automatic_reopens(job: Mapping[str, Any]) -> int:
+    """How many automatic reopens the job had since an operator last reopened it (an operator starts afresh)."""
+    retries = job.get("retries")
+    count = 0
+    for row in retries if isinstance(retries, list) else ():
+        reason = row.get("reason") if isinstance(row, Mapping) else None
+        count = count + 1 if reason in AUTOMATIC_REOPENS else 0
+    return count
+
+
+def reopens_spent(job: Mapping[str, Any]) -> bool:
+    """A parked job had the schedule's six automatic reopens: it is not reopened by itself again, and its stop is
+    its end (the preparation waiting on it goes on: ``website_reconstruction_resume.reopenable``)."""
+    from .job_retry_policy import refusal_retry_delay
+    return refusal_retry_delay(automatic_reopens(job)) is None
 
 class _Withdrawn(Exception):
     pass

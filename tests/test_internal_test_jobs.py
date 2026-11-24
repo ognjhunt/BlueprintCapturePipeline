@@ -5,6 +5,7 @@
 # Covers: src/blueprint_pipeline/website_company_simulation.py
 # Covers: src/blueprint_pipeline/capture_original_owner_observer.py
 # Covers: src/blueprint_pipeline/internal_test_job_door.py
+# Covers: src/blueprint_pipeline/website_scene_workspace_retention.py
 # Covers: deploy/operator-door/operator_door/requests.py
 # Covers: deploy/operator-door/operator_door/spool_runner.py
 # Covers: deploy/operator-door/door-test-job.sh
@@ -139,6 +140,12 @@ def test_the_owner_read_admits_internal_test_only_with_its_marker(marker, admitt
 # ------------------------------------------------------------------------ P3: the door request
 
 sys.path.insert(0, str(ROOT / "deploy" / "operator-door"))
+# Bind the door package now, as test_scene_retirement_operator_bridge does. A module collected earlier in the same
+# worker can leave scripts/operator_door.py (the client, a plain module) under the same name, and the lazy
+# `from operator_door.requests import ...` below then fails with "'operator_door' is not a package".
+if not hasattr(sys.modules.get("operator_door"), "__path__"):
+    sys.modules.pop("operator_door", None)
+import operator_door  # noqa: E402,F401
 
 REQUEST = {"kind": "test-job", "idempotency_key": "20261201:library", "label": "library-aisle",
            "footage_id": "pexels-854533", "description": "Move the blue book to the top shelf."}
@@ -344,6 +351,104 @@ def test_only_a_family_waiting_for_input_is_a_hold_and_a_room_package_is_not(tmp
     monkeypatch.setattr(contracts, reader, lambda handoff, context: True)
     _held(tmp_path, _two_asked(tmp_path), ledger="completed", handoff_status=handoff_status, kind=reader)
     assert _busy(tmp_path) == busy
+
+
+def _retire(tmp_path, result, *, status="completed", proof=True, forge=None):
+    """Storage retention's retirement of the job's scene as ``apply_scene_workspace_retirement`` leaves it
+    (nav-doorway-96 and move-the-lamp, 2026-11-21): the receipt beside ``scenes/``, the workspace gone. ``forge``
+    changes the receipt after its digest, or rewrites the file, as no retirement writes it."""
+    import shutil
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    scene_id = f"site-{result['job_id']}"
+    scene = tmp_path / "handoffs" / "bucket" / "scenes" / scene_id
+    capture = scene / "captures" / result["capture_id"]
+    capture.mkdir(parents=True, exist_ok=True)
+    ledger = {"schema_version": "pipeline_job_ledger.v1", "scene_id": scene_id, "capture_id": result["capture_id"],
+              "status": status, "terminal_payload_sha256": "e" * 64}
+    (capture / "pipeline_job_ledger.json").write_text(json.dumps(ledger))
+    if proof and status == "completed":
+        (capture / "pipeline_job_output_commit.json").write_text(json.dumps({
+            "schema_version": "pipeline_job_output_commit.v1", "status": "committed", "scene_id": scene_id,
+            "capture_id": result["capture_id"], "result_sha256": "f" * 64}))
+    elif proof:
+        ended = {"schema_version": "pipeline_job_terminal_receipt.v1", "status": "authority_ended",
+                 "scene_id": scene_id, "capture_id": result["capture_id"], "payload_sha256": "e" * 64}
+        ended["receipt_digest"] = canonical_digest(ended, digest_field="receipt_digest")
+        (capture / "pipeline_job_terminal_receipt.json").write_text(json.dumps(ended))
+    records = retention._capture_records(scene, [{"capture_id": result["capture_id"], "ledger_status": status}])
+    document = retention._receipt_document(
+        bucket="bucket", scene_id=scene_id, scene=scene, observed_at=NOW, records=records, archive=None,
+        plan={"plan_digest": "sha256:" + "a" * 64, "cloud_verified": [], "totals": {}}, retiring_token="0" * 16)
+    if forge is not None:
+        document = forge(document)
+    shutil.rmtree(scene)
+    path = retention.receipt_path(tmp_path / "handoffs", "bucket", scene_id)
+    assert retention._publish_receipt(path, document if isinstance(document, bytes)
+                                      else retention._receipt_bytes(document))
+    return path
+
+
+@pytest.mark.parametrize("status", ["completed", "terminal_authority_ended"])
+def test_a_test_job_whose_workspace_retention_retired_frees_its_slot(tmp_path, status):
+    """2026-11-24: nav-doorway-96 and move-the-lamp were retired on 2026-11-21 and still held both slots: their
+    capture folders were gone, and a test job has no scene intent to end."""
+    website = Website()
+    first = _ask(tmp_path, website, idempotency_key="20261201:one", label="one")
+    second = _ask(tmp_path, website, idempotency_key="20261201:two", label="two")
+    assert sorted(_busy(tmp_path)) == ["one", "two"]
+    _retire(tmp_path, first, status=status)
+    _retire(tmp_path, second, status=status)
+    assert _busy(tmp_path) == []
+    assert _ask(tmp_path, website, idempotency_key="20261201:three", label="three")["door_outcome"] == "submitted"
+
+
+def test_a_delivered_job_stays_finished_once_its_workspace_is_retired(tmp_path):
+    first = _two_asked(tmp_path)
+    _finish(tmp_path, first, delivered={"at": 1})
+    assert _busy(tmp_path) == ["two"]
+    _retire(tmp_path, first)
+    assert _busy(tmp_path) == ["two"]
+
+
+def _rehashed(change):
+    """A receipt changed and given a digest of its own again: it verifies as a document, never as a retirement."""
+    def forge(document):
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        document = change(document)
+        document["receipt_digest"] = canonical_digest(document, digest_field="receipt_digest")
+        return document
+    return forge
+
+
+def _ledger(**change):
+    return _rehashed(lambda document: {**document, "captures": [
+        {**document["captures"][0], "ledger": {**document["captures"][0]["ledger"], **change}}]})
+
+
+@pytest.mark.parametrize(("forge", "proof"), [
+    (lambda document: b"{}", True),                                         # a file by the receipt's name alone
+    (lambda document: b"not json", True),
+    (lambda document: {**document, "retired_at_epoch": 0}, True),           # changed after its digest
+    (_rehashed(lambda document: {**document, "schema_version": "website_scene_workspace_retired.v0"}), True),
+    (_ledger(status="failed_retryable"), True),                             # its ledger not final
+    (_ledger(capture_id="walkthrough-other"), True),                        # another capture's ledger
+    (_rehashed(lambda document: {**document, "captures": []}), True),       # names no capture
+    (None, False),                                                           # a final ledger nothing proved
+])
+def test_a_receipt_that_does_not_verify_frees_no_slot(tmp_path, forge, proof):
+    _retire(tmp_path, _two_asked(tmp_path), proof=proof, forge=forge)
+    assert sorted(_busy(tmp_path)) == ["one", "two"]
+
+
+def test_a_capture_staged_again_after_its_retirement_is_in_flight_again(tmp_path):
+    """A new delivery stages a retired capture anew (the listener's ``retired_capture_status``): its folder is live."""
+    first = _two_asked(tmp_path)
+    _retire(tmp_path, first)
+    assert _busy(tmp_path) == ["two"]
+    _finish(tmp_path, first, ledger={"status": "processing"})
+    assert _busy(tmp_path) == ["one", "two"]
 
 
 def test_a_retry_of_an_unknown_outcome_reads_the_month(tmp_path):

@@ -671,13 +671,12 @@ def _reference_reasons(
 # --- captures -------------------------------------------------------------------------------------
 
 
-def _terminal_proven(capture_root: Path, *, status: str, ledger: Mapping[str, Any], scene_id: str,
-                     capture_id: str) -> bool:
+def _terminal_documents(status: str, *, ledger: Mapping[str, Any], commit: Any, receipt: Any, scene_id: str,
+                        capture_id: str) -> bool:
+    """The output commit (``completed``) or terminal receipt (an authority ending) that proves a ledger final."""
     if status == "completed":
-        state, commit, _ = _load_json(capture_root / LISTENER_FILES["output_commit"])
         return (
-            state == "ok"
-            and commit is not None
+            isinstance(commit, Mapping)
             and commit.get("schema_version") == LISTENER_SCHEMAS["output_commit"]
             and commit.get("status") == "committed"
             and commit.get("scene_id") == scene_id
@@ -685,11 +684,10 @@ def _terminal_proven(capture_root: Path, *, status: str, ledger: Mapping[str, An
             and isinstance(commit.get("result_sha256"), str)
             and bool(commit["result_sha256"].strip())
         )
-    state, receipt, _ = _load_json(capture_root / LISTENER_FILES["terminal_receipt"])
     ended_by = ledger.get("terminal_payload_sha256")
     return (
-        state == "ok"
-        and receipt is not None
+        status == TERMINAL_AUTHORITY_STATUS
+        and isinstance(receipt, Mapping)
         and receipt.get("schema_version") == LISTENER_SCHEMAS["terminal_receipt"]
         and receipt.get("status") == "authority_ended"
         and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest")
@@ -699,6 +697,14 @@ def _terminal_proven(capture_root: Path, *, status: str, ledger: Mapping[str, An
         and bool(ended_by)
         and receipt.get("payload_sha256") == ended_by
     )
+
+
+def _terminal_proven(capture_root: Path, *, status: str, ledger: Mapping[str, Any], scene_id: str,
+                     capture_id: str) -> bool:
+    name = LISTENER_FILES["output_commit" if status == "completed" else "terminal_receipt"]
+    state, document, _ = _load_json(capture_root / name)
+    return state == "ok" and _terminal_documents(status, ledger=ledger, commit=document, receipt=document,
+                                                 scene_id=scene_id, capture_id=capture_id)
 
 
 def _acknowledgement(capture_root: Path, *, status: str, ledger: Mapping[str, Any], now: float,
@@ -1713,6 +1719,39 @@ def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
             "retired_at_epoch": receipt.get("retired_at_epoch")}
 
 
+def retired_capture_ended(*, storage_root: Path, bucket: str, scene_id: str, capture_id: str) -> bool:
+    """Whether the scene's retirement receipt, valid as ``apply_scene_workspace_retirement`` writes it, proves this
+    capture ended for good: its record's ledger names the capture and is terminal, with the output commit or
+    terminal receipt that proved it before the workspace was retired (``_capture``).
+
+    Retirement needs every capture of the scene ended and nothing referring to it (an open scene intent or
+    attempt, a queue, a pin, a process), so nothing of the capture runs again unless a new delivery stages it
+    anew or a restore brings it back, and a restore takes the receipt's name away. False for no receipt, one that
+    records another capture, and one that does not verify: a file found by its name alone proves nothing.
+    """
+
+    try:
+        retired = retired_capture_status(storage_root=storage_root, bucket=bucket, scene_id=scene_id,
+                                         capture_id=capture_id)
+    except WebsiteSceneWorkspaceRetentionError:
+        return False
+    if retired is None:
+        return False
+    state, receipt, _ = _load_json(Path(retired["receipt"]))
+    if (state != "ok" or receipt is None
+            or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
+            or not isinstance(receipt.get("captures"), list)):
+        return False
+    record = next((row for row in receipt["captures"]
+                   if isinstance(row, Mapping) and row.get("capture_id") == capture_id), None)
+    ledger = record.get("ledger") if isinstance(record, Mapping) else None
+    if (not isinstance(ledger, Mapping) or ledger.get("scene_id") != scene_id
+            or ledger.get("capture_id") != capture_id or ledger.get("status") not in TERMINAL_DISPOSITIONS):
+        return False
+    return _terminal_documents(ledger["status"], ledger=ledger, commit=record.get("output_commit"),
+                               receipt=record.get("terminal_receipt"), scene_id=scene_id, capture_id=capture_id)
+
+
 # --- command line ---------------------------------------------------------------------------------
 
 
@@ -1893,6 +1932,7 @@ __all__ = [
     "plan_scene_workspace_retirement",
     "receipt_path",
     "restore_scene_workspace",
+    "retired_capture_ended",
     "retired_capture_status",
     "scene_path",
     "scene_queue_roots",

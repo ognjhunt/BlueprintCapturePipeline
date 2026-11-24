@@ -173,11 +173,15 @@ def reopenable(job, capture_root: Path) -> bool:
 
     The same reasons ``retry_failed_job`` reopens, within the job's seven days, on a capture not
     withdrawn. Past that, or for a reason only a new video clears, it is final, as before 2026-11-16.
+    So is one whose automatic reopens are spent (``atlas_preparation_job_control.reopens_spent``,
+    2026-11-24): before, a stop that repeated on the same retained inputs kept this wait for the
+    job's seven days, reopened only by deploys (move-the-lamp-2).
     """
-    from .atlas_preparation_job_control import _NEEDS_NEW_CAPTURE, _NOT_RETRYABLE
+    from .atlas_preparation_job_control import _NEEDS_NEW_CAPTURE, _NOT_RETRYABLE, reopens_spent
     from .website_atlas_preview_store import MAXIMUM_JOB_SECONDS, capture_withdrawn
     enqueued = job.get("enqueued_at_epoch")
     return (job.get("state") == "needs_input" and job.get("reason") not in _NEEDS_NEW_CAPTURE | _NOT_RETRYABLE
+            and not reopens_spent(job)
             and type(enqueued) in (int, float) and time.time() - enqueued <= MAXIMUM_JOB_SECONDS
             and not capture_withdrawn(capture_root))
 

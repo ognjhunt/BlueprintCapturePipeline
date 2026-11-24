@@ -178,3 +178,110 @@ def test_a_verified_padding_is_decoded_once_per_job_and_a_change_is_still_refuse
     changed = {**inputs['full_view_sources'][0], 'padding': {**transform, 'source_rect': [0, 0, 1, 1]}}
     with file_digest_cache.file_digest_cache(sidecar), pytest.raises(ValueError, match='padding_changed'):
         fov.full_view_sources({**inputs, 'full_view_sources': [changed]}, tmp_path)
+
+
+class _Hub:
+    """SIFT's points as move-the-lamp-2's decoded-000000149 had them (2026-11-19): the returned view is the source
+    resized, and besides the points both share, many source points with no counterpart (fine texture the resize
+    removed, in the source's top right corner) all take one returned point as their nearest. There, 178 of the 373
+    matches named the same point."""
+
+    SCALE = .5
+
+    def __init__(self, source_shape, true_count=40, hub_count=60, seed=149):
+        import cv2
+
+        rng = np.random.default_rng(seed)
+        height, width = source_shape[:2]
+        points = np.stack([rng.uniform(8, width - 8, true_count), rng.uniform(8, height - 8, true_count)], 1)
+        hubs = np.stack([rng.uniform(.6 * width, width - 4, hub_count), rng.uniform(4, .4 * height, hub_count)], 1)
+        shared = rng.normal(0, 100, (true_count, 128)).astype(np.float32)
+        hub = rng.normal(0, 100, 128).astype(np.float32)
+        self.source = ([cv2.KeyPoint(float(x), float(y), 3) for x, y in (*points, *hubs)],
+                       np.vstack([shared, hub + rng.normal(0, 5, (hub_count, 128))]).astype(np.float32))
+        returned = points * self.SCALE - .25  # pixel centres under a halving resize
+        self.returned = ([*(cv2.KeyPoint(float(x), float(y), 3) for x, y in returned), cv2.KeyPoint(50., 40., 2)],
+                         np.vstack([shared + rng.normal(0, 1, shared.shape), hub]).astype(np.float32))
+        self.source_shape = source_shape[:2]
+
+    def detectAndCompute(self, gray, _mask):
+        return self.source if gray.shape == self.source_shape else self.returned
+
+
+def _halved(source):
+    import cv2
+
+    return cv2.resize(source, (source.shape[1] // 2, source.shape[0] // 2), interpolation=cv2.INTER_AREA)
+
+
+def _turned(source, degrees):
+    import cv2
+
+    height, width = source.shape[:2]
+    turn = cv2.getRotationMatrix2D((width / 2, height / 2), degrees, .5)
+    turn[:, 2] -= (width / 4, height / 4)
+    return cv2.warpAffine(source, turn, (width // 2, height // 2), flags=cv2.INTER_AREA)
+
+
+def test_a_point_many_source_points_take_as_nearest_is_no_correspondence(monkeypatch):
+    import cv2
+
+    source = texture()
+    hub = _Hub(source.shape)
+    # The ratio test alone keeps every hub match, and their consensus is a mapping of scale 0, which the audit
+    # then refused (on the host its angle read 180 degrees: ``atlas_context_pixel_axes_changed``), though the
+    # view is the source resized.
+    (ka, da), (kb, db) = hub.source, hub.returned
+    good = [pair[0] for pair in cv2.BFMatcher().knnMatch(da, db, k=2) if pair[0].distance < .7 * pair[1].distance]
+    assert sum(1 for m in good if m.trainIdx == len(kb) - 1) == 60 and len(good) == 100
+    cv2.setRNGSeed(0)
+    degenerate, _ = cv2.estimateAffinePartial2D(np.float32([ka[m.queryIdx].pt for m in good]),
+                                                np.float32([kb[m.trainIdx].pt for m in good]), method=cv2.RANSAC,
+                                                ransacReprojThreshold=2, maxIters=10000, confidence=.999)
+    assert np.hypot(degenerate[0, 0], degenerate[1, 0]) < 1e-3
+    # Kept to points matched both ways, the same view registers as what it is: the source, halved, whole.
+    monkeypatch.setattr(cv2, "SIFT_create", lambda **_: hub)
+    report = fov.image_coverage(source, _halved(source))
+    matrix = np.array(report["source_to_returned_affine"])
+    assert np.hypot(matrix[0, 0], matrix[1, 0]) == pytest.approx(.5, abs=1e-3)
+    assert abs(np.degrees(np.arctan2(matrix[1, 0], matrix[0, 0]))) < .01
+    assert report["inlier_count"] == 40 and report["full_source_field_of_view_preserved"] is True
+
+
+def test_a_mapping_that_sends_every_point_to_one_place_is_unproven_not_a_turn(monkeypatch):
+    import cv2
+
+    source = texture()
+    monkeypatch.setattr(cv2, "estimateAffinePartial2D", lambda a, b, **_: (
+        np.array([[-1e-12, 0., 50.], [0., -1e-12, 40.]]), np.ones((len(a), 1), np.uint8)))
+    with pytest.raises(ValueError, match="^atlas_context_pixel_mapping_unproven$"):
+        fov.image_coverage(source, _halved(source))
+
+
+@pytest.mark.parametrize("degrees", [1., 5.])
+def test_a_view_the_provider_turned_is_still_refused(degrees):
+    """The 0.1 degree bound stands: a turned grid would put every depth pixel beside its source pixel."""
+    with pytest.raises(ValueError, match="^atlas_context_pixel_axes_changed$"):
+        fov.image_coverage(texture(), _turned(texture(), degrees))
+
+
+def test_a_refusal_is_raised_with_the_audits_own_reason_and_names_its_view(tmp_path, monkeypatch):
+    import json
+    from blueprint_pipeline import website_atlas_pose
+
+    source = texture()
+    paths = []
+    for name in ("first.png", "second.png"):
+        Image.fromarray(source).save(tmp_path / name)
+        paths.append(str(tmp_path / name))
+    monkeypatch.setattr(website_atlas_pose, 'load_pending_atlas_pose_inputs', lambda _: {
+        'digest': 'source-inputs', 'frames': [{'frame_id': frame_id, 'image_path': path,
+                                               'image_digest': f'digest-{frame_id}'}
+                                              for frame_id, path in zip(('0012', '0149'), paths)]})
+    frames = [{'frame_id': '0012', 'rgb': _halved(source)}, {'frame_id': '0149', 'rgb': _turned(source, 5.)}]
+    with pytest.raises(ValueError, match='^atlas_context_pixel_axes_changed$'):
+        fov.verify_pose_context_fov(pose_root=tmp_path, frames=frames, output_root=tmp_path)
+    report = json.loads((tmp_path / 'context-fov-audit.json').read_text())
+    assert (report['status'], report['reason'], report['refused_frame_id']) == (
+        'refused', 'atlas_context_pixel_axes_changed', '0149')
+    assert [row['frame_id'] for row in report['frames']] == ['0012'] and report['provider_calls'] == 0

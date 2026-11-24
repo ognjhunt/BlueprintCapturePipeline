@@ -179,7 +179,9 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     # (0.44 GiB per attempt, 28 attempts of one scene on 2026-11-02); share their
     # verified read-only inodes instead of copying them again.
     stage = Staging(Path(staging_root), namespace, reuse_roots=reuse_staging_roots)
-    manifest_ref = stage.copy(paths["preparation"], "website/preparation.json")
+    # Its name marks a website revision, whose halves seal this digest (``website_half_preparation.binding``).
+    from .website_half_preparation import STAGED_NAME
+    manifest_ref = stage.copy(paths["preparation"], STAGED_NAME)
     stage.copy(paths["task_context"], "website/task_context.json")
     stage.json("provenance/website_task_request.v1.json", task)
     rights_ref = stage.json("rights/admission.json", rights)

@@ -490,3 +490,30 @@ def test_a_withdrawn_capture_job_is_never_reopenable(tmp_path, monkeypatch):
     assert resume.reopenable(job, tmp_path) and not resume._final(job, tmp_path)
     monkeypatch.setattr(store, "capture_withdrawn", lambda _root: True)
     assert not resume.reopenable(job, tmp_path) and resume._final(job, tmp_path)
+
+
+def test_a_wait_on_an_atlas_job_whose_reopens_are_spent_ends_at_its_next_check(waiting):
+    """2026-11-24 (move-the-lamp-2): the preparation waited seven days on an Atlas job that only deploys reopened,
+    refusing alike on the same retained bytes. Once the job's automatic reopens are spent its stop is its end:
+    the next drain replays the preparation once, which records the stop and arms no wait again."""
+    root, owner, context, _, _ = waiting
+    runs = []
+
+    def orchestrated(**kwargs):
+        runs.append(1)
+        return _orchestrated(root, owner, context)(**kwargs)
+    drain = lambda: resume.reconcile_waiting_reconstructions(  # noqa: E731
+        listener, storage_root=root.parents[4],
+        process_args={"provider": "openai", "run_evaluation_prep": False, "run_e2e": orchestrated})
+    now = time.time()
+    reopened = [{"reason": "release_reopened", "at_epoch": now - 60}] * 3
+    parked = {"reason": "atlas_context_field_of_view_lost", "stage": "preparation", "enqueued_at_epoch": now - 86400}
+    _job(root, "needs_input", **parked, retries=reopened)
+    drain()  # the wait armed while Atlas processed replays once and records the needs-input stop
+    assert len(runs) == 1 and resume.armed(listener._read_job_ledger(root))
+    assert listener._read_job_ledger(root)["last_error"] == resume.NEEDS_INPUT_ERROR
+    assert drain() == {"resumed": 0, "pending": 1} and len(runs) == 1  # three of six: it may yet be reopened
+    _job(root, "needs_input", **parked, retries=[*reopened, *[{"reason": "parked_retry", "at_epoch": now}] * 3])
+    assert drain()["pending"] == 0 and len(runs) == 2  # spent: replayed at its next check
+    assert not resume.armed(listener._read_job_ledger(root))
+    assert drain() == {"resumed": 0, "pending": 0} and len(runs) == 2

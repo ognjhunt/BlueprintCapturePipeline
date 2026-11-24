@@ -34,7 +34,8 @@
    "not_found": "Blueprint did not find what the job is about in the video.",
    "objects_taken_out": "objects the job involves were taken out of the room scan and are not in this package.",
    "objects_in_scan": "The job's objects are part of the room scan; they are not separate files.",
-   "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video."
+   "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video.",
+   "thresholds_assumed": "The site has not confirmed the numbers in success_rule.json: where criteria_basis says assumed, the number is Blueprint's standard threshold, not the site's."
   }
  },
  "notes": "Each row is one job variation from the repository's own synthetic fixtures. 'reading' is what the paid Atlas review's task_semantics would say. 'expected' is where the variation ends today: change it only with the change that moves it. 'readme_sentences' are the README's expected wording, kept here as literals: change them only on purpose.",
@@ -73,7 +74,7 @@
     "readme_variant": [
      "not_run_static_check_passed"
     ],
-    "readme_sha256": "sha256:e76c464ac4948d191b5a7ba9fc3b4cd7ad89fdde1621f85fe41ab10214080242"
+    "readme_sha256": "sha256:824910991210dd1ad86d64f53645329f408ec380354c6f277976ee56e6cf2f0d"
    }
   },
   {
@@ -109,7 +110,7 @@
     "readme_variant": [
      "not_run"
     ],
-    "readme_sha256": "sha256:5a4f8df8f4158b769bb10e163e0494c9614626e08f8a687652175fe604d9cbc3"
+    "readme_sha256": "sha256:d4e96b8295fc8c26718b3404cc17431ee9da2f253e18e0606c0024d24d74d886"
    }
   },
   {
@@ -142,7 +143,7 @@
     "readme_variant": [
      "not_run_joint_as_authored"
     ],
-    "readme_sha256": "sha256:ecc85cc6edadf669e4fc0e42d899c32cb122b35f365cbbb9843a08222022a7a8"
+    "readme_sha256": "sha256:549cbe87e0f71ad674f84f644438082e3d5b901795c17f0f94323c2a2f83939a"
    }
   },
   {
@@ -173,7 +174,7 @@
      "room_not_run",
      "goal_estimated"
     ],
-    "readme_sha256": "sha256:31635df18c64c22a3e2afffd22a6a64a8a92922fccdae8aac9dc8d91ec599b26"
+    "readme_sha256": "sha256:8ff0243fab38f1174b0c965b931c72852264e4b2e0a9aacf8b3f4748cf818df8"
    }
   },
   {
@@ -240,7 +241,7 @@
     "readme_variant": [
      "not_run"
     ],
-    "readme_sha256": "sha256:7bd3b20541ae5f2681656e645328184927f41204c8805c5223ad0217283a000a"
+    "readme_sha256": "sha256:6ebd2e9853e589d69def4d4f4686469da1fc5d4fac3955eeecfea308668a1457"
    }
   },
   {
@@ -269,7 +270,7 @@
     "zip_built": true,
     "assumed_thresholds": true,
     "robot_free_probe": "not_queued",
-    "readme_sha256": "sha256:b8708ae87f449a839ac7266174f51a4f0d4074ec79e028eefda58bf50170723b"
+    "readme_sha256": "sha256:95b965ac0ec156b5884d8de75cab9b16c5ce41dc70032ee715f4eca108d21c74"
    }
   },
   {
@@ -334,7 +335,7 @@
      "isaac_sim"
     ],
     "robot_free_probe": "not_queued",
-    "readme_sha256": "sha256:b8708ae87f449a839ac7266174f51a4f0d4074ec79e028eefda58bf50170723b"
+    "readme_sha256": "sha256:ddb84ed772e11653165dccd9f4795c70e976ddab47bdad95b1f56f924599e9b4"
    }
   },
   {
@@ -392,7 +393,7 @@
      "not_run",
      "appearance_quality_not_passed"
     ],
-    "readme_sha256": "sha256:8f66be0d2d8e09e9fc78c2f3a729b5a7b33bf751b7f1e0ad4d2a375a293de268"
+    "readme_sha256": "sha256:8ddf6b931403902f86dc716169461fdbbdd746417e9ecbe81da3d08f353bdd49"
    }
   },
   {
@@ -428,7 +429,7 @@
      "not_run",
      "furniture_removed"
     ],
-    "readme_sha256": "sha256:907b135596c659faa4a63059474e7a976cf06141275fdd3552c62ca42e78d4ad"
+    "readme_sha256": "sha256:7196d552a098f4e2dcdfd5094e140ee5efd481bca3e5a21f90821121a2ac7e23"
    }
   },
   {
@@ -466,7 +467,7 @@
      "not_run",
      "support_region_not_held"
     ],
-    "readme_sha256": "sha256:84b0a1b4d81cbcdb5c85387be4aad1d8989f7af369a094db1ccb103d729c3ad0"
+    "readme_sha256": "sha256:752492f0b062afd2869235425c02dea61a9e9911221b0deab6c05580d4a6bc8b"
    }
   },
   {

@@ -57,8 +57,12 @@ def test_canonical_loader_still_refuses_changed_source_bytes(audit, monkeypatch)
     assert (root / "context-fov-audit.json").read_bytes() == before
 
 
-@pytest.mark.parametrize("changed", ["pixels", "grid", "frame_order"])
-def test_changed_returned_pixels_or_grid_cannot_inherit_a_pass(audit, changed):
+@pytest.mark.parametrize(("changed", "reason", "view"), [
+    ("pixels", "atlas_context_pixel_mapping_unproven", "0"),
+    ("grid", "atlas_context_pixel_mapping_unproven", "0"),
+    ("frame_order", "atlas_context_source_binding_invalid", None),
+])
+def test_changed_returned_pixels_or_grid_cannot_inherit_a_pass(audit, changed, reason, view):
     root, frames, _, _ = audit
     previous = (root / "context-fov-audit.json").read_bytes()
     if changed == "pixels":
@@ -67,10 +71,12 @@ def test_changed_returned_pixels_or_grid_cannot_inherit_a_pass(audit, changed):
         frames[0]["rgb"] = np.zeros((24, 32, 3), np.uint8)
     else:
         frames.reverse()
-    with pytest.raises(ValueError, match="atlas_context_field_of_view_lost"):
+    # Raised with the audit's own reason, never as a lost field of view (2026-11-19, move-the-lamp-2).
+    with pytest.raises(ValueError, match=f"^{reason}$"):
         fov.verify_pose_context_fov(pose_root=root, frames=frames, output_root=root)
     report = json.loads((root / "context-fov-audit.json").read_text())
-    assert report["status"] == "refused"
+    assert report["status"] == "refused" and report["reason"] == reason
+    assert report.get("refused_frame_id") == view
     assert (root / "context-fov-audit-history" / (hashlib.sha256(previous).hexdigest() + ".json")).read_bytes() == previous
 
 
@@ -91,7 +97,34 @@ def test_changed_method_or_library_requires_recomputation(audit, monkeypatch, ch
         monkeypatch.setattr(fov, "__file__", str(implementation))
     result = fov.verify_pose_context_fov(pose_root=root, frames=frames, output_root=root)
     assert calls == [1, 1] and result["status"] == "passed"
-    assert result["input_binding"] != old["input_binding"]
+    if changed == "threshold":
+        # Another bound is another audit.
+        assert result["input_binding"] != old["input_binding"]
+        return
+    # The same pixels passed again under the changed method: the pass later steps bound by its digest (a
+    # completion's plan inputs) stays the job's record, with the new proof beside it, and is not measured again.
+    assert result == old
+    assert json.loads((root / "context-fov-audit.json").read_text()) == old
+    (proof,) = (root / fov.CONFIRMATIONS).iterdir()
+    confirmation = json.loads(proof.read_text())
+    assert confirmation["confirmed_audit_digest"] == old["digest"]
+    assert confirmation["input_binding"] != old["input_binding"] and confirmation["audit"]["status"] == "passed"
+    assert fov.verify_pose_context_fov(pose_root=root, frames=frames, output_root=root) == old
+    assert calls == [1, 1]
+
+
+def test_a_changed_method_that_refuses_replaces_the_pass(audit, monkeypatch):
+    import cv2
+
+    root, frames, _, old = audit
+    monkeypatch.setattr(cv2, "__version__", cv2.__version__ + "-changed")
+    monkeypatch.setattr(fov, "image_coverage", lambda *_: (_ for _ in ()).throw(
+        ValueError("atlas_context_pixel_axes_changed")))
+    with pytest.raises(ValueError, match="^atlas_context_pixel_axes_changed$"):
+        fov.verify_pose_context_fov(pose_root=root, frames=frames, output_root=root)
+    report = json.loads((root / "context-fov-audit.json").read_text())
+    assert report["status"] == "refused" and report["refused_frame_id"] == "0"
+    assert not (root / fov.CONFIRMATIONS).exists()
 
 
 def test_legacy_pass_is_recomputed_once_and_its_original_bytes_are_preserved(audit, monkeypatch):
@@ -127,6 +160,6 @@ def test_self_hashed_bad_coverage_is_not_promoted_by_the_cache(audit, monkeypatc
     report["digest"] = canonical_digest(report, digest_field="digest")
     (root / "context-fov-audit.json").write_text(json.dumps(report))
     monkeypatch.setattr(fov, "image_coverage", lambda *_: pytest.fail("bad cached coverage reached matching"))
-    with pytest.raises(ValueError, match="atlas_context_field_of_view_lost"):
+    with pytest.raises(ValueError, match="^atlas_context_audit_invalid$"):
         fov.verify_pose_context_fov(pose_root=root, frames=frames, output_root=root)
     assert json.loads((root / "context-fov-audit.json").read_text())["status"] == "refused"

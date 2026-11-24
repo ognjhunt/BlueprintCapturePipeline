@@ -109,6 +109,10 @@ class Job:
         _write(self.capture / "capture_descriptor.json", {"metadata": {"website_scene_execution_authority": {
             "owner": {"uid": ACCOUNT}}}})
         _write(self.capture / "pipeline/source_video/normalization.json", {})  # the clip pass's capture list
+        # The preparation every half is built from (``website_half_preparation``): here one that says nothing.
+        self.preparation = self.capture / "pipeline/website_scene_preparation/preparation.json"
+        if not self.preparation.exists():
+            _write(self.preparation, {})
         self.queue = tmp_path / "queue"
         self.scene = tmp_path / "halves/0123/abcd-ef01/scene"
         self.packet = self.scene / "native-task-packet"
@@ -141,6 +145,16 @@ class Job:
             "capture_id": CAPTURE, "capture_root": str(self.capture), "task_id": TASK,
             "request_key": "31e12dca983b8837295ac911c44dee68",
             "team_scene_inputs_path": str(self.scene / "team_scene_inputs.v1.json")})
+
+    def seal_record(self, **fields) -> None:
+        """The half's own record sealed by its digest, with ``fields``, as a compile seals it: ``bound_to`` (a
+        preparation file) names the preparation it was built from by its bytes (``website_half_preparation``)."""
+        bound = fields.pop("bound_to", None)
+        path = self.scene / "team_scene_inputs.v1.json"
+        record = {**json.loads(path.read_text()), "plan_digest": "sha256:" + "7" * 64, **fields,
+                  **({"preparation_sha256": _sha(Path(bound))} if bound is not None else {}), "inputs_digest": ""}
+        record["inputs_digest"] = canonical_digest(record, digest_field="inputs_digest")
+        _write(path, record)
 
 
 class World:

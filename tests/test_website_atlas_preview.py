@@ -723,6 +723,134 @@ def test_a_parked_job_past_its_grant_is_left_as_it_is(monkeypatch, site):
     assert _job(site)["state"] == "failed" and world.runs == []
 
 
+#: The room step's stop move-the-lamp-2 kept (itest-314bd4bc, 2026-11-19): its fallback pose's field-of-view audit
+#: refused one view, and the result named the refusal as its one blocker. No room, nothing to download.
+_HOST_STOP = {"status": "needs_input", "download": None, "blockers": ["atlas_context_pixel_axes_changed"],
+              "digest": "sha256:" + "3" * 64}
+
+
+def _waiting_preparation(job):
+    """Whether the capture's preparation still waits on this Atlas job (``website_reconstruction_resume``)."""
+    from blueprint_pipeline import website_reconstruction_resume as resume
+    return resume.reopenable(job, Path("/nonexistent-capture"))
+
+
+def test_a_parked_job_is_reopened_by_the_clock_and_its_stop_ends_it_once_the_schedule_is_spent(monkeypatch, site):
+    """2026-11-24 (move-the-lamp-2): a job parked for input waited for a deploy to run again, while its preparation
+    waited the job's seven days. Now the clock reopens it on the refusal schedule, with no release at all."""
+    from blueprint_pipeline import website_preparation_retry as retry
+    from blueprint_pipeline.atlas_preparation_job_control import automatic_reopens, reopens_spent
+    _enqueue(site)
+    world = World(monkeypatch, site, [_HOST_STOP] * 7)
+    _live_grant(site, world.clock + 7 * 86400)
+    monkeypatch.setattr(retry, "_release", lambda: None)
+    assert world.advance() == "needs_input" and _job(site)["reason"] == "atlas_context_pixel_axes_changed"
+    assert _job(site)["retry_at_epoch"] is None and len(world.runs) == 1
+    for done, delay in enumerate(preview.REFUSAL_RETRY_DELAYS_SECONDS):
+        assert _waiting_preparation(_job(site)) and not reopens_spent(_job(site))
+        stopped = _job(site)["revised_at_epoch"]
+        world.clock = stopped + delay - 1
+        assert world.advance() == "needs_input" and len(world.runs) == done + 1  # not yet due
+        world.clock = stopped + delay
+        assert world.advance() == "needs_input" and len(world.runs) == done + 2  # run again by itself
+        assert _job(site)["retries"][-1] == {"reason": "parked_retry", "at_epoch": world.clock,
+                                             "stopped_on": "atlas_context_pixel_axes_changed"}
+        assert automatic_reopens(_job(site)) == done + 1
+    # Six reopens, the same stop each time: it is the job's end, and nothing runs it by itself again.
+    assert reopens_spent(_job(site)) and not _waiting_preparation(_job(site))
+    world.clock += preview.REFUSAL_RETRY_DELAYS_SECONDS[-1]
+    assert world.advance() == "needs_input" and len(world.runs) == 7
+    assert world.pushed[-1]["state"] == "needs_input" and world.pushed[-1]["reason"] == "atlas_context_pixel_axes_changed"
+
+
+def test_a_new_release_brings_the_next_reopen_forward_and_counts_as_one(monkeypatch, site):
+    from blueprint_pipeline import website_preparation_retry as retry
+    from blueprint_pipeline.atlas_preparation_job_control import automatic_reopens, reopens_spent
+    _enqueue(site)
+    world = World(monkeypatch, site, [_HOST_STOP] * 8)
+    _live_grant(site, world.clock + 7 * 86400)
+    release = {"commit": "a" * 40}
+    monkeypatch.setattr(retry, "_release", lambda: release["commit"])
+    assert world.advance() == "needs_input" and len(world.runs) == 1
+    # The release that parked it is not yet recorded: one run at once (as since 2026-11-22), then the clock.
+    assert world.advance() == "needs_input" and len(world.runs) == 2
+    assert _job(site)["retries"][-1]["reason"] == "release_reopened" and _job(site)["release_reopened"] == "a" * 40
+    assert world.advance() == "needs_input" and len(world.runs) == 2  # not again on the same release
+    for commit in "bcde":  # each deploy runs it at once, well before its timed retry
+        release["commit"] = commit * 40
+        assert world.advance() == "needs_input" and _job(site)["retries"][-1]["reason"] == "release_reopened"
+    world.clock = _job(site)["revised_at_epoch"] + preview.REFUSAL_RETRY_DELAYS_SECONDS[5]
+    assert world.advance() == "needs_input" and _job(site)["retries"][-1]["reason"] == "parked_retry"
+    assert automatic_reopens(_job(site)) == 6 and reopens_spent(_job(site)) and len(world.runs) == 7
+    # A deploy no longer reopens it: no deploy is ever the way on.
+    release["commit"] = "f" * 40
+    assert world.advance() == "needs_input" and len(world.runs) == 7
+
+
+def test_a_failed_job_has_had_its_timed_retries_and_only_a_release_reopens_it_within_the_same_count(monkeypatch,
+                                                                                                    site):
+    from blueprint_pipeline import website_preparation_retry as retry
+    _enqueue(site)
+    world = World(monkeypatch, site, [_HOST_STOP])
+    _live_grant(site, world.clock + 7 * 86400)
+    monkeypatch.setattr(retry, "_release", lambda: "a" * 40)
+    reopened = [{"reason": "release_reopened", "at_epoch": world.clock - 60}] * 6
+    site.job.write_text(json.dumps({**_job(site), "state": "failed", "reason": "atlas_scene_planner_transients_invalid",
+                                    "retries": reopened, "release_reopened": "z" * 40}))
+    world.clock += 30 * 86400 // 10
+    world.advance()
+    assert _job(site)["state"] == "failed" and world.runs == []  # six already: a new release changes nothing
+    site.job.write_text(json.dumps({**_job(site), "retries": reopened[:5]}))
+    assert world.advance() == "needs_input" and len(world.runs) == 1  # the sixth, by the new release
+    world.clock += 2 * 86400
+    assert world.advance() == "needs_input" and len(world.runs) == 1  # the count is spent: the clock does nothing
+
+
+@pytest.mark.parametrize("fixed", [True, False])
+def test_a_job_already_waiting_on_a_deploy_runs_at_its_next_check_and_ends_once_its_stop_repeats(monkeypatch, site,
+                                                                                               fixed):
+    """move-the-lamp-2 as the host kept it (2026-11-24): parked for input since 2026-11-19 on the code the audit
+    misnamed, reopened by three deploys, the same stop on the same retained bytes each time. At its next check
+    after the deploy it runs once more from its receipts, nothing bought again; with the audit fixed it goes on,
+    and were its stop to repeat, the clock would run it twice more and then end it."""
+    from blueprint_pipeline import website_preparation_retry as retry
+    from blueprint_pipeline.atlas_preparation_job_control import reopens_spent
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed if fixed else _HOST_STOP, _HOST_STOP, _HOST_STOP])
+    _live_grant(site, world.clock + 7 * 86400)
+    monkeypatch.setattr(retry, "_release", lambda: "f" * 40)
+    host = {**_job(site), "state": "needs_input", "reason": "atlas_context_field_of_view_lost", "stage": "preparation",
+            "revision": 8, "revised_at_epoch": world.clock, "updated_at_epoch": world.clock,
+            "next_attempt_at_epoch": world.clock - 2, "retry_at_epoch": None, "result_digest": _HOST_STOP["digest"],
+            "retries": [{"reason": "release_reopened", "at_epoch": world.clock - offset}
+                        for offset in (36731, 22322, 0)],
+            "release_reopened": "8bcf6bfa2763601de7628bac04e79352d72f4471"}
+    site.job.write_text(json.dumps(host))
+    assert _waiting_preparation(_job(site))
+    if fixed:
+        assert world.advance() == "ready" and len(world.runs) == 1
+        assert _job(site)["retries"][-1]["reason"] == "release_reopened"
+        return
+    assert world.advance() == "needs_input" and len(world.runs) == 1
+    assert _job(site)["reason"] == "atlas_context_pixel_axes_changed"  # the audit's own reason now
+    for delay in preview.REFUSAL_RETRY_DELAYS_SECONDS[4:]:
+        world.clock = _job(site)["revised_at_epoch"] + delay
+        assert world.advance() == "needs_input"
+    assert len(world.runs) == 3 and reopens_spent(_job(site)) and not _waiting_preparation(_job(site))
+    world.clock += 86400
+    assert world.advance() == "needs_input" and len(world.runs) == 3
+
+
+def test_an_operators_reopen_starts_the_count_afresh():
+    from blueprint_pipeline.atlas_preparation_job_control import automatic_reopens, reopens_spent
+    automatic = [{"reason": "parked_retry", "at_epoch": 1}] * 6
+    assert reopens_spent({"retries": automatic})
+    job = {"retries": [*automatic, {"reason": "atlas_background_review_required", "at_epoch": 2}]}
+    assert automatic_reopens(job) == 0 and not reopens_spent(job)
+    assert automatic_reopens({"retries": [*job["retries"], automatic[0]]}) == 1
+    assert automatic_reopens({}) == 0 and automatic_reopens({"retries": "corrupt"}) == 0
+
+
 def test_a_job_stopped_for_background_review_resumes_but_one_needing_a_new_capture_does_not(monkeypatch, site):
     """2026-10-24: a cleanup stopped at needs_input could not resume once its cause was fixed."""
     _enqueue(site)

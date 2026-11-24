@@ -748,12 +748,15 @@ def seal_record(root: Path, *, packet: Path, revision: Mapping[str, Any], contra
                 support: Mapping[str, Any] | None, assumed: Mapping[str, Any] | None) -> Path:
     """Write ``team_scene_inputs.v1.json`` (mode 0444) with only what a kept reader reads or validates."""
 
+    from .website_half_preparation import binding
     from .website_owner_success_assumption import FIELD as ASSUMPTION_FIELD
 
     receipt = _file_record(packet / RECEIPT_FILENAME)
     value: dict[str, Any] = {
         "schema_version": SCHEMA, "claim_ceiling": CLAIM_CEILING,
         "scene_revision_digest": revision["revision_digest"], "task_success_contract": dict(contract),
+        # The preparation a website revision was built from, by its bytes: the company package reads its notes there.
+        **binding(revision),
         "base_native_packet": receipt, "construction_result": receipt, "runtime_source": dict(runtime_source),
         "control_diagnostic": dict(PENDING_CONTROLS),
         **({"task_support_seating": dict(seating)} if seating is not None else {}),
