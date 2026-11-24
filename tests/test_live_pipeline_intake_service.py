@@ -140,6 +140,93 @@ def test_signed_website_withdrawal_uses_server_scope_and_never_deletes(tmp_path,
     assert (root / "raw/video.mp4").read_bytes() == b"synthetic-media"
 
 
+def _listener_tree_withdrawal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, buckets=("bucket",)):
+    """A website capture that lives only in the listener's tree: no client map, no manifest root."""
+    vector = json.loads((Path(__file__).parent / "fixtures/website-withdrawal-vector.json").read_text())
+    command = vector["command"]
+    request_id = command["request_id"]
+    handoffs = tmp_path / "pubsub-handoffs"
+    roots = []
+    for bucket in buckets:
+        root = handoffs / bucket / "scenes" / f"site-{request_id}" / "captures" / f"walkthrough-{request_id}"
+        _write_json(root / "raw/manifest.json", {"site_submission_id": request_id, "scene_id": f"site-{request_id}",
+            "capture_id": f"walkthrough-{request_id}", "consent_status": "granted"})
+        (root / "raw/video.mp4").write_bytes(b"synthetic-media")
+        roots.append(root)
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, "synthetic-token")
+    monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, "false")
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "work"))
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "no-manifest.json"))
+    monkeypatch.delenv("BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON", raising=False)
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT", str(handoffs))
+    client = TestClient(create_app())
+
+    def post(value, nonce, actor="blueprint-webapp"):
+        body = json.dumps(value)
+        return client.post("/api/live-pipeline/website-capture-withdrawals", content=body,
+                           headers=_signed_intake_headers("synthetic-token", body, nonce=nonce, client_id=actor))
+    return vector, roots, post
+
+
+def test_website_withdrawal_reaches_a_capture_only_the_listener_tree_holds(tmp_path, monkeypatch):
+    """Privacy: the withdrawal finds the capture where the preparation status route finds it.
+
+    On the host the control-plane manifest names no capture and no client map is installed,
+    so before this the route answered 503 website_withdrawal_server_root_unavailable for every
+    website capture and the tombstone the automatic deletion needs was never written.
+    """
+    from blueprint_pipeline.consent_takedown import read_consent_state
+    from blueprint_pipeline.website_preparation_status_http import website_capture_root
+    vector, (root,), post = _listener_tree_withdrawal(tmp_path, monkeypatch)
+    command = vector["command"]
+    assert website_capture_root({"scene_id": command["scene_id"], "capture_id": command["capture_id"]}) == root
+    accepted = post(command, "listener-ack")
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["command_digest"] == vector["command_digest"]
+    assert accepted.json()["deletion_confirmed"] is False
+    assert (root.parent.parent / "website_withdrawal/tombstone.json").is_file()
+    assert read_consent_state(root)["state"] == "revoked"
+    assert (root / "raw/video.mp4").read_bytes() == b"synthetic-media"
+    assert post(command, "listener-replay").json() == accepted.json()
+
+
+def test_website_withdrawal_fallback_admits_only_the_signed_webapp_and_exact_names(tmp_path, monkeypatch):
+    from blueprint_pipeline.consent_takedown import read_consent_state
+    vector, (root,), post = _listener_tree_withdrawal(tmp_path, monkeypatch)
+    command = vector["command"]
+    # Another signed client gets no listener-tree lookup, as on the status route.
+    refused = post(command, "other-client", actor="other-client")
+    assert (refused.status_code, refused.json()["detail"]) == (503, "website_withdrawal_server_root_unavailable")
+    # Names the status route would refuse never reach the glob.
+    for nonce, changed in (("path", {"request_id": "../req1"}), ("scene", {"scene_id": "site-*"}),
+                           ("capture", {"capture_id": "walkthrough-*"}), ("supplement", {"capture_id": "supplement-req1-1"})):
+        answer = post({**command, **changed}, f"bad-{nonce}")
+        assert (answer.status_code, answer.json()["detail"]) == (503, "website_withdrawal_server_root_unavailable")
+    assert read_consent_state(root)["state"] != "revoked"
+    assert not (root.parent.parent / "website_withdrawal").exists()
+
+
+def test_website_withdrawal_fallback_refuses_a_capture_two_buckets_hold(tmp_path, monkeypatch):
+    vector, roots, post = _listener_tree_withdrawal(tmp_path, monkeypatch, buckets=("bucket-a", "bucket-b"))
+    answer = post(vector["command"], "ambiguous")
+    assert (answer.status_code, answer.json()["detail"]) == (503, "website_withdrawal_server_root_unavailable")
+    assert not any((root.parent.parent / "website_withdrawal").exists() for root in roots)
+
+
+def test_website_withdrawal_mapped_root_for_another_capture_falls_back_to_the_listener_tree(tmp_path, monkeypatch):
+    """A manifest naming one other capture no longer turns every other withdrawal into a 409."""
+    from blueprint_pipeline.consent_takedown import read_consent_state
+    vector, (root,), post = _listener_tree_withdrawal(tmp_path, monkeypatch)
+    other = tmp_path / "pubsub-handoffs/bucket/scenes/site-other/captures/walkthrough-other"
+    other.mkdir(parents=True)
+    _write_json(tmp_path / "manifest.json", {"capture_root": str(other)})
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(tmp_path / "manifest.json"))
+    accepted = post(vector["command"], "manifest-other")
+    assert accepted.status_code == 200, accepted.text
+    assert read_consent_state(root)["state"] == "revoked"
+    assert not (other.parent.parent / "website_withdrawal").exists()
+
+
 def _capture_root(tmp_path: Path) -> Path:
     capture_root = tmp_path / "storage" / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
     _write_json(
