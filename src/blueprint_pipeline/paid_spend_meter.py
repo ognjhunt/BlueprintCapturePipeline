@@ -18,6 +18,10 @@ job, so they are read where they are, not copied:
     in the process environment, else ``unattributed``). An admission carries a
     price only when it names one (``admission["meter"]["held_usd"]``); no
     lane does yet, so these rows count calls, not dollars, until stage 2.
+    A grant checked against the account's month at a maximum cost is also
+    journaled with it (``maximum_cost_usd``). The view and the report never
+    count that figure; only the next admissions do, until the next report
+    (``admitted_since``): a grant is in no report written before it.
     ``record_settlement`` is the matching settlement record.
 ``beta_policy_screening`` (screening ledger)
     Each attempt in ``screening_ledger.v1.json``: held at its cap while
@@ -69,7 +73,8 @@ import os
 import re
 import stat
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -100,6 +105,10 @@ MAX_JOURNAL_FILE_BYTES = 16 * 1024 * 1024
 MAX_LEDGER_BYTES = 32 * 1024 * 1024
 #: Optional on a held row: the last moment its attempt could be billed, from the attempt's own record.
 BILLABLE_UNTIL_FIELD = "billable_until_epoch"
+#: On a journaled grant: the most its call can cost, as the chokepoint judged it against the account's month.
+MAXIMUM_COST_FIELD = "maximum_cost_usd"
+#: Held from the account check to the grant's journal line, so two admissions are never judged at one count.
+ADMISSION_LOCK_FILENAME = "admission.lock"
 _JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,191}")
 _MONTH = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
 _CENT = Decimal("0.000001")
@@ -228,10 +237,26 @@ def record_settlement(*, job_id: Any, meter_key: str, settled_usd: Any, basis: s
     }, root=root, now=now)
 
 
+def admission_meter_key(admission: Mapping[str, Any]) -> str | None:
+    """The meter key the chokepoint journals ``admission`` under, when the admission names one.
+
+    Its meter's ``meter_key``, else its ``allocation_binding_digest``: one reservation, however often a grant
+    is taken for it. An admission that names neither gets a fresh key of its own when it is journaled.
+    """
+
+    meter = admission.get("meter") if isinstance(admission.get("meter"), Mapping) else {}
+    key = meter.get("meter_key") or admission.get("allocation_binding_digest")
+    return str(key) if key else None
+
+
 def meter_chokepoint_admission(admission: Mapping[str, Any], *, resource_class: str, schema_version: str,
                                spend_effect: str = "new_spend", environ: Mapping[str, str] | None = None,
-                               now: float | None = None) -> None:
-    """Journal one grant the chokepoint issued. Never raises and never changes the admission."""
+                               now: float | None = None, maximum_cost_usd: Any = None) -> None:
+    """Journal one grant the chokepoint issued. Never raises and never changes the admission.
+
+    ``maximum_cost_usd`` is the most the call can cost, as the account's month was judged for it; it is kept
+    on the row (``MAXIMUM_COST_FIELD``) for the admissions judged before the next report (``admitted_since``).
+    """
 
     try:
         env = os.environ if environ is None else environ
@@ -242,18 +267,100 @@ def meter_chokepoint_admission(admission: Mapping[str, Any], *, resource_class: 
         job_id = (meter.get("job_id") or admission.get("job_id") or admission.get("website_request_id")
                   or admission.get("request_id") or env.get(JOB_ID_ENV))
         binding = admission.get("allocation_binding_digest")
-        meter_key = str(meter.get("meter_key") or binding or "")
+        meter_key = admission_meter_key(admission) or ""
         if not meter_key:
             canonical = json.dumps(admission, sort_keys=True, separators=(",", ":"), default=str)
             meter_key = "admission:" + hashlib.sha256(
                 f"{resource_class}\0{schema_version}\0{canonical}\0{os.getpid()}\0{time.time_ns()}".encode()
             ).hexdigest()
+        quote = money(maximum_cost_usd)
         record_admission(job_id=job_id, meter_key=meter_key, resource_class=resource_class,
                          held_usd=meter.get("held_usd"), provider=meter.get("provider"), root=root, now=now,
                          admission_schema_version=schema_version, spend_effect=spend_effect,
-                         allocation_binding_digest=str(binding) if binding is not None else None)
+                         allocation_binding_digest=str(binding) if binding is not None else None,
+                         **({MAXIMUM_COST_FIELD: str(quote)} if quote is not None else {}))
     except Exception:  # noqa: BLE001 - metering is visibility; the monthly limit reads billing, not this
         return
+
+
+@contextmanager
+def admission_lock(environ: Mapping[str, str] | None = None) -> Iterator[None]:
+    """One new paid admission at a time on this host, from its account check to its journal line.
+
+    Without it two processes could both be judged at the same count and both admitted. The lock file lives in
+    the meter root beside the journal; a process that cannot open it (no meter root, or a sandbox that sees
+    none) is not locked, just as its grants are not journaled (best effort, as the journal is).
+    """
+
+    descriptor = None
+    root = meter_root(environ)
+    if root is not None:
+        path = Path(root) / ADMISSION_LOCK_FILENAME
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            Path(root).mkdir(parents=True, exist_ok=True)
+            try:
+                descriptor = os.open(path, os.O_RDWR | os.O_CREAT | nofollow, 0o644)
+            except OSError:
+                # Another account's lock file, or a read-only view of the root: a shared lock needs no write.
+                descriptor = os.open(path, os.O_RDONLY | nofollow)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError:
+            if descriptor is not None:
+                os.close(descriptor)
+            descriptor = None
+    try:
+        yield
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def admitted_since(root: Path | None, since_epoch: float, *, now: float,
+                   exclude_meter_key: str | None = None) -> Decimal:
+    """What the grants journaled at or after ``since_epoch``, in the UTC month of ``now``, were admitted for.
+
+    The account's month is judged from a report written up to a few minutes before (``account_monthly_spend``);
+    a grant issued since is in none of its figures. Each counts at the most it was admitted or held for
+    (``MAXIMUM_COST_FIELD``, ``held_usd``), once per meter key. ``exclude_meter_key`` is the reservation being
+    judged, whose own cost the caller adds. A stop counts nothing, nor does an admission that names no amount:
+    none is made up for it. A file this process cannot read is skipped, as ``read_journal`` skips it for the
+    report.
+    """
+
+    if root is None:
+        return Decimal(0)
+    directory = Path(root) / "events" / month_of(now)
+    if directory.is_symlink() or not directory.is_dir():
+        return Decimal(0)
+    amounts: dict[str, Decimal] = {}
+    for path in sorted(directory.glob("uid-*.jsonl")):
+        try:
+            info = os.lstat(path)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_JOURNAL_FILE_BYTES:
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for number, line in enumerate(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if (not isinstance(row, dict) or row.get("schema_version") != EVENT_SCHEMA
+                    or row.get("event") != "admission" or row.get("spend_effect") == "stop"):
+                continue
+            at = _finite(row.get("at_epoch"))
+            if at is None or at < since_epoch:
+                continue
+            key = str(row.get("meter_key") or "") or f"{path.name}:{number}"
+            if exclude_meter_key and key == exclude_meter_key:
+                continue
+            figures = [value for value in (money(row.get(MAXIMUM_COST_FIELD)), money(row.get("held_usd")))
+                       if value is not None]
+            if figures:
+                amounts[key] = max(amounts.get(key, Decimal(0)), *figures)
+    return sum(amounts.values(), Decimal(0))
 
 
 def _journal_files(root: Path) -> list[Path]:
@@ -527,9 +634,11 @@ def public_view(view: Mapping[str, Any], *, max_jobs: int | None = None) -> dict
 
 
 __all__ = [
-    "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV", "METER_ROOT_ENV", "RESOURCE_CLASS_PROVIDERS",
+    "ADMISSION_LOCK_FILENAME", "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV", "MAXIMUM_COST_FIELD",
+    "METER_ROOT_ENV", "RESOURCE_CLASS_PROVIDERS",
     "BILLABLE_UNTIL_FIELD", "OVERHEAD_PREFIX", "OVERHEAD_PROVIDERS", "SOURCE_OPENAI", "SOURCE_OVERHEAD",
-    "UNATTRIBUTED", "VIEW_SCHEMA", "atlas_rows", "openai_rows", "overhead_rows", "is_overhead",
+    "UNATTRIBUTED", "VIEW_SCHEMA", "admission_lock", "admission_meter_key", "admitted_since", "atlas_rows",
+    "openai_rows", "overhead_rows", "is_overhead",
     "hold_counts_in_month", "job_key",
     "journal_rows", "meter_chokepoint_admission", "meter_root", "meter_view", "month_of", "month_start",
     "public_view", "read_journal",

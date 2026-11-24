@@ -104,12 +104,15 @@ class TaskRecord(BaseModel):
 ACCOUNT_LIMIT_WAIT = "agent_account_monthly_limit_wait"
 
 
-def _require_account_limit() -> None:
-    """Before a task starts (never between the steps of one already started)."""
+def _require_account_limit(inference_budget_usd: float | None = None) -> None:
+    """Before a task starts (never between the steps of one already started).
+
+    ``inference_budget_usd`` is the most the task's inference may cost: the account's month must have room for it.
+    """
     from ..paid_resource_admission import PaidResourceAdmissionBlocked, require_paid_resource_budget
 
     try:
-        require_paid_resource_budget(resource_class="openai_api_candidate")
+        require_paid_resource_budget(resource_class="openai_api_candidate", maximum_cost_usd=inference_budget_usd)
     except PaidResourceAdmissionBlocked as exc:
         raise AgentExecutionError(ACCOUNT_LIMIT_WAIT) from exc
 
@@ -370,7 +373,7 @@ class ProductionAgentService:
                 or record.supervision.watch_digest != owner["watch_digest"]):
             raise AgentExecutionError("agent_run_owned_by_persistent_supervisor")
         self.validate_admission(record.task)
-        _require_account_limit()
+        _require_account_limit(record.task.admission.inference_budget_usd)
         self.journal.record_event("server_admission_" + digest(record.task.task_id)[7:], self._ownership(record))
         return self.service.enqueue(record.task)
 

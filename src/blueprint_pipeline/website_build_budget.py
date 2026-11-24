@@ -199,7 +199,9 @@ def _recheck_retained(record: Mapping[str, Any], digest: str) -> None:
             or held.get("blockers") not in ([], None) or held.get("resource_class") != RESOURCE_CLASS
             or held.get("provider") != PROVIDER):
         raise ValueError(RECORD_INVALID)
-    require_paid_resource_budget(resource_class=RESOURCE_CLASS)
+    # The account's month must still have room for the object's frozen cap, as a new reservation's precheck asks.
+    require_paid_resource_budget(resource_class=RESOURCE_CLASS, maximum_cost_usd=record.get("maximum_cost_usd"),
+                                 allocation_binding_digest=digest)
 
 
 def admit_extra_objects(objects: Sequence[Mapping[str, Any]], *, task_context: Mapping[str, Any],

@@ -57,6 +57,18 @@ Report and freshness
     Admission requires a report for this month, bound to this configuration's
     sha256 and limit, written within ``REPORT_MAX_AGE_SECONDS``; anything else
     refuses while a limit is configured.
+
+Admission (stress finding 2026-11-24)
+    A paid call is judged at the report's ``counted_usd`` plus every paid
+    admission the chokepoint journaled since the report was written
+    (``admitted_since_report``, each at the most it was admitted for): those are
+    in no figure of the report, so a burst of calls is never judged at one
+    stale count. A call that names its maximum cost is admitted only when that
+    count plus its cost fits under the limit, as the job's $40 cap admits a
+    call; one that names none is refused once the count reaches the limit.
+    The chokepoint holds one lock from the check to the grant's journal line
+    (``paid_spend_meter.admission_lock``). After the next report a grant's cost
+    counts again only once a hold, a settlement or a bill shows it.
 """
 
 from __future__ import annotations
@@ -75,7 +87,7 @@ from pathlib import Path
 from typing import Any
 
 from .launch_proof_policy import production_launch_mode
-from .paid_spend_meter import money, month_of, month_start, usd
+from .paid_spend_meter import admitted_since, meter_root, money, month_of, month_start, usd
 
 POLICY_SCHEMA = "blueprint.account_monthly_spend_limit.v1"
 REPORT_SCHEMA = "blueprint.account_monthly_spend_report.v1"
@@ -106,6 +118,8 @@ CONFIG_INVALID = "account_monthly_spend_limit_config_invalid"
 REPORT_INVALID = "account_monthly_spend_report_missing_or_invalid"
 REPORT_STALE = "account_monthly_spend_report_stale"
 UNAVAILABLE = "account_monthly_spend_limit_unavailable"
+#: A call named a maximum cost that is no amount (negative, not finite, not a number): it cannot be judged.
+CALL_COST_INVALID = "account_monthly_spend_call_cost_invalid"
 MAX_POLICY_BYTES = 64 * 1024
 MAX_REPORT_BYTES = 1024 * 1024
 MAX_EXPORT_BYTES = 1024 * 1024
@@ -378,14 +392,40 @@ def read_report(path: Path) -> dict[str, Any]:
     return _json_object(_regular_bytes(Path(path), MAX_REPORT_BYTES, reject_writable=True))
 
 
-def admission_blockers(*, now: float | None = None, environ: Mapping[str, str] | None = None) -> list[str]:
-    """``[]`` when the month is under its limit, or no limit is configured where none is required.
+def admitted_since_report(report: Mapping[str, Any], *, now: float | None = None,
+                          environ: Mapping[str, str] | None = None,
+                          exclude_meter_key: str | None = None) -> Decimal | None:
+    """What the paid admissions journaled since ``report`` was written were admitted for; None without its time.
 
-    Otherwise the named refusal. With no limit file, the production control
-    plane refuses (``limit_required``); any other process has no limit.
+    The report counts the month as it read it; every grant the chokepoint journaled from its ``generated_at``
+    on is in none of its figures (``paid_spend_meter.admitted_since``, read from the meter root of ``environ``).
+    """
+
+    generated = _epoch(report.get("generated_at"))
+    if generated is None:
+        return None
+    moment = _clock() if now is None else float(now)
+    return admitted_since(meter_root(environ), generated, now=moment, exclude_meter_key=exclude_meter_key)
+
+
+def admission_blockers(*, now: float | None = None, environ: Mapping[str, str] | None = None,
+                       maximum_cost_usd: Any = None, exclude_meter_key: str | None = None) -> list[str]:
+    """``[]`` when the call fits under the month's limit, or no limit is configured where none is required.
+
+    The month is the report's ``counted_usd`` plus the admissions journaled since it was written
+    (``admitted_since_report``). ``maximum_cost_usd`` is the most the call being judged can cost: with it, that
+    count plus the call must fit under the limit, as the job's $40 cap admits a call; without it (a caller that
+    knows no amount), the count must only be under the limit. ``exclude_meter_key`` is the call's own
+    reservation, so an earlier grant of it is not counted beside its cost. Otherwise the named refusal. With no
+    limit file, the production control plane refuses (``limit_required``); any other process has no limit.
     """
 
     env = os.environ if environ is None else environ
+    quote = None
+    if maximum_cost_usd is not None:
+        quote = money(maximum_cost_usd)
+        if quote is None:
+            return [CALL_COST_INVALID]
     policy, error, _config = configured_policy(env)
     if policy is None:
         if error:
@@ -406,7 +446,11 @@ def admission_blockers(*, now: float | None = None, environ: Mapping[str, str] |
         return [REPORT_INVALID]
     if report.get("period") != period or not -60 <= moment - generated <= REPORT_MAX_AGE_SECONDS:
         return [REPORT_STALE]
-    return [LIMIT_REACHED] if counted >= limit else []
+    count = counted + (admitted_since_report(report, now=moment, environ=env, exclude_meter_key=exclude_meter_key)
+                       or Decimal(0))
+    if count >= limit or (quote is not None and count + quote > limit):
+        return [LIMIT_REACHED]
+    return []
 
 
 # ----------------------------- alerts -----------------------------
@@ -523,17 +567,21 @@ def main(argv: list[str] | None = None) -> int:
         report: Any = read_report(path) if path is not None else None
     except (OSError, ValueError, UnicodeDecodeError):
         report = None
+    since = admitted_since_report(report) if isinstance(report, Mapping) else None
     print(json.dumps({"config_path": str(config), "cap_status": cap_status(policy, error, required=limit_required()),
                       "report_path": str(path) if path else None,
         "admission_blockers": admission_blockers(),
+        "admitted_since_report_usd": None if since is None else usd(since),
         "report": report if args.full or not isinstance(report, Mapping) else summary(report)}, indent=2, sort_keys=True))
     return 0
 
 
 __all__ = [
-    "ACCOUNT_PAGE_CODES", "ACCOUNT_WARN_CODES", "CONFIG_ENV", "CONFIG_INVALID", "INSTALLED_CONFIG_PATH",
+    "ACCOUNT_PAGE_CODES", "ACCOUNT_WARN_CODES", "CALL_COST_INVALID", "CONFIG_ENV", "CONFIG_INVALID",
+    "INSTALLED_CONFIG_PATH",
     "LIMIT_NOT_CONFIGURED", "LIMIT_REACHED", "POLICY_SCHEMA", "REPORT_INVALID", "REPORT_SCHEMA", "REPORT_STALE",
-    "ROOT_ENV", "SHIPPED_CONFIG_PATH", "UNAVAILABLE", "account_alerts", "admission_blockers", "cap_status",
+    "ROOT_ENV", "SHIPPED_CONFIG_PATH", "UNAVAILABLE", "account_alerts", "admission_blockers",
+    "admitted_since_report", "cap_status",
     "configured_policy", "current_openai", "current_world_labs", "describe", "effective_limit", "limit_required",
     "load_policy", "observe_account_spend",
     "persist_provider_observation", "read_provider_observation", "read_report", "summary",

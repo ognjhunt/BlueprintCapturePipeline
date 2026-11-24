@@ -20,8 +20,9 @@ REACHED = "account_monthly_spend_limit_reached"
 def limit(monkeypatch):
     """Switch the real account-limit check between refusing and admitting."""
 
-    state = {"blockers": [REACHED]}
-    monkeypatch.setattr(paid_resource_admission, "_account_monthly_limit_blockers", lambda: list(state["blockers"]))
+    state = {"blockers": [REACHED], "asked": []}
+    monkeypatch.setattr(paid_resource_admission, "_account_monthly_limit_blockers",
+                        lambda **asked: state["asked"].append(asked) or list(state["blockers"]))
     for name in ("BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT", "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG"):
         monkeypatch.delenv(name, raising=False)
     return state
@@ -38,10 +39,14 @@ def test_agent_task_is_not_started_while_refused_and_starts_on_a_later_pass(limi
         validate_admission=lambda task: None, _ownership=lambda record: {},
         journal=SimpleNamespace(record_event=lambda *_args: None),
         service=SimpleNamespace(enqueue=lambda task: started.append(task) or {"state": "queued"}))
-    record = SimpleNamespace(task=SimpleNamespace(task_id="task-1", run_id="run-1"), supervision=None)
+    record = SimpleNamespace(task=SimpleNamespace(task_id="task-1", run_id="run-1",
+                                                  admission=SimpleNamespace(inference_budget_usd=0.25)),
+                             supervision=None)
     with pytest.raises(AgentExecutionError, match=production.ACCOUNT_LIMIT_WAIT):
         production.ProductionAgentService._enqueue_record(service, record, _run_lock_held=True)
     assert started == []  # nothing admitted with the provider; autostart skips it and asks again
+    # The month is asked for room for the task's whole inference budget, not only whether it is under its limit.
+    assert limit["asked"][-1]["maximum_cost_usd"] == 0.25
     limit["blockers"] = []
     production.ProductionAgentService._enqueue_record(service, record, _run_lock_held=True)
     assert started == [record.task]

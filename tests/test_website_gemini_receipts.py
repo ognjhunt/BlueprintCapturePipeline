@@ -472,7 +472,8 @@ def test_an_expired_retained_reservation_is_replaced_by_one_new_one(tmp_path, mo
 def test_a_budget_refusal_of_a_retained_reservation_is_a_money_wait(tmp_path, monkeypatch):
     from blueprint_pipeline import paid_resource_admission as admission
     args, calls, intent = _refused_once(tmp_path, monkeypatch)
-    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: ["account_monthly_spend_limit_reached"])
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers",
+                        lambda **_: ["account_monthly_spend_limit_reached"])
     with pytest.raises(PaidResourceAdmissionBlocked, match="account_monthly_spend_limit_reached"):
         module.retained_gemini_call(**args)
     assert [row[0] for row in calls] == ["reserve", "source_read"]

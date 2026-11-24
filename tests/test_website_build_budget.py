@@ -95,7 +95,7 @@ def ledger(monkeypatch, tmp_path):
     """The real reservation path (``reserve_website_preparation_spend`` and its paid chokepoint) onto ``Ledger``."""
     value = Ledger()
     monkeypatch.setattr(website_task_context, "preparation_webapp_request", value)
-    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: [])
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda **_: [])
     monkeypatch.setattr(admission, "_monthly_budget_blockers", lambda _resource_class: [])
     monkeypatch.delenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", raising=False)
     monkeypatch.setenv("BLUEPRINT_PAID_SPEND_METER_ROOT", str(tmp_path / "meter"))
@@ -179,7 +179,8 @@ def test_an_outage_is_raised_and_the_retry_asks_only_for_what_was_never_admitted
 def test_the_accounts_month_is_a_wait_not_the_jobs_cap(tmp_path, ledger, monkeypatch):
     """The account's monthly limit stays a wait (it is no job's cap): it is raised before the website is asked, and
     nothing is kept as filmed for it."""
-    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: ["account_monthly_spend_limit_reached"])
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers",
+                        lambda **_: ["account_monthly_spend_limit_reached"])
     with pytest.raises(admission.PaidResourceAdmissionBlocked, match="account_monthly_spend_limit_reached"):
         _admit(tmp_path)
     assert ledger.asked == [] and not list((tmp_path / "reservations").glob("*.json"))
@@ -188,7 +189,7 @@ def test_the_accounts_month_is_a_wait_not_the_jobs_cap(tmp_path, ledger, monkeyp
 def test_a_row_the_website_admitted_stays_reserved_when_the_local_recheck_then_refuses(tmp_path, ledger, monkeypatch):
     calls = []
 
-    def month():  # clear at the precheck, reached by the time the admission is rechecked
+    def month(**_):  # clear at the precheck, reached by the time the admission is rechecked
         calls.append(1)
         return [] if len(calls) == 1 else ["account_monthly_spend_limit_reached"]
     monkeypatch.setattr(admission, "_account_monthly_limit_blockers", month)
@@ -196,7 +197,7 @@ def test_a_row_the_website_admitted_stays_reserved_when_the_local_recheck_then_r
         _admit(tmp_path)
     written = json.loads((tmp_path / "reservations" / (_binding("carton")[7:] + ".json")).read_text())
     assert written["status"] == budget.ADMITTED and written["admission"]["status"] == "admitted"
-    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: [])
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda **_: [])
     record = _admit(tmp_path)
     # The retry never asked for the carton again: its row was already held.
     assert [spend["allocation_binding_digest"] for spend in ledger.reservations()] == [
@@ -210,7 +211,7 @@ def test_a_retained_row_is_admitted_again_only_once_the_local_limits_clear(tmp_p
     same hold is admitted, never reserved again."""
     calls = []
 
-    def month():  # clear at the precheck, reached from the recheck on
+    def month(**_):  # clear at the precheck, reached from the recheck on
         calls.append(1)
         return [] if len(calls) == 1 else ["account_monthly_spend_limit_reached"]
     monkeypatch.setattr(admission, "_account_monthly_limit_blockers", month)
@@ -223,7 +224,7 @@ def test_a_retained_row_is_admitted_again_only_once_the_local_limits_clear(tmp_p
             _admit(tmp_path, two)
     assert len(ledger.reservations()) == asked
     assert not (tmp_path / budget.BUDGET_RECORD).exists()
-    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: [])
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda **_: [])
     record = _admit(tmp_path, two)
     assert [row["status"] for row in record["objects"]] == [budget.FIRST, budget.ADMITTED]
     assert [spend["allocation_binding_digest"] for spend in ledger.reservations()].count(_binding("carton")) == 1
@@ -369,7 +370,7 @@ def test_a_refusal_by_the_paid_request_count_reads_exactly_as_one_by_the_dollar_
         kept = [{key: row[key] for key in ("name", "reason", "refused", "refusal_code", "refusal_code_means_one_of")}
                 for row in record["objects"] if row["status"] == budget.KEPT]
         return kept, kept_disclosure(record, decided), build_plan_notes(root)["plan_notes"]
-    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda: [])
+    monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda **_: [])
     monkeypatch.setattr(admission, "_monthly_budget_blockers", lambda _resource_class: [])
     monkeypatch.delenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", raising=False)
     # $28 of $40 held, so one $12 fits; and a job with $40 free whose request count allows one more call.

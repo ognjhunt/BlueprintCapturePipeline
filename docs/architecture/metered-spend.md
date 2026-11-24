@@ -189,12 +189,41 @@ not edited by hand. Changing the amount is a money decision for the owner.
 
 **Enforcement.** `paid_resource_admission._account_monthly_limit_blockers`
 runs in `require_paid_resource_budget` (the pre-reservation check) and in
-`require_paid_resource_admission` (where every grant is issued). It refuses
-when:
+`require_paid_resource_admission` (where every grant is issued).
+
+It judges the month at the report's `counted_usd` plus every paid admission
+the chokepoint journaled since the report's `generated_at`
+(`account_monthly_spend.admitted_since_report`, read from the meter journal).
+Each of those counts once per meter key, at the most it was admitted or held
+for. A grant is in no figure of a report written before it, and the guard
+rewrites the report only about once a minute while the reader accepts one up
+to 15 min old. Without this, every call in that window was judged at one
+stale count (stress finding 2026-11-24: ten $5 calls at $395 of $400 were all
+admitted).
+
+A call that names its maximum cost is admitted only when that count plus the
+cost fits under the limit, as the job's $40 cap admits a call. The cost is
+`maximum_cost_usd` on the chokepoint or the precheck, or the admission's own
+`maximum_cost_usd` (a website preparation receipt carries one), whichever is
+larger. The grant is journaled with it. A caller that knows no amount is
+refused only once the count reaches the limit; no amount is made up for it.
+`require_paid_resource_admission` takes the account check and the grant's
+journal line under one lock (`paid_spend_meter.admission_lock`, a file in the
+meter root), so two processes are never judged at one count.
+
+Limits of this:
+
+- After the next report, a grant's cost counts only once a hold, a settlement
+  or a bill shows it. The provider lag below still applies.
+- The journal stays best effort. A unit that cannot write the meter root (for
+  example `blueprint-team-scene-packet-remote`, whose sandbox does not list it)
+  neither journals its grants nor takes the lock. A journal file another
+  account wrote (mode 0600) is skipped, as the report skips it.
 
 | Refusal | When |
 |---|---|
-| `account_monthly_spend_limit_reached` | The report's `counted_usd` is at or over the month's limit. |
+| `account_monthly_spend_limit_reached` | The count (the report's `counted_usd` plus the admissions since it) is at or over the month's limit, or the count plus this call's maximum cost is over it. |
+| `account_monthly_spend_call_cost_invalid` | The call named a maximum cost that is not an amount (negative, not finite, not a number). |
 | `account_monthly_spend_report_stale` | The report is older than 15 min (`REPORT_MAX_AGE_SECONDS`) or is for another month. |
 | `account_monthly_spend_report_missing_or_invalid` | The report is unreadable, not bound to this config's sha256 and limit, or not `cap_status: set`. |
 | `account_monthly_spend_limit_config_invalid` | The config exists but does not validate. |

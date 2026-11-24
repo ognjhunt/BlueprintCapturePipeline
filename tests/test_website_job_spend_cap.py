@@ -143,7 +143,7 @@ def test_the_accounts_monthly_limit_still_applies_under_the_job_cap(monkeypatch)
     from blueprint_pipeline import paid_resource_admission as admission
     from blueprint_pipeline import website_task_context as context
     monkeypatch.setattr(admission, "_account_monthly_limit_blockers",
-                        lambda: ["account_monthly_spend_limit_reached"])
+                        lambda **_: ["account_monthly_spend_limit_reached"])
     monkeypatch.setattr(admission, "_monthly_budget_blockers", lambda _resource_class: [])
     monkeypatch.setattr(context, "preparation_webapp_request",
                         lambda **_: pytest.fail("the website was asked for a reservation past the account's limit"))
