@@ -3,6 +3,7 @@
 A test job is a whole real job, started from Blueprint's own test footage instead of a site's upload. It runs
 through every real stage and every paid admission a site's job does. It is never shown to a deployment company
 and nothing about it is sent to anyone. For a $0 check of the code paths, use `test-job-matrix.md` instead.
+To find where a running test job stops next against your branch, replay it offline: `job-replay.md`.
 
 The existing monthly limit is the brake; no cap, limit or price is raised for test jobs.
 

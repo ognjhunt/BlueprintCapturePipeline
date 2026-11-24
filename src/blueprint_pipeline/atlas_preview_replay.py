@@ -546,7 +546,8 @@ def run_steps(*, job_path: Path, capture_root: Path, workspace: Path, prefix: st
     return {**report, "steps_run": len(report["steps"]), "stages_reached": harness.stages, "first_stop": first,
             "would_buy": harness.would_buy, "refused_spend": harness.refused_spend,
             "adopted": [{"path": key, "record": value} for key, value in harness.adopted.items()],
-            "absent_paths_probed": unpulled[:200], "skipped_effects": sorted(set(harness.skipped)),
+            "absent_paths_probed": unpulled[:200], "read_paths": list(harness.reads)[:2000],
+            "skipped_effects": sorted(set(harness.skipped)),
             "network_attempts": harness.network,
             "final_job": {key: final.get(key) for key in ("state", "stage", "reason", "revision")}}
 
