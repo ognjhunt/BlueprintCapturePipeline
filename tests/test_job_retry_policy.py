@@ -140,3 +140,33 @@ def test_a_refusal_of_blueprints_own_key_or_account_is_an_outage_never_an_end():
     # Blueprint's own WebApp answers are not an outside service's.
     assert not provider_account_refused("website_control_preparation-spend_http_403:website_scene_rights_required")
     assert request_cannot_succeed("meta_sam_submission_requires_reconciliation")
+
+
+def _sdk_error(status, code, message="refused"):
+    import httpx
+    import openai
+    response = httpx.Response(status, request=httpx.Request("POST", "https://api.openai.com/v1/responses"))
+    kind = {401: openai.AuthenticationError, 402: openai.APIStatusError, 403: openai.PermissionDeniedError,
+            429: openai.RateLimitError, 500: openai.InternalServerError, 503: openai.InternalServerError}[status]
+    return kind(f"Error code: {status}", response=response, body={"message": message, "type": code, "code": code})
+
+
+@pytest.mark.parametrize(("error", "unbilled"), [
+    (lambda: _sdk_error(429, "insufficient_quota", "You have no credits remaining."), True),
+    (lambda: _sdk_error(402, "payment_required"), True),
+    (lambda: _sdk_error(401, "invalid_api_key"), True),
+    (lambda: _sdk_error(403, "unsupported_country_region_territory"), True),
+    (lambda: _sdk_error(429, "enforced_spend_limit_reached"), True),
+    (lambda: _sdk_error(429, "rate_limit_exceeded", "Rate limit reached for requests"), False),
+    (lambda: _sdk_error(500, "server_error"), False),
+    (lambda: _sdk_error(503, "server_error"), False),
+    (lambda: __import__("openai").APITimeoutError(
+        request=__import__("httpx").Request("POST", "https://api.openai.com/v1/responses")), False),
+    (lambda: RuntimeError("worker stopped mid-call"), False),
+])
+def test_only_a_refusal_known_to_bill_nothing_is_unbilled(error, unbilled):
+    from blueprint_pipeline.job_retry_policy import provider_error_waits, provider_refusal_unbilled
+    value = error()
+    assert provider_refusal_unbilled(value) is unbilled
+    # Every refusal known to bill nothing is also an outage the step waits on.
+    assert not unbilled or provider_error_waits(value)

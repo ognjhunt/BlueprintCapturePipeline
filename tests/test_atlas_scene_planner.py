@@ -1030,3 +1030,154 @@ def test_a_view_the_review_cites_as_evidence_becomes_an_input_unless_it_is_unsaf
     proposal["static_intervals_seconds"] = [[0.5, 1.5]]
     with pytest.raises(ValueError, match="atlas_automation_frames_not_selected"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+def _provider_error(status, *, code, message):
+    """The OpenAI SDK's own error for one HTTP answer, as its client raises it."""
+    import httpx
+    import openai
+    kind = {402: openai.APIStatusError, 429: openai.RateLimitError, 500: openai.InternalServerError}[status]
+    response = httpx.Response(status, request=httpx.Request("POST", "https://api.openai.com/v1/responses"))
+    return kind(f"Error code: {status}", response=response,
+                body={"message": message, "type": code, "param": None, "code": code})
+
+
+NO_CREDIT = dict(code="insufficient_quota",
+                 message="You have no credits remaining. Add credits to continue using the API.")
+
+
+def _reserve(record_reservation, spec):
+    """What the SDK invoker writes before its provider request: one durable reservation for this run."""
+    from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import (
+        INFERENCE_RESERVATION_SCHEMA_VERSION)
+    identity = {"run_id": spec.run_id, "capability": "atlas_scene_planner", "model": spec.model,
+                "input_digest": "sha256:" + "1" * 64, "max_turns": 1, "max_output_tokens": spec.max_output_tokens}
+    value = {"schema_version": INFERENCE_RESERVATION_SCHEMA_VERSION, **identity,
+             "reservation_id": canonical_digest(identity), "projected_max_cost_usd": .2}
+    value["inference_reservation_digest"] = canonical_digest(value, digest_field="inference_reservation_digest")
+    record_reservation(value)
+
+
+class RefusingThenAnswering:
+    """The provider refuses the first ``refusals`` calls after their reservation, then answers."""
+
+    def __init__(self, proposal, error, refusals):
+        self.proposal, self.error, self.refusals, self.calls = proposal, error, refusals, 0
+
+    def configure_reservation_audit(self, *, record_reservation, **_):
+        self.reserve = record_reservation
+
+    def invoke(self, spec, inputs):
+        self.calls += 1
+        _reserve(self.reserve, spec)
+        if self.calls <= self.refusals:
+            raise self.error
+        return SimpleNamespace(output=self.proposal, cost_usd=.03, usage={"output_tokens": 10},
+                               model=spec.model, sdk_version="test")
+
+
+def test_a_provider_refusal_that_bills_nothing_settles_nothing_and_spends_no_repair(tmp_path, monkeypatch):
+    # Live test job, 2026-11-23 17:47Z-18:58Z: OpenAI answered 429 insufficient_quota three times; each call was
+    # settled at its reserved maximum ($0.294758), the second spent the one repair, and the call ended as
+    # atlas_scene_planner_output_invalid, so the room's scale was never measured.
+    import openai
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    _, _, proposal, _ = fixture(tmp_path)
+    options["invoker"] = invoker = RefusingThenAnswering(proposal, _provider_error(429, **NO_CREDIT), refusals=3)
+    for tick in range(3):
+        # Each tick the step waits as for an outage (``job_retry_policy.provider_error_waits``).
+        with pytest.raises(openai.RateLimitError):
+            planner.review_survey(**options)
+        assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [0] * (tick + 1)
+    result = planner.review_survey(**options)
+    assert result["status"] == "completed" and invoker.calls == 4
+    # No repair was spent and nothing ended as an invalid answer.
+    assert "validation_repair" not in result["binding"]
+    receipts = [json.loads(path.read_text()) for path in (tmp_path / "plans").glob("*.json")]
+    assert not [row for row in receipts if row.get("status") in ("invalid_output", "submitting")]
+    # Each refusal held its own reservation, settled at $0 and so released, and the answer is one more.
+    assert len(set(calls["reserved"])) == 4
+    assert [row["allocation_binding_digest"] for row in calls["settled"]] == calls["reserved"]
+    assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [0, 0, 0, .03]
+    refused = sorted((tmp_path / "plans").glob(result["binding_digest"][7:] + ".refused-*.json"))
+    assert [json.loads(path.read_text())["status"] for path in refused if "settlement" not in path.name] == [
+        "refused_unbilled"] * 3
+    # A restart buys nothing again.
+    assert planner.review_survey(**options) == result and invoker.calls == 4 and len(calls["settled"]) == 4
+
+
+def test_a_server_error_keeps_its_reserved_settlement(tmp_path, monkeypatch):
+    # A 5xx is not known to have billed nothing: it is held at its reservation, as any call whose outcome is unknown.
+    import openai
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    _, _, proposal, _ = fixture(tmp_path)
+    options["invoker"] = RefusingThenAnswering(proposal, _provider_error(500, code="server_error", message="x"), 1)
+    with pytest.raises(openai.InternalServerError):
+        planner.review_survey(**options)
+    stranded = tmp_path / "plans" / (calls["reserved"][0][7:] + ".json")
+    assert json.loads(stranded.read_text())["status"] == "submitting" and calls["settled"] == []
+    result = planner.review_survey(**options)
+    held = json.loads(stranded.read_text())
+    assert held["status"] == "invalid_output" and held["error"]["type"] == "submission_outcome_unknown"
+    assert held["usage"]["cost_is_actual"] is False and 0 < held["cost_usd"] <= 1
+    assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [held["cost_usd"], .03]
+    assert result["status"] == "completed" and result["binding"]["validation_repair"]["attempt"] == 1
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["recorded_release", "receipt_before_its_release_was_kept"])
+def test_a_call_ended_on_stranded_attempts_reopens_once_on_a_changed_release(tmp_path, monkeypatch, legacy):
+    # A call whose attempts ended with no recorded outcome (the live job's two refused calls) ends as
+    # atlas_scene_planner_output_invalid; a new release reopens it once, as for any failed answer.
+    import openai
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    _, _, proposal, _ = fixture(tmp_path)
+
+    class Stranding:
+        def configure_reservation_audit(self, **_):
+            pass
+
+        def invoke(self, spec, inputs):
+            calls["allowances"].append(spec.max_output_tokens)
+            raise _provider_error(500, code="server_error", message="x")
+    stranding = {**options, "invoker": Stranding()}
+    for _ in range(2):
+        with pytest.raises(openai.InternalServerError):
+            planner.review_survey(**stranding)
+        if legacy:
+            # Before this release a stranded receipt did not record which release sent it.
+            for path in (tmp_path / "plans").glob("*.json"):
+                receipt = json.loads(path.read_text())
+                if receipt.get("status") == "submitting":
+                    receipt.pop("source_commit")
+                    path.write_text(json.dumps(receipt))
+    if not legacy:
+        # The same release cannot buy the same unanswered request again.
+        with pytest.raises(ValueError, match="atlas_scene_planner_output_invalid"):
+            planner.review_survey(**stranding)
+    assert len(calls["allowances"]) == 2 and len(calls["settled"]) == (1 if legacy else 2)
+    answering = {**options, "invoker": RefusingThenAnswering(proposal, None, 0),
+                 "release_blockers": lambda: ("d" * 40, [])}
+    result = planner.review_survey(**answering)
+    assert result["status"] == "completed" and result["source_commit"] == "d" * 40
+    assert result["binding"]["failed_output_recovery"]["failed_source_commit"] == (None if legacy else "c" * 40)
+    assert planner.review_survey(**answering) == result and len(calls["settled"]) == 3
+
+
+def test_a_refusal_recorded_before_a_stop_is_still_settled_at_nothing(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as control
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    _, _, proposal, _ = fixture(tmp_path)
+    options["invoker"] = RefusingThenAnswering(proposal, _provider_error(429, **NO_CREDIT), refusals=1)
+    settle = control.website_webapp_request
+
+    def unreachable(**_):
+        raise OSError("website unreachable")
+    monkeypatch.setattr(control, "website_webapp_request", unreachable)
+    with pytest.raises(OSError):
+        planner.review_survey(**options)
+    recorded = json.loads((tmp_path / "plans" / (calls["reserved"][0][7:] + ".json")).read_text())
+    assert recorded["status"] == "refused_unbilled" and recorded["cost_usd"] == 0
+    monkeypatch.setattr(control, "website_webapp_request", settle)
+    result = planner.review_survey(**options)
+    assert result["status"] == "completed" and "validation_repair" not in result["binding"]
+    assert [row["provider_charge_amount_usd"] for row in calls["settled"]] == [0, .03]
