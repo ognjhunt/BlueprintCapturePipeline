@@ -34,6 +34,16 @@ _NEEDS_NEW_CAPTURE = frozenset({"atlas_insufficient_overlapping_distinct_views",
                                 "atlas_insufficient_sharp_static_views", "atlas_source_rotation_unsupported",
                                 "atlas_scale_review_unresolved"})
 _NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
+# A planner abstention can be re-examined after a source-review fix. It is not
+# proof that the recording must be replaced. Other selection failures keep
+# their existing non-retryable boundary.
+_NEEDS_TASK_INPUT = frozenset({"atlas_scene_subject_origin_uncertain", "atlas_scene_subject_origin_changed",
+                              "atlas_scene_requires_preserved_capture",
+                              "atlas_synthetic_subject_requires_preserved_capture"})
+_WITHDRAWN = frozenset({"source_revoked", "website_capture_withdrawn", "consent_revoked",
+                        "capture_revoked_or_expired"})
+#: A reopened review needs room to finish inside the job's own window.
+REOPEN_MARGIN_SECONDS = 86_400
 #: Written to the job file just before a step runs and removed by the write that follows it.
 #: Read under the job lock, it can only be left by a step whose process died before returning.
 STEP_IN_FLIGHT = "step_in_flight"
@@ -81,6 +91,39 @@ def reopens_spent(job: Mapping[str, Any]) -> bool:
     from .job_retry_policy import refusal_retry_delay
     return (refusal_retry_delay(automatic_reopens(job)) is None
             or len(_trailing_automatic(job)) >= MAX_AUTOMATIC_REOPENS)
+
+
+
+def parked_without_wall(job: Mapping[str, Any]) -> bool:
+    """A job ended failed or needs_input with no retry time, on a reason that is no wall: not privacy, rights or
+    money (``hard_stop_kind``, the spending cap, a withdrawal), not the owner's closing of the run, not a stop only
+    a new video or the site's input clears, and not the job's own end (expired, source gone)."""
+    from .hard_stops import JOB_SPEND_CAP
+    from .job_retry_policy import hard_stop_kind, owner_closed
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
+    from .website_recapture_required import ABSTENTION_CODES
+    reason = job.get("reason")
+    return (job.get("state") in {"failed", "needs_input"} and not job.get("retry_at_epoch")
+            and isinstance(reason, str) and hard_stop_kind(reason) is None and not owner_closed(reason)
+            and reason not in (_NOT_RETRYABLE | _NEEDS_NEW_CAPTURE | _NEEDS_TASK_INPUT | _WITHDRAWN
+                               | set(ABSTENTION_CODES.values())
+                               | {"atlas_scene_planner_abstained", SPENDING_CAP_REACHED, JOB_SPEND_CAP}))
+
+
+def ended_for_good(job: Mapping[str, Any], *, now: float) -> bool:
+    """A job parked on no wall (``parked_without_wall``: failed or needs_input) that nothing reopens by itself any more.
+
+    Such a job is reopened only by the clock or a new release (``website_atlas_preview._reopen_parked``), and only
+    while its reopens for that stop are not spent (``reopens_spent``) and its window still leaves a reopened step
+    room to finish (``REOPEN_MARGIN_SECONDS``, as ``_may_reopen`` reads it). Past either, its stop is its end: no
+    scene can come from it unless an operator reopens it (``retry_failed_job``). A job that waits on a wall, the
+    site, a new video or a recheck is never one here: each of those ends by its own path.
+    """
+    enqueued = job.get("enqueued_at_epoch")
+    return parked_without_wall(job) and (
+        reopens_spent(job) or isinstance(enqueued, bool) or not isinstance(enqueued, (int, float))
+        or now - enqueued > MAXIMUM_JOB_SECONDS - REOPEN_MARGIN_SECONDS)
+
 
 class _Withdrawn(Exception):
     pass

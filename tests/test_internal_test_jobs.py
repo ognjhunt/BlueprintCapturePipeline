@@ -332,6 +332,29 @@ def test_a_preparation_held_for_the_site_frees_its_slot_and_a_reopened_one_count
     assert _busy(tmp_path, NOW + door_job.IN_FLIGHT_FOR_SECONDS) == []
 
 
+@pytest.mark.parametrize(("ending", "busy"), [
+    ("current", ["two"]),               # its own Atlas job ended for good: the attempt recorded its ending
+    ("stale", ["one", "two"]),          # a later attempt (an operator reopened the Atlas job) counts again
+    ("silence", ["one", "two"]),        # the old producer's silence-based record is no ending
+])
+def test_a_failed_preparation_whose_ending_is_recorded_frees_its_slot(tmp_path, ending, busy):
+    """The Austin test job (2026-11-24) counted as in flight for its seven days after its Atlas job ended."""
+    from datetime import datetime, timezone
+
+    from blueprint_pipeline import website_preparation_terminal as terminal
+    first = _two_asked(tmp_path)
+    ledger = {"schema_version": "pipeline_job_ledger.v1", "status": "failed_retryable", "attempt_count": 6,
+              "source_payload_sha256": "a" * 64, "lease_token": None, "attempt_history": []}
+    ledger = terminal.atlas_job_ending(ledger, {"state": "failed", "reason": "atlas_context_field_of_view_lost",
+                                                "revision": 4, "automatic_reopens": 6}, datetime.now(timezone.utc))
+    if ending == "stale":
+        ledger["attempt_count"] = 7
+    if ending == "silence":
+        ledger[terminal.TERMINAL_FIELD]["schema_version"] = terminal.SCHEMA_VERSION
+    _finish(tmp_path, first, ledger=ledger)
+    assert _busy(tmp_path) == busy
+
+
 def test_a_completed_preparation_handed_on_keeps_its_slot(tmp_path):
     """Completed is not ended: a preparation handed to the scene chain still has its heavy work ahead."""
     _held(tmp_path, _two_asked(tmp_path), ledger="completed", handoff_status="ready", simulator_ready=True,

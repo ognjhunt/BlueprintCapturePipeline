@@ -25,8 +25,11 @@ about ten minutes apart, then a dead-letter queue nothing reads. Now:
 
 What is never retried here: an attempt another drain owns (the Atlas wait, the
 assessment wait, a target-choice correction, a robot fit recheck or a held
-replay), and a failure ``hard_stop_kind`` reads as privacy or rights. Authority
-endings are terminal before they get here.
+replay), a failure ``hard_stop_kind`` reads as privacy or rights, and an attempt
+whose capture's own Atlas job ended for good (``website_reconstruction_resume.
+atlas_job_ended``): no run of it can finish, so it records its ending instead
+(``website_preparation_terminal.atlas_job_ending``) and its status says so.
+Authority endings are terminal before they get here.
 
 A re-run buys nothing twice and creates no retry capacity for a call whose
 outcome is unknown: each paid call keeps its own fsynced intent and receipt and
@@ -598,9 +601,11 @@ def _redrive(listener: Any, root: Path, *, storage_root: Path, process_args: Map
 def reconcile_preparation_retries(listener: Any, *, storage_root: Path, process_args: Mapping[str, Any],
                                   limit: int = 1, now: datetime | None = None) -> dict[str, int]:
     """Reclaim dead attempts, then run at most ``limit`` due retries, the longest-due first."""
+    from .website_preparation_terminal import atlas_job_ending, current_terminal
+    from .website_reconstruction_resume import atlas_job_ended
     current = _now(now)
     storage_root = Path(storage_root)
-    counts = {"reclaimed": 0, "adopted": 0, "waiting": 0, "redriven": 0, "failed": 0}
+    counts = {"reclaimed": 0, "adopted": 0, "waiting": 0, "redriven": 0, "failed": 0, "atlas_ended": 0}
     roots = sorted(path.parent for path in storage_root.glob(f"*/scenes/site-*/captures/*/{listener.JOB_LEDGER_FILENAME}")
                    if path.parent.name.startswith(("walkthrough-", "supplement-")))
     due: list[tuple[datetime, str, Path]] = []
@@ -632,6 +637,17 @@ def reconcile_preparation_retries(listener: Any, *, storage_root: Path, process_
                 listener.logger.warning("pubsub_handoff.preparation_dead_attempt_reclaimed", extra={
                     "capture_id": root.name, "previous_lease_owner": ledger.get("lease_owner")})
                 ledger = committed
+            ended = (atlas_job_ended(root, now=current.timestamp())
+                     if ledger.get("status") == "failed_retryable" and not _owned_elsewhere(ledger) else None)
+            if ended is not None:
+                # Its Atlas job ended for good: no run can finish, so none starts and none buys anything for a scene
+                # that cannot come (not even the last call). The attempt records its ending once, bound to it, so its
+                # status says so at a new revision the website is told of. Its retry record stays: an operator's
+                # reopen of the Atlas job lets the next tick run it, and that new attempt leaves the ending behind.
+                counts["atlas_ended"] += 1
+                if current_terminal(ledger) is None:
+                    _transition(listener, root, ledger, atlas_job_ending(ledger, ended, current))
+                continue
             if armed(ledger) is None:
                 adopted = _adopt(listener, root, ledger, current)
                 if adopted is None or (committed := _transition(listener, root, ledger, adopted)) is None:

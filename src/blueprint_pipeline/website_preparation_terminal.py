@@ -36,10 +36,15 @@ from .handoff_job_state import (
 
 TERMINAL_FIELD = "website_preparation_terminal"
 SCHEMA_VERSION = "website_preparation_terminal.v1"
+#: The one terminal disposition this release records (``atlas_job_ending``): its own schema, so no record the
+#: silence-based producer wrote under v1 is ever read as one.
+ENDED_SCHEMA_VERSION = "website_preparation_terminal.v2"
+#: Its basis: the capture's own Atlas job ended for good (``website_reconstruction_resume.atlas_job_ended``).
+ATLAS_JOB_ENDED = "capture_atlas_job_ended"
 OVERDUE_FIELD = "website_preparation_overdue"
 OVERDUE_SCHEMA_VERSION = "website_preparation_overdue.v1"
-# The shared vocabulary of website_preparation_status.v2. This module writes
-# retry_exhausted, budget_exhausted and capacity_blocked; the WebApp accepts all.
+# The shared vocabulary of website_preparation_status.v2; the WebApp accepts all. This module records
+# retry_exhausted (``atlas_job_ending``); its silence-based producer once wrote the others, never read now.
 REASONS = frozenset({"permanent_invalid", "retry_exhausted", "budget_exhausted",
                      "capacity_blocked", "out_of_scope"})
 _RETRYABLE_STATUSES = frozenset({"failed_retryable", "retryable_blocked"})
@@ -111,15 +116,39 @@ def exhausted_reason(ledger: Mapping[str, Any]) -> str:
 
 
 def current_terminal(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Silence records cannot establish a terminal retry disposition.
+    """The attempt's typed terminal disposition, or None. Silence never establishes one.
 
-    The existing producer wrote only silence-based annotations. Retain them for
-    history, but do not promote even a plausible reason or digest into broker
-    evidence. AUT-02's source/attempt-bound durable disposition reader must be
-    integrated here before conclusive retry-exhaustion projection is enabled.
-    Explicit ``terminal_authority_ended`` is handled separately by the reader.
+    The existing producer wrote only silence-based annotations (v1). They stay for history and are never read as
+    a disposition: no reason or digest of theirs is broker evidence. The one disposition read here is bound to this
+    source and attempt and rests on a durable record of its own (``atlas_job_ending``): the capture's own Atlas
+    job ended for good, so no run of this attempt can finish. A later attempt (an operator's reopen of that job, a
+    redelivery) makes it stale. Explicit ``terminal_authority_ended`` is handled separately by the reader.
     """
-    return None
+    record = ledger.get(TERMINAL_FIELD)
+    if (not isinstance(record, Mapping) or record.get("schema_version") != ENDED_SCHEMA_VERSION
+            or record.get("basis") != ATLAS_JOB_ENDED or record.get("reason") not in REASONS
+            or record.get("observed_status") != ledger.get("status")
+            or any(record.get(key) != ledger.get(key) for key in
+                   ("attempt_count", "source_payload_sha256", "lease_token"))):
+        return None
+    return dict(record)
+
+
+def atlas_job_ending(ledger: Mapping[str, Any], ended: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+    """``ledger`` with the terminal disposition of a failed attempt whose capture's own Atlas job ended for good.
+
+    ``ended`` is that job's stop (``website_reconstruction_resume.atlas_job_ended``). The record binds this attempt
+    (``current_terminal``) and names the stop, and the attempt history gains one row with it. The status then
+    reads ``failed_terminal`` with ``retry_exhausted``: the job's Atlas stop had its retries and reopens, and
+    nothing runs the preparation again. The caller commits it over the revision it read.
+    """
+    record = {"schema_version": ENDED_SCHEMA_VERSION, "reason": "retry_exhausted", "basis": ATLAS_JOB_ENDED,
+              "observed_status": ledger.get("status"), "attempt_count": ledger.get("attempt_count"),
+              "source_payload_sha256": ledger.get("source_payload_sha256"), "lease_token": ledger.get("lease_token"),
+              "atlas_job": dict(ended), "recorded_at": _iso(now)}
+    history = [item for item in ledger.get("attempt_history", []) if isinstance(item, Mapping)]
+    return {**dict(ledger), TERMINAL_FIELD: record,
+            "attempt_history": [*history, {"status": "preparation_terminal_recorded", **record}]}
 
 
 def current_overdue(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
