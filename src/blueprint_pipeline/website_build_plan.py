@@ -306,15 +306,56 @@ def decide_plan(*, task_context: Mapping[str, Any], targets: Sequence[Mapping[st
     return record
 
 
+#: The one-object job's sourcing the plan keeps as filmed: today's builder, unchanged.
+KEEPS_AS_FILMED = "keep_as_filmed"
+
+
+def single_object(decided: Mapping[str, Any] | None, removal: Mapping[str, Any]) -> dict[str, Any] | None:
+    """For a job the plan took no object out of alone (one rigid object: today's one-object route, owner direction
+    2026-11-24): the object that route removes from the scan and authors, as the removal names it (its one
+    ``manipulated`` entry, no designed object), with the plan's row for it when the plan names one
+    (``{"entry", "row"}``, ``row`` None otherwise). None when the plan took an object out alone (``built`` decides),
+    or when the route cannot be read: no sealed plan decision, or not exactly one such entry."""
+    if not isinstance(decided, Mapping) or decided.get("built") is not None or removal.get("synthetic_subject"):
+        return None
+    entries = removal.get("entries")
+    manipulated = [row for row in entries if isinstance(row, Mapping) and row.get("task_effect") == "manipulated"] \
+        if isinstance(entries, list) else []
+    if len(manipulated) != 1 or not isinstance(manipulated[0].get("target_id"), str):
+        return None
+    rows = ((decided.get("build_plan") or {}).get("plan") or {}).get("objects") or []
+    row = next((dict(item) for item in rows if isinstance(item, Mapping)
+                and item.get("target_id") == manipulated[0]["target_id"]), None)
+    return {"entry": dict(manipulated[0]), "row": row}
+
+
+def _observed_rigid(entry: Mapping[str, Any]) -> bool:
+    """Whether the removal's analysis saw the object as one rigid body, as the library step reads it: the plan's row
+    may call it rigid where the analysis saw an opening part, and then the object keeps its articulated builder
+    (Codex review of #3715)."""
+    from .task_profile_contracts import task_object_rigidity
+    try:
+        return task_object_rigidity(entry)["rigidity"] == "rigid" and not entry.get("articulated_part")
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
     """The removal manifest as the handoff builds it: with a plan that took one object out of the scan, every other
     object the analysis named as the job's stays in the room as filmed (``kept_in_scan``), so the build is the one
     object's; one the plan sources as a parametric shape is named for compile (``PARAMETRIC_SUBJECT``), which authors
-    it as that shape at no cost (``website_supplied_mesh``). Unchanged without such a plan."""
+    it as that shape at no cost (``website_supplied_mesh``). So too the one-object job's object, when the plan's row
+    for it is a parametric shape (``single_object``); what is removed from the scan is unchanged. Unchanged without
+    such a plan."""
     from .website_supplied_mesh import PARAMETRIC_SUBJECT
     decided = sealed_decision(capture_root)
     built = (decided or {}).get("built")
     if not isinstance(built, Mapping) or not isinstance(built.get("target_id"), str):
+        one = single_object(decided, removal)
+        row = (one or {}).get("row") or {}
+        if (row.get("sourcing") == "parametric" and row.get("parametric_shape") and row.get("rigidity") == "rigid"
+                and _observed_rigid((one or {}).get("entry") or {})):
+            return {**removal, PARAMETRIC_SUBJECT: {"target_id": row["target_id"], "shape": row["parametric_shape"]}}
         return dict(removal)
     entries = [{**row, "task_effect": "kept_in_scan", "kept_in_scan_reason": "build_plan"}
                if row.get("task_effect") == "manipulated" and row.get("target_id") != built["target_id"] else row
@@ -324,6 +365,6 @@ def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str
             **({PARAMETRIC_SUBJECT: {"target_id": built["target_id"], "shape": shape}} if shape else {})}
 
 
-__all__ = ["DECISION_SCHEMA", "NOT_IN_VIDEO", "PARTIAL_REMOVAL_INSTRUCTION", "apply_to_removal", "build_plan_notes",
-           "built_object", "decide_plan", "partial_review", "plan_inputs", "plan_notes", "sealed_decision",
-           "validate_plan"]
+__all__ = ["DECISION_SCHEMA", "KEEPS_AS_FILMED", "NOT_IN_VIDEO", "PARTIAL_REMOVAL_INSTRUCTION", "apply_to_removal",
+           "build_plan_notes", "built_object", "decide_plan", "partial_review", "plan_inputs", "plan_notes",
+           "sealed_decision", "single_object", "validate_plan"]
