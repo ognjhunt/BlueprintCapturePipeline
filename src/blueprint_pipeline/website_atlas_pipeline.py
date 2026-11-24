@@ -22,7 +22,10 @@ import time
 
 from .website_task_context import load_atlas_configuration as load_configuration
 from .common import write_json
-from .atlas_automation_plan import (GENERATED_IN_COLLISION_ONLY, JOB_OBJECT_RULE, PRESERVED_SCENE_ORIGINS,
+# The completion floor's flag and default-deny lists live with the other shared scene codes, so the captured path's
+# automation and the company package read them without this controller's imports.
+from .atlas_automation_plan import (COMPLETION_FLOOR_ERRORS, COMPLETION_FLOOR_REASONS, GENERATED_IN_COLLISION_ONLY,
+                                    JOB_OBJECT_RULE, PRESERVED_SCENE_ORIGINS, SCENE_COMPLETION_NOT_ADMITTED,
                                     preserves_capture)
 from .atlas_pricing import admitted_final_outputs, render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
@@ -49,24 +52,6 @@ _AMENDMENT_RECORD = ("approval_reference", "expires_at_epoch", "authorization_di
 #: the mesh.
 ROUTE_ENV = "BLUEPRINT_WEBSITE_ATLAS_ROUTE"
 ROUTES = ("full", "geometry_only")
-
-#: A preserved capture whose generated gap views were not admitted goes on without them (the room package is the
-#: floor): the flag its result, the scene source and the room record carry.
-SCENE_COMPLETION_NOT_ADMITTED = "scene_completion_not_admitted"
-#: Completion outcomes that take that floor, by code: the review did not pass or its views did not register.
-#: Default-deny: any other stop (money, privacy, a changed binding, a source recovery) stays as it was.
-COMPLETION_FLOOR_REASONS = frozenset({"atlas_completion_visual_review_required",
-                                      "atlas_generated_view_registration_unresolved"})
-#: Raised codes that take it: nothing more may be bought for the review (``website_gemini_receipts``), or the
-#: completion planner's retained answer proposes nothing usable to fill in (``atlas_scene_completion``): it
-#: abstained, chose cameras that are not candidates, gave no gap plan, or cited evidence it was not given.
-#: Nothing is filled in; the captured room goes on. Every other raise (money, release, the canonical planner,
-#: a changed binding) stays a stop.
-COMPLETION_FLOOR_ERRORS = frozenset({"website_gemini_unanswered_dispatches_exhausted",
-                                     "atlas_completion_planner_abstained", "atlas_completion_camera_selection_invalid",
-                                     "atlas_completion_task_gap_plan_missing",
-                                     "atlas_coverage_environment_evidence_invalid"})
-
 
 def completion_floor(completion: dict, splat_root: Path) -> dict:
     """A completion that stopped for a floor reason, as one that admitted nothing; any other, unchanged."""
@@ -1842,6 +1827,10 @@ def finalize_background_result(*, output_root, source_digest, task_context, auto
               "billing_status": "provider_usage_unreported"}
     if complete and background.get("refined_splat"):
         result["refined_splat"] = background["refined_splat"]
+    floor = background.get("scene_completion") if complete else None
+    if isinstance(floor, dict) and floor.get("generated_geometry_rejected") == SCENE_COMPLETION_NOT_ADMITTED:
+        # The cleaned room went on without its generated gap views (``atlas_scene_automation``): said here too.
+        result["scene_completion"] = dict(floor)
     if not_applied:
         # People were erased, so this is no scene as filmed: recorded where the scene source never looks.
         result[NOT_APPLIED_FIELD] = not_applied

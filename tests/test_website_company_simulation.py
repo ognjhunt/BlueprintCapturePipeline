@@ -2425,6 +2425,34 @@ def test_an_estimated_destination_surface_is_named_in_one_sentence_only_when_the
     assert (sim.SURFACE_ESTIMATED_NO_LOOK_NOTE in bare) is expected and sim.SURFACE_ESTIMATED_NOTE not in bare
 
 
+@pytest.mark.parametrize("where", [None, "not_admitted", "unsealed", "other_flag"])
+def test_gap_views_not_admitted_are_named_in_a_package_with_the_job_s_object(job, tmp_path, where):
+    """A completion whose generated gap views were not admitted (``website_atlas_pipeline.SCENE_COMPLETION_NOT_ADMITTED``:
+    a captured object's job, move-the-lamp-2, or a preserved one that builds an object) leaves the areas the video did
+    not show unfilled. The scene source names it on the base scene; the README says so once, with or without the look.
+    A room package says it from its record's flags instead (``test_website_scene_completion_floor``)."""
+    before = sim.simulation_source(job.capture, queue_root=job.queue)
+    preparation = job.capture / "pipeline" / "website_scene_preparation"
+    if where is not None:
+        flag = "scene_completion_not_admitted" if where != "other_flag" else "something_else"
+        _write(preparation / "base_scene.json", {"scene_completion": {
+            "generated_geometry_rejected": flag, "not_admitted_reason": "atlas_completion_visual_review_required"}})
+        handoff = {"status": "intake_ready", "base_scene_path": str(preparation / "base_scene.json")}
+        handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+        if where == "unsealed":
+            handoff["digest"] = "sha256:" + "0" * 64
+        _write(preparation / "handoff.json", handoff)
+    expected = where == "not_admitted"
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert source.get("room") is None and bool(source.get("not_filled_in")) is expected
+    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not expected)
+    for built, name in ((source, "package.zip"), (sim.without_look(source), "bare.zip")):
+        sim.build_package(built, tmp_path / name, literals=[])
+        with zipfile.ZipFile(tmp_path / name) as archive:
+            readme = " ".join(archive.read("README.txt").decode().split())
+        assert readme.count(sim.NOT_FILLED_IN) == (1 if expected else 0)
+
+
 @pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees", "overhang"])
 def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_it_was(job, tmp_path, extent):
     """The object's size read again from its own points, its masks' spill left out (``website_object_extent``):

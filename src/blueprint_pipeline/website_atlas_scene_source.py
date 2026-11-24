@@ -31,7 +31,8 @@ from typing import Any, Mapping
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
-from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, preserves_capture
+from .atlas_automation_plan import (GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY,
+                                    SCENE_COMPLETION_NOT_ADMITTED, preserves_capture)
 from .local_reconstruction_adapters import _sha256_file
 from .website_atlas_preview_store import job_result
 from .website_job_spend_cap import SPENDING_CAP_REACHED
@@ -205,8 +206,10 @@ def _captured_frames_refinement(splat: Mapping[str, Any], source: Mapping[str, A
 
 
 def _completion_not_admitted(result: Mapping[str, Any], completion: Mapping[str, Any]) -> bool:
-    """True when a preserved capture's completion took the floor: nothing generated is in its export."""
-    from .website_atlas_pipeline import COMPLETION_FLOOR_ERRORS, COMPLETION_FLOOR_REASONS, SCENE_COMPLETION_NOT_ADMITTED
+    """True when a completion took the floor: nothing it generated is in the export. A preserved capture's result
+    says so too; a captured object's job says it only on its background's summary (``atlas_scene_automation``),
+    which is then passed as both."""
+    from .atlas_automation_plan import COMPLETION_FLOOR_ERRORS, COMPLETION_FLOOR_REASONS
     return (completion.get('status') == 'completed'
             and completion.get('generated_geometry_rejected') == SCENE_COMPLETION_NOT_ADMITTED
             and completion.get('not_admitted_reason') in COMPLETION_FLOOR_REASONS | COMPLETION_FLOOR_ERRORS
@@ -335,6 +338,13 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         if (result.get("automation") or {}).get("status") != "completed" or background.get("status") != "completed":
             return {"status": "needs_input", "reason": "website_atlas_background_unavailable",
                     "job_reason": background.get("reason")}
+        completion = background.get("scene_completion")
+        if completion is not None:
+            # Flagged, not a stop: the cleaned room went on without its generated gap views
+            # (``atlas_scene_automation.COMPLETION_FLOOR_RECORD``), so the areas no frame saw stay unfilled.
+            if not (isinstance(completion, Mapping) and _completion_not_admitted(completion, completion)):
+                raise ValueError("website_atlas_scene_background_changed")
+            flags = [completion['generated_geometry_rejected']]
     source_pose = result.get("source_pose") or {}
     if result.get("reason") == SPENDING_CAP_REACHED:
         if not background.get("mesh_available") or source_pose.get("status") != "completed":
@@ -425,6 +435,10 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
             or registration.get("digest") != canonical_digest(registration, digest_field="digest")
             or registration.get("splat_manifest_digest") != collision_manifest["digest"]
             or (bundle is not None and registration.get("digest") != bundle.get("mesh_registration_digest"))):
+        raise ValueError("website_atlas_scene_background_changed")
+    refused = None if preserved else (background.get("scene_completion") or {}).get("rejected_generation_result_digest")
+    if refused is not None and refused in (splat_manifest.get("generated_result_digests") or []):
+        # A floored room says its refused views are not in it; a splat fused from them contradicts that.
         raise ValueError("website_atlas_scene_background_changed")
     splat_path, splat_digest = _artifact(splat_root, next(
         row for row in splat_manifest["outputs"] if row["role"] == "splat_ply"))
@@ -521,6 +535,11 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                       **({"walked_floor": level["walked_floor"]} if "walked_floor" in level else {})},
         "operation_id": background_pose["operation"]["id"], "atlas_result_digest": result["digest"],
     }
+    if SCENE_COMPLETION_NOT_ADMITTED in flags:
+        # Read by the company package's README for a package with the job's object in it
+        # (``website_half_preparation.base_scene_notes``); a room package reads its record's flags instead.
+        base["scene_completion"] = {"generated_geometry_rejected": SCENE_COMPLETION_NOT_ADMITTED,
+                                    "not_admitted_reason": completion["not_admitted_reason"]}
     # Every estimate the scene rests on, named for the site's result (``atlas_scene_estimates``).
     from .atlas_scene_estimates import FIELD as ESTIMATES_FIELD, scene_estimates
     estimates = scene_estimates(levelling=level, registration=registration,
