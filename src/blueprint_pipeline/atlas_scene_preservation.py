@@ -69,6 +69,13 @@ def supported_projection_frames(frames, masks=None):
 # One completion pass prepares several camera sets from identical approved
 # frames, and the cross-view support check is quadratic in the frame count.
 _SUPPORT_MASKS = {}
+# Frame sets whose masks stay cached, the least recently used let go first. A
+# preserved completion whose selection holds time-spread views alternates two:
+# the gap survey's photographs (its reference views), every view
+# (``atlas_completion_cameras.context_samples``), then the reference views again
+# for the aimed cameras' survey. With one set kept, the references' masks were
+# computed twice in one pass. Masks are packed bits: about 115 KB a 1280x720 view.
+SUPPORT_MASK_SETS = 2
 # Retained views a source is compared against are decoded once per block of
 # views whose depth, validity and colour fit in this many bytes (8 bytes a
 # pixel, about 7 MB a 1280x720 view), so every source is lifted once per block.
@@ -92,9 +99,12 @@ def _frames_digest(frames):
 
 def _reused_support_masks(frames):
     key = _frames_digest(frames)
-    if key not in _SUPPORT_MASKS:
-        _SUPPORT_MASKS.clear()
-        _SUPPORT_MASKS[key] = _support_masks(frames)
+    if key in _SUPPORT_MASKS:
+        _SUPPORT_MASKS[key] = _SUPPORT_MASKS.pop(key)  # now the most recently used
+        return _SUPPORT_MASKS[key]
+    while len(_SUPPORT_MASKS) >= SUPPORT_MASK_SETS:
+        _SUPPORT_MASKS.pop(next(iter(_SUPPORT_MASKS)))  # let go before the new set is computed
+    _SUPPORT_MASKS[key] = _support_masks(frames)
     return _SUPPORT_MASKS[key]
 
 
