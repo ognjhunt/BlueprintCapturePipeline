@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
@@ -36,6 +37,23 @@ from .local_capture import resolve_local_capture_context
 from .website_scene_geometry import prepare_website_source_frames
 from .website_task_masks import run_website_task_masks
 from .website_task_target_choice import load_target_choices, retain_questions
+from .paid_resource_admission import PaidResourceAdmissionBlocked
+
+#: A typed code as the admission writes its blockers (``website_job_spend_cap_reached``, ``gcp_budget_report_stale``).
+_CODE = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,159}")
+
+
+def _blocker(exc: BaseException) -> str:
+    """The typed code a failure is recorded as. A ``ValueError`` carries its code; a refusal to spend carries the
+    admission's own typed codes (``paid_resource_admission_blocked:<codes>``), so a job stopped for money says which
+    rule stopped it (2026-11-24: an Austin test job recorded only ``PaidResourceAdmissionBlocked``). Any other
+    exception is recorded by its class only, since its text is not a code and may hold anything."""
+    if isinstance(exc, ValueError):
+        return str(exc)
+    if isinstance(exc, PaidResourceAdmissionBlocked) and exc.blockers and all(
+            isinstance(code, str) and _CODE.fullmatch(code) for code in exc.blockers):
+        return str(exc)
+    return type(exc).__name__
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 #: A website analysis that found nothing the task is about goes on flagged with this code, buying no masks.
@@ -510,7 +528,7 @@ def _run_clean_plate_stage(
         except Exception as exc:
             status, mode = "blocked", "source_geometry_blocked"
             reason = "website_source_geometry_unavailable"
-            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+            blockers.append(_blocker(exc))
 
     if source_geometry is not None and not blockers and NOT_FOUND not in (plan.get("flags") or []) and any(
         target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}
@@ -548,7 +566,7 @@ def _run_clean_plate_stage(
             else:
                 status, mode = "blocked", "task_masks_blocked"
                 reason = "website_task_masks_unavailable"
-                blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+                blockers.append(_blocker(exc))
 
     if task_masks is not None and not blockers:
         # Scene preparation needs the plan, the source frames and the task
