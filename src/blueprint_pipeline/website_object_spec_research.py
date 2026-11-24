@@ -725,6 +725,67 @@ def _refused_attempts(root: Path, digest: str) -> list[Path]:
     return sorted(root.glob(f"research-{digest[7:]}.refused-*.json"))
 
 
+#: A research run the provider refused in a way known to bill nothing (``job_retry_policy.provider_refusal_unbilled``):
+#: no credit left, unpaid, past a spend limit, or Blueprint's own key refused. It is settled at $0 and counts no attempt.
+REFUSED_UNBILLED = "refused_unbilled"
+
+
+def _unbilled_refusals(root: Path, digest: str) -> list[Path]:
+    """This research's retired unbilled refusals: ``research-<digest>.unbilled-<n>.json``."""
+    stem = re.escape(f"research-{digest[7:]}.unbilled-")
+    return [path for path in root.glob(f"research-{digest[7:]}.unbilled-*.json")
+            if re.fullmatch(stem + r"\d+\.json", path.name)]
+
+
+def _run_reservations(root: Path, run_id: str) -> list[Path]:
+    """The harness's reservation records for this run (``_provider_reserved`` reads the same)."""
+    found = []
+    for path in (root / "inference_reservations" / "reserved").glob("*.json"):
+        try:
+            if json.loads(path.read_text()).get("run_id") == run_id:
+                found.append(path)
+        except (OSError, ValueError):
+            found.append(path)
+    return found
+
+
+def _provider_completed(root: Path, run_id: str) -> bool:
+    """Whether the harness recorded an answered (billed) call for this run."""
+    completed = root / "inference_reservations" / "completed"
+    return any((completed / path.name).exists() for path in _run_reservations(root, run_id))
+
+
+def _retire_unbilled_refusal(*, path: Path, root: Path, digest: str, receipt: Mapping[str, Any],
+                             task_context: Mapping[str, Any]) -> None:
+    """Settle a refused run at $0, which releases its hold, and move it and its reservation records aside.
+
+    The refusal is first recorded in place, so a stop at any step finishes here on the next run and never reads
+    as a call of unknown outcome. Moved aside, it no longer answers for the research: the next run reserves under
+    its own allocation, through every admission again.
+    """
+    from .website_task_context import website_webapp_request
+    settlement_path = root / f"research-{digest[7:]}.settlement.json"
+    if not settlement_path.is_file():
+        command = {"task_context_digest": task_context["context_digest"],
+                   "allocation_binding_digest": receipt.get("allocation_binding_digest", digest),
+                   "provider": "openai", "completed_request_count": 1, "provider_charge_amount_usd": 0,
+                   "usage_receipt_digest": canonical_digest({"usage": receipt["usage"]})}
+        settlement = website_webapp_request(capture_id=task_context["capture_id"],
+            operation="preparation-settlement", payload={"request_id": task_context["request_id"],
+                "scene_id": task_context["scene_id"], "settlement": command})
+        if settlement.get("status") != "settled":
+            raise ValueError("website_object_spec_agent_settlement_invalid")
+        write_json(settlement_path, settlement)
+    aside = root / f"research-{digest[7:]}.unbilled-{len(_unbilled_refusals(root, digest))}"
+    # Its reservation record would refuse the next run's reservation for the same run id.
+    for reservation in _run_reservations(root, digest[7:23]):
+        moved = aside / "inference_reservations" / "reserved"
+        moved.mkdir(parents=True, exist_ok=True)
+        os.replace(reservation, moved / reservation.name)
+    os.replace(settlement_path, aside.with_name(aside.name + ".settlement.json"))
+    os.replace(path, aside.with_name(aside.name + ".json"))
+
+
 def _retire_refused(*, path: Path, root: Path, digest: str, receipt: Mapping[str, Any], reason: str) -> None:
     """A run with no reservation provably reached no provider; keep it as evidence and free the slot."""
     attempt = len(_refused_attempts(root, digest))
@@ -778,7 +839,11 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
             raise ValueError("website_object_spec_agent_in_progress") from exc
         if path.is_file():
             receipt = json.loads(path.read_text())
-            if receipt.get("status") == "submitting" and not _provider_reserved(root, digest[7:23]):
+            if receipt.get("status") == REFUSED_UNBILLED and receipt.get("binding_digest") == digest:
+                # A stop after the refusal was recorded: finish settling it at $0 and ask again.
+                _retire_unbilled_refusal(path=path, root=root, digest=digest, receipt=receipt,
+                                         task_context=task_context)
+            elif receipt.get("status") == "submitting" and not _provider_reserved(root, digest[7:23]):
                 _retire_refused(path=path, root=root, digest=digest, receipt=receipt,
                                 reason=str(receipt.get("failure") or "unrecorded_before_provider"))
         if path.is_file():
@@ -804,6 +869,8 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
             selected = invoker if invoker is not None else _default_invoker()
             # The WebApp grants one reservation per allocation digest; a retried
             # refusal needs its own, and the refused one's hold is never reused.
+            # A refusal known to bill nothing counts no attempt but still takes a new allocation.
+            attempt += len(_unbilled_refusals(root, digest))
             allocation = digest if attempt == 0 else canonical_digest({"binding_digest": digest,
                                                                        "refused_attempt": attempt})
             admission, _grant = reserve_website_preparation_spend(
@@ -816,7 +883,8 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
                 stream.flush()
                 os.fsync(stream.fileno())
             receipt = _run_agent(path=path, root=root, digest=digest, binding=binding, admission=admission,
-                                 input_value=input_value, invoker=selected, fetcher=fetcher, spec=spec)
+                                 input_value=input_value, invoker=selected, fetcher=fetcher, spec=spec,
+                                 task_context=task_context)
     settlement_path = root / f"research-{digest[7:]}.settlement.json"
     if not settlement_path.is_file():
         command = {"task_context_digest": task_context["context_digest"],
@@ -847,14 +915,20 @@ def _agent_spec(digest: str, fetcher: PageFetcher) -> Any:
 
 
 def _run_agent(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any], admission: Any,
-               input_value: list[dict[str, Any]], invoker: Any, fetcher: PageFetcher, spec: Any) -> dict[str, Any]:
+               input_value: list[dict[str, Any]], invoker: Any, fetcher: PageFetcher, spec: Any,
+               task_context: Mapping[str, Any]) -> dict[str, Any]:
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     fetcher.deadline = time.monotonic() + WALL_CLOCK_SECONDS
     submitted = json.loads(path.read_text())
     audit = InferenceReservationAudit(run_root=root, run_id=digest[7:23])
+    recorded = []
+
+    def record_completion(value):
+        audit.record_completion(value)
+        recorded.append(value)
     try:
         invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
-            record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
+            record_completion=record_completion, restored_reserved_cost_usd=0.0)
         invocation = invoker.invoke(spec, input_value)
     except Exception as exc:  # noqa: BLE001 - reconciled below or held for reconciliation.
         audit.write_manifest()
@@ -862,6 +936,23 @@ def _run_agent(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any
         if not _provider_reserved(root, digest[7:23]):
             _retire_refused(path=path, root=root, digest=digest, receipt=submitted, reason=reason)
             raise ValueError(f"website_object_spec_agent_refused_before_provider:{reason}") from exc
+        from .job_retry_policy import provider_error_status, provider_refusal_unbilled
+        if not recorded and not _provider_completed(root, digest[7:23]) and provider_refusal_unbilled(exc):
+            # The provider refused before any work (no credit, unpaid, a spend limit, a refused key): it bills
+            # nothing. Settled at $0, its hold released and no attempt counted; the research is held for this run
+            # and the job's next run asks again under a new reservation (as the room planner does).
+            status = provider_error_status(exc)
+            receipt = {**submitted, "status": REFUSED_UNBILLED,
+                       "error": {"type": type(exc).__name__, "http_status": status},
+                       "usage": {"cost_basis": "provider_refused_before_work", "cost_is_actual": True,
+                                 "http_status": status}, "cost_usd": 0}
+            temporary = path.with_suffix(".tmp")
+            write_json(temporary, receipt)
+            os.replace(temporary, path)
+            _retire_unbilled_refusal(path=path, root=root, digest=digest, receipt=receipt, task_context=task_context)
+            raise ValueError(f"website_object_spec_agent_provider_refused_unbilled:{type(exc).__name__}") from exc
+        # A 5xx, a plain rate limit, a timeout or any other failure is not known to have billed nothing: its
+        # receipt stays submitting and holds its reservation for reconciliation.
         raise ValueError(f"website_object_spec_agent_failed:{type(exc).__name__}") from exc
     audit.write_manifest()
     findings = ObjectSpecFindings.model_validate(invocation.output).model_dump(mode="json")

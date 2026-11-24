@@ -675,3 +675,21 @@ def test_a_provider_failure_not_known_to_bill_nothing_keeps_its_hold(tmp_path, w
     assert _research(tmp_path, website, invoker)["research"]["reason"].startswith("website_object_spec_agent_failed:")
     assert _research(tmp_path, website, invoker)["research"]["reason"] == "website_object_spec_agent_requires_reconciliation"
     assert len(invoker.calls) == len(website["reserve"]) == 1 and website["settle"] == []
+
+
+def test_a_stop_before_an_unbilled_refusal_is_settled_settles_it_on_the_next_run(tmp_path, website, monkeypatch):
+    root = tmp_path / "spec" / "dishwasher-1"
+    invoker = _ProviderRefusingThenWorking(_findings(), root, _provider_error(429, **NO_CREDIT))
+    settle = control.website_webapp_request
+
+    def unreachable(**_kwargs):
+        raise ValueError("website_control_unreachable")
+
+    monkeypatch.setattr(control, "website_webapp_request", unreachable)
+    assert _research(tmp_path, website, invoker)["status"] == "held"
+    (recorded,) = root.glob("research-*[0-9a-f].json")
+    assert json.loads(recorded.read_text())["status"] == "refused_unbilled"
+    monkeypatch.setattr(control, "website_webapp_request", settle)
+    assert _research(tmp_path, website, invoker)["status"] == "researched"
+    assert [row["provider_charge_amount_usd"] for row in website["settle"]] == [0, 0.21]
+    assert len(invoker.calls) == len(website["reserve"]) == 2
