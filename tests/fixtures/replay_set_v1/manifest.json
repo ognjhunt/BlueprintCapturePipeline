@@ -201,7 +201,7 @@
    "synthetic": true,
    "provenance": "synthetic: built by tests/replay_set_v1_build.py from the replay tools' unit-test builders; no real capture, clip or job record is in it",
    "job_kind": "website_scene_preparation",
-   "description": "An Atlas preview job whose mesh registration refused on its retained inputs, recorded as a deterministic refusal under this release's revision. The controller does not run the step again: the job keeps waiting on its key, and nothing is bought.",
+   "description": "An Atlas preview job whose mesh registration refused on its retained inputs, left by a release before 2026-11-24 waiting on the refusal's key. Since then the refusal ends the job at once as a stop only a new video clears: its next check runs nothing, buys nothing, ends it as needs_input with no retry time and tells the website again, which asks the site for a new video.",
    "input_variety": {
     "video_resolution": "not_applicable",
     "clip_length": "not_applicable",

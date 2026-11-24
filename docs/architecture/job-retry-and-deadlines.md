@@ -236,6 +236,17 @@ retry: the same video and release give the same answer. Two changes answer it.
   (`atlas_insufficient_overlapping_distinct_views`,
   `atlas_coverage_anchor_quality_insufficient`), and a scale no reference supports
   (`atlas_scale_review_unresolved`), already end at once; the website now tells the site what to film.
+  Since 2026-11-24 a room mesh that lies on none of its splat ends the same way
+  (`atlas_mesh_not_registered_to_splat`, `atlas_mesh_frame_ambiguous`: after the closest-frame estimate
+  above, no face is near observed geometry). It is not a finding about the video: the provider makes
+  the mesh from the very splat it is compared with, and the one live case (capture-5b067498,
+  2026-11-07) was Blueprint's own limit, fixed in #3437. But it leaves the rebuild with no collider,
+  and the room's levelling, its base scene, the room package and the company README all need one, so
+  nothing can truthfully ship; it waited on its key, nothing shipped and nothing asked, until a release
+  or the job's deadline. A new video is a new rebuild, the one way on that needs no deploy. A job an
+  earlier release left waiting on that key ends at its next check, and the website is told again.
+  The website must word the ask without blaming the video (WebApp `RECAPTURE_SENTENCES`); until it
+  lists these codes it shows its generic "a step on our side stopped" card.
 
 This replaces item 4 of section 5 for the refusals named here.
 
