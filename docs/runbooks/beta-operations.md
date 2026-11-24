@@ -410,7 +410,8 @@ launch dispatcher uses. Every project in the organization counts.
   room builds wait on it as on an outage, and the stall alarm pages
   `website_provider_account_refused` once, naming the provider and how many jobs
   wait (`preparation_fault_alert`). Adding credit is the fix; the jobs resume by
-  themselves.
+  themselves. A refused planner call, image edit, image repair plan or object
+  research is settled at $0, so its hold stops counting on the job's $40.
 - Whether the WebApp's OpenAI key is in the same organization: owner to
   confirm. If it is not, the WebApp's OpenAI spend is not counted.
 
