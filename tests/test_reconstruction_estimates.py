@@ -96,10 +96,18 @@ def test_a_review_citing_an_unsafe_frame_beside_a_safe_one_drops_that_citation_a
     assert [row["code"] for row in rows] == [estimates.CITATIONS]
 
 
-def test_a_review_whose_object_rests_only_on_unsafe_frames_refuses_once_not_on_a_timer(tmp_path):
+def test_a_review_whose_object_to_remove_rests_only_on_unsafe_frames_refuses_once_not_on_a_timer(tmp_path):
     from blueprint_pipeline import atlas_scene_planner as planner
     survey, proposal, policy = _citing_review(tmp_path)
     proposal["automation"]["objects"][0]["regions"] = proposal["automation"]["objects"][0]["regions"][:1]
+    # Kept as filmed, the object needs no view among the inputs: it leaves the plan, named (proposal review r2).
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    assert review["automation_objects_dropped"] == ["floor"] and review["automation_citations_dropped"] == ["0"]
+    # An object to remove needs its views to be erased from: with none left, the same review repeats the refusal.
+    proposal.update(subject_origin="captured")
+    proposal["coverage_requirements"][0]["role"] = "task_object"
+    proposal["automation"]["objects"][0]["disposition"] = "remove"
+    proposal["automation"]["removal_instruction"] = "Remove the object."
     with pytest.raises(deterministic.DeterministicRefusal, match="atlas_automation_frames_not_selected") as raised:
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
     assert raised.value.inputs == {"proposal_digest": canonical_digest(proposal), "survey_digest": survey["digest"]}

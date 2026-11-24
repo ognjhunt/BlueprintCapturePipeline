@@ -8,6 +8,8 @@ import pytest
 
 from blueprint_pipeline import atlas_scene_planner as planner
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.deterministic_refusal import DeterministicRefusal
+from blueprint_pipeline.job_retry_policy import hard_stop_kind
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
 
@@ -46,13 +48,39 @@ def test_review_cannot_include_unsafe_frames_or_omit_room(tmp_path):
                                    pose_budget=4)["excluded_frame_ids"] == ["2"]
     # ...but it can never be a required view.
     proposal["coverage_requirements"][0]["required_frame_ids"].append("2")
-    with pytest.raises(ValueError, match="privacy_invalid"):
+    with pytest.raises(DeterministicRefusal, match="^atlas_scene_planner_required_view_unsafe$"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
     proposal["coverage_requirements"][0]["required_frame_ids"].remove("2")
     proposal["static_intervals_seconds"] = [[0, 1.5]]
     proposal["coverage_requirements"] = proposal["coverage_requirements"][:1]
-    with pytest.raises(ValueError, match="privacy_invalid"):
+    with pytest.raises(DeterministicRefusal, match="^atlas_scene_planner_task_or_room_coverage_missing$"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+@pytest.mark.parametrize("change, code", [
+    ({"unsafe_frame_ids": ["missing"]}, "atlas_scene_planner_unsafe_frames_invalid"),
+    ({"coverage_requirements": [{"role": "task_object", "label": "object", "required_frame_ids": ["1"]},
+                                {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["2"]}],
+      "unsafe_frame_ids": []}, "atlas_scene_planner_required_views_outside_selection"),
+    ({"anchor_frame_id": "2"}, "atlas_scene_planner_anchor_not_required"),
+    ({"coverage_requirements": [{"role": "task_region", "label": "area", "required_frame_ids": ["1"]},
+                                {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["0"]}],
+      # A captured review that removes an object is not read as treating the room in place.
+      "automation": {"scale_references": [], "objects": [{
+          "target_id": "obj", "label": "object", "segmentation_prompt": "object", "disposition": "remove",
+          "regions": [{"frame_id": "1", "box_xywh_normalized": [.2, .2, .5, .5]}]}],
+          "removal_instruction": "Remove the object.", "mask_margin_fraction": .01}},
+     "atlas_scene_planner_task_or_room_coverage_missing"),
+])
+def test_each_part_of_the_coverage_check_refuses_by_its_own_name(tmp_path, change, code):
+    """Austin (2026-11-24): one code named coverage and privacy for five checks, so no refusal said which failed, and
+    its word "privacy" read as a wall. Each part is decided by the retained review and survey alone: deterministic."""
+    _, survey, proposal, policy = fixture(tmp_path)
+    proposal.update(change)
+    with pytest.raises(DeterministicRefusal, match=f"^{code}$") as refused:
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    assert refused.value.step == "atlas_proposal_review"
+    assert hard_stop_kind(code) is None
 
 
 @pytest.mark.parametrize("violation", [None, "remove", "instruction", "transient", "captured_surrogate", "uncertain"])
@@ -85,6 +113,85 @@ def test_preserved_task_requires_regions_and_keeps_every_captured_object(tmp_pat
         assert result["subject_origin"] == subject_origin
         assert result["automation"]["objects"][0]["disposition"] == "keep"
         assert result["selection_budget"]["maximum_pose_cost_usd"] == 4
+
+
+def _surface_treatment(tmp_path, *, origin="captured"):
+    """The Austin test job's review in small (2026-11-24): "Mop the hard floors in the kitchen, living room and
+    hallway". Floors as task regions, every object kept, nothing removed, and frames showing the camera operator's
+    hands listed as transients, one of them a required kitchen view and the only view of the dishwasher."""
+    _, survey, proposal, policy = fixture(tmp_path)
+    survey["frames"] = [{**survey["frames"][0], "frame_id": str(i), "timestamp_seconds": i} for i in range(6)]
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    proposal.update(subject_origin=origin, static_intervals_seconds=[[0, 5.5]], anchor_frame_id="1",
+                    unsafe_frame_ids=[], transient_frame_ids=["3", "5"],
+                    transients=[{"label": "camera operator's hands", "segmentation_prompt": "human arm"}],
+                    coverage_requirements=[
+                        {"role": "task_region", "label": "kitchen floor", "required_frame_ids": ["1", "3"]},
+                        {"role": "task_region", "label": "hallway floor", "required_frame_ids": ["4"]},
+                        {"role": "surrounding_scene", "label": "kitchen", "required_frame_ids": ["0", "3"]}],
+                    automation={"scale_references": [{
+                        "frame_id": "3", "label": "counter height", "endpoints_normalized": [[.5, .4], [.5, .7]],
+                        "assumed_distance_m": .91, "plausible_distance_range_m": [.84, .99],
+                        "assumption": "a residential counter-height prior"}], "objects": [
+                        {"target_id": "kitchen_floor", "label": "hard floor to mop", "segmentation_prompt": "floor",
+                         "disposition": "keep", "regions": [{"frame_id": "1", "box_xywh_normalized": [0, .5, 1, .5]},
+                                                            {"frame_id": "3", "box_xywh_normalized": [0, .6, 1, .4]}]},
+                        {"target_id": "dishwasher", "label": "dishwasher", "segmentation_prompt": "dishwasher",
+                         "disposition": "keep", "regions": [{"frame_id": "3", "box_xywh_normalized": [.1, .4, .3, .3]}]}],
+                        "removal_instruction": "", "mask_margin_fraction": .01})
+    return survey, proposal, policy
+
+
+@pytest.mark.parametrize("origin", ["captured", "no_manipulated_subject"])
+def test_a_surface_treated_in_place_keeps_the_room_as_filmed_and_leaves_out_every_frame_showing_a_person(tmp_path,
+                                                                                                        origin):
+    """Austin (2026-11-24): the review said ``captured`` for a mopping job yet named no task object and removed
+    nothing, and was refused for want of one; read as ``no_manipulated_subject`` it would have been refused for its
+    transients. Nothing is moved, altered or added, so the room is kept as filmed; that mode erases nobody, so every
+    frame showing a transient is left out (never an input) instead of refused, and the review goes on."""
+    from blueprint_pipeline.atlas_video_inputs import takes_reviewed_background
+    survey, proposal, policy = _surface_treatment(tmp_path, origin=origin)
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    assert review["subject_origin"] == "no_manipulated_subject"
+    assert review.get("subject_origin_proposed") == ("captured" if origin == "captured" else None)
+    assert review["transient_frames_left_out"] == ["3", "5"] and review["required_frames_left_out"] == ["3"]
+    assert review["excluded_frame_ids"] == ["3", "5"]
+    assert not {"transient_frame_ids", "transients", "transient_policy"} & review.keys()
+    assert [row["required_frame_ids"] for row in review["coverage_requirements"]] == [["1"], ["4"], ["0"]]
+    # Its citations of the left-out frame are dropped and flagged; a kept object seen only there leaves the plan.
+    assert review["automation_citations_dropped"] == ["3"] and review["automation"]["scale_references"] == []
+    assert review["automation_objects_dropped"] == ["dishwasher"]
+    assert review["automation"]["objects"] == [{**proposal["automation"]["objects"][0], "regions": [
+        {"frame_id": "1", "box_xywh_normalized": [0, .5, 1, .5]}]}]
+    # The scene as filmed: no edited view, so no RGBD render is held back from posing.
+    assert not takes_reviewed_background(review) and review["selection_budget"]["maximum_pose_cost_usd"] == 4
+    # The planner is told so in its own words.
+    assert "mopping" in planner.SUBJECT_ORIGIN_INSTRUCTIONS and "left out" in planner.SUBJECT_ORIGIN_INSTRUCTIONS
+
+
+@pytest.mark.parametrize("change", ["anchor", "row"])
+def test_a_surface_treatment_whose_only_view_shows_a_person_still_refuses(tmp_path, change):
+    """Leaving frames out never invents a view: an anchor, or a coverage row, that only a frame showing a transient
+    shows has none left, and the review refuses by the code the website words (``atlas_scene_requires_preserved_capture``)."""
+    survey, proposal, policy = _surface_treatment(tmp_path)
+    if change == "anchor":
+        proposal["anchor_frame_id"] = "3"
+    else:
+        proposal["coverage_requirements"][1]["required_frame_ids"] = ["5"]
+    with pytest.raises(ValueError, match="^atlas_scene_requires_preserved_capture$"):
+        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+
+
+def test_a_captured_review_that_removes_its_object_is_never_read_as_treating_the_room_in_place(tmp_path):
+    survey, proposal, policy = _surface_treatment(tmp_path)
+    proposal["coverage_requirements"][0]["role"] = "task_object"
+    proposal["automation"]["objects"][1].update(disposition="remove")
+    proposal["automation"]["removal_instruction"] = "Remove the dishwasher."
+    review = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    # Captured as before: its people are erased, not left out, and its required frames stay.
+    assert review["subject_origin"] == "captured" and "subject_origin_proposed" not in review
+    assert review["transient_frame_ids"] == ["3", "5"] and review["transient_policy"] == "erased_before_reconstruction"
+    assert [row["required_frame_ids"] for row in review["coverage_requirements"]] == [["1", "3"], ["4"], ["0", "3"]]
 
 
 def test_selection_budget_preserves_generated_coverage_before_buying_pose(tmp_path):
@@ -863,7 +970,7 @@ def test_unselected_blurry_candidate_does_not_invalidate_sharp_static_inputs(tmp
     assert review["excluded_frame_ids"] == ["2"] and "quality_excluded_frame_ids" not in review
     survey["frames"][2]["sharpness"] = 19
     proposal["coverage_requirements"][0]["required_frame_ids"].append("2")
-    with pytest.raises(ValueError, match="privacy_invalid"):
+    with pytest.raises(ValueError, match="required_view_unsafe"):
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=2)
 
 
@@ -1021,15 +1128,25 @@ def test_a_view_the_review_cites_as_evidence_becomes_an_input_unless_it_is_unsaf
     assert result["cited_frames_added_to_coverage"] == ["0"]
     assert {"role": "surrounding_scene", "label": "Views the review cites as evidence",
             "required_frame_ids": ["0"]} in result["coverage_requirements"]
-    # An unsafe frame is never an input, cited or not.
+    # An unsafe frame is never an input, cited or not. Kept as filmed, the object it alone showed needs no view
+    # among the inputs: it stays in the scene and leaves the plan, named.
     proposal["unsafe_frame_ids"] = ["0"]
-    with pytest.raises(ValueError, match="atlas_automation_frames_not_selected"):
-        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    result = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+    assert result["automation"]["objects"] == [] and result["automation_objects_dropped"] == ["floor"]
+    assert result["automation_citations_dropped"] == ["0"] and result["excluded_frame_ids"] == ["0"]
+    assert "0" not in {key for row in result["coverage_requirements"] for key in row["required_frame_ids"]}
     # Nor is a frame outside the static intervals.
     proposal["unsafe_frame_ids"] = []
     proposal["static_intervals_seconds"] = [[0.5, 1.5]]
+    assert planner.proposal_review(proposal, survey=survey, policy=policy,
+                                   pose_budget=4)["automation_objects_dropped"] == ["floor"]
+    # An object to remove needs its views: with none left, the review still refuses.
+    _, survey, captured, policy = fixture(tmp_path)
+    automation = _automation()
+    automation["objects"][0]["regions"][0]["frame_id"] = "2"
+    captured["automation"] = automation
     with pytest.raises(ValueError, match="atlas_automation_frames_not_selected"):
-        planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
+        planner.proposal_review(captured, survey=survey, policy=policy, pose_budget=4)
 
 
 def _provider_error(status, *, code, message):

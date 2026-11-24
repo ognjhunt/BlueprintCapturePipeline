@@ -85,8 +85,12 @@ _WORD_SPLIT = re.compile(r"[^0-9a-z]+")
 #:   and rechecked every 30 minutes until the job's deadline, for nothing.
 #: - the WebApp's own configuration states, which it once sent as the consent and brief codes: Blueprint repairs
 #:   them, the site never can, so "consent" in the name is no withdrawal and never ends the job.
+#: - ``atlas_scene_planner_coverage_or_privacy_invalid``: the scene review's answer in the wrong form, no longer
+#:   raised (``atlas_scene_planner.proposal_review`` names each part since its r2). Read as a privacy wall, it ended
+#:   an Atlas job failed at once and no release could reopen it (the Austin test job, 2026-11-24). A reopened job
+#:   runs the review again, whose unsafe-frame rule still refuses before anything is sent.
 NOT_WALL_CODES = ("atlas_coverage_exceeds_frame_budget", "website_atlas_consent_unconfigured",
-                  "website_scene_grant_policy_unconfigured")
+                  "website_scene_grant_policy_unconfigured", "atlas_scene_planner_coverage_or_privacy_invalid")
 _NOT_WALL = re.compile(r"(?<![0-9a-z_])(?:" + "|".join(NOT_WALL_CODES) + r")(?![0-9a-z_])")
 
 

@@ -91,14 +91,17 @@ def _retired(row: Mapping[str, Any], handoff_root: Path) -> bool:
 
 def finished(row: Mapping[str, Any], handoff_root: Path, intent_root: Path) -> bool:
     """Not in flight: refused by the website, its zip delivered, its preparation ended for good or on a hold
-    that waits outside the pipeline (nobody answers a test job), its workspace retired, or its scene chain
-    finished or ended for good. A submission whose outcome is unknown keeps its slot. Read afresh on every
-    check: a held capture a release reopens counts again from the moment its ledger leaves ``completed``.
+    that waits outside the pipeline (nobody answers a test job), its failed attempt's typed ending recorded
+    (``website_preparation_terminal.current_terminal``: its own Atlas job ended for good, so no run of it can
+    finish), its workspace retired, or its scene chain finished or ended for good. A submission whose outcome is
+    unknown keeps its slot. Read afresh on every check: a held capture a release reopens counts again from the
+    moment its ledger leaves ``completed``, and an ended one from its next attempt.
 
     A retired workspace is read from its receipt only while the capture's folder is gone (2026-11-24: retention
     retired nav-doorway-96 and move-the-lamp on 2026-11-21 and both counted for the rest of their seven days,
     since a test job has no scene intent to end): a new delivery that stages the capture again is live again."""
     from .website_preparation_status import held_preparation
+    from .website_preparation_terminal import current_terminal
 
     if row.get("state") == "refused":
         return True
@@ -107,10 +110,11 @@ def finished(row: Mapping[str, Any], handoff_root: Path, intent_root: Path) -> b
     present = False
     for capture in handoff_root.glob(f"*/scenes/site-{row['job_id']}/captures/{row['capture_id']}"):
         present = True
-        status = str(_read(capture / "pipeline_job_ledger.json").get("status") or "")
+        ledger = _read(capture / "pipeline_job_ledger.json")
+        status = str(ledger.get("status") or "")
         if (_read(capture / "pipeline" / "company_simulation" / "company_simulation.json").get("delivered")
                 or (status.startswith("terminal_") and status != "terminal_success")
-                or held_preparation(capture) is not None):
+                or held_preparation(capture) is not None or current_terminal(ledger) is not None):
             return True
     if not present and _retired(row, handoff_root):
         return True

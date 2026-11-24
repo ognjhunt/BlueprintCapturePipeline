@@ -94,6 +94,8 @@ def test_outage_backoff_invalid_bounds_raise(first: object, cap: object) -> None
         ("website_atlas_consent_unconfigured", None),
         ("website_control_http_409:website_atlas_consent_unconfigured", None),
         ("website_scene_grant_policy_unconfigured", None),
+        # A planner answer in the wrong form, retained on jobs failed before proposal review r2.
+        ("atlas_scene_planner_coverage_or_privacy_invalid", None),
         # Only the whole token is taken out: the rest of a message, and a longer code, still count.
         ("website_atlas_consent_unconfigured:consent_revoked", PRIVACY_RIGHTS),
         ("atlas_coverage_exceeds_frame_budget_usd", MONEY),

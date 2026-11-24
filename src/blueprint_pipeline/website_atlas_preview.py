@@ -51,7 +51,8 @@ from pathlib import Path
 from typing import Any
 
 from .atlas_preparation_job_control import (
-    STEP_IN_FLIGHT, _Withdrawn, PreparationJobBusy, _transition, _reason, _NEEDS_NEW_CAPTURE, admission_refusal_code,
+    REOPEN_MARGIN_SECONDS, STEP_IN_FLIGHT, _NEEDS_TASK_INPUT, _WITHDRAWN, _Withdrawn, PreparationJobBusy, _transition,
+    _reason, _NEEDS_NEW_CAPTURE, admission_refusal_code, parked_without_wall as _parked_without_wall,
     preparation_job_lock as preparation_job_lock, retry_preparation_job as retry_preparation_job,
 )
 from .common import write_json
@@ -142,14 +143,9 @@ _AWAITING_AUTHORITY = frozenset({
     # the WebApp's limit, never money (each reservation is still judged on its own, against the $40), and
     # a WebApp release lifts it with no Pipeline deploy: rechecked here until then or the deadline.
     "website_atlas_reservation_summary_too_large", "website_atlas_accounting_response_too_large"})
-# A planner abstention can be re-examined after a source-review fix. It is not
-# proof that the recording must be replaced. Other selection failures keep
-# their existing non-retryable boundary.
-_NEEDS_TASK_INPUT = frozenset({"atlas_scene_subject_origin_uncertain", "atlas_scene_subject_origin_changed",
-                              "atlas_scene_requires_preserved_capture",
-                              "atlas_synthetic_subject_requires_preserved_capture"})
-_WITHDRAWN = frozenset({"source_revoked", "website_capture_withdrawn", "consent_revoked",
-                        "capture_revoked_or_expired"})
+# A planner abstention can be re-examined after a source-review fix. It is not proof that the recording must be
+# replaced. It, the other stops waiting on the site's input (``_NEEDS_TASK_INPUT``) and the withdrawal codes
+# (``_WITHDRAWN``) live in ``atlas_preparation_job_control``, which the preparation's own readers import too.
 
 
 def routing_mode() -> str:
@@ -846,25 +842,9 @@ def _reopen_observed_room(job: dict[str, Any], *, job_dir: Path, now: Callable[[
                        reopened_from=dict(job))
 
 
-#: A reopened review needs room to finish inside the job's own window.
-REOPEN_MARGIN_SECONDS = 86_400
-
-
-def _parked_without_wall(job: Mapping[str, Any]) -> bool:
-    """A job ended failed or needs_input with no retry time, on a reason that is no wall: not privacy, rights or
-    money (``hard_stop_kind``, the spending cap, a withdrawal), not the owner's closing of the run, not a stop only
-    a new video or the site's input clears, and not the job's own end (expired, source gone)."""
-    from .atlas_preparation_job_control import _NOT_RETRYABLE
-    from .hard_stops import JOB_SPEND_CAP
-    from .job_retry_policy import owner_closed
-    from .website_job_spend_cap import SPENDING_CAP_REACHED
-    from .website_recapture_required import ABSTENTION_CODES
-    reason = job.get("reason")
-    return (job.get("state") in {"failed", "needs_input"} and not job.get("retry_at_epoch")
-            and isinstance(reason, str) and hard_stop_kind(reason) is None and not owner_closed(reason)
-            and reason not in (_NOT_RETRYABLE | _NEEDS_NEW_CAPTURE | _NEEDS_TASK_INPUT | _WITHDRAWN
-                               | set(ABSTENTION_CODES.values())
-                               | {"atlas_scene_planner_abstained", SPENDING_CAP_REACHED, JOB_SPEND_CAP}))
+# A reopened review needs room to finish inside the job's own window (``REOPEN_MARGIN_SECONDS``). A job parked on no
+# wall (``_parked_without_wall``), and when its stop is its end (``ended_for_good``), are read in
+# ``atlas_preparation_job_control``, so the preparation that waits on the job reads them the same way.
 
 
 def _reopen_parked(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:

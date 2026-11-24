@@ -620,3 +620,50 @@ def test_a_spent_job_with_no_readable_release_runs_on_the_last_timed_interval(mo
     assert "release_unreadable_timed_fallback" in caplog.text
     monkeypatch.setattr(retry, "_release", lambda: "a" * 40)
     assert retry.spent_waiting({**record, "release_commit": "a" * 40}) is True
+
+
+def test_a_preparation_whose_atlas_job_ended_for_good_is_not_run_again_and_its_status_says_it_ended(failed):
+    """The Austin test job (2026-11-24): its Atlas job ended failed, its five deliveries were spent and the host's
+    retry kept a preparation that could never finish, while its status read as work still going on. Once the
+    capture's own Atlas job ended for good, no run starts (none would buy anything for a scene that cannot come),
+    the attempt records its ending once at a new revision, the status reads ``failed_terminal``, and an operator's
+    reopen of the Atlas job lets the next tick run it again."""
+    import time
+
+    from blueprint_pipeline import website_preparation_status as reader
+    from blueprint_pipeline import website_preparation_terminal as terminal
+    root, raw, context = failed
+    now = time.time()
+    stop = "atlas_context_field_of_view_lost"
+    spent = [{"reason": "release_reopened", "at_epoch": now - 60, "stopped_on": stop}] * 6
+    _job(root, "failed", reason=stop, enqueued_at_epoch=now - 86400, retries=spent)
+    before = listener._read_job_ledger(root)
+    calls = []
+
+    def run_e2e(**kwargs):
+        calls.append(kwargs)
+        return {"status": "completed"}
+    counts = _tick(root, run_e2e, _due(root) + timedelta(days=1))
+    assert counts["atlas_ended"] == 1 and counts["redriven"] == 0 and calls == []
+    ended = listener._read_job_ledger(root)
+    assert ended["revision"] == before["revision"] + 1 and ended["attempt_count"] == before["attempt_count"]
+    assert terminal.current_terminal(ended)["atlas_job"]["reason"] == stop and retry.armed(ended) is not None
+    # Recorded once: the next tick changes nothing.
+    assert _tick(root, run_e2e, _due(root) + timedelta(days=2))["atlas_ended"] == 1
+    assert listener._read_job_ledger(root) == ended and calls == []
+    payload = json.loads(raw)
+    selectors = {"request_id": context["request_id"], "scene_id": ended["scene_id"], "capture_id": ended["capture_id"],
+                 "completion_marker_generation": payload["source_finalize"]["generation"],
+                 "producer_delivery_key": ended["producer_delivery_key"],
+                 "source_payload_sha256": ended["source_payload_sha256"],
+                 "task_context_digest": context["context_digest"]}
+    status = reader.read_preparation_status(capture_root=root, selectors=selectors, schema_version=reader.STATUS_V7)
+    assert (status["state"], status["terminal_reason"], status["code"]) == (
+        "failed_terminal", "retry_exhausted", "preparation_failed_terminal")
+    assert reader.read_preparation_status(capture_root=root, selectors=selectors,
+                                          schema_version=reader.STATUS_V1)["state"] == "failed_retryable"
+    # An operator reopens the Atlas job: the next tick runs the preparation, a new attempt past the ending.
+    _job(root, "processing", stage="queued", enqueued_at_epoch=now - 86400)
+    assert _tick(root, run_e2e, _due(root) + timedelta(days=1))["redriven"] == 1 and len(calls) == 1
+    after = listener._read_job_ledger(root)
+    assert after["status"] == "completed" and terminal.current_terminal(after) is None

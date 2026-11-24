@@ -186,6 +186,32 @@ def reopenable(job, capture_root: Path) -> bool:
             and not capture_withdrawn(capture_root))
 
 
+def atlas_job_ended(capture_root: Path, *, now: float | None = None) -> dict | None:
+    """The capture's own Atlas job's stop when that job ended for good, else None.
+
+    The Atlas job is the capture's one reconstruction: its scene preparation reads that job's scene and no
+    other (``website_atlas_scene_source``). A job parked on no wall that nothing reopens by itself any more
+    (``atlas_preparation_job_control.ended_for_good``: its reopens for that stop spent, or its window leaving no
+    room for one) gives no scene, so no run of the preparation can finish: each run would fail on
+    the same stop, and could buy work for a scene that cannot come (the Austin test job, 2026-11-24, was retried
+    for its whole window). The returned stop is the evidence for that ending. An operator's reopen of the Atlas
+    job (``retry_failed_job``) makes this None again, and the preparation goes on.
+    """
+    from .atlas_preparation_job_control import automatic_reopens, ended_for_good
+    from .website_atlas_preview_store import JOB_FILE, read_job
+    path = Path(capture_root) / "pipeline" / "atlas" / JOB_FILE
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        job = read_job(path)
+    except (OSError, ValueError):
+        return None
+    if not ended_for_good(job, now=time.time() if now is None else now):
+        return None
+    return {"state": job["state"], "reason": job["reason"], "revision": job.get("revision"),
+            "automatic_reopens": automatic_reopens(job)}
+
+
 def _final(job, capture_root: Path, *, waited_on_processing: bool = False) -> bool:
     """The worker's own notion of done: terminal, not waiting to re-check authority, and not reopenable.
 

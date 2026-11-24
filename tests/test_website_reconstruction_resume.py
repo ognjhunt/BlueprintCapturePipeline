@@ -517,3 +517,80 @@ def test_a_wait_on_an_atlas_job_whose_reopens_are_spent_ends_at_its_next_check(w
     assert drain()["pending"] == 0 and len(runs) == 2  # spent: replayed at its next check
     assert not resume.armed(listener._read_job_ledger(root))
     assert drain() == {"resumed": 0, "pending": 0} and len(runs) == 2
+
+
+#: A stop on no wall that the clock and a release reopen (``website_atlas_preview._reopen_parked``).
+PARKED_STOP = "atlas_context_field_of_view_lost"
+
+
+def _spent(now, stop=PARKED_STOP):
+    return [{"reason": "release_reopened", "at_epoch": now - 60, "stopped_on": stop}] * 6
+
+
+@pytest.mark.parametrize("fields, ended", [
+    ({"state": "failed", "reason": PARKED_STOP, "spent": True}, True),
+    ({"state": "needs_input", "reason": PARKED_STOP, "spent": True}, True),
+    ({"state": "failed", "reason": PARKED_STOP, "age_days": 6.5}, True),        # no room left for a reopen
+    ({"state": "failed", "reason": PARKED_STOP}, False),                         # the next release reopens it
+    ({"state": "failed", "reason": PARKED_STOP, "spent": True, "retry_at_epoch": 1}, False),  # rechecked
+    ({"state": "failed", "reason": "atlas_source_rights_unverified", "spent": True}, False),  # a wall ends it
+    ({"state": "failed", "reason": "spending_cap_reached", "spent": True}, False),            # ships what it has
+    ({"state": "needs_input", "reason": "atlas_insufficient_overlapping_distinct_views", "spent": True}, False),
+    ({"state": "needs_input", "reason": "atlas_scene_requires_preserved_capture", "spent": True}, False),
+    ({"state": "processing", "reason": None}, False),
+    ({"state": "ready", "reason": None}, False),
+])
+def test_an_atlas_job_ended_for_good_is_one_nothing_reopens_by_itself_any_more(tmp_path, fields, ended):
+    """The Austin test job (2026-11-24): its Atlas job ended and its preparation stayed failed_retryable, retried
+    for its whole window. Only a job parked on no wall whose reopens are spent, or whose window leaves no room for
+    one, has ended for good: one a release still reopens, one waiting on a wall, the site, a new video or a
+    recheck, and one that shipped what it had are not."""
+    from blueprint_pipeline.atlas_preparation_job_control import ended_for_good
+    now = time.time()
+    fields = dict(fields)
+    spent, age = fields.pop("spent", False), fields.pop("age_days", 1)
+    job = {"schema_version": JOB_SCHEMA, "enqueued_at_epoch": now - 86400 * age, "retry_at_epoch": None, **fields}
+    if spent:
+        job["retries"] = _spent(now, job["reason"])
+    assert ended_for_good(job, now=now) is ended
+    (tmp_path / "pipeline/atlas").mkdir(parents=True)
+    write_json(tmp_path / "pipeline/atlas" / JOB_FILE, job)
+    evidence = resume.atlas_job_ended(tmp_path, now=now)
+    assert (evidence is not None) is ended
+    if ended:
+        assert evidence == {"state": job["state"], "reason": job["reason"], "revision": None,
+                            "automatic_reopens": 6 if "retries" in job else 0}
+
+
+def test_a_capture_with_no_readable_atlas_job_has_none_that_ended(tmp_path):
+    assert resume.atlas_job_ended(tmp_path) is None
+    (tmp_path / "pipeline/atlas").mkdir(parents=True)
+    (tmp_path / "pipeline/atlas" / JOB_FILE).write_text("{not json")
+    assert resume.atlas_job_ended(tmp_path) is None
+
+
+def test_a_failed_preparation_whose_atlas_job_ended_for_good_records_an_ending_bound_to_its_attempt(waiting):
+    """It can never finish, so its ending is recorded (``failed_terminal``, ``retry_exhausted``: "We tried several
+    times and could not get past a problem on our side"), not left reading as work still going on. The record binds
+    the attempt: a later one leaves it behind. A silence-based record of the old producer is still never one."""
+    from blueprint_pipeline.website_preparation_status import _v2_state
+    root = waiting[0]
+    ledger = listener._read_job_ledger(root)
+    failure = {key: value for key, value in ledger.items() if key != resume.FIELD}
+    failure["last_error"] = "website_scene_preparation: website_atlas_job_failed"
+    now = time.time()
+    _job(root, "failed", reason=PARKED_STOP, enqueued_at_epoch=now - 86400, retries=_spent(now))
+    ended = terminal.atlas_job_ending(failure, resume.atlas_job_ended(root, now=now),
+                                      datetime.fromtimestamp(now, timezone.utc))
+    record = terminal.current_terminal(ended)
+    assert record["reason"] == "retry_exhausted" and record["basis"] == terminal.ATLAS_JOB_ENDED
+    assert record["atlas_job"] == {"state": "failed", "reason": PARKED_STOP, "revision": None, "automatic_reopens": 6}
+    assert ended["attempt_history"][-1]["status"] == "preparation_terminal_recorded"
+    assert _v2_state(ended) == ("failed_terminal", "retry_exhausted")
+    assert _v2_state(failure) == ("failed_retryable", None)
+    # A new attempt (an operator reopened the Atlas job, a redelivery) leaves the ending behind.
+    assert terminal.current_terminal({**ended, "attempt_count": ended["attempt_count"] + 1}) is None
+    assert terminal.current_terminal({**ended, "status": "processing", "lease_token": "t"}) is None
+    # The old producer's silence-based annotation is history, never a disposition.
+    legacy = {**ended, terminal.TERMINAL_FIELD: {**record, "schema_version": terminal.SCHEMA_VERSION}}
+    assert terminal.current_terminal(legacy) is None and _v2_state(legacy) == ("failed_retryable", None)
