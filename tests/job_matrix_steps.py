@@ -368,6 +368,29 @@ def company_zip(row: Mapping[str, Any], compiled: Mapping[str, Any], work: Path)
     if zip_spec.get("reason"):
         change["rule_withheld"] = {"reason": zip_spec["reason"]}
         feed += " + a reason no handoff gives (" + zip_spec["reason"] + ")"
+    if zip_spec.get("object_source"):
+        # What the job's object is (stress round 2, 2026-11-24): the half bound to a preparation whose stage-3
+        # configuration the one-object route made (website_supplied_mesh.supplied_mesh_configuration), as a compile
+        # binds it (preparation_sha256): a library model (the library tests' fixture, deployed as this process's
+        # catalog), the plan's parametric shape (a fit, or a misfit that leaves ARTISAN), or ARTISAN.
+        from tests.test_website_object_library import _configuration, _subject
+        from blueprint_pipeline.website_supplied_mesh import supplied_mesh_configuration
+        source = zip_spec["object_source"]
+        folder = job.capture / "pipeline" / "website_scene_preparation"
+        folder.mkdir(parents=True, exist_ok=True)
+        if source == "generated":
+            configuration = _configuration()
+        else:
+            configuration = supplied_mesh_configuration(
+                _configuration(), synthetic=None, synthetic_authoring=None,
+                parametric={"target_id": "tote", "shape": zip_spec.get("shape", "tote")} if source == "parametric"
+                else None, subject_id="tote", sim_min=[0, 0, 0], sim_max=list(zip_spec.get("extents", (0.6, 0.4, 0.3))),
+                library=_subject(job.capture / "lib") if source == "library" else None,
+                library_root=folder / "model" if source == "library" else None)
+        preparation = folder / "preparation.json"
+        preparation.write_text(json.dumps({"authoring_inputs": {"configuration": configuration}}))
+        change["preparation_sha256"] = "sha256:" + hashlib.sha256(preparation.read_bytes()).hexdigest()
+        feed += f" + the half bound to a preparation whose object source is {source}"
     if change:
         value = {**json.loads(record_path.read_text()), **change, "inputs_digest": ""}
         value = {key: item for key, item in value.items() if item is not None or key not in change}
