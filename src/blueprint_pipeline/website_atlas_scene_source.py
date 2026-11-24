@@ -33,6 +33,7 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest
 from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, preserves_capture
 from .local_reconstruction_adapters import _sha256_file
+from .website_atlas_preview_store import job_result
 from .website_job_spend_cap import SPENDING_CAP_REACHED
 
 PROVIDER = "world_labs_atlas"
@@ -264,7 +265,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         return {"status": "needs_input", "reason": (SPENDING_CAP_REACHED if job.get("reason") == SPENDING_CAP_REACHED
                                                   else f"website_atlas_job_{job.get('state')}"),
                 "job_reason": job.get("reason")}
-    result = _read(job_dir / "result.json")
+    # The shipped result, also while its scale review is asked again and has not finished (``job_result``).
+    result = job_result(job_dir, job.get("result_digest"))
     if result.get("digest") != canonical_digest(result, digest_field="digest") or result["digest"] != job.get("result_digest"):
         raise ValueError("website_atlas_scene_result_changed")
     if result.get('observed_scene_only') is True:

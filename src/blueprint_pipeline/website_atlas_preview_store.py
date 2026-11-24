@@ -17,6 +17,10 @@ LOCK_FILE = "preview.lock"
 ARTIFACT_KIND = "atlas-scene-bundle"
 MAXIMUM_JOB_SECONDS = 7 * 86400
 TERMINAL = frozenset({"ready", "needs_input", "failed", "withdrawn"})
+#: A ready job's shipped result, kept beside ``result.json`` while its scale review is asked again
+#: (``website_atlas_preview._ask_scale_review_again``): the step writes its new result before the job names it, and
+#: puts this one back when it cannot finish (an archive outage, a crash between the two writes).
+SHIPPED_RESULT_FILE = "shipped_result.json"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
@@ -50,6 +54,20 @@ def read_job(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema_version") != SCHEMA:
         raise ValueError("website_atlas_preview_job_invalid")
     return value
+
+
+def job_result(job_dir: Path, digest: Any) -> dict[str, Any]:
+    """The result the job names by ``digest``: ``result.json``, or, while an asked-again review has overwritten it
+    and not finished, the shipped one kept beside it (``SHIPPED_RESULT_FILE``); ``{}`` when neither is."""
+    for name in ("result.json", SHIPPED_RESULT_FILE):
+        path = job_dir / name
+        try:
+            value = {} if path.is_symlink() else json.loads(path.read_text())
+        except (OSError, ValueError):
+            value = {}
+        if isinstance(value, dict) and value.get("digest") == digest:
+            return value
+    return {}
 
 
 def capture_withdrawn(capture_root: Path) -> bool:

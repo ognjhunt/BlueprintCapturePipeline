@@ -136,7 +136,11 @@ the built background is not held for it. The Atlas job asks the review again on
 the outage schedule (2 min doubling to 1 h, never past the job's window;
 `website_atlas_preview.SCALE_REVIEW_DUE`), each ask through every admission
 again, and keeps the shipped room through any answer that is no privacy or
-rights stop. When the review answers, the job's result is the measured room; a
+rights stop. Kept means the job and its `result.json` together: the shipped
+result is copied to `shipped_result.json` before each ask and put back when the
+ask cannot finish (an archive outage, a money stop, a process killed mid-step),
+and the scene source reads that copy while an unfinished ask has overwritten
+`result.json` (`website_atlas_preview_store.job_result`). When the review answers, the job's result is the measured room; a
 handoff already sent is built again from it only when it is replayed
 (`website_held_handoff_replay.superseded_atlas_result`).
 

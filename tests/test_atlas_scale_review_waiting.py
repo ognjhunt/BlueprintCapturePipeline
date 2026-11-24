@@ -14,6 +14,7 @@ import json
 import pytest
 
 from blueprint_pipeline import website_atlas_scene_source as source
+from blueprint_pipeline.atlas_preparation_job_control import STEP_IN_FLIGHT
 from tests.test_atlas_unscaled_room import SCALE_NOT_MEASURED, unscaled_job
 from tests.test_website_atlas_preview import World, _completed, _enqueue, _job
 from tests.test_website_atlas_preview import site  # noqa: F401 - the fixture
@@ -168,3 +169,111 @@ def test_a_money_stop_while_the_review_waits_keeps_the_room_and_stops_asking(mon
     world.clock += 7200
     assert world.advance() == "ready" and len(world.runs) == 2
     assert json.loads(site.job.read_text())["state"] == "ready"
+
+
+def _shipping(place):
+    """The stored unscaled room (``test_atlas_unscaled_room.unscaled_job``) as the Atlas job's own result."""
+    job_dir = unscaled_job(place.capture, reason=WAITING)
+    (job_dir / "preview_job.json").unlink()
+    _enqueue(place)
+    return json.loads((job_dir / "result.json").read_text())
+
+
+def _writes(base, asked):
+    """A step that leaves the room's result as ``finalize_background_result`` does: result.json written first."""
+    import hashlib
+    import zipfile
+    from blueprint_pipeline.task_object_authoring_contracts import write_json
+    from blueprint_pipeline.website_atlas_pipeline import canonical_digest
+
+    def step(kwargs):
+        bundle = kwargs["output_root"] / "downloads/atlas-scene-0123.zip"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr(zipfile.ZipInfo("manifest.json", date_time=(2026, 10, 22, 0, 0, 0)), str(asked))
+        value = {key: item for key, item in base.items() if key != "digest"}
+        value["download"] = {"zip_path": str(bundle), "zip_sha256": "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest(),
+                             "manifest_digest": "sha256:" + "e" * 64}
+        value["source_pose"] = {**value["source_pose"], "asked": asked}
+        value["digest"] = canonical_digest(value, digest_field="digest")
+        write_json(kwargs["output_root"] / "result.json", value)
+        return value
+    return step
+
+
+def _consistent(place):
+    result, job = json.loads((place.job.parent / "result.json").read_text()), _job(place)
+    return result["digest"] == job["result_digest"]
+
+
+def test_an_archive_outage_after_the_review_wrote_a_new_result_keeps_the_shipped_room_readable(monkeypatch, site):  # noqa: F811 - the fixture
+    from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
+    base = _shipping(site)
+    world = World(monkeypatch, site, [_writes(base, 1), _writes(base, 2), _writes(base, 3)])
+    assert world.advance() == "ready"
+    shipped = _job(site)
+    assert source.atlas_scene_source(capture_root=site.capture, output_root=site.capture / "prep")["status"] == "ready"
+    publish = store.publish_configured_scene_artifact
+    monkeypatch.setattr(store, "publish_configured_scene_artifact",
+                        lambda **_: (_ for _ in ()).throw(ConnectionError("artifact store unavailable")))
+    world.clock += 120
+    assert world.advance() == "ready" and len(world.runs) == 2
+    kept = _job(site)
+    assert (kept["archive"], kept["result_digest"]) == (shipped["archive"], shipped["result_digest"])
+    assert _consistent(site)
+    value = source.atlas_scene_source(capture_root=site.capture, output_root=site.capture / "prep")
+    assert value["status"] == "ready" and value["flags"] == [SCALE_NOT_MEASURED]
+    # The store answers again: the review's new result becomes the job's.
+    monkeypatch.setattr(store, "publish_configured_scene_artifact", publish)
+    world.clock += kept["scale_review_due_at_epoch"] - world.clock
+    assert world.advance() == "ready" and len(world.runs) == 3
+    assert _job(site)["result_digest"] != shipped["result_digest"] and _consistent(site)
+
+
+def _then(step, error):
+    """``step``, and then ``error`` raised once its result is written."""
+    def run(kwargs):
+        step(kwargs)
+        raise error
+    return run
+
+
+def test_a_money_stop_after_the_review_wrote_a_new_result_keeps_the_shipped_room_readable(monkeypatch, site):  # noqa: F811 - the fixture
+    from blueprint_pipeline.hard_stops import MoneyStop
+    base = _shipping(site)
+    world = World(monkeypatch, site, [_writes(base, 1), _then(_writes(base, 2), MoneyStop("job_spend_cap_reached"))])
+    assert world.advance() == "ready"
+    shipped = _job(site)
+    world.clock += 120
+    assert world.advance() == "ready" and len(world.runs) == 2
+    kept = _job(site)
+    assert kept["result_digest"] == shipped["result_digest"] and kept["scale_review_due_at_epoch"] is None
+    assert _consistent(site)
+    assert source.atlas_scene_source(capture_root=site.capture, output_root=site.capture / "prep")["status"] == "ready"
+
+
+def test_a_process_killed_between_the_review_result_and_the_job_keeps_the_shipped_room_readable(monkeypatch, site):  # noqa: F811 - the fixture
+    base = _shipping(site)
+    answers = []
+
+    def read_while_running(kwargs):
+        # Another process reads the room while the step runs: the new result is written, the job not yet.
+        _writes(base, 2)(kwargs)
+        answers.append(source.atlas_scene_source(capture_root=site.capture, output_root=site.capture / "prep"))
+        raise SystemExit("killed")
+    world = World(monkeypatch, site, [_writes(base, 1), read_while_running])
+    assert world.advance() == "ready"
+    shipped = _job(site)
+    world.clock += 120
+    with pytest.raises(SystemExit):
+        world.advance()
+    assert answers[0]["status"] == "ready" and not _consistent(site)
+    # Until the next tick the job names the shipped room, and its reader still answers for it.
+    assert source.atlas_scene_source(capture_root=site.capture, output_root=site.capture / "prep")["status"] == "ready"
+    world.clock += 1
+    assert world.advance() == "ready" and len(world.runs) == 2
+    kept = _job(site)
+    assert (kept["archive"], kept["result_digest"]) == (shipped["archive"], shipped["result_digest"])
+    assert kept["retry_at_epoch"] is None and kept["scale_review_due_at_epoch"] == world.clock + 240
+    assert kept["scale_review_last_outcome"]["reason"] == "atlas_preview_step_interrupted"
+    assert _consistent(site) and STEP_IN_FLIGHT not in kept

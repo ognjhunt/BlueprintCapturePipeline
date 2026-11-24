@@ -55,7 +55,7 @@ from .job_retry_policy import (
     MONEY, PRIVACY_RIGHTS, REFUSAL_RETRY_DELAYS_SECONDS, hard_stop_kind, outage_retry_delay, refusal_retry_delay,
     release_switching)
 from .website_atlas_preview_store import (
-    ARTIFACT_KIND, JOB_FILE, LOCK_FILE, MAXIMUM_JOB_SECONDS, SCHEMA, TERMINAL,
+    ARTIFACT_KIND, JOB_FILE, LOCK_FILE, MAXIMUM_JOB_SECONDS, SCHEMA, SHIPPED_RESULT_FILE, TERMINAL,
     bundle_filename, capture_name_matches_request, capture_withdrawn as _withdrawn,
     read_job as _read)
 
@@ -715,23 +715,49 @@ def _scale_review_wait(job: Mapping[str, Any], result: Mapping[str, Any], curren
     return {"scale_review_waits": waits, SCALE_REVIEW_DUE: _by_deadline(job, current + outage_retry_delay(waits))}
 
 
-def _ask_scale_review_again(job: dict[str, Any], *, now: Callable[[], float]) -> dict[str, Any]:
+def _ask_scale_review_again(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:
     """A ready job whose scale review is due runs its step once more, from its receipts: the shipped room stays
     final for everything that reads it (no ``retry_at_epoch``) until the step runs, and the step asks every
-    consent, withdrawal and money admission again before the review is bought."""
-    due, current = job.get(SCALE_REVIEW_DUE), int(now())
+    consent, withdrawal and money admission again before the review is bought. Its result is kept aside first
+    (``SHIPPED_RESULT_FILE``): the step writes the new one before the job names it.
+
+    An ask whose step never returned (a memory kill, a restart) ends as any other unfinished ask: the shipped room
+    is put back, result and job together, and asked again on the outage schedule."""
+    current = int(now())
+    if job.get(_SCALE_REVIEW_ASKING) and STEP_IN_FLIGHT in job:
+        before = {key: value for key, value in job.items() if key != STEP_IN_FLIGHT}
+        return _keep_shipped_room(before, {"state": job["state"], "retry_at_epoch": current,
+                                           "reason": "atlas_preview_step_interrupted"}, current, job_dir)
+    due = job.get(SCALE_REVIEW_DUE)
     if (job.get("state") != "ready" or job.get("retry_at_epoch") or isinstance(due, bool)
             or not isinstance(due, (int, float)) or current < due):
         return job
+    _put_result(job_dir, "result.json", SHIPPED_RESULT_FILE, job.get("result_digest"))
     return {**job, "retry_at_epoch": current, _SCALE_REVIEW_ASKING: True}
 
 
-def _keep_shipped_room(before: Mapping[str, Any], after: dict[str, Any], current: int) -> dict[str, Any]:
+def _put_result(job_dir: Path, source: str, target: str, digest: Any) -> None:
+    """Copy the result ``digest`` names from ``source`` to ``target`` whole: a crash leaves one file or the other."""
+    path = job_dir / source
+    try:
+        data = b"" if path.is_symlink() else path.read_bytes()
+        value = json.loads(data)
+    except (OSError, ValueError):
+        return
+    if isinstance(value, dict) and value.get("digest") == digest and not (job_dir / target).is_symlink():
+        staged = job_dir / f".{target}.staged"
+        staged.write_bytes(data)
+        os.replace(staged, job_dir / target)
+
+
+def _keep_shipped_room(before: Mapping[str, Any], after: dict[str, Any], current: int,
+                       job_dir: Path) -> dict[str, Any]:
     """A scale review asked again never takes a shipped room away unless privacy or rights do.
 
     A fresh ready result stands (measured, or still waiting with its next ask). A withdrawal or a privacy or
-    rights stop stands. Any other outcome puts the ready job back as it was: asked again on the outage
-    schedule, or, after the job's window, a money stop or the owner's closing of the run, not asked again.
+    rights stop stands. Any other outcome puts the ready job back as it was, with the result it names (the step
+    may have written a new ``result.json`` before archiving failed): asked again on the outage schedule, or,
+    after the job's window, a money stop or the owner's closing of the run, not asked again.
     """
     if not before.get(_SCALE_REVIEW_ASKING):
         return after
@@ -747,6 +773,7 @@ def _keep_shipped_room(before: Mapping[str, Any], after: dict[str, Any], current
     stop = (reason in _NOT_RETRYABLE or hard_stop_kind(reason) == MONEY or owner_closed(reason)
             or reason in (SPENDING_CAP_REACHED, JOB_SPEND_CAP))
     waits = (before.get("scale_review_waits") or 0) + 1
+    _put_result(job_dir, SHIPPED_RESULT_FILE, "result.json", before.get("result_digest"))
     kept = {key: value for key, value in before.items() if key != _SCALE_REVIEW_ASKING}
     return {**kept, "retry_at_epoch": None, "last_tick_epoch": after.get("last_tick_epoch", current),
             "scale_review_last_outcome": {"state": after.get("state"), "at_epoch": current, "reason": (
@@ -859,10 +886,11 @@ def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: 
     """One bounded step for one job: Atlas progress, provider cleanup, WebApp delivery."""
     return advance_preparation_job(path, reader=_read,
         step=lambda job: _keep_shipped_room(job, _restore_unfinished_reopen(
-            _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now)), int(now())),
+            _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now)), int(now()), path.parent),
         deliver=lambda job: _deliver(job, now=now),
         refresh=lambda job: _ask_scale_review_again(_reopen_parked_after_release(
-            _reopen_observed_room(job, job_dir=path.parent, now=now), job_dir=path.parent, now=now), now=now),
+            _reopen_observed_room(job, job_dir=path.parent, now=now), job_dir=path.parent, now=now),
+            job_dir=path.parent, now=now),
         now=now, transport=transport)
 
 
