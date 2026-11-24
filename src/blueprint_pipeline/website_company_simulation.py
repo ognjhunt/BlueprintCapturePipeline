@@ -200,6 +200,20 @@ SURFACE_ESTIMATED_NO_LOOK_NOTE = ("The destination shelf or surface the job's ob
                                   "the scan (glass and other see-through or shiny surfaces often do not); it was "
                                   "estimated from its visible edges in the video. That estimate is in the collision "
                                   "file.")
+#: The same in a room package (``website_scene_handoff.write_room_package``), which reads the base scene compile sealed
+#: with the estimate (``website_scene_handoff``) but holds no object to place on it.
+SURFACE_ESTIMATED_ROOM_NOTE = ("The job's destination shelf or surface did not show in the scan (glass and other "
+                               "see-through or shiny surfaces often do not); it was estimated from its visible edges in "
+                               "the video. That estimate is in the collision file, not in the look file.")
+SURFACE_ESTIMATED_ROOM_NO_LOOK_NOTE = ("The job's destination shelf or surface did not show in the scan (glass and "
+                                       "other see-through or shiny surfaces often do not); it was estimated from its "
+                                       "visible edges in the video. That estimate is in the collision file.")
+#: Said for the destination piece instead of ``NOT_PREPARED`` when that surface was estimated and the only code the
+#: piece was left out for is compile's ``task_destination_surface_contact_required``: no spot on the estimated surface
+#: held the object (``website_destination_overhang``; job move-the-lamp-2, 24 Nov).
+NOT_PLACED_ON_ESTIMATED_SURFACE = ("Blueprint could not place the job's object on that estimated surface: no spot on "
+                                   "it held the object's estimated footprint.")
+DESTINATION_CONTACT_CODE = "task_destination_surface_contact_required"
 #: The job's object was sized from its own points across the frames, its masks' spill left out (``website_object_extent``,
 #: read from the preparation the job's scene handoff names). A room package holds no object and says nothing of it.
 SIZE_FROM_ITS_POINTS_NOTE = ("The job's object's size was estimated from the video's points of the object that the "
@@ -1099,6 +1113,15 @@ def _counted(many: str, one: str, count: int) -> str:
     return one if count == 1 else many.format(count=count)
 
 
+def _not_prepared(piece: str, codes: Sequence[str], *, surface_estimated: bool) -> str:
+    """A room package's sentence for one piece it left out, for the codes it was left out for."""
+    if all(code == SPENDING_CAP_REACHED for code in codes):
+        return NOT_PREPARED_AT_CAP.format(piece=piece)
+    if piece == "destination" and surface_estimated and all(code == DESTINATION_CONTACT_CODE for code in codes):
+        return NOT_PLACED_ON_ESTIMATED_SURFACE
+    return NOT_PREPARED.format(piece=piece)
+
+
 def _stated(up: str | None, metres: float | None) -> str:
     unit = None if metres is None else f"{metres:g} {'metre' if metres == 1 else 'metres'} per unit"
     stated = [f"up axis {up}" if up else None, unit]
@@ -1200,7 +1223,9 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 else GENERATED_LOOK_AND_COLLISION_NOTE] if source.get("generated_patch") else []),
              # A package with the job's object in it, from its base scene (a room package says it with its room notes).
              *([NOT_FILLED_IN] if source.get("not_filled_in") and room is None else []),
-             *([SURFACE_ESTIMATED_NO_LOOK_NOTE if source.get("look_left_out") else SURFACE_ESTIMATED_NOTE]
+             *([(SURFACE_ESTIMATED_ROOM_NO_LOOK_NOTE if source.get("look_left_out") else SURFACE_ESTIMATED_ROOM_NOTE)
+                if room is not None else
+                (SURFACE_ESTIMATED_NO_LOOK_NOTE if source.get("look_left_out") else SURFACE_ESTIMATED_NOTE)]
                if source.get("surface_estimated") else []),
              *([SIZE_FROM_ITS_POINTS_NOTE] if source.get("size_from_its_points") else []),
              *([SIZE_DISAGREES_WITH_PUBLISHED_NOTE] if source.get("size_disagrees_with_published") else []),
@@ -1212,8 +1237,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_LOCATED] if room.get("not_located") else []),
                 *([OBJECT_NOT_PREPARED] if room.get("object_not_prepared") else []),
                 *([OBJECT_NOT_PLACED] if room.get("object_not_placed") else []),
-                *[(NOT_PREPARED_AT_CAP if all(code == SPENDING_CAP_REACHED for named, code in room["not_prepared"]
-                                              if named == piece) else NOT_PREPARED).format(piece=piece)
+                *[_not_prepared(piece, [code for named, code in room["not_prepared"] if named == piece],
+                                surface_estimated=bool(source.get("surface_estimated")))
                   for piece in NOT_PREPARED_PIECES if any(named == piece for named, _code in room.get("not_prepared") or [])],
                 *([OBJECTS_IN_SCAN if room["objects_in_scan"]
                    else _counted(OBJECTS_TAKEN_OUT, OBJECTS_TAKEN_OUT_ONE, room["objects"])]

@@ -36,6 +36,8 @@ def retained(tmp_path, monkeypatch, request):
     options = getattr(request, "param", {})
     targets = [{"target_id": identifier, "semantic_label": identifier, "segmentation_prompt": identifier,
                 "task_effect": effect, "disposition": disposition,
+                **({"target_role": "destination", "placement_relation": "on"}
+                   if identifier == "desk" and options.get("desk_destination") else {}),
                 "spatial_evidence": [{"timestamp_seconds": 2.0, "box_xywh_normalized": box}]}
                for identifier, effect, disposition, box in [
                    ("object", "manipulated", "remove", [0, 0, .5, .5]),
@@ -241,6 +243,69 @@ def test_a_single_frame_surface_mask_is_kept_once_and_every_retry_reuses_it(reta
         masks.complete_retained_static_task_masks(**kwargs)
     assert completed_path.read_bytes() == tampered
     assert _snapshot(paid_root) == original_paid
+
+
+@pytest.mark.parametrize("retained", [{"desk_destination": True}], indirect=True)
+@pytest.mark.parametrize("one_frame,named", [("desk-b", "desk-b"), ("elsewhere", None), ("taken", None)])
+def test_a_destination_kept_as_one_frame_keeps_beside_it_the_video_track_its_mask_matches(retained, monkeypatch,
+                                                                                          one_frame, named):
+    """Job move-the-lamp-2 (24 Nov): the retained video answer tracked the glass shelf through the video, but its
+    boxes missed the anchors, so the shelf was kept as one frame's image mask, which matched that track (0.91); the
+    estimate of a surface the scan missed then had one frame and refused. The kept selection is unchanged; the
+    video track the one-frame mask matches is named beside it and lifted onto the geometry, read only."""
+    kwargs, paid_root = retained
+    original_paid = _snapshot(paid_root)
+    # The one-frame mask: desk-b's own pixels on that frame, or pixels no desk track holds. ``taken``: desk-b's
+    # pixels, but another target's selection holds desk-b (two targets asked with one prompt): never this surface's.
+    start = {"desk-b": 10, "elsewhere": 2, "taken": 10}[one_frame]
+
+    def ground(**kw):
+        frame = kw["registry"][-1]
+        return {**kw["target"], "segmentation_prompt": "wooden desktop",
+                "spatial_evidence": [{"timestamp_seconds": 2.0, "box_xywh_normalized": [.5, 0, .5, .5]}],
+                "grounding": {"source_frame_id": frame["source_frame_id"], "confidence": .95}}
+
+    def segment(**kw):
+        frame_id = kw["target"]["grounding"]["source_frame_id"]
+        return {"track_id": "desk-image", "label": "desk", "coverage": "single_observed_frame",
+                "observations": [{"source_frame_id": frame_id, "width": 4, "height": 4,
+                                  "runs": [{"start": start, "length": 2}, {"start": start + 4, "length": 2}]}]}
+
+    monkeypatch.setattr(grounding, "ground_task_target", ground)
+    monkeypatch.setattr(masks, "segment_grounded_static_target", segment)
+    completed = masks.complete_retained_static_task_masks(**kwargs)
+    assert completed["targets"][-1]["source_track"]["track_id"] == "desk-image"
+    kept = (paid_root.parent / "task_masks.json").read_bytes()
+    retained_inputs = {key: kwargs[key] for key in ("plan", "source_geometry", "task_masks", "output_root",
+                                                    "view_plan_root")}
+    if one_frame == "taken":
+        floor = completed["targets"][1]
+        completed = {**completed, "targets": [completed["targets"][0], {
+            **floor, "source_track": {**floor["source_track"], "track_id": "desk-b"}}, completed["targets"][2]]}
+        completed["digest"] = masks.canonical_track_digest(completed, digest_field="digest")
+    views = masks.surface_views(**retained_inputs, completed=completed)
+    bound = masks.bind_task_masks_to_geometry(task_masks=completed, source_geometry=kwargs["recovery_geometry"],
+                                              surface_views=views)
+    plain = masks.bind_task_masks_to_geometry(task_masks=completed, source_geometry=kwargs["recovery_geometry"])
+    desk = bound["targets"][-1]
+    # The kept selection, its file and the paid answer are as they were; the desk's own track and bounds too.
+    assert (paid_root.parent / "task_masks.json").read_bytes() == kept
+    assert _snapshot(paid_root) == original_paid
+    assert {key: value for key, value in desk.items() if key != "surface_views"} == plain["targets"][-1]
+    assert completed["targets"][-1]["target_id"] == "desk"
+    assert [row["source_frame_id"] for row in desk["track"]["observations"]] == ["decoded-000000002"]
+    if named is None:
+        assert views == {} and "surface_views" not in desk
+        return
+    assert set(views) == {"desk"}
+    assert {key: value for key, value in views["desk"].items() if key != "track"} == {
+        "basis": masks.SURFACE_VIEWS_BASIS, "track_id": named,
+        "provider_binding_digest": "sha256:" + paid_root.name, "matched_frame_id": "decoded-000000002",
+        "matched_iou": 1.0, "minimum_iou": masks.SURFACE_VIEWS_MIN_IOU}
+    assert desk["surface_views"]["track_id"] == named and desk["surface_views"]["track"]["label"] == "desk"
+    assert [row["source_frame_id"] for row in desk["surface_views"]["track"]["observations"]] == [
+        "decoded-000000000", "decoded-000000002"]
+    assert bound["digest"] == masks.canonical_track_digest(bound, digest_field="digest")
 
 
 @pytest.mark.parametrize("change,error", [

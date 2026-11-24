@@ -1103,11 +1103,13 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # Atlas job had already sealed its planner's removals, the job's objects are out of the scan too.
             return room_package(resolved.profile_id if resolved is not None else None,
                                 {"targets": []} if navigation else None, taken_out=scan_taken_out())
-        from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
+        from .website_task_masks import (bind_task_masks_to_geometry, complete_retained_static_task_masks,
+                                         surface_views)
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile
         family = canonical_task_family(effective_task_profile(task_context=context, **semantics_options))
         result.pop("provider_mutation_performed", None)
+        views: dict[str, Any] = {}
         if family is None and (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
             result["deferred_masks_controller_invoked"] = True
             plan_path = Path(clean_plate["removal_plan_path"])
@@ -1125,16 +1127,20 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # Kept surfaces' full-video source tracks stay compact (``RunLengths``) through
             # binding, coverage, compile and the native inputs; each writes and hashes them
             # with the codec, to the bytes and digests the plain lists give.
-            masks = complete_retained_static_task_masks(plan=json.loads(plan_path.read_text()),
-                source_geometry=clean_plate["source_frames"], task_masks=clean_plate["task_masks"],
-                output_root=plan_path.parent / "task_masks",
-                view_plan_root=plan_path.parent / "mask_view_plan", compact_runs=True, **recovery_options)
+            retained = {"plan": json.loads(plan_path.read_text()), "source_geometry": clean_plate["source_frames"],
+                        "task_masks": clean_plate["task_masks"], "output_root": plan_path.parent / "task_masks",
+                        "view_plan_root": plan_path.parent / "mask_view_plan"}
+            masks = complete_retained_static_task_masks(**retained, compact_runs=True, **recovery_options)
+            # A destination kept as one frame's mask keeps, beside it, the retained video track that mask matches:
+            # the frames an estimate of a surface the scan missed (a glass shelf) needs. Read only.
+            views = surface_views(**retained, completed=masks)
             clean_plate = {**clean_plate, "task_masks": masks}
         geometry = atlas["source_geometry"]
         result.update(geometry_backend=geometry["geometry_backend"],
                       atlas_scene_source={key: atlas[key] for key in (
                           "status", "source_pose_digest", "background_pose_digest", "alignment")})
-        masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
+        masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry,
+                                            **({"surface_views": views} if views else {}))
         write_track_json(root / "task_masks.geometry.json", masks)
         clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
         from .website_target_background_worker import queue_correction

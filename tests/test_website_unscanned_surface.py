@@ -299,3 +299,42 @@ def test_the_shelf_is_estimated_and_used_the_same_in_a_collider_whose_up_is_minu
     assert record["sides_m"][0] == pytest.approx(0.2, abs=0.05) and record["sides_m"][1] == pytest.approx(0.6, abs=0.06)
     assert "task_destination_surface_contact_required" not in value["blockers"], value["blockers"]
     assert value["destination"]["position_world_m"][2] == pytest.approx(expected, abs=0.02)
+
+
+def test_a_shelf_masked_in_one_frame_is_estimated_in_the_frames_of_the_video_track_that_mask_matches(tmp_path):
+    """Job move-the-lamp-2 (24 Nov): the glass shelf was kept as one frame's mask, so the estimate refused it on
+    ``too_few_masked_frames`` and the room package shipped without the lamp. The retained video track that one-frame
+    mask matches (``website_task_masks.surface_views``) shows the shelf in every frame; the estimate reads those, under
+    every check it has, and records where they came from."""
+    views = _views(False)
+    seen = max(range(len(views)), key=lambda index: int(views[index][3].sum()))
+    one = [view[3] if index == seen else np.zeros_like(view[3]) for index, view in enumerate(views)]
+    args = _arguments(tmp_path, shelf_masks=one)
+    masks = args["task_masks"]
+    shelf = masks["targets"][1]
+    assert len(shelf["track"]["observations"]) == 1
+    shelf["surface_views"] = {"basis": "retained_video_track_matching_the_one_frame_mask", "track_id": "video-shelf",
+                              "matched_frame_id": f"frame-{seen}", "matched_iou": 0.91,
+                              "track": _track("glass_shelf", [view[3] for view in views])}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    value = preparation.compile_website_scene_preparation(**args)
+    record = value["destination_surface_estimate"]
+    assert record["status"] == "estimated", record.get("reasons")
+    assert record["masked_frames"] == len(CAMERAS) and record["frames_outline"]["agreeing_frames"] == len(CAMERAS)
+    assert record["masks"] == {"basis": "retained_video_track_matching_the_one_frame_mask", "track_id": "video-shelf",
+                               "matched_frame_id": f"frame-{seen}", "matched_iou": 0.91, "own_masked_frames": 1}
+    assert record["top_z_world_m"] == pytest.approx(SHELF_TOP_Z, abs=0.02)
+    assert record["flag"] == DESTINATION_SURFACE_ESTIMATED
+    assert "task_destination_surface_contact_required" not in value["blockers"], value["blockers"]
+    assert value["destination"]["position_world_m"][2] == pytest.approx(SHELF_TOP_Z, abs=0.02)
+    base = preparation.json.loads((tmp_path / "out" / "base_scene.json").read_text())
+    sealed = next(row for row in base["scene_estimates"] if row["code"] == DESTINATION_SURFACE_ESTIMATED)
+    assert sealed["evidence"]["masks_basis"] == "retained_video_track_matching_the_one_frame_mask"
+    assert DESTINATION_SURFACE_ESTIMATED in preparation_flags(tmp_path / "out" / "preparation.json")
+    # Without those frames the one frame is refused as before, and the same code stops the destination.
+    del shelf["surface_views"]
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    without = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "without"})
+    assert without["destination_surface_estimate"]["reasons"] == ["too_few_masked_frames"]
+    assert "masks" not in without["destination_surface_estimate"]
+    assert "task_destination_surface_contact_required" in without["blockers"]
