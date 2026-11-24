@@ -92,9 +92,11 @@ class Ledger:
 
 @pytest.fixture
 def ledger(monkeypatch, tmp_path):
-    """The real reservation path (``reserve_website_preparation_spend`` and its paid chokepoint) onto ``Ledger``."""
+    """The real reservation path (``reserve_website_preparation_spend`` and its paid chokepoint) onto ``Ledger``; the
+    capture's current source, read before a retained reservation counts again, is the job's own."""
     value = Ledger()
     monkeypatch.setattr(website_task_context, "preparation_webapp_request", value)
+    monkeypatch.setattr(website_task_context, "load_current_website_task_context", lambda **_: dict(CONTEXT))
     monkeypatch.setattr(admission, "_account_monthly_limit_blockers", lambda **_: [])
     monkeypatch.setattr(admission, "_monthly_budget_blockers", lambda _resource_class: [])
     monkeypatch.delenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", raising=False)
@@ -102,13 +104,26 @@ def ledger(monkeypatch, tmp_path):
     return value
 
 
-def _admit(root, objects=OBJECTS):
-    return budget.admit_extra_objects(objects, task_context=CONTEXT, build_plan_digest=PLAN_DIGEST, root=root)
+#: Compile's stage-3 configuration of an object by what it builds it with (``website_supplied_mesh``).
+COMPILED = {"generate": {"authoring_backend": "artisan_v1"},
+            "library": {"authoring_source": "library", "authoring_cost_usd": 0.0},
+            "parametric": {"authoring_source": "parametric", "authoring_cost_usd": 0.0}}
+
+
+def _compiled(objects):
+    """Each object compiled as its plan row sources it (the library and the shape fit): its configuration by target."""
+    return {row["target_id"]: COMPILED[row["sourcing"]] for row in objects
+            if isinstance(row, dict) and "target_id" in row and row.get("sourcing") in COMPILED}
+
+
+def _admit(root, objects=OBJECTS, configurations=None):
+    return budget.admit_extra_objects(objects, task_context=CONTEXT, build_plan_digest=PLAN_DIGEST, root=root,
+                                      configurations=_compiled(objects) if configurations is None else configurations)
 
 
 def _binding(name):
     row = next(row for row in OBJECTS if row["name"] == name)
-    return canonical_digest(budget.reservation_binding(task_context=CONTEXT, build_plan_digest=PLAN_DIGEST, row=row))
+    return canonical_digest(budget.reservation_binding(task_context=CONTEXT, row=row))
 
 
 def test_each_extra_paid_object_reserves_its_own_share_in_the_plans_order_until_the_cap(tmp_path, ledger):
@@ -126,7 +141,8 @@ def test_each_extra_paid_object_reserves_its_own_share_in_the_plans_order_until_
     # Nothing spends past the cap: the carton's $12 fills it exactly.
     assert ledger.total_micros() == 40_000_000
     crate, drill = record["objects"][3], record["objects"][5]
-    assert crate == {"rank": 3, "target_id": "crate", "name": "crate", "sourcing": "generate", "status": budget.KEPT,
+    assert crate == {"rank": 3, "target_id": "crate", "name": "crate", "sourcing": "generate", "route": "generate",
+                     "status": budget.KEPT,
                      "reason": SPENDING_CAP_REACHED, "refused": True, "binding_digest": _binding("crate"),
                      "refusal_code": JOB_SPEND_CAP, "refusal_code_means_one_of": ["job_dollar_cap", "paid_request_count"]}
     # The drill was never asked: it is kept under the crate's refusal, its code as received.
@@ -311,7 +327,8 @@ def test_a_paid_object_reserved_before_a_refusal_ranked_above_it_stays_admitted(
 ])
 def test_objects_that_cannot_be_budgeted_are_refused_before_anything_is_asked(tmp_path, ledger, objects, digest):
     with pytest.raises(ValueError, match=budget.OBJECTS_INVALID):
-        budget.admit_extra_objects(objects, task_context=CONTEXT, build_plan_digest=digest, root=tmp_path)
+        budget.admit_extra_objects(objects, task_context=CONTEXT, build_plan_digest=digest, root=tmp_path,
+                                   configurations=_compiled(objects))
     assert ledger.asked == []
 
 

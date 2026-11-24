@@ -109,7 +109,8 @@ def _fixture(tmp_path: Path, *, rights=None) -> tuple[dict[str, Path], Fetcher]:
     path.write_text(json.dumps(index))
     served = {BASE + path_: data for path_, data in files.items()}
     served[BASE + BOM] = bom
-    return {"nvidia_simready": path}, Fetcher(served)
+    from tests.test_website_object_library import deploy
+    return deploy({"nvidia_simready": path}), Fetcher(served)
 
 
 def test_both_licenses_must_be_allowed_and_an_author_named(tmp_path):
@@ -176,14 +177,24 @@ def test_the_reviewed_package_is_fetched_at_its_commit_composed_and_converted(tm
     from blueprint_pipeline.website_library_notes import changes
     assert changes(design) == "converted it from USD and scaled it"
     assert design["face_count"] == 12  # the guide collider is not part of the model
-    # A changed layer is never used.
+    # A changed layer is never used: fetched again at its pinned sha256 when it can be (stress round 2), else the next
+    # source.
     payload = Path(next(row["path"] for row in subject["files"] if row.get("relative_path") == PAYLOAD))
+    pinned = payload.read_bytes()
     payload.write_text(payload.read_text().replace("30", "31"))
+
+    def down(url, target, *, sha256, max_bytes):
+        raise OSError("no network")
     again = supplied_mesh_configuration(
         {"authoring_backend": "artisan_v1", "metric_envelope": {"maximum_dimension_relative_error": 0.25}},
         synthetic=None, synthetic_authoring=None, parametric=None, subject_id="box", sim_min=[0, 0, 0],
-        sim_max=[0.45, 0.3, 0.225], library=subject, library_root=capture / "model2")
+        sim_max=[0.45, 0.3, 0.225], library=subject, library_root=capture / "model2", library_fetch=down)
     assert again["library_not_used"] == "library_file_changed"
+    healed = supplied_mesh_configuration(
+        {"authoring_backend": "artisan_v1", "metric_envelope": {"maximum_dimension_relative_error": 0.25}},
+        synthetic=None, synthetic_authoring=None, parametric=None, subject_id="box", sim_min=[0, 0, 0],
+        sim_max=[0.45, 0.3, 0.225], library=subject, library_root=capture / "model3", library_fetch=fetch)
+    assert healed["authoring_source"] == "library" and payload.read_bytes() == pinned
 
 
 @pytest.mark.parametrize("repo, request_lines, refused", [

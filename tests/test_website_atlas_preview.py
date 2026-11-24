@@ -806,7 +806,8 @@ def test_a_failed_job_has_had_its_timed_retries_and_only_a_release_reopens_it_wi
     _live_grant(site, world.clock + 7 * 86400)
     monkeypatch.setattr(retry, "_release", lambda: "a" * 40)
     reopened = [{"reason": "release_reopened", "at_epoch": world.clock - 60}] * 6
-    site.job.write_text(json.dumps({**_job(site), "state": "failed", "reason": "atlas_scene_planner_transients_invalid",
+    # Its stop is the one the run repeats (the count is per stop since stress round 2: a new stop has its own six).
+    site.job.write_text(json.dumps({**_job(site), "state": "failed", "reason": _HOST_STOP["blockers"][0],
                                     "retries": reopened, "release_reopened": "z" * 40}))
     world.clock += 30 * 86400 // 10
     world.advance()
@@ -822,12 +823,13 @@ def test_a_job_already_waiting_on_a_deploy_runs_at_its_next_check_and_ends_once_
                                                                                                fixed):
     """move-the-lamp-2 as the host kept it (2026-11-24): parked for input since 2026-11-19 on the code the audit
     misnamed, reopened by three deploys, the same stop on the same retained bytes each time. At its next check
-    after the deploy it runs once more from its receipts, nothing bought again; with the audit fixed it goes on,
-    and were its stop to repeat, the clock would run it twice more and then end it."""
+    after the deploy it runs once more from its receipts, nothing bought again; with the audit fixed it goes on.
+    Were its stop to repeat, now under the audit's own code, the clock would run it on that stop's own schedule
+    (stress round 2: the count is per stop, under one overall bound) and then end it."""
     from blueprint_pipeline import website_preparation_retry as retry
     from blueprint_pipeline.atlas_preparation_job_control import reopens_spent
     _enqueue(site)
-    world = World(monkeypatch, site, [_completed if fixed else _HOST_STOP, _HOST_STOP, _HOST_STOP])
+    world = World(monkeypatch, site, [_completed if fixed else _HOST_STOP, *[_HOST_STOP] * 6])
     _live_grant(site, world.clock + 7 * 86400)
     monkeypatch.setattr(retry, "_release", lambda: "f" * 40)
     host = {**_job(site), "state": "needs_input", "reason": "atlas_context_field_of_view_lost", "stage": "preparation",
@@ -844,12 +846,12 @@ def test_a_job_already_waiting_on_a_deploy_runs_at_its_next_check_and_ends_once_
         return
     assert world.advance() == "needs_input" and len(world.runs) == 1
     assert _job(site)["reason"] == "atlas_context_pixel_axes_changed"  # the audit's own reason now
-    for delay in preview.REFUSAL_RETRY_DELAYS_SECONDS[4:]:
+    for delay in preview.REFUSAL_RETRY_DELAYS_SECONDS:
         world.clock = _job(site)["revised_at_epoch"] + delay
         assert world.advance() == "needs_input"
-    assert len(world.runs) == 3 and reopens_spent(_job(site)) and not _waiting_preparation(_job(site))
+    assert len(world.runs) == 7 and reopens_spent(_job(site)) and not _waiting_preparation(_job(site))
     world.clock += 86400
-    assert world.advance() == "needs_input" and len(world.runs) == 3
+    assert world.advance() == "needs_input" and len(world.runs) == 7
 
 
 def test_an_operators_reopen_starts_the_count_afresh():

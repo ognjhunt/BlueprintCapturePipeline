@@ -401,7 +401,8 @@ def test_invalid_remote_admission_cannot_be_retained_as_restart_authority(monkey
 
 
 def test_a_preparation_reservation_is_journaled_against_its_job_and_the_receipt_is_unchanged(tmp_path, monkeypatch):
-    """Every preparation call names its job in the meter (2026-11-20); its price arrives when it settles."""
+    """Every preparation call names its job in the meter (2026-11-20); its price arrives when it settles, and until
+    then it is held at the cost it was admitted for (stress round 2, 2026-11-24)."""
     from blueprint_pipeline import paid_spend_meter as meter
     monkeypatch.setenv(meter.METER_ROOT_ENV, str(tmp_path))
     received = {}
@@ -418,5 +419,6 @@ def test_a_preparation_reservation_is_journaled_against_its_job_and_the_receipt_
     assert "meter" not in receipt and "meter" not in received
     events, _ = meter.read_journal(tmp_path)
     [row] = meter.journal_rows(events)
-    assert (row["job_id"], row["meter_key"], row["provider"], row["status"]) == (
-        meter.job_key(context()["request_id"]), digest, "gcp", "unpriced")
+    assert (row["job_id"], row["meter_key"], row["provider"], row["status"], row["held_usd"]) == (
+        meter.job_key(context()["request_id"]), digest, "gcp", "held", meter.money("0.12"))
+    assert row["hold_basis"] == meter.UNPRICED_HOLD_BASIS

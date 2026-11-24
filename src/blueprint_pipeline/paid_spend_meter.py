@@ -16,13 +16,17 @@ job, so they are read where they are, not copied:
     (``admission["meter"]["job_id"]``, else the admission's own ``job_id``,
     ``website_request_id`` or ``request_id``, else ``BLUEPRINT_PAID_SPEND_JOB_ID``
     in the process environment, else ``unattributed``). An admission carries a
-    price only when it names one (``admission["meter"]["held_usd"]``); no
-    lane does yet, so these rows count calls, not dollars, until stage 2.
+    price only when it names one (``admission["meter"]["held_usd"]``).
     A grant checked against the account's month at a maximum cost is also
-    journaled with it (``maximum_cost_usd``). The view and the report never
-    count that figure; only the next admissions do, until the next report
-    (``admitted_since``): a grant is in no report written before it.
-    ``record_settlement`` is the matching settlement record.
+    journaled with it (``maximum_cost_usd``). Until its settlement is journaled
+    or a bill of its provider can show it (``BILL_COVERS_AFTER_SECONDS`` after
+    it was admitted), that figure is a hold (``UNPRICED_HOLD_BASIS``, stress
+    round 2, 2026-11-24): before, a grant counted only until the next report
+    (written every minute), so at $380 of $400 one $12 call a minute was judged
+    at $380 each time. The admissions judged before the next report count it
+    too (``admitted_since``): the report names the bytes of each journal file
+    it read, so a grant counts once, in the report or after it, whatever either
+    clock says. ``record_settlement`` is the matching settlement record.
 ``beta_policy_screening`` (screening ledger)
     Each attempt in ``screening_ledger.v1.json``: held at its cap while
     reserved or committed without a verified settlement, then its settled
@@ -60,9 +64,15 @@ answered call settles at its reported usage (provider ``gcp``, where Gemini bill
 A website job is keyed by its WebApp request id: the Pipeline names the
 job's scene and screening site ``site-<request id>``.
 
-The journal is best effort. A process whose sandbox cannot write the meter
-root records nothing and its admission proceeds, because the monthly limit is
-read from reconciled provider billing, not from this journal.
+The account's monthly limit reads this journal (``admitted_since``), so it is
+not best effort where it exists: a grant whose line cannot be written while
+the meter root exists is refused (``JOURNAL_UNWRITABLE``), never admitted
+unseen. A process with no meter root (off the host) journals nothing, as
+before; a clear stop is never refused for it. Each account writes its month in
+files of at most ``ROLL_JOURNAL_FILE_BYTES``, starting a new one before a file
+would pass it, and readers read every file of the month: one they cannot read
+whole refuses new spend (``JournalUnreadable``), and one past
+``NEAR_CAP_JOURNAL_FILE_BYTES`` is flagged before it gets there.
 """
 
 from __future__ import annotations
@@ -104,6 +114,22 @@ OVERHEAD_PROVIDERS = {"openai": "openai", "openai_responses": "openai", "gemini"
                       "anthropic": "anthropic"}
 _OVERHEAD_NAME = re.compile(r"[a-z][a-z0-9_.-]{0,79}")
 MAX_JOURNAL_FILE_BYTES = 16 * 1024 * 1024
+#: A writer starts the next file of its month (``uid-<euid>.<n>.jsonl``) before a file would pass this, so no file nears
+#: the readers' cap and one account's busy month never refuses every admission until the month ends (stress round 2).
+ROLL_JOURNAL_FILE_BYTES = 8 * 1024 * 1024
+#: A file past this was not rolled (another writer, an old release): readers flag it (``NEAR_CAP_GAP``) to page first.
+NEAR_CAP_JOURNAL_FILE_BYTES = 12 * 1024 * 1024
+NEAR_CAP_GAP = "paid_spend_meter_file_near_cap"
+#: A grant whose journal line could not be written while the meter root exists: refused, never admitted unseen.
+JOURNAL_UNWRITABLE = "paid_spend_meter_journal_unwritable"
+#: A grant that named its maximum cost and no held price is held at that cost (``journal_rows``) until it settles or
+#: a bill of its provider read at least ``BILL_COVERS_AFTER_SECONDS`` after it was admitted can show it: the age to
+#: which the account accepts billing evidence (``account_monthly_spend.BILLING_MAX_AGE_SECONDS``).
+UNPRICED_HOLD_BASIS = "admitted_maximum_cost"
+BILL_COVERS_AFTER_SECONDS = 24 * 60 * 60
+#: The report lists each journal hold it counted by meter key, up to this many, so a reservation judged again is not
+#: counted beside its own hold; more, and none is listed (each then counts twice, never less).
+MAX_JOURNAL_HOLDS_LISTED = 1000
 #: Each account's journal is readable by every account on the host, written only by its own (Codex review of #3716):
 #: a grant one account journals must count against the month for an admission another account judges.
 JOURNAL_FILE_MODE = 0o644
@@ -111,6 +137,10 @@ JOURNAL_FILE_MODE = 0o644
 
 class JournalUnreadable(OSError):
     """A journal file of the month could not be read whole: its grants cannot be counted, so new spend waits."""
+
+
+class JournalUnwritable(OSError):
+    """A grant's journal line could not be written while the meter root exists: the account could not count it."""
 
 MAX_LEDGER_BYTES = 32 * 1024 * 1024
 #: Optional on a held row: the last moment its attempt could be billed, from the attempt's own record.
@@ -213,19 +243,38 @@ def record_event(event: Mapping[str, Any], *, root: Path, now: float | None = No
     row["event_id"] = _event_id(str(row["event"]), str(row["meter_key"]), str(row["job_id"]))
     directory = Path(root) / "events" / month_of(at)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"uid-{os.geteuid()}.jsonl"
-    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-                         JOURNAL_FILE_MODE)
-    try:
-        # Every admitting account reads every account's grants (``admitted_since``): a file made before this rule, or
-        # under a stricter umask, is opened up by its own writer. It holds job ids, providers and amounts, no secret.
-        if stat.S_IMODE(os.fstat(descriptor).st_mode) != JOURNAL_FILE_MODE:
-            os.fchmod(descriptor, JOURNAL_FILE_MODE)
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        os.write(descriptor, (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode())
-    finally:
-        os.close(descriptor)
-    return row
+    data = (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    euid = os.geteuid()
+    part = _last_part(directory, euid)
+    while True:
+        path = directory / (f"uid-{euid}.jsonl" if part == 0 else f"uid-{euid}.{part}.jsonl")
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                             JOURNAL_FILE_MODE)
+        try:
+            # Every admitting account reads every account's grants (``admitted_since``): a file made before this rule,
+            # or under a stricter umask, is opened up by its own writer. It holds job ids, providers and amounts.
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) != JOURNAL_FILE_MODE:
+                os.fchmod(descriptor, JOURNAL_FILE_MODE)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            size = os.fstat(descriptor).st_size
+            if size and size + len(data) > ROLL_JOURNAL_FILE_BYTES:
+                part += 1  # full: the month goes on in the next file, under the same lock rule
+                continue
+            if os.write(descriptor, data) != len(data):
+                raise OSError("paid_spend_meter_journal_short_write")
+        finally:
+            os.close(descriptor)
+        return row
+
+
+_PART = re.compile(r"uid-(?P<uid>[0-9]+)(?:\.(?P<part>[1-9][0-9]{0,5}))?\.jsonl")
+
+
+def _last_part(directory: Path, euid: int) -> int:
+    """The highest numbered file of this account's month already written (0 for the first)."""
+    parts = [int(found["part"] or 0) for found in (_PART.fullmatch(name) for name in os.listdir(directory))
+             if found and int(found["uid"]) == euid]
+    return max(parts, default=0)
 
 
 def record_admission(*, job_id: Any, meter_key: str, resource_class: str, held_usd: Any = None,
@@ -267,17 +316,21 @@ def admission_meter_key(admission: Mapping[str, Any]) -> str | None:
 def meter_chokepoint_admission(admission: Mapping[str, Any], *, resource_class: str, schema_version: str,
                                spend_effect: str = "new_spend", environ: Mapping[str, str] | None = None,
                                now: float | None = None, maximum_cost_usd: Any = None) -> None:
-    """Journal one grant the chokepoint issued. Never raises and never changes the admission.
+    """Journal one grant the chokepoint issued; never changes the admission.
 
     ``maximum_cost_usd`` is the most the call can cost, as the account's month was judged for it; it is kept
-    on the row (``MAXIMUM_COST_FIELD``) for the admissions judged before the next report (``admitted_since``).
+    on the row (``MAXIMUM_COST_FIELD``): a hold until the grant settles (``journal_rows``), and counted by the
+    admissions judged before the next report (``admitted_since``). The account's limit reads this line, so when it
+    cannot be written while the meter root exists this raises ``JournalUnwritable`` (stress round 2: a full disk
+    let every grant through at the report's stale count); the chokepoint refuses the grant. With no meter root (off
+    the host) nothing is journaled and nothing is raised.
     """
 
+    env = os.environ if environ is None else environ
+    root = meter_root(env)
+    if root is None:
+        return
     try:
-        env = os.environ if environ is None else environ
-        root = meter_root(env)
-        if root is None:
-            return
         meter = admission.get("meter") if isinstance(admission.get("meter"), Mapping) else {}
         job_id = (meter.get("job_id") or admission.get("job_id") or admission.get("website_request_id")
                   or admission.get("request_id") or env.get(JOB_ID_ENV))
@@ -294,8 +347,10 @@ def meter_chokepoint_admission(admission: Mapping[str, Any], *, resource_class: 
                          admission_schema_version=schema_version, spend_effect=spend_effect,
                          allocation_binding_digest=str(binding) if binding is not None else None,
                          **({MAXIMUM_COST_FIELD: str(quote)} if quote is not None else {}))
-    except Exception:  # noqa: BLE001 - metering is visibility; the monthly limit reads billing, not this
-        return
+    except Exception as exc:  # noqa: BLE001 - whatever stopped the line, the grant would go uncounted
+        if Path(root).is_dir():
+            raise JournalUnwritable(f"{JOURNAL_UNWRITABLE}:{type(exc).__name__}") from exc
+        return  # no meter root this process can see: nothing is journaled here, as before
 
 
 @contextmanager
@@ -304,7 +359,7 @@ def admission_lock(environ: Mapping[str, str] | None = None) -> Iterator[None]:
 
     Without it two processes could both be judged at the same count and both admitted. The lock file lives in
     the meter root beside the journal; a process that cannot open it (no meter root, or a sandbox that sees
-    none) is not locked, just as its grants are not journaled (best effort, as the journal is).
+    none) is not locked, and journals nothing either (``meter_chokepoint_admission``).
     """
 
     descriptor = None
@@ -331,36 +386,66 @@ def admission_lock(environ: Mapping[str, str] | None = None) -> Iterator[None]:
             os.close(descriptor)
 
 
+def _read_file(path: Path, start: int = 0) -> tuple[list[str], int]:
+    """The whole lines of a journal file from byte ``start`` on, and where they end, read under a shared lock (a
+    writer appends whole lines under an exclusive one). Raises ``JournalUnreadable`` for a file that is not a regular
+    one, is past ``MAX_JOURNAL_FILE_BYTES`` or cannot be read: its grants cannot be counted."""
+    try:
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_JOURNAL_FILE_BYTES:
+            raise JournalUnreadable(path.name)
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            with os.fdopen(os.dup(descriptor), "rb") as stream:
+                stream.seek(start)
+                data = stream.read(MAX_JOURNAL_FILE_BYTES + 1)
+        finally:
+            os.close(descriptor)
+        if start + len(data) > MAX_JOURNAL_FILE_BYTES:
+            raise JournalUnreadable(path.name)
+        data.decode("utf-8")  # a file that is not text cannot be counted: refused whole, as before
+        # Writers append whole lines under the exclusive lock, so a line with no end is a damaged one: skipped, as a
+        # line that is not JSON is, and left after the mark, so a later reader sees it as it is then.
+        whole = data[:data.rfind(b"\n") + 1]
+        return whole.decode("utf-8").splitlines(), start + len(whole)
+    except JournalUnreadable:
+        raise
+    except (OSError, UnicodeDecodeError) as exc:
+        raise JournalUnreadable(path.name) from exc
+
+
 def admitted_since(root: Path | None, since_epoch: float, *, now: float,
-                   exclude_meter_key: str | None = None) -> Decimal:
-    """What the grants journaled at or after ``since_epoch``, in the UTC month of ``now``, were admitted for.
+                   exclude_meter_key: str | None = None, after: Mapping[str, Any] | None = None) -> Decimal:
+    """What the grants journaled since a report read the journal, in the UTC month of ``now``, were admitted for.
 
     The account's month is judged from a report written up to a few minutes before (``account_monthly_spend``);
-    a grant issued since is in none of its figures. Each counts at the most it was admitted or held for
-    (``MAXIMUM_COST_FIELD``, ``held_usd``), once per meter key. ``exclude_meter_key`` is the reservation being
-    judged, whose own cost the caller adds. A stop counts nothing, nor does an admission that names no amount:
-    none is made up for it. A file of the month this process cannot read whole raises ``JournalUnreadable``: its
-    grants cannot be counted, so the caller refuses new spend.
+    a grant journaled after it read the journal is in none of its figures. ``after`` is what that report read of
+    each file of the month (``"<month>/<file>": bytes``, ``journal_read_marks``): the lines after it count, so no
+    clock decides and a grant counts once, in the report or here; a file it does not name is read whole. Without
+    ``after`` (a report that names none), the grants journaled at or after ``since_epoch`` count. Each counts at the
+    most it was admitted or held for (``MAXIMUM_COST_FIELD``, ``held_usd``), once per meter key.
+    ``exclude_meter_key`` is the reservation being judged, whose own cost the caller adds. A stop counts nothing,
+    nor does an admission that names no amount: none is made up for it. A file of the month this process cannot read
+    whole raises ``JournalUnreadable``: its grants cannot be counted, so the caller refuses new spend.
     """
 
     if root is None:
         return Decimal(0)
-    directory = Path(root) / "events" / month_of(now)
+    month = month_of(now)
+    directory = Path(root) / "events" / month
     if directory.is_symlink() or not directory.is_dir():
         return Decimal(0)
     amounts: dict[str, Decimal] = {}
     for path in sorted(directory.glob("uid-*.jsonl")):
         # Fail closed (Codex review of #3716): a file of the month this process cannot read whole, another account's
         # or a damaged one, may hold grants; counting it as nothing could admit spend past the limit.
-        try:
-            info = os.lstat(path)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_JOURNAL_FILE_BYTES:
-                raise JournalUnreadable(path.name)
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except JournalUnreadable:
-            raise
-        except (OSError, UnicodeDecodeError) as exc:
-            raise JournalUnreadable(path.name) from exc
+        start = 0
+        if after is not None:
+            mark = after.get(f"{month}/{path.name}")
+            size = path.lstat().st_size if path.exists() else 0
+            start = int(mark) if isinstance(mark, int) and not isinstance(mark, bool) and 0 <= mark <= size else 0
+        lines, _end = _read_file(path, start)
         for number, line in enumerate(lines):
             try:
                 row = json.loads(line)
@@ -370,9 +455,9 @@ def admitted_since(root: Path | None, since_epoch: float, *, now: float,
                     or row.get("event") != "admission" or row.get("spend_effect") == "stop"):
                 continue
             at = _finite(row.get("at_epoch"))
-            if at is None or at < since_epoch:
+            if at is None or (after is None and at < since_epoch):
                 continue
-            key = str(row.get("meter_key") or "") or f"{path.name}:{number}"
+            key = str(row.get("meter_key") or "") or f"{path.name}:{start}:{number}"
             if exclude_meter_key and key == exclude_meter_key:
                 continue
             figures = [value for value in (money(row.get(MAXIMUM_COST_FIELD)), money(row.get("held_usd")))
@@ -394,22 +479,25 @@ def _journal_files(root: Path) -> list[Path]:
     return files
 
 
-def read_journal(root: Path | None) -> tuple[list[dict[str, Any]], list[str]]:
-    """Every journal event, and a gap for each file that could not be read whole."""
+def read_journal(root: Path | None, *, marks: dict[str, int] | None = None
+                 ) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every journal event, and a gap for each file that could not be read whole (``NEAR_CAP_GAP`` too for one past
+    ``NEAR_CAP_JOURNAL_FILE_BYTES``). ``marks``, when given, is filled with how far each file was read
+    (``"<month>/<file>": bytes``): a report names it so the admissions after it count only what it did not read."""
 
     if root is None:
         return [], []
     events, gaps = [], []
     for path in _journal_files(Path(root)):
         try:
-            info = os.lstat(path)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_JOURNAL_FILE_BYTES:
-                gaps.append("paid_spend_meter_journal_file_unreadable")
-                continue
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
+            lines, end = _read_file(path)
+        except JournalUnreadable:
             gaps.append("paid_spend_meter_journal_file_unreadable")
             continue
+        if end > NEAR_CAP_JOURNAL_FILE_BYTES:
+            gaps.append(NEAR_CAP_GAP)
+        if marks is not None:
+            marks[f"{path.parent.name}/{path.name}"] = end
         for line in lines:
             try:
                 row = json.loads(line)
@@ -450,11 +538,18 @@ def journal_rows(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                "admitted_at_epoch": admission.get("at_epoch"), "held_usd": None, "settled_usd": None,
                "settled_at_epoch": None, "status": "unpriced",
                BILLABLE_UNTIL_FIELD: _finite(admission.get(BILLABLE_UNTIL_FIELD))}
+        quote = money(admission.get(MAXIMUM_COST_FIELD))
+        admitted = _finite(admission.get("at_epoch"))
         if settlement is not None:
             row.update(status="settled", settled_usd=money(settlement.get("settled_usd")),
                        settled_at_epoch=settlement.get("at_epoch"))
         elif held is not None:
             row.update(status="held", held_usd=held)
+        elif quote is not None and admitted is not None and admission.get("spend_effect") != "stop":
+            # It named the most it can cost and no price: held at that until it settles or a bill can show it, never
+            # past the month after the bill could (``meter_view``).
+            row.update(status="held", held_usd=quote, hold_basis=UNPRICED_HOLD_BASIS,
+                       **{BILLABLE_UNTIL_FIELD: row[BILLABLE_UNTIL_FIELD] or admitted + BILL_COVERS_AFTER_SECONDS})
         rows.append(row)
     return rows
 
@@ -553,25 +648,51 @@ def hold_counts_in_month(row: Mapping[str, Any], *, now: float) -> bool:
     return until is None or until >= month_start(now)
 
 
-def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[str] = ()) -> dict[str, Any]:
+def covered_by_bill(row: Mapping[str, Any], bills: Mapping[str, float] | None) -> bool:
+    """Whether a grant held at its maximum cost (``UNPRICED_HOLD_BASIS``) is now shown by its provider's bill: a
+    reading of that bill (``bills``: provider to the epoch it was read at) taken ``BILL_COVERS_AFTER_SECONDS`` or
+    more after the grant was admitted. The bill then counts it, and the hold would count it twice."""
+
+    observed = (bills or {}).get(str(row.get("provider") or ""))
+    admitted = _finite(row.get("admitted_at_epoch"))
+    return (row.get("hold_basis") == UNPRICED_HOLD_BASIS and isinstance(observed, (int, float))
+            and admitted is not None and observed >= admitted + BILL_COVERS_AFTER_SECONDS)
+
+
+def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[str] = (),
+               bills: Mapping[str, float] | None = None, journal_marks: Mapping[str, int] | None = None
+               ) -> dict[str, Any]:
     """Per-job metered spend for the UTC month of ``now``, and the totals of those rows.
 
     A settled row counts in the month it settled. A held row counts in every
     month its attempt could still be billed in (``hold_counts_in_month``); one
     whose attempt ended in an earlier month is listed under
-    ``old_unsettled_holds`` for someone to settle and counts in no total. An
-    unpriced admission counts as a call in the month it was admitted. The
-    totals are the sums of the job rows, by construction.
+    ``old_unsettled_holds`` for someone to settle and counts in no total. A
+    grant held at its maximum cost (``UNPRICED_HOLD_BASIS``) counts as one until
+    a bill can show it (``covered_by_bill``) and, past its month, as the call
+    it was. An unpriced admission counts as a call in the month it was
+    admitted. The totals are the sums of the job rows, by construction.
+
+    ``journal``: how far the journal was read (``journal_marks``, for the
+    admissions after it) and each journal hold counted, by meter key, so a
+    reservation judged again is not counted beside its own hold.
     """
 
     month = month_of(now)
     jobs: dict[str, dict[str, Any]] = {}
     old_holds: list[dict[str, Any]] = []
+    journal_holds: dict[str, Decimal] = {}
     for row in rows:
         job = jobs.setdefault(str(row.get("job_id") or UNATTRIBUTED), {
             **_zero(), "admissions": 0, "unpriced_admissions": 0, "by_source": {}, "by_provider_settled_usd": {}})
         source = job["by_source"].setdefault(str(row.get("source")), _zero())
         status = row.get("status")
+        if status == "held" and row.get("hold_basis") == UNPRICED_HOLD_BASIS and (
+                covered_by_bill(row, bills) or not hold_counts_in_month(row, now=now)):
+            status = "unpriced"  # its bill counts it now, or its month is over: the call it was
+        if status == "held" and row.get("source") == SOURCE_JOURNAL and hold_counts_in_month(row, now=now):
+            key = str(row.get("meter_key") or "")
+            journal_holds[key] = journal_holds.get(key, Decimal(0)) + (row.get("held_usd") or Decimal(0))
         settled_at, admitted_at = row.get("settled_at_epoch"), row.get("admitted_at_epoch")
         if status == "settled" and isinstance(settled_at, (int, float)) and month_of(settled_at) == month:
             amount = row.get("settled_usd") or Decimal(0)
@@ -621,8 +742,11 @@ def meter_view(rows: Iterable[Mapping[str, Any]], *, now: float, gaps: Iterable[
                       key=lambda row: (-row["metered_usd"], row["job_id"]))
     old_total = sum((hold["held_usd"] for hold in old_holds), Decimal(0))
     old_holds.sort(key=lambda hold: (-hold["held_usd"], hold["job_id"], hold["source"], hold["meter_key"]))
+    journal = {"period": month, "read_bytes": dict(journal_marks) if journal_marks is not None else None,
+               "holds_usd": ({key: str(amount) for key, amount in sorted(journal_holds.items())}
+                             if len(journal_holds) <= MAX_JOURNAL_HOLDS_LISTED else None)}
     return {"schema_version": VIEW_SCHEMA, "period": month, "generated_at": _utc(now).isoformat(),
-            "jobs": job_rows,
+            "journal": journal, "jobs": job_rows,
             "totals": {**project(totals),
                        # Of the settled spend per provider, what is named overhead rather than a job's.
                        "overhead_by_provider_settled_usd": {name: usd(amount) for name, amount
@@ -653,8 +777,9 @@ def public_view(view: Mapping[str, Any], *, max_jobs: int | None = None) -> dict
 
 
 __all__ = [
-    "ADMISSION_LOCK_FILENAME", "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV", "JOURNAL_FILE_MODE",
-    "JournalUnreadable", "MAXIMUM_COST_FIELD",
+    "ADMISSION_LOCK_FILENAME", "BILL_COVERS_AFTER_SECONDS", "DEFAULT_METER_ROOT", "EVENT_SCHEMA", "JOB_ID_ENV",
+    "JOURNAL_FILE_MODE", "JOURNAL_UNWRITABLE", "JournalUnreadable", "JournalUnwritable", "MAXIMUM_COST_FIELD",
+    "NEAR_CAP_GAP", "NEAR_CAP_JOURNAL_FILE_BYTES", "ROLL_JOURNAL_FILE_BYTES", "UNPRICED_HOLD_BASIS", "covered_by_bill",
     "METER_ROOT_ENV", "RESOURCE_CLASS_PROVIDERS",
     "BILLABLE_UNTIL_FIELD", "OVERHEAD_PREFIX", "OVERHEAD_PROVIDERS", "SOURCE_OPENAI", "SOURCE_OVERHEAD",
     "UNATTRIBUTED", "VIEW_SCHEMA", "admission_lock", "admission_meter_key", "admitted_since", "atlas_rows",

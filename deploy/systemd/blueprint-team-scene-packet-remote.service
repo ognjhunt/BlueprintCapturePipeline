@@ -42,7 +42,9 @@ LoadCredential=remote-cpu-dispatcher:/etc/blueprint/credentials/remote-cpu-dispa
 # created by the first team request's host compile and nothing lands, and a root the registry names elsewhere
 # is refused before anything is staged (remote_cpu_landing_root_unwritable), never after compute is paid.
 # It reads the queue, the inputs it stages and the capture's consent; the standing authority is read-only.
-ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs -/var/lib/blueprint/task-evaluation-inputs/team-scene-halves /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/spend-authority/consumed /var/lib/blueprint/spend-authority/remote-cpu-settled
+# The paid spend meter's journal (optional, -): the account's monthly limit counts each grant this unit's paid
+# admission journals, and a grant whose line cannot be written there is refused (paid_spend_meter.JOURNAL_UNWRITABLE).
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs -/var/lib/blueprint/task-evaluation-inputs/team-scene-halves /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/spend-authority/consumed /var/lib/blueprint/spend-authority/remote-cpu-settled -/var/lib/blueprint/pipeline-control-plane/paid-spend-meter
 ReadOnlyPaths=/var/lib/blueprint/spend-authority/authorizations
 ReadOnlyPaths=-/etc/blueprint/remote-cpu-workers.json
 TasksMax=512

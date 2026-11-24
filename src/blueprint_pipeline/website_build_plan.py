@@ -313,9 +313,11 @@ KEEPS_AS_FILMED = "keep_as_filmed"
 def single_object(decided: Mapping[str, Any] | None, removal: Mapping[str, Any]) -> dict[str, Any] | None:
     """For a job the plan took no object out of alone (one rigid object: today's one-object route, owner direction
     2026-11-24): the object that route removes from the scan and authors, as the removal names it (its one
-    ``manipulated`` entry, no designed object), with the plan's row for it when the plan names one
-    (``{"entry", "row"}``, ``row`` None otherwise). None when the plan took an object out alone (``built`` decides),
-    or when the route cannot be read: no sealed plan decision, or not exactly one such entry."""
+    ``manipulated`` entry, no designed object), with the plan's row for it when the plan names it as the object moved
+    (``{"entry", "row"}``, ``row`` None otherwise). A plan row for that object in another role (the destination, a
+    fixture) disagrees with the analysis the route moves: it is not used (``row`` None) and its role is named
+    (``plan_row_role``). None when the plan took an object out alone (``built`` decides), or when the route cannot
+    be read: no sealed plan decision, or not exactly one such entry."""
     if not isinstance(decided, Mapping) or decided.get("built") is not None or removal.get("synthetic_subject"):
         return None
     entries = removal.get("entries")
@@ -326,6 +328,8 @@ def single_object(decided: Mapping[str, Any] | None, removal: Mapping[str, Any])
     rows = ((decided.get("build_plan") or {}).get("plan") or {}).get("objects") or []
     row = next((dict(item) for item in rows if isinstance(item, Mapping)
                 and item.get("target_id") == manipulated[0]["target_id"]), None)
+    if row is not None and row.get("role") != "moved_object":
+        return {"entry": dict(manipulated[0]), "row": None, "plan_row_role": str(row.get("role"))}
     return {"entry": dict(manipulated[0]), "row": row}
 
 

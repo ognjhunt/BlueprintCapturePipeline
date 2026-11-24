@@ -5,14 +5,16 @@ spend money on creating our own object(s)." The sourcing order for the build pla
 an existing licensed library model first, whatever the plan's sourcing said, then the plan's free parametric shape,
 then the paid generated model (ARTISAN) only for what is left, all inside the job's one cap.
 
-The catalog is checked in (``_catalog_data/object_library_*.json``, built by ``scripts/build_*_object_index.py``):
-Google Scanned Objects, real scanned household objects Google published on Gazebo Fuel under CC BY 4.0, and NVIDIA
-SimReady packages, read only from the pinned URLs NVIDIA reviewed (SimReady Central's submission lists). Rights are a
-hard stop: an entry is a candidate only when every license statement its source makes is, word for word, a spelling
-of a license on ``ALLOWED_LICENSES`` (for SimReady both the package definition's ``license`` and the USD's own
-``asset_license``) and it names its author; anything else, unknown or missing is refused and never shown. So is a
-model whose library asks to be credited in a way the README cannot give (``attribution_refusal``: a link or a name of
-its own), and, for now, the whole M-XR dataset, whose attribution files ask for a web link (``DATASETS_REFUSED``).
+The catalog is checked in (``_catalog_data/object_library_*.json``, built by ``scripts/build_*_object_index.py``) and
+read by ``website_library_catalog``: Google Scanned Objects, real scanned household objects Google published on Gazebo
+Fuel under CC BY 4.0, and NVIDIA SimReady packages, read only from the pinned URLs NVIDIA reviewed (SimReady Central's
+submission lists). Rights are a hard stop: an entry is a candidate only when every license statement its source makes
+is, word for word, a spelling of a license on ``ALLOWED_LICENSES`` (for SimReady both the package definition's
+``license`` and the USD's own ``asset_license``) and it names its author; anything else, unknown or missing is refused
+and never shown. So is a model whose library asks to be credited in a way the README cannot give
+(``attribution_refusal``: a link or a name of its own), and, for now, the whole M-XR dataset, whose attribution files ask
+for a web link (``DATASETS_REFUSED``). A choice sealed under an earlier catalog is looked up in the deployed one each
+time it is used (``rights_now``): here, at compile and in the company package.
 
 Matching, in two steps (``decide_library_object``):
 
@@ -30,9 +32,11 @@ with the plan's row for it where the plan names one (``single_object_row``): wha
 object the success rule scores never change. A plan that keeps it as filmed, a route that cannot be read, and a job
 compiled before this route keep today's builder exactly.
 
-The choice is sealed once per job (``RECORD``), so a job never changes route mid-flight; its files are downloaded
-from an allow-listed host only, size-capped, checked against the sha256 the catalog pinned and cached by content
-(``website_library_asset``). The handoff names the result on the removal manifest (``LIBRARY_SUBJECT``) for compile,
+The choice is sealed once for each reading of the job's object (``RECORD``, ``reading_digest``: the plan's row and the
+task context), so a job never changes route mid-flight; its files are downloaded from an allow-listed host only,
+size-capped, checked against the sha256 the catalog pinned and cached by content (``website_library_asset``). Money
+and an outage at the pick, and a download that fails on the way, are waits: nothing is sealed and the job's own retry
+asks again, so a free model is never traded for the paid builder by a passing failure. The handoff names the result on the removal manifest (``LIBRARY_SUBJECT``) for compile,
 which sizes the model to the object's estimated bounds and authors it as supplied geometry at no cost
 (``website_supplied_mesh``). Every step that is skipped says why; only privacy, rights and money stop anything.
 """
@@ -40,13 +44,15 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.parse
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_library_catalog import (  # noqa: F401 - the catalog's names, as this module always offered them
+    ALLOWED_LICENSES, DATA, DATASETS_REFUSED, INDEX_UNREADABLE, LICENSE_SPELLINGS, PART_MISMATCH, PART_MISSING, READERS,
+    SIMREADY_BOM, _catalog, attribution_refusal, catalog, catalog_status, credit_shippable, license_of, read_index,
+    rights_now)
 from .website_supplied_mesh import LIBRARY_SUBJECT
 
 SCHEMA_VERSION = "website_object_library_choice.v1"
@@ -54,21 +60,6 @@ SUBJECT_SCHEMA = "website_object_library_subject.v1"
 REVISION = "website_object_library.r1"
 RECORD = "library_choice.json"
 SUBJECT_RECORD = "library_subject.json"
-DATA = Path(__file__).parent / "_catalog_data"
-#: Each library's checked-in index, by its key.
-INDEXES = {"google_scanned_objects": DATA / "object_library_gso.v1.json",
-           "nvidia_simready": DATA / "object_library_simready.v1.json"}
-#: The only licenses a library model may be used under (rights are a hard stop), with their names and deeds.
-ALLOWED_LICENSES = {"CC-BY-4.0": {"name": "CC BY 4.0", "url": "https://creativecommons.org/licenses/by/4.0/"},
-                    "CC0-1.0": {"name": "CC0 1.0", "url": "https://creativecommons.org/publicdomain/zero/1.0/"}}
-#: Every spelling a source uses for an allowed license, matched exactly after trimming: nothing is read loosely.
-LICENSE_SPELLINGS = {
-    **dict.fromkeys(("CC-BY-4.0", "cc-by-4.0", "CC BY 4.0", "CC-BY 4.0", "Creative Commons Attribution 4.0 International",
-                     "http://creativecommons.org/licenses/by/4.0/", "https://creativecommons.org/licenses/by/4.0/"),
-                    "CC-BY-4.0"),
-    **dict.fromkeys(("CC0-1.0", "cc0-1.0", "CC0 1.0", "CC0 1.0 Universal",
-                     "http://creativecommons.org/publicdomain/zero/1.0/",
-                     "https://creativecommons.org/publicdomain/zero/1.0/"), "CC0-1.0")}
 MAX_CANDIDATES = 20
 #: A candidate's largest side must lie within these multiples of the plan's size range to be shown at all: it is
 #: scaled to the video's estimate later, and anything further off is another kind of object.
@@ -128,218 +119,6 @@ def tokens(text: Any) -> list[str]:
     words = [_singular(word) for word in re.split(r"[^a-z0-9]+", spaced.lower()) if word]
     return [word for word in words if len(word) > 1 and not word.isdigit() and word not in _STOPWORDS
             and not re.fullmatch(r"[a-z]\d+|\d+[a-z]{0,2}|v\d+", word)]
-
-
-def license_of(statements: Sequence[Sequence[Any]]) -> tuple[str | None, str | None]:
-    """The one allowed license every statement names, or None with why it is refused (``license_missing``,
-    ``license_not_allowed:<where>``, ``licenses_disagree``). Rights are a hard stop: never read loosely."""
-    if not statements:
-        return None, "license_missing"
-    found = set()
-    for where, text in statements:
-        spdx = LICENSE_SPELLINGS.get(text.strip()) if isinstance(text, str) else None
-        if spdx is None:
-            return None, f"license_not_allowed:{where}"
-        found.add(spdx)
-    return (found.pop(), None) if len(found) == 1 else (None, "licenses_disagree")
-
-
-def _gso_entries(index: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Google Scanned Objects records as catalog entries; their links follow the index's own templates."""
-    rows = []
-    for record in index["records"]:
-        rights = index["rights"][record["rights"]]
-        license = rights.get("license") or {}
-        name, version = record["name"], record["version"]
-        # Fuel's description: the product's name on its first line, sometimes the packaging's text below it.
-        title = (str(record.get("title") or "").split("\n")[0].strip() or name.replace("_", " "))
-
-        def link(template: str) -> str:
-            return template.format(name=urllib.parse.quote(name), version=version)
-        rows.append({
-            "id": f"gso:{name}@{version}", "library": index["library"], "library_title": index["library_title"],
-            "title": title, "author": ", ".join(rights.get("authors") or []) or None,
-            "copyright": rights.get("copyright") or None, "disclaimer": rights.get("disclaimer") or None,
-            "words": [title, name.replace("_", " "), record.get("brand") or ""],
-            "categories": list(record.get("categories") or []), "size_m": record.get("size_m"), "mass_kg": None,
-            "license_statements": [("Gazebo Fuel's license", license.get("fuel_license_name")),
-                                   ("Gazebo Fuel's license link", license.get("fuel_license_url")),
-                                   ("the model's own metadata", license.get("metadata_license"))],
-            "item_url": link(index["item_url"]), "format": "obj",
-            "files": [{"role": "mesh", "url": link(index["mesh_url"]), "sha256": record["mesh"]["sha256"],
-                       "size_bytes": record["mesh"]["size_bytes"], "suffix": ".obj"}],
-            "thumbnail": {"url": link(index["thumbnail_url"]), "sha256": record["thumbnail"]["sha256"],
-                          "size_bytes": record["thumbnail"]["size_bytes"], "suffix": ".jpg"}})
-    return rows
-
-
-SIMREADY_BOM = ".metadata/com.nvidia.simready.packaging.bom.json"
-
-
-def _simready_entries(index: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """SimReady package records as catalog entries, every link at the commit NVIDIA reviewed: the package definition
-    (the item's link), its bill of materials (which names every file and its sha256) and its 256 px thumbnail."""
-    from pathlib import PurePosixPath
-    rows = []
-    for record in index["records"]:
-        source, rights = index["sources"][record["source"]], index["rights"][record["rights"]]
-        repo, commit, asset = source["repo"], source["commit"], record["asset"]
-
-        def link(path: str) -> str:
-            return index["file_url"].format(repo=repo, commit=commit, asset=urllib.parse.quote(asset),
-                                            path=urllib.parse.quote(path))
-        root = PurePosixPath(record["root"])
-        thumbnail = record.get("thumbnail")
-        named = str(record.get("asset_name") or "")
-        rows.append({
-            "id": f"simready:{repo}/{asset}@{commit[:12]}", "library": index["library"], "dataset": repo,
-            "library_title": f"the SimReady dataset {repo}",
-            "attribution_request": [str(line) for line in record.get("attribution_request") or []],
-            # The package's own name; the USD's asset_name beside it when that is a name in words.
-            "title": asset + (f" ({named})" if " " in named.strip() else ""), "author": rights.get("author"),
-            "copyright": rights.get("copyright") or None, "disclaimer": rights.get("disclaimer") or None,
-            "words": [asset.replace("_", " "), str(record.get("asset_name") or "")],
-            "categories": [str(record["category"])] if record.get("category") else [],
-            "size_m": record.get("size_m"), "mass_kg": record.get("mass_kg"),
-            "license_statements": [("the package definition", rights.get("package_license")),
-                                   ("the USD's own SimReady_Metadata", rights.get("asset_license"))],
-            "item_url": index["item_url"].format(repo=repo, commit=commit, asset=urllib.parse.quote(asset)),
-            "format": "simready_usd", "package": {"base_url": link(""), "root": str(root)},
-            "files": [{"role": "bom", "url": link(SIMREADY_BOM), "sha256": record["bom"]["sha256"],
-                       "size_bytes": record["bom"]["size_bytes"], "suffix": ".json"}],
-            **({"thumbnail": {"url": link(str(root.parent / ".thumbs" / "256x256" / (root.name + ".png"))),
-                              "sha256": thumbnail["sha256"], "size_bytes": thumbnail["size_bytes"], "suffix": ".png"}}
-               if thumbnail else {})})
-    return rows
-
-
-#: How each library's index becomes catalog entries.
-READERS: dict[str, Callable[[Mapping[str, Any]], list[dict[str, Any]]]] = {"google_scanned_objects": _gso_entries,
-                                                                           "nvidia_simready": _simready_entries}
-
-
-#: Why a library offers nothing (``catalog_status``): its index, or one of the parts it lists, is unreadable, missing
-#: or not the bytes or record count the index names. Never a partial library.
-INDEX_UNREADABLE, PART_MISSING, PART_MISMATCH = ("library_index_unreadable", "library_index_part_missing",
-                                                 "library_index_part_mismatch")
-
-
-def read_index(path: Path) -> dict[str, Any]:
-    """A library's index with its records: in the file itself, or in the parts it lists beside it (``parts``: each
-    file's name, sha256 and record count), each read and checked. Raises with ``INDEX_UNREADABLE``, ``PART_MISSING``
-    or ``PART_MISMATCH`` and the part's name: a library is read whole or not at all."""
-    import hashlib
-    path = Path(path)
-    try:
-        index = json.loads(path.read_text())
-    except (OSError, ValueError) as exc:
-        raise ValueError(INDEX_UNREADABLE) from exc
-    if "parts" not in index:
-        return index
-    records: list[Any] = []
-    for part in index["parts"]:
-        name = str(part.get("file") or "")
-        target = path.parent / name
-        if not name or "/" in name or target.is_symlink() or not target.is_file():
-            raise ValueError(f"{PART_MISSING}:{name}")
-        data = target.read_bytes()
-        try:
-            rows = json.loads(data)["records"]
-        except (ValueError, KeyError, TypeError) as exc:
-            raise ValueError(f"{PART_MISMATCH}:{name}") from exc
-        if (hashlib.sha256(data).hexdigest() != part.get("sha256") or not isinstance(rows, list)
-                or len(rows) != part.get("record_count")):
-            raise ValueError(f"{PART_MISMATCH}:{name}")
-        records += rows
-    return {**index, "records": records}
-
-
-@lru_cache(maxsize=4)
-def _catalog(paths: tuple[tuple[str, str], ...]) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    entries: list[dict[str, Any]] = []
-    status: list[dict[str, Any]] = []
-    for library, path in paths:
-        try:
-            index = read_index(Path(path))
-        except ValueError as exc:
-            # A library whose index or any part of it cannot be read offers nothing, said why; the others still do.
-            status.append({"library": library, "status": "unavailable", "reason": str(exc)[:200]})
-            continue
-        status.append({"library": library, "status": "read", "records": len(index["records"])})
-        for entry in READERS[library](index):
-            spdx, refused = license_of(entry["license_statements"])
-            if spdx is not None and not entry.get("author"):
-                spdx, refused = None, "author_not_stated"  # the credit names who made it, or the model is not used
-            elif spdx is not None and entry.get("dataset") in DATASETS_REFUSED:
-                spdx, refused = None, DATASETS_REFUSED[entry["dataset"]]
-            elif spdx is not None and attribution_refusal(entry, spdx):
-                spdx, refused = None, attribution_refusal(entry, spdx)
-            elif spdx is not None and not credit_shippable(entry, spdx):
-                spdx, refused = None, "credit_not_shippable"  # a credit the package scan would refuse is never owed
-            entries.append({**entry, "license": spdx, **({"license_refused": refused} if refused else {})})
-    return tuple(entries), tuple(status)
-
-
-#: Datasets left out whole for now, listed but never used (rights is a hard stop). M-XR's attribution files ask for
-#: credit as "marso by M-XR" with a web link (CC BY 4.0 3(a)(1)(A)(i): "in any reasonable manner requested by the
-#: Licensor"), and the package scan refuses an unlisted link, so the README cannot give it (coordinator, 2026-11-23).
-DATASETS_REFUSED = {"M-XR/marso-simready": "attribution_link_not_carried"}
-_LINK = re.compile(r"https?://[^\s)\]>,]+")
-_LABEL = re.compile(r"(?i)^\s*(attribution|credit|source|licen[cs]e|licensor)\s*:\s*")
-
-
-def _credit(entry: Mapping[str, Any], spdx: str) -> str:
-    """The entry's credit as the company README would word it (``website_library_notes.credit_text``)."""
-    from .website_library_notes import MODEL_FILE, credit_text
-    license = ALLOWED_LICENSES[spdx]
-    return credit_text({"title": entry["title"], "author": entry.get("author"), "copyright": entry.get("copyright"),
-                        "disclaimer": entry.get("disclaimer"), "library": entry["library_title"],
-                        "link": entry["item_url"], "license": license["name"], "license_url": license["url"],
-                        "changes": "converted it and scaled it"}, [MODEL_FILE, "object.usdz"])
-
-
-def attribution_refusal(entry: Mapping[str, Any], spdx: str) -> str | None:
-    """Why the README cannot credit the entry the way its library asks (``attribution_request``, read from its notice
-    or attribution file), or None when it can or nothing is asked: a link the credit does not give (only the license's
-    deed and the item's own link are given) is ``attribution_link_not_carried``; a name or wording it does not give is
-    ``attribution_manner_not_carried``. A request is never dropped: the model is refused instead."""
-    request = [str(line) for line in entry.get("attribution_request") or []]
-    if not request:
-        return None
-    credit = _credit(entry, spdx)
-    deed = ALLOWED_LICENSES[spdx]["url"]
-    for line in request:
-        for link in _LINK.findall(line):
-            link = link.rstrip(".")
-            if link not in (deed, deed.replace("https://", "http://", 1)) and link not in credit:
-                return "attribution_link_not_carried"
-    for line in request:
-        wanted = _LINK.sub("", _LABEL.sub("", line)).strip(" .()")
-        if wanted and wanted not in credit:
-            return "attribution_manner_not_carried"
-    return None
-
-
-def credit_shippable(entry: Mapping[str, Any], spdx: str) -> bool:
-    """Whether the entry's credit, as the company README would word it, passes the package's outbound scan (an
-    author named by a web address would refuse the whole package): a model whose credit cannot ship is not used."""
-    import io
-    from .outbound_file_scan import scan_stream
-    return scan_stream(io.BytesIO(_credit(entry, spdx).encode()), [], text=True) is None
-
-
-def _paths(indexes: Mapping[str, Path] | None) -> tuple[tuple[str, str], ...]:
-    return tuple(sorted((key, str(path)) for key, path in (indexes or INDEXES).items()))
-
-
-def catalog(indexes: Mapping[str, Path] | None = None) -> list[dict[str, Any]]:
-    """Every entry of every library, each with its license read (``license``) or why it is refused."""
-    return list(_catalog(_paths(indexes))[0])
-
-
-def catalog_status(indexes: Mapping[str, Path] | None = None) -> list[dict[str, Any]]:
-    """Each library's state: ``read`` with its record count, or ``unavailable`` with why (``read_index``)."""
-    return list(_catalog(_paths(indexes))[1])
 
 
 def _largest(size: Any) -> float | None:
@@ -497,7 +276,17 @@ def ask_gemini(*, binding: Mapping[str, Any], maximum_cost_usd: float, images: S
                                 maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke)
 
 
-def _sealed(path: Path, schema: str, target_id: str) -> dict[str, Any] | None:
+def reading_digest(plan_row: Mapping[str, Any], task_context: Mapping[str, Any]) -> str:
+    """The reading of the object a choice and its subject are sealed for: the plan's row as the pick reads it and the
+    task context it was decided under. Prepared again on another reading (the site's correction, a new Atlas result
+    that reads the same target as another object), the job picks again; the pick's own call is retained by its
+    request, so the same question is never paid for twice."""
+    return canonical_digest({"target_id": str(plan_row["target_id"]), "object": object_inputs(plan_row),
+                             "task_context_digest": task_context.get("context_digest")})
+
+
+def _read_sealed(path: Path, schema: str, target_id: str) -> dict[str, Any] | None:
+    """The record at ``path`` when it seals itself, whatever reading it was made for."""
     try:
         value = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -506,6 +295,41 @@ def _sealed(path: Path, schema: str, target_id: str) -> dict[str, Any] | None:
             and value.get("digest") == canonical_digest(value, digest_field="digest")):
         return value
     return None
+
+
+def _sealed(path: Path, schema: str, target_id: str, reading: str) -> dict[str, Any] | None:
+    """The record at ``path`` when it seals itself and was made for this ``reading`` of the object."""
+    value = _read_sealed(path, schema, target_id)
+    return value if value is not None and value.get("reading_digest") == reading else None
+
+
+#: A sealed model the deployed catalog no longer allows (``website_library_catalog.rights_now``): recorded on the
+#: choice as it is reused, never sealed over it.
+RIGHTS_REFUSED_NOW = "rights_refused_now"
+
+
+def _waits(error: BaseException) -> bool:
+    """Money (but the job's own $40 cap, which is final) or an outage at the pick: a wait for the job's own retry
+    (``job_retry_policy``), as ``website_build_budget`` raises them, never a fallback sealed for good: a fallback
+    sealed at the account's limit or in an outage would never ask the model once the month clears or the provider is
+    back."""
+    from .hard_stops import wall_kind
+    from .job_retry_policy import MONEY
+    from .website_preparation_retry import OUTAGE, classify
+    from .website_scene_handoff import spending_cap_code
+    if spending_cap_code(str(error)):
+        return False
+    return wall_kind(error) == MONEY or classify(f"{type(error).__name__}: {error}") in (MONEY, OUTAGE)
+
+
+def _wait(error: BaseException) -> BaseException:
+    """``error`` as the handoff records and retries it: its own type when the handoff reads it, a money stop for a
+    refused admission, else a typed error with its words."""
+    from .hard_stops import MoneyStop, wall_kind
+    from .job_retry_policy import MONEY
+    if isinstance(error, (ValueError, OSError)):
+        return error
+    return MoneyStop(str(error)[:300]) if wall_kind(error) == MONEY else ValueError(str(error)[:300])
 
 
 def _seal(path: Path, value: dict[str, Any]) -> dict[str, Any]:
@@ -521,18 +345,26 @@ def decide_library_object(*, task_context: Mapping[str, Any], plan_row: Mapping[
     """The sealed library choice for the plan's object: ``chosen`` (an entry, by the model or the fallback) or None,
     with every reason. ``frame``: the video's frame of the object (``path``, ``timestamp_seconds``,
     ``source_video_digest``), when one could be read. Privacy, rights, the owner's closing, the job's sentence still
-    to come and a call another run holds are raised, as for the build plan; every other failure falls back."""
+    to come and a call another run holds are raised, as for the build plan; so are money (the account's month, not
+    the job's own cap) and an outage, which seal nothing (``_waits``); every other failure falls back.
+
+    Sealed for one reading of the object (``reading_digest``). A sealed choice is reused only while the deployed
+    catalog still allows its model under the same license (``rights_now``): otherwise it is returned with no model
+    and why (``RIGHTS_REFUSED_NOW``), and the next source is used."""
     from .website_build_choice import _stops
     output_root = Path(output_root)
     target = str(plan_row["target_id"])
-    sealed = _sealed(output_root / RECORD, SCHEMA_VERSION, target)
+    reading = reading_digest(plan_row, task_context)
+    sealed = _sealed(output_root / RECORD, SCHEMA_VERSION, target, reading)
     if sealed is not None:
-        return sealed
+        # Chosen under the catalog of its day: the deployed catalog must still allow the model, under that license.
+        refused = rights_now(sealed["chosen"], entries) if sealed.get("chosen") else None
+        return {**sealed, "chosen": None, RIGHTS_REFUSED_NOW: refused} if refused else sealed
     every = catalog() if entries is None else list(entries)
     found = candidates(plan_row, every)
     listed = shown(found)
     record: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "revision": REVISION, "target_id": target,
-                              "task_context_digest": task_context.get("context_digest"),
+                              "reading_digest": reading, "task_context_digest": task_context.get("context_digest"),
                               "object": object_inputs(plan_row), "catalog_size": len(every),
                               # Each library read, or why it offered nothing (a missing or changed index part).
                               **({"catalog_libraries": catalog_status()} if entries is None else {}),
@@ -570,9 +402,11 @@ def decide_library_object(*, task_context: Mapping[str, Any], plan_row: Mapping[
             source = "model"
             if chosen is None:
                 fallback = NO_MATCH
-        except Exception as exc:  # noqa: BLE001 - every failure but privacy, rights or a held call falls back
+        except Exception as exc:  # noqa: BLE001 - every failure but privacy, rights, money, an outage or a held call falls back
             if _stops(exc):
                 raise
+            if _waits(exc):
+                raise _wait(exc) from exc  # nothing is sealed: the job's own retry asks again
             from .website_scene_handoff import blocker_code
             fallback = blocker_code(exc)[:300]
             picked = deterministic_choice(plan_row, found)
@@ -641,10 +475,12 @@ ROUTE_ALREADY_COMPILED = "website_object_library_route_already_compiled"
 def single_object_row(decided: Mapping[str, Any] | None, removal: Mapping[str, Any]
                       ) -> tuple[dict[str, Any] | None, str | None]:
     """For a one-object job (the plan took no object out alone; owner direction 2026-11-24): the object the route
-    already removes from the scan and authors, as a plan row: the plan's own row for it where the plan names one, or
-    one read from the analysis (its label as the name, its rigidity, no size). ``(None, None)`` when the route cannot be
-    read; ``(row, KEEPS_AS_FILMED)`` when the plan keeps the object as filmed. What is removed from the scan, and which
-    object the success rule scores, are never changed here."""
+    already removes from the scan and authors, as a plan row: the plan's own row for it where the plan names it as the
+    object moved, or one read from the analysis (its label as the name, its rigidity, no size). A plan row for the
+    object in another role (the destination, a fixture) disagrees with the analysis that the route moves it: the
+    analysis is read instead and the disagreement recorded (``plan_role_disagrees``). ``(None, None)`` when the route
+    cannot be read; ``(row, KEEPS_AS_FILMED)`` when the plan keeps the object as filmed. What is removed from the scan,
+    and which object the success rule scores, are never changed here."""
     from .task_profile_contracts import task_object_rigidity
     from .website_build_plan import KEEPS_AS_FILMED as PLAN_KEEPS, single_object
     one = single_object(decided, removal)
@@ -657,7 +493,16 @@ def single_object_row(decided: Mapping[str, Any] | None, removal: Mapping[str, A
     rigid = task_object_rigidity(entry)["rigidity"] == "rigid" and not entry.get("articulated_part")
     return {"target_id": entry["target_id"], "name": label if isinstance(label, str) and label.strip() else None,
             "variety": None, "rigidity": "rigid" if rigid else "not_read_as_rigid", "size_m": None, "mass_kg": None,
-            "reason": "The object the job moves, as the video analysis named it.", "row_source": "analysis"}, None
+            "reason": "The object the job moves, as the video analysis named it.", "row_source": "analysis",
+            **({"plan_role_disagrees": one["plan_row_role"]} if one.get("plan_row_role") else {})}, None
+
+
+def _transient(error: BaseException) -> bool:
+    """A fetch that failed on the way (a reset, a timeout, a 5xx or 429): the pinned bytes are still one free fetch
+    away, so the job's own retry fetches again; anything else (a digest that never matches, a host not allowed)
+    leaves the next source, recorded."""
+    from .website_preparation_retry import OUTAGE, classify
+    return classify(f"{type(error).__name__}: {error}") == OUTAGE
 
 
 def attach_library_subject(removal: Mapping[str, Any], *, capture_root: Path, task_context: Mapping[str, Any],
@@ -670,7 +515,13 @@ def attach_library_subject(removal: Mapping[str, Any], *, capture_root: Path, ta
     (``website_build_plan.built_object``) or, on the one-object route, the object that route already authors
     (``single_object_row``). Unchanged when the route cannot be read, and on the one-object route when the plan keeps
     the object as filmed or the job was compiled before this route: those skips are sealed on their own record and
-    compile sees today's manifest. Sealed once (``SUBJECT_RECORD``)."""
+    compile sees today's manifest. Sealed once for each reading of the object (``SUBJECT_RECORD``,
+    ``reading_digest``); a job compiled before this route keeps that skip whatever it reads later.
+
+    Each time a sealed model is used again, the deployed catalog must still allow it under the same license
+    (``rights_now``); otherwise the manifest says why it is not used, and the next source is built. A download that
+    fails on the way (``_transient``) and money or an outage at the pick are raised and seal nothing: the job's own
+    retry tries again before any paid builder is reached."""
     from .website_build_plan_notes import sealed_decision
     decided = sealed_decision(capture_root)
     row, skipped, route = plan_row_for(decided), None, "built"
@@ -680,11 +531,17 @@ def attach_library_subject(removal: Mapping[str, Any], *, capture_root: Path, ta
             return dict(removal)
     output_root = Path(output_root)
     target = str(row["target_id"])
-    subject = _sealed(output_root / SUBJECT_RECORD, SUBJECT_SCHEMA, target)
+    reading = reading_digest(row, task_context)
+    earlier = _read_sealed(output_root / SUBJECT_RECORD, SUBJECT_SCHEMA, target)
+    if earlier is not None and earlier.get("not_used") == ROUTE_ALREADY_COMPILED:
+        subject = earlier  # compiled for today's builder before this route existed: never changed mid-flight
+    else:
+        subject = earlier if earlier is not None and earlier.get("reading_digest") == reading else None
     if subject is None:
-        subject = {"schema_version": SUBJECT_SCHEMA, "target_id": target, "route": route,
-                   **({"row_source": row["row_source"]} if row.get("row_source") else {})}
-        if route == "one_object" and (output_root.parent / "preparation.json").is_file():
+        subject = {"schema_version": SUBJECT_SCHEMA, "target_id": target, "route": route, "reading_digest": reading,
+                   **({"row_source": row["row_source"]} if row.get("row_source") else {}),
+                   **({"plan_role_disagrees": row["plan_role_disagrees"]} if row.get("plan_role_disagrees") else {})}
+        if route == "one_object" and earlier is None and (output_root.parent / "preparation.json").is_file():
             subject["not_used"] = ROUTE_ALREADY_COMPILED  # compiled for today's builder before this route existed
         elif skipped is not None:
             subject["not_used"] = skipped
@@ -699,13 +556,17 @@ def attach_library_subject(removal: Mapping[str, Any], *, capture_root: Path, ta
                                            frame=frame, entries=entries, fetch=fetch, ask=ask)
             subject["choice_digest"] = choice["digest"]
             if choice.get("chosen") is None:
-                subject["not_used"] = choice.get("fallback") or NO_MATCH
+                subject["not_used"] = choice.get(RIGHTS_REFUSED_NOW) or choice.get("fallback") or NO_MATCH
             else:
                 from .website_library_asset import fetch_files
                 try:
                     files = fetch_files(choice["chosen"], output_root / "files", fetch=fetch)
                 except Exception as exc:  # noqa: BLE001 - a download that fails leaves the next source, recorded
-                    subject["not_used"] = f"{DOWNLOAD_FAILED}:{str(exc)[:200] or type(exc).__name__}"
+                    reason = f"{DOWNLOAD_FAILED}:{str(exc)[:200] or type(exc).__name__}"
+                    if _transient(exc):
+                        # Free, pinned and cached: tried again on the job's own retry, never sealed as its route.
+                        raise ValueError(reason) from exc
+                    subject["not_used"] = reason
                 else:
                     subject.update(attribution=choice["chosen"], files=files,
                                    pick={"source": choice["source"], "reason": choice["reason"],
@@ -718,10 +579,17 @@ def attach_library_subject(removal: Mapping[str, Any], *, capture_root: Path, ta
         # Today's builder, exactly: the free shape is this route's too, so it goes as well.
         from .website_supplied_mesh import PARAMETRIC_SUBJECT
         return {key: value for key, value in removal.items() if key != PARAMETRIC_SUBJECT}
-    return {**removal, LIBRARY_SUBJECT: {key: value for key, value in subject.items() if key != "digest"}}
+    named = {key: value for key, value in subject.items() if key != "digest"}
+    refused = rights_now(named["attribution"], entries) if "attribution" in named else None
+    if refused:
+        # The deployed catalog no longer allows the sealed model: not used, said why; the seal is left as it was.
+        named = {key: value for key, value in named.items() if key not in ("attribution", "files", "pick")}
+        named["not_used"] = refused
+    return {**removal, LIBRARY_SUBJECT: named}
 
 
-__all__ = ["ALLOWED_LICENSES", "INDEXES", "KEEPS_AS_FILMED", "LIBRARY_SUBJECT", "LICENSE_SPELLINGS", "MAX_CANDIDATES",
-           "RECORD", "ROUTE_ALREADY_COMPILED", "SUBJECT_RECORD", "UNNAMED", "attach_library_subject", "candidates",
-           "catalog", "catalog_status", "decide_library_object", "deterministic_choice", "license_of", "plan_row_for",
-           "read_index", "request_binding", "shown", "single_object_row", "tokens", "validate_answer"]
+__all__ = ["ALLOWED_LICENSES", "KEEPS_AS_FILMED", "LIBRARY_SUBJECT", "LICENSE_SPELLINGS", "MAX_CANDIDATES",
+           "RECORD", "RIGHTS_REFUSED_NOW", "ROUTE_ALREADY_COMPILED", "SUBJECT_RECORD", "UNNAMED",
+           "attach_library_subject", "candidates", "catalog", "catalog_status", "decide_library_object",
+           "deterministic_choice", "license_of", "plan_row_for", "read_index", "reading_digest", "request_binding",
+           "rights_now", "shown", "single_object_row", "tokens", "validate_answer"]

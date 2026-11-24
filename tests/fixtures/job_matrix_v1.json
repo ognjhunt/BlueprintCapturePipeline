@@ -34,8 +34,14 @@
    "not_found": "Blueprint did not find what the job is about in the video.",
    "objects_taken_out": "objects the job involves were taken out of the room scan and are not in this package.",
    "objects_in_scan": "The job's objects are part of the room scan; they are not separate files.",
+   "object_parametric_tote": "The job's object is a plain tote shape Blueprint made for it, sized from the video: it has none of the real object's detail, such as handles, labels or texture.",
+   "object_generated": "The job's object is a 3D model Blueprint generated from frames of the video: its shape and look are the generator's estimate, not a scan or a measurement.",
+   "object_library": "The job's object is a model of the same kind of object from a public library, picked and sized from the video: it is not the site's own object.",
    "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video.",
-   "thresholds_assumed": "The site has not confirmed the numbers in success_rule.json: where criteria_basis says assumed, the number is Blueprint's standard threshold, not the site's."
+   "thresholds_assumed": "The site has not confirmed the numbers in success_rule.json: where criteria_basis says assumed, the number is Blueprint's standard threshold, not the site's.",
+   "library_heading": "Library models",
+   "library_credit_model_file": "scene/files/library_model.usda and object.usda: Sterilite Storage Tote, Blue by Google (Copyright 2020 Google LLC.), from Google Scanned Objects (https://fuel.gazebosim.org/1.0/GoogleResearch/models/Sterilite_Storage_Tote_Blue/1/Sterilite_Storage_Tote_Blue.zip), under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from OBJ to fit this job.",
+   "library_carve_out": "These files stay under their own license. Blueprint does not own them, and the terms Blueprint shares this package under do not restrict them."
   }
  },
  "notes": "Each row is one job variation from the repository's own synthetic fixtures. 'reading' is what the paid Atlas review's task_semantics would say. 'expected' is where the variation ends today: change it only with the change that moves it. 'readme_sentences' are the README's expected wording, kept here as literals: change them only on purpose.",
@@ -611,6 +617,175 @@
     "last_stage": "front_half",
     "kind": "refusal",
     "code": "atlas_mesh_not_registered_to_splat"
+   }
+  },
+  {
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the tote to the shelf"
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "label": "one-object-library-model",
+   "zip": {
+    "object_source": "library"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run",
+     "object_library",
+     "library_heading",
+     "library_credit_model_file",
+     "library_carve_out"
+    ],
+    "readme_sha256": "sha256:dd388075761a964cae899a477c896c57229417f32ec6541e34a3b1c39475b548"
+   }
+  },
+  {
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the tote to the shelf"
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "label": "one-object-parametric-tote",
+   "zip": {
+    "object_source": "parametric"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run",
+     "object_parametric_tote"
+    ],
+    "readme_sha256": "sha256:a34b71cb6b819f6ab9122e0ae254df9cf0ce94152de858fd04e98df9dea64b3a"
+   }
+  },
+  {
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the tote to the shelf"
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "label": "one-object-parametric-misfit-artisan",
+   "zip": {
+    "object_source": "parametric",
+    "shape": "cylinder",
+    "extents": [
+     0.8,
+     0.3,
+     0.3
+    ]
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run",
+     "object_generated"
+    ],
+    "readme_sha256": "sha256:5e35f80f66da4cfaf9448bff2663cede22e7b9ebf16f031126356d99934b56a3"
+   }
+  },
+  {
+   "kind": "rigid_pick_place",
+   "reading": {
+    "task_family": "rigid_pick_place",
+    "steps": [
+     {
+      "operation": "rigid_pick_place",
+      "description": "the job",
+      "task_quote": "Move the tote to the shelf"
+     }
+    ]
+   },
+   "front_half": [
+    "levelling-provider-up-estimate"
+   ],
+   "scene": "host_chain",
+   "compile": {
+    "strategy": "pick_and_place",
+    "stage_5": "not_run"
+   },
+   "label": "one-object-artisan-generated",
+   "zip": {
+    "object_source": "generated"
+   },
+   "expected": {
+    "last_stage": "company_zip",
+    "kind": "completed",
+    "code": "zip_published",
+    "zip_built": true,
+    "physics_authority": "static_candidate_no_simulator_run",
+    "robot_free_probe": "not_queued",
+    "robot_station_absent": null,
+    "physics_check": "not_run",
+    "readme_variant": [
+     "not_run",
+     "object_generated"
+    ],
+    "readme_sha256": "sha256:5e35f80f66da4cfaf9448bff2663cede22e7b9ebf16f031126356d99934b56a3"
    }
   }
  ]

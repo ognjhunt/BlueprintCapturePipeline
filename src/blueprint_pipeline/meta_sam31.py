@@ -23,7 +23,11 @@ from PIL import Image
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
+from .paid_resource_admission import (
+    PaidResourceAdmissionGrant,
+    PaidResourceAlreadyReserved,
+    require_paid_resource_admission_grant,
+)
 from .semantic_teacher_image_edit_worker import _open_no_redirect
 from .website_track_mask_codec import (canonical_track_digest, load_track_json, plain_runs, raster_runs,
                                        write_track_json)
@@ -735,16 +739,22 @@ def _held_reservation(root: Path, admission_digest: str) -> dict[str, Any] | Non
     return dict(record["admission"])
 
 
-def _superseded_reservations(root: Path) -> list[str]:
-    """Every retained reservation that could no longer pay (expired): each is folded into the next binding, so a
-    new reservation is never answered ``already_reserved`` by the old one, whose hold stays counted."""
+#: A website hold this run has no record of and sent nothing under (``orphaned``) is set aside at most this many times
+#: per binding: each costs a new reservation beside the old one, which stays counted under the job's $40.
+MAX_ORPHANED_RESERVATIONS = 2
+
+
+def _superseded_reservations(root: Path, statuses: frozenset[str] = frozenset({"superseded", "orphaned"})) -> list[str]:
+    """Every reservation set aside: one kept that could no longer pay (``superseded``, expired), or one the website
+    holds that this run has no record of and sent nothing under (``orphaned``). Each is folded into the next binding,
+    so a new reservation is never answered ``already_reserved`` by the old one, whose hold stays counted."""
     rows = []
     for path in sorted(root.glob("held-reservation-*.json")) if root.is_dir() else ():
         try:
             record = json.loads(path.read_text())
         except (OSError, ValueError):
-            continue
-        if record.get("schema_version") == RETAINED_RESERVATION_SCHEMA and record.get("status") == "superseded":
+            record = {}
+        if record.get("schema_version") == RETAINED_RESERVATION_SCHEMA and record.get("status") in statuses:
             rows.append(str(record.get("allocation_binding_digest")))
     return sorted(rows)
 
@@ -993,10 +1003,26 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                     admission_digest = admission_for(pending)
                     held = None
             if held is None:
-                admission, admission_grant = reserve_website_sam_spend(task_context=task_context,
-                    binding_digest=admission_digest, maximum_cost_usd=unit_cost * len(pending),
-                    request_count=len(pending), source_video_digest=source_video_digest,
-                    retain_admission=lambda value, kept=admission_digest: _write_reservation(root, kept, value))
+                def reserve(binding: str) -> tuple[dict[str, Any], Any]:
+                    return reserve_website_sam_spend(task_context=task_context,
+                        binding_digest=binding, maximum_cost_usd=unit_cost * len(pending),
+                        request_count=len(pending), source_video_digest=source_video_digest,
+                        retain_admission=lambda value: _write_reservation(root, binding, value))
+                try:
+                    admission, admission_grant = reserve(admission_digest)
+                except PaidResourceAlreadyReserved as answer:
+                    # The website holds this binding's reservation and this run kept no record of it (a run stopped
+                    # between the grant and its record, as the owner's Austin job's did before records were kept).
+                    # No pending prompt has an intent (checked above), so nothing was sent under it: it is set aside,
+                    # still counted, and the prompts are reserved once more under a new binding. Bounded per binding.
+                    if len(_superseded_reservations(root, frozenset({"orphaned"}))) >= MAX_ORPHANED_RESERVATIONS:
+                        raise
+                    # Only the worker that holds the capture's lease sets a hold aside: no other may be sending.
+                    from .core.handoff_lease import handoff_lease_checkpoint
+                    handoff_lease_checkpoint("meta_sam_orphaned_reservation")
+                    _write_reservation(root, admission_digest, answer.admission, status="orphaned")
+                    admission_digest = admission_for(pending)
+                    admission, admission_grant = reserve(admission_digest)
             # What the hold covers, for its settlement once every prompt is answered under it (both paths).
             _record_reservation(root, admission, prompt_indices=pending, image_request=image_request)
         require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",

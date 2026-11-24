@@ -422,6 +422,22 @@ def build_report(*, now: float, policy: Mapping[str, Any] | None, policy_error: 
     }
 
 
+#: The readings that are a reading of a provider's bill this month, whole or with a stated gap.
+BILL_STATUSES = frozenset({"observed", "partial", "carried_forward"})
+
+
+def bill_readings(readings: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
+    """When each provider's bill was last read this month (``paid_spend_meter.covered_by_bill``): a grant held at
+    its maximum cost is left to the bill once a reading taken a day after it can show it."""
+
+    bills = {}
+    for name, row in readings.items():
+        observed = _epoch(row.get("observed_at")) if isinstance(row, Mapping) else None
+        if observed is not None and row.get("month_usd") is not None and row.get("status") in BILL_STATUSES:
+            bills[str(name)] = observed
+    return bills
+
+
 def refresh_report(*, now: float | None = None, environ: Mapping[str, str] | None = None,
                    billing_export_path: Path | None = None, audit_root: Path | None = None) -> dict[str, Any]:
     """Recompute the account's month and rewrite the admission report (the spend guard calls this)."""
@@ -436,7 +452,8 @@ def refresh_report(*, now: float | None = None, environ: Mapping[str, str] | Non
                                 billing_export_path=billing_export_path, audit_root=audit_root)
     meter = collect_meter_view(now=moment, world_labs=_account.current_world_labs(observation, now=moment),
                                openai=_account.current_openai(observation, now=moment),
-                               overhead=_account.current_overhead(observation, now=moment), environ=env)
+                               overhead=_account.current_overhead(observation, now=moment), environ=env,
+                               bills=bill_readings(readings))
     destination = report_path(policy, env)
     previous = None
     if destination is not None:
@@ -452,5 +469,5 @@ def refresh_report(*, now: float | None = None, environ: Mapping[str, str] | Non
     return report
 
 
-__all__ = ["billing_month_readings", "build_report", "collect_readings", "gcp_budget_reading",
+__all__ = ["bill_readings", "billing_month_readings", "build_report", "collect_readings", "gcp_budget_reading",
            "observation_readings", "refresh_report"]

@@ -43,23 +43,44 @@ _AUTOMATIC_RETRY_FIELDS = frozenset({STEP_IN_FLIGHT, "refusal_retries", "refusal
 #: The ``retries`` rows of a parked job's automatic reopens (``website_atlas_preview._reopen_parked``): a new
 #: release's, or the clock's on ``job_retry_policy``'s refusal schedule.
 AUTOMATIC_REOPENS = frozenset({"release_reopened", "parked_retry"})
+#: However its stops change, a parked job is reopened by itself at most this many times since an operator last reopened
+#: it (three stops' worth of the six-reopen schedule), so nothing loops for ever; each reopen asks every money
+#: admission again inside the job's $40, so its spend is bounded too.
+MAX_AUTOMATIC_REOPENS = 18
+
+
+def _trailing_automatic(job: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The job's automatic reopens since an operator last reopened it (an operator starts afresh), oldest first."""
+    retries = job.get("retries")
+    rows: list[Mapping[str, Any]] = []
+    for row in retries if isinstance(retries, list) else ():
+        reason = row.get("reason") if isinstance(row, Mapping) else None
+        rows = [*rows, row] if reason in AUTOMATIC_REOPENS else []
+    return rows
 
 
 def automatic_reopens(job: Mapping[str, Any]) -> int:
-    """How many automatic reopens the job had since an operator last reopened it (an operator starts afresh)."""
-    retries = job.get("retries")
+    """How many automatic reopens in a row, since an operator last reopened the job, stopped on the stop it is parked
+    on now (``stopped_on``): a job that got past one stop to a new one (a fix, a new release) has the whole schedule
+    for the new stop (stress round 2: the sixth reopen got past the pose audit to a later step's stop, which ended the
+    job at once, never reopened). A row that names no stop (written before reopens named one) counts as this stop's,
+    so an older job is never given more reopens than it had."""
+    reason = job.get("reason")
     count = 0
-    for row in retries if isinstance(retries, list) else ():
-        reason = row.get("reason") if isinstance(row, Mapping) else None
-        count = count + 1 if reason in AUTOMATIC_REOPENS else 0
+    for row in reversed(_trailing_automatic(job)):
+        if row.get("stopped_on") not in (None, reason):
+            break
+        count += 1
     return count
 
 
 def reopens_spent(job: Mapping[str, Any]) -> bool:
-    """A parked job had the schedule's six automatic reopens: it is not reopened by itself again, and its stop is
-    its end (the preparation waiting on it goes on: ``website_reconstruction_resume.reopenable``)."""
+    """A parked job had the schedule's six automatic reopens for the stop it is on, or ``MAX_AUTOMATIC_REOPENS`` in
+    all: it is not reopened by itself again, and its stop is its end (the preparation waiting on it goes on:
+    ``website_reconstruction_resume.reopenable``)."""
     from .job_retry_policy import refusal_retry_delay
-    return refusal_retry_delay(automatic_reopens(job)) is None
+    return (refusal_retry_delay(automatic_reopens(job)) is None
+            or len(_trailing_automatic(job)) >= MAX_AUTOMATIC_REOPENS)
 
 class _Withdrawn(Exception):
     pass

@@ -80,6 +80,17 @@ def _website_object_spec_agent_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _object_library_catalog_is_the_releases():
+    """The object libraries' deployed catalog (``website_library_catalog.INDEXES``) is the release's own after every
+    test: a test that deploys its fixture index as the catalog compile and the package read
+    (``tests/test_website_object_library.deploy``) never leaves it to the next test."""
+    yield
+    module = sys.modules.get("blueprint_pipeline.website_library_catalog")
+    if module is not None:
+        module.INDEXES = module.SHIPPED_INDEXES
+
+
+@pytest.fixture(autouse=True)
 def _no_gemini_key_from_the_environment(monkeypatch):
     """A developer's or CI's own Gemini key never reaches a test: with one set, a job's model calls (the build plan,
     the build choice) would be real, paid calls on any test whose context is complete. A test that needs a key sets

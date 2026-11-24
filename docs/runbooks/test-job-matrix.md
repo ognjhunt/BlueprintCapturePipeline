@@ -37,7 +37,11 @@ website compile uses the drawer cabinet of `tests/test_team_scene_packet._articu
 an applied removal, or a held support record. "unknown-kind-one-object-rule-withheld" is compiled with the
 handoff's sealed reason, as the worker reads it (the handoff's route is tested in
 `tests/test_website_scene_handoff.py`), and the two "rigid-half-without-a-rule" rows drop the half's rule, with no
-reason or one no handoff gives. They test the package's
+reason or one no handoff gives. The four "one-object-..." rows (stress round 2, 2026-11-24) bind the half to a
+preparation whose stage-3 configuration the one-object route made (`zip.object_source`): a library model (the
+library tests' fixture catalog, deployed as the row's own catalog, so its rights are read as compile and the package
+read them), the plan's tote shape, a cylinder that does not fit and so leaves ARTISAN, and ARTISAN; each README says
+what the object is. They test the package's
 reaction, not how a job gets there.
 
 ## What it cannot show

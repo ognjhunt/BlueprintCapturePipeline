@@ -185,13 +185,33 @@ def read_obj(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return points, triangles
 
 
-def read_usd(path: Path) -> tuple[np.ndarray, np.ndarray]:
+#: The stage could not compose every layer its root names (a layer the bill of materials omits, or of a kind the fetch
+#: skips): the model would be part of the package, so it is not used.
+COMPOSITION_INCOMPLETE = "library_composition_incomplete"
+#: The stage composed a layer that is none of the files fetched and checked against their pinned sha256.
+LAYER_NOT_FETCHED = "library_layer_not_fetched"
+
+
+def read_usd(path: Path, *, fetched: Sequence[Path] | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Every mesh a USD stage shows, composed (payloads loaded, instances expanded), in its world placement, as one set
-    of vertices in metres with Z up and triangles; guides, proxies and hidden meshes are left out, as are materials."""
+    of vertices in metres with Z up and triangles; guides, proxies and hidden meshes are left out, as are materials.
+
+    Never a partial model: a stage with any composition error (``COMPOSITION_INCOMPLETE``: a layer it names that is
+    not there) is refused, and, given the ``fetched`` files, so is one that composes any other layer
+    (``LAYER_NOT_FETCHED``)."""
     from pxr import Usd, UsdGeom
     stage = Usd.Stage.Open(str(path), load=Usd.Stage.LoadAll)
     if stage is None:
         raise ValueError("library_mesh_unreadable")
+    if stage.GetCompositionErrors():
+        raise ValueError(COMPOSITION_INCOMPLETE)
+    if fetched is not None:
+        verified = {Path(item).resolve() for item in fetched}
+        for layer in stage.GetUsedLayers():
+            if layer.anonymous or layer == stage.GetSessionLayer():
+                continue
+            if not layer.realPath or Path(layer.realPath).resolve() not in verified:
+                raise ValueError(LAYER_NOT_FETCHED)
     metres, up = float(UsdGeom.GetStageMetersPerUnit(stage)), str(UsdGeom.GetStageUpAxis(stage))
     if not metres > 0 or up not in ("Y", "Z"):
         raise ValueError("library_mesh_frame_unknown")
@@ -237,7 +257,9 @@ def read_usd(path: Path) -> tuple[np.ndarray, np.ndarray]:
 #: How each model format becomes vertices (metres, Z up) and triangles.
 READERS: dict[str, Callable[[Sequence[Mapping[str, Any]]], tuple[np.ndarray, np.ndarray]]] = {
     "obj": lambda files: read_obj(Path(next(row["path"] for row in files if row["role"] == "mesh"))),
-    "simready_usd": lambda files: read_usd(Path(next(row["path"] for row in files if row["role"] == "root")))}
+    "simready_usd": lambda files: read_usd(Path(next(row["path"] for row in files if row["role"] == "root")),
+                                           fetched=[Path(row["path"]) for row in files
+                                                    if str(row.get("suffix") or "").lower() in USD_SUFFIXES])}
 #: What converting each format to USD is called in the record and the package's credit.
 CONVERTED_FROM = {"obj": "OBJ", "simready_usd": "USD"}
 
@@ -287,18 +309,64 @@ def _write_mesh(path: Path, points: np.ndarray, triangles: np.ndarray, *, prims:
     stage.GetRootLayer().Save()
 
 
+def _fetch_row(attribution: Mapping[str, Any], row: Mapping[str, Any]) -> tuple[dict[str, Any], Path]:
+    """How one of a subject's files was fetched: its pinned row (url, sha256, size, suffix and, for a package's layer,
+    its path in the package) and the cache root ``fetch_pinned`` put it under, read back from its own path."""
+    path, sha256 = Path(str(row["path"])), str(row["sha256"])
+    relative = row.get("relative_path")
+    if relative is not None:  # a SimReady layer, at its own path under the package's folder
+        parts = PurePosixPath(str(relative)).parts
+        if not parts or ".." in parts or tuple(path.parts[-len(parts):]) != parts:
+            raise ValueError("library_file_record_invalid")
+        package = attribution.get("package") or {}
+        return ({"url": str(package["base_url"]) + urllib.parse.quote(str(relative)), "sha256": sha256,
+                 "size_bytes": row["size_bytes"], "relative_path": str(relative)},
+                Path(*path.parts[:-len(parts)]))
+    pinned = next(item for item in attribution.get("files") or [] if item.get("sha256") == sha256)
+    return dict(pinned), path.parent
+
+
+def refetch_changed(subject: Mapping[str, Any], *, fetch: Callable[..., Any] | None = None) -> None:
+    """Every file of ``subject`` whose cached bytes no longer match the sha256 the catalog or the bill pinned, fetched
+    again into the same place (``fetch_pinned``, which keeps only the pinned bytes); raises when one cannot be."""
+    attribution = subject.get("attribution") or {}
+    for row in subject.get("files") or []:
+        path = Path(str(row["path"]))
+        if path.is_file() and not path.is_symlink() and _sha256(path) == row["sha256"]:
+            continue
+        fetch_row, root = _fetch_row(attribution, row)
+        target = fetch_pinned(fetch_row, root, fetch=fetch)
+        if target.resolve() != path.resolve():
+            raise ValueError("library_file_record_invalid")
+
+
+def _unchanged(row: Mapping[str, Any]) -> bool:
+    path = Path(str(row["path"]))
+    return path.is_file() and not path.is_symlink() and _sha256(path) == row["sha256"]
+
+
 def library_design(subject: Mapping[str, Any], *, estimated_m: Sequence[float], tolerance: float,
-                   output_root: Path) -> tuple[dict[str, Any] | None, str | None]:
+                   output_root: Path, fetch: Callable[..., Any] | None = None
+                   ) -> tuple[dict[str, Any] | None, str | None]:
     """The library model sized to the object, with its model file written once by content, or None and why: the
-    files changed (``library_file_changed``), the mesh unreadable, or the proportions off (``library_aspect_mismatch``
-    with the ratios). Never a measurement."""
+    files changed and the pinned bytes could not be fetched again (``library_file_changed``; a cached file damaged
+    since the handoff is fetched again first, ``fetch`` by default the outbound download), the mesh unreadable or
+    only part of a package's stage composing (``library_composition_incomplete``, ``library_layer_not_fetched``), or
+    the proportions off (``library_aspect_mismatch`` with the ratios). Never a measurement."""
     attribution, files = subject.get("attribution") or {}, subject.get("files") or []
     try:
-        for row in files:
-            if _sha256(Path(row["path"])) != row["sha256"]:
+        if not all(_unchanged(row) for row in files):
+            try:
+                refetch_changed(subject, fetch=fetch)
+            except Exception:  # noqa: BLE001 - the pinned bytes cannot be had again: the next source, said why
+                return None, "library_file_changed"
+            if not all(_unchanged(row) for row in files):
                 return None, "library_file_changed"
         points, triangles = READERS[attribution["format"]](files)
-    except (OSError, KeyError, StopIteration, ValueError, IndexError, TypeError):
+    except ValueError as exc:
+        return None, (str(exc) if str(exc) in (COMPOSITION_INCOMPLETE, LAYER_NOT_FETCHED)
+                      else "library_mesh_unreadable")
+    except (OSError, KeyError, StopIteration, IndexError, TypeError):
         return None, "library_mesh_unreadable"
     low, high = points.min(axis=0), points.max(axis=0)
     sizing = fit((high - low).tolist(), estimated_m, tolerance)
@@ -345,5 +413,6 @@ def write_candidate(design: Mapping[str, Any], *, center_xyz_m: Sequence[float],
             "authoring_cost_usd": 0.0}
 
 
-__all__ = ["ALLOWED_HOSTS", "AS_IS", "ASPECT_MISMATCH", "CLAIM", "MODEL_FILE", "SCALED", "SOURCE", "fetch_files",
-           "fetch_pinned", "fit", "library_design", "read_obj", "thumbnail_jpeg", "write_candidate"]
+__all__ = ["ALLOWED_HOSTS", "AS_IS", "ASPECT_MISMATCH", "CLAIM", "COMPOSITION_INCOMPLETE", "LAYER_NOT_FETCHED",
+           "MODEL_FILE", "SCALED", "SOURCE", "fetch_files", "fetch_pinned", "fit", "library_design", "read_obj",
+           "read_usd", "refetch_changed", "thumbnail_jpeg", "write_candidate"]

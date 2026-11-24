@@ -504,8 +504,10 @@ def shipped_code(code: str) -> str:
 
 
 def blocker_code(error: BaseException) -> str:
-    """The code a raised failure is recorded under: its own, or ``DEFECT`` with its type."""
-    return f"{DEFECT}:{type(error).__name__}" if defect(error) else str(error)
+    """The code a raised failure is recorded under: its own, or ``DEFECT`` with its type. A wall by its type (a
+    refused paid admission: the account's month, a budget) is recorded under its own words, never as a defect."""
+    from .hard_stops import wall_kind
+    return f"{DEFECT}:{type(error).__name__}" if defect(error) and wall_kind(error) is None else str(error)
 
 
 def first_retry_cycle_spent(capture_root: Path, now: float) -> bool:

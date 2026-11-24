@@ -43,12 +43,17 @@ STAGED_NAME = "website/preparation.json"
 COLLISION_ONLY, LOOK_AND_COLLISION = GENERATED_IN_COLLISION_ONLY, "look_and_collision"
 #: What the job's object is, one plain note per source, read from the configuration it was authored from: a shape the
 #: build plan made for it (``website_parametric_object``), a model a builder generated (ARTISAN, or the CAD builder
-#: before it), or a shape designed for a test (``website_synthetic_subject``). A library model is named by its credit.
+#: before it), a library model of the same kind (``website_object_library``; its credit names the model), or a shape
+#: designed for a test (``website_synthetic_subject``).
 PARAMETRIC_NOTE = ("The job's object is a plain {shape} shape Blueprint made for it, sized from the video: it has none "
                    "of the real object's detail, such as handles, labels or texture.")
 GENERATED_NOTE = ("The job's object is a 3D model Blueprint generated from frames of the video: its shape and look are "
                   "the generator's estimate, not a scan or a measurement.")
 DESIGNED_NOTE = "The job's object was not filmed: it is a simple shape Blueprint designed for the job."
+#: A library model stands in for the filmed object: the same kind of object, chosen by a model or a word match and
+#: sized from the video (``website_library_asset.CLAIM``), never the site's own object or a measurement of it.
+LIBRARY_NOTE = ("The job's object is a model of the same kind of object from a public library, picked and sized from "
+                "the video: it is not the site's own object.")
 SHAPE_WORDS = {"carton": "carton", "tote": "tote", "open_bin": "open bin", "tray": "tray", "cylinder": "cylinder"}
 GENERATING_BACKENDS = frozenset({"artisan_v1", "astra_cad_blender_v1"})
 #: The site never confirmed the half's thresholds (``website_owner_success_assumption``): they are Blueprint's
@@ -202,9 +207,9 @@ def size_notes(preparation: Mapping[str, Any]) -> dict[str, bool]:
 
 def object_source(configuration: Mapping[str, Any]) -> dict[str, str]:
     """What the job's object is, as the configuration it was authored from says (``object_source``, and the parametric
-    shape's name): empty for a library model (its credit names it) and for a source this cannot tell."""
+    shape's name): empty for a source this cannot tell."""
     if "library_design" in configuration:
-        return {}
+        return {"object_source": "library"}
     design = configuration.get("parametric_design")
     if configuration.get("authoring_source") == "parametric" and isinstance(design, Mapping):
         shape = SHAPE_WORDS.get(str(design.get("shape")))
@@ -221,7 +226,8 @@ def object_note(source: Mapping[str, Any]) -> list[str]:
     kind = source.get("object_source")
     if kind == "parametric":
         return [PARAMETRIC_NOTE.format(shape=source.get("object_shape") or "simple")]
-    return [GENERATED_NOTE] if kind == "generated" else [DESIGNED_NOTE] if kind == "designed" else []
+    notes = {"generated": GENERATED_NOTE, "designed": DESIGNED_NOTE, "library": LIBRARY_NOTE}
+    return [notes[kind]] if kind in notes else []
 
 
 def handoff_base_scene(capture_root: Path) -> dict[str, Any]:
@@ -355,8 +361,9 @@ def surface_estimated(capture_root: Path) -> bool:
     return bool(base_scene_notes(handoff_base_scene(capture_root)).get("surface_estimated"))
 
 
-__all__ = ["COLLISION_ONLY", "DESIGNED_NOTE", "FIELD", "GENERATED_NOTE", "LOOK_AND_COLLISION", "PARAMETRIC_NOTE",
-           "SITE_CONFIRMED", "STAGED_NAME", "THRESHOLDS_ASSUMED", "THRESHOLDS_CONFIRMED_LATER", "base_scene_notes", "binding", "generated_patch", "half_disclosures",
+__all__ = ["COLLISION_ONLY", "DESIGNED_NOTE", "FIELD", "GENERATED_NOTE", "LIBRARY_NOTE", "LOOK_AND_COLLISION",
+           "PARAMETRIC_NOTE", "SITE_CONFIRMED", "STAGED_NAME", "THRESHOLDS_ASSUMED", "THRESHOLDS_CONFIRMED_LATER",
+           "base_scene_notes", "binding", "generated_patch", "half_disclosures",
            "half_preparation", "handoff_base_scene", "look_views", "named_path", "number_paths", "object_estimates",
            "object_note", "object_source", "preparation", "size_notes", "success_basis", "surface_estimated",
            "thresholds_assumed", "thresholds_confirmed_later", "with_assumed_basis"]

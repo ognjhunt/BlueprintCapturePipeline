@@ -80,7 +80,12 @@ def test_the_paid_unit_holds_the_dispatcher_key_narrow_writes_and_a_read_only_au
     assert set(writable) == {JOBS, "/var/lib/blueprint/task-evaluation-inputs/team-scene-halves",
                              "/var/lib/blueprint/pipeline-control-plane/disk-reservations",
                              "/var/lib/blueprint/spend-authority/consumed",
-                             "/var/lib/blueprint/spend-authority/remote-cpu-settled"}
+                             "/var/lib/blueprint/spend-authority/remote-cpu-settled",
+                             # Its paid admission journals each grant, which the account's month counts; a grant whose
+                             # line cannot be written is refused (stress round 2, 2026-11-24).
+                             "/var/lib/blueprint/pipeline-control-plane/paid-spend-meter"}
+    assert " -/var/lib/blueprint/pipeline-control-plane/paid-spend-meter" in service
+    assert classify_path("/var/lib/blueprint/pipeline-control-plane/paid-spend-meter").storage_class == "evidence_hot"
     # Optional, so a host whose registry has not made it yet starts the unit; the landing check refuses before
     # staging when it cannot be written.
     assert " -/var/lib/blueprint/task-evaluation-inputs/team-scene-halves " in service

@@ -1718,7 +1718,9 @@ def test_money_credit_spend_and_stall_pages_are_unchanged():
     assert provider_spend.PAGE_CODES == {
         "account_spend_limit_config_invalid", "account_spend_limit_missing", "account_spend_month_80pct",
         "account_spend_month_limit_reached", "account_spend_report_stale", "gcp_spend_month_high",
-        "openai_spend_24h_high", "world_labs_spend_24h_high"}
+        "openai_spend_24h_high", "world_labs_spend_24h_high",
+        # Stress round 2 (2026-11-24): a spend journal file that cannot be read whole refuses new paid spend.
+        "account_spend_journal_unreadable"}
     assert stall_alarm.PAGE_CODES == {
         "launch_activation_stuck", "launch_lease_stuck", "scene_progression_stalled",
         "trigger_inactive_unheld",

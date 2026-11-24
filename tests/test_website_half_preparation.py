@@ -240,7 +240,8 @@ def test_an_assumed_half_keeps_the_preparation_s_own_basis_for_its_numbers(tmp_p
     ({"authoring_backend": "artisan_v1"}, half.GENERATED_NOTE),
     ({"authoring_backend": "astra_cad_blender_v1"}, half.GENERATED_NOTE),
     ({"synthetic_design": {"shape": "box"}}, half.DESIGNED_NOTE),
-    ({"library_design": {}, "authoring_source": "gso"}, None),  # its credit names it
+    # A library model is said to be a stand-in of the same kind (stress round 2), beside the credit that names it.
+    ({"library_design": {}, "authoring_source": "gso"}, half.LIBRARY_NOTE),
     ({"authoring_backend": "something_else"}, None),  # a source this cannot tell: nothing said
 ])
 def test_the_readme_says_what_the_job_s_object_is_one_plain_note_per_source(tmp_path, configuration, note):
@@ -248,9 +249,10 @@ def test_the_readme_says_what_the_job_s_object_is_one_plain_note_per_source(tmp_
     _write(job.preparation, {"authoring_inputs": {"configuration": configuration}})
     source = _source(job)
     assert half.object_note(source) == ([note] if note else [])
-    others = {half.PARAMETRIC_NOTE.format(shape="open bin"), half.GENERATED_NOTE, half.DESIGNED_NOTE} - {note}
-    if note is None:
-        return
+    others = {half.PARAMETRIC_NOTE.format(shape="open bin"), half.GENERATED_NOTE, half.DESIGNED_NOTE,
+              half.LIBRARY_NOTE} - {note}
+    if note is None or "library_design" in configuration:
+        return  # a library model's package, its credit and its note: tests/test_website_object_library.py
     import zipfile
     sim.build_package(source, tmp_path / "p.zip", literals=[])
     with zipfile.ZipFile(tmp_path / "p.zip") as archive:
