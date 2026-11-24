@@ -22,7 +22,9 @@ an outage until the job's seven-day deadline; any other refusal, a defect or a
 step killed before it returned on the bounded refusal schedule. A money refusal
 waits as ``needs_input`` with its own code, re-asked every
 ``AUTHORITY_RECHECK_SECONDS`` until the job expires, as a missing grant does.
-Only a privacy or rights refusal fails at once. A deterministic refusal
+Only a privacy or rights refusal fails at once. A wall is read by its type
+(``hard_stops``) and then by its code's words, and a typed one stays parked on
+its wall (``WALL``), never reopened as a stop on no wall. A deterministic refusal
 (``deterministic_refusal``: the same inputs and code repeat it) gets no timed
 schedule: it waits as ``needs_input`` and its step runs again only once a
 release decides that step differently. One that only a new capture clears
@@ -54,7 +56,7 @@ from typing import Any
 
 from .atlas_preparation_job_control import (
     REOPEN_MARGIN_SECONDS, STEP_IN_FLIGHT, _NEEDS_TASK_INPUT, _WITHDRAWN, _Withdrawn, PreparationJobBusy, _transition,
-    _reason, _NEEDS_NEW_CAPTURE, admission_refusal_code, parked_without_wall as _parked_without_wall,
+    WALL, _reason, _NEEDS_NEW_CAPTURE, admission_refusal_code, parked_without_wall as _parked_without_wall,
     preparation_job_lock as preparation_job_lock, retry_preparation_job as retry_preparation_job,
 )
 from .common import write_json
@@ -308,6 +310,24 @@ def _answered(job: Mapping[str, Any], stage: Any) -> dict[str, Any]:
     return fields
 
 
+def _wall_kind(*kinds: str | None) -> str | None:
+    """The wall a stop is read as from its type and its words: privacy and rights first, as ``hard_stop_kind``."""
+    return PRIVACY_RIGHTS if PRIVACY_RIGHTS in kinds else MONEY if MONEY in kinds else None
+
+
+def _walled(job: Mapping[str, Any], current: int, code: str, kind: str, *, typed: bool,
+            **fields: Any) -> dict[str, Any]:
+    """The job parked on its wall under the stop's own code: privacy or rights end it failed at once; money waits as
+    needs_input, asked again every ``AUTHORITY_RECHECK_SECONDS`` until the job's deadline (an account-wide wait can
+    clear when the month turns or a hold settles). A wall its type named (``typed``) is kept on the job (``WALL``), so
+    no reopen reads its code's words as a stop on no wall (``_parked_without_wall``)."""
+    walled = {WALL: kind} if typed else {}
+    if kind == PRIVACY_RIGHTS:
+        return _transition(job, current, "failed", code, **fields, **walled)
+    return _transition(job, current, "needs_input", code, **fields, **walled,
+                       retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
+
+
 def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> dict[str, Any]:
     """The job after a failed step: the explicit sets first, then ``job_retry_policy``.
 
@@ -367,17 +387,18 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         return _transition(job, current, "failed", code, **detail)
     if not isinstance(error, ValueError):
         return _refusal_retry(job, current, code, detail)  # a defect: not proven permanent, not an outage
-    kind = hard_stop_kind(code)
+    from .hard_stops import JOB_SPEND_CAP, wall_kind
+    # By its type first (``hard_stops``), then its words: a wall's code may name none (2026-11-24: five typed walls,
+    # ``website_atlas_pose_disclosure_not_authorized`` among them, took the refusal schedule and were reopened).
+    typed = wall_kind(error)
+    kind = _wall_kind(typed, hard_stop_kind(code))
     if kind == PRIVACY_RIGHTS:
-        return _transition(job, current, "failed", code, **detail)
-    from .hard_stops import JOB_SPEND_CAP
+        return _walled(job, current, code, kind, typed=typed is not None, **detail)
     from .website_job_spend_cap import SPENDING_CAP_REACHED
     if code == JOB_SPEND_CAP:
         return _transition(job, current, "failed", SPENDING_CAP_REACHED, **detail)
     if kind == MONEY:
-        # An account-wide money wait can clear when the month turns or a hold settles.
-        return _transition(job, current, "needs_input", code, **detail,
-                           retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
+        return _walled(job, current, code, kind, typed=typed is not None, **detail)
     deterministic = find_deterministic_refusal(error)
     if deterministic is not None:
         # The same inputs and code repeat it: no timed schedule. It waits, rechecked without running,
@@ -522,6 +543,15 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
                 # the next step runs on the admitted release. When any blocker is not, that one may
                 # need a person, and the outcome below is main's, naming the first blocker.
                 return _failed_step(job, ValueError(answers[0]), current)
+            stated, named = result.get("reason"), result.get("wall")
+            named = named if named in (PRIVACY_RIGHTS, MONEY) else None
+            kind = _wall_kind(named, hard_stop_kind(stated))
+            if (not blockers and result.get("stage") not in {"source_pose", "target_correction"}
+                    and isinstance(stated, str) and stated and kind is not None):
+                # A stop the result names as a wall (by its ``wall``, or its words) keeps its own code and waits
+                # on that wall; "a step on our side" (``atlas_background_review_required``) named none.
+                return _walled(job, current, _reason(ValueError(stated)), kind, typed=named is not None,
+                               stage=result.get("stage", "preparation"), result_digest=result.get("digest"))
             reason = (_reason(ValueError(result["reason"]))
                       if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
                       else _reason(ValueError(blockers[0])) if blockers
@@ -808,13 +838,14 @@ def _keep_shipped_room(before: Mapping[str, Any], after: dict[str, Any], current
     if after.get("state") == "ready" and not after.get("retry_at_epoch"):
         return {key: value for key, value in after.items() if key != _SCALE_REVIEW_ASKING}
     reason = after.get("reason")
-    if after.get("state") == "withdrawn" or reason in _WITHDRAWN or hard_stop_kind(reason) == PRIVACY_RIGHTS:
+    wall = _wall_kind(after.get(WALL), hard_stop_kind(reason))
+    if after.get("state") == "withdrawn" or reason in _WITHDRAWN or wall == PRIVACY_RIGHTS:
         return after
     from .atlas_preparation_job_control import _NOT_RETRYABLE
     from .hard_stops import JOB_SPEND_CAP
     from .job_retry_policy import owner_closed
     from .website_job_spend_cap import SPENDING_CAP_REACHED
-    stop = (reason in _NOT_RETRYABLE or hard_stop_kind(reason) == MONEY or owner_closed(reason)
+    stop = (reason in _NOT_RETRYABLE or wall == MONEY or owner_closed(reason)
             or reason in (SPENDING_CAP_REACHED, JOB_SPEND_CAP))
     waits = (before.get("scale_review_waits") or 0) + 1
     _put_result(job_dir, SHIPPED_RESULT_FILE, "result.json", before.get("result_digest"))

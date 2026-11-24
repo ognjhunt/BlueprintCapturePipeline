@@ -46,13 +46,16 @@ _CODE = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,159}")
 def _blocker(exc: BaseException) -> str:
     """The typed code a failure is recorded as. A ``ValueError`` carries its code; a refusal to spend carries the
     admission's own typed codes (``paid_resource_admission_blocked:<codes>``), so a job stopped for money says which
-    rule stopped it (2026-11-24: an Austin test job recorded only ``PaidResourceAdmissionBlocked``). Any other
+    rule stopped it (2026-11-24: an Austin test job recorded only ``PaidResourceAdmissionBlocked``). One whose
+    blockers are no typed codes is recorded by the admission's own code alone, which the retry reads as money, as it
+    is by its type (``hard_stops.wall_kind``); its class name was one word to ``hard_stop_kind``. Any other
     exception is recorded by its class only, since its text is not a code and may hold anything."""
     if isinstance(exc, ValueError):
         return str(exc)
-    if isinstance(exc, PaidResourceAdmissionBlocked) and exc.blockers and all(
-            isinstance(code, str) and _CODE.fullmatch(code) for code in exc.blockers):
-        return str(exc)
+    if isinstance(exc, PaidResourceAdmissionBlocked):
+        if exc.blockers and all(isinstance(code, str) and _CODE.fullmatch(code) for code in exc.blockers):
+            return str(exc)
+        return "paid_resource_admission_blocked"
     return type(exc).__name__
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"

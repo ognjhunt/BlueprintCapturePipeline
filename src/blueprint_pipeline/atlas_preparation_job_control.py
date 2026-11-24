@@ -47,6 +47,10 @@ REOPEN_MARGIN_SECONDS = 86_400
 #: Written to the job file just before a step runs and removed by the write that follows it.
 #: Read under the job lock, it can only be left by a step whose process died before returning.
 STEP_IN_FLIGHT = "step_in_flight"
+#: The wall a stop's type named (``hard_stops.wall_kind``, or a result's own ``wall``), kept beside its code because a
+#: code's words may name none (``website_atlas_pose_disclosure_not_authorized``). It belongs to the stop that wrote it:
+#: every other move of the job drops it (``_transition``).
+WALL = "wall"
 #: Automatic-retry state an operator's reopen starts afresh, with ``transient_failures``.
 _AUTOMATIC_RETRY_FIELDS = frozenset({STEP_IN_FLIGHT, "refusal_retries", "refusal_retries_total",
                                      "deterministic_refusal"})
@@ -96,15 +100,17 @@ def reopens_spent(job: Mapping[str, Any]) -> bool:
 
 def parked_without_wall(job: Mapping[str, Any]) -> bool:
     """A job ended failed or needs_input with no retry time, on a reason that is no wall: not privacy, rights or
-    money (``hard_stop_kind``, the spending cap, a withdrawal), not the owner's closing of the run, not a stop only
-    a new video or the site's input clears, and not the job's own end (expired, source gone)."""
+    money (by the stop's type, ``WALL``, or by its words, ``hard_stop_kind``; the spending cap, a withdrawal), not
+    the owner's closing of the run, not a stop only a new video or the site's input clears, and not the job's own
+    end (expired, source gone)."""
     from .hard_stops import JOB_SPEND_CAP
     from .job_retry_policy import hard_stop_kind, owner_closed
     from .website_job_spend_cap import SPENDING_CAP_REACHED
     from .website_recapture_required import ABSTENTION_CODES
     reason = job.get("reason")
     return (job.get("state") in {"failed", "needs_input"} and not job.get("retry_at_epoch")
-            and isinstance(reason, str) and hard_stop_kind(reason) is None and not owner_closed(reason)
+            and isinstance(reason, str) and not job.get(WALL) and hard_stop_kind(reason) is None
+            and not owner_closed(reason)
             and reason not in (_NOT_RETRYABLE | _NEEDS_NEW_CAPTURE | _NEEDS_TASK_INPUT | _WITHDRAWN
                                | set(ABSTENTION_CODES.values())
                                | {"atlas_scene_planner_abstained", SPENDING_CAP_REACHED, JOB_SPEND_CAP}))
@@ -138,6 +144,8 @@ def _transition(job: Mapping[str, Any], current: int, state: str, reason: str | 
     changed = (job["state"], job["reason"]) != (state, reason) or (
         "archive" in fields and fields["archive"] != job.get("archive"))
     value = {**job, "retry_at_epoch": None, **fields, "state": state, "reason": reason, "updated_at_epoch": current}
+    if WALL not in fields:
+        value.pop(WALL, None)  # the wall of an earlier stop
     if changed:
         value.update(revision=job["revision"] + 1, revised_at_epoch=current)
     return value

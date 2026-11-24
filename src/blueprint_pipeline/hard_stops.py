@@ -15,8 +15,9 @@ code and every digest is unchanged. Two existing types are walls as they stand: 
 chokepoint's ``PaidResourceAdmissionBlocked`` (a ``RuntimeError``, whatever its blockers) and the Atlas
 worker's withdrawal (``atlas_preparation_job_control._Withdrawn``).
 
-This module only names the walls. What a job does after one is unchanged by it; ``is_wall`` is what a
-later change uses to decide. ``hard_stop_kind`` stays the keyword backstop for a code nobody typed.
+This module only names the walls. The Atlas preview step decides by them (``wall_kind`` first, 2026-11-24:
+``website_atlas_preview._failed_step``), and keeps a typed wall on the job, since its code's words may name none.
+``hard_stop_kind`` stays the keyword backstop for a code nobody typed.
 
 Standard library only; no I/O.
 """

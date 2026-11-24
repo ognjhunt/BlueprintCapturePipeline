@@ -37,8 +37,14 @@ never to skip a check.
 
 Since 2026-11-17 the step that guards a wall also raises it as a type
 (`hard_stops.py`: `PrivacyRightsStop`, `MoneyStop`, with the code unchanged;
-`is_wall` also counts `PaidResourceAdmissionBlocked` and a withdrawal). No
-controller decides by the type yet, so this table is unchanged. Two catches in
+`is_wall` also counts `PaidResourceAdmissionBlocked` and a withdrawal). Since
+2026-11-24 the Atlas preview step reads a refusal's type first and its words
+second (`website_atlas_preview._failed_step`), and keeps a typed wall on the job
+(`wall`), so a wall whose code's words name none (such as
+`website_atlas_pose_disclosure_not_authorized`) ends or waits as the table says
+and is never reopened as a stop on no wall. A room-step result that names its
+wall keeps its own code the same way. Codes whose words read as a wall but
+guard none are listed in `job_retry_policy.NOT_WALL_CODES`. Two catches in
 the Atlas room step raise a wall instead of absorbing it: the windowed
 re-pose's selection, and the original views' pose when the windowed re-pose
 asks for it (it would otherwise go on to buy). The refined splat's form loop

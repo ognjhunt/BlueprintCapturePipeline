@@ -468,13 +468,21 @@ def test_validator_rejects_claim_elevation():
 
 def test_a_refusal_to_spend_is_recorded_with_its_typed_codes_and_any_other_failure_by_its_class():
     """2026-11-24: an Austin test job's task masks stopped on ``PaidResourceAdmissionBlocked`` with no word of which
-    rule refused; the admission's own codes are typed and are now kept. Free text never is."""
+    rule refused; the admission's own codes are typed and are now kept. Free text never is: a refusal whose blockers
+    are not codes is recorded by the admission's own code, which the preparation retry reads as the money wall it
+    is (its class name was one word to ``hard_stop_kind``, and an ordinary refusal to the retry)."""
     from blueprint_pipeline.clean_plate_stage import _blocker
-    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
+    from blueprint_pipeline.core.common import StageError
+    from blueprint_pipeline.job_retry_policy import MONEY
+    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked, PaidResourceAlreadyReserved
+    from blueprint_pipeline.website_preparation_retry import classify
 
     assert _blocker(PaidResourceAdmissionBlocked(["gcp_budget_report_stale", "website_job_spend_cap_reached"])) == (
         "paid_resource_admission_blocked:gcp_budget_report_stale,website_job_spend_cap_reached")
-    assert _blocker(PaidResourceAdmissionBlocked(["Call Dana at 555-0100"])) == "PaidResourceAdmissionBlocked"
-    assert _blocker(PaidResourceAdmissionBlocked([])) == "PaidResourceAdmissionBlocked"
+    assert _blocker(PaidResourceAdmissionBlocked(["Call Dana at 555-0100"])) == "paid_resource_admission_blocked"
+    assert _blocker(PaidResourceAdmissionBlocked([])) == "paid_resource_admission_blocked"
+    assert _blocker(PaidResourceAlreadyReserved([], {})) == "paid_resource_admission_blocked"
+    for untyped in (PaidResourceAdmissionBlocked([]), PaidResourceAdmissionBlocked(["Call Dana at 555-0100"])):
+        assert classify(str(StageError("clean_plate", _blocker(untyped)))) == MONEY
     assert _blocker(ValueError("website_task_masks_unavailable")) == "website_task_masks_unavailable"
     assert _blocker(RuntimeError("anything at all")) == "RuntimeError"

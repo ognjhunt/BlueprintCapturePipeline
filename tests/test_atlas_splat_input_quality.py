@@ -370,7 +370,10 @@ def test_a_rebuild_buys_its_splat_only_on_an_accepted_consistent_pose_and_never_
     reasons = {"refused_pose": "atlas_splat_rebuild_pose_refinement_not_accepted",
                "few_views": "atlas_splat_rebuild_consistent_views_insufficient",
                "unaffordable": "atlas_splat_rebuild_allowance_insufficient"}
-    assert result == {"status": "needs_input", "stage": "refined_splat", "reason": reasons[case]} and not bought
+    # The allowance stop is a money wall its words do not name, so the result names it.
+    walled = {"wall": "money"} if case == "unaffordable" else {}
+    assert result == {"status": "needs_input", "stage": "refined_splat", "reason": reasons[case], **walled}
+    assert not bought
 
 
 def write_preserved_records(job_dir, *, accepted=False, pairs=None):

@@ -78,6 +78,11 @@ _OUTAGE = re.compile(r"http_(?:429|5[0-9][0-9])(?![0-9])|timeout|timed out|conne
 # Google's status and its upper-case name ("500 INTERNAL.", "504 DEADLINE_EXCEEDED", "429 RESOURCE_EXHAUSTED"): the
 # name alone is too common (Blueprint's own codes end in "_resource_exhausted").
 _OUTAGE_STATUS_NAME = re.compile(r"(?<![0-9])(?:429|5[0-9][0-9]) [A-Z][A-Z_]{2,}\b")
+#: The paid-resource chokepoint's refusal named by its class (``paid_resource_admission.PaidResourceAdmissionBlocked``
+#: and its subclass), as a stage records one whose blockers are no typed codes: the live Austin test job's
+#: ``clean_plate: PaidResourceAdmissionBlocked`` (2026-11-24). To ``hard_stop_kind`` the CamelCase name is one word, so
+#: it read as an unclassified refusal; it is a money wall by its type (``hard_stops.wall_kind``).
+_CHOKEPOINT_CLASS = re.compile(r"(?<![A-Za-z0-9_])PaidResource(?:AdmissionBlocked|AlreadyReserved)(?![A-Za-z0-9_])")
 _CHAIN_LIMIT = 16
 OUTAGE, REFUSAL, DETERMINISTIC = "outage", "refusal", "deterministic"
 #: The WebApp's ``website_run_closed_by_owner``: the run is closed until the site gives a new instruction.
@@ -92,15 +97,17 @@ AWAITING_JOB_SENTENCE = "awaiting_job_sentence"
 
 
 def classify(*texts: str) -> str:
-    """privacy_rights, money (``job_retry_policy.hard_stop_kind``), the wait for the job's sentence, outage or
-    refusal (unclassified)."""
-    from .job_retry_policy import PRIVACY_RIGHTS, hard_stop_kind, owner_closed_refusal
+    """privacy_rights, money (``job_retry_policy.hard_stop_kind``, and the paid-resource chokepoint's refusal by its
+    class name, ``_CHOKEPOINT_CLASS``), the wait for the job's sentence, outage or refusal (unclassified)."""
+    from .job_retry_policy import MONEY, PRIVACY_RIGHTS, hard_stop_kind, owner_closed_refusal
     if any(owner_closed_refusal(text) for text in texts if text):
         # The site's owner closed the run: never retried. The listener ends the job, and the sweep
         # (``end_owner_closed_preparation``) ends one this same match left behind.
         return OWNER_CLOSED
     stripped = [_OPERATION.sub("website_control_http_", text) for text in texts if text]
     kinds = {hard_stop_kind(text) for text in stripped} - {None}
+    if any(_CHOKEPOINT_CLASS.search(text) for text in stripped):
+        kinds.add(MONEY)
     if kinds:
         return PRIVACY_RIGHTS if PRIVACY_RIGHTS in kinds else kinds.pop()
     from .website_task_context_contracts import TASK_NOT_NAMED
