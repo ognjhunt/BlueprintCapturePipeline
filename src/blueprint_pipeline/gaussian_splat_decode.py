@@ -418,14 +418,23 @@ def float_ply_header(count: int, names: Sequence[str]) -> bytes:
     return "\n".join(header).encode("ascii")
 
 
+#: Vertex rows a float PLY is written at once: its rows are interleaved a run at a
+#: time, so writing never holds a second, interleaved copy of every splat field
+#: (0.85 GiB per copy for a 16.2 M-Gaussian draft).
+FLOAT_PLY_CHUNK_ROWS = 1 << 20
+
+
 def _write_float_ply(path: Path, count: int, order: Sequence[tuple[str, np.ndarray]]) -> Path:
     """A binary little-endian PLY of one ``vertex`` element, one float32 column per (name, values) in order."""
-    table = np.empty((count, len(order)), dtype="<f4")
-    for col, (_, values) in enumerate(order):
-        table[:, col] = np.asarray(values, dtype="<f4")
+    columns = [np.broadcast_to(np.asarray(values), (count,)) for _, values in order]
     with open(path, "wb") as handle:
         handle.write(float_ply_header(count, [name for name, _ in order]))
-        handle.write(table.tobytes(order="C"))
+        for start in range(0, count, FLOAT_PLY_CHUNK_ROWS):
+            stop = min(count, start + FLOAT_PLY_CHUNK_ROWS)
+            table = np.empty((stop - start, len(order)), dtype="<f4")
+            for col, values in enumerate(columns):
+                table[:, col] = np.asarray(values[start:stop], dtype="<f4")
+            handle.write(table.tobytes(order="C"))
     return path
 
 

@@ -17,9 +17,7 @@ def test_chunked_tables_match_the_previous_bincount_order_exactly(monkeypatch, c
         np.concatenate([keys for keys, _ in tables]),
         np.concatenate([columns for _, columns in tables], axis=1))
     sums = depth.VoxelSums(.01)
-    sums._keys, sums._columns = tables[0]
-    sums._pending = tables[1:]
-    sums._pending_rows = sum(len(keys) for keys, _ in tables[1:])
+    sums._leaves = [[*tables[0], tables[1:], sum(len(keys) for keys, _ in tables[1:])]]
     monkeypatch.setattr(sums, "MERGE_CHUNK_ROWS", chunk_rows)
     original = np.concatenate
 
@@ -30,7 +28,7 @@ def test_chunked_tables_match_the_previous_bincount_order_exactly(monkeypatch, c
     monkeypatch.setattr(np, "concatenate", no_column_copy)
     np.testing.assert_array_equal(sums.keys, expected_keys)
     np.testing.assert_array_equal(sums.sums, expected_columns.T)
-    assert sums._pending == [] and sums._pending_rows == 0
+    assert [leaf[2:] for leaf in sums._leaves] == [[[], 0]]
 
 
 def test_chunking_preserves_existing_totals_across_multiple_flushes(monkeypatch):
