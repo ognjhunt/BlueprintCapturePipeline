@@ -69,8 +69,11 @@ provider actions are available to you. Return only the structured proposal."""
 SUBJECT_ORIGIN_INSTRUCTIONS = """
 Classify subject_origin from the COMPLETE owner's task and the observed frames.
 Use no_manipulated_subject when the task needs no object moved, altered or added,
-such as navigating through or inspecting an environment. Cover the route, stopping
-area or inspection region as task_region; never invent a manipulated subject.
+such as navigating through or inspecting an environment. Treating a surface where it
+stays (wiping, mopping, sweeping, vacuuming or otherwise cleaning a floor, counter or
+other fixed surface) is no_manipulated_subject too: the surface is not a manipulated
+object. Cover the route, stopping area, inspection region or treated surface as
+task_region; never invent a manipulated subject.
 Do not use this classification merely because a requested manipulated object is
 missing or unobserved. Preserve every operation in the original task.
 Use synthetic_design only when the task explicitly adds a new authored object that
@@ -79,7 +82,8 @@ For synthetic_design and no_manipulated_subject, every captured object, support 
 automation objects must all have disposition keep and removal_instruction must
 be empty. Cover the intended source/destination interaction areas with role
 task_region instead of pretending the synthetic object was photographed.
-Select transient-free observations: this mode does not erase people or objects.
+These modes do not erase people or objects: list transient frames as usual, and each
+one is left out of the reconstruction, so require views and an anchor that show none.
 Use captured for a task involving an observed manipulated object. When the origin is
 unclear, choose the most likely one and name the doubt in estimated_aspects; never
 abstain for it. This describes
@@ -395,7 +399,24 @@ The shared remaining budget is data, not authority to change prices or limits.
 
 #: The revision of how ``proposal_review`` decides on a retained review (``deterministic_refusal``). A refusal it
 #: raises on the same review and survey repeats until this changes, so it is not re-run on a timer.
-PROPOSAL_REVIEW_REVISION = "atlas_proposal_review.r1"
+#: r2 (2026-11-24): a captured review that treats the room in place is kept as filmed (``_treats_in_place``), a
+#: frame showing a transient is left out in a mode that erases nothing, and the coverage check says which part failed.
+PROPOSAL_REVIEW_REVISION = "atlas_proposal_review.r2"
+
+
+def _treats_in_place(value, roles) -> bool:
+    """A ``captured`` review that names no task object, covers a task region and removes nothing.
+
+    Such a job treats the room where it is (a floor mopped, a counter wiped): no object is moved, altered or
+    added for it, so its scene is kept as filmed, as ``no_manipulated_subject`` keeps one. The review's own
+    content decides it, never its word for the origin (Austin test job, 2026-11-24: "Mop the hard floors in the
+    kitchen, living room and hallway" came back ``captured`` with three floor task regions and every object kept,
+    and was refused for want of a task object).
+    """
+    automation = value.get("automation")
+    return (value.get("subject_origin") == "captured" and "task_object" not in roles and "task_region" in roles
+            and bool(automation) and all(row["disposition"] == "keep" for row in automation["objects"])
+            and not automation["removal_instruction"].strip())
 
 
 def _review_refusal(code, proposal, survey):
@@ -419,8 +440,36 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                             or not 0 <= row[0] < row[1] for row in intervals):
         raise _review_refusal("atlas_scene_planner_intervals_invalid", proposal, survey)
     frames = {r["frame_id"]: r for r in survey["frames"]}
+    roles = {r["role"] for r in value["coverage_requirements"]}
+    proposed_origin = origin
+    if _treats_in_place(value, roles):
+        origin = "no_manipulated_subject"
     unsafe = set(value["unsafe_frame_ids"])
+    if not unsafe <= frames.keys():
+        raise _review_refusal("atlas_scene_planner_unsafe_frames_invalid", proposal, survey)
+    transient = set(value["transient_frame_ids"])
+    if not transient <= frames.keys():
+        raise _review_refusal("atlas_scene_planner_transients_invalid", proposal, survey)
     selected = {key for key, r in frames.items() if any(a <= r["timestamp_seconds"] <= b for a, b in intervals)}
+    left_out, lost = set(), set()
+    if origin in PRESERVED_SCENE_ORIGINS and transient - unsafe:
+        # These modes erase nothing, so a frame showing a person or anything else transient is never an input:
+        # it is left out as an unsafe frame is, and out of every coverage row (the observed room does the same,
+        # ``atlas_observed_room``). This only removes inputs. A row, or the anchor, that nothing else shows
+        # still refuses, as before: no view of it is left.
+        left_out = transient - unsafe
+        rows = [{**row, "required_frame_ids": [key for key in row["required_frame_ids"] if key not in left_out]}
+                for row in value["coverage_requirements"]]
+        if value["anchor_frame_id"] in left_out or any(not row["required_frame_ids"] for row in rows):
+            raise ValueError("atlas_synthetic_subject_requires_preserved_capture" if origin == "synthetic_design"
+                             else "atlas_scene_requires_preserved_capture")
+        lost = {key for row in value["coverage_requirements"] for key in row["required_frame_ids"]} & left_out
+        lost |= set(value.get("additional_input_frame_ids", [])) & left_out
+        value["coverage_requirements"] = rows
+        if "additional_input_frame_ids" in value:
+            value["additional_input_frame_ids"] = [key for key in value["additional_input_frame_ids"]
+                                                   if key not in left_out]
+        unsafe |= left_out
     required = {key for row in value["coverage_requirements"] for key in row["required_frame_ids"]}
     additional = set(value.get("additional_input_frame_ids", []))
     # A rejected frame need not invalidate every usable view in the same static
@@ -431,16 +480,18 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
     quality_rejected = {key for key, row in frames.items()
                         if row.get("sharpness", float("inf")) < thresholds["minimum_sharpness"]
                         or row.get("clipped_fraction", 0) > thresholds["maximum_clipped_fraction"]}
-    excluded = (unsafe & selected) - quality_rejected
-    roles = {r["role"] for r in value["coverage_requirements"]}
+    # A frame left out for showing a transient is excluded whatever its quality, so no later selection takes it.
+    excluded = ((unsafe & selected) - quality_rejected) | (left_out & selected)
     task_role = "task_region" if origin in PRESERVED_SCENE_ORIGINS else "task_object"
-    if (not unsafe <= frames.keys() or not required <= selected
-            or not additional <= selected or (required | additional) & unsafe
-            or value["anchor_frame_id"] not in required or not {task_role, "surrounding_scene"} <= roles):
-        raise ValueError("atlas_scene_planner_coverage_or_privacy_invalid")
-    transient = set(value["transient_frame_ids"])
-    if not transient <= frames.keys():
-        raise _review_refusal("atlas_scene_planner_transients_invalid", proposal, survey)
+    # Each part of the coverage check refuses by its own name; each is decided by the review and survey alone.
+    if not (required | additional) <= selected:
+        raise _review_refusal("atlas_scene_planner_required_views_outside_selection", proposal, survey)
+    if (required | additional) & unsafe:
+        raise _review_refusal("atlas_scene_planner_required_view_unsafe", proposal, survey)
+    if value["anchor_frame_id"] not in required:
+        raise _review_refusal("atlas_scene_planner_anchor_not_required", proposal, survey)
+    if not {task_role, "surrounding_scene"} <= roles:
+        raise _review_refusal("atlas_scene_planner_task_or_room_coverage_missing", proposal, survey)
     # Unsafe wins. A frame can show a person and another scene state at once
     # (2026-10-23: 22 such frames failed a whole plan); it is never an input,
     # so nothing in it is erased.
@@ -491,8 +542,14 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
         # as the model gave it otherwise. An object whose every region was such a citation has no
         # evidence left, so that review still refuses, once: the same review repeats it.
         dropped = sorted(frame for frame in referenced if frame not in required | additional or frame in unsafe)
-        if any(obj["regions"] and all(r["frame_id"] in dropped for r in obj["regions"])
-               for obj in automation["objects"]):
+        unseen = [obj["target_id"] for obj in automation["objects"]
+                  if obj["regions"] and all(r["frame_id"] in dropped for r in obj["regions"])]
+        if unseen and origin in PRESERVED_SCENE_ORIGINS:
+            # Kept as filmed, such an object needs no view among the inputs: it stays in the scene and only leaves
+            # the plan, named (Austin, 2026-11-24: a dishwasher boxed only in a frame showing the camera operator).
+            automation["objects"] = [obj for obj in automation["objects"] if obj["target_id"] not in unseen]
+            value["automation_objects_dropped"] = unseen
+        elif unseen:
             raise _review_refusal("atlas_automation_frames_not_selected", proposal, survey)
         if dropped:
             automation["scale_references"] = [r for r in automation["scale_references"]
@@ -509,8 +566,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
         raise MoneyStop("atlas_runtime_budget_insufficient_for_pose_and_generation")
     refinement = ({k: value[k] for k in ("action", "gap_assessment", "additional_input_frame_ids")}
                   | {"feedback_digest": feedback["digest"]}) if feedback is not None else {}
-    quality = ({"quality_excluded_frame_ids": sorted(unsafe & selected & quality_rejected)}
-               if unsafe & selected & quality_rejected else {})
+    quality_excluded = (unsafe & selected & quality_rejected) - left_out
+    quality = {"quality_excluded_frame_ids": sorted(quality_excluded)} if quality_excluded else {}
     if excluded:
         quality["excluded_frame_ids"] = sorted(excluded)
     if transient:
@@ -518,6 +575,13 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                        transient_policy="erased_before_reconstruction")
     return {"schema_version": "atlas_scene_state_review.v1", "survey_digest": survey["digest"], **refinement, **quality,
             **({"subject_origin": origin} if origin is not None else {}),
+            # The origin the review gave, when its own content reads as another (``_treats_in_place``).
+            **({"subject_origin_proposed": proposed_origin} if proposed_origin != origin else {}),
+            # Frames showing a transient that this origin cannot erase: left out, never inputs.
+            **({"transient_frames_left_out": sorted(left_out & selected)} if left_out & selected else {}),
+            **({"required_frames_left_out": sorted(lost)} if lost else {}),
+            **({"automation_objects_dropped": value["automation_objects_dropped"]}
+               if "automation_objects_dropped" in value else {}),
             **({"automation": automation, "scale_reference_sources": list(reference_sources)} if automation else {}),
             **{k: value[k] for k in ("scene_state", "static_intervals_seconds", "anchor_frame_id",
                 "coverage_requirements", "uncaptured_regions", "selection_policy")},

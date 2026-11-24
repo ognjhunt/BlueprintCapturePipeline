@@ -23,11 +23,21 @@ handoff does not qualify the task, robot, synthetic asset or native physics.
 An uncertain origin or a conflicting edit plan refuses before reconstruction.
 
 Tasks that do not move, alter or add an object use the explicit
-`subject_origin: no_manipulated_subject` plan. Navigation and inspection can
-cover their route, stopping area or inspection region as `task_region`, alongside
-the wider scene, without inventing a task object. This uses the same preserved
-environment reconstruction and source handoff. Every observed object stays in
-place; removal, inpainting and transient-containing selected inputs are refused.
+`subject_origin: no_manipulated_subject` plan. Navigation, inspection and the
+treatment of a surface where it stays (wiping, mopping, sweeping or vacuuming a
+floor or counter) cover their route, stopping area, inspection region or treated
+surface as `task_region`, alongside the wider scene, without inventing a task
+object. A `captured` review that names no task object, covers a task region and
+removes nothing is read as this plan, and keeps the origin it gave as
+`subject_origin_proposed` (the Austin test job, 2026-11-24). This uses the same
+preserved environment reconstruction and source handoff. Every observed object
+stays in place; removal and inpainting are refused. Nothing is erased, so a frame
+the review lists as showing a transient (a person, hands, a passing car) is left
+out of the inputs as an unsafe frame is (`transient_frames_left_out`,
+`required_frames_left_out`); a coverage row or anchor that only such frames show
+still refuses with `atlas_scene_requires_preserved_capture`. A kept object whose
+every cited view was left out stays in the scene and leaves the plan
+(`automation_objects_dropped`).
 An unobserved manipulated object is still uncertain, not a task without a subject.
 This enables beta scene preparation;
 it provides no navigation policy, metric registration, native physics admission

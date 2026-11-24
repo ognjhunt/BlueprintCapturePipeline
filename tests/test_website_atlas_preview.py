@@ -723,6 +723,22 @@ def test_a_job_parked_on_a_wall_or_a_new_video_ask_is_never_reopened_by_a_releas
     assert _job(site)["state"] == "failed" and world.runs == []
 
 
+def test_a_job_failed_on_the_old_planner_coverage_code_is_reopened_by_the_next_release(monkeypatch, site):
+    """The Austin test job (2026-11-24): ``atlas_scene_planner_coverage_or_privacy_invalid`` read as a privacy wall, so
+    it ended the job failed at once and no release reopened it. It guards nothing a re-run skips (the review is asked
+    again, unsafe frames and all), so the next release runs it once more from its receipts."""
+    from blueprint_pipeline import website_preparation_retry as retry
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed])
+    _live_grant(site, world.clock + 3 * 86400)
+    monkeypatch.setattr(retry, "_release", lambda: "a" * 40)
+    site.job.write_text(json.dumps({**_job(site), "state": "failed",
+                                    "reason": "atlas_scene_planner_coverage_or_privacy_invalid"}))
+    assert world.advance() == "ready" and len(world.runs) == 1
+    assert _job(site)["retries"][-1] == {"reason": "release_reopened", "at_epoch": world.clock,
+                                         "stopped_on": "atlas_scene_planner_coverage_or_privacy_invalid"}
+
+
 def test_a_parked_job_past_its_grant_is_left_as_it_is(monkeypatch, site):
     from blueprint_pipeline import website_preparation_retry as retry
     _enqueue(site)
@@ -1839,7 +1855,8 @@ def test_a_deterministic_refusal_waits_without_running_until_a_release_decides_i
         world.clock = _job(site)["retry_at_epoch"]
         assert world.advance() == "needs_input"
     assert len(world.runs) == 1 and _job(site)["revision"] == revision
-    monkeypatch.setattr(atlas_scene_planner, "PROPOSAL_REVIEW_REVISION", "atlas_proposal_review.r2")
+    monkeypatch.setattr(atlas_scene_planner, "PROPOSAL_REVIEW_REVISION",
+                        atlas_scene_planner.PROPOSAL_REVIEW_REVISION + ".next")
     world.clock = _job(site)["retry_at_epoch"]
     assert world.advance() == "ready" and len(world.runs) == 2
     assert "deterministic_refusal" not in _job(site)
