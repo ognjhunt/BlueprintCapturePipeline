@@ -329,6 +329,17 @@ def single_object(decided: Mapping[str, Any] | None, removal: Mapping[str, Any])
     return {"entry": dict(manipulated[0]), "row": row}
 
 
+def _observed_rigid(entry: Mapping[str, Any]) -> bool:
+    """Whether the removal's analysis saw the object as one rigid body, as the library step reads it: the plan's row
+    may call it rigid where the analysis saw an opening part, and then the object keeps its articulated builder
+    (Codex review of #3715)."""
+    from .task_profile_contracts import task_object_rigidity
+    try:
+        return task_object_rigidity(entry)["rigidity"] == "rigid" and not entry.get("articulated_part")
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
     """The removal manifest as the handoff builds it: with a plan that took one object out of the scan, every other
     object the analysis named as the job's stays in the room as filmed (``kept_in_scan``), so the build is the one
@@ -342,7 +353,8 @@ def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str
     if not isinstance(built, Mapping) or not isinstance(built.get("target_id"), str):
         one = single_object(decided, removal)
         row = (one or {}).get("row") or {}
-        if row.get("sourcing") == "parametric" and row.get("parametric_shape") and row.get("rigidity") == "rigid":
+        if (row.get("sourcing") == "parametric" and row.get("parametric_shape") and row.get("rigidity") == "rigid"
+                and _observed_rigid((one or {}).get("entry") or {})):
             return {**removal, PARAMETRIC_SUBJECT: {"target_id": row["target_id"], "shape": row["parametric_shape"]}}
         return dict(removal)
     entries = [{**row, "task_effect": "kept_in_scan", "kept_in_scan_reason": "build_plan"}

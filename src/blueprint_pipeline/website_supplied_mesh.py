@@ -71,6 +71,11 @@ def supplied_mesh_configuration(configuration: dict[str, Any], *, synthetic: Map
         return configuration
     if not isinstance(parametric, Mapping) or parametric.get("target_id") != subject_id:
         return configuration
+    if "mechanism" in configuration:
+        # A parametric shape is one rigid body too: an opening part keeps its builder, whatever the plan's row says
+        # (Codex review of #3715: the analysis saw a mechanism the plan's rigid shape would drop).
+        configuration["parametric_not_used"] = "website_parametric_object_object_opens"
+        return configuration
     from .website_parametric_object import SOURCE, design as parametric_design
     try:
         chosen = parametric_design(parametric.get("shape"), extents)

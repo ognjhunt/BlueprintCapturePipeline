@@ -139,6 +139,18 @@ def test_an_opening_or_soft_object_keeps_todays_route(tmp_path, entry, row):
     assert _compile(removal, mechanism=True)["authoring_backend"] == "artisan_v1"
 
 
+def test_a_rigid_parametric_row_for_an_object_the_analysis_saw_open_keeps_its_articulated_builder(tmp_path):
+    """Codex review of #3715: the plan may call the object a rigid parametric shape where the removal's analysis saw
+    an opening part. The shape is not named for compile, and compile with a mechanism never substitutes one."""
+    _sealed_plan(tmp_path, [{**ROW, "sourcing": "parametric", "parametric_shape": "carton"}])
+    removal = apply_to_removal({**REMOVAL, "entries": [{**ENTRY, "articulated_part": "lid"}]}, tmp_path)
+    assert PARAMETRIC_SUBJECT not in removal
+    # Whatever names a shape, a configuration with a mechanism keeps its builder, with the reason recorded.
+    made = _compile({PARAMETRIC_SUBJECT: {"target_id": "tote", "shape": "carton"}}, mechanism=True)
+    assert made["authoring_backend"] == "artisan_v1" and "parametric_design" not in made
+    assert made["parametric_not_used"] == "website_parametric_object_object_opens"
+
+
 def test_with_no_plan_row_the_analysis_names_the_object_and_the_fallback_never_guesses_a_size(tmp_path):
     _sealed_plan(tmp_path, [])
     removal, asked = _attach(tmp_path)
