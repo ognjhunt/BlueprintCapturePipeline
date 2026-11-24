@@ -16,13 +16,14 @@ copyright notice and the disclaimer of warranties the library supplies with the 
 3(a)(1)(A)(ii) and (iv)), and says nothing where none was supplied. A package with no library model has no such
 section. The credit never depends on the model's own file: when that file is gone or changed it is not shipped, and
 the credit names the files that are (the object, and any copy found by the topology recorded when the model was
-written). When the object was built from a library model whose credit cannot be read, the package may not leave with
-the object at all (``refusal``): library geometry never ships without its credit.
+written). The credit is read from the preparation the shipped half was built from (``website_half_preparation``),
+never from a newer one. When the object was built from a library model whose credit cannot be read, or that
+preparation cannot be read at all, the package may not leave with the object (``refusal``): library geometry never
+ships without its credit, and the room floor ships instead.
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import textwrap
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -41,14 +42,6 @@ CREDIT = ("- {files}: {title} by {author}{copyright}, from {library} ({link}), u
 CARVE_OUT = ("These files stay under their own license. Blueprint does not own them, and the terms Blueprint shares "
              "this package under do not restrict them.")
 USD_SUFFIXES = (".usd", ".usda", ".usdc", ".usdz")
-
-
-def _read(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
 
 
 def _sha256(path: Path) -> str | None:
@@ -74,8 +67,9 @@ def credit_text(row: Mapping[str, Any], files: Sequence[str]) -> str:
                             "disclaimer": f" Its own notice: {disclaimer}" if disclaimer else ""})
 
 
-#: The preparation authored the job's object from a library model but its credit cannot be read: the package may not
-#: leave with that object (rights is a hard stop), since its geometry would ship without its credit.
+#: The preparation authored the job's object from a library model but its credit cannot be read, or the preparation
+#: itself cannot be read: the package may not leave with that object (rights is a hard stop), since a model's geometry
+#: could ship without its credit.
 CREDIT_UNREADABLE = "website_company_simulation_library_credit_unreadable"
 _CREDIT_FIELDS = (("title", "title"), ("author", "author"), ("library", "library_title"), ("link", "item_url"),
                   ("license", "license_name"), ("license_url", "license_url"))
@@ -89,19 +83,13 @@ def topology_digest(counts: Any, indices: Any) -> tuple[int, str]:
                                         + np.asarray(indices, dtype=np.int64).tobytes()).hexdigest()
 
 
-def library_models(capture_root: Path) -> dict[str, Any]:
-    """The library model the preparation the job's handoff names authored the job's object from: ``{"library_models":
-    [row]}`` whenever it did and its credit reads, so the credit never depends on the model's own file (a file missing
-    or changed since it was written is not shipped, and the credit names the files that are); ``{"library_refusal":
-    CREDIT_UNREADABLE}`` when it did but the credit cannot be read; empty when no library model was used."""
+def credit(configuration: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
+    """The library model the job's object was authored from, by the stage-3 ``configuration`` of the half's own
+    preparation (``website_half_preparation``): ``{"library_models": [row]}`` whenever it was and its credit reads,
+    so the credit never depends on the model's own file (a file missing or changed since it was written, or outside
+    ``capture_root``, is not shipped, and the credit names the files that are); ``{"library_refusal":
+    CREDIT_UNREADABLE}`` when it was but the credit cannot be read; empty when no library model was used."""
     root = Path(capture_root)
-    folder = root / "pipeline" / "website_scene_preparation"
-    named = _read(folder / "handoff.json").get("preparation_path")
-    path = folder / "preparation.json"
-    if isinstance(named, str):
-        candidate = (Path(named) if Path(named).is_absolute() else root / named).resolve()
-        path = candidate if candidate.is_relative_to(root.resolve()) else path
-    configuration = (_read(path).get("authoring_inputs") or {}).get("configuration") or {}
     if not isinstance(configuration, Mapping) or "library_design" not in configuration:
         return {}
     design = configuration["library_design"]
@@ -130,7 +118,8 @@ def library_models(capture_root: Path) -> dict[str, Any]:
 
 def refusal(source: Mapping[str, Any]) -> str | None:
     """Why the package may not leave with the job's object in it: the object was built from a library model whose
-    credit cannot be read (``CREDIT_UNREADABLE``). A package without the object (the room) is not refused."""
+    credit cannot be read, or from a preparation that cannot be read at all (``CREDIT_UNREADABLE``). A package
+    without the object (the room floor) is not refused: ``website_company_simulation`` ships it instead."""
     files = source.get("files") or {}
     with_object = any(isinstance(row, Mapping) and row.get("role") == "task_object" for row in files.values())
     return str(source["library_refusal"]) if with_object and source.get("library_refusal") else None
@@ -250,5 +239,6 @@ def readme_lines(source: Mapping[str, Any], *, width: int = 100) -> list[str]:
     return [*lines, "", *textwrap.wrap(CARVE_OUT, width=width)]
 
 
-__all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "MODEL_FILE", "changes", "credit_text", "credited_files",
-           "library_models", "mesh_topologies", "place", "readme_lines", "refusal", "shipped", "topology_digest"]
+__all__ = ["CARVE_OUT", "CREDIT", "CREDIT_UNREADABLE", "HEADING", "MODEL_FILE", "changes", "credit",
+           "credit_text", "credited_files", "mesh_topologies", "place", "readme_lines", "refusal", "shipped",
+           "topology_digest"]

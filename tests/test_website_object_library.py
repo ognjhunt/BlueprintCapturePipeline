@@ -523,8 +523,9 @@ def _job_with_a_library_object(tmp_path: Path):
                                        subject_id="tote", sim_min=[0.7, 1.8, 0.0], sim_max=[1.3, 2.2, 0.3],
                                        library=_subject(job.capture / "lib"),
                                        library_root=job.capture / "pipeline/website_scene_preparation/model")
-    (job.capture / "pipeline/website_scene_preparation/preparation.json").write_text(
-        json.dumps({"authoring_inputs": {"configuration": made}}))
+    preparation = job.capture / "pipeline/website_scene_preparation/preparation.json"
+    preparation.write_text(json.dumps({"authoring_inputs": {"configuration": made}}))
+    job.seal_record(bound_to=preparation)  # the half was compiled from this preparation's revision
     return job, made, set(_library_topologies(Path(design["model_file"]["path"])))
 
 
@@ -577,8 +578,9 @@ def test_an_object_from_a_library_model_whose_credit_cannot_be_read_never_leaves
     from tests.test_website_company_simulation import World
     job, made, _ = _job_with_a_library_object(tmp_path)
     break_credit(made["library_design"])
-    (job.capture / "pipeline/website_scene_preparation/preparation.json").write_text(
-        json.dumps({"authoring_inputs": {"configuration": made}}))
+    preparation = job.capture / "pipeline/website_scene_preparation/preparation.json"
+    preparation.write_text(json.dumps({"authoring_inputs": {"configuration": made}}))
+    job.seal_record(bound_to=preparation)  # its own preparation reads; only the credit in it does not
     source = sim.simulation_source(job.capture, queue_root=job.queue)
     assert source["library_refusal"] == notes.CREDIT_UNREADABLE and not source.get("library_models")
     with pytest.raises(sim.PackageRefused) as refused:

@@ -1273,9 +1273,12 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     except TaskNeutralScoringError as exc:
         raise TeamScenePacketError("team_scene_success_contract_invalid:" + ",".join(exc.errors)) from exc
     packet_record = _record(receipt)
+    from .website_half_preparation import binding
     value = {
         "schema_version": SCHEMA, "claim_ceiling": CLAIM_CEILING,
         "scene_revision_digest": revision["revision_digest"],
+        # The preparation a website revision was built from, by its bytes: the company package reads its notes there.
+        **binding(revision),
         "configuration_digest": canonical_digest({"scene_revision_digest": revision["revision_digest"],
                                                   "packet": packet_record["sha256"],
                                                   "station": station["stance_digest"] if station else None}),

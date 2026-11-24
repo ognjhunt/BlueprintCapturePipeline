@@ -63,13 +63,15 @@ from typing import Any
 
 from . import company_share_permission as permission
 from . import website_company_clip as clip
-from .atlas_automation_plan import GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, GENERATED_VIEWS_IN_LOOK, JOB_OBJECT_RULE
+from .atlas_automation_plan import JOB_OBJECT_RULE
 from .atlas_unscaled_room import SCALE_NOT_MEASURED, SCALE_NOT_MEASURED_NOTE, UNITS_LINE
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .outbound_file_scan import capture_site_identity
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
+from . import website_half_preparation as half_preparation
 from . import website_library_notes as library_notes
+from .website_half_preparation import COLLISION_ONLY, generated_patch, look_views, surface_estimated
 from .website_build_plan_notes import build_plan_notes
 from .website_company_look import look_ply, look_source, reauthor_look
 
@@ -215,8 +217,6 @@ SIZE_DISAGREES_WITH_PUBLISHED_NOTE = ("The published size of the job's object's 
 #: built without the look file.
 GENERATED_VIEWS_LOOK_NOTE = ("Parts of the look file were made from generated views of areas the video saw from "
                              "few angles, checked against the filmed frames and their depth.")
-#: The two places ``generated_patch`` names.
-COLLISION_ONLY, LOOK_AND_COLLISION = GENERATED_IN_COLLISION_ONLY, "look_and_collision"
 #: The look file failed its quality gate (``team_scene_robot_absent.APPEARANCE_QUALITY``) and ships as it is.
 APPEARANCE_QUALITY_NOT_PASSED = ("The look file did not pass Blueprint's image quality check; it is included as "
                                  "it is.")
@@ -370,9 +370,7 @@ def simulation_source(capture_root: Path, *, queue_root: Path | None = None) -> 
                 and isinstance(status.get("team_scene_inputs_path"), str)):
             statuses.append((path.stat().st_mtime_ns, path.name, status))
     for _mtime, _name, status in sorted(statuses, reverse=True):
-        source = _half(Path(status["team_scene_inputs_path"]).parent, status, estimates=object_estimates(root),
-                       generated=generated_patch(root), look=look_views(root), capture=root,
-                       basis=success_basis(root))
+        source = _half(Path(status["team_scene_inputs_path"]).parent, status, capture=root)
         if source is not None:
             return source
     # Else the room package the scene handoff wrote (``website_scene_handoff.write_room_package``), when sealed.
@@ -535,116 +533,33 @@ def package_source(root: Path, *, queue_root: Path | None = None, manifest: Mapp
 
 
 def object_estimates(capture_root: Path) -> Mapping[str, Any] | None:
-    """The object's mass and friction ranges as preparation estimated them from the video, when recorded.
-
-    Read from the preparation the scene handoff names (inside the capture), else the default preparation record.
-    """
-    bounds = (_preparation(capture_root).get("physics") or {}).get("bounds")
-    return bounds if isinstance(bounds, Mapping) else None
-
-
-def _preparation(capture_root: Path) -> dict[str, Any]:
-    """The preparation the job's scene handoff names (inside the capture), else the default preparation record."""
-    root = Path(capture_root)
-    preparation = root / "pipeline" / "website_scene_preparation" / "preparation.json"
-    named = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json").get("preparation_path")
-    if isinstance(named, str):
-        candidate = Path(named) if Path(named).is_absolute() else root / named
-        preparation = candidate if _inside(root, candidate) is not None else preparation
-    return _read(preparation)
+    """The object's mass and friction ranges in the preparation the job's handoff names (a half reads its own:
+    ``website_half_preparation``)."""
+    return half_preparation.object_estimates(half_preparation.preparation(capture_root))
 
 
 def success_basis(capture_root: Path) -> dict[str, str] | None:
-    """For each number of the rule the preparation set, where it came from: ``site_stated`` (the site's own words),
-    ``destination_area`` or ``assumed``, from the preparation's ``success_rule_basis`` when the build choice read the
-    site's words (``website_task_preparation._rule_success``); None otherwise, so its package says what it said
-    before. Never the quotes: the site's words can name the site."""
-    record = _preparation(capture_root).get("success_rule_basis")
-    fields = record.get("fields") if isinstance(record, Mapping) and record.get("applied") is True else None
-    if not isinstance(fields, Mapping):
-        return None
-    # ``site_words`` is ``website_build_choice.SUCCESS_RULE_SITE``, named here: the package lane stays off its imports.
-    words = {"site_words": "site_stated", "assumed": "assumed", "destination_area": "destination_area"}
-    found = {str(key): words[row["basis"]] for key, row in fields.items()
-             if isinstance(row, Mapping) and row.get("basis") in words}
-    return found or None
-
-
-def generated_patch(capture_root: Path) -> str | None:
-    """Where the base scene the job's scene handoff recorded keeps admitted generated geometry, or None.
-
-    ``collision_only``: only in the scan its collision was made from, beside a refined look. ``look_and_collision``:
-    any other admitted geometry (the look is the scan holding it; jobs before 2026-11-17 record no marker). The
-    handoff (sealed by its digest) names the base scene its halves are built from; a base scene with no admitted
-    generated geometry is None, so its package says what it said before.
-    """
-    root = Path(capture_root)
-    handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
-    path = handoff.get("base_scene_path")
-    if not isinstance(path, str) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
-        return None
-    base = _inside(root, Path(path))
-    provenance = (_read(base) if base is not None else {}).get("content_provenance")
-    if not isinstance(provenance, Mapping) or provenance.get("basis") != GENERATED_ESTIMATES_BASIS:
-        return None
-    return COLLISION_ONLY if provenance.get("generated_geometry_in") == COLLISION_ONLY else LOOK_AND_COLLISION
-
-
-def look_views(capture_root: Path) -> bool:
-    """Whether the base scene the job's scene handoff recorded has generated views in its look.
-
-    ``atlas_look_views`` (owner 2026-11-18): the refined splat also holds generated views of areas the
-    video saw from few angles, checked against the filmed frames and their depth. The handoff is sealed by
-    its digest; a base scene without the marker is False, so its package says what it said before.
-    """
-    root = Path(capture_root)
-    handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
-    path = handoff.get("base_scene_path")
-    if not isinstance(path, str) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
-        return False
-    base = _inside(root, Path(path))
-    provenance = (_read(base) if base is not None else {}).get("look_provenance")
-    return isinstance(provenance, Mapping) and provenance.get("generated_views_in") == GENERATED_VIEWS_IN_LOOK
+    """Where each number of the rule came from, in the preparation the job's handoff names (a half reads its own)."""
+    return half_preparation.success_basis(half_preparation.preparation(capture_root))
 
 
 def size_notes(capture_root: Path) -> dict[str, bool]:
-    """What the preparation the job's scene handoff names says of the object's size (``subject_extent``) and where it
-    rests: read from its own points, an exact model's published size that disagrees, and a destination it
-    overhangs (``destination_overhang``). Empty when none, so its package says what it said before."""
-    preparation = _preparation(capture_root)
-    extent = preparation.get("subject_extent")
-    extent = extent if isinstance(extent, Mapping) else {}
-    check = extent.get("published_cross_check") if isinstance(extent.get("published_cross_check"), Mapping) else {}
-    overhang = preparation.get("destination_overhang")
-    return {**({"size_from_its_points": True} if extent.get("status") == "from_its_own_points" else {}),
-            **({"size_disagrees_with_published": True} if check.get("status") == "disagrees" else {}),
-            **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {})}
+    """What the preparation the job's handoff names says of the object's size (a half reads its own)."""
+    return half_preparation.size_notes(half_preparation.preparation(capture_root))
 
 
-def surface_estimated(capture_root: Path) -> bool:
-    """Whether the base scene the job's scene handoff recorded holds a destination surface the scan did not show,
-    estimated from its visible edges (``scene_estimate:destination_surface_estimated``). The handoff is sealed by
-    its digest; a base scene without the row is False, so its package says what it said before."""
-    from .atlas_scene_estimates import DESTINATION_SURFACE_ESTIMATED
-    root = Path(capture_root)
-    handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
-    path = handoff.get("base_scene_path")
-    if not isinstance(path, str) or handoff.get("digest") != canonical_digest(handoff, digest_field="digest"):
-        return False
-    base = _inside(root, Path(path))
-    rows = (_read(base) if base is not None else {}).get("scene_estimates")
-    return any(isinstance(row, Mapping) and row.get("code") == DESTINATION_SURFACE_ESTIMATED
-               for row in (rows if isinstance(rows, list) else []))
-
-
-def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any] | None = None,
-          generated: str | None = None, look: bool = False, capture: Path | None = None,
-          basis: Mapping[str, str] | None = None) -> dict[str, Any] | None:
+def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = None, look: bool = False,
+          capture: Path | None = None) -> dict[str, Any] | None:
     """The half's plan and shipped files; a row that cannot be placed is kept as ``refusal`` naming its role. The
-    look's row carries the splat it was authored from (``look_source``) when ``capture``'s records name one."""
+    look's row carries the splat it was authored from (``look_source``) when ``capture``'s records name one. With
+    ``capture``, a half's notes are read from the preparation it was built from (``website_half_preparation``); a
+    room's are its handoff's (``generated``, ``look``)."""
     from .scene_package_stage import StageRefused, neutral_rule, placements, up_axis
     if not scene.is_absolute() or scene.is_symlink() or not scene.is_dir():
         return None
+    record, notes = _sealed_record(scene, status), _record_notes(scene, status)
+    told = half_preparation.half_disclosures(capture, record) if capture is not None and "room" not in notes else {}
+    estimates, basis = told.pop("estimates", None), told.pop("basis", None)
     for name, plan_file in [*((name, PLAN_FILE) for name in PACKET_DIRECTORIES), SCENE_PACKAGE]:
         packet = scene / name
         plan_path = _inside(scene, packet / plan_file)
@@ -653,17 +568,14 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
         plan = _read(plan_path)
         if not plan:
             continue
-        notes = _record_notes(scene, status)
         source: dict[str, Any] = {"packet_dir": packet, "plan_path": plan_path, "plan": plan,
                                   "plan_digest": plan.get("plan_digest"), "status": dict(status), "files": {},
                                   "refusal": None, **notes,
                                   **({"generated_patch": generated} if generated else {}),
                                   **({"look_views": True} if look else {}),
-                                  **({"surface_estimated": True} if capture is not None
-                                     and surface_estimated(capture) else {}),
-                                  **(size_notes(capture) if capture is not None and "room" not in notes else {}),
+                                  **({"surface_estimated": True} if capture is not None and "room" in notes
+                                     and surface_estimated(capture) else {}), **told,
                                   **(build_plan_notes(capture) if capture is not None else {}),
-                                  **(library_notes.library_models(capture) if capture is not None else {}),
                                   "physics_check": physics_check(
                                       packet, plan, rule_withheld="rule_withheld" in notes)}
         try:
