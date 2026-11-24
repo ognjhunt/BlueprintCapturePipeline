@@ -76,6 +76,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: "3.12"
+          cache-python: "true"
 
       - name: Install frozen dependencies
         run: |

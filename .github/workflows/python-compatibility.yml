@@ -55,6 +55,7 @@ jobs:
         with:
           version: "0.10.7"
           python-version: ${{ matrix.python-version }}
+          cache-python: "true"
 
       - name: Verify lock and compatibility exports
         run: |
