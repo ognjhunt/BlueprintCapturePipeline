@@ -250,6 +250,9 @@ def _namespace_available(tmp_path):
     return NAMESPACE and _namespace_prefix(probe) is not None
 
 
+# Needs a private mount and network namespace (``unshare``), which hosted CI runners do not grant: the hermetic lanes
+# deselect it instead of reporting a skip (they refuse skips). It runs wherever the replay itself runs.
+@pytest.mark.external_runtime
 def test_the_command_pulls_once_replays_in_its_namespace_and_never_changes_the_evidence(site, tmp_path):  # noqa: F811 - the fixture
     if not _namespace_available(tmp_path):
         pytest.skip("this host has no private mount and network namespace for the replay")
