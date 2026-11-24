@@ -26,6 +26,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .atlas_automation_plan import SCENE_COMPLETION_NOT_ADMITTED
 from .atlas_scene_estimates import (DESTINATION_OVERHANG, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED,
                                     OBJECT_SIZE_FROM_ITS_POINTS, SUPPORT_GUESSED, SUPPORT_HEIGHT,
                                     preparation_record_flags)
@@ -61,6 +62,14 @@ ESTIMATE_SENTENCES = {
     SUPPORT_HEIGHT: "The surface under the object is at a different height in the collision geometry than in the reconstruction's picture; it was not corrected, as the surface height line says.",
     "task_object_box_fit_offset": "In the frames, the centre of the box Blueprint fitted to the object is off the centre of the object's outline by more than the placement uncertainty. This is how well the box fits the object, not where it sits in the room.",
     "task_object_box_fit_size": "In the frames, the box Blueprint fitted to the object and the object's outline differ in size by more than 15 % along a side, as the object size line says: the size is less certain than the scale band alone suggests.",
+    # The scene's generated gap views were not admitted (``atlas_scene_automation``, ``website_atlas_pipeline``):
+    # the base scene's ``scene_completion``. The company package's README says the same words (``NOT_FILLED_IN``).
+    SCENE_COMPLETION_NOT_ADMITTED: "Parts of the room the video did not show were not filled in.",
+}
+#: Where the gap views were not admitted nothing was generated, so the surroundings lines say only what was left out.
+NOT_FILLED_IN_SENTENCES = {
+    "scene_estimate:surroundings_not_connected": "Only the job's area was filmed in views that connect; the views of the room around it were left out.",
+    "scene_estimate:surroundings_past_frame_budget": "The views of the room around the job's area were more views than the rebuild takes beside the job's area, and were left out.",
 }
 #: Estimates recorded for Blueprint's own checks that say nothing a company can act on: never shown on its page.
 UNSAID = frozenset({"scene_estimate:review_citations_dropped"})
@@ -379,8 +388,12 @@ def measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[s
     # Every estimate the preparation record itself carries, read as the publication reads it
     # (``atlas_scene_estimates.preparation_record_flags``): its choices, its checks and its corrections.
     codes |= preparation_record_flags(prep)
-    estimated += [line(ESTIMATE_SENTENCES.get(code, "Another estimate the scene rests on, not yet described in "
-                                                    "words.")) for code in sorted(codes - UNSAID)]
+    if _mapping(_mapping(base_scene).get("scene_completion")).get("generated_geometry_rejected") \
+            == SCENE_COMPLETION_NOT_ADMITTED:
+        codes.add(SCENE_COMPLETION_NOT_ADMITTED)
+    words = {**ESTIMATE_SENTENCES, **(NOT_FILLED_IN_SENTENCES if SCENE_COMPLETION_NOT_ADMITTED in codes else {})}
+    estimated += [line(words.get(code, "Another estimate the scene rests on, not yet described in words."))
+                  for code in sorted(codes - UNSAID)]
     return measured, estimated
 
 
@@ -438,4 +451,4 @@ def read_packet_facts(*, capture_root: Path, task_context_digest: str) -> dict[s
         return None
 
 
-__all__ = ["ESTIMATE_SENTENCES", "SCHEMA_VERSION", "UNSAID", "measured_and_estimated", "object_lines", "read_packet_facts"]
+__all__ = ["ESTIMATE_SENTENCES", "NOT_FILLED_IN_SENTENCES", "SCHEMA_VERSION", "UNSAID", "measured_and_estimated", "object_lines", "read_packet_facts"]

@@ -7,6 +7,7 @@ small record the website renders; these are the export's checks, carried over.
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/website_packet_facts.py
+#   src/blueprint_pipeline/atlas_automation_plan.py
 #   src/blueprint_pipeline/website_job_estimates.py
 #   src/blueprint_pipeline/website_preparation_status.py
 
@@ -35,6 +36,32 @@ def test_an_estimate_a_company_cannot_act_on_is_left_out_and_never_described_as_
     texts = " ".join(_texts(estimated))
     assert "citation" not in texts and "not yet described" not in texts and "scene review" not in texts
 
+
+
+def test_a_scene_whose_gap_views_were_not_admitted_says_they_were_not_filled_in_and_never_that_they_were_generated() -> None:
+    """Live test job move-the-lamp-2 (2026-11-24): its generated gap views were refused, so nothing fills the room
+    the video did not show. The company's page says what its package README says, and no line says generated."""
+    from blueprint_pipeline.atlas_automation_plan import SCENE_COMPLETION_NOT_ADMITTED
+    from blueprint_pipeline.website_company_simulation import NOT_FILLED_IN
+
+    rows = [{"code": "scene_estimate:surroundings_not_connected"},
+            {"code": "scene_estimate:surroundings_past_frame_budget"}]
+    floored = {"scene_estimates": rows, "scene_completion": {
+        "generated_geometry_rejected": SCENE_COMPLETION_NOT_ADMITTED,
+        "not_admitted_reason": "atlas_completion_visual_review_required"}}
+    estimated = _texts(facts.measured_and_estimated(LAMP, floored, None)[1])
+    assert facts.ESTIMATE_SENTENCES[SCENE_COMPLETION_NOT_ADMITTED] == NOT_FILLED_IN
+    assert NOT_FILLED_IN in estimated
+    for code, sentence in facts.NOT_FILLED_IN_SENTENCES.items():
+        assert sentence in estimated and facts.ESTIMATE_SENTENCES[code] not in estimated
+    assert not any("generated" in text for text in estimated)
+    # A scene whose completion was admitted keeps the generated wording and says nothing of gaps left unfilled.
+    plain = _texts(facts.measured_and_estimated(LAMP, {"scene_estimates": rows}, None)[1])
+    assert NOT_FILLED_IN not in plain
+    assert all(facts.ESTIMATE_SENTENCES[row["code"]] in plain for row in rows)
+    # Any other record under the same key says nothing.
+    other = _texts(facts.measured_and_estimated(LAMP, {"scene_completion": {"status": "completed"}}, None)[1])
+    assert NOT_FILLED_IN not in other
 
 #: A preparation as test job 4's was (a table lamp to a glass wall shelf, 2026-11-18): every estimate it records.
 LAMP = {"subject": {"description": "table lamp", "aabb_min_xyz": [0.078, -0.3697, 0.539],
