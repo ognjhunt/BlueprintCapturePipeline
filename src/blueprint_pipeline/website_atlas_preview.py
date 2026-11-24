@@ -31,7 +31,7 @@ ends at once as ``needs_input`` instead, and the website asks the site for a
 new video; one an earlier release left waiting ends so at its next check. A job
 parked for input on no wall (``_reopen_parked``) is reopened by the clock on the
 same refusal schedule, a new release bringing the next reopen forward, six
-reopens in all; then its stop is its end (2026-11-24: only deploys reopened it,
+reopens for each stop it parks on (18 at most in all); then its stop is its end (2026-11-24: only deploys reopened it,
 while its preparation waited seven days). A retry re-asks every gate; it never
 bypasses one. No operator command or deploy is needed for a retry;
 ``retry_failed_job`` reopens a job that has already ended.
@@ -880,12 +880,12 @@ def _reopen_parked(job: dict[str, Any], *, job_dir: Path, now: Callable[[], floa
     preparation that waited on it goes on (``website_reconstruction_resume.reopenable``). Only while it can still
     finish inside its window and its grant is live (``_may_reopen``); the step asks every consent, withdrawal and
     money admission again and resumes from its receipts, so nothing is bought twice."""
-    from .atlas_preparation_job_control import _AUTOMATIC_RETRY_FIELDS, automatic_reopens
+    from .atlas_preparation_job_control import _AUTOMATIC_RETRY_FIELDS, automatic_reopens, reopens_spent
     from .website_preparation_retry import _release
     if not _parked_without_wall(job):
         return job
     delay = refusal_retry_delay(automatic_reopens(job))
-    if delay is None:
+    if delay is None or reopens_spent(job):  # the schedule is per stop, under one bound in all
         return job
     current = int(now())
     release = _release()
