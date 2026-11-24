@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import itertools
 import json
 import math
 import struct
@@ -102,6 +103,10 @@ SPZ_MAGIC = 0x5053474E
 SPZ_VERSION = 2
 SPZ_FRACTIONAL_BITS = 12
 SPZ_COLOR_SCALE = 0.15
+# Gaussians encoded or decoded at once: an SPZ field is widened to float64 or int64
+# one run at a time, never the whole body (a 16.2 M-Gaussian draft peaked at
+# 6.95 GiB decoding it at once, 2026-11-24).
+SPZ_CHUNK_ROWS = 1 << 20
 PLY_PROPERTIES = ("x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1",
                   "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")
 
@@ -985,70 +990,185 @@ def _sum_by_key(keys: np.ndarray, columns: np.ndarray) -> tuple[np.ndarray, np.n
     return unique, sums
 
 
+def _weighted_quantities(sample: Mapping[str, np.ndarray]):
+    """The twelve quantities ``VoxelSums`` sums per sample, one at a time: weight, weighted xyz, rgb and
+    normal, a count and weighted slanted footprint; each is the row a 12-row table of them would hold."""
+    weights = sample["weights"]
+    yield weights
+    for key in ("points", "colors", "normals"):
+        for axis in range(3):
+            yield sample[key][:, axis] * weights
+    yield np.ones_like(weights)
+    yield sample.get("slant", np.zeros_like(weights)) * weights
+
+
+def _malloc_trim() -> Callable[[int], int] | None:
+    import ctypes
+    import ctypes.util
+
+    try:
+        return ctypes.CDLL(ctypes.util.find_library("c") or None).malloc_trim
+    except (AttributeError, OSError):
+        return None
+
+
+_MALLOC_TRIM = _malloc_trim()
+
+
+def _release_freed_memory() -> None:
+    """Hand freed heap pages back to the system (glibc ``malloc_trim``); nothing where there is no glibc.
+
+    Arrays below glibc's mmap threshold, which rises to 32 MiB as larger arrays are
+    freed, are carved from the heap, and voxel leaves that live through the fill,
+    between each view's freed temporaries, keep its freed pages resident. Replayed on
+    a 204-view room (2026-11-24), the process was resident 1.3 GiB above what it had
+    allocated when the fill ended and 2.4 GiB above once the splat was built; trimmed,
+    the fill peaked 0.3 GiB lower and the splat build 0.8 GiB lower. Values are untouched.
+    """
+    if _MALLOC_TRIM is not None:
+        _MALLOC_TRIM(0)
+
+
+def _fused_sums(sums: np.ndarray) -> dict[str, np.ndarray]:
+    """Per-voxel means of ``VoxelSums`` rows (one row per voxel, its twelve sums across)."""
+    total = sums[:, :1]
+    normal = sums[:, 7:10] / total
+    agreement = np.linalg.norm(normal, axis=1)
+    return {"xyz": sums[:, 1:4] / total, "rgb": sums[:, 4:7] / total,
+            "normal": normal / np.maximum(agreement, 1e-12)[:, None], "normal_agreement": agreement,
+            "confidence": total[:, 0] / sums[:, 10], "observations": sums[:, 10],
+            "slant": sums[:, 11] / total[:, 0]}
+
+
 class VoxelSums:
     """Running confidence-weighted sums per voxel, so memory follows voxels rather than pixels.
 
-    Each frame is reduced to its own voxels first. Reduced frames merge into the
-    table once they reach half its size, so the table is not re-sorted per frame.
+    Each frame is reduced to its own voxels first. The table is kept in leaves:
+    consecutive ranges of its sorted keys, at most ``LEAF_ROWS`` voxels each. A
+    reduced frame is cut at the leaves' first keys, and a leaf merges what it was
+    given once that reaches ``1 / MERGE_FRACTION`` of it, so a merge rebuilds one
+    leaf, never the table, and what waits to merge stays a small share of the
+    table. As one table merged half its size at a time, the 16.2 M voxels of a
+    204-view room peaked at 4.5 GiB, two tables and their pending frames at once
+    (2026-11-24). Every voxel still adds its frames' sums in frame order, however
+    they are batched, so the leaves change no bit of any sum.
     """
 
-    MIN_MERGE_ROWS = 1_000_000
+    MIN_MERGE_ROWS = 16_384
+    MERGE_FRACTION = 8
+    LEAF_ROWS = 1 << 19
     MERGE_CHUNK_ROWS = 65_536
 
     def __init__(self, voxel: float):
         self.voxel = voxel
-        self._keys = np.empty(0, np.int64)
-        # weight, weighted xyz, rgb and normal, sample count, weighted slanted footprint
-        self._columns = np.empty((12, 0))
-        self._pending: list[tuple[np.ndarray, np.ndarray]] = []
-        self._pending_rows = 0
+        self._clear()
+
+    def _clear(self) -> None:
+        # Per leaf: its sorted keys; its sums, one row per quantity (weight, weighted xyz, rgb
+        # and normal, sample count, weighted slanted footprint); the reduced frames' rows
+        # waiting to merge into it; and how many rows those are.
+        self._leaves: list[list[Any]] = [[np.empty(0, np.int64), np.empty((12, 0)), [], 0]]
+        self._bounds = np.empty(0, np.int64)  # the first key of every leaf after the first
 
     def add(self, sample: Mapping[str, np.ndarray]) -> None:
-        weights = sample["weights"]
-        slant = sample.get("slant", np.zeros_like(weights))
-        columns = np.concatenate([weights[None], (sample["points"] * weights[:, None]).T,
-                                  (sample["colors"] * weights[:, None]).T, (sample["normals"] * weights[:, None]).T,
-                                  np.ones_like(weights)[None], (slant * weights)[None]])
-        self._pending.append(_sum_by_key(_voxel_keys(sample["points"], self.voxel), columns))
-        self._pending_rows += len(self._pending[-1][0])
-        if self._pending_rows >= max(self.MIN_MERGE_ROWS, len(self._keys) // 2):
-            self._merge()
+        # The frame's sums per voxel, a quantity at a time: no table of every pixel's twelve quantities is built.
+        keys, inverse = np.unique(_voxel_keys(sample["points"], self.voxel), return_inverse=True)
+        inverse = inverse.reshape(-1)
+        sums = np.empty((12, len(keys)))
+        for row, quantity in enumerate(_weighted_quantities(sample)):
+            sums[row] = np.bincount(inverse, weights=quantity, minlength=len(keys))
+        del inverse
+        cuts = [0, *np.searchsorted(keys, self._bounds).tolist(), len(keys)]
+        for leaf, start, end in zip(self._leaves, cuts[:-1], cuts[1:]):
+            if end > start:
+                whole = end - start == len(keys)
+                leaf[2].append((keys, sums) if whole else (keys[start:end].copy(), sums[:, start:end].copy()))
+                leaf[3] += end - start
+        del keys, sums
+        for index in reversed(range(len(self._leaves))):  # a split leaf inserts its pieces after itself
+            leaf = self._leaves[index]
+            if leaf[3] and leaf[3] >= max(self.MIN_MERGE_ROWS, len(leaf[0]) // self.MERGE_FRACTION):
+                self._merge_leaf(index)
+        _release_freed_memory()
+
+    def _merge_leaf(self, index: int) -> None:
+        # The leaf and its pending tables already have sorted, unique keys. Avoid
+        # copying all twelve columns into a second table and constructing a full
+        # inverse index before allocating the merged sums.
+        leaf_keys, leaf_columns, pending, _ = self._leaves[index]
+        tables = [(leaf_keys, leaf_columns), *pending]
+        keys = np.unique(np.concatenate([part_keys for part_keys, _ in tables]))
+        columns = np.zeros((12, len(keys)))
+        for part_keys, part_columns in tables:
+            for start in range(0, len(part_keys), self.MERGE_CHUNK_ROWS):
+                end = start + self.MERGE_CHUNK_ROWS
+                slots = np.searchsorted(keys, part_keys[start:end])
+                for row in range(12):
+                    columns[row, slots] += part_columns[row, start:end]
+        del tables, pending, leaf_keys, leaf_columns
+        if len(keys) <= self.LEAF_ROWS:
+            self._leaves[index] = [keys, columns, [], 0]
+            return
+        # Split into pieces of at most half a leaf, so each has room to grow before it merges again.
+        pieces = -(-len(keys) // max(self.LEAF_ROWS // 2, 1))
+        edges = [len(keys) * piece // pieces for piece in range(pieces + 1)]
+        self._leaves[index:index + 1] = [[keys[start:end].copy(), columns[:, start:end].copy(), [], 0]
+                                         for start, end in itertools.pairwise(edges)]
+        self._bounds = np.insert(self._bounds, index, keys[edges[1:-1]])
 
     def _merge(self) -> None:
-        if self._pending:
-            # Each table already has sorted, unique keys. Avoid copying all
-            # twelve columns into a second pixel-sized table and constructing
-            # a full inverse index before allocating the merged sums.
-            tables = [(self._keys, self._columns), *self._pending]
-            keys = np.unique(np.concatenate([part_keys for part_keys, _ in tables]))
-            columns = np.zeros((12, len(keys)))
-            for part_keys, part_columns in tables:
-                for start in range(0, len(part_keys), self.MERGE_CHUNK_ROWS):
-                    end = start + self.MERGE_CHUNK_ROWS
-                    slots = np.searchsorted(keys, part_keys[start:end])
-                    for row in range(12):
-                        columns[row, slots] += part_columns[row, start:end]
-            self._keys, self._columns = keys, columns
-            self._pending, self._pending_rows = [], 0
+        for index in reversed(range(len(self._leaves))):
+            if self._leaves[index][2]:
+                self._merge_leaf(index)
 
     @property
     def keys(self) -> np.ndarray:
         self._merge()
-        return self._keys
+        if len(self._leaves) == 1:
+            return self._leaves[0][0]
+        return np.concatenate([leaf[0] for leaf in self._leaves])
 
     @property
     def sums(self) -> np.ndarray:
         self._merge()
-        return self._columns.T
+        if len(self._leaves) == 1:
+            return self._leaves[0][1].T
+        return np.concatenate([leaf[1] for leaf in self._leaves], axis=1).T
 
     def fused(self) -> dict[str, np.ndarray]:
-        total = self.sums[:, :1]
-        normal = self.sums[:, 7:10] / total
-        agreement = np.linalg.norm(normal, axis=1)
-        return {"xyz": self.sums[:, 1:4] / total, "rgb": self.sums[:, 4:7] / total,
-                "normal": normal / np.maximum(agreement, 1e-12)[:, None], "normal_agreement": agreement,
-                "confidence": total[:, 0] / self.sums[:, 10], "observations": self.sums[:, 10],
-                "slant": self.sums[:, 11] / total[:, 0]}
+        return _fused_sums(self.sums)
+
+    def fused_splat(self) -> tuple[SplatData, float]:
+        """``depth_fused_splat(self.fused(), self.voxel)`` and the median observations per Gaussian.
+
+        Built one leaf at a time, each leaf's sums let go once its Gaussians are
+        written, so the table and the splat never coexist beside a full copy of
+        either. The rows and arithmetic are those of the whole table. This empties
+        the sums.
+        """
+        self._merge()
+        count = sum(len(leaf[0]) for leaf in self._leaves)
+        xyz, f_dc, scales = (np.empty((count, 3), np.float32) for _ in range(3))
+        opacity, quats, observations = np.empty(count, np.float32), np.empty((count, 4), np.float32), np.empty(count)
+        leaves, start = self._leaves[::-1], 0
+        self._clear()
+        while leaves:
+            keys, columns, _, _ = leaves.pop()
+            end = start + len(keys)
+            if end > start:
+                fused = _fused_sums(columns.T)
+                del keys, columns
+                observations[start:end] = fused.pop("observations")
+                part = depth_fused_splat(fused, self.voxel)
+                del fused
+                xyz[start:end], opacity[start:end], f_dc[start:end] = part.xyz, part.opacity, part.f_dc
+                scales[start:end], quats[start:end] = part.scales, part.quats
+                del part
+                _release_freed_memory()
+            start = end
+        splat = SplatData(count=count, xyz=xyz, opacity=opacity, f_dc=f_dc, scales=scales, quats=quats,
+                          properties=PLY_PROPERTIES)
+        return splat, float(np.median(observations))
 
 
 def depth_fused_splat(fused: Mapping[str, np.ndarray], voxel: float) -> SplatData:
@@ -1162,6 +1282,7 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
     if not len(footprints):
         raise ValueError("atlas_depth_splat_no_usable_depth")
     voxel = float(voxel_footprint_multiple * np.median(footprints))
+    del footprints
     # The last read of every view measures agreement after consensus and fills the voxels, in frame order.
     targets = _agreement_targets(frames, [sample["points"] for sample in samples])
     by_target, results = _by_target(targets), {}
@@ -1174,9 +1295,9 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
         confidence, rgb = frame_arrays(frame, "confidence", "rgb")
         sums.add(_surface(frame, depth, confidence, rgb))
     consensus["median_relative_residual_after"] = _agreement_report(frames, targets, results)["median_relative_residual"]
-    fused = sums.fused()
-    # The observation counts are a view of the voxel table: let both go before the splat is built.
-    observations = float(np.median(fused.pop("observations")))
+    del targets, by_target, results
+    # The voxel table becomes the splat a leaf at a time, each leaf let go once its Gaussians are written.
+    splat, observations = sums.fused_splat()
     del sums
     report = {"frames": [{"frame_id": frame["frame_id"], "usable_pixel_fraction": sample["usable"] / size}
                          for frame, sample, size in zip(frames, samples, sizes)],
@@ -1187,7 +1308,7 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
                                   "relative_tolerance": DEPTH_SMOOTHING_TOLERANCE},
               "depth_consensus": consensus,
               "median_observations_per_gaussian": observations}
-    return depth_fused_splat(fused, voxel), report
+    return splat, report
 
 
 def _uint8(values: np.ndarray) -> np.ndarray:
@@ -1206,60 +1327,166 @@ def _sh_degree(rest: np.ndarray | None, count: int) -> int:
     return degree
 
 
-def encode_spz(splat: SplatData) -> bytes:
-    """Niantic SPZ v2, gzip-wrapped and byte-reproducible: degree-0 colour, plus higher-order SH when the splat
-    carries it (``sh_rest``), stored as SPZ does, colour channel innermost, ``round(v * 128 + 128)``."""
-    degree = _sh_degree(splat.sh_rest, splat.count)
-    fixed = np.round(splat.xyz.astype(np.float64) * (1 << SPZ_FRACTIONAL_BITS)).astype(np.int64)
+def _row_chunks(count: int):
+    """``(start, stop)`` of consecutive runs of at most ``SPZ_CHUNK_ROWS`` Gaussians."""
+    for start in range(0, count, SPZ_CHUNK_ROWS):
+        yield start, min(count, start + SPZ_CHUNK_ROWS)
+
+
+def _spz_position_bytes(xyz: np.ndarray) -> np.ndarray:
+    fixed = np.round(xyz.astype(np.float64) * (1 << SPZ_FRACTIONAL_BITS)).astype(np.int64)
     if np.any(np.abs(fixed) >= 1 << 23):
         raise ValueError("atlas_depth_splat_spz_position_out_of_range")
-    positions = ((fixed[..., None] & 0xFFFFFF) >> np.array([0, 8, 16])) & 0xFF
-    quats = splat.quats.astype(np.float64)
+    return ((fixed[..., None] & 0xFFFFFF) >> np.array([0, 8, 16])) & 0xFF
+
+
+def _spz_rotation_bytes(quats: np.ndarray) -> np.ndarray:
+    quats = quats.astype(np.float64)
     quats /= np.linalg.norm(quats, axis=1, keepdims=True)
     quats *= np.where(quats[:, :1] < 0, -1.0, 1.0)
-    parts = [
-        struct.pack("<IIIBBBB", SPZ_MAGIC, SPZ_VERSION, splat.count, degree, SPZ_FRACTIONAL_BITS, 0, 0),
-        positions.astype(np.uint8).tobytes(),
-        _uint8(255.0 / (1.0 + np.exp(-splat.opacity.astype(np.float64)))).tobytes(),
-        _uint8(splat.f_dc.astype(np.float64) * (SPZ_COLOR_SCALE * 255.0) + 127.5).tobytes(),
-        _uint8((splat.scales.astype(np.float64) + 10.0) * 16.0).tobytes(),
-        _uint8(quats[:, 1:] * 127.5 + 127.5).tobytes(),
-    ]
+    return _uint8(quats[:, 1:] * 127.5 + 127.5)
+
+
+def encode_spz(splat: SplatData) -> bytes:
+    """Niantic SPZ v2, gzip-wrapped and byte-reproducible: degree-0 colour, plus higher-order SH when the splat
+    carries it (``sh_rest``), stored as SPZ does, colour channel innermost, ``round(v * 128 + 128)``.
+
+    Each section is encoded ``SPZ_CHUNK_ROWS`` Gaussians at a time straight into the one
+    uncompressed body that is gzipped, so no full-size intermediate of any field is held.
+    """
+    degree = _sh_degree(splat.sh_rest, splat.count)
+    count, dim = splat.count, (degree + 1) ** 2 - 1
+    rest = None if not degree else np.asarray(splat.sh_rest)
+    sections = [(9, lambda part: _spz_position_bytes(splat.xyz[part])),
+                (1, lambda part: _uint8(255.0 / (1.0 + np.exp(-splat.opacity[part].astype(np.float64))))),
+                (3, lambda part: _uint8(splat.f_dc[part].astype(np.float64) * (SPZ_COLOR_SCALE * 255.0) + 127.5)),
+                (3, lambda part: _uint8((splat.scales[part].astype(np.float64) + 10.0) * 16.0)),
+                (3, lambda part: _spz_rotation_bytes(splat.quats[part]))]
     if degree:
-        dim = (degree + 1) ** 2 - 1
-        rest = np.asarray(splat.sh_rest, np.float64).reshape(splat.count, 3, dim).transpose(0, 2, 1)
-        parts.append(_uint8(rest * 128.0 + 128.0).tobytes())
-    return gzip.compress(b"".join(parts), compresslevel=9, mtime=0)
+        sections.append((3 * dim, lambda part: _uint8(np.asarray(rest[part], np.float64).reshape(
+            -1, 3, dim).transpose(0, 2, 1) * 128.0 + 128.0)))
+    raw = np.empty(16 + count * sum(width for width, _ in sections), np.uint8)
+    raw[:16] = np.frombuffer(struct.pack("<IIIBBBB", SPZ_MAGIC, SPZ_VERSION, count, degree, SPZ_FRACTIONAL_BITS,
+                                         0, 0), np.uint8)
+    offset = 16
+    for width, encode in sections:
+        for start, stop in _row_chunks(count):
+            raw[offset + start * width:offset + stop * width] = encode(slice(start, stop)).astype(
+                np.uint8, copy=False).reshape(-1)
+        offset += count * width
+    return gzip.compress(memoryview(raw), compresslevel=9, mtime=0)
 
 
-def decode_spz(data: bytes) -> SplatData:
-    """Niantic SPZ v2 of SH degree 0 to 3. Higher-order SH (stored colour channel innermost, ``(b - 128) / 128``)
-    comes back channel-major in ``sh_rest`` with its ``f_rest_*`` names, as a standard 3DGS PLY holds it; a
-    degree-0 file decodes exactly as it always has."""
+def _spz_body(data: bytes) -> tuple[np.ndarray, int, int, int]:
+    """The uint8 body of an SPZ v2 file after its header, its Gaussian count, SH dimension and fractional bits."""
     raw = gzip.decompress(data)
     magic, version, count, degree, fractional, _flags, _reserved = struct.unpack_from("<IIIBBBB", raw)
     dim = (degree + 1) ** 2 - 1 if degree <= 3 else -1
     if magic != SPZ_MAGIC or version != SPZ_VERSION or dim < 0 or len(raw) != 16 + count * (19 + 3 * dim):
         raise ValueError("atlas_depth_splat_spz_invalid")
-    body = np.frombuffer(raw, dtype=np.uint8, offset=16).astype(np.int64)
-    position, rest = body[:count * 9].reshape(count, 3, 3), body[count * 9:count * 19]
+    return np.frombuffer(raw, dtype=np.uint8, offset=16), count, dim, fractional
+
+
+def _spz_xyz(body: np.ndarray, fractional: int, start: int, stop: int) -> np.ndarray:
+    position = body[start * 9:stop * 9].astype(np.int64).reshape(stop - start, 3, 3)
     fixed = position[..., 0] | (position[..., 1] << 8) | (position[..., 2] << 16)
     fixed = np.where(fixed & 0x800000, fixed - (1 << 24), fixed)
-    alpha = np.clip(rest[:count] / 255.0, 1e-6, 1 - 1e-6)
-    colors, scales, rotation = (rest[count + 3 * count * index:count + 3 * count * (index + 1)].reshape(count, 3)
-                                for index in range(3))
-    xyz = rotation / 127.5 - 1.0
-    w = np.sqrt(np.clip(1.0 - np.sum(xyz * xyz, axis=1), 0.0, None))
+    return (fixed / float(1 << fractional)).astype(np.float32)
+
+
+def decode_spz(data: bytes) -> SplatData:
+    """Niantic SPZ v2 of SH degree 0 to 3. Higher-order SH (stored colour channel innermost, ``(b - 128) / 128``)
+    comes back channel-major in ``sh_rest`` with its ``f_rest_*`` names, as a standard 3DGS PLY holds it; a
+    degree-0 file decodes exactly as it always has.
+
+    Every field is decoded ``SPZ_CHUNK_ROWS`` Gaussians at a time into its float32 array:
+    only one run of the body is ever widened, never the whole of it.
+    """
+    body, count, dim, fractional = _spz_body(data)
+    xyz, f_dc, scales = (np.empty((count, 3), np.float32) for _ in range(3))
+    opacity, quats = np.empty(count, np.float32), np.empty((count, 4), np.float32)
     sh_rest, properties = None, PLY_PROPERTIES
     if dim:
-        coefficients = body[count * 19:].reshape(count, dim, 3).transpose(0, 2, 1).reshape(count, 3 * dim)
-        sh_rest = ((coefficients - 128.0) / 128.0).astype(np.float32)
+        sh_rest = np.empty((count, 3 * dim), np.float32)
         properties = (*PLY_PROPERTIES, *(f"f_rest_{index}" for index in range(3 * dim)))
-    return SplatData(count=count, xyz=(fixed / float(1 << fractional)).astype(np.float32),
-                     opacity=np.log(alpha / (1 - alpha)).astype(np.float32),
-                     f_dc=((colors / 255.0 - 0.5) / SPZ_COLOR_SCALE).astype(np.float32),
-                     scales=(scales / 16.0 - 10.0).astype(np.float32),
-                     quats=np.column_stack([w, xyz]).astype(np.float32), properties=properties, sh_rest=sh_rest)
+
+    def section(index, width, start, stop):
+        return body[count * index + start * width:count * index + stop * width].astype(np.int64)
+    for start, stop in _row_chunks(count):
+        rows = stop - start
+        xyz[start:stop] = _spz_xyz(body, fractional, start, stop)
+        alpha = np.clip(section(9, 1, start, stop) / 255.0, 1e-6, 1 - 1e-6)
+        opacity[start:stop] = np.log(alpha / (1 - alpha)).astype(np.float32)
+        colors, scale, rotation = (section(10 + 3 * index, 3, start, stop).reshape(rows, 3) for index in range(3))
+        f_dc[start:stop] = ((colors / 255.0 - 0.5) / SPZ_COLOR_SCALE).astype(np.float32)
+        scales[start:stop] = (scale / 16.0 - 10.0).astype(np.float32)
+        axes = rotation / 127.5 - 1.0
+        w = np.sqrt(np.clip(1.0 - np.sum(axes * axes, axis=1), 0.0, None))
+        quats[start:stop] = np.column_stack([w, axes]).astype(np.float32)
+        if dim:
+            coefficients = section(19, 3 * dim, start, stop).reshape(rows, dim, 3).transpose(0, 2, 1).reshape(
+                rows, 3 * dim)
+            sh_rest[start:stop] = ((coefficients - 128.0) / 128.0).astype(np.float32)
+    return SplatData(count=count, xyz=xyz, opacity=opacity, f_dc=f_dc, scales=scales, quats=quats,
+                     properties=properties, sh_rest=sh_rest)
+
+
+def _gunzipped_runs(data: bytes, size: int):
+    """The bytes ``gzip.decompress`` returns for a one-member gzip file, in runs of at most ``size`` bytes.
+
+    Its checksum and length are checked once the member ends; a file with more
+    after its member (which ``encode_spz`` never writes) is refused as invalid.
+    """
+    inflate, view, position = zlib.decompressobj(wbits=31), memoryview(data), 0
+    while not inflate.eof:
+        if inflate.unconsumed_tail:
+            given = inflate.unconsumed_tail
+        else:
+            given = view[position:position + size]
+            position += len(given)
+        run = inflate.decompress(given, size)
+        if run:
+            yield run
+        elif not given and not inflate.eof:  # every byte given and nothing more comes out: cut short
+            raise ValueError("atlas_depth_splat_spz_invalid")
+    if inflate.unused_data or position < len(view):
+        raise ValueError("atlas_depth_splat_spz_invalid")
+
+
+def _spz_round_trip_failed(data: bytes, splat: SplatData) -> bool:
+    """Whether ``decode_spz(data)`` differs from ``splat`` in count or by more than one fixed-point step in a position.
+
+    The file is inflated a run at a time and only its positions are decoded and
+    compared with the splat's, so neither its raw body nor a widened copy of it is
+    held. A file ``decode_spz`` would refuse is refused here, whatever its positions.
+    """
+    runs, buffered, inflated = _gunzipped_runs(data, 9 * SPZ_CHUNK_ROWS), bytearray(), 0
+
+    def take(size):
+        nonlocal inflated
+        while len(buffered) < size:
+            run = next(runs, None)
+            if run is None:
+                raise ValueError("atlas_depth_splat_spz_invalid")
+            buffered.extend(run)
+            inflated += len(run)
+        taken = bytes(buffered[:size])
+        del buffered[:size]
+        return taken
+    magic, version, count, degree, fractional, _flags, _reserved = struct.unpack("<IIIBBBB", take(16))
+    dim = (degree + 1) ** 2 - 1 if degree <= 3 else -1
+    if magic != SPZ_MAGIC or version != SPZ_VERSION or dim < 0:
+        raise ValueError("atlas_depth_splat_spz_invalid")
+    largest = []
+    if count == splat.count:
+        for start, stop in _row_chunks(count):
+            positions = np.frombuffer(take(9 * (stop - start)), np.uint8)
+            largest.append(np.max(np.abs(_spz_xyz(positions, fractional, 0, stop - start) - splat.xyz[start:stop])))
+    for run in runs:
+        inflated += len(run)
+    if inflated != 16 + count * (19 + 3 * dim):
+        raise ValueError("atlas_depth_splat_spz_invalid")
+    return count != splat.count or bool(np.max(largest) > 1.0 / (1 << SPZ_FRACTIONAL_BITS))
 
 
 def splats2mesh_task_spec(*, frames: Sequence[Mapping[str, Any]], spz: Path,
@@ -1380,8 +1607,7 @@ def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_mult
         raise ValueError('atlas_depth_splat_generated_context_invalid')
     splat, report = fuse_posed_frames(frames, voxel_footprint_multiple=voxel_footprint_multiple)
     data = encode_spz(splat)
-    decoded = decode_spz(data)
-    if decoded.count != splat.count or np.max(np.abs(decoded.xyz - splat.xyz)) > 1.0 / (1 << SPZ_FRACTIONAL_BITS):
+    if _spz_round_trip_failed(data, splat):
         raise ValueError("atlas_depth_splat_spz_round_trip_failed")
     output_root.mkdir(parents=True, exist_ok=True)
     ply = write_standard_3dgs_ply(splat, output_root / "atlas_depth_splat.ply")
