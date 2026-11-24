@@ -714,3 +714,61 @@ def test_a_timed_out_half_is_tried_once_a_window_and_replaces_the_delivered_floo
     assert manifest["source_kind"] == "half" and "refused_half" not in manifest and len(world.retracted) == 1
     assert "object.usdz" in world.delivered[-1]["files"] and "success_rule.json" in world.delivered[-1]["files"]
     assert _at(world, window + 60)["status"] == "current" and builds == ["half", "floor", "half"]
+
+
+# --- 2026-11-23: a preparation stopped on a blocker that is no wall ships its room floor at once --------------------
+
+BLOCKER = "website_some_code_nobody_classified"
+
+
+def _blocked(floor: Floor, *, named: bool = True, status: str = "awaiting_inputs") -> None:
+    """The capture's handoff as a run that stopped on ``BLOCKER`` once the room was built writes it
+    (``website_scene_handoff``): the preparation still blocked and retrying, its room floor flagged with the blocker
+    and naming it on the handoff (``named``)."""
+    record = handoff.write_room_floor(
+        now=NOW, task_context=floor.context, base_scene=floor.args["base_scene"],
+        source_geometry=floor.args["source_geometry"],
+        removal={"entries": [{"target_id": "cup-1", "task_effect": "manipulated"}]},
+        output_root=floor.workspace / handoff.ROOM_FLOOR, task_profile=None,
+        flags=[handoff.ROOM_FLOOR_FLAG, BLOCKER], not_prepared=[{"piece": "object", "code": BLOCKER}])
+    value = {"schema_version": "website_scene_handoff.v1", "status": status, "blockers": [BLOCKER],
+             "capture_id": CAPTURE, "scene_id": SITE,
+             "room_floor": {"path": str(floor.record), "inputs_digest": record["inputs_digest"],
+                            **({handoff.ROOM_FLOOR_BLOCKERS: [BLOCKER]} if named else {})}}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    _write(floor.workspace / "handoff.json", value)
+
+
+@pytest.mark.parametrize("status", ["awaiting_inputs", "needs_input"])
+def test_a_blocked_preparation_ships_its_room_floor_at_once_flagged_with_its_blocker(tmp_path, monkeypatch, status):
+    """Owner, 2026-11-23: once the room is built and the sharing rights hold, the room floor ships flagged
+    immediately; no scene intent exists (the preparation never reached it), and nothing waits for a day or for the
+    first retry cycle."""
+    floor = Floor(tmp_path, monkeypatch)
+    _blocked(floor, status=status)
+    world = World(floor.job)
+    assert world.publish()["status"] == "published"
+    manifest = _manifest(floor.job)
+    assert manifest["source_kind"] == "floor" and manifest["floor_reason"] == "object_not_built:" + BLOCKER
+    readme = _readme(floor.job)
+    assert sim.NOT_PREPARED.format(piece="object") in readme and sim.NO_RULE in readme
+    assert world.publish()["status"] == "current" and len(world.delivered) == 1
+
+
+def test_a_blocked_handoff_whose_floor_names_no_blocker_ships_nothing(tmp_path, monkeypatch):
+    """Only a floor the handoff wrote for its blocked preparation stands in for it."""
+    floor = Floor(tmp_path, monkeypatch)
+    _blocked(floor, named=False)
+    assert World(floor.job).publish() == {"status": "no_source"}
+
+
+def test_a_blocked_preparations_floor_follows_withdrawal_and_takedown(tmp_path, monkeypatch):
+    """Consent, withdrawal and takedown are checked at publication as for any package."""
+    floor = Floor(tmp_path, monkeypatch)
+    _blocked(floor)
+    world = World(floor.job)
+    assert world.publish()["status"] == "published"
+    _write(floor.job.capture / "pipeline/consent_takedown/takedown_manifest.json", {"takedown_open": True})
+    assert world.publish() == {"status": "refused", "reason": "website_company_simulation_takedown_gate_closed"}
+    _withdraw(floor.job.capture)
+    assert world.publish()["status"] == "withdrawn"

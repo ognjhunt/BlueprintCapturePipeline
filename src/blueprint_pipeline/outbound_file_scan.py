@@ -73,8 +73,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-#: Links a file may carry: XML namespace identifiers (an SVG, XML or USD header names them).
-ALLOWED_LINK_PREFIXES = (b"http://www.w3.org/",)
+#: Links a file may carry: XML namespace identifiers (an SVG, XML or USD header names them), and the public links a
+#: library model's credit must give (``website_library_notes``): its license's deed and the library item it came from.
+#: Each ends at a space, quote, bracket or ``?#&``, so nothing after it (a query's key or token) is ever blanked.
+ALLOWED_LINK_PREFIXES = (b"http://www.w3.org/", b"https://creativecommons.org/licenses/by/4.0/",
+                         b"https://creativecommons.org/publicdomain/zero/1.0/",
+                         b"https://fuel.gazebosim.org/1.0/GoogleResearch/models/",
+                         *(b"https://huggingface.co/datasets/" + name + b"/resolve/" for name in (
+                             b"nvidia/simready-assets", b"PalatialSim/palatial-nv-asset-library",
+                             b"projectsim/simready-assets", b"ALLSIDES/simready-scanned-objects",
+                             b"UCLA-VAIL/UrbanVerse-SimReady-Validated", b"ForgeCAD/simready-assets",
+                             b"NdotLight/SimReady_Assets", b"Vertiv/simready-assets")))
 USD_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz"})
 #: What a scene may ship (Rule 1). Blueprint's own text files are recognised by their content.
 SHIPPED_SUFFIXES = frozenset({".usd", ".usda", ".usdc", ".usdz", ".png", ".jpg", ".jpeg"})
@@ -323,7 +332,7 @@ def _blank_allowed_links(window: bytes) -> bytes:
         start = window.find(prefix)
         while start >= 0:
             end = start + len(prefix)
-            while end < len(window) and window[end] not in b" \t\r\n\"'<>@)":
+            while end < len(window) and window[end] not in b" \t\r\n\"'<>@)?#&":
                 end += 1
             out[start:end] = b" " * (end - start)
             start = window.find(prefix, end)

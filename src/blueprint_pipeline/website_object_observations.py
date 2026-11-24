@@ -91,6 +91,10 @@ def validate_observation_handoff(path: Path, *, configuration: Mapping[str, Any]
         raise ValueError("website_object_observation_frames_invalid")
     frames = [_checked(row["image"], root=path.parent) for row in rows]
     _checked(value["candidate"], root=path.parent)
+    for source, key in (("parametric", "parametric_design"), ("library", "library_design")):
+        shaped = (value.get("candidate_geometry") or {}).get("source") == source
+        if shaped != (key in configuration) or (shaped and value["candidate_geometry"].get("design") != configuration[key]):
+            raise ValueError(f"website_{source}_candidate_binding_invalid")
     cad = (value.get("candidate_geometry") or {}).get("cad_authoring")
     from .website_synthetic_cad import CAD_BACKEND, selection, verify_evidence
     authoring = configuration.get("synthetic_authoring")
@@ -257,8 +261,22 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
                             if "transmission" in row else {}),
                          **{key: row[key] for key in ("visible_parts", "part_state", "view", "reason")}})
     stage.GetRootLayer().Save()
+    geometry = None
+    if config.get("parametric_design") is not None or config.get("library_design") is not None:
+        # A licensed library model (``website_library_asset``) or the plan's plain shape
+        # (``website_parametric_object``): the observed surfaces only checked the object was seen; its candidate is
+        # the model or the shape, sized from its estimated bounds, where it stood.
+        from .website_library_asset import write_candidate as library_candidate
+        from .website_parametric_object import write_candidate as parametric_candidate
+        lower, upper = preparation["subject"]["aabb_min_xyz"], preparation["subject"]["aabb_max_xyz"]
+        library = config.get("library_design")
+        candidate = root / f"source_object_candidate.{'library' if library else 'parametric'}.usda"
+        geometry = (library_candidate if library else parametric_candidate)(
+            library or config["parametric_design"], path=candidate,
+            center_xyz_m=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)])
     value = {"schema_version": SCHEMA, "preparation_digest": preparation["digest"],
              "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
+             **({"candidate_geometry": geometry} if geometry is not None else {}),
              "target_id": target_id, "frames": retained, "candidate": _record(candidate, relative_to=root),
              "source_to_simulator": transform.tolist(), "dimension_authority": "estimated",
              "complete_object_geometry": False, "physical_measurement_proven": False,

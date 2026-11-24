@@ -69,6 +69,8 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .outbound_file_scan import capture_site_identity
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
+from . import website_library_notes as library_notes
+from .website_build_plan_notes import build_plan_notes
 from .website_company_look import look_ply, look_source, reauthor_look
 
 logger = logging.getLogger(__name__)
@@ -475,11 +477,12 @@ def _floor_source(root: Path, *, queue_root: Path, now: float, reason: str | Non
     """The job's room floor as a source, when its object path stopped (``reason`` given: its half was refused)."""
     handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
     floor = handoff.get("room_floor") if isinstance(handoff.get("room_floor"), Mapping) else {}
-    record = (_inside(root, Path(str(floor.get("path") or ""))) if handoff.get("status") == "intake_ready"
+    blocked = floor.get("blockers") if handoff.get("status") != "intake_ready" and floor.get("blockers") == handoff.get("blockers") else None  # ``floor_ships``
+    record = (_inside(root, Path(str(floor.get("path") or ""))) if (handoff.get("status") == "intake_ready" or blocked)
               and handoff.get("digest") == canonical_digest(handoff, digest_field="digest") else None)
     if record is None or _read(record).get("inputs_digest") != floor.get("inputs_digest"):
         return None
-    reason = reason or object_path_stopped(root, handoff, queue_root=queue_root, now=now)
+    reason = reason or (blocked and f"{FLOOR_FLAG}:{','.join(map(str, blocked))}") or object_path_stopped(root, handoff, queue_root=queue_root, now=now)
     if reason is None or not reason.startswith("object_not_built:"):
         if reason is not None and notes is not None:
             notes["reason"] = reason  # cannot be read or bound to this job: nothing ships, the pass says why
@@ -659,6 +662,8 @@ def _half(scene: Path, status: Mapping[str, Any], *, estimates: Mapping[str, Any
                                   **({"surface_estimated": True} if capture is not None
                                      and surface_estimated(capture) else {}),
                                   **(size_notes(capture) if capture is not None and "room" not in notes else {}),
+                                  **(build_plan_notes(capture) if capture is not None else {}),
+                                  **(library_notes.library_models(capture) if capture is not None else {}),
                                   "physics_check": physics_check(
                                       packet, plan, rule_withheld="rule_withheld" in notes)}
         try:
@@ -831,9 +836,11 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         "plan_digest": source.get("plan_digest") if source.get("refusal") else None,
         # Only a wording that differs from the packages before it names a new revision.
         **({"physics_check": source["physics_check"]} if PHYSICS_CHECK_WORDS.get(source.get("physics_check")) else {}),
-        **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room",
+        **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room", "plan_notes",
                                         "generated_patch", "look_views", "surface_estimated", "size_from_its_points",
-                                        "size_disagrees_with_published", "destination_overhang") if source.get(key)},
+                                        "size_disagrees_with_published", "destination_overhang", "library_models",
+                                        "library_refusal")
+           if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
                                           for prim, row in sorted(source["files"].items())
@@ -1198,7 +1205,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                       "  not open USD. scene.usda does not use it."]
         if not visible:
             hidden.append(prim)
-    if any(name.startswith("scene/files/") for name in names):
+    if any(name.startswith("scene/files/") and name != library_notes.MODEL_FILE for name in names):
         lines.append("- scene/files/: files the parts above use.")
     if any(name.lower().endswith((".png", ".jpg", ".jpeg")) for name in names):
         lines.append("- Textures were rewritten without their colour profile and EXIF data, so a photo that relied on "
@@ -1242,7 +1249,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
               "site, and says nothing about safety. No robot is included: bring your own."]
     import textwrap
 
-    notes = [*([LOOK_LEFT_OUT] if source.get("look_left_out") else []),
+    notes = [*(source.get("plan_notes") or []), *([LOOK_LEFT_OUT] if source.get("look_left_out") else []),
              *([PLY_LEFT_OUT] if source.get("ply_left_out") and not source.get("look_left_out") else []),
              *([LOOK_AS_FIRST_WRITTEN, *([ROTATIONS_STORED_WRONG] if any(row["first_rotations_scrambled"]
                                                                         for row in first_written.values()) else [])]
@@ -1279,12 +1286,11 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([NO_RULE] if withheld else []),
              *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else [])]
     # One bullet per note, under its own heading, so a reader can pick out the ones that matter.
-    if notes:
-        lines += ["", "Notes on this simulation", ""]
-        for note in notes:
-            lines += textwrap.wrap(note, width=100, initial_indent="- ", subsequent_indent="  ",
-                                   break_long_words=False, break_on_hyphens=False)
-    lines += ["", "Terms", "",
+    lines += ["", "Notes on this simulation", ""] if notes else []
+    for note in notes:
+        lines += textwrap.wrap(note, width=100, initial_indent="- ", subsequent_indent="  ",
+                               break_long_words=False, break_on_hyphens=False)
+    lines += [*library_notes.readme_lines(source), "", "Terms", "",
               "Use this package only to decide whether you can do this job. Do not pass it on and do not use it",
               "to train software. Blueprint may ask you to delete it; then delete every copy.", ""]
     return "\n".join(lines)
@@ -1325,6 +1331,8 @@ def build_package(source: Mapping[str, Any], output: Path, *, literals: list[tup
     over = [] if over is None else over
     if source.get("refusal"):
         raise ShapeRefused(source["refusal"])
+    if library_notes.refusal(source):  # an object built from a library model never leaves without its credit
+        raise PackageRefused(library_notes.refusal(source), "task_object")
     if sum(row["size_bytes"] for row in source["files"].values()) > MAX_SOURCE_BYTES:
         raise ValueError(OVER_CAP)
     options = {"literals": literals, "words": words, "max_bytes": max_bytes, "deadline": deadline}
@@ -1402,6 +1410,7 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             if offset is not None:
                 offsets[prim] = offset
             rows.append({**row["placement"], "file": relative})
+        library_notes.place(source, staging, _write)  # a library model ships as its own file, with its credit
         plys: dict[str, str] = {}
         for prim, look in written.items():
             if source.get("ply_left_out"):
@@ -1426,8 +1435,9 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
                                                        encoding="utf-8")
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
-        (staging / "README.txt").write_text(_readme(source, placed, [*names, "README.txt"], units, offsets, plys,
-                                                    first_written),
+        credited = {"library_files": library_notes.credited_files(source, staging, placed)}  # every file of a model
+        (staging / "README.txt").write_text(_readme({**source, **credited}, placed, [*names, "README.txt"], units,
+                                                    offsets, plys, first_written),
                                             encoding="utf-8")
         on_time()
         _resolves_inside(staging, room=source.get("room") is not None)

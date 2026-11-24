@@ -326,6 +326,9 @@ ROOM_FLOOR, ROOM_FLOOR_FLAG = "room_floor", "object_not_built"
 #: Beside the floor's half: when this floor (by its record's digest) was first written. A handoff that runs again
 #: writes the same record and keeps it, so the wait before an unstarted object path is listed never restarts.
 ROOM_FLOOR_FIRST_WRITTEN = "first_written.json"
+#: On the handoff's room floor of a preparation stopped on a blocker that is no wall (``floor_ships``): its blockers.
+#: The company pass ships that floor at once, flagged with them, while the job keeps retrying (owner, 2026-11-23).
+ROOM_FLOOR_BLOCKERS = "blockers"
 
 
 def write_room_floor(*, now: float, output_root: Path, **room: Any) -> dict[str, Any]:
@@ -574,6 +577,14 @@ def goes_on(codes: Sequence[str], *, task_context: Mapping[str, Any], now: float
     return window is not None and window - now <= LAST_CALL_SECONDS
 
 
+def floor_ships(codes: Sequence[str], *, task_context: Mapping[str, Any], error: BaseException | None = None) -> bool:
+    """Whether a preparation stopped on ``codes``, its room built, ships its room floor flagged now (owner,
+    2026-11-23: "once the room is built and the sharing rights hold, the room floor ships flagged immediately;
+    retries continue, and a better package replaces it"): exactly when its first retry cycle, once spent, would
+    ship the room package (``goes_on``), so a wall, a privacy or money hold or a development test never does."""
+    return goes_on(codes, task_context=task_context, now=0.0, error=error, retries_spent=lambda: True)
+
+
 def sealed_rule_withheld(capture_root: Path | None) -> dict[str, Any] | None:
     """Why the capture's sealed handoff withheld Blueprint's rule (``rule_withheld``), or None."""
     try:
@@ -796,9 +807,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
 
     def retain_gap(gap: Mapping[str, Any]) -> dict[str, Any]:
         result.update(status="needs_input", blockers=[gap["code"]], native_task_preparation_gap=dict(gap))
-        result["digest"] = canonical_digest(result, digest_field="digest")
-        write_json(handoff_path, result)
-        return result
+        return finish()
 
     def scan_taken_out() -> int:
         # Whether the scan that ships lost anything: the Atlas result is the one source of truth. A scene kept
@@ -842,19 +851,37 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         write_json(handoff_path, result)
         return result
 
-    def room_floor() -> None:
+    def room_floor(blockers: Sequence[str] = ()) -> None:
         # Kept beside the object's own route, CPU only: the company builder ships it, flagged, while that route
         # runs or once it stops (``website_company_simulation.object_path_stopped``). Never a stop of its own.
+        # ``blockers``: the preparation stopped on them, none a wall (``floor_ships``); flagged and named so.
         try:
             record = write_room_floor(now=now, task_context=context, base_scene=base,
                                       source_geometry=atlas["source_geometry"], removal=removal,
                                       output_root=root / ROOM_FLOOR, task_profile=None,
-                                      objects_in_scan=geometry_only, flags=package_flags([ROOM_FLOOR_FLAG]))
-        except (ValueError, KeyError, OSError) as exc:
+                                      objects_in_scan=geometry_only,
+                                      flags=package_flags([ROOM_FLOOR_FLAG, *map(shipped_code, blockers)]),
+                                      not_prepared=[{"piece": piece_of(code), "code": code} for code in dict.fromkeys(
+                                          shipped_code(code).split(":", 1)[0] for code in blockers)])
+        except (ValueError, KeyError, TypeError, OSError) as exc:
             result[ROOM_FLOOR] = {"status": "not_written", "reason": str(exc)[:200]}
             return
         result[ROOM_FLOOR] = {"path": str(root / ROOM_FLOOR / "half" / ROOM_RECORD),
-                              "inputs_digest": record["inputs_digest"]}
+                              "inputs_digest": record["inputs_digest"],
+                              **({ROOM_FLOOR_BLOCKERS: list(blockers)} if blockers else {})}
+
+    def finish() -> dict[str, Any]:
+        # Every handoff this run writes itself. The room is built (``room_ready``) and the preparation stopped on no
+        # wall: its room floor ships flagged at once, the job keeps retrying, and the package a later run writes
+        # replaces it (owner, 2026-11-23).
+        if (room_ready and result["status"] not in ("intake_ready", ROOM_PACKAGE) and result.get("blockers")
+                and ROOM_FLOOR not in result and may_fall_back()
+                and floor_ships(result["blockers"], task_context=metadata.get("site_task_context") or {},
+                                error=failure)):
+            room_floor([str(code) for code in result["blockers"]])
+        result["digest"] = canonical_digest(result, digest_field="digest")
+        write_json(handoff_path, result)
+        return result
 
     def room_for(gap: Mapping[str, Any]) -> dict[str, Any]:
         # A gap that says Blueprint has no model for the job, by code: the job's declared profile, flagged.
@@ -899,6 +926,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         return receipt
 
     room_ready = dispatching = False
+    failure: BaseException | None = None
     keep_outbox_receipt(capture_root)
     try:
         if clean_plate.get("privacy_verified") is not True or clean_plate.get("status") not in {"noop", "objects_removed"}:
@@ -920,9 +948,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 native_geometry_requirements={
                     "source_aligned_depth_and_camera_poses": "required_for_mask_lifting_and_scene_registration",
                     "measured_scale": "unknown", "atlas_required": True})
-            result["digest"] = canonical_digest(result, digest_field="digest")
-            write_json(handoff_path, result)
-            return result
+            return finish()
         base = dict(atlas["base_scene"])
         # A base scene the job's earlier Atlas result built is replaced: its records are kept first.
         retain_superseded_records(capture_root=capture_root, root=root,
@@ -939,6 +965,13 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
             raise ValueError("website_scene_removal_manifest_outside_capture")
         removal = json.loads(removal_path.read_text())
+        # The build plan took one object out of the scan: the job's other objects stay in it as filmed (owner, 2026-11-23).
+        from .website_build_plan import apply_to_removal, sealed_decision
+        removal, planned = apply_to_removal(removal, capture_root), sealed_decision(capture_root)
+        if planned is not None:
+            result["build_plan"] = {"digest": planned["build_plan"]["digest"],
+                                    "built": (planned.get("built") or {}).get("target_id"),
+                                    "kept_in_scan": len(planned.get("kept_in_scan_target_ids") or [])}
         # Capture truth applies to held families too. Reading this retained
         # manifest performs no mask, authoring or provider work.
         # The editor could not take the job's object out cleanly, or the job's objects are several or soft, so the
@@ -1105,7 +1138,9 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 blockers=[correction['reason']], visual_reconstruction_ready=False,
                 atlas_scene_source={'status': correction['status'], 'reason': correction['reason'],
                                     'stage': 'target_correction'})
-            result['digest'] = canonical_digest(result, digest_field='digest')
+            # No room floor here: this room was cleaned around the object the site has since corrected, so a
+            # floor would tell a company the wrong object was the job's. The corrected room ships when it is built.
+            result["digest"] = canonical_digest(result, digest_field="digest")
             write_json(handoff_path, result)
             return result
         if navigation:
@@ -1120,9 +1155,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # The fit check models one rigid subject; a family task is recorded, never assessed.
             result.update(status="needs_input", blockers=[GEOMETRY_ONLY_BLOCKER],
                           fit_check={"status": "not_run", "reason": "task_family_not_modelled"})
-            result["digest"] = canonical_digest(result, digest_field="digest")
-            write_json(handoff_path, result)
-            return result
+            return finish()
         if family is not None:
             # Family tasks compile all retained targets and their native
             # measurements. The single rigid-subject authoring path cannot
@@ -1154,9 +1187,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                     task_context_path=context_path, root=binding_root(), now=now)
                 if (metadata.get("website_scene_execution_authority") or {}).get("schema_version") == "website_scene_sponsorship.v1":
                     result["website_intake_outbox"] = send(preparation["intake_request"])
-            result["digest"] = canonical_digest(result, digest_field="digest")
-            write_json(handoff_path, result)
-            return result
+            return finish()
         targets = {row["target_id"]: row for row in masks.get("targets", [])}
         subjects = [row for row in removal.get("entries", []) if row.get("task_effect") == "manipulated"]
         synthetic = removal.get("synthetic_subject")
@@ -1211,6 +1242,13 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         if masks != clean_plate["task_masks"]:
             write_track_json(root / "task_masks.coverage.json", masks)
             clean_plate = {**clean_plate, "task_masks": masks}
+        # The plan's object from a licensed library first, before a shape or a paid model (owner, 2026-11-23).
+        from .website_object_library import attach_library_subject
+        handoff_lease_checkpoint("website_scene_handoff_object_library")
+        removal = attach_library_subject(removal, capture_root=capture_root, task_context=context,
+            output_root=root / "object_library", source_video_digest=source_video_digest,
+            source_video=source_video if source_video.is_file() and source_video.resolve().is_relative_to(
+                capture_root.resolve()) else None)
         authority = metadata.get("website_scene_execution_authority") or {}
         if not all(key in authority for key in ("max_total_spend_usd", "max_paid_attempts", "expires_at_epoch")):
             # Compile geometry even while execution is held. Zero authority
@@ -1276,9 +1314,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         if geometry_only:
             result["fit_check"] = geometry_only_fit_check(preparation=preparation, base_scene=base,
                                                           native_root=root / "fit_check")
-            result["digest"] = canonical_digest(result, digest_field="digest")
-            write_json(handoff_path, result)
-            return result
+            return finish()
         if preparation["status"] == "intake_ready":
             room_floor()
         # A missing execution authority must not stop this CPU-only geometry
@@ -1348,6 +1384,5 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 str(exc), task_context_digest=stopped_context["context_digest"])})
         else:
             result.update(status="awaiting_inputs", blockers=[code])
-    result["digest"] = canonical_digest(result, digest_field="digest")
-    write_json(handoff_path, result)
-    return result
+        failure = exc
+    return finish()

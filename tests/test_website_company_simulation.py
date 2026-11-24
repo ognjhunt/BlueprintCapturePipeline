@@ -2913,3 +2913,38 @@ def test_no_price_and_none_of_blueprints_spend_reaches_the_package(job, tmp_path
         assert price_findings(text) == [], name
     _assert_absent_from_zip(job, [b"37.25", b"61.5", b"12.75", b"PLANTSPEND", b"reserved_cost", b"max_spend"])
     assert not {"37.25", "61.5", "12.75", "PLANTSPEND"} & set(re.findall(r"[\w.]+", json.dumps(world.delivered[0])))
+
+
+@pytest.mark.parametrize("sealed", [None, "v1", "plan", "tampered"])
+def test_the_build_plan_is_named_in_plain_words_only_when_its_decision_is_sealed(job, tmp_path, sealed):
+    """The build plan (owner direction 2026-11-23) in the README: what the job needs, the one object the plan takes
+    out of the scan, the ones it keeps as filmed, what the video does not show. Never that anything was built."""
+    from blueprint_pipeline.website_build_plan_notes import DECISION_SCHEMA
+    before = sim.simulation_source(job.capture, queue_root=job.queue)
+    row = {"variety": None, "rigidity": "rigid", "size_m": None, "mass_kg": None, "reason": "r",
+           "editor_object_ids": []}
+    plan = {"objects": [
+        {**row, "target_id": "tote", "name": "blue tote", "role": "moved_object", "sourcing": "parametric"},
+        {**row, "target_id": "carton", "name": "carton", "role": "moved_object", "sourcing": "generate"},
+        {**row, "target_id": "not_in_video", "name": "pallet", "role": "fixture", "sourcing": "library"}]}
+    decided = {"schema_version": "atlas_job_object_rule.v1" if sealed == "v1" else DECISION_SCHEMA,
+               "applied": False, "build_plan": {"plan": plan},
+               "built": {"target_id": "tote", "editor_object_ids": ["e"]}}
+    decided["digest"] = canonical_digest(decided, digest_field="digest")
+    if sealed == "tampered":
+        decided["built"] = {"target_id": "carton"}
+    if sealed is not None:
+        _write(job.capture / "pipeline" / "atlas" / "job_object_rule.json", decided)
+    expected = sealed == "plan"
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert bool(source.get("plan_notes")) is expected
+    assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not expected)
+    sim.build_package(source, tmp_path / "package.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "package.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    for sentence in ("What this simulation needs, as Blueprint's model read the job: blue tote, carton and pallet.",
+                     "The plan takes this out of the scan to build as its own object: blue tote.",
+                     "The plan keeps these in the scan as filmed, not built on their own: carton.",
+                     "Not in the video, so not in this simulation: pallet."):
+        assert (sentence in readme) is expected
+    assert "was built" not in readme

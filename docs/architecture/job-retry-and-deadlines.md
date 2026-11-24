@@ -283,6 +283,16 @@ earlier handoff's receipt kept as that marker), a failure keeps the job waiting.
 success rule) with its code, and the package's README says so. If the room itself cannot be
 packaged, the job keeps waiting with the step's code.
 
+Since 2026-11-23 (owner: "once the room is built and the sharing rights hold, the room floor ships
+flagged immediately; retries continue, and a better package replaces it") the room does not wait for
+that cycle. A run that stops, once the room is built (`room_ready`: the Atlas scene source is ready
+with a levelled, scaled base scene and the clean plate's privacy check passed), on blockers for which
+a spent cycle would ship the room package (`website_scene_handoff.floor_ships`) writes the room floor,
+flagged with those blockers, and names them on the handoff; the company pass ships that floor at once.
+The job keeps its status and retries on its schedule; a later room package or compiled half replaces
+the floor. A wall, a privacy or money hold, a development test, or a room that is not built (an Atlas
+scene source that is not ready, such as a source pose that could not be established) writes no floor.
+
 ## 9. A refined splat that keeps failing waits for a fresh attempt (2026-11-18)
 
 When every refined-splat form of a website job has failed at World Labs (the task runner's three
