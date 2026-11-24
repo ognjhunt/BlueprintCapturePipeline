@@ -24,6 +24,12 @@ Matching, in two steps (``decide_library_object``):
   shown, its license allowed, its size inside the plan's range. A refused or missing answer falls back to the best
   retrieved entry above a conservative threshold (``deterministic_choice``), else none. Nothing is ever invented.
 
+The object is the build plan's built object or, for the common one-object job (owner, 2026-11-24: "yes extend
+library-first to single-object jobs next"), the object today's one-object route removes from the scan and authors,
+with the plan's row for it where the plan names one (``single_object_row``): what is removed from the scan and which
+object the success rule scores never change. A plan that keeps it as filmed, a route that cannot be read, and a job
+compiled before this route keep today's builder exactly.
+
 The choice is sealed once per job (``RECORD``), so a job never changes route mid-flight; its files are downloaded
 from an allow-listed host only, size-capped, checked against the sha256 the catalog pinned and cached by content
 (``website_library_asset``). The handoff names the result on the removal manifest (``LIBRARY_SUBJECT``) for compile,
@@ -624,25 +630,68 @@ def key_frame(*, removal: Mapping[str, Any], target_id: str, source_video: Path 
     return {**frame, "source_video_digest": source_video_digest}
 
 
+#: Skip reasons on the one-object route (``single_object_row``); none of them stops the job.
+KEEPS_AS_FILMED = "website_object_library_plan_keeps_as_filmed"
+UNNAMED = "website_object_library_object_unnamed"
+#: A preparation compiled before this route existed (today's builder): the job keeps it, never changing route
+#: mid-flight, so a paid attempt it may already have reserved is never orphaned.
+ROUTE_ALREADY_COMPILED = "website_object_library_route_already_compiled"
+
+
+def single_object_row(decided: Mapping[str, Any] | None, removal: Mapping[str, Any]
+                      ) -> tuple[dict[str, Any] | None, str | None]:
+    """For a one-object job (the plan took no object out alone; owner direction 2026-11-24): the object the route
+    already removes from the scan and authors, as a plan row: the plan's own row for it where the plan names one, or
+    one read from the analysis (its label as the name, its rigidity, no size). ``(None, None)`` when the route cannot be
+    read; ``(row, KEEPS_AS_FILMED)`` when the plan keeps the object as filmed. What is removed from the scan, and which
+    object the success rule scores, are never changed here."""
+    from .task_profile_contracts import task_object_rigidity
+    from .website_build_plan import KEEPS_AS_FILMED as PLAN_KEEPS, single_object
+    one = single_object(decided, removal)
+    if one is None:
+        return None, None
+    entry, row = one["entry"], one["row"]
+    if row is not None:
+        return {**row, "row_source": "plan"}, (KEEPS_AS_FILMED if row.get("sourcing") == PLAN_KEEPS else None)
+    label = entry.get("semantic_label")
+    rigid = task_object_rigidity(entry)["rigidity"] == "rigid" and not entry.get("articulated_part")
+    return {"target_id": entry["target_id"], "name": label if isinstance(label, str) and label.strip() else None,
+            "variety": None, "rigidity": "rigid" if rigid else "not_read_as_rigid", "size_m": None, "mass_kg": None,
+            "reason": "The object the job moves, as the video analysis named it.", "row_source": "analysis"}, None
+
+
 def attach_library_subject(removal: Mapping[str, Any], *, capture_root: Path, task_context: Mapping[str, Any],
                            output_root: Path, source_video: Path | None = None,
                            source_video_digest: str | None = None, entries: Sequence[Mapping[str, Any]] | None = None,
                            fetch: Callable[..., Any] | None = None,
                            ask: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
-    """The removal manifest with the library's answer for the plan's built object (``LIBRARY_SUBJECT``): its files,
-    fetched and checked, and its attribution; or the reason no library model is used. Unchanged when the plan
-    builds no object of its own (``website_build_plan.built_object``). Sealed once (``SUBJECT_RECORD``)."""
+    """The removal manifest with the library's answer for the job's object (``LIBRARY_SUBJECT``): its files, fetched
+    and checked, and its attribution; or the reason no library model is used. The object is the plan's built object
+    (``website_build_plan.built_object``) or, on the one-object route, the object that route already authors
+    (``single_object_row``). Unchanged when the route cannot be read, and on the one-object route when the plan keeps
+    the object as filmed or the job was compiled before this route: those skips are sealed on their own record and
+    compile sees today's manifest. Sealed once (``SUBJECT_RECORD``)."""
     from .website_build_plan_notes import sealed_decision
-    row = plan_row_for(sealed_decision(capture_root))
+    decided = sealed_decision(capture_root)
+    row, skipped, route = plan_row_for(decided), None, "built"
     if row is None:
-        return dict(removal)
+        (row, skipped), route = single_object_row(decided, removal), "one_object"
+        if row is None:
+            return dict(removal)
     output_root = Path(output_root)
     target = str(row["target_id"])
     subject = _sealed(output_root / SUBJECT_RECORD, SUBJECT_SCHEMA, target)
     if subject is None:
-        subject = {"schema_version": SUBJECT_SCHEMA, "target_id": target}
-        if row.get("rigidity") != "rigid":
+        subject = {"schema_version": SUBJECT_SCHEMA, "target_id": target, "route": route,
+                   **({"row_source": row["row_source"]} if row.get("row_source") else {})}
+        if route == "one_object" and (output_root.parent / "preparation.json").is_file():
+            subject["not_used"] = ROUTE_ALREADY_COMPILED  # compiled for today's builder before this route existed
+        elif skipped is not None:
+            subject["not_used"] = skipped
+        elif row.get("rigidity") != "rigid":
             subject["not_used"] = NOT_RIGID  # supplied geometry is one rigid body: an opening part needs its joint
+        elif not row.get("name"):
+            subject["not_used"] = UNNAMED  # nothing to look the object up by
         else:
             frame = key_frame(removal=removal, target_id=target, source_video=source_video,
                               source_video_digest=source_video_digest, output_root=output_root)
@@ -665,10 +714,14 @@ def attach_library_subject(removal: Mapping[str, Any], *, capture_root: Path, ta
                                          "choice_digest": choice["digest"]})
         output_root.mkdir(parents=True, exist_ok=True)
         subject = _seal(output_root / SUBJECT_RECORD, subject)
+    if subject.get("not_used") in (KEEPS_AS_FILMED, ROUTE_ALREADY_COMPILED):
+        # Today's builder, exactly: the free shape is this route's too, so it goes as well.
+        from .website_supplied_mesh import PARAMETRIC_SUBJECT
+        return {key: value for key, value in removal.items() if key != PARAMETRIC_SUBJECT}
     return {**removal, LIBRARY_SUBJECT: {key: value for key, value in subject.items() if key != "digest"}}
 
 
-__all__ = ["ALLOWED_LICENSES", "INDEXES", "LIBRARY_SUBJECT", "LICENSE_SPELLINGS", "MAX_CANDIDATES", "RECORD",
-           "SUBJECT_RECORD", "attach_library_subject", "candidates", "catalog", "decide_library_object",
-           "deterministic_choice", "license_of", "plan_row_for", "request_binding", "shown", "tokens",
-           "validate_answer"]
+__all__ = ["ALLOWED_LICENSES", "INDEXES", "KEEPS_AS_FILMED", "LIBRARY_SUBJECT", "LICENSE_SPELLINGS", "MAX_CANDIDATES",
+           "RECORD", "ROUTE_ALREADY_COMPILED", "SUBJECT_RECORD", "UNNAMED", "attach_library_subject", "candidates",
+           "catalog", "catalog_status", "decide_library_object", "deterministic_choice", "license_of", "plan_row_for",
+           "read_index", "request_binding", "shown", "single_object_row", "tokens", "validate_answer"]
