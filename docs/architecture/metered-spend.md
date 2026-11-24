@@ -647,7 +647,9 @@ under it.
   - the handoff's `build_plan` disclosure carries the same fields beside
     `kept_at_spending_cap` (`website_build_plan_notes.kept_disclosure`);
   - the company README's plain notes say what is true of either limit:
-    "Kept as filmed: <name>, the job reached its limit on paid work."
+    "Kept as filmed: <name>, the job reached its limit on paid work." The
+    name is the object's in plain object words only, never the plan's own
+    phrase, which may name a person (`website_build_plan_notes.plain_name`).
 
   The job goes on without them. A refusal is final: money a later settlement
   frees brings no refused object back. The account's monthly limit, privacy,
