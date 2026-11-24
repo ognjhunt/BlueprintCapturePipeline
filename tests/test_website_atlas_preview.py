@@ -1611,6 +1611,49 @@ def test_atlas_job_cap_ends_without_rescheduling_any_paid_step(monkeypatch, site
     assert world.pushed[-1]["reason"] == "spending_cap_reached"
 
 
+@pytest.mark.parametrize("blockers,code", [
+    (["account_monthly_spend_limit_reached"], "account_monthly_spend_limit_reached"),
+    (["account_monthly_spend_journal_unreadable"], "account_monthly_spend_journal_unreadable"),
+    (["account_monthly_spend_report_stale"], "account_monthly_spend_report_stale"),
+    (["account_monthly_spend_limit_not_configured"], "account_monthly_spend_limit_not_configured"),
+    # The account's own code is the one named beside another limit's.
+    (["account_monthly_spend_limit_reached", "gcp_monthly_budget_admission_blocked"],
+     "account_monthly_spend_limit_reached"),
+    (["gcp_monthly_budget_admission_blocked"], "gcp_monthly_budget_admission_blocked"),
+])
+def test_the_paid_admission_chokepoints_own_refusal_waits_under_the_limits_code(monkeypatch, site, blockers, code):
+    """Stress round 2 (2026-11-24): the account's month refuses a website reservation inside
+    ``reserve_website_preparation_spend`` as ``PaidResourceAdmissionBlocked``, a RuntimeError. It took the defect's
+    refusal schedule, ended failed as ``paid_resource_admission_blocked`` and the website never heard which limit.
+    It now waits as every money wait does, rechecked until the job's deadline, under the limit's own code."""
+    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
+    _enqueue(site)
+    world = World(monkeypatch, site, [PaidResourceAdmissionBlocked(sorted(blockers)),
+                                      {"status": "processing", "stage": "plan"}])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["reason"], job["retry_at_epoch"]) == (code, world.clock + preview.AUTHORITY_RECHECK_SECONDS)
+    assert "refusal_retries" not in job and job["provider_cleanup"] is None
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("needs_input", code)
+    assert preview._parked_without_wall(job) is False
+    world.clock += preview.AUTHORITY_RECHECK_SECONDS
+    assert world.advance() == "processing" and len(world.runs) == 2
+
+
+@pytest.mark.parametrize("code", ["website_atlas_consent_unconfigured", "website_scene_grant_policy_unconfigured"])
+def test_a_webapp_configuration_state_waits_on_our_side_and_is_never_the_sites_privacy_wall(monkeypatch, site, code):
+    """The WebApp now sends its own unconfigured states under their own codes, where it sent the consent and brief
+    codes. "consent" in the name would read as a withdrawal and end the job: each waits, rechecked, instead."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(f"website_control_preparation-spend_http_409:{code}"),
+                                      {"status": "processing", "stage": "plan"}])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["reason"], job["retry_at_epoch"]) == (code, world.clock + preview.AUTHORITY_RECHECK_SECONDS)
+    world.clock += preview.AUTHORITY_RECHECK_SECONDS
+    assert world.advance() == "processing"
+
+
 def test_a_money_refusal_waits_as_needs_input_shown_to_the_owner_and_re_asked_until_expiry(monkeypatch, site):
     refusal = ValueError("account_monthly_spend_limit_reached")
     _enqueue(site)

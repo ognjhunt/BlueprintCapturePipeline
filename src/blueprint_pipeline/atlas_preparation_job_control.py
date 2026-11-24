@@ -74,10 +74,28 @@ def _transition(job: Mapping[str, Any], current: int, state: str, reason: str | 
     return value
 
 
+def admission_refusal_code(error: BaseException) -> str | None:
+    """The code a refused paid admission (``PaidResourceAdmissionBlocked``, the chokepoint's own type) names, or None.
+
+    Its text is ``paid_resource_admission_blocked:<blockers>``; the code is the account's own (``account_monthly_spend``)
+    when one is among them, else the first blocker, so the website is told which limit refused and never the
+    chokepoint's name (stress round 2, 2026-11-24).
+    """
+    from .paid_resource_admission import PaidResourceAdmissionBlocked
+    if not isinstance(error, PaidResourceAdmissionBlocked):
+        return None
+    blockers = [str(code) for code in error.blockers if _CODE.fullmatch(str(code))]
+    account = [code for code in blockers if code.startswith("account_monthly_spend_")]
+    return (account or blockers or ["paid_resource_admission_blocked"])[0]
+
+
 def _reason(error: BaseException) -> str:
     """The typed code of a refusal: the owning service's code, never its text."""
     if isinstance(error, _Withdrawn):
         return "website_capture_withdrawn"
+    admission = admission_refusal_code(error)
+    if admission is not None:
+        return admission
     status = getattr(error, "status", None)
     if isinstance(status, int):
         return f"website_atlas_api_{status}"

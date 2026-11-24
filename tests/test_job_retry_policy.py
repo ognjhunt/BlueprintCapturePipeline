@@ -89,6 +89,15 @@ def test_outage_backoff_invalid_bounds_raise(first: object, cap: object) -> None
         (42, None),
         ("paid_resource_consent_revoked", PRIVACY_RIGHTS),
         ("budget_exhausted:license_missing", PRIVACY_RIGHTS),
+        # Stress round 2 (2026-11-24): codes whose words read as a wall but guard none.
+        ("atlas_coverage_exceeds_frame_budget", None),
+        ("website_atlas_consent_unconfigured", None),
+        ("website_control_http_409:website_atlas_consent_unconfigured", None),
+        ("website_scene_grant_policy_unconfigured", None),
+        # Only the whole token is taken out: the rest of a message, and a longer code, still count.
+        ("website_atlas_consent_unconfigured:consent_revoked", PRIVACY_RIGHTS),
+        ("atlas_coverage_exceeds_frame_budget_usd", MONEY),
+        ("website_atlas_consent_unconfigured_x", PRIVACY_RIGHTS),
     ],
 )
 def test_hard_stop_kind(code: object, expected: str | None) -> None:

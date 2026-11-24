@@ -85,6 +85,8 @@ def test_only_privacy_rights_capability_spent_allowances_and_expiry_end_a_job():
     # A Blueprint fault stays fixable: a code fix and deploy can still re-drive it.
     for reason in ("pipeline_fault", "scene_configuration_failed", "policy_canary_blocked"):
         assert outcome.REASONS[reason] == ("setup_repair", False, "blueprint_fault")
+    # The account's month is a wait on our side, on the one kind both sides read as one, never an ending.
+    assert outcome.REASONS["account_limit_wait"] == ("setup_repair", False, "account_limit")
 
 
 SPENT_ALLOWANCES = [
@@ -138,6 +140,23 @@ SPENT_ALLOWANCES = [
     ("blocked", "preparation", ["beta_screening_job_ceiling_exceeded"], "job_ceiling_reached"),
     ("blocked", "preparation", ["website_job_ceiling_insufficient"], "job_ceiling_reached"),
     ("blocked", "preparation", ["website_scene_preparation_budget_exhausted"], "job_ceiling_reached"),
+    # The account-wide monthly limit (stress round 2, 2026-11-24): paused on our side, resumes by itself. Before,
+    # unlisted, each read as an unknown Blueprint fault ("a setup problem on our side").
+    ("blocked", "preparation", ["account_monthly_spend_limit_reached"], "account_limit_wait"),
+    ("needs_input", "factory", ["account_monthly_spend_journal_unreadable"], "account_limit_wait"),
+    ("blocked", "preparation", ["account_monthly_spend_report_stale"], "account_limit_wait"),
+    ("blocked", "preparation", ["account_monthly_spend_limit_not_configured"], "account_limit_wait"),
+    ("blocked", "preparation", ["account_monthly_spend_report_missing_or_invalid"], "account_limit_wait"),
+    ("blocked", "preparation", ["account_monthly_spend_limit_config_invalid"], "account_limit_wait"),
+    ("blocked", "preparation", ["account_monthly_spend_limit_unavailable"], "account_limit_wait"),
+    # A call that names no amount is a defect, not a wait.
+    ("blocked", "preparation", ["account_monthly_spend_call_cost_invalid"], "pipeline_fault"),
+    # The job's own cap still ends it beside an account wait.
+    ("blocked", "preparation", ["account_monthly_spend_limit_reached", "website_scene_preparation_budget_exhausted"],
+     "job_ceiling_reached"),
+    # The WebApp's own configuration states: Blueprint repairs them, never the site.
+    ("needs_input", "source", ["website_atlas_consent_unconfigured"], "pipeline_fault"),
+    ("needs_input", "source", ["website_scene_grant_policy_unconfigured"], "pipeline_fault"),
     # (d) waiting on the site: awaiting_site, not terminal.
     ("needs_input", "source", ["website_atlas_source_consent_required"], "site_consent_required"),
     ("needs_input", "source", ["website_atlas_planner_consent_required"], "site_consent_required"),
