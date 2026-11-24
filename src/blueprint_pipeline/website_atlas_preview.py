@@ -505,6 +505,7 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
     fallback = (result.get("appearance") or {}).get("fallback_reason")
     cap_reason = SPENDING_CAP_REACHED if result.get("reason") == SPENDING_CAP_REACHED else None
     return _transition(job, current, "ready", cap_reason, stage="archived", archive=archive, transient_failures=0,
+                       **_scale_review_wait(job, result, current),
                        result_digest=result["digest"], splat_available=bool(result.get("splat_available")),
                        mesh_available=bool(result.get("mesh_available")), refined_splat=result.get("refined_splat"),
                        **({"look_fallback": fallback if isinstance(fallback, str) else None}
@@ -696,6 +697,64 @@ def _deliver(job: dict[str, Any], *, now: Callable[[], float]) -> dict[str, Any]
             "delivery_next_at_epoch": current + min(3600, 30 * 2 ** attempts)}
 
 
+#: On a ready job whose built room shipped unscaled while its scale review waited on its provider
+#: (``atlas_unscaled_room.SCALE_REVIEW_WAITING``): when the job asks the review again, on the outage schedule.
+SCALE_REVIEW_DUE = "scale_review_due_at_epoch"
+_SCALE_REVIEW_ASKING = "scale_review_asking"
+
+
+def _scale_review_wait(job: Mapping[str, Any], result: Mapping[str, Any], current: int) -> dict[str, Any]:
+    """The ready job's next ask of a scale review that waits on its provider (2 min doubling to 1 h, never past
+    the job's deadline), or none once the review answered or the spending cap was reached."""
+    from .atlas_unscaled_room import SCALE_REVIEW_WAITING
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
+    if ((result.get("source_pose") or {}).get("reason") != SCALE_REVIEW_WAITING
+            or result.get("reason") == SPENDING_CAP_REACHED):
+        return {key: None for key in (SCALE_REVIEW_DUE, "scale_review_waits") if job.get(key) is not None}
+    waits = (job.get("scale_review_waits") or 0) + 1
+    return {"scale_review_waits": waits, SCALE_REVIEW_DUE: _by_deadline(job, current + outage_retry_delay(waits))}
+
+
+def _ask_scale_review_again(job: dict[str, Any], *, now: Callable[[], float]) -> dict[str, Any]:
+    """A ready job whose scale review is due runs its step once more, from its receipts: the shipped room stays
+    final for everything that reads it (no ``retry_at_epoch``) until the step runs, and the step asks every
+    consent, withdrawal and money admission again before the review is bought."""
+    due, current = job.get(SCALE_REVIEW_DUE), int(now())
+    if (job.get("state") != "ready" or job.get("retry_at_epoch") or isinstance(due, bool)
+            or not isinstance(due, (int, float)) or current < due):
+        return job
+    return {**job, "retry_at_epoch": current, _SCALE_REVIEW_ASKING: True}
+
+
+def _keep_shipped_room(before: Mapping[str, Any], after: dict[str, Any], current: int) -> dict[str, Any]:
+    """A scale review asked again never takes a shipped room away unless privacy or rights do.
+
+    A fresh ready result stands (measured, or still waiting with its next ask). A withdrawal or a privacy or
+    rights stop stands. Any other outcome puts the ready job back as it was: asked again on the outage
+    schedule, or, after the job's window, a money stop or the owner's closing of the run, not asked again.
+    """
+    if not before.get(_SCALE_REVIEW_ASKING):
+        return after
+    if after.get("state") == "ready" and not after.get("retry_at_epoch"):
+        return {key: value for key, value in after.items() if key != _SCALE_REVIEW_ASKING}
+    reason = after.get("reason")
+    if after.get("state") == "withdrawn" or reason in _WITHDRAWN or hard_stop_kind(reason) == PRIVACY_RIGHTS:
+        return after
+    from .atlas_preparation_job_control import _NOT_RETRYABLE
+    from .hard_stops import JOB_SPEND_CAP
+    from .job_retry_policy import owner_closed
+    from .website_job_spend_cap import SPENDING_CAP_REACHED
+    stop = (reason in _NOT_RETRYABLE or hard_stop_kind(reason) == MONEY or owner_closed(reason)
+            or reason in (SPENDING_CAP_REACHED, JOB_SPEND_CAP))
+    waits = (before.get("scale_review_waits") or 0) + 1
+    kept = {key: value for key, value in before.items() if key != _SCALE_REVIEW_ASKING}
+    return {**kept, "retry_at_epoch": None, "last_tick_epoch": after.get("last_tick_epoch", current),
+            "scale_review_last_outcome": {"state": after.get("state"), "at_epoch": current, "reason": (
+                reason or after.get("last_refusal_reason") or after.get("last_transient_reason"))},
+            **({SCALE_REVIEW_DUE: None} if stop else
+               {"scale_review_waits": waits, SCALE_REVIEW_DUE: _by_deadline(before, current + outage_retry_delay(waits))})}
+
+
 def _reopen_observed_room(job: dict[str, Any], *, job_dir: Path, now: Callable[[], float]) -> dict[str, Any]:
     """Reopen, once, a ready job whose observed room rests on an abstention that is not final.
 
@@ -799,11 +858,11 @@ def _restore_unfinished_reopen(job: dict[str, Any]) -> dict[str, Any]:
 def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: Any = None) -> str:
     """One bounded step for one job: Atlas progress, provider cleanup, WebApp delivery."""
     return advance_preparation_job(path, reader=_read,
-        step=lambda job: _restore_unfinished_reopen(
-            _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now)),
+        step=lambda job: _keep_shipped_room(job, _restore_unfinished_reopen(
+            _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now)), int(now())),
         deliver=lambda job: _deliver(job, now=now),
-        refresh=lambda job: _reopen_parked_after_release(_reopen_observed_room(job, job_dir=path.parent, now=now),
-                                                         job_dir=path.parent, now=now),
+        refresh=lambda job: _ask_scale_review_again(_reopen_parked_after_release(
+            _reopen_observed_room(job, job_dir=path.parent, now=now), job_dir=path.parent, now=now), now=now),
         now=now, transport=transport)
 
 

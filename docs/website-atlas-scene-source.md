@@ -129,6 +129,23 @@ object not prepared; the package's sealed record and plan hold relative units
 and no metres value, and its README says "Sizes in this room are relative; its scale was not
 measured."
 
+A scale review its provider cannot answer now (a 429 or 5xx, or a refusal
+before any work such as no credit left: `job_retry_policy.provider_error_waits`)
+is one of those ordinary codes too, `atlas_scale_review_waiting_on_provider`:
+the built background is not held for it. The Atlas job asks the review again on
+the outage schedule (2 min doubling to 1 h, never past the job's window;
+`website_atlas_preview.SCALE_REVIEW_DUE`), each ask through every admission
+again, and keeps the shipped room through any answer that is no privacy or
+rights stop. When the review answers, the job's result is the measured room; a
+handoff already sent is built again from it only when it is replayed
+(`website_held_handoff_replay.superseded_atlas_result`).
+
+A planner call the provider refuses before any work
+(`job_retry_policy.provider_refusal_unbilled`) is settled at $0, which releases
+its hold, spends no repair and never ends the call as
+`atlas_scene_planner_output_invalid`; a 5xx or a timeout is still held at its
+reservation as a call of unknown outcome.
+
 Nothing here measures anything. Scale comes from named reference assumptions,
 `metric_measurement_proven` stays false, and qualification still needs the
 site's independent measurements (`docs/beta-site-task-simulation-qualification.md`).

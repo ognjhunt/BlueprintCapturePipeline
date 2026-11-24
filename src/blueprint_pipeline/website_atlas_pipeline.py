@@ -198,13 +198,17 @@ def accuracy_survey(*, source_video: Path, base_root: Path, base_survey: Path, r
 
 
 def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check, experimental, max_polls,
-                 reference_inputs=None, configuration=None, allow_scale_review=True, raise_walls=False):
+                 reference_inputs=None, configuration=None, allow_scale_review=True, raise_walls=False,
+                 scale_outage_ships=False):
     """The selected original views' own Atlas pose and the scale its reviewed references give.
 
     Retained receipts make a resume free. A refused purchase leaves the
     background intact and is reported, not raised. ``raise_walls`` raises a
     wall (``hard_stops``) instead: for the windowed re-pose, which would
-    otherwise go on to buy.
+    otherwise go on to buy. ``scale_outage_ships``: a scale review whose
+    provider is out is recorded (``atlas_unscaled_room.SCALE_REVIEW_WAITING``)
+    instead of raised, so a built background ships unscaled while the job asks
+    again; otherwise the step waits on the outage.
     """
     from .atlas_scene_automation import measurement_plan
     from .atlas_scene_measurements import estimate_sizes, load_views
@@ -295,6 +299,15 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
                     # The review found no reference to add: the height priors' guesstimate stands.
                     if str(exc) != "atlas_scale_review_abstained" or not rests_on_height_priors(measurements):
                         raise
+                except Exception as exc:
+                    # Its provider is out or refused before any work (no credit, a refused key): the room is
+                    # not held for it. Any other error, and every wall, is raised as before.
+                    from .atlas_unscaled_room import SCALE_REVIEW_WAITING
+                    from .job_retry_policy import provider_error_waits
+                    if not scale_outage_ships or not provider_error_waits(exc):
+                        raise
+                    return {"status": "needs_input", "reason": SCALE_REVIEW_WAITING,
+                            "scene_measurements_digest": measurements["digest"]}
                 else:
                     (measurements, measurement_path), measurement_input_digest = reviewed, inputs['digest']
                 if measurements.get("status") != "estimated":
@@ -1676,7 +1689,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             # scale: the original views' own pose, bought once here and shared.
             source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
                 task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
-                configuration=config)
+                configuration=config, scale_outage_ships=True)
             if source_pose["status"] == "processing":
                 return source_pose
         return finalize_background_result(output_root=output_root, source_digest=source_digest,

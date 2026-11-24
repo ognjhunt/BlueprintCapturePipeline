@@ -34,11 +34,20 @@ LEVELLING_UNITS = 1.0
 RELATIVE_FRAME = {"declared_meters_per_unit": None, "units": "relative", "units_per_reconstruction_unit": 1.0}
 
 
+#: The scale review could not be asked now: its provider is out (a 429 or 5xx) or refused before any work (no credit,
+#: a refused key: ``job_retry_policy.provider_error_waits``). ``website_atlas_pipeline._source_pose`` records it for a
+#: built background, so the room ships unscaled at once, and the Atlas job asks the review again on the outage
+#: schedule (``website_atlas_preview``): every ask goes through the same admissions, and a measured room replaces
+#: this one. It is no wall: a provider being out says nothing about privacy, rights or money; a refusal that does
+#: (the job's spending cap, a withdrawal, revoked consent) keeps its own code and ships nothing.
+SCALE_REVIEW_WAITING = "atlas_scale_review_waiting_on_provider"
 #: The scale review's own ordinary failures (the views were posed; no scale could be established from them):
 #: ``website_atlas_pipeline._source_pose`` returns the first when the review leaves the measurements unestimated,
-#: and ``atlas_scene_planner`` raises the second when the review's planner call ends with no valid answer. Neither
-#: is a wall: the planner's money and release stops carry their own codes.
-ORDINARY_SCALE_FAILURES = frozenset({"atlas_scale_review_unresolved", "atlas_scene_planner_output_invalid"})
+#: and ``atlas_scene_planner`` raises the second when the review's planner call ends with no valid answer; the
+#: third is the review waiting on its provider (``SCALE_REVIEW_WAITING``). None is a wall: the planner's money and
+#: release stops carry their own codes.
+ORDINARY_SCALE_FAILURES = frozenset({"atlas_scale_review_unresolved", "atlas_scene_planner_output_invalid",
+                                     SCALE_REVIEW_WAITING})
 
 
 def ships_unscaled(source_pose: Mapping[str, Any]) -> bool:
