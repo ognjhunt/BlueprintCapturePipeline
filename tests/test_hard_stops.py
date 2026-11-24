@@ -370,7 +370,7 @@ def test_a_wall_after_the_bought_pose_is_held_as_before_and_raised_only_for_the_
                                           task_context={"capture_id": "c"}, check=lambda *_a, **_k: None,
                                           experimental=False, max_polls=1))
         assert bought == ["pose"]
-    assert held[0] == held[1] == {"status": "needs_input", "reason": str(WALL_AFTER_POSE)}
+    assert held[0] == held[1] == {"status": "needs_input", "reason": str(WALL_AFTER_POSE), "wall": "money"}
     # The windowed re-pose asks for the wall: it would go on to buy past a held result.
     root = tmp_path / "repose" / "pose"
     root.mkdir(parents=True)
@@ -447,7 +447,7 @@ def test_the_reviewed_background_path_still_delivers_when_a_wall_follows_the_bou
         result = pipeline.run_atlas_pipeline(source_video=video, output_root=root, checkpoint=lambda *_a, **_k: None,
                                              task_context={"capture_id": "c", "context_digest": "task"})
         assert bought == ["pose"] and result["source_pose"] == {"status": "needs_input",
-                                                                "reason": str(WALL_AFTER_POSE)}
+                                                                "reason": str(WALL_AFTER_POSE), "wall": "money"}
         assert result["splat_available"] is True
         assert result["download"] == {"zip_path": "scene.zip"}
         assert result["reason"] == "spending_cap_reached"

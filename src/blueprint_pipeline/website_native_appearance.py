@@ -34,7 +34,8 @@ def prepare_native_appearance(*, preparation: Mapping[str, Any], base_scene: Map
         raise ValueError("website_native_appearance_source_changed")
     coordinate = preparation["coordinate_frame"]
     transform = np.asarray(coordinate["runtime_to_simulator"], dtype=float)
-    scale = coordinate["declared_meters_per_unit"]
+    from .atlas_unscaled_room import runtime_scale
+    scale = runtime_scale(coordinate)
     sign = -1 if coordinate["declared_up_axis"] == "-Y" else 1
     rotation = (np.array([[1, 0, 0], [0, 0, -sign], [0, sign, 0]])
                 if coordinate["declared_up_axis"] in {"Y", "-Y"} else np.eye(3))

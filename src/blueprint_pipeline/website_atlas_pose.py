@@ -562,6 +562,12 @@ def needs_atlas_pose_reconciliation(state: Mapping[str, Any] | None, now: float)
                  or now - state.get("uncertain_since_epoch", 0) > UNCERTAIN_RESEND_WINDOW_SECONDS))
 
 
+#: The pose attempt's own ordinary failures, after which a background built on other views ships unscaled, flagged
+#: (``atlas_unscaled_room.ships_unscaled``). Only codes this module raises for the provider failing to pose the views;
+#: a wall, an admission, retention, a rejection or any other code is not on it and ships nothing.
+ORDINARY_POSE_FAILURES = frozenset({"website_atlas_pose_attempt_failed"})
+
+
 def refuse_closed_or_uncertain_attempt(state: Mapping[str, Any] | None, now: float) -> None:
     """Closed attempts, and uncertain ones past the documented resend, never buy another operation."""
     if not state:

@@ -341,36 +341,41 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         flags.append(SPENDING_CAP_REACHED)
     if not background.get("mesh_available"):
         return {"status": "needs_input", "reason": "website_atlas_background_mesh_unavailable"}
-    if source_pose.get("status") != "completed":
+    # A built background whose source pose did not complete ships in its own units, flagged (``atlas_unscaled_room``).
+    from .atlas_unscaled_room import LEVELLING_UNITS, SCALE_NOT_MEASURED, ships_unscaled
+    unscaled = source_pose.get("status") != "completed"
+    if unscaled and (preserved or not ships_unscaled(source_pose)):
         return {"status": "needs_input", "reason": "website_atlas_source_pose_unavailable",
                 "job_reason": source_pose.get("reason")}
-
-    pose_root = _inside(job_dir / source_pose.get("pose_relative_path", "pose") / GEOMETRY_INPUTS_FILE, job_dir).parent
-    measurements_path = _inside(pose_root / source_pose.get('measurements_relative_path', 'scene_measurements.json'), job_dir)
-    measurements = _read(measurements_path)
-    mpu = measurements.get("meters_per_unit_estimate")
-    if (measurements.get("digest") != canonical_digest(measurements, digest_field="digest")
-            or measurements["digest"] != source_pose.get("scene_measurements_digest")):
-        raise ValueError("website_atlas_scene_measurements_changed")
-    if (measurements.get("status") != "estimated" or isinstance(mpu, bool) or not isinstance(mpu, (int, float))
-            or not math.isfinite(mpu) or mpu <= 0):
-        # Known-size references that disagree say the scale is unknown, not small.
-        disagree = (measurements.get("reference_agreement") or {}).get("basis") == "no_majority"
-        return {"status": "needs_input", "reason": "website_atlas_scale_references_disagree" if disagree
-                else "website_atlas_scale_estimate_unavailable"}
-    scale = {"meters_per_unit": float(mpu), "basis": "reference_estimate", "evidence_digest": measurements["digest"],
-             "evidence_reference": str(measurements_path.relative_to(capture_root.resolve()))}
-    # How the cues judged it travels with the geometry: a guesstimate on height
-    # priors alone has a wide range, and its basis says so.
-    if measurements.get("meters_per_unit_range") is not None:
-        scale["meters_per_unit_range"] = measurements["meters_per_unit_range"]
-    if (measurements.get("reference_agreement") or {}).get("basis"):
-        scale["agreement_basis"] = measurements["reference_agreement"]["basis"]
-    inputs = _read(_inside(pose_root / GEOMETRY_INPUTS_FILE, job_dir))
-    geometry_root = _geometry_root(output_root, scale=scale,
-                                   pose_digest=_read(pose_root / "atlas_posed_rgbd_result.json").get("digest"))
-    geometry = atlas_posed_view_geometry(pose_root=pose_root, rotation=_survey_rotation(job_dir, inputs),
-                                         scale=scale, output_root=geometry_root)
+    if unscaled:
+        pose_root, mpu, geometry = job_dir / "pose", LEVELLING_UNITS, None
+    else:
+        pose_root = _inside(job_dir / source_pose.get("pose_relative_path", "pose") / GEOMETRY_INPUTS_FILE, job_dir).parent
+        measurements_path = _inside(pose_root / source_pose.get('measurements_relative_path', 'scene_measurements.json'), job_dir)
+        measurements = _read(measurements_path)
+        mpu = measurements.get("meters_per_unit_estimate")
+        if (measurements.get("digest") != canonical_digest(measurements, digest_field="digest")
+                or measurements["digest"] != source_pose.get("scene_measurements_digest")):
+            raise ValueError("website_atlas_scene_measurements_changed")
+        if (measurements.get("status") != "estimated" or isinstance(mpu, bool) or not isinstance(mpu, (int, float))
+                or not math.isfinite(mpu) or mpu <= 0):
+            # Known-size references that disagree say the scale is unknown, not small.
+            disagree = (measurements.get("reference_agreement") or {}).get("basis") == "no_majority"
+            return {"status": "needs_input", "reason": "website_atlas_scale_references_disagree" if disagree
+                    else "website_atlas_scale_estimate_unavailable"}
+        scale = {"meters_per_unit": float(mpu), "basis": "reference_estimate", "evidence_digest": measurements["digest"],
+                 "evidence_reference": str(measurements_path.relative_to(capture_root.resolve()))}
+        # How the cues judged it travels with the geometry: a guesstimate on height
+        # priors alone has a wide range, and its basis says so.
+        if measurements.get("meters_per_unit_range") is not None:
+            scale["meters_per_unit_range"] = measurements["meters_per_unit_range"]
+        if (measurements.get("reference_agreement") or {}).get("basis"):
+            scale["agreement_basis"] = measurements["reference_agreement"]["basis"]
+        inputs = _read(_inside(pose_root / GEOMETRY_INPUTS_FILE, job_dir))
+        geometry_root = _geometry_root(output_root, scale=scale,
+                                       pose_digest=_read(pose_root / "atlas_posed_rgbd_result.json").get("digest"))
+        geometry = atlas_posed_view_geometry(pose_root=pose_root, rotation=_survey_rotation(job_dir, inputs),
+                                             scale=scale, output_root=geometry_root)
 
     automation_root = job_dir / "automation"
     if result.get('target_correction'):
@@ -426,7 +431,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
 
     # The background was fused on whichever pose posed its views: the original
     # views' own, or a fresh pose of the reviewed edited views.
-    source = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
+    source = None if unscaled else json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
     if preserved and splat_manifest["pose_result_digest"] != source["digest"]:
         raise ValueError("website_atlas_preserved_scene_pose_mismatch")
     # A look whose refined splat also holds generated views checked against the filmed frames
@@ -446,7 +451,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
             splat_manifest, source) and look_views is None:
         raise ValueError('atlas_preserved_completion_not_bound')
     background_root = pose_root
-    if splat_manifest["pose_result_digest"] == source["digest"]:
+    if source is not None and splat_manifest["pose_result_digest"] == source["digest"]:
         background_pose = source
     else:
         candidates = [(path.parent, _read(path))
@@ -457,14 +462,14 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                                                 (None, None))
         if background_pose is None:
             raise ValueError("website_atlas_scene_background_pose_missing")
-    alignment = world_alignment(_cameras(source), _cameras(background_pose))
+    alignment = None if unscaled else world_alignment(_cameras(source), _cameras(background_pose))
     basis = "same_atlas_pose" if background_pose is source else "shared_atlas_cameras"
-    if alignment is None and background_pose is not source:
+    if alignment is None and background_pose is not source and not unscaled:
         alignment = _shared_view_alignment(job_dir=job_dir, source_root=pose_root, source=source,
                                            background_root=background_root, background=background_pose,
                                            bundle_root=bundle_root, bundle=bundle)
         basis = "shared_view_depth"
-    if alignment is None and background_pose is not source:
+    if alignment is None and background_pose is not source and not unscaled:
         alignment = _retained_pose_alignment(job_dir=job_dir, source_root=pose_root, source=source,
             background_root=background_root, background=background_pose, bundle_root=bundle_root, bundle=bundle)
         basis = "retained_source_pose_shared_depth"
@@ -502,7 +507,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         "splat_binding_id": "website-splat-" + splat_digest[7:39],
         "collision_mesh_path": str(mesh_path), "collision_mesh_digest": mesh_digest,
         "collision_binding_id": "website-collider-" + mesh_digest[7:39],
-        "up_axis": "Y", "meters_per_unit": runtime_mpu, "provider": PROVIDER, "scale_authority": SCALE_AUTHORITY,
+        "up_axis": "Y", "meters_per_unit": None if unscaled else runtime_mpu, "provider": PROVIDER,
+        **({"scale_status": SCALE_NOT_MEASURED} if unscaled else {"scale_authority": SCALE_AUTHORITY}),
         "ground_plane_offset_m": level["ground_plane_offset_m"], "anchor": anchor,
         "levelling": {"digest": level["digest"], "revision": level.get("schema_version"),
                       "up_basis": level["up_basis"], "tilt_degrees": level["tilt_degrees"],
@@ -532,6 +538,12 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     # filmed route a locomotion task's start and goal can be read from (``website_locomotion_task``).
     walked = sorted((key, row) for key, row in _cameras(background_pose).items() if str(key).startswith("decoded-"))
     camera_path = [((lift[:3, :3] @ row[:3, 3] + lift[:3, 3]) * runtime_mpu).tolist() for _, row in walked]
+    if unscaled:
+        # Nothing is lifted onto a room with no source pose: the object is not built, and no metres are written.
+        return {"status": "ready", "base_scene": base, "source_geometry": None, "source_pose_digest": None,
+                "background_pose_digest": background_pose["digest"], "alignment": "unscaled",
+                **({"job_objects_kept": kept} if (kept := _job_objects_kept(result)) else {}),
+                "flags": [*flags, SCALE_NOT_MEASURED], "not_prepared": [source_pose["reason"]]}
     return {"status": "ready", "base_scene": base, "source_geometry": geometry,
             "camera_path_levelled_m": camera_path,
             "source_pose_digest": source["digest"], "background_pose_digest": background_pose["digest"],

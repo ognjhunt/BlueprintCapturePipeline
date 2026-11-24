@@ -301,11 +301,15 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
                     return {"status": "needs_input", "reason": "atlas_scale_review_unresolved",
                             "scene_measurements_digest": measurements["digest"]}
     except ValueError as exc:
-        from .hard_stops import is_wall
+        from .hard_stops import is_wall, wall_kind
         if raise_walls and is_wall(exc):
             # The windowed re-pose records a held result and goes on to buy: it gets the wall instead.
             raise
-        return {"status": "needs_input", "reason": str(exc)}
+        # A wall's kind is kept, so the built room never ships past it (``atlas_unscaled_room.ships_unscaled``): by
+        # its type, else by its code's words, so a wall raised as plain text is held exactly like the typed one.
+        from .job_retry_policy import hard_stop_kind
+        kind = wall_kind(exc) or hard_stop_kind(str(exc))
+        return {"status": "needs_input", "reason": str(exc), **({"wall": kind} if kind else {})}
     return {"status": "completed", "result_digest": pose["digest"], "operation_id": pose["operation"]["id"],
             "pose_relative_path": str(pose_root.relative_to(parent_root.parent)),
             'measurements_relative_path': str(measurement_path.relative_to(pose_root)),

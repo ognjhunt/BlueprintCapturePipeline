@@ -27,8 +27,9 @@ def normalize_runtime_collision(*, preparation: Mapping[str, Any], base_scene: M
     coordinates = preparation["coordinate_frame"]
     if coordinates.get("physical_scale_measured") is not False:
         raise ValueError("website_native_scale_authority_invalid")
-    frame = {"meters_per_unit": coordinates["declared_meters_per_unit"],
-             "up_axis": coordinates["declared_up_axis"]}
+    from .atlas_unscaled_room import runtime_scale
+    frame = {"meters_per_unit": runtime_scale(coordinates),
+             "up_axis": coordinates["declared_up_axis"], **({"units": "relative"} if coordinates.get("units") else {})}
     if frame["up_axis"] != base_scene["up_axis"] or frame["up_axis"] not in {"Y", "-Y", "Z"}:
         raise ValueError("website_native_coordinate_frame_mismatch")
     expected = np.eye(4)
