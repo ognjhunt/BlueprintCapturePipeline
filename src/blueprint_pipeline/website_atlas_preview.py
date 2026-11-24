@@ -39,7 +39,9 @@ bypasses one. No operator command or deploy is needed for a retry;
 from __future__ import annotations
 
 import argparse
+import contextlib
 import contextvars
+import faulthandler
 import json
 import logging
 import os
@@ -99,6 +101,11 @@ LATER_PASSES_SECONDS = 900 + 900 + 600 + 900
 #: edit's receipt ``submitting`` (2026-11-16, 16:23). The passes run first count against it, so the unit still
 #: ends in time: they leave the tick less, or (past this budget) no step at all.
 STEP_START_BUDGET_SECONDS = UNIT_TIMEOUT_SECONDS - LONGEST_STEP_SECONDS - LATER_PASSES_SECONDS
+#: A step still running this long after the unit's start has outrun the plan above, with every other job waiting
+#: behind it (2026-11-24, 11:41: one job's scale review, slowed at the batch slice's memory bound, held the tick
+#: two hours until the unit's limit killed it). The tick ends it here (``_ended_if_still_running``), as that
+#: limit would, 55 minutes sooner, and names where it stood.
+STEP_END_SECONDS = STEP_START_BUDGET_SECONDS + LONGEST_STEP_SECONDS
 #: The running tick's clock and the moment past which no paid stage starts (``tick`` sets it).
 _PAID_STAGE_DEADLINE: contextvars.ContextVar[tuple[Callable[[], float], float] | None] = contextvars.ContextVar(
     "website_atlas_preview_paid_stage_deadline", default=None)
@@ -1026,7 +1033,8 @@ def _advanced(before: Any, after: Any, current: float) -> bool:
 
 def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_seconds: float = 0,
          stop_reason: Callable[[], str | None] = lambda: None,
-         clock: Callable[[], float] = time.monotonic, budget_started: float | None = None) -> dict[str, int]:
+         clock: Callable[[], float] = time.monotonic, budget_started: float | None = None,
+         end_overrun_steps: bool = False) -> dict[str, int]:
     """Step every job once; while a pass advances jobs, step those again within ``continue_seconds``.
 
     Each step takes the job's own lock, as one tick always did. ``stop_reason``
@@ -1043,24 +1051,28 @@ def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_s
     back to back after one job's long step instead of one a round (2026-11-18: a
     single step of one job ran 54 min). A job whose live World Labs operations all
     still run is answered by one read-only poll, not a replay (``_waiting_on_provider``).
+    With ``end_overrun_steps`` (the unit's tick), a step still running ``STEP_END_SECONDS``
+    after the budget's start ends the process (``_ended_if_still_running``).
     """
     paths = sorted((path for path in Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}")
                     if capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name)),
                    key=lambda path: (_last_tick(path), str(path)))
     started = clock()
-    deadline = (started if budget_started is None else budget_started) + STEP_START_BUDGET_SECONDS
+    begun = started if budget_started is None else budget_started
+    deadline = begun + STEP_START_BUDGET_SECONDS
     # Paid stages inside a step ask the tick's checkpoint first: none starts past the same budget.
     token = _PAID_STAGE_DEADLINE.set((clock, deadline))
     try:
         return _tick_passes(paths, started=started, now=now, continue_seconds=continue_seconds,
-                            stop_reason=stop_reason, clock=clock, deadline=deadline)
+                            stop_reason=stop_reason, clock=clock, deadline=deadline,
+                            step_end=begun + STEP_END_SECONDS if end_overrun_steps else None)
     finally:
         _PAID_STAGE_DEADLINE.reset(token)
 
 
 def _tick_passes(paths: list[Path], *, started: float, now: Callable[[], float], continue_seconds: float,
                  stop_reason: Callable[[], str | None], clock: Callable[[], float],
-                 deadline: float) -> dict[str, int]:
+                 deadline: float, step_end: float | None = None) -> dict[str, int]:
     outcomes: dict[Path, str] = {}
     passes, deferred, spent = 1, 0, False
     # The continuation window opens at the tick's start, and again where a step ends that alone outran it.
@@ -1078,7 +1090,8 @@ def _tick_passes(paths: list[Path], *, started: float, now: Callable[[], float],
             starts.append((path, at))
             before = _progress(path) if continue_seconds > 0 else None
             try:
-                outcome = advance_job(path, now=now)
+                with _ended_if_still_running(None if step_end is None else step_end - at):
+                    outcome = advance_job(path, now=now)
             except Exception as error:  # noqa: BLE001 - one unreadable job never stops the others
                 logger.warning("website_atlas_preview_job_unreadable type=%s", type(error).__name__)
                 outcome = "unreadable"
@@ -1108,6 +1121,28 @@ def _tick_passes(paths: list[Path], *, started: float, now: Callable[[], float],
     for outcome in outcomes.values():
         counts[outcome] = counts.get(outcome, 0) + 1
     return counts
+
+
+@contextlib.contextmanager
+def _ended_if_still_running(seconds: float | None):
+    """End the process if the step inside is still running after ``seconds`` (None: never).
+
+    The way the unit's limit ends it, only sooner: at once, with no handler or cleanup run, so a paid hold or a
+    ``submitting`` receipt is left exactly as a kill leaves it. faulthandler's own thread does it, on its own
+    clock, so a step stuck in native code or a system call is ended too; it first writes every thread's
+    traceback to the journal, which names the sub-step that never returned. The step's in-flight mark stays,
+    so the next tick, a minute later, retries the job on the refusal schedule (``atlas_preview_step_interrupted``)
+    and steps the other jobs, after the passes it runs first.
+    """
+    if seconds is None:
+        yield
+        return
+    # To the process's own standard error (the journal), whatever ``sys.stderr`` is now.
+    faulthandler.dump_traceback_later(max(1.0, seconds), exit=True, file=2)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 def _last_tick(path: Path) -> float:
@@ -1373,7 +1408,7 @@ def main(argv: list[str] | None = None) -> int:
     failure: Exception | None = None
     try:
         counts.update(tick(args.storage_root, continue_seconds=continue_seconds_from_environment(),
-                           stop_reason=stop_reason, budget_started=unit_started))
+                           stop_reason=stop_reason, budget_started=unit_started, end_overrun_steps=True))
         from .owned_capture_atlas_worker import tick_from_environment
         counts.update({"owned_" + key: value for key, value in tick_from_environment().items()})
     except Exception as error:  # noqa: BLE001 - re-raised below, after the publication passes have run
