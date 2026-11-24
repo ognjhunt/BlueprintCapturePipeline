@@ -222,6 +222,11 @@ def test_source_reconstruction_refusal_keeps_its_own_stage_and_reason(monkeypatc
     assert world.advance() == "needs_input"
     assert _job(site)["stage"] == "source_pose" and _job(site)["reason"] == "atlas_scale_review_unresolved"
     assert world.published == []
+    # Stress round 2 (2026-11-24): a stop on it is the new-video ask the website words, never a parked job the
+    # clock reopens six times for a paid scale review of the same views.
+    assert preview._parked_without_wall(_job(site)) is False
+    world.clock += 7 * 86400
+    assert world.advance() == "needs_input" and len(world.runs) == 1
 
 
 @pytest.mark.parametrize('blocker', [
@@ -280,6 +285,12 @@ def test_a_tombstone_seen_at_the_next_tick_ends_the_job_without_running(monkeypa
      "website_atlas_source_consent_required"),
     # A lapsed price review is the owner's to renew, like a missing grant.
     (ValueError("atlas_runtime_price_review_expired"), "atlas_runtime_price_review_expired"),
+    # Stress round 2 (2026-11-24): the WebApp's accounting read past its own bound. A WebApp release lifts it,
+    # so the job waits, rechecked, instead of ending failed and being reopened six times for nothing.
+    (ValueError("website_control_atlas-configuration_http_409:website_atlas_reservation_summary_too_large"),
+     "website_atlas_reservation_summary_too_large"),
+    (ValueError("website_control_atlas-configuration_http_409:website_atlas_accounting_response_too_large"),
+     "website_atlas_accounting_response_too_large"),
 ])
 def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypatch, site, refusal, reason):
     _enqueue(site)
@@ -1611,6 +1622,49 @@ def test_atlas_job_cap_ends_without_rescheduling_any_paid_step(monkeypatch, site
     assert world.pushed[-1]["reason"] == "spending_cap_reached"
 
 
+@pytest.mark.parametrize("blockers,code", [
+    (["account_monthly_spend_limit_reached"], "account_monthly_spend_limit_reached"),
+    (["account_monthly_spend_journal_unreadable"], "account_monthly_spend_journal_unreadable"),
+    (["account_monthly_spend_report_stale"], "account_monthly_spend_report_stale"),
+    (["account_monthly_spend_limit_not_configured"], "account_monthly_spend_limit_not_configured"),
+    # The account's own code is the one named beside another limit's.
+    (["account_monthly_spend_limit_reached", "gcp_monthly_budget_admission_blocked"],
+     "account_monthly_spend_limit_reached"),
+    (["gcp_monthly_budget_admission_blocked"], "gcp_monthly_budget_admission_blocked"),
+])
+def test_the_paid_admission_chokepoints_own_refusal_waits_under_the_limits_code(monkeypatch, site, blockers, code):
+    """Stress round 2 (2026-11-24): the account's month refuses a website reservation inside
+    ``reserve_website_preparation_spend`` as ``PaidResourceAdmissionBlocked``, a RuntimeError. It took the defect's
+    refusal schedule, ended failed as ``paid_resource_admission_blocked`` and the website never heard which limit.
+    It now waits as every money wait does, rechecked until the job's deadline, under the limit's own code."""
+    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
+    _enqueue(site)
+    world = World(monkeypatch, site, [PaidResourceAdmissionBlocked(sorted(blockers)),
+                                      {"status": "processing", "stage": "plan"}])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["reason"], job["retry_at_epoch"]) == (code, world.clock + preview.AUTHORITY_RECHECK_SECONDS)
+    assert "refusal_retries" not in job and job["provider_cleanup"] is None
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("needs_input", code)
+    assert preview._parked_without_wall(job) is False
+    world.clock += preview.AUTHORITY_RECHECK_SECONDS
+    assert world.advance() == "processing" and len(world.runs) == 2
+
+
+@pytest.mark.parametrize("code", ["website_atlas_consent_unconfigured", "website_scene_grant_policy_unconfigured"])
+def test_a_webapp_configuration_state_waits_on_our_side_and_is_never_the_sites_privacy_wall(monkeypatch, site, code):
+    """The WebApp now sends its own unconfigured states under their own codes, where it sent the consent and brief
+    codes. "consent" in the name would read as a withdrawal and end the job: each waits, rechecked, instead."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(f"website_control_preparation-spend_http_409:{code}"),
+                                      {"status": "processing", "stage": "plan"}])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["reason"], job["retry_at_epoch"]) == (code, world.clock + preview.AUTHORITY_RECHECK_SECONDS)
+    world.clock += preview.AUTHORITY_RECHECK_SECONDS
+    assert world.advance() == "processing"
+
+
 def test_a_money_refusal_waits_as_needs_input_shown_to_the_owner_and_re_asked_until_expiry(monkeypatch, site):
     refusal = ValueError("account_monthly_spend_limit_reached")
     _enqueue(site)
@@ -1809,6 +1863,25 @@ def test_a_mesh_that_lies_on_none_of_its_splat_ends_at_once_and_asks_for_a_new_v
     assert "deterministic_refusal" not in job and "refusal_retries" not in job
     assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("needs_input", code)
     # Nothing runs it again: not the clock, not an operator's retry.
+    world.clock += 6 * 86400
+    assert world.advance() == "needs_input" and len(world.runs) == 1
+    with pytest.raises(ValueError, match="atlas_preview_retry_requires_recoverable_failure"):
+        preview.retry_failed_job(site.job)
+
+
+@pytest.mark.parametrize("code", ["atlas_insufficient_sharp_static_views", "atlas_source_rotation_unsupported"])
+def test_a_video_file_the_same_video_always_refuses_asks_for_a_new_video_at_once(monkeypatch, site, code):
+    """Stress round 2 (2026-11-24): a survey with fewer than two sharp, well-exposed frames, and a file whose
+    display rotation is not a quarter turn, took the refusal schedule, ended failed and were reopened by the
+    clock six times; the same file repeats each every time. Each now ends at once as a new-video ask."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError(code)])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["state"], job["reason"], job["retry_at_epoch"]) == ("needs_input", code, None)
+    assert "refusal_retries" not in job
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("needs_input", code)
+    assert preview._parked_without_wall(job) is False
     world.clock += 6 * 86400
     assert world.advance() == "needs_input" and len(world.runs) == 1
     with pytest.raises(ValueError, match="atlas_preview_retry_requires_recoverable_failure"):

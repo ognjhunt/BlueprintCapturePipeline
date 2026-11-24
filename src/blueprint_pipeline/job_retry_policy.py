@@ -22,6 +22,7 @@ import re
 
 __all__ = [
     "MONEY",
+    "NOT_WALL_CODES",
     "OWNER_CLOSED_CODE",
     "PROVIDER_ACCOUNT_STATUSES",
     "PROVIDER_OUTAGE_STATUSES",
@@ -77,6 +78,16 @@ _MONEY_WORDS = frozenset({
 })
 # fmt: on
 _WORD_SPLIT = re.compile(r"[^0-9a-z]+")
+#: Codes whose words read as a wall but that guard none (stress round 2, 2026-11-24). Each is taken out of the
+#: text, as a whole token, before its words are read, so the rest of a longer message still counts:
+#: - ``atlas_coverage_exceeds_frame_budget``: "budget" counts the views a rebuild may take, never money (as
+#:   ``website_scene_handoff.REQUEST_SIZE_CODES`` count a request's tokens or bytes). It was read as a money wait
+#:   and rechecked every 30 minutes until the job's deadline, for nothing.
+#: - the WebApp's own configuration states, which it once sent as the consent and brief codes: Blueprint repairs
+#:   them, the site never can, so "consent" in the name is no withdrawal and never ends the job.
+NOT_WALL_CODES = ("atlas_coverage_exceeds_frame_budget", "website_atlas_consent_unconfigured",
+                  "website_scene_grant_policy_unconfigured")
+_NOT_WALL = re.compile(r"(?<![0-9a-z_])(?:" + "|".join(NOT_WALL_CODES) + r")(?![0-9a-z_])")
 
 
 def _is_int(value: object) -> bool:
@@ -149,7 +160,7 @@ def hard_stop_kind(code: object) -> str | None:
     """
     if not isinstance(code, str) or not code:
         return None
-    words = set(_WORD_SPLIT.split(code.lower()))
+    words = set(_WORD_SPLIT.split(_NOT_WALL.sub(" ", code.lower())))
     if words & _PRIVACY_RIGHTS_WORDS:
         return PRIVACY_RIGHTS
     if words & _MONEY_WORDS:

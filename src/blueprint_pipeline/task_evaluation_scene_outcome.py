@@ -12,6 +12,12 @@ outcome from a single registry:
     Terminal when a non-extendable retry or recovery allowance ran out, or the
     execution window expired (``authority_expired``: Blueprint sponsors the
     window, so it is never the site's fault).
+    ``account_limit_wait`` is this kind too, never terminal: the account-wide monthly
+    limit (``account_monthly_spend``) refuses new paid work, or cannot be read, so
+    the job is paused on Blueprint's side and resumes by itself when the month has
+    room again (a hold settles, the month turns) or the limit's report is fresh.
+    It is the account's money stop, never the job's cap and never the site's. Of
+    the five kinds both sides share, only this one is a wait on Blueprint's side.
 ``spending_cap_reached``
     The job reached its spending cap (``website_job_spend_cap``, owner decision
     2026-11-19): the scene's budget or the job's cap leaves no room for the next
@@ -54,7 +60,7 @@ SCHEMA_VERSION = "task_evaluation_scene_intent_outcome.v1"
 FILENAME = "outcome.json"
 
 KINDS = ("setup_repair", "spending_cap_reached", "awaiting_site", "withdrawn", "held")
-REASON_CATEGORIES = ("blueprint_fault", "authority_expired", "spending_cap", "site_action",
+REASON_CATEGORIES = ("blueprint_fault", "authority_expired", "spending_cap", "account_limit", "site_action",
                      "privacy_rights", "capability_limit")
 
 #: The closed reason vocabulary: reason_code -> (kind, terminal, reason_category).
@@ -75,6 +81,9 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     # (c) Money: the job's spending cap. Nothing raises it; the job ends with what it has.
     "spend_cap_reached": ("spending_cap_reached", True, "spending_cap"),
     "job_ceiling_reached": ("spending_cap_reached", True, "spending_cap"),
+    # Money: the account-wide monthly limit refuses new paid work, or cannot be read. Paused on our
+    # side, it resumes by itself; the execution window still ends it (stress round 2, 2026-11-24).
+    "account_limit_wait": ("setup_repair", False, "account_limit"),
     # (d) The site has to act.
     "site_consent_required": ("awaiting_site", False, "site_action"),
     "task_brief_required": ("awaiting_site", False, "site_action"),
@@ -108,6 +117,17 @@ BLOCKER_REASONS: dict[str, str] = {
     "beta_screening_job_ceiling_exceeded": "job_ceiling_reached",
     "website_job_ceiling_insufficient": "job_ceiling_reached",
     "website_scene_preparation_budget_exhausted": "job_ceiling_reached",
+    # The account-wide monthly limit's admission (account_monthly_spend.admission_blockers, and
+    # paid_resource_admission when the check itself fails). Before 2026-11-24 none was listed, so a
+    # stopped row read as an unknown Blueprint fault, "a setup problem". A call that names no amount
+    # (account_monthly_spend_call_cost_invalid) is a defect, not a wait, and stays unlisted.
+    "account_monthly_spend_limit_reached": "account_limit_wait",
+    "account_monthly_spend_journal_unreadable": "account_limit_wait",
+    "account_monthly_spend_report_stale": "account_limit_wait",
+    "account_monthly_spend_report_missing_or_invalid": "account_limit_wait",
+    "account_monthly_spend_limit_not_configured": "account_limit_wait",
+    "account_monthly_spend_limit_config_invalid": "account_limit_wait",
+    "account_monthly_spend_limit_unavailable": "account_limit_wait",
     # Non-extendable allowances (max_retries is sealed in the intent; the recovery
     # caps and the submission cap are code and config): scene progression,
     # reserve_scene_attempt, and the bare codes older records carry.
@@ -139,6 +159,10 @@ BLOCKER_REASONS: dict[str, str] = {
     "website_atlas_planner_consent_required": "site_consent_required",
     "website_atlas_consent_expired": "site_consent_required",
     "task_brief_missing": "task_brief_required",
+    # The WebApp's own configuration states (stress round 2, 2026-11-24), which it once sent as the
+    # consent and brief codes above: Blueprint repairs them, the site never can.
+    "website_atlas_consent_unconfigured": "pipeline_fault",
+    "website_scene_grant_policy_unconfigured": "pipeline_fault",
     # Scene progression, the source resolver and task-family preparation.
     "source_kind_not_supported_by_progression": "source_kind_unsupported",
     "completed_3d_scene_result_required": "source_kind_unsupported",

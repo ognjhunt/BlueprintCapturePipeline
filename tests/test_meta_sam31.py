@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import time
+import math
 from pathlib import Path
 import shutil
 
@@ -172,6 +174,91 @@ def test_partial_prompt_resume_reserves_only_missing_response(tmp_path, monkeypa
     assert [(root / f"response-{index}.json").read_bytes() for index in (0, 1)] == original_bytes
     assert sam.run_meta_sam31(**{**args, "task_context": None}, opener=lambda *a, **kw: pytest.fail("retained")) == result
     assert len(reservations) == 1
+
+
+def _two_answered_one_pending(tmp_path, monkeypatch):
+    """Prompts 0 and 1 answered and kept, prompt 2 not yet sent: the shape the owner's Austin job stopped in."""
+    from blueprint_pipeline import website_task_context
+
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    args = inputs(tmp_path)
+    prompts = [{**PROMPT, "prompt_id": f"target-{i}", "text": f"object {i}"} for i in range(3)]
+    args.update(prompts=prompts, admission={}, admission_grant=None,
+                task_context={"capture_id": "fixture", "request_id": "itest-austin"})
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=prompts))
+    root = args["output_root"] / digest[7:]
+    root.mkdir(parents=True)
+    clip = sam.encode_clip(registry=args["frame_registry"], artifacts=args["frame_artifacts"], root=root)
+    for index in (0, 1):
+        sam.write_json(root / f"intent-{index}.json", {"binding_digest": digest, "clip_digest": _sha256_file(clip)})
+        sam.write_json(root / f"response-{index}.json", {"binding_digest": digest, "clip_digest": _sha256_file(clip),
+                                                         "response": response(), "reserved_cost_usd": 0.0025})
+    reservations, sources = [], []
+
+    def reserve(**kwargs):
+        if any(row["binding_digest"] == kwargs["binding_digest"] for row in reservations):
+            pytest.fail("already_reserved: the WebApp lets only the first transaction dispatch")
+        reservations.append(kwargs)
+        value = {**build_paid_lane_admission(resource_class="evaluator_api"), "provider": "meta",
+                 "allocation_binding_digest": kwargs["binding_digest"], "maximum_cost_usd": kwargs["maximum_cost_usd"],
+                 "external_disclosure_allowed": True, "expires_at_epoch": time.time() + 3600}
+        kwargs["retain_admission"](value)   # as the real reservation does, before its local recheck
+        return value, require_paid_resource_admission(value, resource_class="evaluator_api",
+            expected_schema_version="paid_lane_admission.v1")
+
+    monkeypatch.setattr(website_task_context, "reserve_website_sam_spend", reserve)
+    monkeypatch.setattr(website_task_context, "require_current_website_source", sources.append)
+    return args, root, reservations, sources
+
+
+def test_a_hold_reserved_before_a_run_stopped_pays_the_next_run_and_is_never_reserved_twice(tmp_path, monkeypatch):
+    """Stress round 2 (2026-11-24): the owner's Austin job reserved its pending prompt, then timed out reading a kept
+    answer before sending it; every later run was answered ``already_reserved`` and refused. The hold is kept the
+    moment it is granted, and a run that sent nothing under it reuses it after reading the site's current source."""
+    import subprocess
+
+    args, root, reservations, sources = _two_answered_one_pending(tmp_path, monkeypatch)
+    real_parse = sam.parse_tracks
+    monkeypatch.setattr(sam, "parse_tracks", lambda *a, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired("node", 379)))
+    with pytest.raises(subprocess.TimeoutExpired):
+        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("nothing is sent before the kept answers read"))
+    assert len(reservations) == 1 and not (root / "intent-2.json").exists()
+    held = json.loads((root / f"held-reservation-{reservations[0]['binding_digest'][7:]}.json").read_text())
+    assert held["status"] == "held" and held["admission"]["allocation_binding_digest"] == reservations[0]["binding_digest"]
+    assert "fixture-meta-secret" not in json.dumps(held)
+
+    monkeypatch.setattr(sam, "parse_tracks", real_parse)
+    calls = []
+
+    def opener(request, **kwargs):
+        calls.append(json.loads(request.data)["input"][0]["content"][0]["text"])
+        return BytesIO(json.dumps(response()).encode())
+
+    result = sam.run_meta_sam31(**args, opener=opener)
+    assert result["status"] == "completed" and calls == ["object 2"]
+    assert len(reservations) == 1                        # the same hold paid it: no second reservation
+    assert sources == [args["task_context"]]             # the site's current source was read before the reuse
+    assert json.loads((root / "response-2.json").read_text())["allocation_binding_digest"] == reservations[0]["binding_digest"]
+
+
+def test_an_expired_kept_hold_stays_counted_and_the_next_reservation_is_a_new_binding(tmp_path, monkeypatch):
+    args, root, reservations, _sources = _two_answered_one_pending(tmp_path, monkeypatch)
+    prompts = args["prompts"]
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=prompts))
+    pending = canonical_digest({"kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
+                                "pending_prompt_indices": [2]})
+    expired = {**build_paid_lane_admission(resource_class="evaluator_api"), "provider": "meta",
+               "allocation_binding_digest": pending, "maximum_cost_usd": 0.0025, "external_disclosure_allowed": True,
+               "expires_at_epoch": time.time() - 1}
+    sam._write_reservation(root, pending, expired)
+    calls = []
+    result = sam.run_meta_sam31(**args, opener=lambda request, **kw: calls.append(1) or BytesIO(json.dumps(response()).encode()))
+    assert result["status"] == "completed" and calls == [1]
+    assert len(reservations) == 1 and reservations[0]["binding_digest"] not in (pending, digest)
+    assert json.loads((root / f"held-reservation-{pending[7:]}.json").read_text())["status"] == "superseded"
+    assert sam._superseded_reservations(root) == [pending]
 
 
 def test_partial_prompt_resume_refuses_uncertain_missing_prompt_before_reservation(tmp_path, monkeypatch):
@@ -492,6 +579,17 @@ def test_the_parser_time_limit_grows_with_the_response():
     assert sam.parser_timeout_seconds("x" * (64 * 1024 * 1024)) == 3600
 
 
+def test_the_parser_time_limit_also_grows_with_the_boxes_it_decodes():
+    """Owner's Austin walkthrough (2026-11-24): 3,010 masks, mostly 1079x1617 boxes, in 1.26 MiB of text, timed out
+    twice at the text's 379 s; the boxes' 1,912 megapixels give 956 s. The text's measure still holds as a floor."""
+    box = "<0f>0<|box;x1=0;y1=302;x2=1079;y2=1919;w=1080;h=1920|><|mask;x=0;y=0;data=1024,684,!!|>"
+    assert sam.parser_timeout_seconds(box * 1000) == math.ceil(0.5 * 1000 * 1079 * 1617 / 1e6)   # 873 s
+    assert sam.parser_timeout_seconds(box) == 300                                                # the floor
+    assert sam.parser_timeout_seconds(box * 10_000) == 3600                                      # the ceiling
+    small = "<0f>0<|box;x1=10;y1=10;x2=20;y2=20;w=1080;h=1920|>" + "x" * (2 * 1024 * 1024)
+    assert sam.parser_timeout_seconds(small) == math.ceil(300 * len(small) / 1024**2)            # text measure wins
+
+
 def _job_spend(monkeypatch):
     """The job's reservation path as the website answers it: one admission per distinct binding."""
     from blueprint_pipeline import website_task_context
@@ -655,3 +753,103 @@ def test_a_resend_never_exceeds_the_callers_own_cap(tmp_path, monkeypatch, cap, 
             sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("resend beyond the caller's cap"))
         assert len(reservations) == 1 and not (root / sam.UNANSWERED_ARCHIVE).exists()
         assert (root / "intent-1.json").is_file()
+
+
+# --- settling a website reservation (stress round 2, 2026-11-24) -----------------------------------------------
+
+WEBSITE_CONTEXT = {"capture_id": "walkthrough-req1", "request_id": "req1", "scene_id": "site-req1",
+                   "context_digest": "sha256:" + "c" * 64}
+
+
+def _website_run(tmp_path, monkeypatch, *, settle):
+    """Three prompts reserved on the job's ledger as one reservation, answered; ``settle`` is the website."""
+    from blueprint_pipeline import website_task_context
+
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    args = inputs(tmp_path)
+    prompts = [{**PROMPT, "prompt_id": f"target-{i}", "text": f"object {i}"} for i in range(3)]
+    args.update(prompts=prompts, admission={}, admission_grant=None, task_context=WEBSITE_CONTEXT)
+    reservations, sent = [], []
+
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        value = {**build_paid_lane_admission(resource_class="evaluator_api"),
+                 "allocation_binding_digest": kwargs["binding_digest"],
+                 "maximum_cost_usd": kwargs["maximum_cost_usd"], "external_disclosure_allowed": True}
+        return value, require_paid_resource_admission(value, resource_class="evaluator_api",
+            expected_schema_version="paid_lane_admission.v1")
+
+    def webapp(*, task_context, operation, payload):
+        assert operation == "preparation-settlement" and task_context is WEBSITE_CONTEXT
+        sent.append(payload["settlement"])
+        return settle(payload["settlement"])
+
+    monkeypatch.setattr(website_task_context, "reserve_website_sam_spend", reserve)
+    monkeypatch.setattr(website_task_context, "preparation_webapp_request", webapp)
+    return args, reservations, sent
+
+
+def _accepts(command):
+    return {**command, "actual_cost_usd": command["provider_charge_amount_usd"], "status": "settled"}
+
+
+def _answers(request, **kwargs):
+    return BytesIO(json.dumps(response()).encode())
+
+
+def test_a_reservation_whose_prompts_are_all_answered_is_settled_once_at_its_usage(tmp_path, monkeypatch):
+    """Before this no Meta reservation was settled: each held its whole quote on the job's ledger for the job's life."""
+    args, reservations, sent = _website_run(tmp_path, monkeypatch, settle=_accepts)
+    assert sam.run_meta_sam31(**args, opener=_answers)["status"] == "completed"
+    assert len(reservations) == 1 and len(sent) == 1
+    command = sent[0]
+    assert command["provider"] == "meta" and command["completed_request_count"] == 3
+    assert command["allocation_binding_digest"] == reservations[0]["binding_digest"]
+    assert command["task_context_digest"] == WEBSITE_CONTEXT["context_digest"]
+    # One image per prompt, at the reviewed image price: never above what was reserved.
+    assert command["provider_charge_amount_usd"] == 0.0075 <= reservations[0]["maximum_cost_usd"]
+    assert command["usage_receipt_digest"].startswith("sha256:")
+    # Replayed from the retained answers: nothing is bought or settled again.
+    assert sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("retained"))["status"] == "completed"
+    assert len(sent) == 1 and len(reservations) == 1
+
+
+def test_a_website_that_refuses_the_meta_settlement_keeps_the_hold_and_is_asked_again_later(tmp_path, monkeypatch):
+    """The website's settlement reader lists no ``meta`` variant until its release adds it: the refusal changes
+    nothing (the row keeps its quote, so the cap over-counts, never under-counts), the step still completes, and a
+    later run of the binding asks again."""
+    answers = {"accept": False}
+
+    def website(command):
+        if not answers["accept"]:
+            raise ValueError("website_control_preparation-settlement_http_400:unclassified")
+        return _accepts(command)
+    args, _reservations, sent = _website_run(tmp_path, monkeypatch, settle=website)
+    assert sam.run_meta_sam31(**args, opener=_answers)["status"] == "completed"
+    assert len(sent) == 1
+    root = next(path for path in args["output_root"].iterdir() if path.is_dir())
+    assert not list(root.glob("reservation-*.settlement.json"))
+    answers["accept"] = True
+    sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("retained"))
+    assert len(sent) == 2 and sent[0] == sent[1] and len(list(root.glob("reservation-*.settlement.json"))) == 1
+
+
+def test_a_reservation_with_a_prompt_answered_under_another_is_never_settled(tmp_path, monkeypatch):
+    """An unanswered dispatch is counted as spent and resent under a new reservation: the first keeps its hold."""
+    args, _reservations, sent = _website_run(tmp_path, monkeypatch, settle=_accepts)
+    sam.run_meta_sam31(**args, opener=_answers)
+    root = next(path for path in args["output_root"].iterdir() if path.is_dir())
+    for path in root.glob("reservation-*.settlement.json"):
+        path.unlink()
+    answer = json.loads((root / "response-1.json").read_text())
+    sam.write_json(root / "response-1.json", {**answer, "allocation_binding_digest": "sha256:" + "e" * 64})
+    assert sam.settle_answered_reservations(root, task_context=WEBSITE_CONTEXT) == []
+    assert len(sent) == 1
+
+
+def test_an_answer_is_priced_from_the_usage_meta_reported():
+    video = {"response": {"usage": {"video_frames_processed": 37}}}
+    assert sam._answered_cost(video, image_request=False) == pytest.approx(37 * sam.PRICE_PER_FRAME_USD)
+    assert sam._answered_cost({"response": {"usage": {}}}, image_request=False) is None
+    assert sam._answered_cost({"response": {"usage": {"video_frames_processed": True}}}, image_request=False) is None
+    assert sam._answered_cost({}, image_request=True) == sam.PROFILE["price_per_image_usd"]

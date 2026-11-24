@@ -52,11 +52,21 @@ def _sam_parser_node() -> Path | None:
 #: a fixed 300 s on a loaded host, and the same response parsed in a later pass.
 PARSER_SECONDS_PER_MIB = 300
 PARSER_TIMEOUT_BOUNDS_S = (300, 3600)
+#: The text is run-length coded, so its size alone under-counts the work: each mask is decoded
+#: to its whole box. Owner's Austin walkthrough (2026-11-24): 1.26 MiB of text for 3,010 masks
+#: over 110 s of 1080x1920 video decodes 1,912 megapixels of boxes. It timed out at the text's
+#: 379 s on the host twice, the same answer each retry, and took 205 s on a 4-core machine at
+#: load 8. So the limit is also 0.5 s per megapixel of decoded box (956 s here), whichever is more.
+PARSER_SECONDS_PER_MASK_MEGAPIXEL = 0.5
+_BOX = re.compile(r"<\|box;x1=(\d+);y1=(\d+);x2=(\d+);y2=(\d+);")
 
 
 def parser_timeout_seconds(text: str) -> int:
+    """The parser's time limit: the larger of the text's and the decoded boxes' measure, within the bounds."""
     size = len(text.encode("utf-8")) / (1024 * 1024)
-    return int(min(PARSER_TIMEOUT_BOUNDS_S[1], max(PARSER_TIMEOUT_BOUNDS_S[0], math.ceil(PARSER_SECONDS_PER_MIB * size))))
+    area = sum(max(0, int(x2) - int(x1)) * max(0, int(y2) - int(y1)) for x1, y1, x2, y2 in _BOX.findall(text)) / 1e6
+    seconds = max(PARSER_SECONDS_PER_MIB * size, PARSER_SECONDS_PER_MASK_MEGAPIXEL * area)
+    return int(min(PARSER_TIMEOUT_BOUNDS_S[1], max(PARSER_TIMEOUT_BOUNDS_S[0], math.ceil(seconds))))
 
 
 #: HTTP statuses the provider answers when it refused a request without processing it.
@@ -688,6 +698,142 @@ def _set_aside_answers_for_another_clip(root: Path, answered: Sequence[int], *, 
     return count + 1
 
 
+#: A reservation the WebApp granted for this binding, kept the moment it is granted (stress round 2, 2026-11-24:
+#: the owner's Austin job reserved its second prompt, then timed out reading the first answer before sending it;
+#: every later run was answered ``already_reserved``, which no run could use, so the job could never go on).
+RETAINED_RESERVATION_SCHEMA = "meta_sam31_retained_reservation.v1"
+
+
+def _reservation_path(root: Path, admission_digest: str) -> Path:
+    """Apart from the settlement's ``reservation-*.json`` records, so neither reads the other's."""
+    return root / f"held-reservation-{admission_digest[7:]}.json"
+
+
+def _write_reservation(root: Path, admission_digest: str, admission: Mapping[str, Any], status: str = "held") -> None:
+    """Kept before anything is sent under it, fsynced and replaced whole."""
+    root.mkdir(parents=True, exist_ok=True)
+    path = _reservation_path(root, admission_digest)
+    temporary = path.with_suffix(".json.tmp")
+    with temporary.open("w") as stream:
+        json.dump({"schema_version": RETAINED_RESERVATION_SCHEMA, "allocation_binding_digest": admission_digest,
+                   "status": status, "admission": dict(admission)}, stream, indent=2, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def _held_reservation(root: Path, admission_digest: str) -> dict[str, Any] | None:
+    """The admission this binding still holds and has sent nothing under, or None."""
+    path = _reservation_path(root, admission_digest)
+    if not path.is_file() or path.is_symlink():
+        return None
+    record = json.loads(path.read_text())
+    if (record.get("schema_version") != RETAINED_RESERVATION_SCHEMA or record.get("status") != "held"
+            or record.get("allocation_binding_digest") != admission_digest
+            or not isinstance(record.get("admission"), Mapping)):
+        return None
+    return dict(record["admission"])
+
+
+def _superseded_reservations(root: Path) -> list[str]:
+    """Every retained reservation that could no longer pay (expired): each is folded into the next binding, so a
+    new reservation is never answered ``already_reserved`` by the old one, whose hold stays counted."""
+    rows = []
+    for path in sorted(root.glob("held-reservation-*.json")) if root.is_dir() else ():
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if record.get("schema_version") == RETAINED_RESERVATION_SCHEMA and record.get("status") == "superseded":
+            rows.append(str(record.get("allocation_binding_digest")))
+    return sorted(rows)
+
+
+#: One website reservation this binding made (``reserve_website_sam_spend``): the prompts it covers, written once beside
+#: the answers, so the reservation can be settled when every one of them is answered under it.
+RESERVATION_SCHEMA = "meta_sam31_reservation.v1"
+
+
+def _record_reservation(root: Path, admission: Mapping[str, Any], *, prompt_indices: Sequence[int],
+                        image_request: bool) -> None:
+    """Keep what a website reservation covers; best effort: an unrecorded one is simply never settled (it keeps
+    its whole hold, so the job's cap over-counts, never under-counts)."""
+    try:
+        digest = str(admission["allocation_binding_digest"])
+        path = root / f"reservation-{digest[7:23]}.json"
+        if not path.exists():
+            write_json(path, {"schema_version": RESERVATION_SCHEMA, "allocation_binding_digest": digest,
+                              "prompt_indices": [int(index) for index in prompt_indices],
+                              "maximum_cost_usd": float(admission["maximum_cost_usd"]),
+                              "image_request": bool(image_request)})
+    except (OSError, KeyError, TypeError, ValueError):
+        return
+
+
+def _answered_cost(receipt: Mapping[str, Any], *, image_request: bool) -> float | None:
+    """What one answered prompt costs at the reviewed rates (``PROFILE``), from the usage Meta reported; else None.
+
+    Video is billed per frame processed, an image per image (the pricing page ``PROFILE`` names). The 50 frames a
+    reservation holds at least (``minimum_reserved_frames``) are Blueprint's own hold, not a bill, so the usage
+    alone prices the answer, as a Gemini call is settled at its reported usage.
+    """
+    if image_request:
+        return PROFILE["price_per_image_usd"]
+    processed = ((receipt.get("response") or {}).get("usage") or {}).get("video_frames_processed")
+    if isinstance(processed, bool) or not isinstance(processed, int) or processed < 0:
+        return None
+    return processed * PRICE_PER_FRAME_USD
+
+
+def settle_answered_reservations(root: Path, *, task_context: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Settle each website reservation of this binding whose every prompt was answered under it; never raises.
+
+    Before 2026-11-24 no Meta reservation was ever settled: each held its full quote on the job's ledger for the
+    job's life, and every resend or re-buy reserved anew beside it. A settlement names the reservation's own
+    prompts and their reported usage (``usage_receipt_digest``), at what that usage costs, never above the quote.
+    A reservation with a prompt unanswered, answered under another reservation (an unanswered dispatch counted as
+    spent and resent), or whose usage is missing keeps its whole hold. A website release that does not know the
+    ``meta`` settlement refuses it: the hold then stays as before, and a later run of the binding asks again.
+    """
+    settled: list[dict[str, Any]] = []
+    for path in sorted(root.glob("reservation-*.json")):
+        try:
+            done = path.with_name(path.stem + ".settlement.json")
+            record = json.loads(path.read_text())
+            if done.is_file() or record.get("schema_version") != RESERVATION_SCHEMA:
+                continue
+            digest, indices = record["allocation_binding_digest"], record["prompt_indices"]
+            answers = []
+            for index in indices:
+                response_path = root / f"response-{index}.json"
+                receipt = json.loads(response_path.read_text()) if response_path.is_file() else {}
+                cost = (_answered_cost(receipt, image_request=record["image_request"])
+                        if receipt.get("allocation_binding_digest") == digest else None)
+                if cost is None:
+                    break
+                answers.append((index, receipt, cost))
+            else:
+                total = math.ceil(round(sum(cost for _index, _receipt, cost in answers) * 1_000_000, 6)) / 1_000_000
+                if not indices or not 0 <= total <= float(record["maximum_cost_usd"]):
+                    continue
+                usage = [{"prompt_index": index, "clip_digest": receipt.get("clip_digest"),
+                          "usage": (receipt.get("response") or {}).get("usage")} for index, receipt, _cost in answers]
+                command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": digest,
+                           "provider": "meta", "completed_request_count": len(indices),
+                           "provider_charge_amount_usd": total,
+                           "usage_receipt_digest": canonical_digest({"model": MODEL, "answers": usage})}
+                from .website_task_context import preparation_webapp_request
+                answer = preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
+                    payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"],
+                             "settlement": command})
+                if answer.get("status") == "settled" and all(answer.get(key) == value for key, value in command.items()):
+                    write_json(done, answer)
+                    settled.append(dict(answer))
+        except Exception:  # noqa: BLE001,S112 - the answers are bought; an unsettled reservation keeps its quote
+            continue
+    return settled
+
+
 def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifacts: Sequence[Mapping[str, Any]],
                    prompts: Sequence[Mapping[str, Any]], output_root: Path, admission: Mapping[str, Any],
                    admission_grant: PaidResourceAdmissionGrant | None = None,
@@ -755,14 +901,16 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
         # run, so a re-buy whose reservation was refused, or whose worker died, is never reserved
         # under the original binding again ("already_reserved"), nor bought twice under one hold.
         rebuys = _recorded_rebuys(root) if inline else []
-        if len(pending) == len(prompts) and not refused and not resends and not rebuys:
+        superseded = _superseded_reservations(root)
+        if len(pending) == len(prompts) and not refused and not resends and not rebuys and not superseded:
             return digest
         return canonical_digest({
             "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
             "pending_prompt_indices": list(pending), **({"refused_dispatches": refused} if refused else {}),
             **({"unanswered_resends": [{"prompt_index": index, **resends[index]} for index in sorted(resends)]}
                if resends else {}),
-            **({"clip_rebuy": len(rebuys), "clip_digest": rebuys[-1]["clip_digest"]} if rebuys else {})})
+            **({"clip_rebuy": len(rebuys), "clip_digest": rebuys[-1]["clip_digest"]} if rebuys else {}),
+            **({"superseded_reservations": superseded} if superseded else {})})
 
     admission_digest = admission_for(pending)
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
@@ -823,10 +971,34 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             raise ValueError("meta_sam_retained_response_changed")
     if not retained:
         if admission_grant is None and task_context is not None:
-            from .website_task_context import reserve_website_sam_spend
-            admission, admission_grant = reserve_website_sam_spend(task_context=task_context,
-                binding_digest=admission_digest, maximum_cost_usd=unit_cost * len(pending),
-                request_count=len(pending), source_video_digest=source_video_digest)
+            from .website_task_context import (
+                RetainedAdmissionUnusable,
+                require_current_website_source,
+                reserve_website_sam_spend,
+                reuse_website_preparation_spend,
+            )
+            held = _held_reservation(root, admission_digest)
+            if held is not None:
+                # No pending prompt has an intent (checked above), so nothing was sent under this hold: the
+                # same hold, never released, pays this dispatch. It skips the website's spend transaction, so
+                # the capture's current source is read first; the account and budget checks run again.
+                require_current_website_source(task_context)
+                try:
+                    admission_grant = reuse_website_preparation_spend(admission=held, binding_digest=admission_digest,
+                        job_id=task_context.get("request_id"), provider="meta")
+                    admission = held
+                except RetainedAdmissionUnusable:
+                    # Expired: keep its hold (never released here) and reserve once more under a new binding.
+                    _write_reservation(root, admission_digest, held, status="superseded")
+                    admission_digest = admission_for(pending)
+                    held = None
+            if held is None:
+                admission, admission_grant = reserve_website_sam_spend(task_context=task_context,
+                    binding_digest=admission_digest, maximum_cost_usd=unit_cost * len(pending),
+                    request_count=len(pending), source_video_digest=source_video_digest,
+                    retain_admission=lambda value, kept=admission_digest: _write_reservation(root, kept, value))
+            # What the hold covers, for its settlement once every prompt is answered under it (both paths).
+            _record_reservation(root, admission, prompt_indices=pending, image_request=image_request)
         require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
                                               allocation_binding_digest=admission_digest, require_allocation_binding=True)
         budget = admission.get("maximum_cost_usd")
@@ -925,6 +1097,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 raise ValueError("meta_sam_retained_tracks_changed")
         else:
             write_track_json(root / "tracks.json", result)
+        if task_context is not None:
+            settle_answered_reservations(root, task_context=task_context)
         return result if compact_runs else plain_runs(result)
     finally:
         if video_artifact and not retained:

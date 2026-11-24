@@ -47,7 +47,9 @@ job, so they are read where they are, not copied:
 ``webapp_overhead`` (the WebApp's own paid agent runs)
     The first look, brief reading and the WebApp's other agent runs, per run
     kind and provider for the month (``provider_spend_alerts.observe_webapp_overhead``).
-    They are outside every job's $40 cap (owner rule 2026-11-20) and keyed as
+    The first look and brief reading are outside every job's $40 cap (owner rule 2026-11-20); the WebApp holds
+    its other runs for a job (the free-text pass, the follow-up picker) against that job's cap on its own ledger
+    (since 2026-11-24), and every run is counted here once all the same. They are keyed as
     named overhead (``overhead:<name>``), never as a job; they count toward the
     account's month like any other settled row.
 

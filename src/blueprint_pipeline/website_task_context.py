@@ -177,11 +177,14 @@ def preparation_webapp_request(*, task_context: Mapping[str, Any], operation: st
 
 
 def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest: str,
-                            maximum_cost_usd: float, request_count: int, source_video_digest: str | None = None) -> tuple[dict[str, Any], Any]:
+                            maximum_cost_usd: float, request_count: int, source_video_digest: str | None = None,
+                            retain_admission: Callable[[Mapping[str, Any]], None] | None = None) -> tuple[dict[str, Any], Any]:
+    """``retain_admission`` keeps the WebApp's granted admission before the local recheck, so a run that stops
+    before its dispatch leaves a hold the next run can reuse (``meta_sam31``)."""
     return reserve_website_preparation_spend(task_context=task_context, binding_digest=binding_digest,
         maximum_cost_usd=maximum_cost_usd, request_count=request_count,
         resource_class="evaluator_api", provider="meta", source_video_digest=source_video_digest,
-        atlas_auxiliary=source_video_digest is not None)
+        atlas_auxiliary=source_video_digest is not None, retain_admission=retain_admission)
 
 
 def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], binding_digest: str,
@@ -283,11 +286,13 @@ def require_current_website_source(task_context: Mapping[str, Any]) -> None:
 
 
 def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_digest: str,
-                                    now: float | None = None, job_id: str | None = None) -> Any:
-    """The in-process grant of a retained Gemini reservation whose last dispatch provably bought nothing.
+                                    now: float | None = None, job_id: str | None = None,
+                                    provider: str = "google") -> Any:
+    """The in-process grant of a retained Gemini or Meta reservation whose last dispatch provably bought nothing.
 
-    Only ``website_gemini_receipts`` calls this, for an intent the provider refused before any work
-    (429/503, or Gemini's credits-depleted 402) or one never dispatched: the same WebApp hold, never
+    ``website_gemini_receipts`` calls this for an intent the provider refused before any work
+    (429/503, or Gemini's credits-depleted 402) or one never dispatched; ``meta_sam31`` for a held
+    reservation under which no prompt has an intent: the same WebApp hold, never
     released, pays the next dispatch under the same binding. No new reservation is made. The admission's own validity (its binding,
     shape and ``expires_at_epoch``, which the WebApp sets to the grant's window) raises
     ``RetainedAdmissionUnusable``; the account and budget checks that run again raise as they
@@ -297,13 +302,15 @@ def reuse_website_preparation_spend(*, admission: Mapping[str, Any], binding_dig
 
     from .paid_resource_admission import require_paid_resource_admission
     expires = admission.get("expires_at_epoch")
-    if (admission.get("allocation_binding_digest") != binding_digest or admission.get("provider") != "google"
+    if provider not in ("google", "meta"):
+        raise ValueError("website_preparation_retained_admission_provider_invalid")
+    if (admission.get("allocation_binding_digest") != binding_digest or admission.get("provider") != provider
             or admission.get("resource_class") != "evaluator_api" or admission.get("status") != "admitted"
             or admission.get("schema_version") != "paid_lane_admission.v1" or admission.get("blockers") not in ([], None)
             or isinstance(expires, bool) or not isinstance(expires, (int, float))
             or not expires > (time.time() if now is None else now)):
         raise RetainedAdmissionUnusable("website_preparation_retained_admission_unusable")
-    return require_paid_resource_admission(metered_admission(admission, job_id=job_id, provider="google"),
+    return require_paid_resource_admission(metered_admission(admission, job_id=job_id, provider=provider),
                                            resource_class="evaluator_api",
                                            expected_schema_version="paid_lane_admission.v1")
 

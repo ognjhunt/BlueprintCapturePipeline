@@ -464,3 +464,17 @@ def test_validator_rejects_claim_elevation():
     assert "clean_plate_stage_boundary_metric_authority_elevated" in validate_clean_plate_stage_manifest(
         elevated_boundary
     )
+
+
+def test_a_refusal_to_spend_is_recorded_with_its_typed_codes_and_any_other_failure_by_its_class():
+    """2026-11-24: an Austin test job's task masks stopped on ``PaidResourceAdmissionBlocked`` with no word of which
+    rule refused; the admission's own codes are typed and are now kept. Free text never is."""
+    from blueprint_pipeline.clean_plate_stage import _blocker
+    from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionBlocked
+
+    assert _blocker(PaidResourceAdmissionBlocked(["gcp_budget_report_stale", "website_job_spend_cap_reached"])) == (
+        "paid_resource_admission_blocked:gcp_budget_report_stale,website_job_spend_cap_reached")
+    assert _blocker(PaidResourceAdmissionBlocked(["Call Dana at 555-0100"])) == "PaidResourceAdmissionBlocked"
+    assert _blocker(PaidResourceAdmissionBlocked([])) == "PaidResourceAdmissionBlocked"
+    assert _blocker(ValueError("website_task_masks_unavailable")) == "website_task_masks_unavailable"
+    assert _blocker(RuntimeError("anything at all")) == "RuntimeError"

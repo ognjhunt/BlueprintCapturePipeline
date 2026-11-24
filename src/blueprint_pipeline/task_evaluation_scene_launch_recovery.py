@@ -82,11 +82,15 @@ HOST_CHAIN_TRANSIENT_CODES = frozenset({
     "control_plane_disk_budget_exceeded", "control_plane_disk_budget_lock_busy",
 })
 #: Paid-admission refusals the spend guard clears by itself (account_monthly_spend).
-#: A reached limit is a money stop and is never in this set.
+#: A reached limit is a money stop and is never in this set. A month's journal that could not be
+#: read whole leaves the grants since the report uncounted, so new spend waits "as for a stale
+#: report" (``account_monthly_spend.JOURNAL_UNREADABLE``); the next whole read of the journal clears
+#: it. Unlisted until 2026-11-24, a launch it refused was an unproven blocker instead of a $0 retry.
 ADMISSION_TRANSIENT_BLOCKERS = frozenset({
     "account_monthly_spend_report_stale",
     "account_monthly_spend_report_missing_or_invalid",
     "account_monthly_spend_limit_unavailable",
+    "account_monthly_spend_journal_unreadable",
 })
 #: Past the dispatcher's own allocator timeout (hard TTL + 300 s) by this much.
 LOST_DISPATCHER_GRACE_SECONDS = 900

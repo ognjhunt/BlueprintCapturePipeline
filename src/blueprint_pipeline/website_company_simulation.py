@@ -71,7 +71,8 @@ from .outbound_file_scan import capture_site_identity
 from .website_atlas_preview_store import capture_name_matches_request, capture_withdrawn
 from . import website_half_preparation as half_preparation
 from . import website_library_notes as library_notes
-from .website_half_preparation import COLLISION_ONLY, THRESHOLDS_ASSUMED, generated_patch, look_views, surface_estimated
+from .website_half_preparation import (COLLISION_ONLY, THRESHOLDS_ASSUMED, THRESHOLDS_CONFIRMED_LATER, generated_patch,
+                                       look_views, surface_estimated)
 from .website_build_plan_notes import build_plan_notes
 from .website_company_look import look_ply, look_source, reauthor_look
 
@@ -570,6 +571,8 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
     told = half_preparation.half_disclosures(capture, record) if capture is not None and "room" not in notes else {}
     estimates, basis = told.pop("estimates", None), told.pop("basis", None)
     assumed = "room" not in notes and half_preparation.thresholds_assumed(record)  # the site confirmed none of them
+    # ... when it was compiled. The site may have confirmed exactly those numbers since: its status says so.
+    confirmed = assumed and half_preparation.thresholds_confirmed_later(record, status)
     for name, plan_file in [*((name, PLAN_FILE) for name in PACKET_DIRECTORIES), SCENE_PACKAGE]:
         packet = scene / name
         plan_path = _inside(scene, packet / plan_file)
@@ -586,6 +589,7 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
                                   **({"surface_estimated": True} if capture is not None and "room" in notes
                                      and surface_estimated(capture) else {}), **told,
                                   **({"thresholds_assumed": True} if assumed else {}),
+                                  **({"thresholds_confirmed_later": True} if confirmed else {}),
                                   **(build_plan_notes(capture) if capture is not None else {}),
                                   "physics_check": physics_check(
                                       packet, plan, rule_withheld="rule_withheld" in notes)}
@@ -593,7 +597,8 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
             rows = placements(plan)
             axis = up_axis(plan, packet=packet)
             rule = half_preparation.with_assumed_basis(neutral_rule(
-                _with_sealed_rule(plan, scene, status), estimates=estimates, packet=packet, basis=basis), assumed)
+                _with_sealed_rule(plan, scene, status), estimates=estimates, packet=packet, basis=basis), assumed,
+                confirmed=confirmed)
             room = source.get("room")
             if room is not None and (
                     name != SCENE_PACKAGE[0] or room["plan_digest"] != plan.get("plan_digest")
@@ -762,7 +767,8 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room", "plan_notes",
                                         "generated_patch", "look_views", "surface_estimated", "size_from_its_points",
                                         "size_disagrees_with_published", "destination_overhang", "library_models",
-                                        "library_refusal", "thresholds_assumed", "object_source", "object_shape")
+                                        "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
+                                        "object_source", "object_shape")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
@@ -1139,6 +1145,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
         if isinstance(source.get("rule"), Mapping) and source["rule"].get("criteria_basis"):
             lines += ["  criteria_basis says, for each number Blueprint set, whether the site's own words state it",
                       "  (site_stated), it is the goal area's radius (destination_area) or Blueprint's default (assumed)."]
+            if half_preparation.SITE_CONFIRMED in source["rule"]["criteria_basis"].values():
+                lines += ["  site_confirmed: Blueprint's default, which the site confirmed after this was first built."]
     elif room is not None and room["success_rule_defined"]:
         lines += ["- success_rule.json: the goal region (surface_target: radius_m around surface_position_world_m,",
                   "  the middle of the goal's footprint at the lowest point of it the video shows) and how long",
@@ -1213,8 +1221,8 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([NO_RULE] if withheld else []),
              *half_preparation.object_note(source),
              *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else []),
-             *([THRESHOLDS_ASSUMED] if source.get("thresholds_assumed") and source.get("rule") and room is None
-               else [])]
+             *(([THRESHOLDS_CONFIRMED_LATER] if source.get("thresholds_confirmed_later") else [THRESHOLDS_ASSUMED])
+               if source.get("thresholds_assumed") and source.get("rule") and room is None else [])]
     # One bullet per note, under its own heading, so a reader can pick out the ones that matter.
     lines += ["", "Notes on this simulation", ""] if notes else []
     for note in notes:
@@ -1417,16 +1425,42 @@ def _resolves_inside(staging: Path, *, room: bool = False) -> None:
 
 # --- publishing -------------------------------------------------------------------------------------------------
 
-def package_record(*, identity: Mapping[str, str], manifest: Mapping[str, Any]) -> dict[str, Any]:
-    """What the WebApp may store: the package's identity, never a path, object key or person."""
+#: The neutral prim of the job's object (``scene_package_stage.ROLE_PRIMS``): in the package's placed parts exactly
+#: when the job's object ships in it. A room package, or a floor standing in for a refused half, has none.
+OBJECT_PRIM = "Object"
+#: The WebApp's answer while its reader of ``website_company_simulation.v1`` is strict and predates
+#: ``object_included`` (its route's schema failure, a 409 with this code).
+RECORD_REFUSED = "website_company_simulation_invalid"
+
+
+def object_included(manifest: Mapping[str, Any]) -> bool:
+    """Whether the job's object is in the package the manifest names: its placed parts hold the object's prim."""
+    files = (manifest.get("source") or {}).get("files")
+    return isinstance(files, Mapping) and OBJECT_PRIM in files
+
+
+def package_record(*, identity: Mapping[str, str], manifest: Mapping[str, Any],
+                   with_object_included: bool = True) -> dict[str, Any]:
+    """What the WebApp may store: the package's identity, never a path, object key or person.
+
+    ``object_included`` (2026-11-24, added compatibly) is true only when the job's object is in the package. A
+    website whose strict reader predates it refuses the record (``RECORD_REFUSED``); the same record without it is
+    then sent (``_publish_built``), so the package still reaches the companies and nothing waits for a deploy.
+    """
     built, basis = manifest["package"], manifest["permission"]
     value = {"schema_version": PACKAGE_SCHEMA, "capture_id": identity["capture_id"],
              "simulation_revision": manifest["simulation_revision"], "state": "ready", "format": built["format"],
              "content_type": built["content_type"], "digest": built["digest"], "size_bytes": built["size_bytes"],
              "files": list(built["files"]), "permission_basis": basis["permission_basis"],
-             "statement_version": basis["statement_version"], "updated_at_epoch": int(manifest["built_at_epoch"])}
+             "statement_version": basis["statement_version"], "updated_at_epoch": int(manifest["built_at_epoch"]),
+             **({"object_included": object_included(manifest)} if with_object_included else {})}
     value["simulation_digest"] = cross_runtime_canonical_digest(value)
     return value
+
+
+def _record_refused(error: BaseException) -> bool:
+    """The website's strict reader refused the record's shape (not its rights, its revision or its digest)."""
+    return f"_http_409:{RECORD_REFUSED}" in str(error)
 
 
 @contextmanager
@@ -1796,7 +1830,17 @@ def _publish_built(root, identity, manifest, manifest_path, package_path, basis,
         permission.take_back(manifest, manifest_path, retract)
         return {"status": "withdrawn"}
     try:
-        deliver(record, identity=identity)
+        try:
+            deliver(record, identity=identity)
+        except Exception as error:  # only the record's shape is retried here
+            if "object_included" not in record or not _record_refused(error):
+                raise
+            # A website that predates ``object_included``: the same package, its record without the field. The
+            # digest that is out is this one, so a later pass finds it current and never sends it again.
+            record = package_record(identity=identity, manifest=manifest, with_object_included=False)
+            manifest["simulation_digest"] = record["simulation_digest"]
+            write_json(manifest_path, manifest)
+            deliver(record, identity=identity)
     except Exception as error:  # noqa: BLE001 - classified below; the archive stands only with rights
         reason = _own_reason(error)
         if permission.RIGHTS_REFUSALS.search(str(error)):

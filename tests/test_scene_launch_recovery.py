@@ -310,6 +310,8 @@ def _refusal(*blockers):
     ({**NOT_INVOKED, "allocator_invoked": True, "allocator_exit_code": 1,
       "provider_mutation_evidence": {"status": "absent_before_paid_admission"}}, None, "absent_before_paid_admission"),
     (ADMISSION_REFUSED, _refusal("account_monthly_spend_report_stale"), "paid_admission_refused"),
+    # Stress round 2 (2026-11-24): an unreadable month journal waits as a stale report does.
+    (ADMISSION_REFUSED, _refusal("account_monthly_spend_journal_unreadable"), "paid_admission_refused"),
 ])
 def test_a_receipt_that_proves_no_provider_was_reached_is_recovered(tmp_path, receipt, adapter_output, basis):
     run, profile = _receipt_run(tmp_path, receipt=receipt, adapter_output=adapter_output)
@@ -325,6 +327,10 @@ def test_a_receipt_that_proves_no_provider_was_reached_is_recovered(tmp_path, re
     (ADMISSION_REFUSED, _refusal("account_monthly_spend_limit_reached")),
     (ADMISSION_REFUSED, {**_refusal("account_monthly_spend_report_stale"), "instance_id": "1"}),
     (ADMISSION_REFUSED, {**_refusal("account_monthly_spend_report_stale"), "provider_mutations_performed": 1}),
+    # The journal wait is a free retry only while the refusal proves nothing was rented.
+    (ADMISSION_REFUSED, {**_refusal("account_monthly_spend_journal_unreadable"), "provider_mutations_performed": 1}),
+    (ADMISSION_REFUSED, {**_refusal("account_monthly_spend_journal_unreadable"), "instance_id": "1"}),
+    (ADMISSION_REFUSED, _refusal("account_monthly_spend_journal_unreadable", "vast_instance_created")),
     (ADMISSION_REFUSED, None),
     ({**ADMISSION_REFUSED, "provider_mutation_evidence": {**ADMISSION_REFUSED["provider_mutation_evidence"],
                                                           "terminal_result_artifact_present": True}},

@@ -148,6 +148,82 @@ def test_an_assumed_half_s_rule_names_each_of_its_numbers_assumed_and_says_so(tm
     assert "criteria_basis" not in _source(job)["rule"]
 
 
+CONTRACT = "sha256:" + "c" * 64
+
+
+def _assumed_on(job: Job, contract: str = CONTRACT) -> None:
+    from blueprint_pipeline import website_owner_success_assumption as assumption
+    job.seal_record(**{assumption.FIELD: {"status": assumption.ASSUMED, "task_success_contract_digest": contract}})
+
+
+def _status_notes(job: Job, **marker) -> None:
+    """The request's status as the packet queue's timer pass records the site's answer (``noted_status``)."""
+    from blueprint_pipeline import website_owner_success_assumption as assumption
+    path = next((job.queue / "status").glob("*.json"))
+    status = json.loads(path.read_text())
+    status[assumption.FIELD] = {"status": assumption.ASSUMED, "task_success_contract_digest": CONTRACT, **marker}
+    path.write_text(json.dumps(status))
+
+
+CONFIRMED_LATER = {"confirmation_digest": "sha256:" + "d" * 64, "confirmed_at": "2026-11-24T00:00:00Z",
+                   "issuer_channel": "website"}
+
+
+def test_a_later_confirmation_reaches_the_readme_and_criteria_basis_as_a_new_revision(tmp_path):
+    """Stress round 2 (2026-11-24): the package read the assumption only from the half's sealed record, so after the
+    site confirmed exactly those numbers its README still said "The site has not confirmed the numbers". The record
+    never changes; the request's status records the confirmation, and the package is a new revision that says both:
+    assumed when built, confirmed since."""
+    import zipfile
+    job = Job(tmp_path / "job")
+    _assumed_on(job)
+    assumed = _source(job)
+    assert set(assumed["rule"]["criteria_basis"].values()) == {"assumed"}
+    _status_notes(job, site_answer="confirmed", confirmed_later=CONFIRMED_LATER)
+    source = _source(job)
+    assert source["thresholds_confirmed_later"] is True and source["thresholds_assumed"] is True
+    assert source["rule"]["criteria_basis"] == {path: half.SITE_CONFIRMED for path in assumed["rule"]["criteria_basis"]}
+    assert sim.simulation_revision(source) != sim.simulation_revision(assumed)
+    sim.build_package(source, tmp_path / "p.zip", literals=[])
+    with zipfile.ZipFile(tmp_path / "p.zip") as archive:
+        readme = " ".join(archive.read("README.txt").decode().split())
+    assert half.THRESHOLDS_CONFIRMED_LATER in readme and half.THRESHOLDS_ASSUMED not in readme
+    assert "site_confirmed: Blueprint's default, which the site confirmed" in readme
+
+
+@pytest.mark.parametrize("marker", [
+    {"site_answer": "this_is_wrong", "this_is_wrong": {"reason": "too tight"}},  # disputed: still Blueprint's
+    {"site_answer": "confirmed", "confirmed_later": CONFIRMED_LATER,
+     "task_success_contract_digest": "sha256:" + "e" * 64},  # another contract's confirmation says nothing of this one
+    {},  # no answer yet
+])
+def test_only_the_sites_confirmation_of_this_contract_changes_the_assumed_wording(tmp_path, marker):
+    job = Job(tmp_path / "job")
+    _assumed_on(job)
+    _status_notes(job, **marker)
+    source = _source(job)
+    assert not source.get("thresholds_confirmed_later") and set(source["rule"]["criteria_basis"].values()) == {"assumed"}
+
+
+def test_a_half_compiled_again_after_the_confirmation_reads_it_from_its_own_record(tmp_path):
+    from blueprint_pipeline import website_owner_success_assumption as assumption
+    job = Job(tmp_path / "job")
+    job.seal_record(**{assumption.FIELD: {"status": assumption.ASSUMED, "task_success_contract_digest": CONTRACT,
+                                          "site_answer": "confirmed", "confirmed_later": CONFIRMED_LATER}})
+    assert _source(job)["thresholds_confirmed_later"] is True
+
+
+def test_a_confirmation_turns_only_the_preparations_assumed_numbers_into_site_confirmed(tmp_path):
+    job = Job(tmp_path / "job")
+    _write(job.preparation, {"success_rule_basis": {"applied": True, "fields": {
+        "maximum_episode_seconds": {"value": 60, "basis": "site_words"},
+        "settling.position_tolerance_m": {"value": 0.05, "basis": "assumed"}}}})
+    _assumed_on(job)
+    _status_notes(job, site_answer="confirmed", confirmed_later=CONFIRMED_LATER)
+    assert _source(job)["rule"]["criteria_basis"] == {"maximum_episode_seconds": "site_stated",
+                                                      "settling.position_tolerance_m": half.SITE_CONFIRMED}
+
+
 def test_an_assumed_half_keeps_the_preparation_s_own_basis_for_its_numbers(tmp_path):
     job = Job(tmp_path / "job")
     _write(job.preparation, {"success_rule_basis": {"applied": True, "fields": {

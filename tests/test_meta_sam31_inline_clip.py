@@ -64,13 +64,16 @@ def _job(tmp_path, monkeypatch, prompts=3, frames=4, size=64):
 def _reservations(monkeypatch):
     holds = []
 
-    def reserve(*, task_context, binding_digest, maximum_cost_usd, request_count, source_video_digest=None):
+    def reserve(*, task_context, binding_digest, maximum_cost_usd, request_count, source_video_digest=None,
+                retain_admission=None):
         assert binding_digest not in [row["allocation_binding_digest"] for row in holds], "already_reserved"
         value = {**build_paid_lane_admission(resource_class="evaluator_api"), "provider": "meta",
                  "task_context_digest": task_context["context_digest"], "allocation_binding_digest": binding_digest,
                  "maximum_cost_usd": maximum_cost_usd, "request_count": request_count,
                  "external_disclosure_allowed": True, "expires_at_epoch": time.time() + 3600}
         holds.append(value)
+        if retain_admission is not None:
+            retain_admission(value)   # as the real reservation keeps it, before its local recheck
         return value, require_paid_resource_admission(value, resource_class="evaluator_api",
                                                       expected_schema_version="paid_lane_admission.v1")
 

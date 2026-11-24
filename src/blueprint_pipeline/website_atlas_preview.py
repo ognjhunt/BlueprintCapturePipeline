@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from .atlas_preparation_job_control import (
-    STEP_IN_FLIGHT, _Withdrawn, PreparationJobBusy, _transition, _reason, _NEEDS_NEW_CAPTURE,
+    STEP_IN_FLIGHT, _Withdrawn, PreparationJobBusy, _transition, _reason, _NEEDS_NEW_CAPTURE, admission_refusal_code,
     preparation_job_lock as preparation_job_lock, retry_preparation_job as retry_preparation_job,
 )
 from .common import write_json
@@ -130,7 +130,18 @@ _AWAITING_AUTHORITY = frozenset({
     "website_atlas_provider_retention_decision_required", "atlas_runtime_price_review_expired",
     # The site names its job (or the website drafts the sentence from the footage): re-checked
     # with the website's current context until the job's own deadline.
-    "website_task_not_named"})
+    "website_task_not_named",
+    # The WebApp's own configuration states (stress round 2, 2026-11-24), once sent as the consent and
+    # brief codes: Blueprint repairs them, never the site, so they wait here, rechecked, and the word
+    # "consent" never makes one read as the site's privacy wall.
+    "website_atlas_consent_unconfigured", "website_scene_grant_policy_unconfigured",
+    # The WebApp's noncreating configuration read refuses to summarise a job's preparation ledger past its
+    # own bound (128 rows, then 200 KB: ``websitePreparationAccounting.ts``). A resumed step reads it every
+    # time and a row is never removed, so the same job repeats it until the WebApp's bound changes; it was
+    # unclassified, took the refusal schedule, ended failed and was reopened six times for nothing. It is
+    # the WebApp's limit, never money (each reservation is still judged on its own, against the $40), and
+    # a WebApp release lifts it with no Pipeline deploy: rechecked here until then or the deadline.
+    "website_atlas_reservation_summary_too_large", "website_atlas_accounting_response_too_large"})
 # A planner abstention can be re-examined after a source-review fix. It is not
 # proof that the recording must be replaced. Other selection failures keep
 # their existing non-retryable boundary.
@@ -321,12 +332,20 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
     if (code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT or code == "atlas_scene_planner_abstained"
             or code in ABSTENTION_CODES.values()):
         return _transition(job, current, "needs_input", code)
+    from .bounded_error import error_description
+    if admission_refusal_code(error) is not None:
+        # The paid-resource chokepoint refused (a RuntimeError, so it took the defect's refusal schedule and
+        # ended failed as ``paid_resource_admission_blocked``): a money wall by its type. It waits as every
+        # money wait does, rechecked until the job's deadline, under the refusing limit's own code (the
+        # account's month: ``account_monthly_spend_limit_reached``, ``_report_stale``...), which the
+        # website words as paused on our side (stress round 2, 2026-11-24).
+        return _transition(job, current, "needs_input", code, last_error=error_description(error),
+                           retry_at_epoch=_by_deadline(job, current + AUTHORITY_RECHECK_SECONDS))
     if not isinstance(error, ValueError):
         # Typed refusals are ValueErrors with their own code. Anything else (transport, storage
         # or a defect) keeps only its type name in the code, so record where it was raised.
         logger.warning("website_atlas_preview_step_error capture=%s code=%s", job.get("capture_id"), code,
                        exc_info=error)
-    from .bounded_error import error_description
     # The retained job, never the WebApp's preview, keeps the failure behind the
     # code: its type and a redacted, trimmed message. It is the last one seen.
     detail = {"last_error": error_description(error)}
