@@ -441,26 +441,53 @@ def _cut_off(receipt: Mapping[str, Any]) -> bool:
     return receipt.get("status") == "submitting" and set(receipt) == {"status", "request_digest", "frame_id"}
 
 
+#: An edit the provider refused in a way known to bill nothing (``job_retry_policy.provider_refusal_unbilled``):
+#: no credit left, unpaid, past a spend limit, or Blueprint's own key refused. It counts at $0.
+REFUSED_UNBILLED = "refused_unbilled"
+REFUSED_UNBILLED_CODE = "website_image_completion_provider_refused_unbilled"
+
+
+class ProviderRefusedUnbilled(ValueError):
+    """The provider's answer to one edit, as the edit adapter kept it, in the shape
+    ``job_retry_policy.provider_refusal_unbilled`` and ``provider_error_waits`` read: its HTTP status, its error
+    code and the provider's response (only an HTTP answer carries one)."""
+
+    def __init__(self, failure: Any):
+        failure = failure if isinstance(failure, Mapping) else {}
+        status = failure.get("http_status")
+        super().__init__(REFUSED_UNBILLED_CODE + (f":http_{status}" if isinstance(status, int) else ""))
+        self.status_code = status
+        self.code = failure.get("provider_error_code")
+        self.response = failure or None
+
+
+def _refused_unbilled(receipt: Mapping[str, Any]) -> bool:
+    return receipt.get("status") == REFUSED_UNBILLED and receipt.get("cost_usd") == 0
+
+
 def _after_cut_offs(*, output_root: Path, binding: Mapping[str, Any], request_digest: str, indices: Sequence[int],
                     frames: Sequence[Mapping[str, Any]], cap: float, task_context: Mapping[str, Any] | None,
-                    read_only: bool = False):
-    """The attempt this batch continues in, each earlier attempt that a cut-off call ended being settled once.
+                    read_only: bool = False, homes: Mapping[int, tuple[Path, str]] | None = None):
+    """The attempt this batch continues in, each earlier attempt that a cut-off or refused call ended being
+    settled once.
 
     An attempt with a cut-off receipt counts its completed edits at their receipted cost and each
-    cut-off call at the full per-request cap; a request never sent counts nothing, because its intent
+    cut-off call at the full per-request cap; a call the provider refused in a way known to bill nothing
+    (``REFUSED_UNBILLED``) counts $0; a request never sent counts nothing, because its intent
     is written before every call. That attempt's reservation is settled at that figure (the WebApp
     matches a settlement to a whole reservation by its request count), and the edits it did not
     complete go on under a new request digest, with their own reservation, receipts and settlement.
     Returns the binding and digest to continue under and, per edit completed earlier, its (root, digest).
     ``read_only`` (a replay of retained edits) follows only attempts a live run already closed, and
-    writes, settles and buys nothing.
+    writes, settles and buys nothing. ``homes``: edits completed in attempts closed before ``request_digest``.
     """
     from .website_task_context import preparation_webapp_request
-    homes: dict[int, tuple[Path, str]] = {}
+    homes = dict(homes or {})
     while True:
         root, pending = output_root / request_digest[7:], [i for i in indices if i not in homes]
         receipts = {i: json.loads((root / f"{i}.json").read_text()) for i in pending if (root / f"{i}.json").is_file()}
-        cut = [i for i in receipts if _cut_off(receipts[i])]
+        refused = [i for i in receipts if _refused_unbilled(receipts[i])]
+        cut = [i for i in receipts if _cut_off(receipts[i])] + refused
         if not cut:
             return binding, request_digest, homes
         closed = (root / CUT_OFF_RECORD).is_file() and (task_context is None or (root / "settlement.json").is_file())
@@ -473,9 +500,13 @@ def _after_cut_offs(*, output_root: Path, binding: Mapping[str, Any], request_di
                 or any(isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost)
                        or not 0 <= cost <= cap for cost in costs)):
             raise ValueError("website_image_completion_requires_reconciliation")
-        record = {"schema_version": "website_image_completion_cut_off.v1", "code": CUT_OFF_CODE,
-                  "request_digest": request_digest, "cut_off_frame_ids": [frames[i]["frame_id"] for i in cut],
-                  "per_request_cap_usd": cap, "counted_usd": round(sum(costs) + cap * len(cut), 6)}
+        record = {"schema_version": "website_image_completion_cut_off.v1",
+                  "code": CUT_OFF_CODE if len(cut) > len(refused) else REFUSED_UNBILLED_CODE,
+                  "request_digest": request_digest,
+                  "cut_off_frame_ids": [frames[i]["frame_id"] for i in cut if i not in refused],
+                  "per_request_cap_usd": cap, "counted_usd": round(sum(costs) + cap * (len(cut) - len(refused)), 6)}
+        if refused:
+            record["refused_unbilled_frame_ids"] = [frames[i]["frame_id"] for i in refused]
         if not (root / CUT_OFF_RECORD).is_file():
             write_json(root / CUT_OFF_RECORD, record)
         if task_context is not None and not (root / "settlement.json").is_file():
@@ -715,9 +746,28 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                                   expected_size=canvas.size, token=token, opener=request_opener,
                                                   reference_images=references)
                 if not response["succeeded"]:
+                    from .job_retry_policy import provider_refusal_unbilled
+                    refusal = ProviderRefusedUnbilled(response.get("provider_failure"))
+                    if provider_refusal_unbilled(refusal):
+                        # The provider refused before any work (no credit, unpaid, a spend limit, a refused key):
+                        # it bills nothing. Recorded at $0, this attempt is closed and its hold settled at what
+                        # its made edits cost; the step waits as for an outage
+                        # (``job_retry_policy.provider_error_waits``) and the job's next run asks again under a
+                        # new reservation. A stop before the settlement finishes it on the next run.
+                        temporary = receipt_path.with_suffix(".tmp")
+                        write_json(temporary, {"status": REFUSED_UNBILLED, "request_digest": request_digest,
+                                               "frame_id": frame["frame_id"], "blocker": response["blocker"],
+                                               "provider_failure": response.get("provider_failure"),
+                                               "cost_usd": 0})
+                        os.replace(temporary, receipt_path)
+                        _after_cut_offs(output_root=output_root, binding=binding, request_digest=request_digest,
+                                        indices=edited_indices, frames=frames, cap=cap, task_context=task_context,
+                                        homes=homes)
+                        raise refusal
                     # Keep the adapter's sanitized provider evidence before
-                    # surfacing the failure. The non-completed intent still
-                    # fences retries and retains its full spending reservation.
+                    # surfacing the failure. A failure not known to bill nothing
+                    # (a rate limit, a 5xx, no answer) still fences retries and
+                    # retains its full spending reservation.
                     failure = {"status": "submitting", "request_digest": request_digest,
                                "frame_id": frame["frame_id"], "blocker": response["blocker"],
                                "provider_failure": response.get("provider_failure"),
