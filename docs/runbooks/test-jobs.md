@@ -88,6 +88,49 @@ re-evaluates every hold that names a missing `pipeline:*` piece. The host has 8 
 retire them (an owner-approved retirement) or let them age out, and check `report` for `held:` lines before
 starting a batch.
 
+## Run it again now, after a fix
+
+A job that failed a step waits out its own retry schedule, even once the fix it needed is live: the Atlas preview's
+refusal schedule (15 min, 1 h, 3 h, 6 h, 12 h, 24 h, `job_retry_policy.REFUSAL_RETRY_DELAYS_SECONDS`) and the
+preparation retry's (`website_preparation_retry`). A release reopens a job parked at `needs_input`; it does not move a
+job that is processing with a retry scheduled. To bring that retry forward:
+
+```bash
+python3 scripts/operator_door.py test-job-retry-now itest-<40 hex> --reason "the fix for X is live" --wait
+"$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py retry-now --state run.json --label <label> --reason "..."
+```
+
+It changes only when the job's next attempt is due. Under the lock its own tick or listener takes, it sets the Atlas
+preview job's `next_attempt_at_epoch`, and the preparation retry record's `next_attempt_at` (the ledger's next
+revision, as the listener commits its own retry's time), to now. Nothing else changes: the refusal, retry and reopen
+counts stay as they are and still count the retry that runs, no wall, grant or limit moves, and every paid call still
+goes through its own admission. The next tick or listener pass runs the step as it would have when its time came.
+
+- Only internal test jobs: the id is the website's `itest-` id, the door's test-job ledger
+  (`/var/lib/blueprint/pipeline-control-plane/internal-test-jobs/`) has its submitted row, and the door's result of
+  the `test-job` request that row names says it made this job. Anything else is refused.
+- A withdrawn capture is refused. A record whose last stop reads as privacy, rights or money (`hard_stop_kind`, as the
+  preparation retry reads a refusal; the job's spending cap; a refusal by the paid-resource chokepoint,
+  `PaidResourceAdmissionBlocked`) is left on its own schedule, and the answer names it (`stop_is_a_wall`).
+- A record whose step is running is left as it is and the answer says so (`step_running`): the Atlas lock is held, the
+  preparation is `processing`, or the listener began its retry less than 15 minutes ago and has not claimed it yet. A
+  step mark left by a killed Atlas step is `step_interrupted`: the next tick schedules that retry itself.
+- Once per job per release. A retry-now that changed a record is kept on the job's ledger row (`retry_now`: the
+  release, who asked, why); a second one on the same release is refused `test_job_retry_now_used_on_this_release`.
+  One that changed nothing does not count. The door's receipt keeps every ask with who asked and why
+  (`results/<id>.test-job-retry-now.json`).
+
+The answer names each record's result: `brought_forward`, `already_due`, `not_waiting_on_a_retry` (a parked or
+finished Atlas job, which a release reopens; a preparation with no timed retry), `waits_for_a_release` (a
+preparation retry gated on a release or a deterministic key, not a time), `step_running`, `stop_is_a_wall`, `absent`.
+For the preparation it also gives `listener_due_at`: a grant past its expiry first leaves the silence sweep its
+window. The door's outcome is `brought_forward` when either record moved, `unchanged` when neither did, and
+`refused` when neither did and a record's stop is a wall.
+
+The installed door's request list is fenced to owner-approved kinds; this kind works there only once the owner has
+approved adding it to that list (`DISPATCHER_HOLD_ONLY` in `deploy/operator-door/operator_door/requests.py`). Until
+then the door refuses it as `kind_unknown`.
+
 ## What it costs
 
 Up to about $20 a job. The one complete run so far (2026-11-16, a rigid job) settled $6.04 at World Labs and

@@ -23,6 +23,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py retire-parked-delivery <bucket>/scenes/site-*/captures/<capture> \
         --approval-evidence "<owner approval>" [--apply] --wait
     python3 scripts/operator_door.py test-job --idempotency-key K --label L --footage-id F --description "..." --wait
+    python3 scripts/operator_door.py test-job-retry-now itest-<40 hex> --reason "the fix it waited for is live" --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -69,7 +70,8 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
                 "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded",
-                "confirmed", "already_confirmed", "already_restored", "already_retired", "submitted"}
+                "confirmed", "already_confirmed", "already_restored", "already_retired", "submitted",
+                "brought_forward"}
 GITHUB_API = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline"
 # The only job that attests a main commit. Its success is what a deploy's verification needs.
 ATTESTING_JOB = "SBOM, license, and provenance contract"
@@ -846,6 +848,11 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     for flag in ("--idempotency-key", "--label", "--footage-id", "--description"):
         test_job.add_argument(flag, required=True)
     _add_wait(test_job, 600)
+    retry_now = commands.add_parser("test-job-retry-now",
+                                    help="bring one internal test job's scheduled retries forward to now; timing only")
+    retry_now.add_argument("job_id", help="the test job's id, itest-<40 hex>")
+    retry_now.add_argument("--reason", required=True, help="why; recorded with who asked (<= 500 chars)")
+    _add_wait(retry_now, 600)
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
     selected_modes = selected.add_mutually_exclusive_group()
@@ -950,6 +957,8 @@ def run(args: argparse.Namespace) -> int:
         body = {"kind": "test-job", "idempotency_key": args.idempotency_key, "label": args.label,
                 "footage_id": args.footage_id, "description": args.description}
         return _submit(body, args)
+    elif command == "test-job-retry-now":
+        return _submit({"kind": "test-job-retry-now", "job_id": args.job_id, "reason": args.reason}, args)
     elif command == "selected-handoff":
         with Path(args.selector_file).open("rb") as stream:
             raw = stream.read(4097)
