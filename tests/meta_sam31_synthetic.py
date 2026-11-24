@@ -22,6 +22,14 @@ import numpy as np
 
 SHELVES = ("left_shelf", "right_shelf", "end_shelf", "floor")
 MIXED = SHELVES + ("box", "person")
+#: The job's object fills half the frame's rows (one run a row), and two people stay in view: the
+#: tracks the clean plate selects and keeps whole, every frame at full resolution.
+LARGE = SHELVES + ("crate", "person")
+#: As ``LARGE``, but the object to move has a twin the analysis's box cannot tell apart: the run
+#: goes on with its best supported guess and asks the site, holding both whole tracks.
+LARGE_AMBIGUOUS = SHELVES + ("twin_crate", "person")
+#: Targets that are the job's object to move.
+MOVED = ("box", "crate", "twin_crate")
 
 
 def _jitter(rows, frame, salt, spread):
@@ -87,6 +95,13 @@ def synthetic_masks(target: str, frame: int, width: int, height: int) -> list[tu
     if target == "box":              # a small task object carried across the aisle
         return [("1", *_blob(width * (0.35 + 0.3 * frame / 437), height * 0.62,
                              width * 0.04, height * 0.05, width, height))]
+    if target == "crate":            # a large task object: half the frame's rows, drifting a little
+        return [("1", *_blob(width * (0.45 + 0.05 * math.sin(frame / 50)), height * 0.5,
+                             width * 0.3, height * 0.25, width, height))]
+    if target == "twin_crate":       # two such objects side by side, equally far from the analysis's box
+        sway = 0.02 * math.sin(frame / 50)
+        return [("1", *_blob(width * (0.27 + sway), height * 0.5, width * 0.12, height * 0.25, width, height)),
+                ("2", *_blob(width * (0.73 + sway), height * 0.5, width * 0.12, height * 0.25, width, height))]
     if target == "person":           # two people; the second leaves after a while
         found = [("1", *_blob(width * 0.2, height * (0.45 + 0.1 * math.sin(frame / 20)),
                               width * 0.05, height * 0.3, width, height))]
@@ -171,8 +186,11 @@ def install(set_attribute: Callable[[Any, str, Any], None], root: Path, *, frame
                                  "target_class": "person", "target_role": "person", "task_effect": "privacy",
                                  "disposition": "remove", "spatial_evidence": []})
             continue
-        (_, (left, top, right, bottom), _), *_ = synthetic_masks(name, anchor, width, height)
-        moved = name == "box"
+        boxes = [box for _, box, _ in synthetic_masks(name, anchor, width, height)]
+        # The analysis's box: the instance's own, or around both twins.
+        left, top = min(box[0] for box in boxes), min(box[1] for box in boxes)
+        right, bottom = max(box[2] for box in boxes), max(box[3] for box in boxes)
+        moved = name in MOVED
         plan_targets.append({"target_id": name, "semantic_label": name.replace("_", " "),
                              "segmentation_prompt": name,
                              "task_effect": "manipulated" if moved else "static_contact",
@@ -225,6 +243,50 @@ def run_clean_plate(set_attribute: Callable[[Any, str, Any], None], root: Path, 
     common.write_json(root / "clean_plate" / "clean_plate_stage_manifest.json",
                       {"status": "noop", "source_frames": setup["source_geometry"], "task_masks": manifest})
     return {**setup, "task_masks": manifest}
+
+
+#: The clock the synthetic stage reads, so its manifests' bytes repeat.
+STAGE_CLOCK = "2026-11-24T00:00:00Z"
+
+
+def capture_root(root: Path) -> Path:
+    """The synthetic job's capture, laid out as a website capture is: ``.../scenes/<scene>/captures/<capture>``."""
+    return root / "storage" / "bucket" / "scenes" / "synthetic-scene" / "captures" / "synthetic-capture"
+
+
+def run_clean_plate_stage(set_attribute: Callable[[Any, str, Any], None], root: Path, *, frames: int, width: int,
+                          height: int, targets: tuple[str, ...] = LARGE,
+                          before_run: Callable[[], None] | None = None) -> dict[str, Any]:
+    """``clean_plate_stage.run_clean_plate_stage`` itself on the synthetic job, as a website job runs it.
+
+    The video analysis returns the synthetic plan and the source frames are the synthetic
+    geometry frames; SAM is the synthetic provider (``install``). Everything after the SAM answer
+    is the stage's own code: task masks, the site's question for a guessed object, and the
+    removal plan, removal manifest, stage manifest and pointer it writes. Returns the stage's
+    result (what the scene handoff receives) with the plan and source geometry.
+    """
+    from blueprint_pipeline import clean_plate_stage as stage
+    from blueprint_pipeline.clean_plate_removal_analysis_gemini import build_removal_plan
+
+    capture = capture_root(root)
+    (capture / "pipeline").mkdir(parents=True, exist_ok=True)
+    setup = install(set_attribute, capture / "raw", frames=frames, width=width, height=height, targets=targets)
+    classes = {"person": "person", **{name: "movable_object" for name in MOVED}}
+    plan = build_removal_plan(targets=[{**target, "target_class": classes.get(target["target_id"], "fixed_clutter"),
+                                        "rebuild_intent": "rebuild_and_compose" if target["target_id"] in MOVED
+                                        else "none"} for target in setup["plan"]["targets"]],
+                              status="completed", model="synthetic", processing="synthetic")
+    plan.update(generated_at=STAGE_CLOCK, task_context_sha256=setup["plan"]["task_context_sha256"])
+    set_attribute(stage, "analyze_removal_targets", lambda **_: plan)
+    set_attribute(stage, "prepare_website_source_frames", lambda **_: setup["source_geometry"])
+    set_attribute(stage, "utc_now_iso", lambda: STAGE_CLOCK)
+    if before_run is not None:
+        before_run()
+    result = stage.run_clean_plate_stage(capture_root=capture, website_source_video=setup["source"],
+                                         privacy_processing={"status": "pending_website_review"})
+    if result["status"] not in {"noop", "objects_removed"}:
+        raise ValueError(f"synthetic_clean_plate_stage_{result['status']}:{','.join(result['blockers'])}")
+    return {**setup, "plan": plan, "task_masks": result["task_masks"], "stage": result}
 
 
 def _stored_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
@@ -293,10 +355,12 @@ def run_scene_handoff(root: Path, job: dict[str, Any], *, width: int, height: in
         digest = canonical_digest
     after = after or (lambda stage: None)
     clean = root / "clean_plate"
-    completed = masks.complete_retained_static_task_masks(
-        plan=job["plan"], source_geometry=job["source_geometry"], task_masks=job["task_masks"],
-        output_root=clean / "task_masks", view_plan_root=clean / "mask_view_plan",
-        **({"compact_runs": True} if compact else {}))
+    completed = job["task_masks"]
+    if completed.get("deferred_target_ids"):  # kept surfaces wait for the handoff's completion
+        completed = masks.complete_retained_static_task_masks(
+            plan=job["plan"], source_geometry=job["source_geometry"], task_masks=job["task_masks"],
+            output_root=clean / "task_masks", view_plan_root=clean / "mask_view_plan",
+            **({"compact_runs": True} if compact else {}))
     after("completed")
     geometry = flat_depth_geometry(job["source_geometry"], width=width, height=height)
     bound = masks.bind_task_masks_to_geometry(task_masks=completed, source_geometry=geometry)
@@ -331,37 +395,68 @@ def _peak_rss_bytes() -> int:
     return peak if sys.platform == "darwin" else peak * 1024
 
 
+TARGET_SETS = {"shelves": SHELVES, "mixed": MIXED, "large": LARGE, "large_ambiguous": LARGE_AMBIGUOUS}
+
+
+def returned_runs(task_masks: dict[str, Any]) -> int:
+    """How many runs the task masks' full-video source tracks hold (each target's whole track)."""
+    return sum(len(row["runs"]) for target in task_masks.get("targets") or []
+               for row in (target.get("source_track") or {}).get("observations") or [])
+
+
 def main(argv: list[str]) -> int:
-    """``python -m tests.meta_sam31_synthetic ROOT FRAMES WIDTH HEIGHT ADDRESS_SPACE_MIB [STAGE]``.
+    """``python -m tests.meta_sam31_synthetic ROOT FRAMES WIDTH HEIGHT ADDRESS_SPACE_MIB [STAGE [TARGETS]]``.
 
     STAGE ``clean_plate`` (the default): the clean-plate SAM step. ``handoff``: that step, then
     the scene handoff's stages on its retained output (``run_scene_handoff``, compact runs);
     ``handoff-plain``: the same through the plain route, for code without compact runs.
+    ``stage``: the clean-plate stage itself (``run_clean_plate_stage``); run again on the same
+    ROOT, it reads its retained SAM answers back, as a retry does. ``stage-handoff``: the stage,
+    then the scene handoff's stages on what it returned. TARGETS names a set of
+    ``TARGET_SETS``: ``shelves`` by default, ``large`` for the stage.
 
     Prints the peak resident memory before the measured work (interpreter, imports, synthetic
     setup; for the handoff stages, also the clean-plate step) and after it (after each handoff
-    stage too), and the persisted files' digests. The address-space cap makes a memory
-    regression fail inside this process with MemoryError instead of exhausting the host.
+    stage too), the measured work's seconds, the runs the returned source tracks hold, and the
+    persisted files' digests. The address-space cap makes a memory regression fail inside this
+    process with MemoryError instead of exhausting the host.
     """
+    import time
+
     root, frames, width, height, cap_mib = Path(argv[0]).resolve(), *map(int, argv[1:5])
     stage = argv[5] if len(argv) > 5 else "clean_plate"
+    on_stage = stage.startswith("stage")
+    targets = TARGET_SETS[argv[6] if len(argv) > 6 else "large" if on_stage else "shelves"]
     if sys.platform.startswith("linux"):
         resource.setrlimit(resource.RLIMIT_AS, (cap_mib << 20, cap_mib << 20))
     os.environ.setdefault("META_MODEL_API_KEY", "synthetic-key")
     os.environ["BLUEPRINT_WEBSITE_SAM31_PROVIDER"] = "meta"
     baseline: dict[str, int] = {}
     stages: dict[str, int] = {}
-    job = run_clean_plate(setattr, root, frames=frames, width=width, height=height,
-                          before_run=lambda: baseline.setdefault("rss", _peak_rss_bytes()))
-    if stage != "clean_plate":
+    seconds: dict[str, float] = {}
+
+    def started() -> None:
+        baseline.setdefault("rss", _peak_rss_bytes())
+        seconds["started"] = time.perf_counter()
+
+    run = run_clean_plate_stage if on_stage else run_clean_plate
+    job = run(setattr, root, frames=frames, width=width, height=height, targets=targets, before_run=started)
+    seconds["measured"] = time.perf_counter() - seconds.pop("started")
+    persisted_root = capture_root(root) / "pipeline" if on_stage else root
+    if stage not in {"clean_plate", "stage"}:
         baseline["rss"] = _peak_rss_bytes()
-        root.mkdir(parents=True, exist_ok=True)
-        os.chdir(root)
-        result = run_scene_handoff(root, job, width=width, height=height, compact=stage == "handoff",
+        persisted_root.mkdir(parents=True, exist_ok=True)
+        os.chdir(persisted_root)
+        began = time.perf_counter()
+        result = run_scene_handoff(persisted_root, job, width=width, height=height,
+                                   compact=stage in {"handoff", "stage-handoff"},
                                    after=lambda name: stages.setdefault(name, _peak_rss_bytes()))
+        seconds["handoff"] = time.perf_counter() - began
         del result
     print(json.dumps({"baseline_peak_rss_bytes": baseline["rss"], "peak_rss_bytes": _peak_rss_bytes(),
-                      "stage_peak_rss_bytes": stages, "persisted": persisted_digests(root)}))
+                      "stage_peak_rss_bytes": stages, "seconds": seconds,
+                      "returned_runs": returned_runs(job["task_masks"]),
+                      "persisted": persisted_digests(persisted_root)}))
     return 0
 
 

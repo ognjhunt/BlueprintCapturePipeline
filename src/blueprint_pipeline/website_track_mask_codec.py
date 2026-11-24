@@ -270,7 +270,8 @@ _RUN_TEXT = (r"[ \t\n\r]*\{[ \t\n\r]*\"start\"[ \t\n\r]*:[ \t\n\r]*-?(?:0|[1-9][
              r"[ \t\n\r]*\"length\"[ \t\n\r]*:[ \t\n\r]*-?(?:0|[1-9][0-9]*)[ \t\n\r]*\}[ \t\n\r]*")
 #: The inside of a non-empty JSON list of ``{"start": int, "length": int}`` objects, keys in order.
 _RUN_LIST = re.compile(_RUN_TEXT + "(?:," + _RUN_TEXT + ")*")
-_INTEGER = re.compile(r"-?[0-9]+")
+#: A ``bytes.translate`` table keeping digits and "-" and making every other byte a space.
+_RUN_INTEGERS = bytes(byte if chr(byte) in "0123456789-" else 0x20 for byte in range(256))
 _READ_CHARACTERS = 1 << 20
 _CONSTANTS = {"NaN": float("nan"), "Infinity": float("inf"), "-Infinity": float("-inf")}
 
@@ -410,7 +411,10 @@ class _StreamingTrackReader:
                 return None
         if _RUN_LIST.fullmatch(self._text, self._at + 1, end) is None:
             return None
-        values = [int(value) for value in _INTEGER.findall(self._text, self._at + 1, end)]
+        # The match leaves only ASCII, with digits and "-" in the integers alone: every other byte made a space,
+        # ``split`` gives the very tokens ``re.findall(r"-?[0-9]+")`` gives, many times faster.
+        text = self._text[self._at + 1:end].encode("ascii")
+        values = [int(value) for value in text.translate(_RUN_INTEGERS).split()]
         try:
             runs = RunLengths(values[0::2], values[1::2])
         except OverflowError:  # beyond int64: kept as its list of dicts, as ``from_runs`` keeps it

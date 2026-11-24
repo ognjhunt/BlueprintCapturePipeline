@@ -101,7 +101,15 @@ def chosen_track(target_id: str, tracks: Sequence[Mapping[str, Any]],
 
 
 def _run_length(observation: Mapping[str, Any]) -> int:
-    return sum(int(run.get("length") or 0) for run in observation.get("runs") or [])
+    from .website_track_mask_codec import RunLengths
+
+    runs = observation.get("runs") or []
+    if type(runs) is RunLengths:
+        # Compact runs (a whole track's): their lengths summed as one array, never a dict per run. An int32
+        # length array cannot overflow an int64 total; a wider one is summed exactly, as Python ints.
+        lengths = runs.lengths
+        return int(lengths.sum(dtype="int64")) if lengths.dtype.itemsize == 4 else sum(lengths.tolist())
+    return sum(int(run.get("length") or 0) for run in runs)
 
 
 def _area(observation: Mapping[str, Any]) -> float:

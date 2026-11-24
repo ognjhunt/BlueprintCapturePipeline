@@ -180,9 +180,11 @@ def measurement_sources(capture_root: str | Path, current: Mapping[str, Any]) ->
     """
 
     from .clean_plate_removal_analysis_gemini import DEFAULT_PROCESSING, PROCESSING_ENV, _video_processing
+    from .website_track_mask_codec import load_track_json
 
     root = Path(capture_root)
-    manifest = json.loads(root.joinpath(*CLEAN_PLATE_MANIFEST).read_text(encoding="utf-8"))
+    # The stage manifest carries the task masks' full-video tracks: read with their runs compact.
+    manifest = load_track_json(root.joinpath(*CLEAN_PLATE_MANIFEST))
     video = Path(str(manifest.get("input_video_path") or ""))
     _require(video.is_absolute() and not video.is_symlink() and video.is_file()
              and video.resolve().is_relative_to(root.resolve()), "source_video_unavailable")
