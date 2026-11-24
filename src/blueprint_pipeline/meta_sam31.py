@@ -29,8 +29,8 @@ from .paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 from .semantic_teacher_image_edit_worker import _open_no_redirect
-from .website_track_mask_codec import (canonical_track_digest, load_track_json, plain_runs, raster_runs,
-                                       write_track_json)
+from .website_track_mask_codec import (canonical_track_digest, holds_track_json, load_track_json, plain_runs,
+                                       raster_runs, write_track_json)
 
 MODEL = "sam-3.1"
 ENDPOINT = "https://api.meta.ai/v1/responses"
@@ -898,7 +898,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                         for index in range(len(prompts)))
         if (video_artifact is None or not retained or root.is_symlink()
                 or any(path.is_symlink() or not path.is_file() for path in required)
-                or json.loads((root / "binding.json").read_text()) != binding):
+                # Compared as written: a tuple in this run's binding reads back as a list.
+                or canonical_digest(json.loads((root / "binding.json").read_text())) != digest):
             raise ValueError("meta_sam_retained_video_required")
     # The original grant authorizes one dispatch of the whole prompt set. A
     # stopped worker may have retained only a prefix of its provider responses;
@@ -1119,7 +1120,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             # The rung the answers were bought with, in the receipt every caller keeps.
             result["clip_encoding"] = _clip_encoding_name(root, clip_digest, clip_encoding)
         if require_retained_video:
-            if load_track_json(root / "tracks.json") != result:
+            if not holds_track_json(root / "tracks.json", result):
                 raise ValueError("meta_sam_retained_tracks_changed")
         else:
             write_track_json(root / "tracks.json", result)

@@ -580,6 +580,17 @@ def write_track_json(path: Path, payload: Mapping[str, Any]) -> None:
     write_json_chunks(path, _indent_chunks(dict(payload), 0, set()))
 
 
+def holds_track_json(path: Path, value: Mapping[str, Any]) -> bool:
+    """Whether the JSON kept at ``path`` is ``value``, compared as the JSON both are written as.
+
+    A value made in this run can hold a tuple or compact runs where the file reads back a list:
+    the same document, which Python's ``==`` calls different, so a retained derivative compared
+    that way is refused on every run after its first write (job move-the-lamp-2, 24 Nov). Their
+    canonical texts are equal only when every key and value is, so a changed file still differs.
+    """
+    return canonical_track_digest(load_track_json(path)) == canonical_track_digest(value)
+
+
 def canonical_track_digest(value: Mapping[str, Any], *, digest_field: str | None = None) -> str:
     """``canonical_digest(value, digest_field=...)``, hashed chunk by chunk instead of as one string."""
     normalized = dict(value)

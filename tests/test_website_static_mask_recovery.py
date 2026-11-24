@@ -175,6 +175,74 @@ def test_recovery_uses_calibrated_source_views_and_preserves_completed_evidence(
     assert _snapshot(paid_root) == original_paid
 
 
+@pytest.mark.parametrize("crop", ["real", "tuple_stub"])
+def test_a_single_frame_surface_mask_is_kept_once_and_every_retry_reuses_it(retained, monkeypatch, tmp_path, crop):
+    """Job move-the-lamp-2, 24 Nov: the shelf's one-frame mask held its crop box as a tuple, so the manifest
+    just written never equalled itself read back and every retry refused the job. ``tuple_stub`` keeps a
+    tuple in this run's value: the kept file is compared as the JSON both are written as."""
+    from PIL import Image
+
+    kwargs, paid_root = retained
+    original_paid = _snapshot(paid_root)
+    image = tmp_path / "grounded.png"
+    Image.new("RGB", (4, 4), "white").save(image)
+    crops = []
+
+    def ground(**kw):
+        frame = kw["registry"][-1]
+        return {**kw["target"], "segmentation_prompt": "wooden desktop",
+                "spatial_evidence": [{"timestamp_seconds": 2.0, "box_xywh_normalized": [.5, 0, .5, .5]}],
+                "grounding": {"source_frame_id": frame["source_frame_id"], "source_image_path": str(image),
+                              "image_digest": _sha256_file(image)}}
+
+    real = masks.run_meta_sam31
+
+    def hosted(**kw):
+        if kw.get("video_artifact") is not None:
+            return real(**kw)  # the retained full clip, as before
+        crop_row = kw["frame_registry"][0]
+        crops.append(crop_row["source_crop_box_pixels"])
+        left, top, right, bottom = crop_row["source_crop_box_pixels"]
+        width = right - left
+        # The desk's top-right quarter, (2..3, 0..1) on the 4 x 4 frame, in crop pixels.
+        return {"binding_digest": "sha256:crop", "tracks": [{"track_id": "desk-crop", "label": "desk",
+                "observations": [{"source_frame_id": crop_row["source_frame_id"], "width": width,
+                                  "height": bottom - top, "runs": [{"start": 2 - left, "length": 2},
+                                                                   {"start": width + 2 - left, "length": 2}]}]}]}
+
+    def stub(**kw):
+        frame_id = kw["target"]["grounding"]["source_frame_id"]
+        return {"track_id": "desk-image", "label": "desk", "coverage": "single_observed_frame",
+                "observations": [{"source_frame_id": frame_id, "width": 4, "height": 4,
+                                  "source_crop_box_pixels": (1, 0, 4, 3),
+                                  "runs": [{"start": 2, "length": 2}, {"start": 6, "length": 2}]}]}
+
+    monkeypatch.setattr(grounding, "ground_task_target", ground)
+    monkeypatch.setattr(masks, "run_meta_sam31", hosted)
+    if crop == "tuple_stub":
+        monkeypatch.setattr(masks, "segment_grounded_static_target", stub)
+    first = masks.complete_retained_static_task_masks(**kwargs)
+    observation = first["targets"][-1]["source_track"]["observations"][0]
+    assert list(observation["source_crop_box_pixels"]) == [1, 0, 4, 3]
+    if crop == "real":
+        assert crops == [[1, 0, 4, 3]] and json.loads(json.dumps(first)) == first
+    completed_path = paid_root.parent / "task_masks.json"
+    kept = completed_path.read_bytes()
+    # Every retry selects the same mask again, finds it kept, and goes on with it; nothing is rewritten.
+    assert masks.complete_retained_static_task_masks(**kwargs) == first
+    assert completed_path.read_bytes() == kept
+    assert _snapshot(paid_root) == original_paid
+    # A kept mask that is not this one is still refused, and left as found.
+    changed = json.loads(kept)
+    changed["targets"][-1]["source_track"]["observations"][0]["runs"][0]["length"] = 1
+    write_json(completed_path, changed)
+    tampered = completed_path.read_bytes()
+    with pytest.raises(ValueError, match="retained_static_masks_manifest_changed"):
+        masks.complete_retained_static_task_masks(**kwargs)
+    assert completed_path.read_bytes() == tampered
+    assert _snapshot(paid_root) == original_paid
+
+
 @pytest.mark.parametrize("change,error", [
     ("context", "recovery_context_changed"), ("calibration", "recovery_geometry_invalid"),
     ("video", "source_video_changed"),
@@ -223,9 +291,9 @@ def test_direct_recovery_entry_also_binds_the_current_task_context(retained):
     (None, None), ("missing", "retained_video_required"), ("binding", "retained_video_required"),
     ("parsed", "retained_tracks_changed"), ("result", "retained_tracks_changed"),
     ("missing_parsed", "retained_video_required"), ("profile", "retained_video_required"),
-    ("symlink", "retained_video_required"),
+    ("symlink", "retained_video_required"), ("tuple", None),
 ])
-def test_cache_only_video_mode_never_creates_an_implicit_paid_attempt(retained, change, error):
+def test_cache_only_video_mode_never_creates_an_implicit_paid_attempt(retained, monkeypatch, change, error):
     kwargs, paid_root = retained
     binding = json.loads((paid_root / "binding.json").read_text())
     video = json.loads((paid_root.parent / "continuous-video.json").read_text())["video"]
@@ -247,6 +315,10 @@ def test_cache_only_video_mode_never_creates_an_implicit_paid_attempt(retained, 
         path.symlink_to(target)
     elif change == "profile":
         binding["prompts"][0]["text"] = "changed concept"
+    elif change == "tuple":
+        # A binding made in this run that reads back as the same JSON is the retained one.
+        made = sam.request_binding
+        monkeypatch.setattr(sam, "request_binding", lambda **kw: {**made(**kw), "prompts": tuple(made(**kw)["prompts"])})
     before = _snapshot(paid_root)
     args = dict(frame_registry=binding["frame_registry"], frame_artifacts=[], prompts=binding["prompts"],
                 output_root=paid_root.parent, admission={}, video_artifact=video,

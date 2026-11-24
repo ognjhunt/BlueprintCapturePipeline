@@ -24,8 +24,8 @@ from .sam31_source_track_provider_stage import run_sam31_source_track_stage
 from .scene_placement.sam31_source_track_provider import RUN_REQUEST_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 from .website_task_target_choice import TaskTargetAmbiguous, best_supported_guess, chosen_track
-from .website_track_mask_codec import (canonical_track_digest, decode_track_mask, load_track_json, mask_runs,
-                                       plain_runs, write_track_json)
+from .website_track_mask_codec import (canonical_track_digest, decode_track_mask, holds_track_json,
+                                       load_track_json, mask_runs, plain_runs, write_track_json)
 
 
 def _plain_ambiguity(function):
@@ -326,8 +326,10 @@ def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[
         crop_path = output_root / "source-crop.png"
         image.crop(crop_box).save(crop_path)
     left, top, right, bottom = crop_box
+    # Recorded as the list its JSON reads back as: the manifest made here is compared with the one kept.
+    crop_pixels = list(crop_box)
     crop_registry = [{**frame, "model_frame_index": 0, "width": right - left, "height": bottom - top,
-                      "source_crop_box_pixels": crop_box, "source_image_digest": grounding["image_digest"]}]
+                      "source_crop_box_pixels": crop_pixels, "source_image_digest": grounding["image_digest"]}]
     # Location already identifies the target in this crop. Drop an optional
     # leading color adjective, which can exclude a shaded/cream-colored book.
     concept = re.sub(r"^(?:white|black|blue|red|green|yellow|orange|purple|brown|gray|grey|cream)(?:-colou?red)?\s+",
@@ -348,7 +350,7 @@ def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[
             edges = np.diff(np.pad(full.reshape(-1).astype(np.int8), (1, 1)))
             starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
             observations.append({**row, "width": frame["width"], "height": frame["height"],
-                "source_crop_box_pixels": crop_box, "crop_mask_digest": canonical_digest(row),
+                "source_crop_box_pixels": crop_pixels, "crop_mask_digest": canonical_digest(row),
                 "runs": [{"start": int(start), "length": int(end - start)} for start, end in zip(starts, ends)]})
         tracks.append({**track, "track_id": track["track_id"] + "-static-frame", "observations": observations,
                        "coverage": "single_observed_frame", "provider_binding_digest": result["binding_digest"]})
@@ -869,7 +871,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     manifest["digest"] = canonical_track_digest(manifest, digest_field="digest")
     manifest_path = manifest_root / ("task_masks.object_removal.json" if deferred_target_ids else "task_masks.json")
     if recovering and manifest_path.is_file():
-        if load_track_json(manifest_path) != manifest:
+        if not holds_track_json(manifest_path, manifest):
             raise ValueError("website_retained_static_masks_manifest_changed")
     else:
         write_track_json(manifest_path, manifest)
@@ -921,7 +923,7 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
             task_context=task_context, source_video=source_video, view_plan=view_plan,
             retained_static_masks=task_masks, recovery_geometry=recovery_geometry, compact_runs=True)
     completed_path = output_root.resolve() / canonical_digest(task_masks["binding"])[7:23] / "task_masks.json"
-    if completed_path.is_file() and load_track_json(completed_path) != complete:
+    if completed_path.is_file() and not holds_track_json(completed_path, complete):
         raise ValueError("website_retained_static_masks_manifest_changed")
     if not completed_path.is_file():
         write_track_json(completed_path, complete)
@@ -971,7 +973,7 @@ def _select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geomet
     request_key = canonical_digest({key: value for key, value in binding.items() if key != "target_choices_digest"})
     root = output_root.resolve() / request_key[7:23]
     first_manifest = output_root.resolve() / canonical_digest(binding)[7:23] / "task_masks.object_removal.json"
-    if not first_manifest.is_file() or load_track_json(first_manifest) != task_masks:
+    if not first_manifest.is_file() or not holds_track_json(first_manifest, task_masks):
         raise ValueError("website_retained_static_masks_manifest_changed")
     if binding["mask_input_pixels"] == "selected_original_views_v1":
         plans = list(view_plan_root.glob("*/view_plan.json"))
