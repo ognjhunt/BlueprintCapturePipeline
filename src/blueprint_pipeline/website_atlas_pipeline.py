@@ -32,6 +32,7 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .atlas_preparation_context import requires_task_semantic_analysis
 from .website_job_spend_cap import SPENDING_CAP_REACHED
+from .job_retry_policy import MONEY, PRIVACY_RIGHTS
 
 
 #: Who read the rate card, and when. Renewing it re-confirms the same prices.
@@ -826,7 +827,6 @@ def _preserved_appearance(*, frames, pose, draft, output_root, policy, task_cont
             if rebuild:
                 # The job's allowance cannot carry the splat and mesh: a money wall, named as one since its
                 # words name none (``website_atlas_preview.advance_preparation_step`` keeps its code).
-                from .job_retry_policy import MONEY
                 return {"status": "needs_input", "stage": "refined_splat",
                         "reason": "atlas_splat_rebuild_allowance_insufficient", "wall": MONEY}
             return {"status": "completed", "basis": DRAFT_APPEARANCE,
@@ -957,9 +957,12 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             clean_root=pose_root.parent.parent / "clean_plate",
             output=output_root / "capture_source_survey_with_task_views.json")
     if not (source_root / "atlas_posed_rgbd_result.json").is_file():
-        return {"status": "needs_input", "stage": "source_pose", "source_pose": source_pose,
-                "reason": source_pose.get("reason", "atlas_source_pose_unavailable"),
-                "blockers": [source_pose.get("reason", "atlas_source_pose_unavailable")]}
+        reason = source_pose.get("reason", "atlas_source_pose_unavailable")
+        # The wall the pose stopped on (``_source_pose``) is the result's: the job waits on it, or ends at once on
+        # privacy and rights (``website_atlas_preview``), as the same wall raised does.
+        wall = source_pose.get("wall")
+        return {"status": "needs_input", "stage": "source_pose", "source_pose": source_pose, "reason": reason,
+                "blockers": [reason], **({"wall": wall} if wall in (PRIVACY_RIGHTS, MONEY) else {})}
     if rebuild and ((json.loads((source_root / "atlas_posed_rgbd_result.json").read_text()).get("operation") or {})
                     .get("response") or {}).get("poseRefinementAccepted") is not True:
         # A rebuild buys its splat only on a pose World Labs refined (``_preserved_appearance``), so it
@@ -1821,6 +1824,9 @@ def finalize_background_result(*, output_root, source_digest, task_context, auto
               **({"scene_estimates": left_out} if left_out else {}), "model": model,
               "blockers": (["metric_scene_registration_unproven"] if complete else
                            [background.get("reason", "atlas_background_review_required")]),
+              # The wall the background stopped on, by its type (``atlas_scene_automation``): the job's to wait on.
+              **({"wall": background["wall"]} if not complete and background.get("wall") in (PRIVACY_RIGHTS, MONEY)
+                 else {}),
               "splat_available": complete,
               "splat_kind": background.get("splat_kind", "depth_fused_draft") if complete else None,
               "splat_manifest_digest": background.get("splat_manifest_digest"),

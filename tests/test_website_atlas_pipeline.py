@@ -1187,3 +1187,35 @@ def test_a_job_with_no_object_of_its_own_records_the_rule_as_before(tmp_path, mo
     run()
     assert "job_objects_kept" not in json.loads((root / "job_object_rule.json").read_text())
     assert "job_objects_kept" not in posed[0]["review"]["job_object_rule"]
+
+
+@pytest.mark.parametrize("wall", ["money", "privacy_rights", None])
+def test_a_source_pose_stopped_on_a_wall_names_that_wall_on_the_result(tmp_path, monkeypatch, wall):
+    """The code sweep of 2026-11-24: ``_source_pose`` named the wall it stopped on, but the result the job reads did
+    not, so a typed wall whose words name none parked the job with no retry time (``website_atlas_preview``)."""
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    root, run, automated, posed = _job(tmp_path, monkeypatch, _bought_review(), clean_plate=("noop", []))
+    from blueprint_pipeline import atlas_source_pose_inputs
+    code = "website_atlas_pose_admission_expired"
+    # Nothing was posed: the pose's own folder holds no posed result.
+    monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda pose_root: (pose_root, {"frames": []}))
+    monkeypatch.setattr(pipeline, "_source_pose", lambda **kw: posed.append(kw) or {
+        "status": "needs_input", "reason": code, **({"wall": wall} if wall else {})})
+    result = run()
+    assert (result["status"], result["stage"], result["reason"], result["blockers"]) == (
+        "needs_input", "source_pose", code, [code])
+    assert result.get("wall") == wall and not automated
+
+
+def test_a_background_stopped_on_a_typed_wall_names_it_on_the_result(tmp_path):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    automation = {"status": "needs_input", "background": {"status": "needs_input", "wall": "money",
+                                                          "reason": "website_atlas_pose_admission_expired"}}
+    result = pipeline.finalize_background_result(output_root=tmp_path, source_digest="sha256:" + "a" * 64,
+        task_context={"context_digest": "sha256:" + "c" * 64}, automation=automation, source_pose=None, model="m")
+    assert result["blockers"] == ["website_atlas_pose_admission_expired"] and result["wall"] == "money"
+    assert result["download"] is None and json.loads((tmp_path / "result.json").read_text()) == result
+    plain = pipeline.finalize_background_result(output_root=tmp_path / "plain", source_digest="sha256:" + "a" * 64,
+        task_context={"context_digest": "sha256:" + "c" * 64}, automation={"status": "needs_input", "background": {
+            "status": "needs_input", "reason": "atlas_edit_source_changed"}}, source_pose=None, model="m")
+    assert "wall" not in plain

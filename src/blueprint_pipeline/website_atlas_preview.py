@@ -545,17 +545,28 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
                 return _failed_step(job, ValueError(answers[0]), current)
             stated, named = result.get("reason"), result.get("wall")
             named = named if named in (PRIVACY_RIGHTS, MONEY) else None
-            kind = _wall_kind(named, hard_stop_kind(stated))
-            if (not blockers and result.get("stage") not in {"source_pose", "target_correction"}
-                    and isinstance(stated, str) and stated and kind is not None):
-                # A stop the result names as a wall (by its ``wall``, or its words) keeps its own code and waits
-                # on that wall; "a step on our side" (``atlas_background_review_required``) named none.
-                return _walled(job, current, _reason(ValueError(stated)), kind, typed=named is not None,
+            own = result.get("stage") in {"source_pose", "target_correction"} and bool(stated)
+            if own or blockers:
+                reason = _reason(ValueError(stated if own else blockers[0]))
+                # A source pose's or target correction's own stop is read by its wall and its words, as
+                # ``website_atlas_pipeline._source_pose`` reads it. A blocker is read by the wall its stage typed
+                # (``wall``) alone: a background keeps codes that only read like money (an image completion's own
+                # allowance, which no wait refills) as stops of their own.
+                kind = _wall_kind(named, hard_stop_kind(reason)) if own else named
+            else:
+                # "A step on our side" (``atlas_background_review_required``) names no wall.
+                kind = _wall_kind(named, hard_stop_kind(stated)) if isinstance(stated, str) and stated else None
+                reason = _reason(ValueError(stated)) if kind is not None else "atlas_background_review_required"
+            if kind is not None and reason in _WITHDRAWN:
+                return _failed_step(job, ValueError(reason), current)  # a withdrawal ends as one, wherever it stops
+            if kind is not None:
+                # A stop the result names as a wall keeps its own code and waits on that wall, whichever stage
+                # stopped on it: a money wait is asked again every ``AUTHORITY_RECHECK_SECONDS`` until the deadline,
+                # privacy and rights end the job at once. A source pose or a background that a paid call refused
+                # for money was parked with no retry time, so nothing ever asked again (the code sweep of
+                # 2026-11-24).
+                return _walled(job, current, reason, kind, typed=named is not None,
                                stage=result.get("stage", "preparation"), result_digest=result.get("digest"))
-            reason = (_reason(ValueError(result["reason"]))
-                      if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
-                      else _reason(ValueError(blockers[0])) if blockers
-                      else "atlas_background_review_required")
             return _transition(job, current, "needs_input", reason,
                                stage=result.get("stage", "preparation" if blockers else "background_review"),
                                result_digest=result.get("digest"))
