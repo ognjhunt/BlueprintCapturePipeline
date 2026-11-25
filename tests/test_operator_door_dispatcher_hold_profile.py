@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "retire-parked-delivery", "test-job", "test-job-retry-now", "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "retire-parked-delivery", "test-job", "test-job-retry-now", "test-company", "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}
 # The owner approved bringing an internal test job's retries forward (2026-11-25): admitted, at the operate scope.
 assert r.required_scope("test-job-retry-now") == "operate"
 assert r.validate_request_id("20261125T030000Z-test-job-retry-now-0123abcd")

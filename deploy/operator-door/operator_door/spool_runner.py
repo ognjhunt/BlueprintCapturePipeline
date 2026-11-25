@@ -270,6 +270,25 @@ def _test_job_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[
             f"BindReadOnlyPaths={secrets}/pipeline_sync_token")
 
 
+def _test_company_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_TEST_COMPANY_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
+
+
+def _test_company_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """One signed website call: the network and the Pipeline sync token, every other secret hidden, and nothing writable
+    but the result. It reads and writes no record on the host."""
+    hidden = [path for path in config.hidden_paths if path != "/etc/blueprint/provider-secrets"]
+    secrets = "/etc/blueprint/provider-secrets"
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in hidden),
+            f"TemporaryFileSystem={secrets}:ro", f"BindReadOnlyPaths={secrets}/pipeline_sync_token",
+            "ReadWritePaths=" + str(Path(config.spool_root) / "results"))
+
+
 def _test_job_retry_now_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
             "DOOR_SERVICE_USER": "blueprint",
@@ -432,6 +451,11 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
     "test-job": _LaunchSpec("blueprint-operator-door-test-job", "door-test-job.sh", "5min",
                             lambda request: hashlib.sha256(request["idempotency_key"].encode("utf-8")).hexdigest()[:12],
                             _test_job_environment, _test_job_properties),
+    # Named by a hash of the action and the job; nothing the request carries reaches a unit name.
+    "test-company": _LaunchSpec(
+        "blueprint-operator-door-test-company", "door-test-company.sh", "2min",
+        lambda request: hashlib.sha256((request["action"] + "/" + request.get("job_id", "")).encode("utf-8")).hexdigest()[:12],
+        _test_company_environment, _test_company_properties),
     # Named by a hash of the job id; the reason never reaches a unit name.
     "test-job-retry-now": _LaunchSpec(
         "blueprint-operator-door-test-job-retry-now", "door-test-job-retry-now.sh", "5min",
