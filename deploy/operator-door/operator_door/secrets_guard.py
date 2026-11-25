@@ -10,6 +10,9 @@ journal line is scanned for credential-shaped content before it leaves.
 Over-refusal is the accepted failure mode: a refused file is reported by name
 and rule, never by content.
 
+Bytes that a format defines as numbers, not text, are read by
+``scan_numeric_bytes`` instead (``fsview`` decides which bytes those are).
+
 Every pattern is bounded (no unbounded quantifier next to an alternation or a
 line anchor), because the scanner runs over megabytes of capture data and a
 pathological input must not pin the door's CPU.
@@ -97,6 +100,22 @@ _CONTENT_RULES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     ("bearer_header", re.compile(rb"(?i)authorization[ \t]{0,8}[:=][ \t]{0,8}bearer[ \t]{1,8}[A-Za-z0-9._~+/=-]{20,4096}")),
 )
 
+# Rules that match a credential's own shape, with no key, field name or other text around it.
+_BARE_TOKEN_RULES = frozenset({
+    "openai_key", "stripe_key", "aws_access_key", "google_api_key", "google_oauth_token", "github_token",
+    "slack_token", "notion_token", "huggingface_token", "blueprint_agent_key", "jwt",
+})
+# The bytes a string ends at: NUL (a C string), ASCII whitespace, a quote, and the "=", ":" and ","
+# between a key and its value. None of them can be part of a token.
+_STRING_EDGE = rb"\x00\t\n\x0b\x0c\r \"'=:,"
+# In numbers a bare token shape counts only where it stands as a string: a string edge, or the end of
+# the data, on both sides. Every other rule needs text around its match and applies unchanged.
+_NUMERIC_RULES: tuple[tuple[str, re.Pattern[bytes]], ...] = tuple(
+    (reason, re.compile(rb"(?<![^" + _STRING_EDGE + rb"])(?:" + pattern.pattern + rb")(?![^" + _STRING_EDGE + rb"])")
+     if reason in _BARE_TOKEN_RULES else pattern)
+    for reason, pattern in _CONTENT_RULES
+)
+
 _PEM_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY( BLOCK)?-----")
 _PEM_END = re.compile(r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY( BLOCK)?-----")
 
@@ -113,6 +132,26 @@ def scan_bytes(data: bytes) -> str | None:
 
     for reason, pattern in _CONTENT_RULES:
         if pattern.search(data):
+            return reason
+    return None
+
+
+def scan_numeric_bytes(data: bytes, start: int = 0) -> str | None:
+    """``scan_bytes`` for bytes a format defines as numbers, such as an SPZ splat's body.
+
+    Quantized numbers often fall in the ASCII letter range: a dark colour run in a
+    splat reads ``hf_`` and thirty letters. There a bare token shape counts only
+    where it stands as a string, with NUL, whitespace, a quote, ``=``, ``:`` or
+    ``,`` (or the end of ``data``) on both sides; a token written into such bytes
+    as a string is still found. Every rule that needs text around its match, such
+    as a key name or an assignment, applies exactly as it does to text.
+
+    Bytes before ``start`` are context only: no match begins in them, but they are
+    what a match at ``start`` stands after.
+    """
+
+    for reason, pattern in _NUMERIC_RULES:
+        if pattern.search(data, start):
             return reason
     return None
 

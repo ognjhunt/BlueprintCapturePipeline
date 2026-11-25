@@ -13,6 +13,12 @@ Two extra rules close what name and content patterns alone would miss:
 * compressed content (gzip, zip, xz, bzip2) is scanned after decompression, with
   the verdict cached per file version; formats the standard library cannot
   decompress (zstd, 7z, rar) are refused.
+
+A gzip stream that is a Gaussian splat in SPZ form holds only quantized
+numbers, so its body is read with ``scan_numeric_bytes`` (``_scan_splat``). That
+is decided from the decompressed bytes, never from a file name, and holds only
+for a stream exactly as long as its header declares; anything else, other
+binary formats included, is scanned as text.
 """
 
 from __future__ import annotations
@@ -21,18 +27,20 @@ import bz2
 import fnmatch
 import gzip
 import io
+import itertools
 import json
 import lzma
 import os
 import stat
+import struct
 import tarfile
 import tempfile
 import threading
 import zipfile
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO, Callable, Iterable, Iterator
 
 from .config import DoorConfig
-from .secrets_guard import refused_name, scan_bytes
+from .secrets_guard import refused_name, scan_bytes, scan_numeric_bytes
 
 MANIFEST_NAME = ".operator-door-manifest.json"
 _SCAN_OVERLAP = 4096
@@ -47,7 +55,21 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"7z\xbc\xaf\x27\x1c", "7z"),
     (b"Rar!", "rar"),
 )
-_STREAMABLE = {"gzip": gzip.GzipFile, "xz": lzma.LZMAFile, "bzip2": bz2.BZ2File}
+_STREAMABLE = {"xz": lzma.LZMAFile, "bzip2": bz2.BZ2File}
+# Niantic SPZ v2 inside its gzip wrapper, as the pipeline writes and reads it
+# (src/blueprint_pipeline/atlas_depth_splat.py, encode_spz and _spz_body): a 16-byte
+# header (magic, version, Gaussian count, SH degree, fractional bits, flags,
+# reserved), then for each Gaussian 9 position, 1 alpha, 3 colour, 3 scale and 3
+# rotation bytes, and 3 for each higher-order SH coefficient. Every byte is a
+# number.
+# The owner asked (2026-11-25, verbatim: "start tackling these now - work on all
+# of them", of a list that named this refusal) for the door's refusal of
+# splat/atlas_depth_splat.spz to be fixed: secret_content_refused:huggingface_token,
+# matched by chance in the splat's colour bytes, blocked every replay pull of a
+# job whose splat is kept on the host.
+_SPZ_HEADER = struct.Struct("<IIIBBBB")
+_SPZ_MAGIC = 0x5053474E
+_SPZ_VERSION = 2
 
 
 class FsRefused(Exception):
@@ -67,21 +89,79 @@ def compression_kind(head: bytes) -> str | None:
     return None
 
 
-def _scan_stream(stream: BinaryIO, budget: list[int]) -> str | None:
-    """Scan a decompressed stream in overlapping chunks; ``budget`` counts bytes left."""
+def _chunks(stream: BinaryIO, budget: list[int]) -> Iterator[bytes]:
+    """A decompressed stream in chunks; ``budget`` counts bytes left."""
 
-    tail = b""
-    while True:
-        chunk = stream.read(_CHUNK)
-        if not chunk:
-            return None
+    while chunk := stream.read(_CHUNK):
         budget[0] -= len(chunk)
         if budget[0] < 0:
             raise FsRefused("compressed_too_large_to_scan")
+        yield chunk
+
+
+def _scan_text(chunks: Iterable[bytes]) -> str | None:
+    """Scan chunks with every rule, each window overlapping the one before."""
+
+    tail = b""
+    for chunk in chunks:
         reason = scan_bytes(tail + chunk)
         if reason is not None:
             return reason
         tail = chunk[-_SCAN_OVERLAP:]
+    return None
+
+
+def _scan_stream(stream: BinaryIO, budget: list[int]) -> str | None:
+    """Scan a decompressed stream in overlapping chunks; ``budget`` counts bytes left."""
+
+    return _scan_text(_chunks(stream, budget))
+
+
+def _spz_length(head: bytes) -> int | None:
+    """The exact decompressed length an SPZ v2 header declares, or None when ``head`` is not one."""
+
+    if len(head) < _SPZ_HEADER.size:
+        return None
+    magic, version, count, degree, _fractional, _flags, _reserved = _SPZ_HEADER.unpack_from(head)
+    if magic != _SPZ_MAGIC or version != _SPZ_VERSION or degree > 3:
+        return None
+    return _SPZ_HEADER.size + count * (19 + 3 * ((degree + 1) ** 2 - 1))
+
+
+def _scan_splat(chunks: Iterable[bytes], length: int) -> str | None:
+    """Verdict for a decompressed SPZ splat whose header declares ``length`` bytes.
+
+    Every window is scanned as text first, as ``_scan_text`` does, and a rule's hit
+    there stands only if ``scan_numeric_bytes`` confirms it in the same window.
+    A stream of any other length is not the splat its header declares: then the
+    first text hit stands, as for any other file.
+    """
+
+    previous, total, text_reason = b"", 0, None
+    for chunk in chunks:
+        window = previous[-_SCAN_OVERLAP:] + chunk
+        reason = scan_bytes(window)
+        if reason is not None:
+            # The byte before the window, so a match at its start is judged by what it really follows.
+            before = previous[-_SCAN_OVERLAP - 1:-_SCAN_OVERLAP]
+            confirmed = scan_numeric_bytes(before + window, len(before))
+            if confirmed is not None:
+                return confirmed
+            text_reason = text_reason or reason
+        total += len(chunk)
+        previous = chunk
+    return None if total == length else text_reason
+
+
+def _scan_gzip(stream: BinaryIO, budget: list[int]) -> str | None:
+    """A decompressed gzip stream: an SPZ splat by its header, read as numbers; anything else, as text."""
+
+    chunks = _chunks(stream, budget)
+    first = next(chunks, b"")
+    length = _spz_length(first)
+    if length is None:
+        return _scan_text(itertools.chain((first,), chunks))
+    return _scan_splat(itertools.chain((first,), chunks), length)
 
 
 def _scan_compressed(fd: int, kind: str) -> str | None:
@@ -91,8 +171,11 @@ def _scan_compressed(fd: int, kind: str) -> str | None:
     with os.fdopen(os.dup(fd), "rb") as raw:
         raw.seek(0)
         try:
+            if kind == "gzip":
+                with gzip.GzipFile(fileobj=raw) as stream:
+                    return _scan_gzip(stream, budget)
             if kind in _STREAMABLE:
-                with _STREAMABLE[kind](fileobj=raw) if kind == "gzip" else _STREAMABLE[kind](raw) as stream:
+                with _STREAMABLE[kind](raw) as stream:
                     return _scan_stream(stream, budget)
             if kind == "zip":
                 with zipfile.ZipFile(raw) as archive:

@@ -2,12 +2,17 @@
 
 # Covers (for impacted-test selection):
 #   deploy/operator-door/operator_door/fsview.py
+#   deploy/operator-door/operator_door/secrets_guard.py
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import os
+import random
+import string
+import struct
 import sys
 import tarfile
 from pathlib import Path
@@ -18,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "operato
 
 from operator_door.config import DoorConfig  # noqa: E402
 from operator_door.fsview import FileView, FsRefused  # noqa: E402
+from operator_door.secrets_guard import scan_bytes  # noqa: E402
 
 
 @pytest.fixture()
@@ -226,7 +232,6 @@ def test_json_only_roots_serve_only_json(tree: dict[str, Path]) -> None:
 
 
 def test_compressed_files_are_scanned_after_decompression(tree: dict[str, Path]) -> None:
-    import gzip
     import zipfile
 
     folder = tree["root"] / "bundles"
@@ -262,3 +267,129 @@ def test_archive_refusals_happen_before_streaming(tree: dict[str, Path]) -> None
     with pytest.raises(FsRefused) as caught:
         _view(tree).prepare_archive(str(tree["root"] / "runs" / "scene-1" / "progression.json"))
     assert caught.value.code == "not_a_directory"
+
+
+# -- splats: numbers, not text --------------------------------------------------
+
+_SPZ_MAGIC = 0x5053474E
+# A real-looking Hugging Face token: hf_ and 34 letters.
+_HF_TOKEN = b"hf_" + "".join(random.Random(7).choices(string.ascii_letters, k=34)).encode()
+# The bytes the door matched by chance. atlas_depth_splat.encode_spz stores a colour channel c as
+# round((c / 255 - 0.5) / SH_C0 * 0.15 * 255 + 127.5), so every channel below 117 is an ASCII digit or
+# letter: a dark brown voxel RGB(83, 80, 66) is written "hf_", ten dark grey ones RGB(70, 75, 72) are
+# "adb" each, and huggingface_token (hf_ and 30 letters) matches.
+_CHANCE_COLOURS = b"\x8b\x8b\x8b" + b"hf_" + b"adb" * 10 + b"\x8b\x8b\x8b"
+
+
+def _spz(count: int, body: bytes | None = None, *, plant: tuple[tuple[int, bytes], ...] = (),
+         version: int = 2, extra: bytes = b"") -> bytes:
+    """A gzip-wrapped SPZ v2 splat of SH degree 0; its body is random numbers unless ``body`` is given."""
+
+    raw = bytearray(random.Random(count).randbytes(19 * count) if body is None else body)
+    assert len(raw) == 19 * count
+    for offset, data in plant:
+        raw[offset:offset + len(data)] = data
+    return gzip.compress(struct.pack("<IIIBBBB", _SPZ_MAGIC, version, count, 0, 12, 0, 0) + bytes(raw) + extra,
+                         mtime=0)
+
+
+def _depth_splat_spz() -> bytes:
+    """Byte for byte what encode_spz writes for 13 voxels at the origin, of which voxel 1 is RGB(83, 80, 66)
+    and voxels 2-11 are RGB(70, 75, 72): positions, alphas, colours, scales, rotations."""
+
+    body = bytes(9 * 13) + b"\xe1" * 13 + _CHANCE_COLOURS + b"KK&" * 13 + b"\x80" * 39
+    return _spz(13, body)
+
+
+def _assert_refused(view: FileView, path: Path, code: str) -> None:
+    with pytest.raises(FsRefused) as caught:
+        view.read_range(str(path))
+    assert caught.value.code == code
+
+
+def test_a_depth_splat_whose_colours_spell_a_token_by_chance_is_served(tree: dict[str, Path]) -> None:
+    """The refusal of splat/atlas_depth_splat.spz (secret_content_refused:huggingface_token), reproduced."""
+
+    splat = tree["root"] / "job" / "splat" / "atlas_depth_splat.spz"
+    splat.parent.mkdir(parents=True)
+    splat.write_bytes(_depth_splat_spz())
+    # The text rules match the decompressed body, as they did on the host...
+    assert scan_bytes(gzip.decompress(splat.read_bytes())) == "huggingface_token"
+    # ...but those bytes are numbers, and the door serves the file and archives it.
+    view = _view(tree)
+    data, info = view.read_range(str(splat))
+    assert data == splat.read_bytes() and info["eof"] is True
+    sink = io.BytesIO()
+    manifest = view.stream_archive(str(tree["root"] / "job"), sink.write)
+    assert manifest["skipped"] == [] and manifest["files_included"] == 1
+
+
+def test_a_random_splat_with_token_shaped_numbers_is_served(tree: dict[str, Path]) -> None:
+    count = 200_000  # 3.8 MB of body: several scan windows
+    chance = b"\x8b" + _HF_TOKEN + b"\x8b"
+    # Also across the first scan window's end, and exactly where the second window starts (judged by
+    # the byte it really follows), and at the body's end.
+    plant = ((5_000, chance), ((1 << 20) - 16 - 20, chance), ((1 << 20) - 16 - 4096 - 1, chance),
+             (19 * count - len(chance), chance),
+             (3 << 20, b"\x9c" + b"sk-" + b"a" * 30 + b"\x9c"), (2_000_000, b"\xa0AKIA" + b"B" * 16 + b"\xa0"))
+    path = tree["root"] / "random.spz"
+    path.write_bytes(_spz(count, plant=plant))
+    assert scan_bytes(gzip.decompress(path.read_bytes())) == "openai_key"
+    assert _view(tree).read_range(str(path), 0, 64)[1]["size"] == path.stat().st_size
+
+
+@pytest.mark.parametrize(
+    ("offset", "written", "code"),
+    [
+        (5_000, b"\x00" + _HF_TOKEN + b"\x00", "huggingface_token"),  # a C string
+        (5_000, b'\x8b"' + _HF_TOKEN + b'"\x8b', "huggingface_token"),
+        (5_000, b"\x8b " + _HF_TOKEN + b"\n\x8b", "huggingface_token"),
+        (5_000, b"\x8b=" + _HF_TOKEN + b",\x8b", "huggingface_token"),
+        (5_000, b"\x8b\nHF_TOKEN=" + _HF_TOKEN + b"\n", "env_secret_assignment"),
+        (5_000, b'\x8b{"api_key": "abcdefghijklmnop12"}', "json_secret_field"),
+        # Across the first scan window's end, and at the body's very end.
+        ((1 << 20) - 16 - 20, b"\x00" + _HF_TOKEN + b"\x00", "huggingface_token"),
+        (19 * 200_000 - len(_HF_TOKEN) - 1, b"\x00" + _HF_TOKEN, "huggingface_token"),
+    ],
+)
+def test_a_token_written_into_a_splat_as_a_string_is_refused(
+    tree: dict[str, Path], offset: int, written: bytes, code: str
+) -> None:
+    path = tree["root"] / "leaky.spz"
+    path.write_bytes(_spz(200_000, plant=((offset, written),)))
+    _assert_refused(_view(tree), path, f"secret_content_refused:{code}")
+
+
+def test_a_splat_of_any_other_length_than_declared_is_scanned_as_text(tree: dict[str, Path]) -> None:
+    body = bytes(9 * 13) + b"\xe1" * 13 + _CHANCE_COLOURS + b"KK&" * 13 + b"\x80" * 39
+    view = _view(tree)
+    for name, blob in (
+        ("longer.spz", _spz(13, body, extra=b"\x00")),
+        ("appended.spz", _depth_splat_spz() + gzip.compress(b"notes\n", mtime=0)),  # a second gzip member
+        ("shorter.spz", gzip.compress(gzip.decompress(_depth_splat_spz())[:-1], mtime=0)),
+        ("v3.spz", _spz(13, body, version=3)),  # a layout the pipeline does not write
+    ):
+        path = tree["root"] / name
+        path.write_bytes(blob)
+        _assert_refused(view, path, "secret_content_refused:huggingface_token")
+
+
+def test_other_binary_and_text_files_keep_the_text_scan(tree: dict[str, Path]) -> None:
+    folder = tree["root"] / "other"
+    folder.mkdir()
+    # The same chance bytes, not inside a splat: uncompressed, and in a gzip that is no splat.
+    (folder / "colours.bin").write_bytes(b"\x00" * 64 + _CHANCE_COLOURS)
+    (folder / "colours.bin.gz").write_bytes(gzip.compress(b"\x00" * 64 + _CHANCE_COLOURS))
+    # A pickled string: a length byte before it and an opcode after, as in a gzip-compressed pickle.
+    (folder / "args.pkl.gz").write_bytes(gzip.compress(b"\x80\x04\x95\x30\x00\x8c\x25" + _HF_TOKEN + b"\x94."))
+    (folder / "notes.txt.gz").write_bytes(gzip.compress(b"login with " + _HF_TOKEN + b"\n"))
+    ply = (b"ply\nformat binary_little_endian 1.0\ncomment exported with " + _HF_TOKEN + b"\n"
+           b"element vertex 2\nproperty float x\nproperty float y\nproperty float z\nend_header\n"
+           + struct.pack("<6f", 0.5, 1.5, 2.5, 3.5, 4.5, 5.5))
+    (folder / "points.ply").write_bytes(ply)
+    (folder / "points.ply.gz").write_bytes(gzip.compress(ply))
+    view = _view(tree)
+    for name in ("colours.bin", "colours.bin.gz", "args.pkl.gz", "notes.txt.gz", "points.ply", "points.ply.gz"):
+        _assert_refused(view, folder / name, "secret_content_refused:huggingface_token")
+    (folder / "clean.log.gz").write_bytes(gzip.compress(b"stage ok\n" * 1000))
+    assert view.read_range(str(folder / "clean.log.gz"))[1]["size"] > 0
