@@ -124,7 +124,19 @@ def retain_rejected_selection(*, capture_root, task_context, source_video):
         old = json.loads(prior.read_text())
         old_digest = canonical_digest(old)
         _retain(root / 'history' / old_digest[7:] / 'handoff.json', old, guarded_handoff_write_json)
-    _retain(root / 'rejections' / rejection['digest'][7:] / 'handoff.json', handoff, guarded_handoff_write_json)
+    archive = root / 'rejections' / rejection['digest'][7:] / 'handoff.json'
+    if archive.is_file() and not archive.is_symlink():
+        # The handoff an earlier release wrote for this same rejection, in its own words: kept as written, as the
+        # record of when the site's rejection was first handed off; today's is the live handoff below. Comparing it
+        # whole refused every later run, so the site's rejection never resolved (2026-11-24 sweep).
+        try:
+            kept = json.loads(archive.read_text())
+        except ValueError:
+            kept = None
+        if not isinstance(kept, dict) or (kept.get('selection_rejection') or {}).get('digest') != rejection['digest']:
+            raise ValueError('website_target_correction_retained_record_changed')
+    else:
+        _retain(archive, handoff, guarded_handoff_write_json)
     guarded_handoff_write_json(prior, handoff)
     return handoff
 
