@@ -19,7 +19,8 @@ code repeat it, so it is not re-run on a timer. With no collider nothing can shi
 controller ends the job on it at once and the website asks the site for a new video, a new rebuild
 (``atlas_preparation_job_control._NEEDS_NEW_CAPTURE``, 2026-11-24). A registered frame whose support
 or depth filter keeps no face keeps the registered faces before that filter instead, flagged
-(``support_estimate``).
+(``support_estimate``). The depth filter makes at most ``DEPTH_FILTER_MAX_FACE_VIEWS`` comparisons;
+past them, views spread evenly in pose order vote, and the collider is flagged (``depth_filter_estimate``).
 """
 
 from __future__ import annotations
@@ -58,6 +59,16 @@ REGISTRATION_SAMPLES = 200_000
 #: A block's values are joined before the one median or sum, so its size changes no figure; at 2^18 faces a
 #: block's temporaries are about 50 MB (2^20: about 200 MB, beside the whole mesh).
 FACE_BLOCK = 1 << 18
+#: The most face-view comparisons the depth filter makes (faces it screens times views that vote). It ran 0.38 s a
+#: view per million faces in the 2026-11-24 sweep's container (204 views of a 6.5 M-face mesh: 9 min; 400 views of
+#: 13 M: 35 min) and the host has run this work 2.4 times slower. It runs after the mesh's purchase, the step's last
+#: paid stage, and the Atlas tick gives what follows that stage 20 minutes (``website_atlas_preview.
+#: LONGEST_STEP_SECONDS``); a step still running past them is ended and retried, the filter with it, every time.
+#: This bound is about 4 minutes there (about 10 on the host). Past it, the views that vote are spread evenly in pose
+#: order, never fewer than the two a removal needs: the same inputs choose the same views on any host.
+DEPTH_FILTER_MAX_FACE_VIEWS = 640_000_000
+#: The reason a collider screened by fewer views than it has is an estimate (``depth_filter_estimate``).
+DEPTH_FILTER_VIEWS_BOUNDED = "atlas_mesh_depth_filter_views_bounded"
 _COMPONENTS = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
 _WIDTH = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}
 
@@ -121,6 +132,15 @@ def mesh_depth_free_space_filter(
         if identity not in seen_references:
             voting_frames.append(frame)
             seen_references.add(identity)
+    # At most DEPTH_FILTER_MAX_FACE_VIEWS comparisons: past them, views spread evenly in pose order vote.
+    distinct = len(voting_frames)
+    allowed = max(2, DEPTH_FILTER_MAX_FACE_VIEWS // max(1, count))
+    bound = None
+    if distinct > allowed:
+        voting_frames = [voting_frames[int(i)] for i in np.linspace(0, distinct - 1, allowed).round()]
+        bound = {"maximum_face_views": DEPTH_FILTER_MAX_FACE_VIEWS, "distinct_views": distinct,
+                 "voting_views": len(voting_frames), "basis": "evenly_spaced_in_pose_order",
+                 "voting_frame_ids": [str(frame["frame_id"]) for frame in voting_frames]}
     # Each sample's views that see past it (counted up to the two that decide) and
     # whether any view agrees with it, gathered one view at a time.
     clear = np.zeros((count, 4), dtype=np.uint8)
@@ -146,7 +166,8 @@ def mesh_depth_free_space_filter(
               "method": "all_vertices_and_centroid_two_views_no_agreeing_sample",
               "absolute_tolerance_provider_units": float(absolute_tolerance),
               "relative_depth_tolerance": float(relative_tolerance),
-              "references": references, "distinct_reference_count": len(voting_frames),
+              "references": references, "distinct_reference_count": distinct,
+              **({"voting_view_bound": bound} if bound is not None else {}),
               "faces_in": count,
               "faces_kept": int(keep.sum()), "faces_removed": int((~keep).sum()),
               "native_collision_qualified": False, "metric_measurement_proven": False}
@@ -343,13 +364,19 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     kept = faces[near & (centroid_distance <= support)]
     del near
     supported = kept
-    depth_filter = None
+    depth_filter = filter_estimate = None
     if reference_frames is not None:
         mask, depth_filter = mesh_depth_free_space_filter(
             vertices, faces=kept, frames=reference_frames, absolute_tolerance=support)
         depth_filter["reference_pose_digest"] = reference_pose_digest
         depth_filter["digest"] = canonical_digest(depth_filter, digest_field="digest")
         kept = kept[mask]
+        if "voting_view_bound" in depth_filter:
+            view_bound = depth_filter["voting_view_bound"]
+            filter_estimate = {"code": COLLIDER_ESTIMATE_FLAG, "reason": DEPTH_FILTER_VIEWS_BOUNDED,
+                               "voting_views": view_bound["voting_views"],
+                               "distinct_views": view_bound["distinct_views"],
+                               "basis": "faces_screened_by_evenly_spaced_views", "claim": "development_only_estimate"}
     support_estimate = None
     if not len(kept):
         if registration_estimate is not None:
@@ -402,6 +429,8 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
         record["registration_estimate"] = registration_estimate
     if support_estimate is not None:
         record["support_estimate"] = support_estimate
+    if filter_estimate is not None:
+        record["depth_filter_estimate"] = filter_estimate
     record["digest"] = canonical_digest(record, digest_field="digest")
     (output_root / "atlas_mesh_registration.json").write_text(json.dumps(record, indent=2) + "\n")
     return record
