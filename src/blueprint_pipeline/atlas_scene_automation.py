@@ -788,12 +788,17 @@ def run_automation(
         # At the job's spending cap nothing more is bought for the room and nothing
         # waits (owner, 2026-11-19): the room stays as filmed, flagged
         # ``spending_cap_reached`` (``website_atlas_pipeline.BACKGROUND_FLOOR_REASONS``).
-        from .hard_stops import JOB_SPEND_CAP
+        from .hard_stops import JOB_SPEND_CAP, wall_kind
         from .website_job_spend_cap import SPENDING_CAP_REACHED
+        capped = _reason(exc) == JOB_SPEND_CAP
+        # A wall by its type is named, so the job waits on it, or ends at once on privacy and rights
+        # (``website_atlas_preview``), as the same wall raised does; a code's own words are read there too.
+        wall = None if capped else wall_kind(exc)
         background = {
             "status": "needs_input",
-            "reason": SPENDING_CAP_REACHED if _reason(exc) == JOB_SPEND_CAP else str(exc),
+            "reason": SPENDING_CAP_REACHED if capped else str(exc),
             "retained_root": str(output_root / "background"),
+            **({"wall": wall} if wall else {}),
         }
     value = {
         "schema_version": "atlas_scene_automation.v1",

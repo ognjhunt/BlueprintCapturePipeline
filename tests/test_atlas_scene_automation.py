@@ -1714,6 +1714,31 @@ def test_a_provider_answer_in_the_background_step_is_raised_not_held_for_input(t
         assert result['status'] == 'needs_input' and result['background']['reason'] == flag
 
 
+@pytest.mark.parametrize('error,wall', [('MoneyStop', 'money'), ('PrivacyRightsStop', 'privacy_rights'),
+                                        ('ValueError', None)])
+def test_a_background_a_typed_wall_stopped_names_its_wall(tmp_path, monkeypatch, error, wall):
+    """The code sweep of 2026-11-24: a background a paid call refused for money was kept as a stop of its own, and
+    the job it parked had no retry time. A wall by its type is named on the background, which the job waits on."""
+    from blueprint_pipeline import atlas_scene_automation as worker
+    from blueprint_pipeline import hard_stops
+    frame = view(tmp_path)
+    pose = {'digest': 'pose', 'binding': {'source_video_digest': 'video'},
+            'operation': {'id': 'already-paid'}, 'depth_unit': 'estimated', 'scale_status': 'estimated'}
+    monkeypatch.setattr(sizes, 'load_views', lambda *args: (pose, [frame]))
+    monkeypatch.setattr(sizes, 'estimate_sizes', lambda **kw: {})
+    refusal = getattr(hard_stops, error, ValueError)('website_atlas_pose_admission_expired')
+
+    def refused(**kw):
+        raise refusal
+    monkeypatch.setattr(edits, 'run_background', refused)
+    result = worker.run_automation(pose_root=tmp_path, inputs={}, review={'automation': plan()}, output_root=tmp_path,
+                                   task_context={}, configuration={'policy': {}}, task_runner=None, pose_runner=None,
+                                   release_blockers=None)
+    assert result['status'] == 'needs_input'
+    assert result['background']['reason'] == 'website_atlas_pose_admission_expired'
+    assert result['background'].get('wall') == wall
+
+
 def _rounds_harness(tmp_path, monkeypatch, counts, *, passes_at=None, receipts=False, bought=None):
     """The editor review rejects ``counts[0]`` views and repair round n rejects ``counts[n]``.
 

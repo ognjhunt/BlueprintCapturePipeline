@@ -831,6 +831,70 @@ def test_a_stop_the_result_names_as_a_wall_keeps_its_own_code_and_waits_on_its_w
     assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == (state, result["reason"])
 
 
+_PRICE = "atlas_runtime_price_review_expired"
+_DISCLOSURE = "website_atlas_pose_disclosure_not_authorized"
+
+
+@pytest.mark.parametrize("result", [
+    # A source pose a typed money wall stopped (``_source_pose`` names it; the pipeline's result carries it).
+    {"status": "needs_input", "stage": "source_pose", "reason": _PRICE, "blockers": [_PRICE], "wall": "money"},
+    # One its code's words alone name.
+    {"status": "needs_input", "stage": "source_pose", "reason": "account_monthly_spend_report_stale",
+     "blockers": ["account_monthly_spend_report_stale"]},
+    # A background a typed money wall stopped (``finalize_background_result`` carries the background's wall).
+    {"status": "needs_input", "download": None, "blockers": ["website_atlas_pose_admission_expired"], "wall": "money"},
+])
+def test_a_source_pose_or_background_a_money_wall_stopped_is_asked_again_until_it_clears(monkeypatch, site, result):
+    """The code sweep of 2026-11-24: such a stop was parked as needs_input with no retry time, and its words or its
+    wall kept every reopen away, so nothing asked again once the money cleared (a price review renewed, the month
+    turned). It now waits as every money wait does, asked again every ``AUTHORITY_RECHECK_SECONDS``."""
+    from blueprint_pipeline.atlas_preparation_job_control import WALL
+    _enqueue(site)
+    world = World(monkeypatch, site, [result, {"status": "processing", "stage": "pose"}])
+    assert world.advance() == "needs_input"
+    job = _job(site)
+    assert (job["reason"], job.get(WALL)) == (result["blockers"][0], result.get("wall"))
+    assert job["retry_at_epoch"] == world.clock + preview.AUTHORITY_RECHECK_SECONDS
+    assert (world.pushed[-1]["state"], world.pushed[-1]["reason"]) == ("needs_input", result["blockers"][0])
+    world.clock = job["retry_at_epoch"]
+    assert world.advance() == "processing" and len(world.runs) == 2
+    assert WALL not in _job(site) and _job(site)["reason"] is None
+
+
+@pytest.mark.parametrize("result", [
+    {"status": "needs_input", "stage": "source_pose", "reason": _DISCLOSURE, "blockers": [_DISCLOSURE],
+     "wall": "privacy_rights"},
+    {"status": "needs_input", "download": None, "blockers": [_DISCLOSURE], "wall": "privacy_rights"},
+])
+def test_a_source_pose_or_background_a_privacy_wall_stopped_ends_the_job_at_once(monkeypatch, site, result):
+    """Its words name no wall, so it was parked with no retry time and every release reopened it to be refused
+    again. It now ends failed at once with its own code, as the same wall raised does."""
+    from blueprint_pipeline.atlas_preparation_job_control import WALL
+    _enqueue(site)
+    world = World(monkeypatch, site, [result])
+    assert world.advance() == "failed"
+    job = _job(site)
+    assert (job["reason"], job[WALL], job["retry_at_epoch"]) == (_DISCLOSURE, "privacy_rights", None)
+    assert preview._parked_without_wall(job) is False
+
+
+def test_a_source_pose_stopped_on_a_withdrawal_ends_as_a_withdrawal(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "needs_input", "stage": "source_pose", "reason": "source_revoked",
+                                       "blockers": ["source_revoked"], "wall": "privacy_rights"}])
+    assert world.advance() == "withdrawn"
+
+
+@pytest.mark.parametrize("code", ["website_image_completion_budget_exhausted", "website_image_completion_budget_exceeded"])
+def test_a_background_blocker_that_only_reads_like_money_keeps_its_own_stop(monkeypatch, site, code):
+    """An image completion's own allowance is no wall a wait clears: with no wall named, it stays a stop of its own,
+    with no retry time, as before."""
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "needs_input", "download": None, "blockers": [code]}])
+    assert world.advance() == "needs_input"
+    assert (_job(site)["reason"], _job(site)["retry_at_epoch"]) == (code, None)
+
+
 def test_a_stop_on_no_wall_with_no_blockers_still_waits_as_a_background_review(monkeypatch, site):
     _enqueue(site)
     world = World(monkeypatch, site, [{"status": "needs_input", "stage": "refined_splat",
