@@ -584,5 +584,9 @@ def test_the_runner_asks_for_a_jobs_retry_now_by_its_label(tmp_path, monkeypatch
     argv = ["retry-now", "--state", str(state), "--label", "austin-apartment-floors", "--reason", BODY["reason"]]
     assert runner.main(argv) == 0 and posts == [ASK]
     assert json.loads(capsys.readouterr().out)["door_outcome"] == "brought_forward"
+    # A host with several handoff buckets: the one holding the job is named, and nothing is listed.
+    monkeypatch.setattr(runner.door, "handoff_bucket", lambda: pytest.fail("listed"))
+    assert runner.main([*argv, "--bucket", "other-bucket"]) == 0 and posts[-1] == {**ASK, "bucket": "other-bucket"}
+    capsys.readouterr()
     assert runner.main(["retry-now", "--state", str(state), "--label", "unknown", "--reason", "r"]) == 2
-    assert len(posts) == 1
+    assert len(posts) == 2

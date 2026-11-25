@@ -5,7 +5,7 @@
     "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py submit --matrix jobs.json -k 2 --state run.json
     "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py follow --state run.json --report report.json
     "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py report --state run.json
-    "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py retry-now --state run.json --label L --reason "fix is live"
+    "$BLUEPRINT_PIPELINE_PYTHON" scripts/test_jobs.py retry-now --state run.json --label L --reason "fix is live" [--bucket B]
 
 A matrix row is ``{"label", "footage_id", "description"}``. A clip mix (``docs/test-footage/clip-mix-v1.json``) is a
 matrix too: its rows marked ``"footage_uploaded": false`` are skipped, and a row the website finds no clip for is
@@ -241,7 +241,8 @@ def retry_now(args: argparse.Namespace, state: dict) -> int:
         print(f"{args.label}: no started job of that label in {args.state}", file=sys.stderr)
         return 2
     accepted = door._json("POST", "/requests", body={"kind": "test-job-retry-now", "job_id": job["job_id"],
-                                                     "reason": args.reason, "bucket": door.handoff_bucket()})
+                                                     "reason": args.reason,
+                                                     "bucket": args.bucket or door.handoff_bucket()})
     for _ in range(120):
         request = door._json("GET", f"/requests/{accepted['id']}")
         verdict = door._terminal(request)
@@ -284,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     retry = commands.add_parser("retry-now", help="bring one job's scheduled retries forward to now (timing only)")
     for flag in ("--state", "--label", "--reason"):
         retry.add_argument(flag, required=True)
+    retry.add_argument("--bucket", help="the handoff bucket holding the job's scene (default: the host's only one)")
     args = parser.parse_args(argv)
     path = Path(args.state)
     state = json.loads(path.read_text()) if path.exists() else {"jobs": []}
