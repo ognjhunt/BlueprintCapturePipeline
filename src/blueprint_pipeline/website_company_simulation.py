@@ -29,7 +29,8 @@ company clip is published (``website_company_clip``):
 - every file is read with the shared outbound scan (``outbound_file_scan``: ids in both forms, account ids,
   keys, host paths, storage, file and web links, bare web addresses, and the text form of every binary USD
   layer) before the zip is made; a finding refuses the package (``refused``), naming the file and the kind;
-- the zip is deterministic (names in order, fixed times and modes), so the same inputs give the same digest; it
+- the zip is deterministic (names in order, fixed modes, every member dated by the capture's own date, never the
+  build's: ``website_company_member_date``), so the same inputs give the same digest; it
   goes to the private artifact store by digest under a name for the capture (withdrawal deletion finds every
   version by that name), the WebApp is told its identity through the signed ``company-simulation`` control
   operation and reads it through the signed ``/api/live-pipeline/website-company-simulations`` route.
@@ -76,6 +77,7 @@ from .website_half_preparation import (COLLISION_ONLY, THRESHOLDS_ASSUMED, THRES
                                        look_views, surface_estimated)
 from .website_build_plan_notes import build_plan_notes
 from .website_company_look import look_ply, look_source, reauthor_look
+from .website_company_member_date import ZIP_EPOCH, member_date
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +127,8 @@ ROTATIONS_STORED_WRONG = ("In that version each Gaussian's rotation is stored in
 #: (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a look is written
 #: again from its source splat with the fixed writer and also ships as a standard 3DGS PLY. v4 (2026-11-21): a plain
 #: README. v5 (2026-11-25): plain zip headers; ZIP64 in the local header alone made macOS refuse the zip (Error 640).
-BUILDER_REVISION = "website_company_simulation_builder.v5"
+#: v6 (2026-11-25): members dated by the capture, not 1980; an object placed where its box meets the room says so.
+BUILDER_REVISION = "website_company_simulation_builder.v6"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
@@ -296,7 +299,6 @@ RULE_WITHHELD_REASONS = frozenset({"website_native_task_profile_preparation_requ
 #: The stage-4 record a rigid website object passes (``task_object_artisan_candidate``, ``_usd_findings``).
 RIGID_STATIC_SCHEMA = "task_evaluation_rigid_replacement_static_qualification.v1"
 _USD = frozenset({".usd", ".usda", ".usdc", ".usdz"})
-_FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _RIGHTS_REFUSALS = re.compile(r"(source_revoked|consent_revoked|consent_expired|website_capture_withdrawn"
                               r"|capture_revoked_or_expired|website_company_simulation_not_permitted"
@@ -599,6 +601,7 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
                                   **({"surface_estimated": True} if capture is not None and "room" in notes
                                      and surface_estimated(capture) else {}), **told,
                                   **({"thresholds_assumed": True} if assumed else {}),
+                                  **({"member_date": member_date(capture)} if capture is not None else {}),
                                   **({"thresholds_confirmed_later": True} if confirmed else {}),
                                   **(build_plan_notes(capture) if capture is not None else {}),
                                   "physics_check": physics_check(
@@ -779,7 +782,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
                                         "generated_patch", "look_views", "surface_estimated", "not_filled_in",
                                         "size_from_its_points",
                                         "size_disagrees_with_published", "destination_overhang",
-                                        "destination_box_meets_room", "library_models",
+                                        "destination_box_meets_room", "member_date", "library_models",
                                         "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
                                         "object_source", "object_shape")
            if source.get(key)},
@@ -1415,7 +1418,7 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
         with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             for name in names:
-                info = zipfile.ZipInfo(name, date_time=_FIXED_TIME)
+                info = zipfile.ZipInfo(name, date_time=tuple(source.get("member_date") or ZIP_EPOCH))
                 info.compress_type, info.create_system, info.external_attr = zipfile.ZIP_DEFLATED, 3, 0o100644 << 16
                 info.file_size = (staging / name).stat().st_size
                 with (staging / name).open("rb") as stream, archive.open(info, "w") as member:

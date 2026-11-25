@@ -7,6 +7,7 @@ host is reached, and nothing is paid for.
 # Covers: src/blueprint_pipeline/website_company_simulation.py
 # Covers: src/blueprint_pipeline/website_company_look.py
 # Covers: src/blueprint_pipeline/outbound_file_scan.py
+# Covers: src/blueprint_pipeline/website_company_member_date.py
 from __future__ import annotations
 
 import hashlib
@@ -340,6 +341,7 @@ def test_a_clean_scene_makes_a_package_that_passes_the_scan_opens_and_is_stable(
     with zipfile.ZipFile(package) as archive:
         names = archive.namelist()
         assert names == sorted(names)
+        # This capture's records carry no date: every member keeps the zip format's first one (``ZIP_EPOCH``).
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
         # Plain headers that agree (2026-11-25: macOS's Archive Utility refused a package whose local headers named a
         # ZIP64 field its central directory did not have): no member is in ZIP64, nor needs a ZIP64 reader.
@@ -401,6 +403,62 @@ def test_a_clean_scene_makes_a_package_that_passes_the_scan_opens_and_is_stable(
     source = sim.simulation_source(job.capture, queue_root=job.queue)
     again = sim.build_package(source, tmp_path / "again.zip", literals=sim.secret_literals(job.capture, source))
     assert again["digest"] == record["digest"]
+
+
+#: Job move-the-lamp-2's capture (``raw/manifest.json``): 2026-11-19 15:09:20.505 UTC, when the upload was received.
+LAMP_CAPTURE_MS = 1795100960505
+
+
+def test_members_carry_the_capture_s_own_date_and_the_same_inputs_give_the_same_bytes(job, tmp_path, monkeypatch):
+    """Finder showed every file of lamp-2's package as made on 1 January 1980 (25 Nov): each member now carries the
+    capture's own date, from its manifest, never the build's, so the same inputs still give the same digest."""
+    import time
+
+    manifest = json.loads((job.capture / "raw/manifest.json").read_text())
+    _write(job.capture / "raw/manifest.json", {**manifest, "capture_start_epoch_ms": LAMP_CAPTURE_MS,
+                                               "capture_start_epoch_ms_basis": "server_upload_received"})
+    world = World(job)
+    assert world.publish()["status"] == "published"
+    record = world.delivered[0]
+    with zipfile.ZipFile(_package(job)) as archive:
+        assert {info.date_time for info in archive.infolist()} == {(2026, 11, 19, 15, 9, 20)}
+    source = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert source["member_date"] == (2026, 11, 19, 15, 9, 20)
+    literals = sim.secret_literals(job.capture, source)
+    # Built again later, with the clock somewhere else entirely: the same bytes.
+    monkeypatch.setattr(time, "time", lambda: 4_102_444_800.0)  # 2100-01-01
+    again = sim.build_package(source, tmp_path / "again.zip", literals=literals)
+    assert again["digest"] == record["digest"]
+    # Another capture date is another package: its revision and its bytes.
+    _write(job.capture / "raw/manifest.json", {**manifest, "capture_start_epoch_ms": LAMP_CAPTURE_MS + 86_400_000})
+    moved = sim.simulation_source(job.capture, queue_root=job.queue)
+    assert moved["member_date"] == (2026, 11, 20, 15, 9, 20)
+    assert sim.simulation_revision(moved) != sim.simulation_revision(source)
+    assert sim.build_package(moved, tmp_path / "moved.zip", literals=literals)["digest"] != record["digest"]
+
+
+def test_the_member_date_falls_back_through_the_capture_s_inputs_and_never_to_now(tmp_path):
+    from blueprint_pipeline import website_company_member_date as dates
+
+    root = tmp_path / "capture"
+    assert dates.member_date(None) == dates.member_date(root) == dates.ZIP_EPOCH == (1980, 1, 1, 0, 0, 0)
+    # The rights' recorded time, when no record gives the capture's start.
+    _write(root / "pipeline/website_task_context.json",
+           {"capture_rights": {"recorded_at_iso": "2026-11-19T15:09:16.758Z"}})
+    assert dates.member_date(root) == (2026, 11, 19, 15, 9, 16)
+    # The delivery's descriptor before it, and the capture's own manifest before both.
+    _write(root / "capture_descriptor.json", {"metadata": {"media_metadata": {"capture_start_epoch_ms": 1795000000000}}})
+    assert dates.member_date(root) == (2026, 11, 18, 11, 6, 40)
+    _write(root / "raw/manifest.json", {"capture_start_epoch_ms": LAMP_CAPTURE_MS})
+    assert dates.member_date(root) == (2026, 11, 19, 15, 9, 20)
+    # A value a zip cannot date (1 ms after 1970, as a browser fixture sends), or that is no time, is passed over.
+    for bad in (1, True, "1795100960505", float("nan"), 10 ** 20):
+        _write(root / "raw/manifest.json", {"capture_start_epoch_ms": bad})
+        assert dates.member_date(root) == (2026, 11, 18, 11, 6, 40), bad
+    # A rights time with no zone is not read as UTC; an unreadable file is passed over.
+    (root / "capture_descriptor.json").write_text("{not json")
+    _write(root / "pipeline/website_task_context.json", {"capture_rights": {"recorded_at_iso": "2026-11-19T15:09:16"}})
+    assert dates.member_date(root) == dates.ZIP_EPOCH
 
 
 def test_published_once_then_current_without_rebuilding_or_resending(job, monkeypatch):
