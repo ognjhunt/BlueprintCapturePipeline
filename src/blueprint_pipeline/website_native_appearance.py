@@ -16,7 +16,7 @@ import numpy as np
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .gaussian_splat_decode import (
-    convert_to_standard_ply, find_splat_transform_cli, read_standard_3dgs_ply, splat_decoder_input_suffix,
+    convert_to_standard_ply, find_splat_transform_cli, splat_decoder_input_suffix, standard_3dgs_ply_rows,
 )
 from .local_reconstruction_adapters import _sha256_file
 from . import particlefield_usd
@@ -57,7 +57,7 @@ def prepare_native_appearance(*, preparation: Mapping[str, Any], base_scene: Map
             raise ValueError("website_native_appearance_cache_changed")
         return prior
     try:
-        read_standard_3dgs_ply(source)
+        standard_3dgs_ply_rows(source)  # the header's checks only: the writer reads the rows a run at a time
         standard = source
         decoder = None
     except ValueError:

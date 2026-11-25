@@ -319,6 +319,40 @@ def read_standard_3dgs_ply(path: str | Path) -> SplatData:
     )
 
 
+def standard_3dgs_ply_rows(path: str | Path) -> tuple[np.ndarray, dict[str, int]]:
+    """A standard float 3DGS PLY's body as a read-only ``(count, properties)`` float32 memory map, and each
+    property's column, after :func:`read_standard_3dgs_ply`'s checks in its order.
+
+    Nothing is decoded here: a caller reads the rows and columns it uses, a run at a time, and
+    each value is the one :func:`read_standard_3dgs_ply` gives.
+    """
+    path = Path(path)
+    with open(path, "rb") as handle:
+        fmt, count, props, offset = _parse_ply_header(handle)
+    if fmt != "binary_little_endian":
+        raise ValueError(f"unsupported PLY format '{fmt}' (need binary_little_endian)")
+    if any(ptype not in _FLOAT_PLY_TYPES for ptype, _ in props):
+        raise ValueError("non-float vertex property; not a standard 3DGS float PLY")
+    names = [name for _, name in props]
+    index = {name: i for i, name in enumerate(names)}
+    missing = [key for key in _REQUIRED_3DGS_PROPS if key not in index]
+    if missing:
+        raise ValueError(f"missing 3dgs properties: {missing}")
+    ncol = len(props)
+    available = max(0, path.stat().st_size - offset) // 4
+    if available < count * ncol:
+        raise ValueError(f"truncated PLY body: expected {count * ncol} floats, got {min(available, count * ncol)}")
+    rest = [name for name in names if re.fullmatch(r"f_rest_[0-9]+", name)]
+    if rest:
+        coefficient_count = 1 + (len(rest) // 3)
+        degree = int(round(coefficient_count**0.5)) - 1
+        if len(rest) % 3 or (degree + 1) ** 2 != coefficient_count:
+            raise ValueError("invalid f_rest property count for spherical harmonics")
+    rows = (np.memmap(path, dtype="<f4", mode="r", offset=offset, shape=(count, ncol)) if count
+            else np.zeros((0, ncol), dtype="<f4"))
+    return rows, index
+
+
 def read_aura_2dgs_surfel_ply(path: str | Path) -> GaussianSurfelData:
     """Read the exact AuraFusion360 float-PLY surflet layout.
 
