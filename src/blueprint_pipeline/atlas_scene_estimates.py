@@ -28,8 +28,10 @@ Codes, each ``scene_estimate:<kind>``:
   the job went on with its best supported candidate, which the site may correct.
 - ``target_role_kept``: the analysis could not decide a target's part in the task; it kept the
   role the analysis gave it.
-- ``destination_guessed``: the job's sentence named no place to put the object; the destination
-  is the harness's choice on the support (``website_destination_area``).
+- ``destination_guessed``: where the goal is set is Blueprint's choice, not a place the site's sentence
+  named: on the destination the sentence names (and, where that surface was a best guess among several,
+  which one), or, where it named none, on the surface the object starts on (``website_destination_area``;
+  the company's page says which, ``website_packet_facts.destination_guessed_words``).
 - ``destination_near_start``: the support left no spot at least the object's longest side away
   from its start; the destination is nearer than that.
 - ``registration_ambiguous``: the object's observed shape fitted the scene almost as well in a second
