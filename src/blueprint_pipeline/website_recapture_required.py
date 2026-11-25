@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .website_track_mask_codec import canonical_track_digest
 
 __all__ = ["CODES", "FIELD", "FRONT_NORMAL_CODE", "ABSTENTION_CODES", "FRAMES_UNUSABLE_CODE", "NOT_OBSERVED_CODE", "REGISTRATION_CODES", "ROOM_BUILT_CODES", "SCHEMA", "record",
            "retains_recapture_required"]
@@ -76,7 +76,7 @@ def retains_recapture_required(handoff: Mapping[str, Any], task_context: Mapping
             and stop.get("task_context_digest") == task_context.get("context_digest")
             and stop.get("provider_mutation_performed") is False
             and handoff.get("schema_version") == "website_scene_handoff.v1"
-            and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+            and handoff.get("digest") == canonical_track_digest(handoff, digest_field="digest")
             and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
             and handoff.get("status") == "needs_input" and handoff.get("blockers") == [stop["code"]]
             and not any(key in handoff for key in ("source_registration", "website_intake_outbox")))

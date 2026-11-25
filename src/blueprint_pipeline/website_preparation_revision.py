@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 import re
 
-from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 
 from .website_preparation_revision_identity import (  # noqa: F401  (re-exported)
     FIELD, PREFIX, RENEWAL_FIELD, RENEWAL_PREFIX, capture_id, renewal, requires_retained_authority, revision)
@@ -22,7 +22,8 @@ def bind_preparation(preparation, *, output_root, capture_root, authority=None):
     if Path(output_root) == Path(capture_root) / 'pipeline' / 'website_scene_preparation':
         return preparation
     from .website_task_target_choice import correction_binding_digest
-    from .core.handoff_lease import guarded_handoff_write_json
+    from .core.handoff_lease import guarded_handoff_write_track_json
+    from .website_track_mask_codec import canonical_track_digest
     digest = correction_binding_digest(Path(capture_root) / 'pipeline')
     if digest is None or Path(output_root) != workspace(capture_root):
         raise ValueError('website_preparation_revision_workspace_changed')
@@ -36,8 +37,10 @@ def bind_preparation(preparation, *, output_root, capture_root, authority=None):
     request['submission_id'] = PREFIX + cross_runtime_canonical_digest(
         {key: item for key, item in request.items() if key != 'submission_id'})[7:]
     revision(request)
-    value['digest'] = canonical_digest(value, digest_field='digest')
-    guarded_handoff_write_json(Path(output_root) / 'preparation.json', value)
+    # A family preparation's source tracks may be compact runs: the codec hashes and writes them to the bytes and
+    # digest the plain lists give.
+    value['digest'] = canonical_track_digest(value, digest_field='digest')
+    guarded_handoff_write_track_json(Path(output_root) / 'preparation.json', value)
     return value
 
 
