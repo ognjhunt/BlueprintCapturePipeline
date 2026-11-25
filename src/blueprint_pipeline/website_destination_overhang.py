@@ -40,12 +40,19 @@ A named area and the places offered to the site are only ever ones that hold it 
 sealer's admission). Wherever relocation, the named area or a site's stored choice finally puts it, it is read
 again there (``Placement.settle``): a spot that holds all of it drops the record; one that no longer holds it moves
 to the nearest spot near it that does, or back to the spot first placed, recorded. A job that had a spot that
-holds the object never stops for it. A footprint with no such spot returns None, and compile stops exactly as
-before; given ``why``, it is filled with what the search found (``unheld``), which compile keeps as
-``destination_unheld`` and every reader words (``website_destination_unheld``): no surface under its
-centre; no spot with the disc on the surface and half the footprint over it; or, at every such spot tested, other
-geometry in its box (job move-the-lamp-2: the wall behind the glass shelf). Every value is an estimate, never a
-measurement.
+holds the object never stops for it.
+
+Where every spot tested with the disc on the surface and half the footprint over it refused only for other geometry
+in its box (``IN_THE_WAY``), the object still goes to the nearest of them (``_through``): only privacy, rights and
+money stop a job, and the estimated box takes in the whole object, not only the base that rests (job move-the-lamp-2,
+25 Nov: the lamp's shade against the wall behind the glass shelf, the shelf's own estimate 8 cm uncertain, so the
+lamp and its rule were left out of the package). From there the spot judges it without that rule, so a named area,
+a site's choice and ``settle`` read it alike, and the placement carries the search's record, flagged
+``scene_estimate:destination_box_meets_room`` (``Placement.fields``); every reader words it
+(``website_destination_unheld.BOX_MEETS_ROOM_NOTE``). Any other footprint with no such spot returns None, and compile
+stops exactly as before; given ``why``, it is filled with what the search found (``unheld``), which compile keeps as
+``destination_unheld`` and every reader words (``website_destination_unheld``): no surface under its centre, or no
+spot with the disc on the surface and half the footprint over it. Every value is an estimate, never a measurement.
 """
 from __future__ import annotations
 
@@ -53,7 +60,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from .atlas_scene_estimates import DESTINATION_OVERHANG
+from .atlas_scene_estimates import DESTINATION_BOX_MEETS_ROOM, DESTINATION_OVERHANG
 from .task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M
 from .website_support_geometry import (FITTED_MAX_FACE_TILT_DEGREES, REGION_EDGE_ROUNDING_M, RESTING_OUTLINE_GRID_STEPS,
                                        RESTING_OUTLINE_MIN_SHARE, destination_clear_of_start, same_support_surface,
@@ -67,6 +74,8 @@ CLUTTER_SEEDS = 24
 #: Why a spot does not hold the object: the first rule it fails, in ``_Spot.holds``' order.
 NEAR_START, TOO_LITTLE_OVER, NEAR_AN_EDGE, IN_ITS_BOX = (
     "near_its_start", "too_little_of_it_over_the_surface", "disc_past_an_edge", "other_geometry_in_its_box")
+#: The placement's record where other geometry stood in its box at every spot that otherwise held it (``_through``).
+PLACED_THROUGH = "placed_with_other_geometry_in_its_box"
 
 
 def _plan(up: int) -> list[int]:
@@ -201,6 +210,7 @@ class _Spot:
                                         window=search_window_m(placement_residual_m) / meters_per_unit, itself=itself)
         self.lattice_points = 0
         self.refused: dict[str, int] = {}  # each spot a search tested and did not hold, by the rule it failed
+        self.through = False  # other geometry in its box no longer refuses a spot (``_through``)
 
     def box(self, centre: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         low, high = np.zeros(3), np.zeros(3)
@@ -222,7 +232,7 @@ class _Spot:
             return TOO_LITTLE_OVER
         if not self.outline.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M / self.mpu):
             return NEAR_AN_EDGE
-        return IN_ITS_BOX if self.obstacles.meet(*self.box(centre)) else None
+        return IN_ITS_BOX if not self.through and self.obstacles.meet(*self.box(centre)) else None
 
     def holds(self, centre: np.ndarray, share: float, radius: float) -> bool:
         """The disc of ``radius`` on the surface, enough of the footprint over it, nothing else in its box there,
@@ -304,13 +314,36 @@ def unheld(spot: _Spot | None, half: np.ndarray, meters_per_unit: float) -> dict
             "physical_measurement": False}
 
 
+def _through(spot: _Spot, around: np.ndarray, radius: float, half: np.ndarray, meters_per_unit: float
+             ) -> tuple[tuple[np.ndarray, float, int] | None, dict[str, Any]]:
+    """The nearest spot to ``around`` that holds the object but for other geometry in its box, and the record of the
+    search that found none clear (``unheld``, flagged); (None, that record) unless other geometry was its only cause
+    (``IN_THE_WAY``). From then on ``spot`` judges every spot without that rule."""
+    found = unheld(spot, half, meters_per_unit)
+    if found.get("cause") != IN_THE_WAY:
+        return None, found
+    spot.through = True
+    near = spot.across(around, radius)
+    if near is None:  # a spot failed only that rule, so one holds now; were none found, it stops as before
+        spot.through = False
+        return None, found
+    return near, {**found, "status": PLACED_THROUGH, "flag": DESTINATION_BOX_MEETS_ROOM}
+
+
 class Placement:
-    """The overhang placement compile carries from its destination check to where the object finally lands."""
+    """The overhang placement compile carries from its destination check to where the object finally lands; ``met``,
+    the search's record where other geometry stood in its box at every spot that otherwise held it (``_through``)."""
 
     def __init__(self, spot: _Spot, centre: np.ndarray, grounded: np.ndarray, record: dict[str, Any] | None,
-                 runtime_to_sim: Any):
-        self.spot, self.centre, self.grounded, self.record = spot, centre, grounded, record
+                 runtime_to_sim: Any, met: dict[str, Any] | None = None):
+        self.spot, self.centre, self.grounded, self.record, self.met = spot, centre, grounded, record, met
         self.runtime_to_sim = np.asarray(runtime_to_sim, dtype=float)
+
+    def fields(self) -> dict[str, Any]:
+        """The preparation's records of where the object lands: what hangs over (``destination_overhang``) and the
+        other geometry in its box there (``destination_box_meets_room``), each only when there is one."""
+        return {**({"destination_overhang": self.record} if self.record else {}),
+                **({"destination_box_meets_room": self.met} if self.met else {})}
 
     def _at(self, sealed: Mapping[str, Any]) -> tuple[np.ndarray, float]:
         """A sealed destination's centre (runtime plan) and the radius the scorer uses there (runtime units)."""
@@ -364,8 +397,9 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
                      why: dict[str, Any] | None = None
                      ) -> tuple[dict[str, Any] | None, Placement | None, list]:
     """The surface, the placement and the position to place on (``position`` with its plan centre slid where
-    needed); (None, None, ``position``) when no spot holds the object, and then ``why``, when given, filled with
-    ``unheld``'s record. ``lower``/``upper`` are its footprint at ``position``, ``start`` its start box on
+    needed), the spot nearest it that holds the object but for other geometry in its box where only that refused
+    every spot (``_through``); else (None, None, ``position``), and then ``why``, when given, filled with ``unheld``'s
+    record. ``lower``/``upper`` are its footprint at ``position``, ``start`` its start box on
     ``start_support`` with compile's ``clearance``, ``radius`` the scorer's disc, ``look`` compile's own
     ``support_under`` lookup."""
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
@@ -393,21 +427,23 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
         # No outline to test a spot on: no spot is proven, but the surface is reported (compile keeps a whole
         # footprint's own support then; an overhang has nothing to stand on).
         return surface, None, list(position)
-    share = spot.share(start_centre)
+    share, met = spot.share(start_centre), None
     if spot.holds(start_centre, share, radius):
         found = (start_centre, share, 1)
     else:
         found = spot.across(start_centre, radius)
         if found is None:
-            if why is not None:
-                why.update(unheld(spot, half, meters_per_unit))
-            return None, None, list(position)
+            found, met = _through(spot, start_centre, radius, half, meters_per_unit)
+            if found is None:
+                if why is not None:
+                    why.update(met)
+                return None, None, list(position)
     centre = found[0]
     placed = list(position)
     for offset, axis in enumerate(plan):
         placed[axis] = float(centre[offset])
     record = spot.record(centre, found[1], start_centre, found[2])
-    return surface, Placement(spot, centre, start_centre, record, runtime_to_sim), placed
+    return surface, Placement(spot, centre, start_centre, record, runtime_to_sim, met), placed
 
 
 def destination_points(row: Mapping[str, Any], frames: Sequence[Mapping[str, Any]], matrix: Any) -> np.ndarray | None:
@@ -440,7 +476,8 @@ def placed_clear(mesh: Any, lower: Sequence[float], upper: Sequence[float], posi
     With no support under the whole footprint, the object may still hold with its centre over one, an overhang
     flagged (``centre_supported``). With one, it can still hold something else there (clutter on a table): only
     when other geometry (never the object's own scan where it starts, ``start``) stands in the object's box at
-    the grounded centre does it slide to the nearest spot that holds it; no such spot is the old stop. Otherwise,
+    the grounded centre does it slide to the nearest spot that holds it; with none, the nearest that holds it but
+    for that geometry (``_through``). Otherwise,
     and wherever no outline can be read to test it, it takes exactly the path it always took, and compile's own
     relocation keeps it off its start. ``why``, when given, is filled as ``centre_supported`` fills it wherever no
     spot holds the object."""
@@ -456,13 +493,15 @@ def placed_clear(mesh: Any, lower: Sequence[float], upper: Sequence[float], posi
     centre = (lower + upper)[plan] / 2
     if spot.outline is None or spot.obstacles is None or not spot.obstacles.meet(*spot.box(centre)):
         return whole, None, grounded
-    found = spot.across(centre, options["radius"])
+    found, met = spot.across(centre, options["radius"]), None
     if found is None:
-        if why is not None:
-            why.update(unheld(spot, (upper - lower)[plan] / 2, options["meters_per_unit"]))
-        return None, None, grounded
+        found, met = _through(spot, centre, options["radius"], (upper - lower)[plan] / 2, options["meters_per_unit"])
+        if found is None:
+            if why is not None:
+                why.update(met)
+            return None, None, grounded
     placed = list(grounded)
     for offset, axis in enumerate(plan):
         placed[axis] = float(found[0][offset])
     record = spot.record(found[0], found[1], centre, found[2])
-    return whole, Placement(spot, found[0], centre, record, options["runtime_to_sim"]), placed
+    return whole, Placement(spot, found[0], centre, record, options["runtime_to_sim"], met), placed

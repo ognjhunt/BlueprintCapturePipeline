@@ -1895,7 +1895,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination, **searched,
-        **surface_estimate, **subject_extent, **({"destination_overhang": overhang.record} if overhang and overhang.record else {}),
+        **surface_estimate, **subject_extent, **(overhang.fields() if overhang else {}),  # an overhang, its box met
         **({"destination_unheld": destination_unheld} if destination_unheld else {}),
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),

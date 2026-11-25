@@ -211,7 +211,7 @@
    "why_here": "The job words are test job 4's, as quoted in website_unscanned_surface (its glass wall shelf had level collider faces over about 5% of its area). The repo does not record whether move-the-lamp-2 reached the estimated surface. The runner skips this row until footage_id is filled in.",
    "code_path": [
     "website_unscanned_surface: the destination's top estimated from its masks and the frames' cameras when less than half its area holds level collider faces; sealed in the base scene as scene_estimate:destination_surface_estimated",
-    "package: SURFACE_ESTIMATED_NOTE (website_company_simulation); when no estimate holds, compile raises task_destination_surface_contact_required and the room package ships"
+    "package: SURFACE_ESTIMATED_NOTE (website_company_simulation); when no estimate holds, compile raises task_destination_surface_contact_required and the room package ships; when one holds and only other geometry (the wall behind the shelf) stands in the object's box wherever it would rest, the object and its rule ship, flagged scene_estimate:destination_box_meets_room (website_destination_overhang)"
    ],
    "matrix_rows": [
     "glass-destination-surface-estimated"

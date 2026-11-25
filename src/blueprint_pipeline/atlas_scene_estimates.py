@@ -48,6 +48,9 @@ Codes, each ``scene_estimate:<kind>``:
 - ``destination_overhang``: no surface holds the object's whole footprint at its destination; it is
   set down with its centre and at least half its footprint over the surface, the rest over the
   edge (``website_destination_overhang``).
+- ``destination_box_meets_room``: wherever the object would rest on its destination with its centre and
+  half its footprint over the surface, its estimated box, which takes in all of it, reached into other
+  geometry of the room; it is placed at the nearest such spot all the same (``website_destination_overhang``).
 
 Pure apart from reading the retained JSON records named. Records written before these estimates
 existed carry none of their fields and give no code.
@@ -104,6 +107,9 @@ OBJECT_SIZE_DISAGREES_WITH_PUBLISHED = "scene_estimate:object_size_disagrees_wit
 #: The object's footprint is larger than the supported part of its destination surface: set down with its centre
 #: over it, part of its footprint over the edge (``website_destination_overhang``).
 DESTINATION_OVERHANG = "scene_estimate:destination_overhang"
+#: Wherever the object would rest on its destination surface, its estimated box reached into other geometry of the
+#: room (job move-the-lamp-2: the wall behind a glass shelf); it is placed at the nearest such spot, flagged.
+DESTINATION_BOX_MEETS_ROOM = "scene_estimate:destination_box_meets_room"
 #: No catalog robot fits the job on paper (``website_robot_fit_precheck``): a note on the job, never a stop.
 #: Carried as ``scene_estimate:robot_fit_none:<cause>``, the cause that refused the most candidates.
 ROBOT_FIT_NONE = "scene_estimate:robot_fit_none"
@@ -118,7 +124,8 @@ CODES = frozenset({LEVEL, APPEARANCE, FLOOR, COLLIDER, CITATIONS, SURROUNDING, T
                    REGISTRATION_AMBIGUOUS, PLACEMENT_UNCERTAINTY, SUPPORT_HEIGHT, SUPPORT_GUESSED,
                    TASK_VIEWS_DROPPED, SURROUNDINGS_GENERATED, SURROUNDINGS_PAST_BUDGET,
                    DESTINATION_SURFACE_ESTIMATED,
-                   OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG})
+                   OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG,
+                   DESTINATION_BOX_MEETS_ROOM})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -237,8 +244,10 @@ def preparation_record_flags(value: Mapping[str, Any]) -> set[str]:
         flags.append(DESTINATION_SURFACE_ESTIMATED)
     extent = _mapping(value.get("subject_extent"))
     flags += [code for code in (extent.get("flag"), _mapping(extent.get("published_cross_check")).get("flag"),
-                                _mapping(value.get("destination_overhang")).get("flag"))
-              if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG)]
+                                _mapping(value.get("destination_overhang")).get("flag"),
+                                _mapping(value.get("destination_box_meets_room")).get("flag"))
+              if code in (OBJECT_SIZE_FROM_ITS_POINTS, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, DESTINATION_OVERHANG,
+                          DESTINATION_BOX_MEETS_ROOM)]
     return {code for code in flags if code in CODES} | (box_fit & TASK_OBJECT_BOX_FIT_FLAGS)
 
 

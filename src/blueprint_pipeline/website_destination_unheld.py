@@ -9,6 +9,11 @@ job page (``website_packet_facts``) say it in these words. Job move-the-lamp-2 (
 glass shelf; what did not fit was its whole box, shade and all, clear of the wall behind the shelf with its centre
 5 cm inside the shelf's edges.
 
+Where the only cause is other geometry in the object's box (``IN_THE_WAY``), the object is placed all the same at the
+nearest spot that holds it but for that (``website_destination_overhang._through``), flagged
+``scene_estimate:destination_box_meets_room``: the package (``BOX_MEETS_ROOM_NOTE``) and the company's job page
+(``BOX_MEETS_ROOM_SENTENCE``) say so in these words, and nothing says the object could not be placed.
+
 Pure and import-free, so the readers' lanes import nothing of the geometry.
 """
 from __future__ import annotations
@@ -31,6 +36,17 @@ _WHY = {
     TOO_SMALL: (f"no spot it tried had room for the object's centre at least {_INSIDE} inside the surface's edges with "
                 "at least half of the object's estimated box over the surface."),
     NO_SURFACE: "no surface was found under the place the object was to go."}
+#: Placed where its box meets the room (``IN_THE_WAY`` alone): the README of a package with the object and its rule.
+BOX_MEETS_ROOM_NOTE = ("Where the success rule's goal is, the job's object's estimated box, which takes in the whole "
+                       "object and not only its base, reaches into another surface of the room, as it did at every "
+                       f"spot Blueprint tried with the object's centre at least {_INSIDE} inside the surface's edges "
+                       "and at least half of the object over the surface. The goal is the nearest such spot all the "
+                       "same; Blueprint did not test whether the object fits there.")
+#: The same on the company's job page (``website_packet_facts.ESTIMATE_SENTENCES``).
+BOX_MEETS_ROOM_SENTENCE = ("Wherever the object would rest on the surface it goes to, its estimated box, which takes in "
+                           "the whole object and not only its base, reached into another surface of the room: the "
+                           "goal is at the nearest such spot all the same, and Blueprint did not test whether the "
+                           "object fits there.")
 
 
 def sentence(cause: object, surface: str) -> str | None:

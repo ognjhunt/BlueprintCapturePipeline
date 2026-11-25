@@ -15,7 +15,7 @@ import trimesh
 
 from blueprint_pipeline import website_destination_overhang as overhang
 from blueprint_pipeline import website_task_preparation as preparation
-from blueprint_pipeline.atlas_scene_estimates import DESTINATION_OVERHANG
+from blueprint_pipeline.atlas_scene_estimates import DESTINATION_BOX_MEETS_ROOM, DESTINATION_OVERHANG
 from blueprint_pipeline.website_support_geometry import (RESTING_OUTLINE_GRID_STEPS, RESTING_OUTLINE_MIN_SHARE,
                                                        destination_clear_of_start, support_under)
 from blueprint_pipeline.website_surface_target_admission import website_target_radius, website_target_reach
@@ -154,10 +154,19 @@ def test_a_box_into_the_wall_slides_along_the_shelf_until_it_clears(mpu, up_sign
     assert record["largest_overhang_m"] == pytest.approx(z + 0.09 - 0.16, abs=0.003)  # all of it at the front
 
 
-def test_no_room_above_the_shelf_stays_blocked():
+def test_no_room_above_the_shelf_places_it_where_it_rests_flagged():
+    """Only privacy, rights and money stop a job: a shelf above that the box meets everywhere is flagged, the object
+    placed where it rests with its centre and half its footprint over the shelf (job move-the-lamp-2)."""
     mesh = _mesh(0.16, lid=True)  # a shelf 10 cm above: a 45 cm box meets it everywhere
     lower, upper = _footprint(0.3, 0.08, 0.21, 0.18)
-    assert _place(mesh, lower, upper)[:2] == (None, None)
+    why: dict = {}
+    surface, placement, position = _place(mesh, lower, upper, why=why)
+    assert surface is not None and placement is not None and why == {}
+    x, z = _metres(position, mpu=1.0, up_sign=1)
+    assert _shelf_share(x, z, 0.21, 0.18, 0.16) >= RESTING_OUTLINE_MIN_SHARE - 1e-9
+    met = placement.fields()["destination_box_meets_room"]
+    assert met["flag"] == DESTINATION_BOX_MEETS_ROOM and met["status"] == overhang.PLACED_THROUGH
+    assert met["cause"] == overhang.IN_THE_WAY and met["refused"][overhang.IN_ITS_BOX] > 0
 
 
 def test_low_clutter_moves_a_short_object_and_the_box_stops_at_its_own_height():
@@ -308,7 +317,7 @@ def test_clutter_on_a_wholly_supported_surface_slides_the_object_clear_of_it():
     assert x + 0.06 <= 0.22 + 1e-9 or x - 0.06 >= 0.38 - 1e-9  # its box no longer meets the book
 
 
-def test_a_clear_wholly_supported_spot_takes_the_old_path_and_clutter_everywhere_is_the_old_stop():
+def test_a_clear_wholly_supported_spot_takes_the_old_path_and_clutter_everywhere_is_flagged_where_it_stands():
     from blueprint_pipeline.website_support_geometry import support_under
     lower, upper = _footprint(0.3, 0.15, 0.12, 0.12, height=0.2)
     clear = _mesh(0.3)
@@ -317,7 +326,10 @@ def test_a_clear_wholly_supported_spot_takes_the_old_path_and_clutter_everywhere
     full = _mesh(0.3, boxes=[((0.0, TOP, 0.0), (0.6, TOP + 0.05, 0.3))])
     whole = support_under(full, lower, upper, up=1, meters_per_unit=1.0)
     if whole is not None:
-        assert _clear(full, lower, upper, whole)[:2] == (None, None)
+        surface, placement, position = _clear(full, lower, upper, whole)
+        # The grounded centre already holds it but for the board: it stays there, flagged.
+        assert surface == whole and np.allclose(position, (lower + upper) / 2)
+        assert placement.fields()["destination_box_meets_room"]["flag"] == DESTINATION_BOX_MEETS_ROOM
 
 
 def test_the_objects_own_scan_where_it_starts_is_not_clutter():
@@ -485,11 +497,14 @@ def test_where_no_spot_holds_it_the_search_says_why():
     walled = _mesh(0.12, wall=True)
     lower, upper = _footprint(0.3, 0.06, 0.20, 0.22)
     why: dict = {}
-    assert _place(walled, lower, upper, why=why)[:2] == (None, None)
-    assert why["cause"] == overhang.IN_THE_WAY and why["status"] == "no_spot_holds_it"
-    assert why["refused"][overhang.IN_ITS_BOX] > 0 and overhang.NEAR_START not in why["refused"]
-    assert why["spots_tested"] == sum(why["refused"].values())
-    assert why["footprint_m"] == pytest.approx([0.20, 0.22]) and why["physical_measurement"] is False
+    surface, placement, _ = _place(walled, lower, upper, why=why)
+    # Only the wall stood in its way: it is placed, and the search's record travels with it, flagged, not as a stop.
+    assert surface is not None and placement is not None and why == {}
+    met = placement.met
+    assert met["cause"] == overhang.IN_THE_WAY and met["status"] == overhang.PLACED_THROUGH
+    assert met["refused"][overhang.IN_ITS_BOX] > 0 and overhang.NEAR_START not in met["refused"]
+    assert met["spots_tested"] == sum(met["refused"].values())
+    assert met["footprint_m"] == pytest.approx([0.20, 0.22]) and met["physical_measurement"] is False
     # Across a 14 cm shelf, 30 cm deep: no spot has half of it over the shelf.
     why = {}
     lower, upper = _footprint(0.3, 0.07, 0.10, 0.30)
@@ -513,22 +528,48 @@ def test_clutter_everywhere_on_a_wholly_supported_surface_says_why():
     whole = support_under(full, lower, upper, up=1, meters_per_unit=1.0)
     assert whole is not None  # the shelf under it, a 5 cm board over all of it
     why: dict = {}
-    assert _clear(full, lower, upper, whole, why=why)[:2] == (None, None)
-    assert why["cause"] == overhang.IN_THE_WAY and why["refused"][overhang.IN_ITS_BOX] > 0
+    surface, placement, _ = _clear(full, lower, upper, whole, why=why)
+    assert surface == whole and why == {}
+    met = placement.met
+    assert met["cause"] == overhang.IN_THE_WAY and met["refused"][overhang.IN_ITS_BOX] > 0
 
 
 #: A cup 0.22 m across: wider than the 0.12 m shelf is deep by more than the 5 cm disc leaves room for.
 WIDER_CUP = ((-0.71, 0.75, 2.39), (-0.49, 0.87, 2.61))
 
 
-def test_compile_keeps_why_no_spot_on_the_shelf_held_the_object(tmp_path):
+def test_compile_places_the_object_where_only_the_wall_stands_in_its_box_and_flags_it(tmp_path):
     """Job move-the-lamp-2 in the ray-cast room: wherever the disc lies on the shallow shelf with half the cup over it,
-    the wall behind stands in the cup's box. Compile stops on the same code as before and keeps what its search
-    found, which the room package's README words."""
+    the wall behind stands in the cup's box. That stopped compile (``task_destination_surface_contact_required``), so
+    the room package shipped without the object or its rule. It protects no privacy, rights or money: compile now
+    goes on with the goal on that shelf, at the nearest such spot, and keeps what its search found, flagged."""
+    from blueprint_pipeline.atlas_scene_estimates import preparation_record_flags
     value = preparation.compile_website_scene_preparation(**_arguments(tmp_path, shelf=SHALLOW, cup_box=WIDER_CUP))
-    assert "task_destination_surface_contact_required" in value["blockers"]
-    unheld = value["destination_unheld"]
-    assert unheld["cause"] == overhang.IN_THE_WAY and unheld["spots_tested"] > 0
-    assert unheld["refused"][overhang.IN_ITS_BOX] > 0 and unheld["physical_measurement"] is False
-    assert min(unheld["footprint_m"]) > 0.2 and "destination_overhang" not in value
+    assert "task_destination_surface_contact_required" not in value["blockers"]
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    assert "destination_unheld" not in value  # nothing says the object could not be placed
+    met = value["destination_box_meets_room"]
+    assert met["cause"] == overhang.IN_THE_WAY and met["spots_tested"] > 0 and met["flag"] == DESTINATION_BOX_MEETS_ROOM
+    assert met["refused"][overhang.IN_ITS_BOX] > 0 and met["physical_measurement"] is False
+    assert min(met["footprint_m"]) > 0.2
+    # The goal rests on the shelf the job names, its rule the rigid one, contact-bound to that surface.
+    destination = value["destination"]
+    assert destination["basis"] == "registered_estimated_visible_bounds_and_collider_contact"
+    assert value["intake_request"]["task"]["destination"] == destination
+    assert value["intake_request"]["task"]["success"]["maximum_final_planar_target_error_m"] > 0
+    assert DESTINATION_BOX_MEETS_ROOM in preparation_record_flags(value)
     preparation.json.dumps(value, allow_nan=False)
+
+
+def test_where_its_box_meets_the_room_every_reader_says_so_and_none_says_it_was_not_placed(tmp_path):
+    """The flag reaches the company's job page and the package's README in one set of words."""
+    from blueprint_pipeline import website_destination_unheld as unheld
+    from blueprint_pipeline.website_half_preparation import size_notes
+    from blueprint_pipeline.website_packet_facts import ESTIMATE_SENTENCES, measured_and_estimated
+    value = preparation.compile_website_scene_preparation(**_arguments(tmp_path, shelf=SHALLOW, cup_box=WIDER_CUP))
+    estimated = [row["text"] for row in measured_and_estimated(value, None, None)[1]]
+    assert ESTIMATE_SENTENCES[DESTINATION_BOX_MEETS_ROOM] == unheld.BOX_MEETS_ROOM_SENTENCE
+    assert unheld.BOX_MEETS_ROOM_SENTENCE in estimated
+    assert not any(text.startswith("Blueprint could not place") for text in estimated)
+    assert size_notes(value)["destination_box_meets_room"] is True
+    assert "destination_box_meets_room" not in size_notes({**value, "destination_box_meets_room": None})

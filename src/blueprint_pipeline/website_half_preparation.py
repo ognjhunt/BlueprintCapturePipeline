@@ -195,15 +195,17 @@ def success_basis(preparation: Mapping[str, Any]) -> dict[str, str] | None:
 
 def size_notes(preparation: Mapping[str, Any]) -> dict[str, bool]:
     """What the preparation says of the object's size (``subject_extent``) and where it rests: read from its own
-    points, an exact model's published size that disagrees, and a destination it overhangs (``destination_overhang``).
-    Empty when none, so its package says what it said before."""
+    points, an exact model's published size that disagrees, a destination it overhangs (``destination_overhang``), and
+    one whose other geometry stands in its box wherever it would rest (``destination_box_meets_room``). Empty when
+    none, so its package says what it said before."""
     extent = preparation.get("subject_extent")
     extent = extent if isinstance(extent, Mapping) else {}
     check = extent.get("published_cross_check") if isinstance(extent.get("published_cross_check"), Mapping) else {}
-    overhang = preparation.get("destination_overhang")
+    overhang, met = preparation.get("destination_overhang"), preparation.get("destination_box_meets_room")
     return {**({"size_from_its_points": True} if extent.get("status") == "from_its_own_points" else {}),
             **({"size_disagrees_with_published": True} if check.get("status") == "disagrees" else {}),
-            **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {})}
+            **({"destination_overhang": True} if isinstance(overhang, Mapping) and overhang.get("flag") else {}),
+            **({"destination_box_meets_room": True} if isinstance(met, Mapping) and met.get("flag") else {})}
 
 
 def object_source(configuration: Mapping[str, Any]) -> dict[str, str]:

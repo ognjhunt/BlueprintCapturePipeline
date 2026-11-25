@@ -156,8 +156,7 @@ JOINT_AS_AUTHORED = ("The joint's range is from the object's authored file and t
 #: The same, for a half whose rule is withheld (``RULE_WITHHELD_REASONS``): no rule, so no success interval.
 JOINT_AS_AUTHORED_NO_RULE = "The joint's range is from the object's authored file; no simulator moved the joint."
 PHYSICS_CHECK_WORDS = {
-    "isaac_sim": (),
-    "not_run": (NO_SIMULATOR,),
+    "isaac_sim": (), "not_run": (NO_SIMULATOR,),
     "not_run_static_check_passed": (STATIC_CHECK_PASSED, NO_SIMULATOR),
     "not_run_joint_as_authored": (NO_SIMULATOR, JOINT_AS_AUTHORED),
     "not_run_joint_as_authored_no_rule": (NO_SIMULATOR, JOINT_AS_AUTHORED_NO_RULE),
@@ -595,8 +594,7 @@ def _half(scene: Path, status: Mapping[str, Any], *, generated: str | None = Non
             continue
         source: dict[str, Any] = {"packet_dir": packet, "plan_path": plan_path, "plan": plan,
                                   "plan_digest": plan.get("plan_digest"), "status": dict(status), "files": {},
-                                  "refusal": None, **notes,
-                                  **({"generated_patch": generated} if generated else {}),
+                                  "refusal": None, **notes, **({"generated_patch": generated} if generated else {}),
                                   **({"look_views": True} if look else {}),
                                   **({"surface_estimated": True} if capture is not None and "room" in notes
                                      and surface_estimated(capture) else {}), **told,
@@ -770,8 +768,7 @@ def physics_check(packet: Path, plan: Mapping[str, Any], *, rule_withheld: bool 
 
 def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKAGE_BYTES) -> str:
     """Names this package: the files' digests, their placements, the success rule, the builder and the cap."""
-    return canonical_digest({
-        "builder": BUILDER_REVISION, "format": FORMAT, "max_bytes": int(max_bytes),
+    return canonical_digest({"builder": BUILDER_REVISION, "format": FORMAT, "max_bytes": int(max_bytes),
         "files": {prim: {key: row[key] for key in ("sha256", "size_bytes", "suffix", "placement")}
                   for prim, row in sorted(source["files"].items())},
         "rule": source.get("rule"), "axis": source.get("axis"), "refusal": source.get("refusal"),
@@ -781,7 +778,8 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
         **{key: source[key] for key in ("removed_items", "appearance_quality", "support_not_held", "room", "plan_notes",
                                         "generated_patch", "look_views", "surface_estimated", "not_filled_in",
                                         "size_from_its_points",
-                                        "size_disagrees_with_published", "destination_overhang", "library_models",
+                                        "size_disagrees_with_published", "destination_overhang",
+                                        "destination_box_meets_room", "library_models",
                                         "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
                                         "object_source", "object_shape")
            if source.get(key)},
@@ -1230,6 +1228,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
              *([SIZE_FROM_ITS_POINTS_NOTE] if source.get("size_from_its_points") else []),
              *([SIZE_DISAGREES_WITH_PUBLISHED_NOTE] if source.get("size_disagrees_with_published") else []),
              *([DESTINATION_OVERHANG_NOTE] if source.get("destination_overhang") else []),
+             *([unheld.BOX_MEETS_ROOM_NOTE] if source.get("destination_box_meets_room") else []),
              *([SUPPORT_REGION_NOT_HELD if source["support_not_held"] == "region" else SUPPORT_NOT_HELD]
                if source.get("support_not_held") and not withheld else []),
              *([ROOM_NOT_RUN, GOAL_ESTIMATED if room["success_rule_assumed"] else NO_RULE,
@@ -1245,8 +1244,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                   if room.get("objects") else []),
                 *([NOTHING_TAKEN_OUT] if room.get("nothing_taken_out") else []),
                 *([NOT_FILLED_IN] if room.get("not_filled_in") else []), *([SCALE_NOT_MEASURED_NOTE] if unscaled else [])]
-               if room is not None else []),
-             *([NO_RULE] if withheld else []),
+               if room is not None else []), *([NO_RULE] if withheld else []),
              *half_preparation.object_note(source),
              *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else []),
              *(([THRESHOLDS_CONFIRMED_LATER] if source.get("thresholds_confirmed_later") else [THRESHOLDS_ASSUMED])
@@ -1403,8 +1401,7 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
         credited = {"library_files": library_notes.credited_files(source, staging, placed)}  # every file of a model
         (staging / "README.txt").write_text(_readme({**source, **credited}, placed, [*names, "README.txt"], units,
-                                                    offsets, plys, first_written),
-                                            encoding="utf-8")
+                                                    offsets, plys, first_written), encoding="utf-8")
         on_time()
         _resolves_inside(staging, room=source.get("room") is not None)
         findings = scan_tree(staging, [*literal_forms(literals), *(words or [])], scratch=scratch, before_each=on_time,

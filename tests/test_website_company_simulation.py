@@ -2470,24 +2470,30 @@ def test_gap_views_not_admitted_are_named_in_a_package_with_the_job_s_object(job
         assert readme.count(sim.NOT_FILLED_IN) == (1 if expected else 0)
 
 
-@pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees", "overhang"])
+@pytest.mark.parametrize("extent", [None, "from_its_own_points", "kept", "disagrees", "overhang", "box_meets_room"])
 def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_it_was(job, tmp_path, extent):
     """The object's size read again from its own points, its masks' spill left out (``website_object_extent``):
-    the README says so in one sentence, and says when the exact model's published size disagrees with it, and when
-    it overhangs its destination (``website_destination_overhang``). A job whose box fit its masks and whose
-    destination holds it records nothing and its package is unchanged, at the same revision."""
+    the README says so in one sentence, and says when the exact model's published size disagrees with it, when
+    it overhangs its destination (``website_destination_overhang``), and when its box meets the room wherever it would
+    rest there (job move-the-lamp-2, placed all the same). A job whose box fit its masks and whose destination holds it
+    records nothing and its package is unchanged, at the same revision."""
+    from blueprint_pipeline.website_destination_unheld import BOX_MEETS_ROOM_NOTE
     before = sim.simulation_source(job.capture, queue_root=job.queue)
     preparation = job.capture / "pipeline" / "website_scene_preparation"
     if extent is not None:
-        record = {"status": "kept" if extent in ("kept", "overhang") else "from_its_own_points",
+        record = {"status": "kept" if extent in ("kept", "overhang", "box_meets_room") else "from_its_own_points",
                   **({"published_cross_check": {"status": "disagrees"}} if extent == "disagrees" else {})}
         _write(preparation / "preparation.json", {"subject_extent": record, **(
-            {"destination_overhang": {"flag": "scene_estimate:destination_overhang"}} if extent == "overhang" else {})})
+            {"destination_overhang": {"flag": "scene_estimate:destination_overhang"}} if extent == "overhang" else {}),
+            **({"destination_box_meets_room": {"flag": "scene_estimate:destination_box_meets_room",
+                                               "cause": "other_geometry_in_its_box_wherever_it_would_rest"}}
+               if extent == "box_meets_room" else {})})
         handoff = {"status": "intake_ready", "preparation_path": str(preparation / "preparation.json")}
         handoff["digest"] = canonical_digest(handoff, digest_field="digest")
         _write(preparation / "handoff.json", handoff)
     expected = {"size_from_its_points": extent in ("from_its_own_points", "disagrees"),
-                "size_disagrees_with_published": extent == "disagrees", "destination_overhang": extent == "overhang"}
+                "size_disagrees_with_published": extent == "disagrees", "destination_overhang": extent == "overhang",
+                "destination_box_meets_room": extent == "box_meets_room"}
     assert sim.size_notes(job.capture) == {key: True for key, value in expected.items() if value}
     source = sim.simulation_source(job.capture, queue_root=job.queue)
     assert (sim.simulation_revision(source) == sim.simulation_revision(before)) is (not any(expected.values()))
@@ -2498,6 +2504,8 @@ def test_an_object_sized_from_its_own_points_is_named_in_one_sentence_only_when_
     assert (sim.SIZE_DISAGREES_WITH_PUBLISHED_NOTE in readme) is expected["size_disagrees_with_published"]
     assert readme.count("points of the object") == (1 if expected["size_from_its_points"] else 0)
     assert (sim.DESTINATION_OVERHANG_NOTE in readme) is expected["destination_overhang"]
+    assert (" ".join(BOX_MEETS_ROOM_NOTE.split()) in readme) is expected["destination_box_meets_room"]
+    assert "could not place" not in readme  # a package with the object never says it could not be placed
 
 
 # --- a look written again from its source splat, and its PLY ------------------------------------------------------

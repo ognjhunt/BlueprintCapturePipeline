@@ -29,9 +29,9 @@ from pathlib import Path
 from typing import Any
 
 from .atlas_automation_plan import SCENE_COMPLETION_NOT_ADMITTED
-from .atlas_scene_estimates import (DESTINATION_OVERHANG, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED,
-                                    OBJECT_SIZE_FROM_ITS_POINTS, SUPPORT_GUESSED, SUPPORT_HEIGHT,
-                                    preparation_record_flags)
+from .atlas_scene_estimates import (DESTINATION_BOX_MEETS_ROOM, DESTINATION_OVERHANG,
+                                    OBJECT_SIZE_DISAGREES_WITH_PUBLISHED, OBJECT_SIZE_FROM_ITS_POINTS,
+                                    SUPPORT_GUESSED, SUPPORT_HEIGHT, preparation_record_flags)
 from . import website_destination_unheld as unheld
 
 SCHEMA_VERSION = "website_packet_facts.v1"
@@ -52,6 +52,7 @@ ESTIMATE_SENTENCES = {
     "scene_estimate:surroundings_past_frame_budget": "The views of the room around the job's area were more views than the rebuild takes beside the job's area, and were left out. Any of the room around it in the simulation is generated from the footage of the job's area.",
     SUPPORT_GUESSED: "No surface lay at the object's estimated bottom: Blueprint chose the surface it rests on from the video (the one its frames show it touching, else the nearest under it) and corrected where it rests onto that surface, as the object size line says.",
     DESTINATION_OVERHANG: "No surface at the destination holds the object's whole footprint: it is placed with its centre over the surface and part of its footprint over the edge, as the overhang line says.",
+    DESTINATION_BOX_MEETS_ROOM: unheld.BOX_MEETS_ROOM_SENTENCE,
     OBJECT_SIZE_FROM_ITS_POINTS: "The object's masks also took in what lies under or behind it in some frames: Blueprint estimated its size from the video's points of the object that the frames agree on, as the object size line says.",
     OBJECT_SIZE_DISAGREES_WITH_PUBLISHED: "The published size of the object's exact model disagrees with the size estimated from the video; the simulation keeps the video's estimate.",
     "scene_estimate:destination_surface_estimated": "The destination shelf or surface did not show in the scan (glass and other see-through or shiny surfaces often do not); it was estimated from its visible edges in the video and is in the collision file, not in the look.",
