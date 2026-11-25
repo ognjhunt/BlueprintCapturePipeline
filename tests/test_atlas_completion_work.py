@@ -97,6 +97,48 @@ def test_a_lamp_size_room_with_a_captured_object_fits(tmp_path):
     assert estimate.fits() and not (tmp_path / 'completion' / work.RECORD).exists()
 
 
+def test_a_room_whose_survey_needs_no_support_check_is_charged_the_one_its_aiming_makes(tmp_path):
+    """180 views, the survey's photographs every one of them and every survey camera at a recorded centre: the survey
+    computes no support masks, but the aiming's context samples need every view's, and a later step computes them
+    again before its planner. Without them its repeated work came to 398 reference seconds of 900; with them, 912."""
+    views = [_view(index) for index in range(180)]
+    estimate = work.CompletionWork(root=tmp_path / 'completion', frames=views, photographs=views,
+                                   geometry_frames=views, candidates=[_camera(view) for view in views],
+                                   splat_root=_export(tmp_path, 1_000_000))
+    with pytest.raises(ValueError, match=f'^{work.WORK_EXCEEDS_STEP}$'):
+        estimate.admit_survey()
+    record = json.loads((tmp_path / 'completion' / work.RECORD).read_text())
+    support = work.UNIT_SECONDS['support_per_point_pair'] * 720 * 1280 * 180 * 179
+    assert 'survey_support' not in record['reference_seconds_by_phase']
+    assert record['reference_seconds_by_phase']['aiming_support'] == round(support, 1)
+    assert record['repeated_reference_seconds_by_phase']['aiming_support'] == round(support, 1)
+    assert record['reference_seconds'] <= record['available_reference_seconds']['whole_pass']
+    assert (record['repeated_reference_seconds'] - support < record['available_reference_seconds']['repeated_before_planner']
+            < record['repeated_reference_seconds'])
+
+
+def test_a_view_sets_support_check_is_charged_where_the_pass_first_makes_it_and_again_on_a_later_step(tmp_path):
+    views = [_view(index) for index in range(40)]
+    every, references = (work.UNIT_SECONDS['support_per_point_pair'] * 720 * 1280 * count * (count - 1)
+                         for count in (40, 20))
+    # The survey's photographs are every view and a camera moves: the survey computes their masks and the aiming reads
+    # them from its cache, but a later step's aiming computes them again.
+    moved = work.CompletionWork(root=tmp_path / 'moved', frames=views, photographs=views, geometry_frames=views,
+                                candidates=[_camera(views[0], offset=.3)], splat_root=_export(tmp_path / 'a', 10**6))
+    assert moved.phases['survey_support'] == pytest.approx(every) and 'aiming_support' not in moved.phases
+    assert moved.repeated() == pytest.approx(moved.phases['prelude'] + moved.phases['aiming_reads'] + every)
+    # The photographs are reference views and every survey camera sits at one's centre: the aiming computes every
+    # view's masks, and the first aimed survey whose cameras move the references', once in the pass.
+    centred = work.CompletionWork(root=tmp_path / 'centred', frames=views, photographs=views[::2],
+                                  geometry_frames=views, candidates=[_camera(view) for view in views[::2]],
+                                  splat_root=_export(tmp_path / 'b', 10**6))
+    assert 'survey_support' not in centred.phases and centred.phases['aiming_support'] == pytest.approx(every)
+    centred.admit_aimed_survey([_camera(views[0], offset=1.)])
+    centred.admit_aimed_survey([_camera(views[0], offset=2.)])
+    assert centred.phases['aimed_survey_support'] == pytest.approx(references)
+    assert centred.repeated() == pytest.approx(centred.phases['prelude'] + centred.phases['aiming_reads'] + every)
+
+
 def test_placement_scoring_no_step_can_finish_takes_the_floor_before_the_next_gap_is_scored(tmp_path):
     estimate = work.CompletionWork(**_lamp_size(tmp_path))
     estimate.admit_survey()

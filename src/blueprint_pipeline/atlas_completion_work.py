@@ -23,6 +23,12 @@ unit's start), so its surveys are written; and what a later step does again befo
 before no paid stage may start (``STEP_START_BUDGET_SECONDS``), since a pass that ends after that leaves its
 planner to the next step. Both are host seconds, divided by ``HOST_SLOWDOWN``.
 
+The cross-view support check, quadratic in its views, is charged to the first survey or aiming in the pass that
+needs a view set's masks: a pass keeps both sets it uses (``atlas_scene_preservation.SUPPORT_MASK_SETS``). A survey
+whose cameras all sit at recorded centres needs none, but the aiming's context samples (``context_samples``) need
+every view's, so the aiming computes them unless its survey did; and a later step always computes them again before
+its planner, since its cache starts empty and the surveys it reads from disk compute none.
+
 Derivation (``UNIT_SECONDS``, reference seconds: the container round 8b measured Austin in, one BLAS thread):
 each phase's time divided by the count that drives it. Austin there gave the step's work before the survey (6.7
 minutes for 204 views), the support check (121 views: 3.87 minutes on this code), the export projection (1.70 s a
@@ -76,8 +82,6 @@ UNIT_SECONDS = {
     # Scoring one candidate placement of an aimed camera: per context sample.
     'placement_per_sample': 2.85e-7,
 }
-#: The phases a later step does again before it may reach the planner: the rest is kept on disk.
-REPEATED = ('prelude', 'aiming_reads', 'aiming_support', 'placement_scoring')
 
 
 def step_seconds() -> dict[str, float]:
@@ -91,6 +95,11 @@ def step_seconds() -> dict[str, float]:
 def _pixels(frame) -> int:
     k = frame['intrinsics']
     return int(k['width']) * int(k['height'])
+
+
+def _support_seconds(views) -> float:
+    """The cross-view support check over ``views``: every pixel of each against each other view."""
+    return UNIT_SECONDS['support_per_point_pair'] * sum(map(_pixels, views)) * (len(views) - 1)
 
 
 def _gaussians(splat_root) -> int:
@@ -116,30 +125,44 @@ class CompletionWork:
         self.counts = {'views': len(self.frames), 'photographs': len(self.photographs),
                        'geometry_views': len(self.geometry_frames), 'survey_cameras': len(candidates),
                        'gaussians': self.gaussians, 'scored_placements': 0, 'aimed_survey_cameras': 0}
-        self.phases = {'prelude': UNIT_SECONDS['prelude_per_view_pixel'] * sum(map(_pixels, self.frames))}
-        self._add(self._survey(candidates, first=True))
+        # The view sets whose support masks this pass has computed: they stay cached for the rest of it.
+        self._supported = set()
         pixels = sum(map(_pixels, self.frames))
+        self.phases = {'prelude': UNIT_SECONDS['prelude_per_view_pixel'] * pixels}
+        self._add(self._survey(candidates, first=True))
         self.phases['aiming_reads'] = UNIT_SECONDS['aiming_per_view_pixel'] * pixels
-        # Their support masks, unless the survey's photographs are these views (then they are read again).
-        if not (len(self.frames) == len(self.photographs)
-                and all(a is b for a, b in zip(self.frames, self.photographs))):
-            self.phases['aiming_support'] = UNIT_SECONDS['support_per_point_pair'] * pixels * (len(self.frames) - 1)
+        # The aiming's context samples need every view's support masks: computed here unless its survey did.
+        self._add(self._support(self.frames, 'aiming_support'))
+        # What a later step does again before it may reach the planner (the surveys are kept on disk): the reading
+        # of the views and the aiming, whose support masks that step computes again whatever this one did.
+        self.again = {'prelude': self.phases['prelude'], 'aiming_reads': self.phases['aiming_reads'],
+                      'aiming_support': _support_seconds(self.frames)}
 
-    def _add(self, phases):
+    def _add(self, phases, *, again=False):
         for name, value in phases.items():
             self.phases[name] = self.phases.get(name, 0.) + value
+            if again:
+                self.again[name] = self.again.get(name, 0.) + value
+
+    def _support(self, views, phase):
+        """``views``' support check, charged to ``phase`` if no survey or aiming in this pass computed it yet."""
+        key = tuple(map(id, views))
+        if key in self._supported:
+            return {}
+        self._supported.add(key)
+        return {phase: _support_seconds(views)}
 
     def _survey(self, cameras, *, first):
-        """One ``survey_gaps`` over ``cameras``; the support masks and the observed space on the first only, since
-        a pass's later surveys read them again from their caches."""
+        """One ``survey_gaps`` over ``cameras``: its photographs' support masks if a camera moves and the pass has not
+        computed them yet, and the observed space on the first only, which a pass's later surveys read from its cache."""
         from .atlas_scene_chisel import DEPTH_PROJECTION_BATCH_CAMERAS
         from .atlas_scene_preservation import CONTEXT_BATCH_CAMERAS, _same_center
 
         cost, phases, prefix = UNIT_SECONDS, {}, 'survey_' if first else 'aimed_survey_'
         photograph_pixels = sum(map(_pixels, self.photographs))
         moving = [not any(_same_center(frame, row['camera']) for frame in self.photographs) for row in cameras]
-        if first and any(moving):
-            phases['support'] = cost['support_per_point_pair'] * photograph_pixels * (len(self.photographs) - 1)
+        if any(moving):
+            phases.update(self._support(self.photographs, 'support'))
         batches = sum(any(moving[start:start + CONTEXT_BATCH_CAMERAS])
                       for start in range(0, len(moving), CONTEXT_BATCH_CAMERAS))
         phases['context'] = (cost['context_per_point_camera'] * sum(moving) * photograph_pixels
@@ -169,7 +192,7 @@ class CompletionWork:
         return sum(self.phases.values())
 
     def repeated(self) -> float:
-        return sum(self.phases.get(name, 0.) for name in REPEATED)
+        return sum(self.again.values())
 
     def fits(self) -> bool:
         available = step_seconds()
@@ -180,7 +203,9 @@ class CompletionWork:
             return
         record = {'schema_version': SCHEMA_VERSION, 'status': 'exceeds_step', 'stage': stage, 'counts': self.counts,
                   'reference_seconds_by_phase': {name: round(value, 1) for name, value in self.phases.items()},
-                  'reference_seconds': round(self.total(), 1), 'repeated_reference_seconds': round(self.repeated(), 1),
+                  'reference_seconds': round(self.total(), 1),
+                  'repeated_reference_seconds_by_phase': {name: round(value, 1) for name, value in self.again.items()},
+                  'repeated_reference_seconds': round(self.repeated(), 1),
                   'available_reference_seconds': {name: round(value, 1) for name, value in step_seconds().items()},
                   'host_slowdown': HOST_SLOWDOWN, 'unit_seconds': UNIT_SECONDS,
                   'basis': 'counts_times_measured_unit_costs_not_the_clock', 'claim_ceiling': 'development_only'}
@@ -195,7 +220,7 @@ class CompletionWork:
     def admit_placements(self, *, placements, samples):
         """Before one gap's ``placements`` locations are scored over ``samples`` context samples."""
         self.counts['scored_placements'] += placements
-        self._add({'placement_scoring': UNIT_SECONDS['placement_per_sample'] * placements * samples})
+        self._add({'placement_scoring': UNIT_SECONDS['placement_per_sample'] * placements * samples}, again=True)
         self._admit('before_placement_scoring')
 
     def admit_aimed_survey(self, cameras):
