@@ -39,6 +39,7 @@ JOB = "itest-" + "c" * 40
 THIS = "20261125T050000Z-test-company-0000abcd"
 ANSWER = {"kind": "test-company", "action": "answer", "job_id": JOB, "state": "interested",
           "inputs": "We run this job at two sites."}
+OUTCOME_QUESTIONS = {"kind": "test-company", "action": "outcome-questions", "job_id": JOB, "day": 14}
 
 
 @pytest.mark.parametrize(("body", "expected"), [
@@ -50,6 +51,8 @@ ANSWER = {"kind": "test-company", "action": "answer", "job_id": JOB, "state": "i
      {"kind": "test-company", "action": "accept", "job_id": JOB}),
     ({"kind": "test-company", "action": "page", "job_id": JOB},
      {"kind": "test-company", "action": "page", "job_id": JOB}),
+    (OUTCOME_QUESTIONS, OUTCOME_QUESTIONS),
+    ({**OUTCOME_QUESTIONS, "day": 90}, {**OUTCOME_QUESTIONS, "day": 90}),
     (ANSWER, ANSWER),
     ({key: value for key, value in ANSWER.items() if key != "inputs"}, {**ANSWER, "inputs": ""}),
 ])
@@ -74,6 +77,12 @@ def test_the_door_admits_one_action_for_the_test_company(body, expected):
     ({"kind": "test-company", "action": "page", "job_id": "8d3f0c2a-9e7b-4c1d-a0f5-6b2e9d4c7a31"},
      "test_company_job_invalid"),                                        # a site's job: its page is never read
     ({"kind": "test-company", "action": "page", "job_id": JOB, "company_id": "a" * 64}, "request_key_unknown:company_id"),
+    ({**OUTCOME_QUESTIONS, "day": 30}, "test_company_day_invalid"),           # only the dates the website asks on
+    ({**OUTCOME_QUESTIONS, "day": "14"}, "test_company_day_invalid"),
+    ({**OUTCOME_QUESTIONS, "day": True}, "test_company_day_invalid"),
+    ({key: value for key, value in OUTCOME_QUESTIONS.items() if key != "day"}, "test_company_day_invalid"),
+    ({**OUTCOME_QUESTIONS, "job_id": "8d3f0c2a-9e7b-4c1d-a0f5-6b2e9d4c7a31"}, "test_company_job_invalid"),
+    ({**OUTCOME_QUESTIONS, "side": "site"}, "request_key_unknown:side"),
     ({**ANSWER, "state": "accepted"}, "test_company_state_invalid"),
     ({**ANSWER, "inputs": "x" * 2001}, "test_company_inputs_invalid"),
     ({**ANSWER, "inputs": "a\x00b"}, "test_company_inputs_invalid"),
@@ -128,6 +137,7 @@ def test_the_door_runs_one_signed_call_with_only_the_sync_token_and_the_result_w
      {"job_id": JOB}),
     ({"kind": "test-company", "action": "page", "job_id": JOB}, "/api/internal/pipeline/test-company/page",
      {"job_id": JOB}),
+    ({**OUTCOME_QUESTIONS, "day": 45}, "/api/internal/pipeline/test-company/outcome-questions", {"job_id": JOB, "day": 45}),
 ])
 def test_each_action_is_one_signed_call_to_its_website_route(request_, path, body):
     calls = []
@@ -137,6 +147,22 @@ def test_each_action_is_one_signed_call_to_its_website_route(request_, path, bod
         return {"ok": True}
     assert company.run(request_, post=post) == {"door_outcome": "done", "action": request_["action"], "website": {"ok": True}}
     assert calls == [(path, body, "test_company")]
+
+
+def test_outcome_questions_keep_each_answers_state_and_label_and_never_its_signed_link():
+    link = "https://tryblueprint.io/api/job-outcomes/" + "t" * 80
+    website = {"ok": True, "job_id": JOB, "day": 14, "queued": ["job_outcome_question:x:company:14"],
+               "answers": {"company": [{"state": "deployed", "label": "Deployed", "url": link}],
+                           "site": [{"state": "talking", "label": "Still talking", "url": link}]}}
+    report = company.run(OUTCOME_QUESTIONS, post=lambda *_args, **_kwargs: website)
+    assert report == {"door_outcome": "done", "action": "outcome-questions",
+                      "website": {"ok": True, "job_id": JOB, "day": 14, "queued": ["job_outcome_question:x:company:14"],
+                                  "answers": {"company": [{"state": "deployed", "label": "Deployed"}],
+                                              "site": [{"state": "talking", "label": "Still talking"}]}}}
+    assert "job-outcomes" not in json.dumps(report) and "url" not in json.dumps(report)
+    # Another action's answer is passed on as the website gave it.
+    assert company.run({"kind": "test-company", "action": "page", "job_id": JOB},
+                       post=lambda *_args, **_kwargs: {"ok": True, "answers": 1})["website"] == {"ok": True, "answers": 1}
 
 
 def test_the_websites_refusal_is_the_doors_refusal_and_an_outage_its_failure():
@@ -204,18 +230,22 @@ def test_the_client_sends_one_action(monkeypatch):
     monkeypatch.setattr(client, "_submit", lambda body, args, **_: sent.append(body) or 0)
     for argv in (["test-company", "ensure"], ["test-company", "send", JOB], ["test-company", "site-link", JOB],
                  ["test-company", "answer", JOB, "--state", "interested", "--inputs", ANSWER["inputs"]],
-                 ["test-company", "accept", JOB], ["test-company", "page", JOB], ["test-company", "page", "--job", JOB]):
+                 ["test-company", "accept", JOB], ["test-company", "page", JOB], ["test-company", "page", "--job", JOB],
+                 ["test-company", "outcome-questions", JOB], ["test-company", "outcome-questions", JOB, "--day", "90"]):
         assert client.run(client.build_parser().parse_args(argv)) == 0
     page = {"kind": "test-company", "action": "page", "job_id": JOB}
     assert sent == [{"kind": "test-company", "action": "ensure"}, {"kind": "test-company", "action": "send", "job_id": JOB},
                     {"kind": "test-company", "action": "site-link", "job_id": JOB}, ANSWER,
-                    {"kind": "test-company", "action": "accept", "job_id": JOB}, page, page]
+                    {"kind": "test-company", "action": "accept", "job_id": JOB}, page, page,
+                    OUTCOME_QUESTIONS, {**OUTCOME_QUESTIONS, "day": 90}]
     with pytest.raises(SystemExit, match="name the test job"):
         client.run(client.build_parser().parse_args(["test-company", "send"]))
     with pytest.raises(SystemExit, match="two different test jobs"):
         client.run(client.build_parser().parse_args(["test-company", "page", JOB, "--job", "itest-" + "d" * 40]))
     with pytest.raises(SystemExit, match="--state is required"):
         client.run(client.build_parser().parse_args(["test-company", "answer", JOB]))
+    with pytest.raises(SystemExit):
+        client.build_parser().parse_args(["test-company", "outcome-questions", JOB, "--day", "30"])
     assert client._terminal({"request": ANSWER, "outcome": {"status": "acted"}}) is True
 
 

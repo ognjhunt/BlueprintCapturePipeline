@@ -37,8 +37,8 @@ job, as the service user, with no network: it sets that job's scheduled Atlas pr
 at most once per release, and changes no count, wall, grant, spend or admission.
 ``test-company`` (``operate``) runs the active release's ``internal_test_company_door`` as the service user: one signed
 call to the website for Blueprint's internal test company (ensure it, send it one internal test job, answer for it on
-one, press the site's Accept for it on one, one test job's site link, or read its page of one). The website opens internal
-test jobs only to that company. The door spends nothing itself; a model pass the website's path starts (the screening
+one, press the site's Accept for it on one, one test job's site link, read its page of one, or ask one date's outcome
+questions of its introduction on one now). The website opens internal test jobs only to that company. The door spends nothing itself; a model pass the website's path starts (the screening
 of words, a page read's job brief) is held by the website against the job's USD 40 cap.
 """
 
@@ -163,6 +163,8 @@ _TEST_JOB_FOOTAGE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _TEST_JOB_ID = re.compile(r"itest-[0-9a-f]{40}")
 # The answers a company gives on the website (Blueprint-WebApp client/src/lib/companyResponses.ts).
 _COMPANY_ANSWER_STATES = ("interested", "declined", "needs_something", "tested_can_do", "tested_cannot_yet")
+# The dates an introduction's outcome question is asked on (Blueprint-WebApp server/utils/jobOutcomes.ts).
+_OUTCOME_QUESTION_DAYS = (14, 45, 90)
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
 ACTIVATION_HOLD_OVERRIDE = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
@@ -580,7 +582,8 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         action, job_id = body.get("action"), body.get("job_id")
         allowed = {"ensure": ("kind", "action"), "send": ("kind", "action", "job_id"),
                    "site-link": ("kind", "action", "job_id"), "accept": ("kind", "action", "job_id"),
-                   "page": ("kind", "action", "job_id"), "answer": ("kind", "action", "job_id", "state", "inputs")}
+                   "page": ("kind", "action", "job_id"), "outcome-questions": ("kind", "action", "job_id", "day"),
+                   "answer": ("kind", "action", "job_id", "state", "inputs")}
         if action not in allowed:
             raise RequestRefused("test_company_action_invalid")
         _only(body, allowed[action])
@@ -588,6 +591,11 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             return {"kind": kind, "action": action}
         if not isinstance(job_id, str) or not _TEST_JOB_ID.fullmatch(job_id):
             raise RequestRefused("test_company_job_invalid")
+        if action == "outcome-questions":
+            day = body.get("day")
+            if type(day) is not int or day not in _OUTCOME_QUESTION_DAYS:
+                raise RequestRefused("test_company_day_invalid")
+            return {"kind": kind, "action": action, "job_id": job_id, "day": day}
         if action != "answer":
             return {"kind": kind, "action": action, "job_id": job_id}
         state, inputs = body.get("state"), body.get("inputs", "")
