@@ -33,7 +33,7 @@ import numpy as np
 
 from .atlas_depth_splat import SH_C0
 from .decision_evidence_contracts import canonical_digest
-from .gaussian_splat_decode import read_standard_3dgs_ply
+from .gaussian_splat_decode import standard_3dgs_ply_rows
 from .local_reconstruction_adapters import _sha256_file
 
 SCHEMA_VERSION = "atlas_mesh_registration.v2"
@@ -55,7 +55,9 @@ FAILURE_RECORD = "atlas_mesh_registration_failure.json"
 REGISTRATION_SAMPLES = 200_000
 #: Faces gathered into (faces, 3, 3) at once. A room's mesh has millions of faces (capture-447's: 6.5 M), and
 #: the whole array is 470 MB of float64 per copy; registration held two and its area temporaries (2.8 GB).
-FACE_BLOCK = 1 << 20
+#: A block's values are joined before the one median or sum, so its size changes no figure; at 2^18 faces a
+#: block's temporaries are about 50 MB (2^20: about 200 MB, beside the whole mesh).
+FACE_BLOCK = 1 << 18
 _COMPONENTS = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
 _WIDTH = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}
 
@@ -153,15 +155,24 @@ def mesh_depth_free_space_filter(
 
 
 def read_glb_triangles(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Positions and triangle indices of a single-primitive, untransformed GLB."""
-    data = path.read_bytes()
+    """Positions and triangle indices of a single-primitive, untransformed GLB.
+
+    The file is read through a memory map: only the two accessors are copied out, never the whole
+    file (a provider mesh's GLB also holds its normals, texture coordinates and texture image).
+    """
+    size = path.stat().st_size
+    data = np.memmap(path, dtype=np.uint8, mode="r") if size else np.zeros(0, np.uint8)
+    if size < 28:
+        raise ValueError("atlas_mesh_glb_invalid")
     magic, version, length = struct.unpack_from("<4sII", data)
     json_length, json_type = struct.unpack_from("<I4s", data, 12)
-    bin_length, bin_type = struct.unpack_from("<I4s", data, 20 + json_length)
-    if (magic != b"glTF" or version != 2 or length != len(data) or json_type != b"JSON"
-            or bin_type != b"BIN\0" or 28 + json_length + bin_length > len(data)):
+    if 28 + json_length > size:
         raise ValueError("atlas_mesh_glb_invalid")
-    gltf = json.loads(data[20:20 + json_length])
+    bin_length, bin_type = struct.unpack_from("<I4s", data, 20 + json_length)
+    if (magic != b"glTF" or version != 2 or length != size or json_type != b"JSON"
+            or bin_type != b"BIN\0" or 28 + json_length + bin_length > size):
+        raise ValueError("atlas_mesh_glb_invalid")
+    gltf = json.loads(data[20:20 + json_length].tobytes())
     binary = data[28 + json_length:28 + json_length + bin_length]
     if any(key in node for node in gltf.get("nodes", []) for key in ("matrix", "rotation", "translation", "scale")):
         raise ValueError("atlas_mesh_node_transform_unsupported")
@@ -244,7 +255,13 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
         raise ValueError("atlas_mesh_splat_path_invalid")
     if _sha256_file(ply) != next(row["sha256"] for row in splat_manifest["outputs"] if row["role"] == "splat_ply"):
         raise ValueError("atlas_mesh_splat_changed")
-    splat = read_standard_3dgs_ply(ply)
+    # Only the splat's positions and its base colour at the kept vertices are read, from its mapped body: never the
+    # whole decoded splat (each of its columns copied out of the whole body read at once). The positions are built
+    # once as float64, the array the tree would copy them into: the same values as the PLY's float32.
+    splat_rows, column = standard_3dgs_ply_rows(ply)
+    splat_xyz = np.empty((len(splat_rows), 3), dtype=np.float64)
+    for start in range(0, len(splat_rows), FACE_BLOCK):
+        splat_xyz[start:start + FACE_BLOCK] = splat_rows[start:start + FACE_BLOCK][:, [column[key] for key in "xyz"]]
     voxel = float(splat_manifest["voxel_size"])
     if not np.isfinite(voxel) or voxel <= 0:
         raise ValueError("atlas_mesh_voxel_size_invalid")
@@ -257,11 +274,11 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
 
     # Edge length does not change under the declared axis flips, so it is measured once, before the search.
     edge = float(np.median(per_face(faces, lambda tri: np.linalg.norm(tri[:, 1] - tri[:, 0], axis=1))))
-    tree = cKDTree(splat.xyz)
+    tree = cKDTree(splat_xyz)
     mesh_tree = cKDTree(vertices)
     sample = vertices[np.linspace(0, len(vertices) - 1, min(REGISTRATION_SAMPLES, len(vertices))).astype(np.int64)]
-    source_sample = splat.xyz[np.linspace(0, len(splat.xyz) - 1,
-                                         min(REGISTRATION_SAMPLES, len(splat.xyz))).astype(np.int64)]
+    source_sample = splat_xyz[np.linspace(0, len(splat_xyz) - 1,
+                                         min(REGISTRATION_SAMPLES, len(splat_xyz))).astype(np.int64)]
     limit = max(MAX_MEDIAN_RESIDUAL_VOXELS * voxel, REGISTRATION_MESH_EDGES * edge)
     diagnostics, residuals, candidates = {}, {}, []
     for name, sign in GLB_FRAMES.items():
@@ -289,10 +306,10 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
                    "registration_distance_limit": limit, "voxel_size": voxel, "median_mesh_edge": edge,
                    "registration_limit_basis": "max(3 draft voxels, 1.5 median mesh edges)",
                    "mesh_vertices": int(len(vertices)), "mesh_faces": int(len(faces)),
-                   "splat_points": int(len(splat.xyz)),
+                   "splat_points": int(len(splat_xyz)),
                    "mesh_bounds": [vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist()],
-                   "splat_bounds": [splat.xyz.min(axis=0).astype(float).tolist(),
-                                    splat.xyz.max(axis=0).astype(float).tolist()],
+                   "splat_bounds": [splat_xyz.min(axis=0).astype(float).tolist(),
+                                    splat_xyz.max(axis=0).astype(float).tolist()],
                    "source_glb_sha256": _sha256_file(glb), "splat_manifest_digest": splat_manifest["digest"]}
         failure["digest"] = canonical_digest(failure, digest_field="digest")
         Path(output_root).mkdir(parents=True, exist_ok=True)
@@ -317,9 +334,14 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     vertices = vertices * np.array(GLB_FRAMES[frame])
     support = max(SUPPORT_VOXELS * voxel, SUPPORT_MESH_EDGES * edge)
     vertex_distance, vertex_nearest = tree.query(vertices, distance_upper_bound=np.nextafter(support, np.inf))
-    centroid_distance = per_face(faces, lambda tri: tree.query(
+    centroid_distance = per_face(faces, lambda tri, query=tree.query: query(
         tri.mean(axis=1), distance_upper_bound=np.nextafter(support, np.inf))[0])
-    kept = faces[np.all(vertex_distance[faces] <= support, axis=1) & (centroid_distance <= support)]
+    del tree, splat_xyz  # the splat's positions are not read again: its colour comes from its mapped rows
+    # Every vertex of a face near observed geometry, a block of faces at a time, never (faces, 3) distances at once.
+    near = np.concatenate([np.all(vertex_distance[faces[start:start + FACE_BLOCK]] <= support, axis=1)
+                           for start in range(0, len(faces), FACE_BLOCK)])
+    kept = faces[near & (centroid_distance <= support)]
+    del near
     supported = kept
     depth_filter = None
     if reference_frames is not None:
@@ -341,9 +363,19 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
                             "basis": ("support_filtered_faces_before_depth_filter" if len(supported)
                                       else "every_registered_face"),
                             "claim": "development_only_estimate"}
-    used, remapped = np.unique(kept, return_inverse=True)
+    # The kept faces' vertices in order and each corner's place among them: ``np.unique(kept, return_inverse=True)``'s
+    # values, without sorting every corner (about 100 bytes a face held at once).
+    present = np.zeros(len(vertices), dtype=bool)
+    present[kept.reshape(-1)] = True
+    used = np.flatnonzero(present)
+    remapped = (np.cumsum(present, dtype=np.int64) - 1)[kept]
+    del present
     nearest = vertex_nearest[used]
-    colors = np.clip((0.5 + SH_C0 * splat.f_dc[nearest]) * 255.0, 0, 255).round()
+    base_colour = np.empty((len(nearest), 3), dtype=np.float32)
+    for start in range(0, len(nearest), FACE_BLOCK):
+        base_colour[start:start + FACE_BLOCK] = splat_rows[nearest[start:start + FACE_BLOCK]][
+            :, [column[f"f_dc_{index}"] for index in range(3)]]
+    colors = np.clip((0.5 + SH_C0 * base_colour) * 255.0, 0, 255).round()
     out = write_glb_triangles(output_root / "atlas_mesh_supported.glb", vertices[used], remapped.reshape(-1, 3), colors)
 
     def area(rows: np.ndarray) -> float:
