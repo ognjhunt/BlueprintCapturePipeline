@@ -173,9 +173,46 @@ def half_preparation(capture_root: Path, record: Mapping[str, Any]) -> tuple[dic
 
 
 def object_estimates(preparation: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """The object's mass and friction ranges as the preparation estimated them from the video, when recorded."""
+    """The object's mass and friction ranges as the preparation recorded them (``physics.bounds``), when it did."""
     bounds = (preparation.get("physics") or {}).get("bounds") if isinstance(preparation.get("physics"), Mapping) else None
     return bounds if isinstance(bounds, Mapping) else None
+
+
+#: Where the rule's mass range (``object_estimates_from_video.mass_kg``: the key is a contract and keeps its name) comes
+#: from, said in the README (``estimates_note``): the object's size in the video times typical densities
+#: (``website_task_preparation.screen_physics``, and a jointed body's density prior), unless the preparation says the
+#: model's published weight set it (``physics.mass_authority``, ``website_articulated_mass``) or the object was
+#: designed for a test (``website_synthetic_subject``). Its friction range is never read from the video: it is
+#: Blueprint's standard default (``PHYSICS_PRIORS``, the jointed and designed objects' own fixed ranges).
+MASS_WORDS = {"video_size": "comes from its size in the video and typical densities",
+              "published": "comes from the published weight of its model",
+              "partly_published": ("comes partly from the published weights of its model and partly from its size in "
+                                   "the video and typical densities"),
+              "designed": "is the one Blueprint designed the object with"}
+FRICTION_DEFAULT = "its friction range is Blueprint's standard default"
+
+
+def mass_basis(preparation: Mapping[str, Any]) -> dict[str, str]:
+    """``mass_basis`` when the preparation's mass range is not the video's size times typical densities; else empty."""
+    physics = preparation.get("physics") if isinstance(preparation.get("physics"), Mapping) else {}
+    basis = ("designed" if physics.get("basis") == "synthetic_design"
+             else "published" if physics.get("mass_authority") == "manufacturer_published"
+             else "partly_published" if physics.get("mass_authority") == "mixed" else None)
+    return {"mass_basis": basis} if basis else {}
+
+
+def estimates_note(source: Mapping[str, Any]) -> list[str]:
+    """The README's sentence for the rule's mass and friction ranges (``object_estimates_from_video``), or none."""
+    shipped = (source.get("rule") or {}).get("object_estimates_from_video")
+    if not isinstance(shipped, Mapping) or not shipped:
+        return []
+    mass = "mass_kg" in shipped
+    friction = bool({"static_friction", "dynamic_friction"} & set(shipped))
+    words = [*([f"mass range in success_rule.json {MASS_WORDS[source.get('mass_basis') or 'video_size']}"]
+               if mass else []),
+             *([FRICTION_DEFAULT if mass else "friction range in success_rule.json is Blueprint's standard default"]
+               if friction else [])]
+    return ["The object's " + "; ".join(words) + "."]
 
 
 def success_basis(preparation: Mapping[str, Any]) -> dict[str, str] | None:
@@ -291,6 +328,7 @@ def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str,
         or handoff_base_scene(root)
     return {**base_scene_notes(base), **size_notes(preparation), **object_source(configuration),
             **library_notes.credit(configuration, root), **object_variations.evidence(preparation, root),
+            **mass_basis(preparation),
             "estimates": object_estimates(preparation),
             "basis": success_basis(preparation)}
 

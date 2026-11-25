@@ -42,7 +42,7 @@
    "object_generated": "The job's object is a 3D model Blueprint generated from frames of the video: its shape and look are the generator's estimate, not a scan or a measurement.",
    "object_designed": "The job's object was not filmed: it is a simple shape Blueprint designed for the job.",
    "object_library": "The job's object is a model of the same kind of object from a public library, picked and sized from the video: it is not the site's own object.",
-   "estimates_from_video": "The object's mass and friction in success_rule.json are ranges estimated from the video.",
+   "estimates_from_video": "The object's mass range in success_rule.json comes from its size in the video and typical densities; its friction range is Blueprint's standard default.",
    "thresholds_assumed": "The site has not confirmed the numbers in success_rule.json: where criteria_basis says assumed, the number is Blueprint's standard threshold, not the site's.",
    "library_heading": "Library models",
    "library_credit_model_file": "scene/files/library_model.usda and object.usda: Sterilite Storage Tote, Blue by Google (Copyright 2020 Google LLC.), from Google Scanned Objects (https://fuel.gazebosim.org/1.0/GoogleResearch/models/Sterilite_Storage_Tote_Blue/1/Sterilite_Storage_Tote_Blue.zip), under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from OBJ to fit this job.",

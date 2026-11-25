@@ -129,7 +129,8 @@ ROTATIONS_STORED_WRONG = ("In that version each Gaussian's rotation is stored in
 #: (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a look is written
 #: again from its source splat with the fixed writer and also ships as a standard 3DGS PLY. v4 (2026-11-21): a plain
 #: README. v5 (2026-11-25): plain zip headers; ZIP64 in the local header alone made macOS refuse the zip (Error 640).
-#: v6 (2026-11-25): members dated by the capture, not 1980; an object placed where its box meets the room says so.
+#: v6 (2026-11-25): members dated by the capture, not 1980; an object placed where its box meets the room says so;
+#: the object's simulated variations (``variations.usda``, ``variations.json``); the mass range's basis in words.
 BUILDER_REVISION = "website_company_simulation_builder.v6"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
@@ -286,8 +287,6 @@ FIELDS_LEFT_OUT_LINES = ["  criteria_fields_left_out counts the fields Blueprint
                          "  could carry the site's own words, and any field outside the names it shares."]
 #: The room is as filmed: the planner's removals were not applied (``website_atlas_pipeline.job_object_review``).
 NOTHING_TAKEN_OUT = "Nothing was taken out of the room scan."
-#: The half's rule holds the object's mass and friction as ranges estimated from the video.
-OBJECT_ESTIMATES_FROM_VIDEO = "The object's mass and friction in success_rule.json are ranges estimated from the video."
 NOT_FILLED_IN = "Parts of the room the video did not show were not filled in."
 ROOM_RECORD_SCHEMA = "blueprint.room_package_inputs.v1"
 #: A one-object job no task profile models (``website_scene_handoff``; the gaps of its ``ROOM_GAPS``, pinned equal
@@ -786,7 +785,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
                                         "size_disagrees_with_published", "destination_overhang",
                                         "destination_box_meets_room", "member_date", "library_models",
                                         "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
-                                        "object_source", "object_shape", "variation_evidence")
+                                        "object_source", "object_shape", "variation_evidence", "mass_basis")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
@@ -1249,7 +1248,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
                 *([NOT_FILLED_IN] if room.get("not_filled_in") else []), *([SCALE_NOT_MEASURED_NOTE] if unscaled else [])]
                if room is not None else []), *([NO_RULE] if withheld else []),
              *half_preparation.object_note(source),
-             *([OBJECT_ESTIMATES_FROM_VIDEO] if (source.get("rule") or {}).get("object_estimates_from_video") else []),
+             *half_preparation.estimates_note(source),  # where the mass range comes from; friction's default
              *(([THRESHOLDS_CONFIRMED_LATER] if source.get("thresholds_confirmed_later") else [THRESHOLDS_ASSUMED])
                if source.get("thresholds_assumed") and source.get("rule") and room is None else [])]
     # One bullet per note, under its own heading, so a reader can pick out the ones that matter.

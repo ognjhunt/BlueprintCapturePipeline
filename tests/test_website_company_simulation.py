@@ -982,11 +982,38 @@ def test_the_object_estimates_from_the_video_go_in_the_rule_and_are_left_out_whe
         rule = json.loads(archive.read("success_rule.json"))
         readme = archive.read("README.txt").decode()
     assert rule["object_estimates_from_video"] == {"mass_kg": [0.4, 1.8], "static_friction": [0.2, 0.9]}
-    assert "estimated from the video" in readme
+    # Only the mass range comes from the video (its size times typical densities, ``screen_physics``); the friction
+    # range is Blueprint's standard default (``PHYSICS_PRIORS``). The key keeps its name: it is a contract.
+    said = ("The object's mass range in success_rule.json comes from its size in the video and typical densities; "
+            "its friction range is Blueprint's standard default.")
+    assert said in " ".join(readme.split()) and "ranges estimated from the video" not in readme
     source = sim.simulation_source(job.capture, queue_root=job.queue)
     (job.capture / "pipeline/website_scene_preparation/preparation.json").unlink()
     assert "object_estimates_from_video" not in sim.simulation_source(job.capture, queue_root=job.queue)["rule"]
     assert source["rule"]["object_estimates_from_video"]
+
+
+@pytest.mark.parametrize(("physics", "shipped", "said"), [
+    ({"basis": "estimated"}, {"mass_kg": [0.4, 1.8], "static_friction": [0.2, 0.9]},
+     "The object's mass range in success_rule.json comes from its size in the video and typical densities; its "
+     "friction range is Blueprint's standard default."),
+    ({"basis": "estimated", "mass_authority": "manufacturer_published"}, {"mass_kg": [9.0, 11.0]},
+     "The object's mass range in success_rule.json comes from the published weight of its model."),
+    ({"basis": "estimated", "mass_authority": "mixed"}, {"mass_kg": [9.0, 11.0], "dynamic_friction": [0.2, 0.6]},
+     "The object's mass range in success_rule.json comes partly from the published weights of its model and partly "
+     "from its size in the video and typical densities; its friction range is Blueprint's standard default."),
+    ({"basis": "synthetic_design"}, {"mass_kg": [0.3, 0.4], "static_friction": [0.5, 0.7]},
+     "The object's mass range in success_rule.json is the one Blueprint designed the object with; its friction range "
+     "is Blueprint's standard default."),
+    ({"basis": "estimated"}, {"static_friction": [0.2, 0.9]},
+     "The object's friction range in success_rule.json is Blueprint's standard default."),
+])
+def test_the_readme_says_where_the_mass_range_comes_from_and_that_friction_is_a_default(physics, shipped, said):
+    from blueprint_pipeline import website_half_preparation as halves
+
+    source = {**halves.mass_basis({"physics": physics}), "rule": {"object_estimates_from_video": shipped}}
+    assert halves.estimates_note(source) == [said]
+    assert halves.estimates_note({"rule": {}}) == [] and halves.estimates_note({}) == []
 
 
 def test_the_rule_says_which_numbers_the_site_s_words_set_and_never_quotes_them(job):
