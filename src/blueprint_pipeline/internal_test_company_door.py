@@ -12,7 +12,11 @@ Pipeline -> WebApp transport as ``internal_test_job_door``, to do one thing, and
   leaves the website (``.../test-company/accept``);
 - ``site-link``: one test job's site owner link (``.../test-jobs/<job>/site-link``);
 - ``page``: its own page of one test job, read as its page read reads it, answered as a redacted summary with the job
-  summary PDF's text and no address, ticket, signature or token (``.../test-company/page``).
+  summary PDF's text and no address, ticket, signature or token (``.../test-company/page``);
+- ``outcome-questions``: one date's outcome questions (day 14, 45 or 90) asked now of a test job's introduction to it,
+  the same emails the date's sweep sends, to the internal test inbox only (``.../test-company/outcome-questions``). The
+  website also answers each side's signed answer links; this module keeps each answer's state and label and drops the
+  links, so no signed link is written to the door's results. The questions are answered from that inbox.
 
 Nothing here deletes, changes a limit or spends by itself. Each call runs the website's own path, which may start the
 model passes that path starts for any job (the screening of the words read across, on a send, an answer or a page read;
@@ -35,6 +39,8 @@ KIND = "test-company"
 STATES = ("interested", "declined", "needs_something", "tested_can_do", "tested_cannot_yet")
 #: The website's id for a test job (``server/routes/internal-test-jobs.ts`` ``internalTestJobId``).
 JOB_ID = re.compile(r"itest-[0-9a-f]{40}")
+#: The dates an introduction's outcome question is asked on (Blueprint-WebApp ``server/utils/jobOutcomes.ts``).
+OUTCOME_DAYS = (14, 45, 90)
 _WEBSITE_REFUSAL = re.compile(r"test_company_webapp_http_4[0-9]{2}(:.*)?")
 
 
@@ -45,7 +51,8 @@ def validated(request: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     action, job_id = request.get("action"), request.get("job_id")
     keys = {"ensure": {"kind", "action"}, "send": {"kind", "action", "job_id"},
             "site-link": {"kind", "action", "job_id"}, "accept": {"kind", "action", "job_id"},
-            "page": {"kind", "action", "job_id"}, "answer": {"kind", "action", "job_id", "state", "inputs"}}
+            "page": {"kind", "action", "job_id"}, "outcome-questions": {"kind", "action", "job_id", "day"},
+            "answer": {"kind", "action", "job_id", "state", "inputs"}}
     if action not in keys or not set(request) <= keys[action] or (action != "answer" and set(request) != keys[action]):
         raise Refused("test_company_request_invalid")
     if action == "ensure":
@@ -60,6 +67,11 @@ def validated(request: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
         return "/api/internal/pipeline/test-company/accept", {"job_id": job_id}
     if action == "page":
         return "/api/internal/pipeline/test-company/page", {"job_id": job_id}
+    if action == "outcome-questions":
+        day = request.get("day")
+        if type(day) is not int or day not in OUTCOME_DAYS:
+            raise Refused("test_company_day_invalid")
+        return "/api/internal/pipeline/test-company/outcome-questions", {"job_id": job_id, "day": day}
     state, inputs = request.get("state"), request.get("inputs", "")
     if state not in STATES:
         raise Refused("test_company_state_invalid")
@@ -76,7 +88,22 @@ def run(request: Mapping[str, Any], *, post: Callable[..., dict[str, Any]] = pos
         if _WEBSITE_REFUSAL.fullmatch(str(exc)):
             raise Refused(str(exc)) from None  # the website said no: nothing was done
         raise
+    if request["action"] == "outcome-questions":
+        answer = _without_links(answer)
     return {"door_outcome": "done", "action": request["action"], "website": answer}
+
+
+def _without_links(answer: Any) -> Any:
+    """The website's answer to ``outcome-questions`` with each answer link reduced to its state and label: a signed
+    link answers for one side of an introduction, so it stays in the internal test inbox's email."""
+    if not isinstance(answer, Mapping):
+        return answer
+    links = answer.get("answers")
+    if not isinstance(links, Mapping):
+        return dict(answer)
+    kept = {side: [{"state": row.get("state"), "label": row.get("label")} for row in rows if isinstance(row, Mapping)]
+            for side, rows in links.items() if isinstance(rows, list)}
+    return {**answer, "answers": kept}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
