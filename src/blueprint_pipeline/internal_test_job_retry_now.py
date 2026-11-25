@@ -27,6 +27,7 @@ could not read) counts as used, since it may have changed a record; one that cha
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import re
@@ -252,8 +253,18 @@ def run(request: Mapping[str, Any], *, door_request_id: str, requested_by: str, 
                  "reason": reason, "at_epoch": current}
         # Counted before any record changes, so a process killed between them still used this release's one.
         write_json(path, {**row, "retry_now": [*asks, {**entry, "outcome": "applying"}]})
-        records = {"atlas_preview": _atlas(capture_root, current=current),
-                   "preparation_retry": _preparation(capture_root, now=datetime.fromtimestamp(current, timezone.utc))}
+        records: dict[str, Any] = {}
+        try:
+            records["atlas_preview"] = _atlas(capture_root, current=current)
+            records["preparation_retry"] = _preparation(capture_root, now=datetime.fromtimestamp(current, timezone.utc))
+        except Exception:
+            # Each record is written only as its last act, so a raise changed only those it lists as changed. With
+            # none changed this release's one is not used, and its next ask finds the same records (Austin,
+            # 2026-11-25: an OSError left "applying" on a row whose records were unchanged). A process killed
+            # outright still leaves "applying": nothing can tell what it reached.
+            if not any(record.get("result") == CHANGED for record in records.values()):
+                write_json(path, {**row, "retry_now": asks})
+            raise
         changed = any(record["result"] == CHANGED for record in records.values())
         # Only a retry-now that changed something uses the release's one; the door's receipt keeps every ask.
         write_json(path, {**row, "retry_now": [*asks, *([{**entry, "outcome": CHANGED, "records": {
@@ -264,6 +275,16 @@ def run(request: Mapping[str, Any], *, door_request_id: str, requested_by: str, 
                                         else {}),
             "job_id": job_id, "label": row.get("label"), "release": commit, "requested_by": requested_by,
             "reason": reason, "records": records}
+
+
+def _os_error_code(exc: OSError) -> str:
+    """``OSError``, its errno's name and the last two parts of the file it names (``OSError:EACCES:atlas/preview.lock``),
+    each part only of code characters: a read-only path or a missing permission says where without the message."""
+    parts = [type(exc).__name__, errno.errorcode.get(exc.errno, "") if isinstance(exc.errno, int) else ""]
+    if isinstance(exc.filename, (str, Path)):
+        parts.append("/".join(Path(exc.filename).parts[-2:]))
+    code = ":".join(re.sub(r"[^A-Za-z0-9_./-]", "_", part)[:80] for part in parts if part)
+    return code[:200]
 
 
 #: The script's exit codes (deploy/operator-door/door-test-job-retry-now.sh).
@@ -282,7 +303,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                      requested_by=args.requested_by, door_results=args.door_results)
     except Refused as exc:
         report = {"door_outcome": "refused", "code": str(exc)}
-    except (ValueError, KeyError, TypeError, OSError) as exc:
+    except OSError as exc:
+        # Which call and which file, never the message: the door's outcome keeps only a code.
+        report = {"door_outcome": "failed", "code": _os_error_code(exc)}
+    except (ValueError, KeyError, TypeError) as exc:
         text = str(exc)
         report = {"door_outcome": "failed", "code": text if re.fullmatch(r"[a-z0-9_:.-]{1,200}", text)
                   else type(exc).__name__}
