@@ -6,6 +6,8 @@ may contribute; known surfaces and observed free space always take precedence.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
+import functools
 import hashlib
 from pathlib import Path
 
@@ -278,6 +280,36 @@ def _support_masks(frames):
     return support
 
 
+#: The completion root being prepared (``follows_today_until_sent``).
+_PREPARING: ContextVar[Path | None] = ContextVar('atlas_completion_root_being_prepared', default=None)
+
+
+def completion_sent(root) -> bool:
+    """Whether any batch of a completion root was submitted: its record is written before its first upload."""
+    return any((Path(root) / 'generated').rglob('atlas_pose/submission.json'))
+
+
+def follows_today_until_sent(function):
+    """A completion (``generate_*_completion``) whose batches sent nothing yet prepares its inputs and plan with
+    today's code: a file an earlier run wrote under its root is written again instead of refused (``rewritable``).
+    Once any batch is submitted, they refuse as before, as a provider may hold them. (2026-11-24 sweep: a completion
+    plan rebuilt from views, depth, extent and batches refused mid-completion though nothing was bought.)"""
+    @functools.wraps(function)
+    def prepared(*args, root, **kwargs):
+        token = _PREPARING.set(Path(root).resolve())
+        try:
+            return function(*args, root=root, **kwargs)
+        finally:
+            _PREPARING.reset(token)
+    return prepared
+
+
+def rewritable(path) -> bool:
+    """Whether ``path`` lies under the completion root being prepared and no batch of it was sent."""
+    root = _PREPARING.get()
+    return root is not None and Path(path).resolve().is_relative_to(root) and not completion_sent(root)
+
+
 def _save_image(path, pixels):
     from PIL import Image
 
@@ -285,7 +317,9 @@ def _save_image(path, pixels):
         raise ValueError('atlas_completion_preservation_inputs_changed')
     if path.exists():
         if not np.array_equal(np.asarray(Image.open(path)), pixels):
-            raise ValueError('atlas_completion_preservation_inputs_changed')
+            if not rewritable(path):
+                raise ValueError('atlas_completion_preservation_inputs_changed')
+            Image.fromarray(pixels).save(path)
     else:
         Image.fromarray(pixels).save(path)
 
@@ -582,6 +616,7 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
                    'novel_view': True}, report, paths
 
 
+@follows_today_until_sent
 def generate_masked_completion(*, frames, selected, candidates, root, pose, context, configuration,
                                task_runner, max_polls, removed_objects=(), checkpoint=None):
     """Use the existing inpainting/batching adapter; preserve every native result."""
@@ -633,7 +668,7 @@ def generate_masked_completion(*, frames, selected, candidates, root, pose, cont
                             'maximum_cost_usd': quote['maximum_cost_usd']} for group, request, _, _, quote in specs]}
     binding['digest'] = canonical_digest(binding, digest_field='digest')
     plan_path = root / 'masked-completion-plan.json'
-    if plan_path.exists() and json.loads(plan_path.read_text()) != binding:
+    if plan_path.exists() and json.loads(plan_path.read_text()) != binding and not rewritable(plan_path):
         raise ValueError('atlas_completion_masked_plan_changed')
     write_json(plan_path, binding)
     assets = [plan_path, *[Path(row[key]) for row in rows for key in ('image_path', 'keep_mask_path')]]
