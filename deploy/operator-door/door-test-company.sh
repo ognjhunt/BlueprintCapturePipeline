@@ -1,8 +1,9 @@
 #!/bin/bash
 # Act for Blueprint's internal test company through the website's signed internal routes, with the
 # active release (blueprint_pipeline.internal_test_company_door) as the service user: ensure it,
-# send it a test job, answer for it, or a test job's site link. This root script keeps only the
-# door's log, result and outcome. Nothing is spent; the website refuses every real job.
+# send it a test job, answer for it, press the site's Accept, a test job's site link, or read its
+# page of a test job. This root script keeps only the door's log, result and outcome. It spends
+# nothing; a model pass the website starts is held against the job's cap. Real jobs are refused.
 set -euo pipefail
 umask 022
 # shellcheck source-path=SCRIPTDIR source=door-common.sh

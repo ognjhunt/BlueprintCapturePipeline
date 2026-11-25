@@ -48,6 +48,8 @@ ANSWER = {"kind": "test-company", "action": "answer", "job_id": JOB, "state": "i
      {"kind": "test-company", "action": "site-link", "job_id": JOB}),
     ({"kind": "test-company", "action": "accept", "job_id": JOB},
      {"kind": "test-company", "action": "accept", "job_id": JOB}),
+    ({"kind": "test-company", "action": "page", "job_id": JOB},
+     {"kind": "test-company", "action": "page", "job_id": JOB}),
     (ANSWER, ANSWER),
     ({key: value for key, value in ANSWER.items() if key != "inputs"}, {**ANSWER, "inputs": ""}),
 ])
@@ -68,6 +70,10 @@ def test_the_door_admits_one_action_for_the_test_company(body, expected):
     ({"kind": "test-company", "action": "site-link", "job_id": JOB + "/../x"}, "test_company_job_invalid"),
     ({"kind": "test-company", "action": "accept"}, "test_company_job_invalid"),
     ({"kind": "test-company", "action": "accept", "job_id": JOB, "alias": "A"}, "request_key_unknown:alias"),
+    ({"kind": "test-company", "action": "page"}, "test_company_job_invalid"),
+    ({"kind": "test-company", "action": "page", "job_id": "8d3f0c2a-9e7b-4c1d-a0f5-6b2e9d4c7a31"},
+     "test_company_job_invalid"),                                        # a site's job: its page is never read
+    ({"kind": "test-company", "action": "page", "job_id": JOB, "company_id": "a" * 64}, "request_key_unknown:company_id"),
     ({**ANSWER, "state": "accepted"}, "test_company_state_invalid"),
     ({**ANSWER, "inputs": "x" * 2001}, "test_company_inputs_invalid"),
     ({**ANSWER, "inputs": "a\x00b"}, "test_company_inputs_invalid"),
@@ -119,6 +125,8 @@ def test_the_door_runs_one_signed_call_with_only_the_sync_token_and_the_result_w
     (ANSWER, "/api/internal/pipeline/test-company/answer",
      {"job_id": JOB, "state": "interested", "inputs": "We run this job at two sites."}),
     ({"kind": "test-company", "action": "accept", "job_id": JOB}, "/api/internal/pipeline/test-company/accept",
+     {"job_id": JOB}),
+    ({"kind": "test-company", "action": "page", "job_id": JOB}, "/api/internal/pipeline/test-company/page",
      {"job_id": JOB}),
 ])
 def test_each_action_is_one_signed_call_to_its_website_route(request_, path, body):
@@ -193,16 +201,68 @@ def _client():
 
 def test_the_client_sends_one_action(monkeypatch):
     client, sent = _client(), []
-    monkeypatch.setattr(client, "_submit", lambda body, args: sent.append(body) or 0)
+    monkeypatch.setattr(client, "_submit", lambda body, args, **_: sent.append(body) or 0)
     for argv in (["test-company", "ensure"], ["test-company", "send", JOB], ["test-company", "site-link", JOB],
                  ["test-company", "answer", JOB, "--state", "interested", "--inputs", ANSWER["inputs"]],
-                 ["test-company", "accept", JOB]):
+                 ["test-company", "accept", JOB], ["test-company", "page", JOB], ["test-company", "page", "--job", JOB]):
         assert client.run(client.build_parser().parse_args(argv)) == 0
+    page = {"kind": "test-company", "action": "page", "job_id": JOB}
     assert sent == [{"kind": "test-company", "action": "ensure"}, {"kind": "test-company", "action": "send", "job_id": JOB},
                     {"kind": "test-company", "action": "site-link", "job_id": JOB}, ANSWER,
-                    {"kind": "test-company", "action": "accept", "job_id": JOB}]
+                    {"kind": "test-company", "action": "accept", "job_id": JOB}, page, page]
     with pytest.raises(SystemExit, match="name the test job"):
         client.run(client.build_parser().parse_args(["test-company", "send"]))
+    with pytest.raises(SystemExit, match="two different test jobs"):
+        client.run(client.build_parser().parse_args(["test-company", "page", JOB, "--job", "itest-" + "d" * 40]))
     with pytest.raises(SystemExit, match="--state is required"):
         client.run(client.build_parser().parse_args(["test-company", "answer", JOB]))
     assert client._terminal({"request": ANSWER, "outcome": {"status": "acted"}}) is True
+
+
+class _Answer:
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def read(self) -> bytes:
+        return self._data
+
+
+def test_the_client_prints_the_websites_answer_with_the_finished_request(monkeypatch, capsys):
+    client = _client()
+    result = f"/var/lib/blueprint-operator-door/requests/results/{THIS}.test-company.json"
+    answer = {"door_outcome": "done", "action": "page", "website": {"ok": True, "job_id": JOB,
+                                                                    "summary_text": "At a glance\n[link to the job's page]"}}
+    states = iter([{"state": "processing"}, {"state": "completed", "request": {"kind": "test-company", "action": "page"},
+                                             "outcome": {"status": "acted", "result": result}}])
+    reads = []
+    monkeypatch.setattr(client, "_json", lambda method, route, *rest, **kw: (
+        {"id": THIS, "state": "pending"} if method == "POST" else next(states)))
+    monkeypatch.setattr(client, "_request", lambda method, route, query=None, *rest, **kw: (
+        reads.append((method, route, query)) or _Answer(json.dumps(answer).encode())))
+    monkeypatch.setattr(client.time, "sleep", lambda _seconds: None)
+    args = client.build_parser().parse_args(["test-company", "page", JOB, "--wait", "--poll", "0"])
+    assert client.run(args) == 0
+    printed = json.loads(capsys.readouterr().out)
+    # One JSON document: the request's state, and the release module's answer read back through the door's file read.
+    assert printed["test_company_result"] == answer
+    assert reads == [("GET", "/fs/read", {"path": result})]
+
+
+def test_the_client_says_when_the_answer_cannot_be_read_and_reads_nothing_else(monkeypatch, capsys):
+    client = _client()
+
+    def refused(*_args, **_kwargs):
+        raise client.DoorError(2, "refused: secret_content_refused:json_secret_field")
+    monkeypatch.setattr(client, "_request", refused)
+    state = {"outcome": {"status": "acted", "result": f"/var/lib/blueprint-operator-door/requests/results/{THIS}.test-company.json"}}
+    client._with_test_company_answer(state)
+    assert state["test_company_result"] is None and "could not be read" in capsys.readouterr().err
+    other = {"outcome": {"status": "acted", "result": "/etc/blueprint/pipeline-control-plane.env"}}
+    client._with_test_company_answer(other)
+    assert "test_company_result" not in other

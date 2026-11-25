@@ -10,10 +10,15 @@ Pipeline -> WebApp transport as ``internal_test_job_door``, to do one thing, and
 - ``answer``: its answer on one test job, through the website's own answer path (``.../test-company/answer``);
 - ``accept``: the site's Accept for it on one test job, through the site's own introduction code, so no site token
   leaves the website (``.../test-company/accept``);
-- ``site-link``: one test job's site owner link (``.../test-jobs/<job>/site-link``).
+- ``site-link``: one test job's site owner link (``.../test-jobs/<job>/site-link``);
+- ``page``: its own page of one test job, read as its page read reads it, answered as a redacted summary with the job
+  summary PDF's text and no address, ticket, signature or token (``.../test-company/page``).
 
-Nothing here spends, deletes or changes a limit. The website refuses every job that is not an internal test job, and
-every company but the test company; this module names no email address.
+Nothing here deletes, changes a limit or spends by itself. Each call runs the website's own path, which may start the
+model passes that path starts for any job (the screening of the words read across, on a send, an answer or a page read;
+a page read also the job's brief when it has none current), each held by the website against the job's one USD 40 cap.
+The website refuses every job that is not an internal test job, and every company but the test company; this module
+names no email address.
 """
 from __future__ import annotations
 
@@ -40,7 +45,7 @@ def validated(request: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     action, job_id = request.get("action"), request.get("job_id")
     keys = {"ensure": {"kind", "action"}, "send": {"kind", "action", "job_id"},
             "site-link": {"kind", "action", "job_id"}, "accept": {"kind", "action", "job_id"},
-            "answer": {"kind", "action", "job_id", "state", "inputs"}}
+            "page": {"kind", "action", "job_id"}, "answer": {"kind", "action", "job_id", "state", "inputs"}}
     if action not in keys or not set(request) <= keys[action] or (action != "answer" and set(request) != keys[action]):
         raise Refused("test_company_request_invalid")
     if action == "ensure":
@@ -53,6 +58,8 @@ def validated(request: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
         return f"/api/internal/pipeline/test-jobs/{job_id}/site-link", {}
     if action == "accept":
         return "/api/internal/pipeline/test-company/accept", {"job_id": job_id}
+    if action == "page":
+        return "/api/internal/pipeline/test-company/page", {"job_id": job_id}
     state, inputs = request.get("state"), request.get("inputs", "")
     if state not in STATES:
         raise Refused("test_company_state_invalid")

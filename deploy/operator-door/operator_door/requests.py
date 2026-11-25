@@ -37,7 +37,9 @@ job, as the service user, with no network: it sets that job's scheduled Atlas pr
 at most once per release, and changes no count, wall, grant, spend or admission.
 ``test-company`` (``operate``) runs the active release's ``internal_test_company_door`` as the service user: one signed
 call to the website for Blueprint's internal test company (ensure it, send it one internal test job, answer for it on
-one, press the site's Accept for it on one, or one test job's site link). The website opens internal test jobs only to that company; nothing is spent.
+one, press the site's Accept for it on one, one test job's site link, or read its page of one). The website opens internal
+test jobs only to that company. The door spends nothing itself; a model pass the website's path starts (the screening
+of words, a page read's job brief) is held by the website against the job's USD 40 cap.
 """
 
 from __future__ import annotations
@@ -578,7 +580,7 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         action, job_id = body.get("action"), body.get("job_id")
         allowed = {"ensure": ("kind", "action"), "send": ("kind", "action", "job_id"),
                    "site-link": ("kind", "action", "job_id"), "accept": ("kind", "action", "job_id"),
-                   "answer": ("kind", "action", "job_id", "state", "inputs")}
+                   "page": ("kind", "action", "job_id"), "answer": ("kind", "action", "job_id", "state", "inputs")}
         if action not in allowed:
             raise RequestRefused("test_company_action_invalid")
         _only(body, allowed[action])
