@@ -257,6 +257,33 @@ def _room_package_job(tmp_path, *, bound=True, cause="other_geometry_in_its_box_
     return root
 
 
+def test_a_room_package_in_a_corrections_workspace_reads_the_preparation_beside_it(tmp_path):
+    """Codex, #3735: after a site's correction, compile writes the preparation and the room package under
+    ``website_scene_preparation/revisions/<digest>/`` while ``handoff.json`` stays at the top. The preparation the
+    room package names is read from the room package's own workspace, not from beside the handoff."""
+    import shutil
+
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = _room_package_job(tmp_path)
+    work = root / "pipeline" / "website_scene_preparation"
+    revision = work / "revisions" / ("e" * 64)
+    revision.mkdir(parents=True)
+    shutil.move(str(work / "preparation.json"), revision / "preparation.json")
+    shutil.move(str(work / "room_package"), revision / "room_package")
+    # An older preparation left beside the handoff must not be the one read.
+    stale = json.loads((revision / "preparation.json").read_text())
+    stale["subject"]["description"] = "an older lamp"
+    stale["digest"] = canonical_digest(stale, digest_field="digest")
+    write_json(work / "preparation.json", stale)
+    handoff = json.loads((work / "handoff.json").read_text())
+    handoff["room_package"]["path"] = str(revision / "room_package" / "half" / "room_package_inputs.v1.json")
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(work / "handoff.json", handoff)
+    value = facts.read_packet_facts(capture_root=root, task_context_digest=CONTEXT)
+    assert value is not None and {"text": "Object: table lamp.", "answers": None} in value["object"]
+
+
 def test_a_room_package_shipped_on_compiles_stop_shows_the_objects_estimates_and_why_it_was_not_placed(tmp_path):
     """Job move-the-lamp-2 (24 Nov): the room package's handoff names no preparation, so the company's page read
     "Nothing about the object is measured or estimated yet." under "add a stand-in of your own, sized from the facts

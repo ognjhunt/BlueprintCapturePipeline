@@ -445,8 +445,11 @@ def read_packet_facts(*, capture_root: Path, task_context_digest: str) -> dict[s
             # A room package shipped for compile's own stops names the preparation compile wrote beside it, by
             # digest, in its sealed record (``website_scene_handoff.write_room_package``): the object's estimates.
             reference = _mapping(handoff.get("room_package"))
-            room = _load(Path(str(reference.get("path"))), root, "inputs_digest")
-            handoff = {**handoff, "preparation_path": str(path.parent / "preparation.json"),
+            room_path = Path(str(reference.get("path")))
+            room = _load(room_path, root, "inputs_digest")
+            # Both are written in the preparation's workspace (``website_preparation_revision.workspace``: a
+            # correction's ``revisions/<digest>/``), ``<workspace>/room_package/half/<record>``; the handoff is not.
+            handoff = {**handoff, "preparation_path": str(room_path.parents[2] / "preparation.json"),
                        "preparation_digest": room.get("preparation_digest")
                        if room["inputs_digest"] == reference.get("inputs_digest") else None}
         preparation = _load(Path(handoff["preparation_path"]), root, "digest")
