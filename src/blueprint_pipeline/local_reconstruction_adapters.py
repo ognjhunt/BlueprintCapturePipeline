@@ -176,6 +176,32 @@ def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> str:
     return digest
 
 
+#: What a decoded observation index is an index of: the capture, its video and the frames chosen from it.
+_DECODED_INDEX_IDENTITY = ("schema_version", "capture_digest", "video_relative_path", "video_digest",
+                           "selection_method", "selection_binding")
+
+
+def _write_decoded_index(path: Path, value: Mapping[str, Any]) -> str:
+    """``_write_immutable_json`` for a decoded observation index, which a decode run again replaces.
+
+    The index names the frozen dataset its run compiled, and that dataset's configuration names the
+    release (``source_commit_sha``): a decode run again after a deploy (a survey step that stopped part
+    way) compiles its dataset in a folder of its own, and its index is the one at this fixed path, which
+    refused every such run (2026-11-24 sweep). Readers find the index here by name, one per decode, so it
+    is replaced, not written beside. An index of another capture, video or selection still refuses.
+    """
+    if path.is_file() and not path.is_symlink() and path.read_bytes() != _canonical_bytes(value):
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            existing = None
+        if not isinstance(existing, dict) or any(existing.get(key) != value.get(key)
+                                                 for key in _DECODED_INDEX_IDENTITY):
+            raise LocalReconstructionAdapterError(["derived_artifact:immutable_conflict"])
+        path.unlink()
+    return _write_immutable_json(path, value)
+
+
 def _implementation_digest() -> str:
     return canonical_digest(
         {
@@ -774,7 +800,7 @@ class LocalDecodedObservationAdapter:
             "hidden_heldout_frame_count": len(heldout_ids),
         }
         index_path = artifact_root / "decoded_observation_index.json"
-        index_digest = _write_immutable_json(index_path, index)
+        index_digest = _write_decoded_index(index_path, index)
         dataset_path = (
             artifact_root
             / f"frozen_dataset_{dataset['deterministic_configuration_digest'][7:23]}"

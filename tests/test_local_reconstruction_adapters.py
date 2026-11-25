@@ -162,6 +162,39 @@ def test_decoded_observation_adapter_is_deterministic_and_non_metric(
     assert first["source_frames"]["hidden_heldout_frame_count"] == 1
 
 
+def test_a_decode_run_again_after_a_deploy_replaces_its_index_and_never_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The index names its run's dataset, whose configuration names the release: a survey step that stopped part
+    way and ran again after a deploy refused with ``derived_artifact:immutable_conflict`` (2026-11-24 sweep)."""
+    _stub_media_tools(monkeypatch, presentation_times=[0.1, 0.2, 0.3, 0.4])
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    (capture_root / "video.mp4").write_bytes(b"retained-video")
+    output_root = tmp_path / "derived"
+    kwargs = {"intake_id": "intake-1", "capture_digest": CAPTURE_DIGEST,
+              "capture_authority_profile": "monocular_video", "capture_root": capture_root,
+              "video_relative_path": "video.mp4", "output_root": output_root,
+              "rights_and_retention": {"external_processing": False}, "maximum_frames": 4}
+    monkeypatch.setenv("BLUEPRINT_SOURCE_COMMIT", "a" * 40)
+    first = LocalDecodedObservationAdapter().execute(**kwargs)
+    monkeypatch.setenv("BLUEPRINT_SOURCE_COMMIT", "b" * 40)
+    second = LocalDecodedObservationAdapter().execute(**kwargs)
+    indexes = list(output_root.rglob("decoded_observation_index.json"))
+    assert len(indexes) == 1  # the Atlas survey readers require exactly one
+    index = json.loads(indexes[0].read_text())
+    references = second["asset_references"]
+    assert index["reconstruction_dataset_manifest_digest"] == references["reconstruction_dataset_manifest"]["digest"]
+    assert first["asset_references"]["reconstruction_dataset_manifest"]["digest"] != (
+        references["reconstruction_dataset_manifest"]["digest"])
+    assert second["source_frames"] == first["source_frames"]
+    # An index of another video at the same place is not this decode's: it still refuses.
+    index["video_digest"] = "sha256:" + "f" * 64
+    indexes[0].write_text(json.dumps(index))
+    with pytest.raises(LocalReconstructionAdapterError, match="immutable_conflict"):
+        LocalDecodedObservationAdapter().execute(**kwargs)
+
+
 def _arkit_bundle(root: Path) -> None:
     (root / "arkit/depth").mkdir(parents=True)
     (root / "arkit/confidence").mkdir(parents=True)
