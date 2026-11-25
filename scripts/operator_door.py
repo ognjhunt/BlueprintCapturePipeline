@@ -24,7 +24,7 @@ laptop too. Standard library only.
         --approval-evidence "<owner approval>" [--apply] --wait
     python3 scripts/operator_door.py test-job --idempotency-key K --label L --footage-id F --description "..." --wait
     python3 scripts/operator_door.py test-job-retry-now itest-<40 hex> --reason "the fix it waited for is live" --wait
-    python3 scripts/operator_door.py test-company ensure|send|answer|accept|site-link [itest-<40 hex>] [--state S --inputs T] --wait
+    python3 scripts/operator_door.py test-company ensure|send|answer|accept|site-link|page [itest-<40 hex>] [--state S --inputs T] --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -56,6 +56,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
@@ -420,7 +421,8 @@ def _terminal(state: dict[str, Any]) -> bool | None:
 _LONGEST_DEPLOY_WAIT_SECONDS = 8 * 3600
 
 
-def _wait(request_id: str, *, timeout: float, poll: float) -> int:
+def _wait(request_id: str, *, timeout: float, poll: float,
+          annotate: Callable[[dict[str, Any]], None] | None = None) -> int:
     deadline = time.monotonic() + timeout
     last = None
     while True:
@@ -432,6 +434,8 @@ def _wait(request_id: str, *, timeout: float, poll: float) -> int:
             last = summary
         verdict = _terminal(state)
         if verdict is not None:
+            if annotate is not None:
+                annotate(state)
             _print(state)
             return 0 if verdict else 1
         if time.monotonic() >= deadline:
@@ -455,7 +459,8 @@ def handoff_bucket() -> str:
     return names[0]
 
 
-def _submit(body: dict[str, Any], args: argparse.Namespace) -> int:
+def _submit(body: dict[str, Any], args: argparse.Namespace,
+            annotate: Callable[[dict[str, Any]], None] | None = None) -> int:
     import uuid
     operation_key = getattr(args, "operation_key", None) or str(uuid.uuid4())
     print(f"operation key: {operation_key} (reuse --operation-key after a lost response)", file=sys.stderr)
@@ -465,7 +470,22 @@ def _submit(body: dict[str, Any], args: argparse.Namespace) -> int:
         _print(accepted)
         return 0
     print(f"spooled {accepted['id']}", file=sys.stderr)
-    return _wait(accepted["id"], timeout=args.timeout, poll=args.poll)
+    return _wait(accepted["id"], timeout=args.timeout, poll=args.poll, annotate=annotate)
+
+
+def _with_test_company_answer(state: dict[str, Any]) -> None:
+    """A finished ``test-company`` request's own answer (the release module's report, with the website's answer under
+    ``website``), read back through the door's file read, which refuses credential-shaped content, and put beside the
+    request's state as ``test_company_result``, so one JSON document is printed."""
+    path = (state.get("outcome") or {}).get("result")
+    if not isinstance(path, str) or not path.endswith(".test-company.json"):
+        return
+    try:
+        with _request("GET", "/fs/read", {"path": path}) as response:
+            state["test_company_result"] = json.loads(response.read())
+    except (DoorError, ValueError) as error:
+        state["test_company_result"] = None
+        print(f"the result {path} could not be read: {error}", file=sys.stderr)
 
 
 def _github_json(route: str) -> dict[str, Any]:
@@ -864,8 +884,9 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         test_job.add_argument(flag, required=True)
     _add_wait(test_job, 600)
     company = commands.add_parser("test-company", help="act for Blueprint's internal test company on a test job")
-    company.add_argument("action", choices=("ensure", "send", "site-link", "answer", "accept"))
+    company.add_argument("action", choices=("ensure", "send", "site-link", "answer", "accept", "page"))
     company.add_argument("job_id", nargs="?", help="the test job's id, itest-<40 hex> (all but ensure)")
+    company.add_argument("--job", dest="job_option", help="the test job's id, as the positional names it")
     company.add_argument("--state", choices=("interested", "declined", "needs_something", "tested_can_do",
                                              "tested_cannot_yet"), help="the answer (answer only)")
     company.add_argument("--inputs", default="", help="the answer's words (answer only; some answers need a few)")
@@ -982,15 +1003,18 @@ def run(args: argparse.Namespace) -> int:
         return _submit(body, args)
     elif command == "test-company":
         body: dict[str, Any] = {"kind": "test-company", "action": args.action}
+        if args.job_id and args.job_option and args.job_id != args.job_option:
+            raise SystemExit(f"test-company {args.action}: two different test jobs named")
+        job_id = args.job_id or args.job_option
         if args.action != "ensure":
-            if not args.job_id:
+            if not job_id:
                 raise SystemExit(f"test-company {args.action}: name the test job (itest-<40 hex>)")
-            body["job_id"] = args.job_id
+            body["job_id"] = job_id
         if args.action == "answer":
             if not args.state:
                 raise SystemExit("test-company answer: --state is required")
             body.update(state=args.state, inputs=args.inputs)
-        return _submit(body, args)
+        return _submit(body, args, annotate=_with_test_company_answer)
     elif command == "test-job-retry-now":
         return _submit({"kind": "test-job-retry-now", "job_id": args.job_id, "reason": args.reason,
                         "bucket": args.bucket or handoff_bucket()}, args)
