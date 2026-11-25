@@ -398,10 +398,21 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     remapped = (np.cumsum(present, dtype=np.int64) - 1)[kept]
     del present
     nearest = vertex_nearest[used]
-    base_colour = np.empty((len(nearest), 3), dtype=np.float32)
+    # A vertex with no Gaussian within the support distance (only when every registered face is kept) has no observed
+    # colour: the query names one past the splat for it. It takes the colour a zero base colour gives (neutral grey),
+    # and the estimate counts it; indexing the splat with it raised IndexError and shipped no collider at all.
+    unseen = nearest >= len(splat_rows)
+    base_colour = np.zeros((len(nearest), 3), dtype=np.float32)
     for start in range(0, len(nearest), FACE_BLOCK):
-        base_colour[start:start + FACE_BLOCK] = splat_rows[nearest[start:start + FACE_BLOCK]][
+        rows, seen = nearest[start:start + FACE_BLOCK], ~unseen[start:start + FACE_BLOCK]
+        base_colour[start:start + FACE_BLOCK][seen] = splat_rows[rows[seen]][
             :, [column[f"f_dc_{index}"] for index in range(3)]]
+    if unseen.any():
+        support_estimate = {**(support_estimate or {"code": COLLIDER_ESTIMATE_FLAG,
+                                                    "reason": "atlas_mesh_no_supported_faces",
+                                                    "claim": "development_only_estimate"}),
+                            "vertices_without_nearby_gaussian": int(unseen.sum()),
+                            "unobserved_vertex_colour": "neutral_grey_zero_base_colour"}
     colors = np.clip((0.5 + SH_C0 * base_colour) * 255.0, 0, 255).round()
     out = write_glb_triangles(output_root / "atlas_mesh_supported.glb", vertices[used], remapped.reshape(-1, 3), colors)
 
