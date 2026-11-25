@@ -273,16 +273,20 @@ def _test_job_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[
 def _test_job_retry_now_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
             "DOOR_SERVICE_USER": "blueprint",
-            "DOOR_TEST_JOB_RETRY_NOW_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
+            # The module's request is unchanged; the bucket only names the writable scene.
+            "DOOR_TEST_JOB_RETRY_NOW_REQUEST": json.dumps({key: value for key, value in request.items()
+                                                           if key != "bucket"}, sort_keys=True, allow_nan=False)}
 
 
 def _test_job_retry_now_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
-    """As the user that owns the records, with no network and every secret hidden. Writable: the job's scene under
-    each handoff bucket (its Atlas job and preparation ledger; the id was validated with the request), the door's
-    test-job ledger, and the result."""
+    """As the user that owns the records, with no network and every secret hidden. Writable: the job's scene under the
+    request's handoff bucket (its Atlas job and preparation ledger; both were validated with the request), the door's
+    test-job ledger, and the result. The scene is named, never listed: this runner is root with no capabilities, so
+    the service user's own folders cannot be read to find it (Austin, 2026-11-25: a listing found none, the scene
+    stayed read-only and the ask failed with EROFS on the Atlas job's lock)."""
     # "-": a scene retired before the unit starts must not stop it (226/NAMESPACE); the module says absent.
-    scenes = [f"-{path}" for path in sorted(Path(_PUBSUB_HANDOFFS).glob(f"*/scenes/site-{request['job_id']}"))]
-    writable = " ".join((*scenes, str(Path(config.control_plane_state) / "internal-test-jobs"),
+    scene = f"-{_PUBSUB_HANDOFFS}/{request['bucket']}/scenes/site-{request['job_id']}"
+    writable = " ".join((scene, str(Path(config.control_plane_state) / "internal-test-jobs"),
                          str(Path(config.spool_root) / "results")))
     return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
             "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",

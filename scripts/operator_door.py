@@ -440,6 +440,20 @@ def _wait(request_id: str, *, timeout: float, poll: float) -> int:
         time.sleep(poll)
 
 
+HANDOFF_ROOT = "/var/lib/blueprint/pubsub-handoffs"
+
+
+def handoff_bucket() -> str:
+    """The host's one handoff bucket, as the door lists its handoff root: a test-job retry-now names it, so the door
+    makes only that job's scene writable. Several (or none) cannot be chosen between here: name one with --bucket."""
+    names = [row.get("name") for row in _json("GET", "/fs/list", {"path": HANDOFF_ROOT}).get("entries") or []
+             if row.get("type") == "dir" and isinstance(row.get("name"), str)
+             and not row["name"].startswith((".", "_"))]
+    if len(names) != 1:
+        raise SystemExit(f"test-job-retry-now: {len(names)} handoff buckets under {HANDOFF_ROOT}; name one with --bucket")
+    return names[0]
+
+
 def _submit(body: dict[str, Any], args: argparse.Namespace) -> int:
     import uuid
     operation_key = getattr(args, "operation_key", None) or str(uuid.uuid4())
@@ -852,6 +866,7 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
                                     help="bring one internal test job's scheduled retries forward to now; timing only")
     retry_now.add_argument("job_id", help="the test job's id, itest-<40 hex>")
     retry_now.add_argument("--reason", required=True, help="why; recorded with who asked (<= 500 chars)")
+    retry_now.add_argument("--bucket", help="the handoff bucket holding the job's scene (default: the host's only one)")
     _add_wait(retry_now, 600)
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
@@ -958,7 +973,8 @@ def run(args: argparse.Namespace) -> int:
                 "footage_id": args.footage_id, "description": args.description}
         return _submit(body, args)
     elif command == "test-job-retry-now":
-        return _submit({"kind": "test-job-retry-now", "job_id": args.job_id, "reason": args.reason}, args)
+        return _submit({"kind": "test-job-retry-now", "job_id": args.job_id, "reason": args.reason,
+                        "bucket": args.bucket or handoff_bucket()}, args)
     elif command == "selected-handoff":
         with Path(args.selector_file).open("rb") as stream:
             raw = stream.read(4097)

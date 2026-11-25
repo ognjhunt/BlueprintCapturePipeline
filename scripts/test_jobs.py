@@ -241,7 +241,7 @@ def retry_now(args: argparse.Namespace, state: dict) -> int:
         print(f"{args.label}: no started job of that label in {args.state}", file=sys.stderr)
         return 2
     accepted = door._json("POST", "/requests", body={"kind": "test-job-retry-now", "job_id": job["job_id"],
-                                                     "reason": args.reason})
+                                                     "reason": args.reason, "bucket": door.handoff_bucket()})
     for _ in range(120):
         request = door._json("GET", f"/requests/{accepted['id']}")
         verdict = door._terminal(request)
