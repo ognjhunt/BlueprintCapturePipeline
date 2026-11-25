@@ -237,6 +237,26 @@ def test_repeated_preparation_reuses_support_only_for_byte_identical_frames(tmp_
     assert checks == [2, 2, 2], 'Any changed pose or pixel is checked again'
 
 
+def test_a_pass_that_alternates_two_frame_sets_checks_each_set_once(monkeypatch):
+    """The gap survey's reference views, every view for camera ranking, then the references again for the aimed
+    cameras: two sets kept, so the references are not checked a second time. A third set lets the oldest go."""
+    a, b, c = frame('a'), frame('b', cam=camera(x=.02)), frame('c', cam=camera(x=.04))
+    checks, masks = [], preservation._support_masks
+    monkeypatch.setattr(preservation, '_SUPPORT_MASKS', {})
+    monkeypatch.setattr(preservation, '_support_masks',
+                        lambda frames: checks.append([f['frame_id'] for f in frames]) or masks(frames))
+    references, every = [a, b], [a, b, c]
+    first = preservation._reused_support_masks(references)
+    preservation._reused_support_masks(every)
+    again = preservation._reused_support_masks(references)
+    assert checks == [['a', 'b'], ['a', 'b', 'c']] and again is first
+    preservation._reused_support_masks([b, c])  # lets go of every view's, the least recently used
+    preservation._reused_support_masks(references)
+    preservation._reused_support_masks(every)
+    assert checks == [['a', 'b'], ['a', 'b', 'c'], ['b', 'c'], ['a', 'b', 'c']]
+    assert len(preservation._SUPPORT_MASKS) == preservation.SUPPORT_MASK_SETS == 2
+
+
 @pytest.mark.parametrize('depth,allowed', [(1., False), (2., False), (4., True)])
 def test_generated_geometry_cannot_fill_observed_free_space_or_replace_known_surface(depth, allowed):
     reference = frame()
