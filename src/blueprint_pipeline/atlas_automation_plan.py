@@ -32,13 +32,14 @@ COMPLETION_FLOOR_REASONS = frozenset({"atlas_completion_visual_review_required",
 #: completion planner's retained answer proposes nothing usable to fill in (``atlas_scene_completion``): it
 #: abstained, chose cameras that are not candidates, gave no gap plan, or cited evidence it was not given; or no
 #: view has any valid depth to place a completion camera on (``camera_candidates``; a view without it is only left
-#: out). Nothing is filled in; the captured room goes on. Every other raise (money, release, the canonical planner,
-#: a changed binding) stays a stop.
+#: out); or its gap survey and camera aiming, estimated from counts before they start, cannot fit in a step
+#: (``atlas_completion_work``; Austin, itest-cce2beee, 2026-11-25). Nothing is filled in; the captured room goes on.
+#: Every other raise (money, release, the canonical planner, a changed binding) stays a stop.
 COMPLETION_FLOOR_ERRORS = frozenset({"website_gemini_unanswered_dispatches_exhausted",
                                      "atlas_completion_planner_abstained", "atlas_completion_camera_selection_invalid",
                                      "atlas_completion_task_gap_plan_missing",
                                      "atlas_coverage_environment_evidence_invalid",
-                                     "atlas_completion_no_context_depth"})
+                                     "atlas_completion_no_context_depth", "atlas_completion_work_exceeds_step"})
 
 
 def preserves_capture(value) -> bool:

@@ -77,6 +77,14 @@ STAGES = ("atlas_preview", "preparation", "scene_handoff", "company_simulation")
 GROUPS = (("atlas_preview",), ("preparation", "scene_handoff"), ("company_simulation",))
 HANDOFF_ROOT = "/var/lib/blueprint/pubsub-handoffs"
 CODE_ROOT = Path(__file__).resolve().parents[2]
+#: The numeric thread counts the Atlas preview unit runs with (``deploy/systemd/blueprint-website-atlas-preview.service``).
+#: A worker that took the shell's instead ran the reference views' support check of Austin (itest-cce2beee,
+#: 2026-11-25) in 22 minutes with four BLAS threads, against 4.8 with one.
+UNIT_THREADS = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
+#: What each stage group's host unit sets of them: the Atlas preview unit's tick runs the preview and the company
+#: simulation pass. The preparation and its handoff run in the handoff listener, whose unit sets none (its host
+#: environment file is not read here), so that worker keeps this process's.
+GROUP_UNIT_ENVIRONMENT = {"atlas_preview": UNIT_THREADS, "preparation": {}, "company_simulation": UNIT_THREADS}
 DOOR_CLIENT = CODE_ROOT / "scripts" / "operator_door.py"
 #: The door's only routes this tool calls; both are reads.
 DOOR_ROUTES = frozenset({"/fs/list", "/fs/read"})
@@ -1118,6 +1126,11 @@ _GROUP_RUNNERS: dict[str, Callable[..., list[dict[str, Any]]]] = {
     "atlas_preview": _atlas_group, "preparation": _preparation_group, "company_simulation": _company_group}
 
 
+def _worker_environment(group: str) -> dict[str, str]:
+    """A stage worker's environment: this process's, the repository's code, and what its host unit sets."""
+    return {**os.environ, "PYTHONPATH": str(CODE_ROOT / "src"), **GROUP_UNIT_ENVIRONMENT[group]}
+
+
 def _run_group(group: str, capture_root: Path, *, run_dir: Path, past: Sequence[str], commit: str,
                steps: int | None, watched: str, inline: bool) -> list[dict[str, Any]]:
     """One stage group, in its own process (``inline``: in this one, for tests that stand stages in)."""
@@ -1135,7 +1148,7 @@ def _run_group(group: str, capture_root: Path, *, run_dir: Path, past: Sequence[
     started = time.monotonic()
     with open(log, "wb") as stream:
         process = subprocess.Popen(argv, stdout=stream, stderr=subprocess.STDOUT, cwd=str(CODE_ROOT),
-                                   env={**os.environ, "PYTHONPATH": str(CODE_ROOT / "src")})
+                                   env=_worker_environment(group))
         _pid, status, usage = os.wait4(process.pid, 0)
         process.returncode = os.waitstatus_to_exitcode(status)
     if output.is_file():

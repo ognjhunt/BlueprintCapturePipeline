@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -203,6 +204,33 @@ def test_the_gap_survey_substitution_takes_the_completions_retained_report(tmp_p
         with pytest.raises(ValueError, match="atlas_completion_gap_survey_changed"):
             completion.complete_scene(root=tmp_path)  # a passed report is the code's own to adopt: never assumed
     assert [row["how"] for row in record] == ["retained_output", "no_retained_output"]
+
+
+def test_a_stage_worker_runs_with_the_thread_counts_its_host_unit_sets(tmp_path, monkeypatch):
+    """The Atlas preview unit runs on one BLAS thread; its replayed workers do too, whatever the shell sets."""
+    unit = (ROOT / "deploy/systemd/blueprint-website-atlas-preview.service").read_text()
+    line = next(row for row in unit.splitlines() if row.startswith("Environment=OPENBLAS_NUM_THREADS="))
+    assert dict(item.split("=", 1) for item in line.removeprefix("Environment=").split()) == job_replay.UNIT_THREADS
+    for name in job_replay.UNIT_THREADS:
+        monkeypatch.setenv(name, "4")
+    launch = job_replay.subprocess.Popen
+
+    def worker(argv, **options):
+        # The worker the replay starts, as a process that only says which thread counts it was given.
+        group, run_dir = argv[argv.index("--worker") + 1], argv[argv.index("--run-dir") + 1]
+        report = ("import json, os, sys; json.dump({'rows': [], 'threads': {name: os.environ.get(name) "
+                  "for name in sys.argv[3:]}}, open(os.path.join(sys.argv[1], 'threads-' + sys.argv[2] + '.json'), 'w'))")
+        return launch([sys.executable, "-c", report, run_dir, group, *job_replay.UNIT_THREADS], **options)
+    monkeypatch.setattr(job_replay.subprocess, "Popen", worker)
+    seen = {}
+    for group, *_ in job_replay.GROUPS:
+        job_replay._run_group(group, tmp_path / "capture", run_dir=tmp_path, past=(), commit="", steps=None,
+                              watched=str(tmp_path), inline=False)
+        seen[group] = json.loads((tmp_path / f"threads-{group}.json").read_text())["threads"]
+    one = dict.fromkeys(job_replay.UNIT_THREADS, "1")
+    # The preparation runs in the handoff listener, whose unit sets none: it keeps the shell's.
+    assert seen == {"atlas_preview": one, "preparation": dict.fromkeys(job_replay.UNIT_THREADS, "4"),
+                    "company_simulation": one}
 
 
 def test_the_door_is_only_read():

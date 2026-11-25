@@ -279,3 +279,129 @@ def test_prior_completion_reuses_bound_composite_and_mask_without_regenerating(t
     mask.write_bytes(b'changed-mask')
     with pytest.raises(ValueError, match='prior_changed'):
         gaps.retained_completion(root=tmp_path, pose_digest='pose')
+
+
+def _resumable_scene():
+    """Two recorded views of a wall and a box, and survey cameras at and away from their centres."""
+    def camera(x, z=0.):
+        return {'intrinsics': {'width': 40, 'height': 30, 'fx': 36., 'fy': 36., 'cx': 20., 'cy': 15.},
+                'extrinsics': {'position': [x, 0., z], 'quaternion': [0., 0., 0., 1.], 'coordinateSystem': 'rub'}}
+    frames = []
+    for index, x in enumerate((0., .4)):
+        depth = np.full((30, 40), 3., np.float32)
+        depth[8:20, 12 + 4 * index:24 + 4 * index] = 1.5
+        depth[2:5, 30:36] = 0  # a hole no view ranged
+        frames.append(posed_frame(frame_id=f'view-{index}', rgb=np.full((30, 40, 3), 90 + 40 * index, np.uint8),
+                                  depth=depth, confidence=np.ones((30, 40), np.float32), camera=camera(x)))
+    pool = [{'camera_id': f'cam-{index}', 'source_frame_id': 'view-0', 'purpose': purpose, 'camera': camera(x, z)}
+            for index, (purpose, x, z) in enumerate([('wide', 0., 0.), ('translated', .2, 0.), ('wide', .4, 0.),
+                                                     ('translated', .1, .3), ('disocclusion', .3, .5),
+                                                     ('translated', -.2, .2)])]
+    return frames, pool
+
+
+def _tree(root):
+    return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob('*')) if path.is_file()}
+
+
+def test_a_survey_a_step_ended_goes_on_from_its_last_finished_camera_to_the_same_bytes(tmp_path, monkeypatch):
+    """Austin (itest-cce2beee, 2026-11-25): a survey no step could finish began again on every retry. Each finished
+    camera is kept, bound to the survey's binding; the next step makes only the others, and the survey it writes is
+    the one an unbroken step writes, byte for byte."""
+    from blueprint_pipeline import atlas_observed_space
+
+    frames, pool = _resumable_scene()
+    root = tmp_path / 'gaps'
+    whole = gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=root)
+    unbroken = _tree(root)
+    assert not any(name.endswith('-camera.json') for name in unbroken)
+    for path in sorted(root.rglob('*'), reverse=True):
+        path.unlink() if path.is_file() else path.rmdir()
+    walk, walked = atlas_observed_space.first_reached, []
+
+    def ended_after_three(space, camera, mask):
+        if len(walked) == 3:
+            raise SystemExit('the step ended here')
+        walked.append(camera)
+        return walk(space, camera, mask)
+    monkeypatch.setattr(atlas_observed_space, 'first_reached', ended_after_three)
+    with pytest.raises(SystemExit):
+        gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=root)
+    assert sorted(path.name for path in root.glob('*-camera.json')) == ['0000-camera.json', '0001-camera.json',
+                                                                         '0002-camera.json']
+    # A camera the step did not finish left images no record names; a cut-short one is made again from nothing.
+    (root / 'context/0003-context.png').write_bytes(b'\x89PNG cut short')
+    walked.clear()
+    monkeypatch.setattr(atlas_observed_space, 'first_reached', lambda space, camera, mask: walked.append(camera)
+                        or walk(space, camera, mask))
+    resumed = gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=root)
+    assert [camera['extrinsics']['position'] for camera in walked] == [
+        row['camera']['extrinsics']['position'] for row in pool[3:]]
+    assert resumed == whole and _tree(root) == unbroken
+
+
+def test_a_kept_camera_of_another_survey_is_never_adopted(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_observed_space
+
+    frames, pool = _resumable_scene()
+    root = tmp_path / 'gaps'
+    walk, walked = atlas_observed_space.first_reached, []
+    gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=tmp_path / 'other')
+    (root).mkdir()
+    record = json.loads(json.dumps({'schema_version': gaps.SURVEY_CAMERA_SCHEMA_VERSION,
+                                    'binding_digest': 'sha256:' + '0' * 64, 'row': {}, 'previews': []}))
+    (root / '0000-camera.json').write_text(json.dumps(record))
+    monkeypatch.setattr(atlas_observed_space, 'first_reached', lambda space, camera, mask: walked.append(camera)
+                        or walk(space, camera, mask))
+    gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=root)
+    assert len(walked) == len(pool) and not list(root.glob('*-camera.json'))
+
+
+def _reference_projection(splat, camera):
+    """``project_exported_splat`` as it was: the mask chosen per camera and ``np.minimum.at`` per disc radius."""
+    import cv2
+    from blueprint_pipeline.atlas_scene_preservation import _project
+    from blueprint_pipeline.splat_scene_analysis import DEFAULT_VISIBLE_OPACITY
+
+    k = camera['intrinsics']
+    shape = (int(k['height']), int(k['width']))
+    visible = np.isfinite(splat.xyz).all(axis=1) & (splat.opacity_sigmoid >= DEFAULT_VISIBLE_OPACITY)
+    z, u, v, inside = _project(splat.xyz[visible], camera)
+    pixels = np.floor(v[inside]).astype(int) * shape[1] + np.floor(u[inside]).astype(int)
+    sigma = np.exp(splat.scales[visible][inside, :2].astype(np.float64).max(axis=1))
+    radius = np.clip(np.floor(1.5 * sigma * k['fx'] / z[inside]), 1, gaps.MAX_COVERAGE_DISC_PIXELS).astype(int)
+    depth = np.full(shape, np.inf, np.float32)
+    for size in np.unique(radius):
+        layer = np.full(shape, np.inf, np.float32)
+        np.minimum.at(layer.reshape(-1), pixels[radius == size], z[inside][radius == size])
+        kernel = (np.ones((3, 3), np.uint8) if size == 1 else
+                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * size + 1, 2 * size + 1)))
+        depth = np.minimum(depth, cv2.erode(layer, kernel, borderType=cv2.BORDER_CONSTANT, borderValue=float('inf')))
+    return np.where(np.isfinite(depth), depth, 0).astype(np.float32)
+
+
+def test_an_export_projected_into_many_cameras_gives_each_the_bytes_it_always_did():
+    """The visible discs are chosen once for all of a survey's cameras, and each pixel's nearest depth is a sort's
+    group minimum, not ``np.minimum.at``: Austin's 16.2 M Gaussians took 4.5 s a camera, now 1.7, the same bytes."""
+    from blueprint_pipeline.gaussian_splat_decode import SplatData
+
+    rng = np.random.default_rng(7)
+    count = 60000
+    xyz = rng.normal([0, 0, -3], [1.2, .8, 1.5], (count, 3)).astype(np.float32)
+    xyz[::997] = np.nan  # not finite: never projected
+    xyz[1::5] = xyz[::5][:len(xyz[1::5])]  # many centres share a pixel and a depth exactly
+    splat = SplatData(count=count, xyz=xyz, opacity=rng.normal(0, 2, count).astype(np.float32),
+                      f_dc=np.zeros((count, 3), np.float32),
+                      scales=rng.normal(-4.5, 1., (count, 3)).astype(np.float32),
+                      quats=np.tile(np.float32([1, 0, 0, 0]), (count, 1)), properties=())
+    discs, seen = gaps.ExportedDiscs(splat), []
+    # The last camera looks away from every disc: an empty view, as it always was.
+    for position, quaternion in [([0, 0, 0], [0, 0, 0, 1]), ([.3, -.1, 1.], [0, .2, 0, .98]),
+                                 ([0, 0, -6], [0, 1, 0, 0]), ([0, 0, 9], [0, 1, 0, 0])]:
+        camera = {'intrinsics': {'width': 96, 'height': 64, 'fx': 70., 'fy': 70., 'cx': 48., 'cy': 32.},
+                  'extrinsics': {'position': position, 'quaternion': quaternion}}
+        expected = _reference_projection(splat, camera)
+        assert gaps.project_exported_splat(discs, camera).tobytes() == expected.tobytes()
+        assert gaps.project_exported_splat(splat, camera).tobytes() == expected.tobytes()
+        seen.append(bool((expected > 0).any()))
+    assert seen == [True, True, True, False]

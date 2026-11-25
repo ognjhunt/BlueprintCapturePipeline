@@ -112,3 +112,42 @@ def test_gap_survey_batches_every_candidate_and_adopts_its_verified_report(tmp_p
     assert [row['camera_id'] for row in report['views']] == [str(i) for i in range(19)]
     monkeypatch.setattr(chisel, 'project_source_depths', lambda *_: pytest.fail('repeated a completed survey'))
     assert atlas_scene_gaps.survey_gaps(**args) == report
+
+
+def _reference_source_depth(frames, camera):
+    """``project_source_depth`` as it was for a camera away from every view's centre: every valid point projected,
+    each pixel's nearest by ``np.minimum.at``."""
+    from blueprint_pipeline.atlas_depth_splat import decoded_frame
+
+    k = camera['intrinsics']
+    zbuffer = np.full((k['height'], k['width']), np.inf, np.float32)
+    for frame in frames:
+        frame = decoded_frame(frame, 'depth', 'confidence')
+        points, _, _ = preservation._world(frame, preservation._valid(frame))
+        z, u, v, inside = preservation._project(points, camera)
+        pixels = np.floor(v[inside]).astype(int) * k['width'] + np.floor(u[inside]).astype(int)
+        np.minimum.at(zbuffer.reshape(-1), pixels, z[inside])
+    return np.where(np.isfinite(zbuffer), zbuffer, 0).astype(np.float32)
+
+
+def test_a_camera_away_from_every_view_keeps_its_depth_bytes_when_unseen_tiles_are_skipped(monkeypatch):
+    """The lamp's room (itest-314bd4bc): its translated and disocclusion cameras' depth took 10.4 s for eight; a sort's
+    group minimum and skipping tiles no point of which reaches the camera make it 8.2 s, the same bytes."""
+    from scipy.spatial.transform import Rotation
+
+    frames = _frames()
+    cameras = []
+    for index, yaw in enumerate((0., .5, 1.4, 3.1)):
+        camera = _camera((.05 * index, .02, .1 * index), (80, 50))
+        camera['extrinsics']['quaternion'] = Rotation.from_euler('Y', yaw).as_quat().tolist()
+        cameras.append(camera)
+    projected, every = [], preservation._project
+    monkeypatch.setattr(preservation, '_project', lambda points, camera: projected.append(len(points))
+                        or every(points, camera))
+    depths = chisel.project_source_depths(frames, cameras)
+    monkeypatch.setattr(preservation, '_project', every)
+    for camera, depth in zip(cameras, depths, strict=True):
+        assert depth.tobytes() == _reference_source_depth(frames, camera).tobytes()
+    assert (depths[0] > 0).any() and not depths[-1].any()  # the last looks away from every view
+    lifted = sum(int(preservation._valid(frame).sum()) for frame in frames)
+    assert sum(projected) < lifted * len(cameras)

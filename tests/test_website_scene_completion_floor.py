@@ -38,6 +38,8 @@ FLAG = pipeline.SCENE_COMPLETION_NOT_ADMITTED
 REVIEW_REQUIRED = "atlas_completion_visual_review_required"
 EXHAUSTED = receipts.EXHAUSTED
 NO_CONTEXT_DEPTH = "atlas_completion_no_context_depth"
+# Its survey and aiming, estimated from counts before they start, cannot fit in a step (Austin, 25 Nov).
+WORK_EXCEEDS_STEP = "atlas_completion_work_exceeds_step"
 # Job 1's generated views and two of its capture-context frames (ids only).
 VIEWS = [f"completion-completion-decoded-0000000{n}-wide" for n in (15, 21, 35)]
 CONTEXT = ["decoded-000000015", "decoded-000000018"]
@@ -253,6 +255,7 @@ def _stopped(reason, **extra):
                                             "atlas_coverage_environment_evidence_invalid")],
     # No view has any valid depth to place a completion camera on (a view without it is only left out).
     (ValueError(NO_CONTEXT_DEPTH), NO_CONTEXT_DEPTH),
+    (ValueError(WORK_EXCEEDS_STEP), WORK_EXCEEDS_STEP),
 ])
 def test_a_completion_its_review_did_not_admit_goes_on_without_the_generated_part(tmp_path, monkeypatch,
                                                                                 outcome, reason):
@@ -438,12 +441,17 @@ def test_the_planner_codes_the_floor_takes_are_the_ones_the_completion_raises():
 
     from blueprint_pipeline import atlas_scene_completion
     source = inspect.getsource(atlas_scene_completion.complete_scene)
-    planner = pipeline.COMPLETION_FLOOR_ERRORS - {EXHAUSTED, NO_CONTEXT_DEPTH}
+    planner = pipeline.COMPLETION_FLOOR_ERRORS - {EXHAUSTED, NO_CONTEXT_DEPTH, WORK_EXCEEDS_STEP}
     assert len(planner) == 4
     assert all(f'raise ValueError("{code}")' in source or f"raise ValueError('{code}')" in source for code in planner)
     # The camera pool's own refusal, raised only when no view has any valid depth.
     pool = inspect.getsource(atlas_scene_completion.camera_candidates)
     assert NO_CONTEXT_DEPTH in pipeline.COMPLETION_FLOOR_ERRORS and f'raise ValueError("{NO_CONTEXT_DEPTH}")' in pool
+    # The work bound's, raised from counts before the survey and before placement scoring.
+    from blueprint_pipeline import atlas_completion_work
+    assert atlas_completion_work.WORK_EXCEEDS_STEP == WORK_EXCEEDS_STEP in pipeline.COMPLETION_FLOOR_ERRORS
+    assert 'raise ValueError(WORK_EXCEEDS_STEP)' in inspect.getsource(atlas_completion_work.CompletionWork._admit)
+    assert 'work.admit_survey()' in source and "'placement_bound': work.admit_placements" in source
     for stop in ("atlas_completion_canonical_planner_required", "atlas_completion_release_not_admitted"):
         assert stop in source and stop not in pipeline.COMPLETION_FLOOR_ERRORS
 
@@ -559,6 +567,7 @@ def _refused(reason=REVIEW_REQUIRED):
                                             "atlas_completion_task_gap_plan_missing",
                                             "atlas_coverage_environment_evidence_invalid")],
     (ValueError(NO_CONTEXT_DEPTH), NO_CONTEXT_DEPTH),
+    (ValueError(WORK_EXCEEDS_STEP), WORK_EXCEEDS_STEP),
 ])
 @pytest.mark.parametrize("refined", [False, True])
 def test_a_captured_job_whose_gap_views_were_refused_goes_on_with_the_room_its_editor_cleaned(
