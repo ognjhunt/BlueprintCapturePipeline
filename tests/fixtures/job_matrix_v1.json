@@ -44,8 +44,19 @@
    "object_library": "The job's object is a model of the same kind of object from a public library, picked and sized from the video: it is not the site's own object.",
    "estimates_from_video": "The object's mass range in success_rule.json comes from its size in the video and typical densities; its friction range is Blueprint's standard default.",
    "thresholds_assumed": "The site has not confirmed the numbers in success_rule.json: where criteria_basis says assumed, the number is Blueprint's standard threshold, not the site's.",
+   "variations_heading": "Simulated variations",
+   "variations_layer": "variations.usda: scene.usda with one variant set, simulated_variation, on each object below: nominal (the object as in scene.usda) and sample_01 to sample_08. Open it instead of scene.usda and pick a variant to try the object at another size, mass, friction or look; scene.usda and the parts' files are unchanged.",
+   "variations_sidecar": "variations.json: each object's ranges, what each range rests on (basis) and every sample's values.",
+   "variations_not_measured": "These are simulated variations for testing in your own tools, not measurements of the site's objects.",
+   "variations_basis": "Each range rests on the site's own answer (site_answer), else Blueprint's estimate from the video (video_estimate), else a narrow band around the value in the object's file (default). Nothing reads friction, colour or roughness from the video, so theirs are default.",
+   "variations_size": "A size variant scales the object the same on every side about the bottom centre of its box, so it stays on the surface it starts on.",
+   "variations_rule": "success_rule.json is the same for every variant: it was set for the object as in scene.usda.",
+   "variations_object_size_and_mass_default": "/World/Object: size (default) and mass (default).",
+   "variations_object_friction_default": "/World/Object: friction (default).",
+   "variations_library": "The variants change the size and mass of the library model credited under Library models; its own file is unchanged.",
    "library_heading": "Library models",
    "library_credit_model_file": "scene/files/library_model.usda and object.usda: Sterilite Storage Tote, Blue by Google (Copyright 2020 Google LLC.), from Google Scanned Objects (https://fuel.gazebosim.org/1.0/GoogleResearch/models/Sterilite_Storage_Tote_Blue/1/Sterilite_Storage_Tote_Blue.zip), under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from OBJ to fit this job.",
+   "library_credit_model_file_and_variations": "scene/files/library_model.usda, object.usda and variations.usda: Sterilite Storage Tote, Blue by Google (Copyright 2020 Google LLC.), from Google Scanned Objects (https://fuel.gazebosim.org/1.0/GoogleResearch/models/Sterilite_Storage_Tote_Blue/1/Sterilite_Storage_Tote_Blue.zip), under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from OBJ to fit this job.",
    "library_carve_out": "These files stay under their own license. Blueprint does not own them, and the terms Blueprint shares this package under do not restrict them."
   }
  },
@@ -83,9 +94,17 @@
     "robot_station_absent": null,
     "physics_check": "not_run_static_check_passed",
     "readme_variant": [
-     "not_run_static_check_passed"
+     "not_run_static_check_passed",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:824910991210dd1ad86d64f53645329f408ec380354c6f277976ee56e6cf2f0d"
+    "readme_sha256": "sha256:4ec2be75a3154d7b505104653f8db754be14dbafb18ecfa2b3d54fc5b9928335"
    }
   },
   {
@@ -119,9 +138,17 @@
     "robot_station_absent": null,
     "physics_check": "not_run",
     "readme_variant": [
-     "not_run"
+     "not_run",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:d4e96b8295fc8c26718b3404cc17431ee9da2f253e18e0606c0024d24d74d886"
+    "readme_sha256": "sha256:41b0679b919239db282c78dbc7edbe013aa6aaf81ee4df966c09ab9896ba0133"
    }
   },
   {
@@ -152,9 +179,16 @@
     "robot_station_absent": null,
     "physics_check": "not_run_joint_as_authored",
     "readme_variant": [
-     "not_run_joint_as_authored"
+     "not_run_joint_as_authored",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_rule",
+     "variations_object_friction_default"
     ],
-    "readme_sha256": "sha256:549cbe87e0f71ad674f84f644438082e3d5b901795c17f0f94323c2a2f83939a"
+    "readme_sha256": "sha256:7bc27abf71018e2acca78ede225c2134a6b5820135bfe2b88ca6b5c42e56f48d"
    }
   },
   {
@@ -250,9 +284,17 @@
     "robot_station_absent": "team_embodiment_task_motion_no_clear_stance",
     "physics_check": "not_run",
     "readme_variant": [
-     "not_run"
+     "not_run",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:6ebd2e9853e589d69def4d4f4686469da1fc5d4fac3955eeecfea308668a1457"
+    "readme_sha256": "sha256:4b793f6387d452ce9ad77eb6881b41ab7b04764f9a02cca8250313cdb0f70985"
    }
   },
   {
@@ -281,7 +323,7 @@
     "zip_built": true,
     "assumed_thresholds": true,
     "robot_free_probe": "not_queued",
-    "readme_sha256": "sha256:95b965ac0ec156b5884d8de75cab9b16c5ce41dc70032ee715f4eca108d21c74"
+    "readme_sha256": "sha256:6ce861efea9e7f40318e9df34c03a9f57cfbfb0f4f8c8aaa1797888c3eea4270"
    }
   },
   {
@@ -343,10 +385,18 @@
     "zip_built": true,
     "physics_check": "isaac_sim",
     "readme_variant": [
-     "isaac_sim"
+     "isaac_sim",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
     "robot_free_probe": "not_queued",
-    "readme_sha256": "sha256:ddb84ed772e11653165dccd9f4795c70e976ddab47bdad95b1f56f924599e9b4"
+    "readme_sha256": "sha256:b88b86a429a04190220ab9503bd3fbb3cde62edf665dff0784cef1daed8a6c35"
    }
   },
   {
@@ -402,9 +452,17 @@
     "robot_station_absent": "native_task_arena_particlefield_quality_missing_or_invalid",
     "readme_variant": [
      "not_run",
-     "appearance_quality_not_passed"
+     "appearance_quality_not_passed",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:8ddf6b931403902f86dc716169461fdbbdd746417e9ecbe81da3d08f353bdd49"
+    "readme_sha256": "sha256:3a71887055f45ad52e55262d9ec9b1875620298647bac9a253e4a6f6adda4858"
    }
   },
   {
@@ -438,9 +496,17 @@
     "robot_station_absent": null,
     "readme_variant": [
      "not_run",
-     "furniture_removed"
+     "furniture_removed",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:7196d552a098f4e2dcdfd5094e140ee5efd481bca3e5a21f90821121a2ac7e23"
+    "readme_sha256": "sha256:e0bba722cc596fb74b302113997cf567254fe6643fb16e5dc50fae85552c8715"
    }
   },
   {
@@ -476,9 +542,17 @@
     "robot_station_absent": null,
     "readme_variant": [
      "not_run",
-     "support_region_not_held"
+     "support_region_not_held",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:752492f0b062afd2869235425c02dea61a9e9911221b0deab6c05580d4a6bc8b"
+    "readme_sha256": "sha256:e8c6c18d13aea316a7595049099b78b25d3366b01caf24e678480ff0c3e7cb14"
    }
   },
   {
@@ -510,9 +584,16 @@
     "robot_station_absent": null,
     "readme_variant": [
      "not_run",
-     "no_rule"
+     "no_rule",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:dd7b2a9294a370b79401bceb9cf875aec3fc1b2ad00944373b14d4d0069bae0d"
+    "readme_sha256": "sha256:75110fc52d242106100686cd13a281b63ebcab8c2417950af32657a22700344b"
    }
   },
   {
@@ -660,11 +741,20 @@
     "readme_variant": [
      "not_run",
      "object_library",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default",
+     "variations_library",
      "library_heading",
-     "library_credit_model_file",
+     "library_credit_model_file_and_variations",
      "library_carve_out"
     ],
-    "readme_sha256": "sha256:dd388075761a964cae899a477c896c57229417f32ec6541e34a3b1c39475b548"
+    "readme_sha256": "sha256:dfce9e36b67776394ce6b3a2069381ba374976f88b67278c9ec07b4c9d325341"
    }
   },
   {
@@ -702,9 +792,17 @@
     "physics_check": "not_run",
     "readme_variant": [
      "not_run",
-     "object_parametric_tote"
+     "object_parametric_tote",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:a34b71cb6b819f6ab9122e0ae254df9cf0ce94152de858fd04e98df9dea64b3a"
+    "readme_sha256": "sha256:fc318f1ab9d105327d24dcb3539b633eb0174cc68a63a3aa1539446d1d3aa2a4"
    }
   },
   {
@@ -748,9 +846,17 @@
     "physics_check": "not_run",
     "readme_variant": [
      "not_run",
-     "object_generated"
+     "object_generated",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:5e35f80f66da4cfaf9448bff2663cede22e7b9ebf16f031126356d99934b56a3"
+    "readme_sha256": "sha256:02169f97b8f104ad0b3d815dbd7e7ecd51cd8e133fb72c1a5ab89ec9557ba839"
    }
   },
   {
@@ -788,9 +894,17 @@
     "physics_check": "not_run",
     "readme_variant": [
      "not_run",
-     "object_generated"
+     "object_generated",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:5e35f80f66da4cfaf9448bff2663cede22e7b9ebf16f031126356d99934b56a3"
+    "readme_sha256": "sha256:02169f97b8f104ad0b3d815dbd7e7ecd51cd8e133fb72c1a5ab89ec9557ba839"
    }
   },
   {
@@ -1033,9 +1147,17 @@
     "physics_check": "not_run",
     "readme_variant": [
      "not_run",
-     "object_parametric_carton"
+     "object_parametric_carton",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:d26b2091bd0367a6de73ad19e4b5ac45c84675c9317e3015cc9c5bd95e2470c5"
+    "readme_sha256": "sha256:b751b25e675673ed52be3cf3c641601e10e3e436ec9447bcfc5c13ddd50e9ac9"
    }
   },
   {
@@ -1070,9 +1192,17 @@
     "physics_check": "not_run",
     "readme_variant": [
      "not_run",
-     "object_designed"
+     "object_designed",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:fa420f5eabe020ebabdba797bbac5f7c702a911a13665f94da45b7ae857a7292"
+    "readme_sha256": "sha256:47e48de498e0fa3d0ccc6ce7aed94c8d655932bd4ce38a127da4128d917a0643"
    }
   },
   {
@@ -1109,9 +1239,17 @@
     "readme_variant": [
      "not_run",
      "surface_estimated",
-     "object_generated"
+     "object_generated",
+     "variations_heading",
+     "variations_layer",
+     "variations_sidecar",
+     "variations_not_measured",
+     "variations_basis",
+     "variations_size",
+     "variations_rule",
+     "variations_object_size_and_mass_default"
     ],
-    "readme_sha256": "sha256:c3443b5fa194b832da7228a6067796b1ad25bab6a72a1e0e168e458f95082cd0"
+    "readme_sha256": "sha256:6640eb1df2ab634a70a1cf1fd27ed9580fcf982e77c3826a82f26e399995caa9"
    }
   }
  ]
