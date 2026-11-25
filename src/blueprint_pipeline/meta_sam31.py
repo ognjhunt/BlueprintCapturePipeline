@@ -1182,11 +1182,19 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             parsed_path = root / f"parsed-response-{index}.json"
             parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
                               "parser_revision": 1, "profile": PROFILE}
-            if parsed_path.is_file():
-                parsed = load_track_json(parsed_path)
-                if (parsed.get("binding") != parsed_binding
-                        or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")):
+            try:
+                parsed = load_track_json(parsed_path) if parsed_path.is_file() else None
+            except (OSError, ValueError):
+                parsed = {}
+            if parsed is not None and (parsed.get("binding") != parsed_binding
+                                       or parsed.get("digest") != canonical_track_digest(parsed, digest_field="digest")):
+                # Parsed by another parser revision, from another answer, or changed since. Static recovery reads
+                # only what it retained, so there it refuses; otherwise the kept answer is parsed again, buying
+                # nothing: a parser revision bump refused every retained parse (2026-11-24 sweep).
+                if require_retained_video:
                     raise ValueError("meta_sam_retained_tracks_changed")
+                parsed = None
+            if parsed is not None:
                 decoded = parsed["tracks"]
             else:
                 if require_retained_video:
