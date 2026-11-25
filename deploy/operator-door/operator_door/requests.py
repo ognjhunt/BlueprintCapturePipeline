@@ -548,15 +548,19 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("test_job_fields_invalid")
         return {key: body[key] for key in sorted(body)}
     if kind == "test-job-retry-now":
-        # The job by its website id, and why; the release module finds it in the door's own test-job records.
-        _only(body, ("kind", "job_id", "reason"))
-        job_id, reason = body.get("job_id"), body.get("reason")
+        # The job by its website id, and why; the release module finds it in the door's own test-job records. The
+        # handoff bucket names the one scene its sandbox makes writable: the root runner cannot list the service
+        # user's folders to find it (Austin, 2026-11-25: the scene stayed read-only, EROFS on its Atlas lock).
+        _only(body, ("kind", "job_id", "reason", "bucket"))
+        job_id, reason, bucket = body.get("job_id"), body.get("reason"), body.get("bucket")
         if not isinstance(job_id, str) or not _TEST_JOB_ID.fullmatch(job_id):
             raise RequestRefused("test_job_retry_now_job_invalid")
         if (not isinstance(reason, str) or reason != reason.strip() or not 1 <= len(reason) <= 500
                 or not reason.isprintable()):
             raise RequestRefused("test_job_retry_now_reason_invalid")
-        return {"kind": kind, "job_id": job_id, "reason": reason}
+        if not isinstance(bucket, str) or not _BUCKET.fullmatch(bucket) or ".." in bucket:
+            raise RequestRefused("test_job_retry_now_bucket_invalid")
+        return {"kind": kind, "job_id": job_id, "reason": reason, "bucket": bucket}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")

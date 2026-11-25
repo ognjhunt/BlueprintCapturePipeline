@@ -46,6 +46,9 @@ THIS = "20261124T184000Z-test-job-retry-now-0000abcd"
 RELEASE, NEXT_RELEASE = "d" * 40, "e" * 40
 NOW = 1_795_545_600  # 2026-11-24T18:40:00Z
 BODY = {"kind": "test-job-retry-now", "job_id": JOB, "reason": "the fix for the scene review is live"}
+BUCKET = "blueprint-8c1ca.appspot.com"
+#: What a client sends the door: the module's request and the handoff bucket that names the writable scene.
+ASK = {**BODY, "bucket": BUCKET}
 
 
 def _iso(epoch: float) -> str:
@@ -142,6 +145,12 @@ class World:
     ({"refusal_retries": 0}, "request_key_unknown:refusal_retries"),               # it carries no count, ...
     ({"spend_usd": 5}, "request_key_unknown:spend_usd"),                           # ... no money ...
     ({"next_attempt_at_epoch": 0}, "request_key_unknown:next_attempt_at_epoch"),   # ... and no time of its own
+    # The handoff bucket names the writable scene: a bucket's grammar, never a path out of the handoff root.
+    ({"bucket": "../etc"}, "test_job_retry_now_bucket_invalid"),
+    ({"bucket": "a/b"}, "test_job_retry_now_bucket_invalid"),
+    ({"bucket": "bucket..x"}, "test_job_retry_now_bucket_invalid"),
+    ({"bucket": None}, "test_job_retry_now_bucket_invalid"),
+    ({"bucket": "Bucket"}, "test_job_retry_now_bucket_invalid"),
 ])
 def test_the_door_admits_only_a_test_jobs_id_and_a_reason(change, code):
     from operator_door.requests import (
@@ -152,9 +161,9 @@ def test_the_door_admits_only_a_test_jobs_id_and_a_reason(change, code):
     )
 
     assert required_scope("test-job-retry-now") == "operate" and validate_request_id(THIS) == THIS
-    body = {**BODY, **change}
+    body = {**ASK, **change}
     if code is None:
-        assert validate_request(body) == BODY
+        assert validate_request(body) == ASK
         return
     with pytest.raises(RequestRefused, match=f"^{code}$"):
         validate_request(body)
@@ -165,10 +174,10 @@ def test_the_door_runs_it_as_the_records_owner_with_no_network_writing_only_the_
     from operator_door.config import DoorConfig
     from operator_door.requests import RequestRefused, validate_request
 
-    monkeypatch.setattr(spool_runner, "_PUBSUB_HANDOFFS", str(tmp_path))
-    (tmp_path / "bucket" / "scenes" / f"site-{JOB}").mkdir(parents=True)
-    (tmp_path / "bucket" / "scenes" / "site-other-job").mkdir(parents=True)
-    config, request = DoorConfig(), validate_request(BODY)
+    # The runner is root with no capabilities: it cannot list the service user's folders, so nothing may depend on
+    # a listing. Here the handoff root does not even exist, and the scene is still named exactly.
+    monkeypatch.setattr(spool_runner, "_PUBSUB_HANDOFFS", str(tmp_path / "unlistable"))
+    config, request = DoorConfig(), validate_request(ASK)
     launch = spool_runner._LAUNCHES["test-job-retry-now"]
     properties = launch.properties(config, request)
     assert launch.script == "door-test-job-retry-now.sh" and JOB not in launch.label(request)
@@ -176,13 +185,13 @@ def test_the_door_runs_it_as_the_records_owner_with_no_network_writing_only_the_
     hidden = next(item for item in properties if item.startswith("InaccessiblePaths=")).split("=", 1)[1].split()
     assert {"-" + path for path in config.hidden_paths} == set(hidden)
     writable = next(item for item in properties if item.startswith("ReadWritePaths=")).split("=", 1)[1].split()
-    assert writable == [f"-{tmp_path}/bucket/scenes/site-{JOB}",
+    assert writable == [f"-{tmp_path}/unlistable/{BUCKET}/scenes/site-{JOB}",
                         "/var/lib/blueprint/pipeline-control-plane/internal-test-jobs",
                         "/var/lib/blueprint-operator-door/requests/results"]
     arguments = spool_runner._script_env(config, THIS, request, "cloud-agent")
     assert "--setenv=DOOR_REQUESTED_BY=cloud-agent" in arguments
     sent = next(item for item in arguments if item.startswith("--setenv=DOOR_TEST_JOB_RETRY_NOW_REQUEST="))
-    assert json.loads(sent.split("=", 2)[2]) == BODY
+    assert json.loads(sent.split("=", 2)[2]) == BODY  # the module's request, as it always was
     with pytest.raises(RequestRefused, match="^test_job_retry_now_caller_invalid$"):
         spool_runner._script_env(config, THIS, request, "")
 
@@ -536,10 +545,24 @@ def _module(path: Path, name: str):
 
 def test_the_door_client_sends_the_job_and_the_reason(monkeypatch):
     client = _module(ROOT / "scripts" / "operator_door.py", "operator_door_client_retry_now")
-    sent = []
+    sent, listed = [], []
+
+    def door_json(method, route, query=None, body=None):
+        listed.append((method, route, query))
+        return {"entries": [{"name": ".pubsub_retry_deferrals", "type": "dir"}, {"name": "_pipeline_failures",
+                             "type": "dir"}, {"name": BUCKET, "type": "dir"}, {"name": "note.json", "type": "file"}]}
+    monkeypatch.setattr(client, "_json", door_json)
     monkeypatch.setattr(client, "_submit", lambda body, args: sent.append(body) or 0)
     assert client.run(client.build_parser().parse_args(["test-job-retry-now", JOB, "--reason", BODY["reason"]])) == 0
-    assert sent == [BODY]
+    # The host's one handoff bucket, found as the door lists its handoff root.
+    assert sent == [ASK] and listed == [("GET", "/fs/list", {"path": "/var/lib/blueprint/pubsub-handoffs"})]
+    assert client.run(client.build_parser().parse_args(["test-job-retry-now", JOB, "--reason", BODY["reason"],
+                                                        "--bucket", "other-bucket"])) == 0
+    assert sent[-1] == {**BODY, "bucket": "other-bucket"} and len(listed) == 1
+    monkeypatch.setattr(client, "_json", lambda *_a, **_k: {"entries": [{"name": "a", "type": "dir"},
+                                                                         {"name": "b", "type": "dir"}]})
+    with pytest.raises(SystemExit, match="2 handoff buckets"):
+        client.run(client.build_parser().parse_args(["test-job-retry-now", JOB, "--reason", BODY["reason"]]))
     assert client._terminal({"request": BODY, "outcome": {"status": "brought_forward"}}) is True
     assert client._terminal({"request": BODY, "outcome": {"status": "unchanged"}}) is False
 
@@ -554,11 +577,12 @@ def test_the_runner_asks_for_a_jobs_retry_now_by_its_label(tmp_path, monkeypatch
         if method == "POST":
             posts.append(body)
             return {"id": THIS}
-        return {"request": BODY, "outcome": {"status": "brought_forward", "result": "/r.json"}}
+        return {"request": ASK, "outcome": {"status": "brought_forward", "result": "/r.json"}}
     monkeypatch.setattr(runner.door, "_json", door_json)
+    monkeypatch.setattr(runner.door, "handoff_bucket", lambda: BUCKET)
     monkeypatch.setattr(runner, "cat_json", lambda path: {"door_outcome": "brought_forward", "job_id": JOB})
     argv = ["retry-now", "--state", str(state), "--label", "austin-apartment-floors", "--reason", BODY["reason"]]
-    assert runner.main(argv) == 0 and posts == [BODY]
+    assert runner.main(argv) == 0 and posts == [ASK]
     assert json.loads(capsys.readouterr().out)["door_outcome"] == "brought_forward"
     assert runner.main(["retry-now", "--state", str(state), "--label", "unknown", "--reason", "r"]) == 2
     assert len(posts) == 1
