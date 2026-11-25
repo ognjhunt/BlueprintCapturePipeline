@@ -659,7 +659,8 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
                        source_geometry: Mapping[str, Any], removal: Mapping[str, Any], output_root: Path,
                        task_profile: str | None, task_masks: Mapping[str, Any] | None = None,
                        objects_in_scan: bool = False, flags: Sequence[str] = (), taken_out: int = 0,
-                       not_prepared: Sequence[Mapping[str, str]] = ()) -> dict[str, Any]:
+                       not_prepared: Sequence[Mapping[str, str]] = (),
+                       preparation_digest: str | None = None) -> dict[str, Any]:
     """The room package's half (``scene-package/``: the room's collision and look, the plan) and its sealed record.
 
     CPU only, buys nothing. A navigation job (``task_masks`` given) whose reading names exactly one goal mask gets
@@ -668,7 +669,9 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
     ``GOAL_DWELL_SECONDS``", both numbers assumed. Any other job ships no rule of Blueprint's: the record says so,
     and the site's words stay on the job's page, the one place they are shown redacted. The job's objects are counted, never placed: taken out of the scan by the
     clean plate, or part of it on a geometry-only route; ``taken_out`` counts those the Atlas job's planner took out
-    when the clean plate removed none (``planner_removals_applied``).
+    when the clean plate removed none (``planner_removals_applied``). ``preparation_digest``: the preparation compile
+    wrote beside it when the room ships for compile's own stops; the company's job page reads the object's estimates
+    from it (``website_packet_facts``), as it does from the one a prepared scene's handoff names.
     """
     import shutil
 
@@ -742,6 +745,7 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
                               else "taken_out_of_room_scan"} if count else None,
               **({"flags": list(flags)} if flags else {}),
               **({"not_prepared": [dict(row) for row in not_prepared]} if not_prepared else {}),
+              **({"preparation_digest": preparation_digest} if preparation_digest else {}),
               PROBE_FIELD: PROBE_NOT_QUEUED,
               "robot_included": False, "simulator_run": False, "plan_digest": plan["plan_digest"],
               "inputs_digest": ""}
@@ -831,17 +835,20 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
 
     def room_package(profile: str | None, masks: Mapping[str, Any] | None = None,
                      flags: Sequence[str] = (), taken_out: int = 0,
-                     not_prepared: Sequence[str] = ()) -> dict[str, Any]:
+                     not_prepared: Sequence[str] = (), causes: Mapping[str, str] | None = None,
+                     preparation_digest: str | None = None) -> dict[str, Any]:
         # Not held: the room package goes to the company builder (``write_room_package``); no object is built.
-        # ``not_prepared``: the blockers it ships for, each with the piece of the job it leaves out (``piece_of``).
+        # ``not_prepared``: the blockers it ships for, each with the piece of the job it leaves out (``piece_of``),
+        # and ``causes``' typed cause for its code where compile recorded one.
         result.pop("rule_withheld", None)
         flags = package_flags(flags)
         geometry = atlas.get("source_geometry") or {}  # none for a room whose scale was not measured
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
                                     removal=removal, output_root=root / "room_package", task_profile=profile,
                                     task_masks=masks, objects_in_scan=geometry_only or in_scan, flags=flags,
-                                    taken_out=taken_out, not_prepared=[
-                                        {"piece": piece_of(code), "code": code}
+                                    taken_out=taken_out, preparation_digest=preparation_digest, not_prepared=[
+                                        {"piece": piece_of(code), "code": code,
+                                         **({"cause": causes[code]} if code in (causes or {}) else {})}
                                         # The code alone, never its detail (a builder's or an exception's words).
                                         for code in dict.fromkeys(code.split(":", 1)[0] for code in not_prepared)])
         result.update(status=ROOM_PACKAGE, blockers=[], job_disposition="accepted",
@@ -1310,7 +1317,12 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
             # whose blockers are no wall ships the same room package (``goes_on``); a geometry-only job ends at its
             # fit check instead.
             shipped = [shipped_code(str(code)) for code in preparation["blockers"]]
-            return room_package(None, flags=shipped, not_prepared=shipped)
+            # Why no spot on the destination held the object, as compile's search found it: one of its typed causes,
+            # never free text, which the README words (``website_company_simulation._not_prepared``).
+            from .website_destination_unheld import CAUSES
+            cause = (preparation.get("destination_unheld") or {}).get("cause")
+            return room_package(None, flags=shipped, not_prepared=shipped, preparation_digest=preparation.get("digest"),
+                                causes={"task_destination_surface_contact_required": cause} if cause in CAUSES else None)
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
                 or (preparation.get("subject_excision") or {}).get("status") == "excised"):

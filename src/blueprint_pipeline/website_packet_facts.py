@@ -7,8 +7,10 @@ registration residual, every estimate the scene rests on); and Blueprint's own e
 say, the object's weight and how often the job runs (``website_job_estimates``).
 
 It is read-only and pays for nothing. It reads what the scene handoff names: the handoff (sealed by its digest),
-the preparation it names (sealed, and bound to the current task context), the base scene it names, and the robot fit
-table when one is verified (``website_robot_fit_projection``). Anything it cannot read or verify is left out (None),
+the preparation it names (sealed, and bound to the current task context) or, for a room package shipped on compile's
+own stops, the one its sealed record names by digest (job move-the-lamp-2: the company page said nothing about the
+object was estimated while telling the company to size a stand-in from those facts), the base scene it names, and the
+robot fit table when one is verified (``website_robot_fit_projection``). Anything it cannot read or verify is left out (None),
 so it never fails a status read.
 
 Each line is plain words, never a price, an id, a path or a link. A line that is Blueprint's estimate of something
@@ -30,6 +32,7 @@ from .atlas_automation_plan import SCENE_COMPLETION_NOT_ADMITTED
 from .atlas_scene_estimates import (DESTINATION_OVERHANG, OBJECT_SIZE_DISAGREES_WITH_PUBLISHED,
                                     OBJECT_SIZE_FROM_ITS_POINTS, SUPPORT_GUESSED, SUPPORT_HEIGHT,
                                     preparation_record_flags)
+from . import website_destination_unheld as unheld
 
 SCHEMA_VERSION = "website_packet_facts.v1"
 #: The record's bound inside the status receipt; lines are cut from the end of the estimates past it.
@@ -371,6 +374,10 @@ def measured_and_estimated(preparation: Mapping[str, Any], base_scene: Mapping[s
     if overhang.get("flag") == DESTINATION_OVERHANG and reach is not None and reach > 0:
         estimated.append(line("The object's footprint is larger than the supported part of the surface at that spot: "
                               f"about {reach * 100:.1f} cm hangs over its edge; its centre is over the surface."))
+    # No spot on the destination's surface held the object: the room ships without it (``website_destination_unheld``).
+    not_placed = unheld.sentence(_mapping(prep.get("destination_unheld")).get("cause"), "the surface it goes to")
+    if not_placed:
+        estimated.append(line(not_placed))
     weight = weight_line(prep)  # Blueprint's best estimate, labelled, never as weighed
     if weight is not None:
         estimated.append(line(weight, "item_weight"))
@@ -434,6 +441,17 @@ def read_packet_facts(*, capture_root: Path, task_context_digest: str) -> dict[s
         if (handoff.get("schema_version") != "website_scene_handoff.v1" or handoff.get("capture_id") != root.name
                 or handoff.get("scene_id") != root.parent.parent.name):
             return None
+        if handoff.get("status") == "room_package_written" and "preparation_path" not in handoff:
+            # A room package shipped for compile's own stops names the preparation compile wrote beside it, by
+            # digest, in its sealed record (``website_scene_handoff.write_room_package``): the object's estimates.
+            reference = _mapping(handoff.get("room_package"))
+            room_path = Path(str(reference.get("path")))
+            room = _load(room_path, root, "inputs_digest")
+            # Both are written in the preparation's workspace (``website_preparation_revision.workspace``: a
+            # correction's ``revisions/<digest>/``), ``<workspace>/room_package/half/<record>``; the handoff is not.
+            handoff = {**handoff, "preparation_path": str(room_path.parents[2] / "preparation.json"),
+                       "preparation_digest": room.get("preparation_digest")
+                       if room["inputs_digest"] == reference.get("inputs_digest") else None}
         preparation = _load(Path(handoff["preparation_path"]), root, "digest")
         if (handoff.get("preparation_digest") != preparation["digest"]
                 or _mapping(preparation.get("binding")).get("task_context_digest") != task_context_digest

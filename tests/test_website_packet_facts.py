@@ -232,3 +232,91 @@ def test_no_price_and_none_of_blueprints_spend_reaches_the_record(tmp_path) -> N
     root = _job(tmp_path, preparation={**LAMP, "reserved_cost_usd": 37.25, "budget_note": "Scene budget $40"})
     value = facts.read_packet_facts(capture_root=root, task_context_digest=CONTEXT)
     assert value is not None and not price_findings(json.dumps(value))
+
+
+def _room_package_job(tmp_path, *, bound=True, cause="other_geometry_in_its_box_wherever_it_would_rest"):
+    """A room package shipped on compile's own stop, as the scene handoff leaves it: its sealed record names the
+    preparation compile wrote beside it by digest, and its handoff names no preparation."""
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = _job(tmp_path, preparation={**LAMP, "blockers": ["task_destination_surface_contact_required"],
+                                       "destination_unheld": {"status": "no_spot_holds_it", "cause": cause}})
+    work = root / "pipeline" / "website_scene_preparation"
+    prepared = json.loads((work / "preparation.json").read_text())
+    record = {"schema_version": "blueprint.room_package_inputs.v1", "task_context_digest": CONTEXT,
+              "not_prepared": [{"piece": "destination", "code": "task_destination_surface_contact_required"}],
+              **({"preparation_digest": prepared["digest"]} if bound else {})}
+    record["inputs_digest"] = canonical_digest(record, digest_field="inputs_digest")
+    write_json(work / "room_package" / "half" / "room_package_inputs.v1.json", record)
+    handoff = {key: value for key, value in json.loads((work / "handoff.json").read_text()).items()
+               if key not in {"preparation_path", "preparation_digest", "robot_fit_table", "digest"}}
+    handoff.update(status="room_package_written", room_package={
+        "path": str(work / "room_package" / "half" / "room_package_inputs.v1.json"), "inputs_digest": record["inputs_digest"]})
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(work / "handoff.json", handoff)
+    return root
+
+
+def test_a_room_package_in_a_corrections_workspace_reads_the_preparation_beside_it(tmp_path):
+    """Codex, #3735: after a site's correction, compile writes the preparation and the room package under
+    ``website_scene_preparation/revisions/<digest>/`` while ``handoff.json`` stays at the top. The preparation the
+    room package names is read from the room package's own workspace, not from beside the handoff."""
+    import shutil
+
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = _room_package_job(tmp_path)
+    work = root / "pipeline" / "website_scene_preparation"
+    revision = work / "revisions" / ("e" * 64)
+    revision.mkdir(parents=True)
+    shutil.move(str(work / "preparation.json"), revision / "preparation.json")
+    shutil.move(str(work / "room_package"), revision / "room_package")
+    # An older preparation left beside the handoff must not be the one read.
+    stale = json.loads((revision / "preparation.json").read_text())
+    stale["subject"]["description"] = "an older lamp"
+    stale["digest"] = canonical_digest(stale, digest_field="digest")
+    write_json(work / "preparation.json", stale)
+    handoff = json.loads((work / "handoff.json").read_text())
+    handoff["room_package"]["path"] = str(revision / "room_package" / "half" / "room_package_inputs.v1.json")
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(work / "handoff.json", handoff)
+    value = facts.read_packet_facts(capture_root=root, task_context_digest=CONTEXT)
+    assert value is not None and {"text": "Object: table lamp.", "answers": None} in value["object"]
+
+
+def test_a_room_package_shipped_on_compiles_stop_shows_the_objects_estimates_and_why_it_was_not_placed(tmp_path):
+    """Job move-the-lamp-2 (24 Nov): the room package's handoff names no preparation, so the company's page read
+    "Nothing about the object is measured or estimated yet." under "add a stand-in of your own, sized from the facts
+    about the object below", though compile had estimated the lamp. The preparation the room package's record names
+    by digest is read instead, and says why the lamp was not placed."""
+    from blueprint_pipeline import website_destination_unheld as unheld
+    root = _room_package_job(tmp_path)
+    value = facts.read_packet_facts(capture_root=root, task_context_digest=CONTEXT)
+    assert value is not None and {"text": "Object: table lamp.", "answers": None} in value["object"]
+    assert any(row["text"].startswith("Sizes that matter for holding it") for row in value["object"])
+    assert unheld.sentence(unheld.IN_THE_WAY, "the surface it goes to") in _texts(value["estimated"])
+    assert ("Blueprint could not place the job's object on the surface it goes to: at every spot it tried with the "
+            "object's centre at least 5 cm inside the surface's edges and at least half of the object over the surface, "
+            "the object's estimated box, which takes in the whole object and not only its base, reached into another "
+            "surface of the room.") in _texts(value["estimated"])
+    assert facts.read_packet_facts(capture_root=root, task_context_digest="sha256:" + "d" * 64) is None
+    # A record that names no preparation, or another one: nothing is shown, as before.
+    assert facts.read_packet_facts(capture_root=_room_package_job(tmp_path / "unbound", bound=False),
+                                   task_context_digest=CONTEXT) is None
+    work = root / "pipeline" / "website_scene_preparation"
+    prepared = json.loads((work / "preparation.json").read_text())
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    prepared["subject"]["description"] = "another lamp"
+    prepared["digest"] = canonical_digest(prepared, digest_field="digest")
+    (work / "preparation.json").write_text(json.dumps(prepared))
+    assert facts.read_packet_facts(capture_root=root, task_context_digest=CONTEXT) is None
+
+
+def test_an_unknown_cause_says_nothing_about_why_and_the_words_keep_the_scorers_radius():
+    from blueprint_pipeline import website_destination_unheld as unheld
+    from blueprint_pipeline.website_surface_target_admission import WEBSITE_TARGET_TOLERANCE_M
+    assert unheld.CENTRE_INSIDE_M == WEBSITE_TARGET_TOLERANCE_M
+    assert all(unheld.sentence(cause, "x") for cause in unheld.CAUSES)
+    assert unheld.sentence("a builder's own words", "x") is None and unheld.sentence(None, "x") is None
+    texts = _texts(facts.measured_and_estimated({**LAMP, "destination_unheld": {"cause": "free text"}}, None, None)[1])
+    assert not any("could not place" in text for text in texts)

@@ -1354,6 +1354,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                 relative_error=DIMENSION_RELATIVE_ERROR, development=False)
     destination = distinct_support = relocation = region_record = surface_target_admission = region_outline = None
     overhang = None  # the destination's surface a little smaller than the object (``website_destination_overhang``)
+    destination_unheld: dict[str, Any] = {}  # what the destination's search found where no spot held the object
     destination_choice = None
     interior = None
     from .website_destination_choice import SITE_CHOICE, settle_place  # the places offered; the site's pick
@@ -1442,7 +1443,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             destination_support, overhang, position = placed_clear(collider, destination_min, destination_max,
                 position, destination_support, up=up, meters_per_unit=mpu, up_sign=up_sign,
                 placement_residual_m=residual, radius=radius, runtime_to_sim=runtime_to_sim,
-                start=(subject_min, subject_max), start_support=support, clearance=clearance, look=look)
+                start=(subject_min, subject_max), start_support=support, clearance=clearance, look=look,
+                why=destination_unheld)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
@@ -1931,6 +1933,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination, **searched,
         **surface_estimate, **subject_extent, **({"destination_overhang": overhang.record} if overhang and overhang.record else {}),
+        **({"destination_unheld": destination_unheld} if destination_unheld else {}),
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
         **({"destination_choice": destination_choice} if destination_choice is not None and not rule_withheld else {}),

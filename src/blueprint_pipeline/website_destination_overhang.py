@@ -10,7 +10,11 @@ identity), and is judged only in that pose. A spot holds it when:
 
 - its centre and the scorer's disc about it (``website_target_radius``; the footprint where that is smaller) rest
   on one connected, near-level surface by ``support_under``'s own rules: compile's own lookup, window, level and
-  connectivity, its nine probes the disc's centre, corners and edge midpoints;
+  connectivity, its nine probes the centre, corners and edge midpoints of the square about the disc. That square's
+  corners lie 1.41 radii out, past the disc: where one falls off a narrow surface turned in plan while the disc
+  lies wholly on it (job move-the-lamp-2: a 16 cm glass shelf at 59 degrees, the disc 6.4 cm from its nearest
+  edge), the surface is looked up again with the nine probes inside the disc (its inscribed square), so the
+  search below still runs;
 - the disc the scorer will use there lies wholly on that surface's outline (``support_outline``), as the sealer's
   admission reads it;
 - at least ``RESTING_OUTLINE_MIN_SHARE`` of the footprint lies over that outline, read on the
@@ -37,7 +41,11 @@ sealer's admission). Wherever relocation, the named area or a site's stored choi
 again there (``Placement.settle``): a spot that holds all of it drops the record; one that no longer holds it moves
 to the nearest spot near it that does, or back to the spot first placed, recorded. A job that had a spot that
 holds the object never stops for it. A footprint with no such spot returns None, and compile stops exactly as
-before. Every value is an estimate, never a measurement.
+before; given ``why``, it is filled with what the search found (``unheld``), which compile keeps as
+``destination_unheld`` and every reader words (``website_destination_unheld``): no surface under its
+centre; no spot with the disc on the surface and half the footprint over it; or, at every such spot tested, other
+geometry in its box (job move-the-lamp-2: the wall behind the glass shelf). Every value is an estimate, never a
+measurement.
 """
 from __future__ import annotations
 
@@ -50,11 +58,15 @@ from .task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M
 from .website_support_geometry import (FITTED_MAX_FACE_TILT_DEGREES, REGION_EDGE_ROUNDING_M, RESTING_OUTLINE_GRID_STEPS,
                                        RESTING_OUTLINE_MIN_SHARE, destination_clear_of_start, same_support_surface,
                                        search_window_m, support_outline, support_under)
+from .website_destination_unheld import IN_THE_WAY, NO_SURFACE, TOO_SMALL
 from .website_surface_target_admission import WEBSITE_TARGET_TOLERANCE_M
 
 BASIS = "centre_and_disc_over_the_surface_box_clear"
 #: Spots one footprint apart tried outward from, nearest first, when nothing within one footprint holds the object.
 CLUTTER_SEEDS = 24
+#: Why a spot does not hold the object: the first rule it fails, in ``_Spot.holds``' order.
+NEAR_START, TOO_LITTLE_OVER, NEAR_AN_EDGE, IN_ITS_BOX = (
+    "near_its_start", "too_little_of_it_over_the_surface", "disc_past_an_edge", "other_geometry_in_its_box")
 
 
 def _plan(up: int) -> list[int]:
@@ -188,6 +200,7 @@ class _Spot:
             self.obstacles = _Obstacles(mesh, surface, low, high, up=up, up_sign=up_sign, top=top,
                                         window=search_window_m(placement_residual_m) / meters_per_unit, itself=itself)
         self.lattice_points = 0
+        self.refused: dict[str, int] = {}  # each spot a search tested and did not hold, by the rule it failed
 
     def box(self, centre: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         low, high = np.zeros(3), np.zeros(3)
@@ -198,17 +211,23 @@ class _Spot:
     def share(self, centre: np.ndarray) -> float:
         return float(self.outline.covers(_points(centre, self.half)).mean())
 
-    def holds(self, centre: np.ndarray, share: float, radius: float) -> bool:
-        """The disc of ``radius`` on the surface, enough of the footprint over it, nothing else in its box there,
-        and clear of its start on the surface it starts on."""
+    def refusal(self, centre: np.ndarray, share: float, radius: float) -> str | None:
+        """The first rule ``centre`` fails, in ``holds``' order; None when it holds the object."""
         if self.start is not None:
             point = np.zeros(3)
             point[self.plan] = centre
             if not destination_clear_of_start(*self.start, point, up=self.up, clearance=self.clearance):
-                return False
-        return (share >= RESTING_OUTLINE_MIN_SHARE and self.outline is not None
-                and self.outline.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M / self.mpu)
-                and not self.obstacles.meet(*self.box(centre)))
+                return NEAR_START
+        if share < RESTING_OUTLINE_MIN_SHARE or self.outline is None:
+            return TOO_LITTLE_OVER
+        if not self.outline.holds(centre, radius, tolerance=REGION_EDGE_ROUNDING_M / self.mpu):
+            return NEAR_AN_EDGE
+        return IN_ITS_BOX if self.obstacles.meet(*self.box(centre)) else None
+
+    def holds(self, centre: np.ndarray, share: float, radius: float) -> bool:
+        """The disc of ``radius`` on the surface, enough of the footprint over it, nothing else in its box there,
+        and clear of its start on the surface it starts on."""
+        return self.refusal(centre, share, radius) is None
 
     def nearest(self, around: np.ndarray, radius: float) -> tuple[np.ndarray, float, int] | None:
         """The nearest spot within one footprint of ``around`` that holds the object: its centre, share and the
@@ -232,8 +251,10 @@ class _Spot:
         centres, shares = centres[held], shares[held]
         order = np.argsort(np.linalg.norm(centres - around, axis=1), kind="stable")
         for tested, index in enumerate(order, start=1):
-            if self.holds(centres[index], float(shares[index]), radius):
+            why = self.refusal(centres[index], float(shares[index]), radius)
+            if why is None:
                 return centres[index], float(shares[index]), tested
+            self.refused[why] = self.refused.get(why, 0) + 1
         return None
 
     def across(self, around: np.ndarray, radius: float) -> tuple[np.ndarray, float, int] | None:
@@ -266,6 +287,21 @@ class _Spot:
                 "footprint_m": sorted(float(2 * value * self.mpu) for value in self.half), "orientation": "as_placed",
                 "slid_m": float(np.linalg.norm(centre - start)) * self.mpu, "spots_tested": tested,
                 "lattice_points": self.lattice_points, "flag": DESTINATION_OVERHANG, "physical_measurement": False}
+
+
+def unheld(spot: _Spot | None, half: np.ndarray, meters_per_unit: float) -> dict[str, Any]:
+    """What a search that found no spot holding the object found (``spot`` None: no surface under its centre).
+
+    ``cause`` only where the counts settle it: no surface; no spot tested with the disc on the surface and half the
+    footprint over it (``TOO_SMALL``); or every spot tested that had both refused only for geometry in its box
+    (``IN_THE_WAY``). Spots are counted each time a search tested one; a spot searched from two seeds counts twice."""
+    refused = dict(sorted((spot.refused if spot is not None else {}).items()))
+    cause = (NO_SURFACE if spot is None else None if refused.get(NEAR_START) else
+             IN_THE_WAY if refused.get(IN_ITS_BOX) else TOO_SMALL)
+    return {"status": "no_spot_holds_it", "basis": BASIS, **({"cause": cause} if cause else {}),
+            "spots_tested": sum(refused.values()), "refused": refused,
+            "footprint_m": sorted(float(2 * value * meters_per_unit) for value in half), "orientation": "as_placed",
+            "physical_measurement": False}
 
 
 class Placement:
@@ -324,21 +360,30 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
                      radius: float, runtime_to_sim: Any, start: tuple[Sequence[float], Sequence[float]],
                      start_support: Mapping[str, Any] | None, clearance: float,
                      look: Callable[..., Any] = support_under,
-                     itself: tuple[Sequence[float], Sequence[float]] | None = None
+                     itself: tuple[Sequence[float], Sequence[float]] | None = None,
+                     why: dict[str, Any] | None = None
                      ) -> tuple[dict[str, Any] | None, Placement | None, list]:
     """The surface, the placement and the position to place on (``position`` with its plan centre slid where
-    needed); (None, None, ``position``) when no spot holds the object. ``lower``/``upper`` are its footprint at
-    ``position``, ``start`` its start box on ``start_support`` with compile's ``clearance``, ``radius`` the
-    scorer's disc, ``look`` compile's own ``support_under`` lookup."""
+    needed); (None, None, ``position``) when no spot holds the object, and then ``why``, when given, filled with
+    ``unheld``'s record. ``lower``/``upper`` are its footprint at ``position``, ``start`` its start box on
+    ``start_support`` with compile's ``clearance``, ``radius`` the scorer's disc, ``look`` compile's own
+    ``support_under`` lookup."""
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
     plan = _plan(up)
     start_centre, half = (lower + upper)[plan] / 2, (upper - lower)[plan] / 2
     core_low, core_high = lower.copy(), upper.copy()
-    core = np.minimum(half, radius)
-    core_low[plan], core_high[plan] = start_centre - core, start_centre + core
-    surface = look(mesh, core_low, core_high, up=up, meters_per_unit=meters_per_unit, up_sign=up_sign,
-                   placement_residual_m=placement_residual_m)
+    core, inside = np.minimum(half, radius), np.minimum(half, radius / np.sqrt(2))
+    surface = None
+    # The square about the disc first; where a corner of it is off the surface, the square inside the disc.
+    for reach in (core, inside) if np.any(inside < core) else (core,):
+        core_low[plan], core_high[plan] = start_centre - reach, start_centre + reach
+        surface = look(mesh, core_low, core_high, up=up, meters_per_unit=meters_per_unit, up_sign=up_sign,
+                       placement_residual_m=placement_residual_m)
+        if surface is not None:
+            break
     if surface is None:
+        if why is not None:
+            why.update(unheld(None, half, meters_per_unit))
         return None, None, list(position)
     same = start_support is not None and same_support_surface(surface, dict(start_support))
     spot = _Spot(mesh, surface, lower, upper, up=up, up_sign=up_sign, meters_per_unit=meters_per_unit,
@@ -354,6 +399,8 @@ def centre_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], 
     else:
         found = spot.across(start_centre, radius)
         if found is None:
+            if why is not None:
+                why.update(unheld(spot, half, meters_per_unit))
             return None, None, list(position)
     centre = found[0]
     placed = list(position)
@@ -395,10 +442,12 @@ def placed_clear(mesh: Any, lower: Sequence[float], upper: Sequence[float], posi
     when other geometry (never the object's own scan where it starts, ``start``) stands in the object's box at
     the grounded centre does it slide to the nearest spot that holds it; no such spot is the old stop. Otherwise,
     and wherever no outline can be read to test it, it takes exactly the path it always took, and compile's own
-    relocation keeps it off its start."""
+    relocation keeps it off its start. ``why``, when given, is filled as ``centre_supported`` fills it wherever no
+    spot holds the object."""
     if whole is None:
         return centre_supported(mesh, lower, upper, position, start=start, start_support=start_support, itself=start,
                                 **options)
+    why = options.pop("why", None)
     lower, upper, grounded = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float), list(position)
     plan = _plan(options["up"])
     spot = _Spot(mesh, whole, lower, upper, up=options["up"], up_sign=options.get("up_sign", 1),
@@ -409,6 +458,8 @@ def placed_clear(mesh: Any, lower: Sequence[float], upper: Sequence[float], posi
         return whole, None, grounded
     found = spot.across(centre, options["radius"])
     if found is None:
+        if why is not None:
+            why.update(unheld(spot, (upper - lower)[plan] / 2, options["meters_per_unit"]))
         return None, None, grounded
     placed = list(grounded)
     for offset, axis in enumerate(plan):
