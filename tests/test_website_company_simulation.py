@@ -341,6 +341,23 @@ def test_a_clean_scene_makes_a_package_that_passes_the_scan_opens_and_is_stable(
         names = archive.namelist()
         assert names == sorted(names)
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
+        # Plain headers that agree (2026-11-25: macOS's Archive Utility refused a package whose local headers named a
+        # ZIP64 field its central directory did not have): no member is in ZIP64, nor needs a ZIP64 reader.
+        assert all(info.extract_version == 20 and info.create_version == 20 for info in archive.infolist())
+        offsets = [info.header_offset for info in archive.infolist()]
+    with package.open("rb") as raw:
+        for offset in offsets:
+            raw.seek(offset)
+            header = raw.read(30)
+            version, compressed, size, name_length, extra_length = (
+                int.from_bytes(header[4:6], "little"), int.from_bytes(header[18:22], "little"),
+                int.from_bytes(header[22:26], "little"), int.from_bytes(header[26:28], "little"),
+                int.from_bytes(header[28:30], "little"))
+            raw.seek(name_length, 1)
+            extra = raw.read(extra_length)
+            assert header[:4] == b"PK\x03\x04" and version == 20
+            assert 0xFFFFFFFF not in (compressed, size) and b"\x01\x00" != extra[:2]
+    with zipfile.ZipFile(package) as archive:
         unpacked = tmp_path / "unpacked"
         archive.extractall(unpacked)
     textures = [name for name in names if name.startswith("scene/files/")]
