@@ -444,8 +444,15 @@ def _rejection_summary(grid, gap, references):
 CONTEXT_BATCH_CAMERAS = 8
 
 
-def prepare_completion_views(*, frames, selected, root):
-    """Prepare camera-paired grayscale keep masks without a provider call."""
+def prepare_completion_views(*, frames, selected, root, names=None):
+    """Prepare camera-paired grayscale keep masks without a provider call.
+
+    ``names`` numbers each view's files (by default its place in ``selected``), so a
+    gap survey continuing a step that ended prepares only the cameras it has not
+    finished, under the names they always had. Each view's context is its own:
+    which other views share its batch, or whether any of them is away from every
+    photograph's centre, changes none of its pixels.
+    """
     import cv2
 
     root.mkdir(parents=True, exist_ok=True)
@@ -465,7 +472,8 @@ def prepare_completion_views(*, frames, selected, root):
             keep = cv2.erode(keep.astype(np.uint8), np.ones((3, 3), np.uint8),
                              borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
             rgb[~keep] = 127
-        image, mask = root / f'{index:04d}-context.png', root / f'{index:04d}-keep.png'
+        name = index if names is None else names[index]
+        image, mask = root / f'{name:04d}-context.png', root / f'{name:04d}-keep.png'
         _save_image(image, rgb)
         _save_image(mask, keep.astype(np.uint8) * 255)
         rows.append({'frame_id': view['camera_id'], 'source_frame_id': view['source_frame_id'],

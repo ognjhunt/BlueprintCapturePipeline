@@ -281,6 +281,82 @@ def test_prior_completion_reuses_bound_composite_and_mask_without_regenerating(t
         gaps.retained_completion(root=tmp_path, pose_digest='pose')
 
 
+def _resumable_scene():
+    """Two recorded views of a wall and a box, and survey cameras at and away from their centres."""
+    def camera(x, z=0.):
+        return {'intrinsics': {'width': 40, 'height': 30, 'fx': 36., 'fy': 36., 'cx': 20., 'cy': 15.},
+                'extrinsics': {'position': [x, 0., z], 'quaternion': [0., 0., 0., 1.], 'coordinateSystem': 'rub'}}
+    frames = []
+    for index, x in enumerate((0., .4)):
+        depth = np.full((30, 40), 3., np.float32)
+        depth[8:20, 12 + 4 * index:24 + 4 * index] = 1.5
+        depth[2:5, 30:36] = 0  # a hole no view ranged
+        frames.append(posed_frame(frame_id=f'view-{index}', rgb=np.full((30, 40, 3), 90 + 40 * index, np.uint8),
+                                  depth=depth, confidence=np.ones((30, 40), np.float32), camera=camera(x)))
+    pool = [{'camera_id': f'cam-{index}', 'source_frame_id': 'view-0', 'purpose': purpose, 'camera': camera(x, z)}
+            for index, (purpose, x, z) in enumerate([('wide', 0., 0.), ('translated', .2, 0.), ('wide', .4, 0.),
+                                                     ('translated', .1, .3), ('disocclusion', .3, .5),
+                                                     ('translated', -.2, .2)])]
+    return frames, pool
+
+
+def _tree(root):
+    return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob('*')) if path.is_file()}
+
+
+def test_a_survey_a_step_ended_goes_on_from_its_last_finished_camera_to_the_same_bytes(tmp_path, monkeypatch):
+    """Austin (itest-cce2beee, 2026-11-25): a survey no step could finish began again on every retry. Each finished
+    camera is kept, bound to the survey's binding; the next step makes only the others, and the survey it writes is
+    the one an unbroken step writes, byte for byte."""
+    from blueprint_pipeline import atlas_observed_space
+
+    frames, pool = _resumable_scene()
+    root = tmp_path / 'gaps'
+    whole = gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=root)
+    unbroken = _tree(root)
+    assert not any(name.endswith('-camera.json') for name in unbroken)
+    for path in sorted(root.rglob('*'), reverse=True):
+        path.unlink() if path.is_file() else path.rmdir()
+    walk, walked = atlas_observed_space.first_reached, []
+
+    def ended_after_three(space, camera, mask):
+        if len(walked) == 3:
+            raise SystemExit('the step ended here')
+        walked.append(camera)
+        return walk(space, camera, mask)
+    monkeypatch.setattr(atlas_observed_space, 'first_reached', ended_after_three)
+    with pytest.raises(SystemExit):
+        gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=root)
+    assert sorted(path.name for path in root.glob('*-camera.json')) == ['0000-camera.json', '0001-camera.json',
+                                                                         '0002-camera.json']
+    # A camera the step did not finish left images no record names; a cut-short one is made again from nothing.
+    (root / 'context/0003-context.png').write_bytes(b'\x89PNG cut short')
+    walked.clear()
+    monkeypatch.setattr(atlas_observed_space, 'first_reached', lambda space, camera, mask: walked.append(camera)
+                        or walk(space, camera, mask))
+    resumed = gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=root)
+    assert [camera['extrinsics']['position'] for camera in walked] == [
+        row['camera']['extrinsics']['position'] for row in pool[3:]]
+    assert resumed == whole and _tree(root) == unbroken
+
+
+def test_a_kept_camera_of_another_survey_is_never_adopted(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_observed_space
+
+    frames, pool = _resumable_scene()
+    root = tmp_path / 'gaps'
+    walk, walked = atlas_observed_space.first_reached, []
+    gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=tmp_path / 'other')
+    (root).mkdir()
+    record = json.loads(json.dumps({'schema_version': gaps.SURVEY_CAMERA_SCHEMA_VERSION,
+                                    'binding_digest': 'sha256:' + '0' * 64, 'row': {}, 'previews': []}))
+    (root / '0000-camera.json').write_text(json.dumps(record))
+    monkeypatch.setattr(atlas_observed_space, 'first_reached', lambda space, camera, mask: walked.append(camera)
+                        or walk(space, camera, mask))
+    gaps.survey_gaps(frames=frames, geometry_frames=frames, candidates=pool, root=root)
+    assert len(walked) == len(pool) and not list(root.glob('*-camera.json'))
+
+
 def _reference_projection(splat, camera):
     """``project_exported_splat`` as it was: the mask chosen per camera and ``np.minimum.at`` per disc radius."""
     import cv2

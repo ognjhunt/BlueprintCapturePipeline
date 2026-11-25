@@ -18,6 +18,8 @@ from .atlas_depth_splat import pixel_digest, restrict_frame
 
 
 SURVEY_SCHEMA_VERSION = 'atlas_geometry_gap_survey.v2'
+#: One camera's finished result in a survey not yet written (``survey_gaps``).
+SURVEY_CAMERA_SCHEMA_VERSION = 'atlas_geometry_gap_survey_camera.v1'
 # How ``gap_target_candidates`` places cameras for this survey's gaps. A survey
 # saved without it (v1) keeps the camera choice it was made with.
 GAP_CAMERA_ORIGIN_RANKING = 'observed_context_v1'
@@ -248,23 +250,41 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
             if Path(path).is_symlink() or _sha256_file(Path(path)) != digest:
                 raise ValueError('atlas_completion_gap_survey_changed')
         return report
+    # Each camera's result is kept beside its images as it is made, bound to this survey's binding, so a step
+    # that ends mid-survey is continued by the next instead of begun again (Austin, itest-cce2beee, 2026-11-25).
+    # A camera without one is made again from nothing: images it left are its own unrecorded output.
+    kept = _kept_cameras(root, len(candidates), binding_digest)
+    pending = [index for index in range(len(candidates)) if index not in kept]
+    for index in pending:
+        for path in _camera_outputs(root, index):
+            path.unlink(missing_ok=True)
     # Use the very same supported patches/erosion as the generation handoff.
     # Raw projected points can look like context while the usable patches are
     # actually empty, especially when looking at the back of a surface.
-    prepared = prepare_completion_views(frames=frames, selected=candidates, root=root / 'context')
+    prepared = (dict(zip(pending, prepare_completion_views(frames=frames, selected=[candidates[i] for i in pending],
+                                                           root=root / 'context', names=pending), strict=True))
+                if pending else {})
     space = observed_space(photographs=frames, geometry_frames=geometry_frames)
-    discs = ExportedDiscs(splat) if splat is not None else None
-    rows, previews, depth_batch = [], [], []
-    for index, (candidate, source) in enumerate(zip(candidates, prepared, strict=True)):
+    discs = ExportedDiscs(splat) if splat is not None and pending else None
+    batches = {pending[start]: pending[start:start + DEPTH_PROJECTION_BATCH_CAMERAS]
+               for start in range(0, len(pending), DEPTH_PROJECTION_BATCH_CAMERAS)}
+    rows, previews, depths = [], [], {}
+    for index, candidate in enumerate(candidates):
+        if index in kept:
+            rows.append(kept[index]['row'])
+            previews.extend(kept[index]['previews'])
+            continue
+        source = prepared[index]
         rgb = np.asarray(Image.open(source['image_path']).convert('RGB'))
         photographed = np.asarray(Image.open(source['keep_mask_path']).convert('L')) == 255
         if splat is not None:
             depth = project_exported_splat(discs, candidate['camera'])
         else:
-            if index % DEPTH_PROJECTION_BATCH_CAMERAS == 0:
-                batch = candidates[index:index + DEPTH_PROJECTION_BATCH_CAMERAS]
-                depth_batch = project_source_depths(geometry_frames, [row['camera'] for row in batch])
-            depth = depth_batch[index % DEPTH_PROJECTION_BATCH_CAMERAS]
+            if index in batches:
+                # Each camera's depth is its own: the batch only shares each view's lift between them.
+                depths = dict(zip(batches[index], project_source_depths(
+                    geometry_frames, [candidates[i]['camera'] for i in batches[index]]), strict=True))
+            depth = depths.pop(index)
         expected = (expected_depth_for_candidate(expected_frames, candidate)
                     if expected_frames else None)
         outline = candidate.get('gap_domain') == 'projected_scene_outline_hypothesis'
@@ -297,6 +317,7 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
                      'photographed_without_depth_gap_pixel_count': int(np.count_nonzero(flagged)),
                      'uncovered_pixels_first_reaching': {name: int(np.count_nonzero(reached == code))
                                                          for code, name in REACHED_NAMES.items()}})
+        made = []
         if candidate['purpose'] in {'wide', 'translated', 'disocclusion', 'gap_target'}:
             preview = np.zeros_like(rgb)
             covered = depth > 0
@@ -305,9 +326,12 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
             preview[flagged > 0] = (0, 200, 255)
             image = root / f'{index:04d}-survey.png'
             _save_image(image, preview)
-            previews.append({'path': str(image), 'sha256': _sha256_file(image),
-                             'source_frame_id': candidate['source_frame_id'],
-                             'camera_id': candidate['camera_id'], 'kind': 'geometry_gap_survey'})
+            made.append({'path': str(image), 'sha256': _sha256_file(image),
+                         'source_frame_id': candidate['source_frame_id'],
+                         'camera_id': candidate['camera_id'], 'kind': 'geometry_gap_survey'})
+        previews.extend(made)
+        write_json(_camera_record(root, index), {'schema_version': SURVEY_CAMERA_SCHEMA_VERSION,
+                                                 'binding_digest': binding_digest, 'row': rows[-1], 'previews': made})
     report = {'schema_version': SURVEY_SCHEMA_VERSION, 'views': rows, 'previews': previews,
               'binding_digest': binding_digest,
               'basis': ('exported_splat_centers_and_reviewed_depth_hypotheses' if splat is not None
@@ -322,7 +346,41 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
               'claim_ceiling': 'development_only'}
     report['digest'] = canonical_digest(report, digest_field='digest')
     write_json(root / 'survey.json', report)
+    for index in range(len(candidates)):
+        _camera_record(root, index).unlink(missing_ok=True)
     return report
+
+
+def _camera_record(root, index):
+    """Where ``survey_gaps`` keeps one camera's finished result until its survey is written."""
+    return root / f'{index:04d}-camera.json'
+
+
+def _camera_outputs(root, index):
+    return (_camera_record(root, index), root / f'{index:04d}-gaps.png', root / f'{index:04d}-survey.png',
+            root / 'context' / f'{index:04d}-context.png', root / 'context' / f'{index:04d}-keep.png')
+
+
+def _kept_cameras(root, count, binding_digest):
+    """The cameras an unfinished survey of this binding finished: their rows and previews, their images unchanged."""
+    kept = {}
+    for index in range(count):
+        path = _camera_record(root, index)
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            record = json.loads(path.read_text())
+            if (record.get('schema_version') != SURVEY_CAMERA_SCHEMA_VERSION
+                    or record.get('binding_digest') != binding_digest):
+                continue
+            assets = [(record['row']['label_path'], record['row']['label_sha256']),
+                      *((row['path'], row['sha256']) for row in record['previews'])]
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue  # not a record this survey wrote whole: the camera is made again
+        if all(Path(name).is_file() and not Path(name).is_symlink() and _sha256_file(Path(name)) == digest
+               for name, digest in assets):
+            kept[index] = record
+    return kept
 
 
 def context_supported_candidates(candidates, survey):
