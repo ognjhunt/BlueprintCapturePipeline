@@ -29,6 +29,7 @@ answers).
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -60,6 +61,25 @@ SITE_QUESTION = {"per_hour": "items_per_hour", "hours_per_day": "hours_per_day"}
 OPERATION_LABELS = {"per_hour": "How many an hour", "hours_per_day": "How many hours a day the job runs",
                     "days_per_week": "How many days a week it runs"}
 ESTIMATE_LABEL = "Blueprint's estimate; the site did not say"
+#: The site's quick answer of how heavy the item is (``operator_task_details.item_weight``), when it states one weight,
+#: is read as that weight give or take this share (the robot fit's band, and the company package's variations').
+OWNER_WEIGHT_RELATIVE_BAND = 0.10
+_KG_PER_UNIT = {**dict.fromkeys(("kg", "kgs", "kilo", "kilos", "kilogram", "kilograms"), 1.0),
+                **dict.fromkeys(("g", "gram", "grams"), 0.001),
+                **dict.fromkeys(("lb", "lbs", "pound", "pounds"), 0.45359237),
+                **dict.fromkeys(("oz", "ounce", "ounces"), 0.028349523125)}
+# One number and one unit, optionally "about" it: "5 kg", "12 lb", "about 3kg". Ranges, bounds
+# ("under 5 kg"), two figures or a missing unit do not match.
+_OWNER_WEIGHT = re.compile(r"(?:(?:about|around|approximately|approx\.?|roughly|circa|~|≈)\s*)?"
+                           r"([0-9]+(?:\.[0-9]+)?|\.[0-9]+)\s*([a-z]+)\.?", re.IGNORECASE)
+
+
+def owner_stated_weight_kg(text: Any) -> float | None:
+    """The owner's free-text item weight in kg when it states exactly one weight; ``None`` otherwise."""
+    match = _OWNER_WEIGHT.fullmatch(text.strip()) if isinstance(text, str) else None
+    factor = _KG_PER_UNIT.get(match.group(2).lower()) if match else None
+    value = float(match.group(1)) * factor if match and factor else 0.0
+    return value if math.isfinite(value) and value > 0 else None
 
 
 def _finite(value: Any) -> bool:
@@ -204,5 +224,6 @@ def operations_lines(preparation: Mapping[str, Any] | None) -> list[tuple[str, s
              "the job's words and the place filmed; nobody at the site checked it.", None)]
 
 
-__all__ = ["CLAIM", "DESIGNED", "MATERIAL_DENSITY_KG_M3", "PHYSICS", "PUBLISHED",
-           "operations_estimate", "operations_lines", "preparation_estimates", "weight_estimate", "weight_line"]
+__all__ = ["CLAIM", "DESIGNED", "MATERIAL_DENSITY_KG_M3", "OWNER_WEIGHT_RELATIVE_BAND", "PHYSICS", "PUBLISHED",
+           "operations_estimate", "operations_lines", "owner_stated_weight_kg", "preparation_estimates",
+           "weight_estimate", "weight_line"]

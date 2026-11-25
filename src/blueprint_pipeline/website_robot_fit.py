@@ -88,7 +88,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -99,6 +98,8 @@ from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_EMBODIMENT_ID, DROID_POLICY_CANARY_PRESET_ID
 from .robot_spec_catalog import figure_value
 from .usd_binary_read_cache import read_scoped
+# The site's quick answer of the item's weight, read where the company package can read it too.
+from .website_job_estimates import OWNER_WEIGHT_RELATIVE_BAND, owner_stated_weight_kg
 # The site's reader of the table owns its verdicts and row order; it stays off this module's imports.
 from .website_robot_fit_projection import (
     ESTIMATE_STRADDLES, FIRST_LOOK_VERDICTS, FITS_IF, QUANTITY_UNITS, ROUTE_CLEAR, UNKNOWN_CAUSES, condition_sentence,
@@ -112,7 +113,6 @@ CLAIM_CEILING = "development_only"
 VERDICTS = ("fits", "fits_spec", "doesnt_fit", "unknown")
 # A row's ``verdict`` stays within VERDICTS, which older readers validate rows against; its
 # ``first_look_verdict`` takes one of FIRST_LOOK_VERDICTS, FITS_IF among them.
-OWNER_WEIGHT_RELATIVE_BAND = 0.10
 #: The pessimistic cycle: each carry at this fraction of the published (peak) TCP speed, plus this
 #: allowance for grasping and releasing.
 PESSIMISTIC_SPEED_FRACTION = 0.1
@@ -125,24 +125,6 @@ CHAIN_SCALES = 25
 #: The recipe (embodiment) id of each robot profile ``robot_arm_path_clearance.ROBOT_PROFILE_ARMS``
 #: names: a catalog model on that recipe takes the capability verdict's carry for the profile's arm.
 PROFILE_RECIPES = {DROID_POLICY_CANARY_PRESET_ID: DROID_EMBODIMENT_ID}
-_KG_PER_UNIT = {**dict.fromkeys(("kg", "kgs", "kilo", "kilos", "kilogram", "kilograms"), 1.0),
-                **dict.fromkeys(("g", "gram", "grams"), 0.001),
-                **dict.fromkeys(("lb", "lbs", "pound", "pounds"), 0.45359237),
-                **dict.fromkeys(("oz", "ounce", "ounces"), 0.028349523125)}
-# One number and one unit, optionally "about" it: "5 kg", "12 lb", "about 3kg". Ranges, bounds
-# ("under 5 kg"), two figures or a missing unit do not match.
-_OWNER_WEIGHT = re.compile(r"(?:(?:about|around|approximately|approx\.?|roughly|circa|~|≈)\s*)?"
-                           r"([0-9]+(?:\.[0-9]+)?|\.[0-9]+)\s*([a-z]+)\.?", re.IGNORECASE)
-
-
-def owner_stated_weight_kg(text: Any) -> float | None:
-    """The owner's free-text item weight in kg when it states exactly one weight; ``None`` otherwise."""
-    match = _OWNER_WEIGHT.fullmatch(text.strip()) if isinstance(text, str) else None
-    factor = _KG_PER_UNIT.get(match.group(2).lower()) if match else None
-    value = float(match.group(1)) * factor if match and factor else 0.0
-    return value if math.isfinite(value) and value > 0 else None
-
-
 def _r(value: float) -> float:
     return round(float(value), 6)
 
