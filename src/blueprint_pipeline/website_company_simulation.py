@@ -121,16 +121,10 @@ LOOK_AS_FIRST_WRITTEN = "The look file is included as USD only, in an earlier ve
 ROTATIONS_STORED_WRONG = ("In that version each Gaussian's rotation is stored in the wrong order, so the look may not "
                           "show correctly.")
 #: Moves whenever what the builder writes changes, so a package built or refused by the earlier builder is built once
-#: more at the first pass after the release. v2 (2026-11-16): the layer's flatten note naming a host file is
-#: dropped (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a look
-#: is written again from its source splat with the fixed writer (every Gaussian's rotation as given) and also ships
-#: as a standard 3DGS PLY of that source. v4 (2026-11-21): the README speaks to the company in plain words (one name
-#: for the look file, no internal codes, notes as bullets), so packages built with the old README are built once more.
-#: v5 (2026-11-25): plain zip headers. v4 wrote every member with ``force_zip64``: each local header said its sizes were
-#: in a ZIP64 field while the central directory held them as plain sizes with no such field, and macOS's Archive Utility
-#: refused the package ("Unable to expand simulation.zip", Error 640; the owner, on the internal test company's first
-#: download). Every package is far below ZIP64's 4 GiB, so each member now declares its real size and Python writes
-#: ZIP64 only where it is needed, in both headers alike.
+#: more at the first pass after the release. v2 (2026-11-16): the layer's flatten note naming a host file is dropped
+#: (``place``); a package v1 refused for that note waited six hours for its retry. v3 (2026-11-18): a look is written
+#: again from its source splat with the fixed writer and also ships as a standard 3DGS PLY. v4 (2026-11-21): a plain
+#: README. v5 (2026-11-25): plain zip headers; ZIP64 in the local header alone made macOS refuse the zip (Error 640).
 BUILDER_REVISION = "website_company_simulation_builder.v5"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
@@ -1426,8 +1420,6 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             for name in names:
                 info = zipfile.ZipInfo(name, date_time=_FIXED_TIME)
                 info.compress_type, info.create_system, info.external_attr = zipfile.ZIP_DEFLATED, 3, 0o100644 << 16
-                # Its real size, so Python writes plain headers below ZIP64's limit and ZIP64 in both headers above
-                # it, never ZIP64 in the local header alone (which macOS's Archive Utility refuses).
                 info.file_size = (staging / name).stat().st_size
                 with (staging / name).open("rb") as stream, archive.open(info, "w") as member:
                     shutil.copyfileobj(stream, member, 8 << 20)
