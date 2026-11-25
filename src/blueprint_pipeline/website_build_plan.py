@@ -19,10 +19,12 @@ What it changes today (``built_object``): a job whose analysis names several obj
 every one in the scan as filmed (``website_atlas_pipeline.job_object_review``). With a plan, the most important object
 it can build (a rigid or opening object the job moves, named by the analysis, with the editor's rows that show it) is
 taken out of the scan alone and built as the job's object (``partial_review``); every other object stays in the room
-as filmed (``apply_to_removal``). A job with one rigid object keeps today's route; its plan is recorded. The plan, in
-plain words, goes into the company's README (``build_plan_notes``): what it needs, the object it takes out of the scan
-to build, what it keeps as filmed, what the video does not show. Never a claim that an object was built: the package's
-own notes say whether it was prepared.
+as filmed (``apply_to_removal``). ``built_objects`` lists every object the plan could build that way, in its order:
+the first is the one built, and the others are only recorded, each with the free source it could use
+(``website_extra_objects``). A job with one rigid object keeps today's route; its plan is recorded. The plan, in plain
+words, goes into the company's README (``build_plan_notes``): what it needs, the object it takes out of the scan to
+build, what it keeps as filmed, what the video does not show. Never a claim that an object was built: the package's own
+notes say whether it was prepared.
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .website_parametric_object import SHAPES as PARAMETRIC_SHAPES
@@ -199,11 +201,11 @@ def validate_plan(answer: Any, *, inputs: Mapping[str, Any], task_context: Mappi
     return {"objects": kept, **({"dropped": dropped} if dropped else {})}
 
 
-def built_object(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str, Any]],
-                 editor_objects: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
-    """The plan's most important object the job can build today, or None: the first, in the plan's order, that the job
-    moves, that is rigid or opens, that the plan does not keep as filmed, that the analysis named as the job's own
-    object and did not read as soft, and that the editor shows in rows it would remove."""
+def _buildable(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str, Any]],
+               editor_objects: Sequence[Mapping[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Each object the job could build, in the plan's order, read one at a time: one the job moves, that is rigid or
+    opens, that the plan does not keep as filmed, that the analysis named as the job's own object and did not read as
+    soft, and that the editor shows in rows it would remove."""
     from .task_profile_contracts import task_object_rigidity
     manipulated = {str(row.get("target_id")): row for row in entries if row.get("task_effect") == "manipulated"}
     removable = {str(row.get("target_id")) for row in editor_objects if row.get("disposition") == "remove"}
@@ -212,10 +214,23 @@ def built_object(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[st
         ids = [item for item in row["editor_object_ids"] if item in removable]
         if (row["role"] == "moved_object" and row["rigidity"] in BUILDABLE_RIGIDITY and row["sourcing"] != "keep_as_filmed"
                 and entry is not None and task_object_rigidity(entry)["rigidity"] != "deformable" and ids):
-            return {"target_id": row["target_id"], "name": row["name"], "sourcing": row["sourcing"],
-                    **({"parametric_shape": row["parametric_shape"]} if row["parametric_shape"] else {}),
-                    "editor_object_ids": ids}
-    return None
+            yield {"target_id": row["target_id"], "name": row["name"], "sourcing": row["sourcing"],
+                   **({"parametric_shape": row["parametric_shape"]} if row["parametric_shape"] else {}),
+                   "editor_object_ids": ids}
+
+
+def built_objects(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str, Any]],
+                  editor_objects: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Every object the plan would build, ranked as the plan ranks them, its most important first (``_buildable``).
+    Only the first is built today (``built_object``); the rest stay in the room as filmed, recorded."""
+    return list(_buildable(plan, entries=entries, editor_objects=editor_objects))
+
+
+def built_object(plan: Mapping[str, Any] | None, *, entries: Sequence[Mapping[str, Any]],
+                 editor_objects: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """The plan's most important object the job can build today, or None: the first of ``built_objects``, read as
+    before, so no row after it is looked at."""
+    return next(_buildable(plan, entries=entries, editor_objects=editor_objects), None)
 
 
 def partial_review(review: Mapping[str, Any], editor_object_ids: Sequence[str]) -> dict[str, Any]:
@@ -370,5 +385,5 @@ def apply_to_removal(removal: Mapping[str, Any], capture_root: Path) -> dict[str
 
 
 __all__ = ["DECISION_SCHEMA", "KEEPS_AS_FILMED", "NOT_IN_VIDEO", "PARTIAL_REMOVAL_INSTRUCTION", "apply_to_removal",
-           "build_plan_notes", "built_object", "decide_plan", "partial_review", "plan_inputs", "plan_notes",
-           "sealed_decision", "single_object", "validate_plan"]
+           "build_plan_notes", "built_object", "built_objects", "decide_plan", "partial_review", "plan_inputs",
+           "plan_notes", "sealed_decision", "single_object", "validate_plan"]

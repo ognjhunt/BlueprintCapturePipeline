@@ -36,7 +36,8 @@ from .website_assembly_coverage import assembly_constraints, assembly_contract, 
 from .website_build_choice import chosen_destination_rows, chosen_mechanism, success_with_site_numbers
 from .website_task_context_contracts import (GEOMETRY_ONLY_BLOCKER, authoring_admission_blockers,
                                              without_withheld_gap)
-from .website_preparation_contracts import scene_configuration_max_retries
+from .website_preparation_request import (CLAIM_CEILING, compose_back_record, composed_removal_manifest,
+                                          geometry_origin, intake_request, request_subject)
 from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
 from .website_track_mask_codec import canonical_track_digest, load_track_json
 from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start, on_surface_radius,
@@ -65,7 +66,6 @@ def _front_normal_undetermined(*values: Any) -> ValueError:
     body = json.dumps([np.round(np.asarray(value, dtype=float), 9).tolist() for value in values])
     return DeterministicRefusal("website_front_normal_undetermined", step="website_front_normal",
                                 inputs={"geometry_sha256": "sha256:" + hashlib.sha256(body.encode()).hexdigest()})
-CLAIM_CEILING = "development_only"
 _UP_INDEX = {"Y": 1, "-Y": 1, "Z": 2}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 SUCCESS = {"control_frequency_hz": 15, "maximum_episode_seconds": 24.0, "minimum_lift_m": 0.05,
@@ -1827,10 +1827,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     {"part_id": part, "reason": "builder_cannot_place_measured_extent", "builder_code": str(exc),
                      "frame_ids": list(withdrawn["frame_ids"]), "withdrawn_box_assembly_m": withdrawn["box_assembly_m"]}]
     thumbnail = _thumbnail(track, frames_by_id, output_root / "thumbnail.png")
-    # Capture consent permits scene preparation; it does not manufacture a
-    # paid simulation authorization or accept provider terms on the owner's behalf.
-    owner = dict(spend.get("owner") or {})
-    consent = dict(spend.get("consent") or {})
     if authoring_provider == "anthropic":
         if authoring_backend != "astra_cad_blender_v1":
             raise ValueError("website_artisan_provider_unsupported_explicit_legacy_backend_required")
@@ -1850,40 +1846,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     blockers.extend(admission)  # the Anthropic terms, the Agents API authority, the execution authority, the rights
     rule_success, success_basis = success_with_site_numbers(articulated=articulated, destination=destination, defaults={
         "rigid": SUCCESS, "opening": ARTICULATED_SUCCESS}, success_rule=success_rule, rule_withheld=rule_withheld)
-    request = {
-        "schema_version": intake.REQUEST_SCHEMA, "submission_id": capture_id, "owner": owner,
-        "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
-                   "content_digest": base_scene["splat_digest"]},
-        # The preparation below binds the reconstructed collider and estimated
-        # registration. This is not an owner-uploaded companion mesh or an
-        # owner declaration of its coordinate frame.
-        "task": {"task_id": "website-" + task_context["context_digest"][7:27],
-                 "strategy": "articulated_open_close" if articulated else "pick_and_place",
-                 "subject": {"description": subject_entry.get("semantic_label") or subject_entry["target_id"],
-                             "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,
-                             "coordinate_frame": "Z_up_estimated_meters",
-                             "geometry_origin": "synthetic_design" if synthetic is not None
-                             else "retained_in_captured_reconstruction" if atlas_route == "geometry_only"
-                             else "removed_before_reconstruction",
-                             "complete_object_dimensions": body is not None or synthetic is not None},
-                 "support": {"description": subject_entry.get("support_label") or "support surface under subject",
-                             "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
-                 **({"articulation": mechanism, "success": rule_success} if articulated else
-                    {"destination": destination or {"needs_input": "task_destination_pose_required"},
-                     # The object's centre ends within the destination's area: its radius is the tolerance
-                     # (``website_destination_area``) unless the site's words ask for less.
-                     "success": rule_success})},
-        "execution": {"purpose": "scene_preparation", "max_total_spend_usd": spend["max_total_spend_usd"],
-                      "max_paid_attempts": spend["max_paid_attempts"],
-                      "max_retries": scene_configuration_max_retries(spend),
-                      "expires_at_epoch": spend["expires_at_epoch"],
-                      "allowed_providers": (["vast", "openai", "anthropic"]
-                                            if authoring_provider == "anthropic" or artisan_on_anthropic
-                                            else ["vast", "openai"]),
-                      "policy_candidates": [],
-                      "claim_scope": CLAIM_CEILING},
-        "consent": consent,
-    }
+    request = intake_request(capture_id=capture_id, task_context=task_context, base_scene=base_scene, spend=spend,
+        articulated=articulated, subject=request_subject(subject_entry, aabb_min=sim_min, aabb_max=sim_max,
+            origin=geometry_origin(designed=synthetic is not None, atlas_route=atlas_route),
+            complete=body is not None or synthetic is not None),
+        support_label=subject_entry.get("support_label"), support_aabb=sim_support, mechanism=mechanism,
+        destination=destination, success=rule_success, anthropic=authoring_provider == "anthropic" or artisan_on_anthropic)
     # Scene preparation may build geometry while the owner's target is unknown
     # or untranslated. It selects no policy and cannot claim the target was met.
     # Retain the translation refusal for an evaluation request.
@@ -1896,14 +1864,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             intake.validate_request(request, now=now)
         except intake.SceneIntakeError as exc:
             blockers.append(str(exc))
-    compose_back = {"replacement_asset_id": "website-subject-" + task_context["context_digest"][7:27],
-                    "pose_world": {"position": [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
-                                   "orientation_xyzw": [0.0, 0.0, 0.0, 1.0], "unit": base_scene["up_axis"] + "-up runtime units",
-                                   "meters_per_unit": mpu, "support_snap_runtime_units": snap},
-                    "replacement_asset_frame_registration_uri": str(registration_path)}
-    composed = dict(removal_manifest)
-    composed["entries"] = [dict(row, compose_back=compose_back) if row["target_id"] == subject_entry["target_id"] else dict(row)
-                           for row in removal_manifest["entries"]]
+    compose_back = compose_back_record(task_context=task_context, subject_min=subject_min, subject_max=subject_max,
+        base_scene=base_scene, meters_per_unit=mpu, snap=snap, registration_path=registration_path)
+    composed = composed_removal_manifest(removal_manifest, {subject_entry["target_id"]: compose_back})
     write_json(output_root / "removal_manifest.composed.json", composed)
     value = {
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
