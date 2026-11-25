@@ -338,7 +338,7 @@ def test_the_package_credits_a_simready_model_with_the_owners_wording(tmp_path, 
     notice = " (Copyright (c) 2026 Example Corporation.)" if supplied else ""
     disclaimer = (" Its own notice: This asset is provided as is, without warranties of any kind." if supplied
                   else "")
-    assert (f"- scene/files/library_model.usda and object.usdz: {ASSET} by NVIDIA{notice}, from the SimReady dataset "
+    assert (f"- scene/files/library_model.usda, object.usdz and variations.usda: {ASSET} by NVIDIA{notice}, from the SimReady dataset "
             f"{REPO} ({BASE}com.nvidia.simready.packaging.json), under CC BY 4.0 "
             "(https://creativecommons.org/licenses/by/4.0/). Blueprint converted it from USD and scaled it to fit "
             f"this job.{disclaimer}") in readme

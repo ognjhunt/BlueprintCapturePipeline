@@ -54,6 +54,7 @@ import os
 import re
 import shutil
 import stat
+import textwrap
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -72,6 +73,7 @@ from .website_atlas_preview_store import capture_name_matches_request, capture_w
 from . import website_half_preparation as half_preparation
 from . import website_destination_unheld as unheld
 from . import website_library_notes as library_notes
+from . import website_object_variations as variations
 from .website_half_preparation import (COLLISION_ONLY, THRESHOLDS_ASSUMED, THRESHOLDS_CONFIRMED_LATER, generated_patch,
                                        look_views, surface_estimated)
 from .website_build_plan_notes import build_plan_notes
@@ -783,7 +785,7 @@ def simulation_revision(source: Mapping[str, Any], *, max_bytes: int = MAX_PACKA
                                         "size_from_its_points",
                                         "size_disagrees_with_published", "destination_overhang", "library_models",
                                         "library_refusal", "thresholds_assumed", "thresholds_confirmed_later",
-                                        "object_source", "object_shape")
+                                        "object_source", "object_shape", "variation_evidence")
            if source.get(key)},
         # The splat a look is written again from (``look_source``): a look found later, or moved, is a new package.
         **({"looks": looks} if (looks := {prim: {key: row["look_source"][key] for key in ("sha256", "runtime_to_simulator")}
@@ -1205,8 +1207,6 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
               "Built from one phone video of the site. Sizes, distances and positions are estimates from that",
               "video, not measurements. A result in this simulation is not a promise of what a robot does at the",
               "site, and says nothing about safety. No robot is included: bring your own."]
-    import textwrap
-
     notes = [*(source.get("plan_notes") or []), *([LOOK_LEFT_OUT] if source.get("look_left_out") else []),
              *([PLY_LEFT_OUT] if source.get("ply_left_out") and not source.get("look_left_out") else []),
              *([LOOK_AS_FIRST_WRITTEN, *([ROTATIONS_STORED_WRONG] if any(row["first_rotations_scrambled"]
@@ -1256,7 +1256,7 @@ def _readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[st
     for note in notes:
         lines += textwrap.wrap(note, width=100, initial_indent="- ", subsequent_indent="  ",
                                break_long_words=False, break_on_hyphens=False)
-    lines += [*library_notes.readme_lines(source), "", "Terms", "",
+    lines += [*variations.readme_lines(source), *library_notes.readme_lines(source), "", "Terms", "",
               "Use this package only to decide whether you can do this job. Do not pass it on and do not use it",
               "to train software. Blueprint may ask you to delete it; then delete every copy.", ""]
     return "\n".join(lines)
@@ -1342,8 +1342,7 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
     from .scene_package_stage import StageRefused, write_stage
     output.parent.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=STAGING + "-", dir=output.parent))
-    staging, scratch = work / "package", work / "scan"
-    partial = work / "simulation.zip.partial"
+    staging, scratch, partial = work / "package", work / "scan", work / "simulation.zip.partial"
     staging.mkdir(mode=0o750)
     scratch.mkdir(mode=0o700)
     try:
@@ -1400,10 +1399,11 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
                                       for prim, offset in sorted(offsets.items())}
             (staging / "success_rule.json").write_text(json.dumps(rule, indent=2, sort_keys=True) + "\n",
                                                        encoding="utf-8")
+        varied = variations.write(source, staging, placed)  # each object's simulated variations, said to be so
         names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob("*") if path.is_file())
         credited = {"library_files": library_notes.credited_files(source, staging, placed)}  # every file of a model
-        (staging / "README.txt").write_text(_readme({**source, **credited}, placed, [*names, "README.txt"], units,
-                                                    offsets, plys, first_written),
+        (staging / "README.txt").write_text(_readme({**source, **credited, **varied}, placed, [*names, "README.txt"],
+                                                    units, offsets, plys, first_written),
                                             encoding="utf-8")
         on_time()
         _resolves_inside(staging, room=source.get("room") is not None)

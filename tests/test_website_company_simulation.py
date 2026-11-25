@@ -362,8 +362,9 @@ def test_a_clean_scene_makes_a_package_that_passes_the_scan_opens_and_is_stable(
         archive.extractall(unpacked)
     textures = [name for name in names if name.startswith("scene/files/")]
     assert len(textures) == 1 and textures[0].endswith(".png")
+    # The job's object ships with its simulated variations (``website_object_variations``).
     assert set(names) - set(textures) == {"README.txt", "scene.usda", "scene/room.usdc", "scene/room_collision.usdc",
-                                          "object.usdz", "success_rule.json"}
+                                          "object.usdz", "success_rule.json", "variations.usda", "variations.json"}
     assert record["files"] == names
     # Every file passes the shared scan, with every id of the job looked for.
     literals = scan.literal_forms([(REQUEST, "a job id"), (CAPTURE, "a job id"), (TASK, "a job id"),

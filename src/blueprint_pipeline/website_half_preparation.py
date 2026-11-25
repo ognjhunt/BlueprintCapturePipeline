@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import website_library_notes as library_notes
+from . import website_object_variations as object_variations
 from .atlas_automation_plan import (GENERATED_ESTIMATES_BASIS, GENERATED_IN_COLLISION_ONLY, GENERATED_VIEWS_IN_LOOK,
                                     SCENE_COMPLETION_NOT_ADMITTED)
 from .decision_evidence_contracts import canonical_digest
@@ -276,8 +277,9 @@ def base_scene_notes(base: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str, Any]:
-    """Everything the half's own preparation and base scene say the package must tell, as the source's keys; plus
-    ``estimates`` and ``basis`` for its rule. Only ``library_refusal`` when that preparation cannot be read."""
+    """Everything the half's own preparation and base scene say the package must tell, as the source's keys (with what
+    its object's simulated variations rest on, ``website_object_variations.evidence``); plus ``estimates`` and
+    ``basis`` for its rule. Only ``library_refusal`` when that preparation cannot be read."""
     root = Path(capture_root)
     preparation, path = half_preparation(root, record)
     if preparation is None:
@@ -286,7 +288,8 @@ def half_disclosures(capture_root: Path, record: Mapping[str, Any]) -> dict[str,
     base = (_beside(root, path) if isinstance(record.get(FIELD), str) and path is not None else {}) \
         or handoff_base_scene(root)
     return {**base_scene_notes(base), **size_notes(preparation), **object_source(configuration),
-            **library_notes.credit(configuration, root), "estimates": object_estimates(preparation),
+            **library_notes.credit(configuration, root), **object_variations.evidence(preparation, root),
+            "estimates": object_estimates(preparation),
             "basis": success_basis(preparation)}
 
 
