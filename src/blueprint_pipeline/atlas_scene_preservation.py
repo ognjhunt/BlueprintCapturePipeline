@@ -164,12 +164,61 @@ def _support_source(view):
     return points, y, x, view['rgb'][y, x].astype(np.int16), valid.shape
 
 
+#: A source's pixels are boxed in world space by tiles of this many pixels a side; a reference camera no
+#: tile's box can reach skips that tile's points (``_tiles_outside``). On Austin (itest-cce2beee, 204 views,
+#: 2026-11-25) 63% of the point projections the check made were of such tiles.
+SUPPORT_CULL_TILE_PIXELS = 64
+#: How far outside the image (pixels) a box must lie, and, relative to the box's distance from the camera,
+#: how far from the camera's plane, before it is skipped: far beyond the rounding of ``_project``.
+SUPPORT_CULL_MARGIN_PIXELS = 4
+SUPPORT_CULL_PLANE_RELATIVE = 1e-6
+
+
+def _tile_boxes(points, y, x):
+    """The world box of each ``SUPPORT_CULL_TILE_PIXELS`` tile's points, and each point's box."""
+    size = SUPPORT_CULL_TILE_PIXELS
+    tile = (y // size) * (int(x.max()) // size + 1) + x // size
+    order = np.argsort(tile, kind='stable')
+    ordered = tile[order]
+    starts = np.flatnonzero(np.concatenate(([True], ordered[1:] != ordered[:-1])))
+    low = np.minimum.reduceat(points[order], starts, axis=0)
+    high = np.maximum.reduceat(points[order], starts, axis=0)
+    box = np.empty(len(points), np.intp)
+    box[order] = np.repeat(np.arange(len(starts)), np.diff(np.append(starts, len(order))))
+    return low, high, box
+
+
+def _tiles_outside(low, high, camera):
+    """Boxes no point of which ``_project`` can place inside ``camera``: a conservative cull.
+
+    Each test is linear in the point (in front of or behind the camera's plane, and each image edge as
+    ``x * fx + c * z`` against zero), so a box whose eight corners all pass one holds only points that pass
+    it. A box is skipped when its corners lie behind the plane, or in front of it and all past one edge by
+    ``SUPPORT_CULL_MARGIN_PIXELS``, both by far more than the projection's rounding: a box that meets the
+    camera's plane within ``SUPPORT_CULL_PLANE_RELATIVE`` of its distance is never skipped.
+    """
+    k, e = camera['intrinsics'], camera['extrinsics']
+    corners = np.stack([np.where(np.array(bits, bool), high, low) for bits in np.ndindex(2, 2, 2)], axis=1)
+    offset = corners - np.asarray(e['position'])
+    local = offset @ _rotation_matrix(e['quaternion'])
+    side, up, z = local[..., 0], -local[..., 1], -local[..., 2]
+    plane = SUPPORT_CULL_PLANE_RELATIVE * (1 + np.abs(offset).max(axis=(1, 2)))
+    m = SUPPORT_CULL_MARGIN_PIXELS
+    past_edge = ((side * k['fx'] + (k['cx'] + m) * z < 0).all(axis=1)
+                 | (side * k['fx'] + (k['cx'] - k['width'] - m) * z > 0).all(axis=1)
+                 | (up * k['fy'] + (k['cy'] + m) * z < 0).all(axis=1)
+                 | (up * k['fy'] + (k['cy'] - k['height'] - m) * z > 0).all(axis=1))
+    return (z < -plane[:, None]).all(axis=1) | ((z > plane[:, None]).all(axis=1) & past_edge)
+
+
 def _support_masks(frames):
     """Per source frame, the non-edge pixels another frame sees at the same depth and colour (packed bits).
 
     Each source meets the other frames in frame order, as before; the frames
     it meets are decoded one block at a time (``_reference_blocks``) and the
     source is lifted again for each block, its support so far kept as bits.
+    A reference projects only the source tiles that can reach its image
+    (``_tiles_outside``); a skipped point is one it would have found outside.
     """
     from .atlas_depth_splat import EDGE_RELATIVE_JUMP
 
@@ -187,6 +236,7 @@ def _support_masks(frames):
             del source
             supported = (np.zeros(len(points), bool) if support[index] is None
                          else _unpacked(support[index])[y, x])
+            low, high, box = _tile_boxes(points, y, x) if len(points) else (None, None, None)
             for other_index in others:
                 other = references[other_index]
                 # Support is an OR across references. Once another view agrees,
@@ -196,6 +246,7 @@ def _support_masks(frames):
                     finished[index] = True
                     break
                 camera = {'intrinsics': other['intrinsics'], 'extrinsics': other['extrinsics']}
+                pending = pending[~_tiles_outside(low, high, camera)[box[pending]]]
                 z, u, v, inside = _project(points[pending], camera)
                 ids = pending[inside]
                 rows, cols = np.floor(v[inside]).astype(int), np.floor(u[inside]).astype(int)

@@ -449,3 +449,59 @@ def test_novel_view_review_rejects_invented_objects_on_known_surfaces():
     assert 'minor blur, seams, speckling' in prompt
     assert 'clear task obstruction' in prompt
     assert 'generic front' in prompt
+
+
+def _room_views(count=6, size=(160, 120)):
+    """Views turning about a box room: each sees part of it, several see none of another's pixels."""
+    from scipy.spatial.transform import Rotation
+
+    rng = np.random.default_rng(3)
+    width, height = size
+    views = []
+    for index in range(count):
+        yaw = index * 2 * np.pi / count
+        cam = {'intrinsics': {'width': width, 'height': height, 'fx': 110., 'fy': 110.,
+                              'cx': width / 2, 'cy': height / 2},
+               'extrinsics': {'position': [.3 * np.cos(yaw), .1 * index, .3 * np.sin(yaw)],
+                              'quaternion': Rotation.from_euler('Y', yaw).as_quat().tolist(),
+                              'coordinateSystem': 'rub'}}
+        depth = (2.5 + .4 * np.sin(np.arange(width) / 9.)[None, :] + rng.normal(0, .01, (height, width)))
+        depth[:, : width // 5] = 1.2  # a nearer column a neighbour sees too
+        views.append(posed_frame(frame_id=f'turn-{index}', rgb=np.full((height, width, 3), 100, np.uint8),
+                                 depth=depth.astype(np.float32), confidence=np.ones((height, width), np.float32),
+                                 camera=cam))
+    return views
+
+
+def test_no_tile_the_support_check_skips_holds_a_point_a_view_would_see():
+    """The cull is conservative: a box it skips for a camera holds no point ``_project`` puts inside it, near the
+    camera's plane and an image edge included."""
+    rng = np.random.default_rng(11)
+    camera = {'intrinsics': {'width': 64, 'height': 48, 'fx': 50., 'fy': 50., 'cx': 32., 'cy': 24.},
+              'extrinsics': {'position': [0., 0., 0.], 'quaternion': [0., 0., 0., 1.]}}
+    low = rng.uniform(-3, 3, (4000, 3))
+    high = low + rng.uniform(0, .6, (4000, 3))
+    low[:500, 2], high[:500, 2] = -1e-9, 1e-9  # boxes on the camera's plane
+    skipped = preservation._tiles_outside(low, high, camera)
+    assert 0 < skipped.sum() < len(low)
+    for box in np.flatnonzero(skipped):
+        points = rng.uniform(low[box], high[box], (400, 3))
+        corners = np.stack([np.where(np.array(bits, bool), high[box], low[box]) for bits in np.ndindex(2, 2, 2)])
+        assert not preservation._project(np.concatenate([points, corners]), camera)[3].any()
+    assert not skipped[:500].any()
+
+
+def test_the_support_check_skips_tiles_no_view_can_see_and_keeps_every_mask_byte_for_byte(monkeypatch):
+    """Austin (itest-cce2beee, 2026-11-25): 63% of the check's point projections fell outside the view they were
+    projected into. Skipping those tiles' points changes no mask: the same bits as projecting every point."""
+    views = _room_views()
+    projected, every = [], preservation._project
+    monkeypatch.setattr(preservation, '_project', lambda points, camera: projected.append(len(points))
+                        or every(points, camera))
+    culled = preservation._support_masks(views)
+    skipping = sum(projected)
+    projected.clear()
+    monkeypatch.setattr(preservation, '_tiles_outside', lambda low, high, camera: np.zeros(len(low), bool))
+    reference = preservation._support_masks(views)
+    assert [(bits.tobytes(), shape) for bits, shape in culled] == [(bits.tobytes(), shape) for bits, shape in reference]
+    assert skipping < sum(projected) and any(np.unpackbits(bits).any() for bits, _ in culled)

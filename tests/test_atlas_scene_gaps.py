@@ -279,3 +279,53 @@ def test_prior_completion_reuses_bound_composite_and_mask_without_regenerating(t
     mask.write_bytes(b'changed-mask')
     with pytest.raises(ValueError, match='prior_changed'):
         gaps.retained_completion(root=tmp_path, pose_digest='pose')
+
+
+def _reference_projection(splat, camera):
+    """``project_exported_splat`` as it was: the mask chosen per camera and ``np.minimum.at`` per disc radius."""
+    import cv2
+    from blueprint_pipeline.atlas_scene_preservation import _project
+    from blueprint_pipeline.splat_scene_analysis import DEFAULT_VISIBLE_OPACITY
+
+    k = camera['intrinsics']
+    shape = (int(k['height']), int(k['width']))
+    visible = np.isfinite(splat.xyz).all(axis=1) & (splat.opacity_sigmoid >= DEFAULT_VISIBLE_OPACITY)
+    z, u, v, inside = _project(splat.xyz[visible], camera)
+    pixels = np.floor(v[inside]).astype(int) * shape[1] + np.floor(u[inside]).astype(int)
+    sigma = np.exp(splat.scales[visible][inside, :2].astype(np.float64).max(axis=1))
+    radius = np.clip(np.floor(1.5 * sigma * k['fx'] / z[inside]), 1, gaps.MAX_COVERAGE_DISC_PIXELS).astype(int)
+    depth = np.full(shape, np.inf, np.float32)
+    for size in np.unique(radius):
+        layer = np.full(shape, np.inf, np.float32)
+        np.minimum.at(layer.reshape(-1), pixels[radius == size], z[inside][radius == size])
+        kernel = (np.ones((3, 3), np.uint8) if size == 1 else
+                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * size + 1, 2 * size + 1)))
+        depth = np.minimum(depth, cv2.erode(layer, kernel, borderType=cv2.BORDER_CONSTANT, borderValue=float('inf')))
+    return np.where(np.isfinite(depth), depth, 0).astype(np.float32)
+
+
+def test_an_export_projected_into_many_cameras_gives_each_the_bytes_it_always_did():
+    """The visible discs are chosen once for all of a survey's cameras, and each pixel's nearest depth is a sort's
+    group minimum, not ``np.minimum.at``: Austin's 16.2 M Gaussians took 4.5 s a camera, now 1.7, the same bytes."""
+    from blueprint_pipeline.gaussian_splat_decode import SplatData
+
+    rng = np.random.default_rng(7)
+    count = 60000
+    xyz = rng.normal([0, 0, -3], [1.2, .8, 1.5], (count, 3)).astype(np.float32)
+    xyz[::997] = np.nan  # not finite: never projected
+    xyz[1::5] = xyz[::5][:len(xyz[1::5])]  # many centres share a pixel and a depth exactly
+    splat = SplatData(count=count, xyz=xyz, opacity=rng.normal(0, 2, count).astype(np.float32),
+                      f_dc=np.zeros((count, 3), np.float32),
+                      scales=rng.normal(-4.5, 1., (count, 3)).astype(np.float32),
+                      quats=np.tile(np.float32([1, 0, 0, 0]), (count, 1)), properties=())
+    discs, seen = gaps.ExportedDiscs(splat), []
+    # The last camera looks away from every disc: an empty view, as it always was.
+    for position, quaternion in [([0, 0, 0], [0, 0, 0, 1]), ([.3, -.1, 1.], [0, .2, 0, .98]),
+                                 ([0, 0, -6], [0, 1, 0, 0]), ([0, 0, 9], [0, 1, 0, 0])]:
+        camera = {'intrinsics': {'width': 96, 'height': 64, 'fx': 70., 'fy': 70., 'cx': 48., 'cy': 32.},
+                  'extrinsics': {'position': position, 'quaternion': quaternion}}
+        expected = _reference_projection(splat, camera)
+        assert gaps.project_exported_splat(discs, camera).tobytes() == expected.tobytes()
+        assert gaps.project_exported_splat(splat, camera).tobytes() == expected.tobytes()
+        seen.append(bool((expected > 0).any()))
+    assert seen == [True, True, True, False]
