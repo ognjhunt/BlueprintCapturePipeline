@@ -231,12 +231,24 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     survey_options = ({'expected_frames': expected_frames, 'splat_root': splat_root}
                       if expected_frames or splat_root is not None else {})
     context_frames = frames if reference_frames is None else reference_frames
+    work = None
+    if coverage_feedback is None and not any(root.glob('plan-inputs*.json')):
+        # From counts, before any of it runs: work no step can finish takes the completion floor, before the
+        # planner (a paid call) is asked (``atlas_completion_work``). A pass that already reached its planner did
+        # this work in a step, and may hold a paid answer; a coverage pass has no floor. Neither is bounded.
+        from .atlas_completion_work import CompletionWork
+        work = CompletionWork(root=root, frames=frames, photographs=context_frames, geometry_frames=geometry_frames,
+                              candidates=candidates, splat_root=splat_root, expected_frames=expected_frames)
+        work.admit_survey()
     gaps = survey_gaps(frames=context_frames, geometry_frames=geometry_frames, candidates=candidates,
                        root=root / 'gaps', **survey_options)
     from .atlas_completion_cameras import gap_target_candidates
     aimed = gap_target_candidates(frames, camera_pool, gaps, **(
-        {'expected_frames': expected_frames} if expected_frames else {}))
+        {'expected_frames': expected_frames} if expected_frames else {}),
+        **({'placement_bound': work.admit_placements} if work is not None else {}))
     if aimed:
+        if work is not None:
+            work.admit_aimed_survey(aimed)
         targeted = survey_gaps(frames=context_frames, geometry_frames=geometry_frames,
                               candidates=aimed, root=root / 'gap-targets', **survey_options)
         _, rejected_aims = context_supported_candidates(aimed, targeted)
@@ -251,6 +263,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
             fallback = gap_target_candidates(frames, camera_pool, retry_survey, source_centred=True,
                 **({'expected_frames': expected_frames} if expected_frames else {}))
             if fallback:
+                if work is not None:
+                    work.admit_aimed_survey(fallback)
                 fallback_gaps = survey_gaps(frames=context_frames, geometry_frames=geometry_frames,
                     candidates=fallback, root=root / 'gap-target-context-fallback', **survey_options)
                 aimed.extend(fallback)

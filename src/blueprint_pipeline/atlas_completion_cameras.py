@@ -207,7 +207,8 @@ def observed_context(samples, supported, frames, camera, gap_points, gap_weights
     return float(observed.mean()), float(np.sum(gap_weights[inside][exposed] / z[inside][exposed] ** 2))
 
 
-def gap_target_candidates(frames, candidates, survey, *, source_centred=False, expected_frames=()):
+def gap_target_candidates(frames, candidates, survey, *, source_centred=False, expected_frames=(),
+                          placement_bound=None):
     """Aim at actual gaps, estimating the aim point from neighbouring depth.
 
     Camera locations come from the captured trajectory or its already screened
@@ -228,6 +229,10 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False, e
     Each frame is read once for the planning cloud and once for whether it
     sees a known surface in front of each gap's aim point; cameras are then
     placed gap by gap in survey order, exactly as when every frame stayed read.
+
+    ``placement_bound``, when given, is told before each gap's locations are
+    scored how many there are and over how many context samples; it raises to
+    stop the aiming (``atlas_completion_work.CompletionWork.admit_placements``).
     """
     from pathlib import Path
     from PIL import Image
@@ -375,6 +380,8 @@ def gap_target_candidates(frames, candidates, survey, *, source_centred=False, e
                                         -(ys + .5 - k['cy']) / k['fy'], -np.ones(len(xs))))
             gap_points = position + (gap_rays * depth) @ rotation.T
             weights = np.full(len(xs), aim['gap_pixels'] / len(xs) * depth ** 2)
+            if placement_bound is not None:
+                placement_bound(placements=len(choices), samples=len(samples))
             scored = []
             for angle, candidate in choices:
                 aimed = aimed_rotation(candidate, focus)
