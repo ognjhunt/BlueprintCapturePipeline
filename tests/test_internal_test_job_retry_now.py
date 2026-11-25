@@ -431,6 +431,38 @@ def test_an_ask_stopped_partway_still_uses_the_releases_one(tmp_path, monkeypatc
         world.ask(request_id="20261124T190000Z-test-job-retry-now-0000abce")
 
 
+def test_an_ask_that_raised_before_any_record_changed_does_not_use_the_releases_one(tmp_path, monkeypatch):
+    """Austin (2026-11-25): an OSError before either record changed left "applying", and the release's one was spent
+    on nothing. Its records are unchanged and the next ask on the same release brings both forward."""
+    world = World(tmp_path)
+    before = world.records()
+    real = retry._atlas
+
+    def unreadable(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied", "/scenes/x/pipeline/atlas/preview.lock")
+    monkeypatch.setattr(retry, "_atlas", unreadable)
+    with pytest.raises(PermissionError):
+        world.ask()
+    assert world.read(world.row_path)["retry_now"] == [] and world.records() == before
+    monkeypatch.setattr(retry, "_atlas", real)
+    assert world.ask(request_id="20261124T190000Z-test-job-retry-now-0000abce")["door_outcome"] == "brought_forward"
+
+
+@pytest.mark.parametrize(("error", "code"), [
+    (PermissionError(13, "Permission denied", "/var/lib/x/captures/c/pipeline/atlas/preview.lock"),
+     "PermissionError:EACCES:atlas/preview.lock"),
+    (OSError(30, "Read-only file system", "/var/lib/x/captures/c/.pipeline_job_ledger.json.lock"),
+     "OSError:EROFS:c/.pipeline_job_ledger.json.lock"),
+    (OSError("disk"), "OSError"),
+])
+def test_a_failed_ask_names_the_error_and_the_file_never_its_message(monkeypatch, capsys, error, code):
+    def run(*_args, **_kwargs):
+        raise error
+    monkeypatch.setattr(retry, "run", run)
+    assert retry.main(["--request-json", json.dumps(BODY), "--door-request-id", THIS, "--requested-by", "a"]) == 1
+    assert json.loads(capsys.readouterr().out) == {"door_outcome": "failed", "code": code}
+
+
 @pytest.mark.parametrize("release", [None, "", "not-a-commit"])
 def test_with_no_release_to_bound_it_the_ask_is_refused(tmp_path, release):
     world = World(tmp_path)
