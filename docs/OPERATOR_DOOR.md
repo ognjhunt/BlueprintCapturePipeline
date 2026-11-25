@@ -311,6 +311,14 @@ again. It runs once per fact; otherwise it refuses with
 `selected_handoff_atlas_held_handoff_resume_not_eligible` or
 `selected_handoff_atlas_held_handoff_resume_already_replayed`.
 
+Since 2026-11-25 (`website_rules_reopen.REVISION` `website_accept_every_job.2026-11-25`) it also re-runs, once,
+a `completed` job whose handoff shipped its room package for one cause alone, the destination
+(`task_destination_surface_contact_required`), recorded with no cause or with other geometry in the object's box,
+which this release gets past (job move-the-lamp-2). Its grant must be live, its prepared scene never sent, and
+nothing in its room package record a privacy, rights or money stop. The status shows
+`native_preparation.rules_reopen` when it qualifies. The run buys only what the job's preparation buys from there,
+through the same admissions: the object's authoring and its scene, inside the job's grant and caps.
+
 It also re-runs a `completed` preparation, held or handed off, whose Atlas
 result was published again after it (for example a splat rebuild). The status
 then shows `native_preparation.atlas_result_superseded`: the result its base

@@ -16,11 +16,22 @@ drain tick (``reconcile_held_handoffs``) run once through the same claim, on the
 retained outputs. It never buys twice: the Atlas result, every retained Gemini, SAM and authoring receipt are read
 as they stand, and a job whose prepared scene may already have gone to the website is not reopened.
 
+Since 2026-11-25 (``REVISION``) it also reopens a job that shipped its room package without its object for one cause
+alone, the destination (``ROOM_PACKAGE_CAUSES``): ``task_destination_surface_contact_required``, which a release
+with ``website_destination_overhang._through`` gets past where only other geometry stood in the object's box (job
+move-the-lamp-2: the wall behind the glass shelf; its room package, written on 24 Nov, recorded no cause, so did every
+one before #3735). A shipped room package is a completed stage that no fact re-runs (``website_held_handoff_replay``
+reads it as held on nothing), so only the operator's ``selected-handoff --resume-preparation`` runs it, once: the drain
+keeps no bytes for a handed-off job. Its room package's own sealed record decides: one piece not prepared, that code,
+a cause this release fixes, and no code or flag that is a wall; never one whose intake may have gone to the website.
+The holds the 2026-11-17 revision reopened are not reopened again under this one (``PREVIOUS_REVISION``): it adds
+the room package only.
+
 Never reopened (``reopen_verdict`` names why): a withdrawn capture, a job with no live grant (expired or none), a
 stop that is a wall (privacy, rights, money, the owner's closing, the job's sentence still to come), the site's
 unconfirmed brief (its own consent replay), a recapture hold (its own replay), a job whose ledger did not complete
-(a failing job retries by itself; an ended authority stays ended), and a hold the current rules would keep.
-Read-only; it decides, it never runs anything.
+(a failing job retries by itself; an ended authority stays ended), a hold the current rules would keep, and a room
+package shipped for anything else. Read-only; it decides, it never runs anything.
 """
 from __future__ import annotations
 
@@ -30,8 +41,16 @@ from pathlib import Path
 from typing import Any, Mapping
 
 #: The rules a reopened job goes on under: #3636 (Gemini's credits out is a money wait) and #3637 (a blocker that is no
-#: wall ships the room package), with the holds the room package replaced on 2026-11-16. A later revision reopens again.
-REVISION = "website_accept_every_job.2026-11-17"
+#: wall ships the room package), with the holds the room package replaced on 2026-11-16; and, since 2026-11-25, the
+#: object placed where only other geometry stands in its box at the destination (``ROOM_PACKAGE_CAUSES``). A later
+#: revision reopens again.
+REVISION = "website_accept_every_job.2026-11-25"
+#: The revision before: a hold it reopened is not reopened again under this one, which adds only the room package.
+PREVIOUS_REVISION = "website_accept_every_job.2026-11-17"
+#: A room package shipped for one not-prepared piece, by its code, reopens for the causes this release fixes, as its
+#: sealed record names them (``website_destination_unheld``); None: a record from before the search named one (#3735).
+ROOM_PACKAGE_CAUSES = {"task_destination_surface_contact_required":
+                       frozenset({None, "other_geometry_in_its_box_wherever_it_would_rest"})}
 KIND = "rules_reopen"
 WHAT_HAPPENS = ("The preparation runs again on the current release from its retained outputs. It may ship the room "
                 "package, or build the job's object, which buys the object's authoring within the job's grant.")
@@ -73,9 +92,12 @@ def _reopen_verdict(root: Path, *, now: float) -> dict[str, Any]:
     status = ledger.get("status") if isinstance(ledger, dict) else None
     if status != "completed":
         return _verdict(False, "ledger_" + str(status or "missing"))
-    if reopened(root, ledger_revision=ledger.get("revision")):
-        return _verdict(False, "already_reopened_under_these_rules")
     handoff, context = _handoff(root), _retained_context(root)
+    shipped = handoff is not None and handoff.get("status") == "room_package_written"
+    # A hold the revision before reopened stays reopened; a room package it could not reopen is this one's to reopen.
+    if reopened(root, ledger_revision=ledger.get("revision"),
+                revisions=(REVISION,) if shipped else (REVISION, PREVIOUS_REVISION)):
+        return _verdict(False, "already_reopened_under_these_rules")
     if handoff is None or context is None:
         return _verdict(False, "no_retained_handoff")
     if not _grant_live(root):
@@ -84,6 +106,8 @@ def _reopen_verdict(root: Path, *, now: float) -> dict[str, Any]:
     if handoff.get("website_intake_outbox") or handoff.get("navigation_intake") or prepared_scene_may_exist(
             capture, task_context_digest=context.get("context_digest")):
         return _verdict(False, "intake_may_have_been_sent")  # it may be in paid preparation: never bought twice
+    if shipped:
+        return _room_package_verdict(capture, handoff)
     blockers = [str(code) for code in handoff.get("blockers") or []]
     if handoff.get("status") not in {"needs_input", "awaiting_inputs"} or not blockers:
         return _verdict(False, "not_stopped")
@@ -114,14 +138,43 @@ def _reopen_verdict(root: Path, *, now: float) -> dict[str, Any]:
     return _verdict(False, "current_rules_still_wait", stopped_on=blockers)
 
 
-def reopened(pipeline_root: Path, *, ledger_revision: Any) -> bool:
-    """Whether a reopen under ``REVISION`` already ran for this job: marked, and claimed (the ledger moved past the
-    revision it was marked at). A mark whose run never claimed the job (a crash, a refused claim) leaves it eligible."""
+def _room_package_verdict(capture: Path, handoff: Mapping[str, Any]) -> dict[str, Any]:
+    """Whether a shipped room package reopens: its sealed record (the handoff names it by path and digest) left out one
+    piece for one code of ``ROOM_PACKAGE_CAUSES`` with a cause this release fixes, and nothing in it is a wall."""
+    from .job_retry_policy import MONEY, PRIVACY_RIGHTS
+    from .website_preparation_outcome import _load
+    from .website_preparation_retry import AWAITING_JOB_SENTENCE, OWNER_CLOSED, classify
+    from .website_scene_handoff import spending_cap_code
+    named = handoff.get("room_package") if isinstance(handoff.get("room_package"), Mapping) else {}
+    try:
+        record = _load(Path(str(named.get("path") or "")), capture.absolute(), "inputs_digest")
+    except (OSError, ValueError):
+        return _verdict(False, "not_stopped")  # no sealed record to read: as every room package before it
+    if record.get("inputs_digest") != named.get("inputs_digest"):
+        return _verdict(False, "room_package_record_changed")
+    rows = [row for row in record.get("not_prepared") or [] if isinstance(row, Mapping)]
+    codes = [str(row.get("code")) for row in rows]
+    walls = sorted({kind for kind in (classify(str(code)) for code in [*codes, *(record.get("flags") or [])])
+                    if kind in {PRIVACY_RIGHTS, MONEY, OWNER_CLOSED, AWAITING_JOB_SENTENCE}}
+                   | {MONEY for code in [*codes, *(record.get("flags") or [])] if spending_cap_code(str(code))
+                      or str(code) == "spending_cap_reached"})
+    if walls:
+        return _verdict(False, "wall:" + ",".join(walls), stopped_on=codes)
+    if len(rows) != 1 or codes[0] not in ROOM_PACKAGE_CAUSES or rows[0].get("cause") not in ROOM_PACKAGE_CAUSES[codes[0]]:
+        return _verdict(False, "room_package_cause_not_fixed_in_this_release", stopped_on=codes)
+    return _verdict(True, "room_package_reopens_may_build_object_and_buy_authoring", stopped_on=codes,
+                    what_happens=WHAT_HAPPENS)
+
+
+def reopened(pipeline_root: Path, *, ledger_revision: Any, revisions: tuple[str, ...] = (REVISION,)) -> bool:
+    """Whether a reopen under one of ``revisions`` already ran for this job: marked, and claimed (the ledger moved past
+    the revision it was marked at). A mark whose run never claimed the job (a crash, a refused claim) leaves it
+    eligible."""
     try:
         mark = json.loads((Path(pipeline_root) / "website_scene_preparation" / REOPENED_FILE).read_text())
     except (OSError, ValueError):
         return False
-    return (isinstance(mark, dict) and mark.get("rules_revision") == REVISION
+    return (isinstance(mark, dict) and mark.get("rules_revision") in revisions
             and mark.get("ledger_revision") != ledger_revision)
 
 
@@ -173,8 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["KIND", "REOPENED_FILE", "REOPENED_GAPS", "REVISION", "WHAT_HAPPENS", "mark_reopened", "reopen_verdict",
-           "reopened", "rules_reopen", "survey"]
+__all__ = ["KIND", "PREVIOUS_REVISION", "REOPENED_FILE", "REOPENED_GAPS", "REVISION", "ROOM_PACKAGE_CAUSES",
+           "WHAT_HAPPENS", "mark_reopened", "reopen_verdict", "reopened", "rules_reopen", "survey"]
 
 
 if __name__ == "__main__":
