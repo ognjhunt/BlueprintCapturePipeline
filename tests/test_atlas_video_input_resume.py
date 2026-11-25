@@ -126,3 +126,58 @@ def test_incomplete_preparation_uses_the_existing_build_path(prepared):
     (output / "atlas_view_selection.json").unlink()
     with pytest.raises(AssertionError, match="completed input preparation was recomputed"):
         video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+
+
+def _earlier_release(output, *, binding=None, policy=None):
+    """The selection as an earlier release wrote it for the same review: its pose record was made from it."""
+    input_path, plan_path = output / video.GEOMETRY_INPUTS_FILE, output / "atlas_view_selection.json"
+    inputs, plan = json.loads(input_path.read_text()), json.loads(plan_path.read_text())
+    (binding or (lambda value: None))(inputs["binding"])
+    (policy or (lambda value: None))(plan["frame_policy"])
+    inputs["digest"] = canonical_digest(inputs, digest_field="digest")
+    plan["input_digest"] = inputs["digest"]
+    input_path.write_text(json.dumps(inputs))
+    plan_path.write_text(json.dumps(plan))
+    (output / "atlas_pose_inputs.json").unlink()
+    return {path: path.read_bytes() for path in (input_path, plan_path)}
+
+
+@pytest.mark.parametrize("change", ["adapter_version", "policy_field_added", "policy_field_missing"])
+def test_a_selection_an_earlier_release_made_for_the_same_review_is_kept_as_written(prepared, change):
+    """2026-11-24 sweep: the binding's adapter version and the policy's fields were compared whole with today's, so
+    any such change refused every step of every job past view selection. The selection is read as written."""
+    path, review, output, _ = prepared
+    kept = _earlier_release(output, **{
+        "adapter_version": {"binding": lambda value: value.update(adapter_version=2)},
+        "policy_field_added": {"policy": lambda value: value.update(an_earlier_field="as it wrote it")},
+        "policy_field_missing": {"policy": lambda value: value.pop("distinct_views_added")}}[change])
+    result = video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+    assert {path: path.read_bytes() for path in kept} == kept
+    inputs = json.loads((output / video.GEOMETRY_INPUTS_FILE).read_text())
+    assert [row["frame_id"] for row in result["frames"]] == [row["frame_id"] for row in inputs["frames"]]
+
+
+@pytest.mark.parametrize("change", ["survey", "privacy", "profile"])
+def test_a_selection_for_another_survey_privacy_screen_or_profile_still_refuses(prepared, change):
+    path, review, output, _ = prepared
+    _earlier_release(output, binding={
+        "survey": lambda value: value.update(survey_digest="sha256:" + "e" * 64, adapter_version=2),
+        "privacy": lambda value: value["privacy_screen"].update(model_sha256="another", adapter_version=2),
+        "profile": lambda value: value.update(splat_frame_target=64, adapter_version=2)}[change])
+    with pytest.raises(ValueError, match="atlas_retained_video_inputs_invalid"):
+        video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+
+
+def test_inputs_a_run_wrote_before_its_plan_are_replaced_while_no_pose_was_asked(prepared, monkeypatch):
+    """A run that stopped between writing the inputs and the plan refused every later run against them, though no
+    pose request was made from them; one made from them still refuses (``test_atlas_face_blur_decision``)."""
+    path, review, output, _ = prepared
+    _earlier_release(output, binding=lambda value: value.update(adapter_version=2))
+    (output / "atlas_view_selection.json").unlink()
+    monkeypatch.undo()
+    monkeypatch.setattr(video, "_features", lambda *_: None)
+    monkeypatch.setattr(video, "select_coverage_views", lambda **_: ([0, 1, 2], []))
+    monkeypatch.setattr(privacy, "blur_faces", lambda image: (image.copy(), []))
+    video.prepare_video_inputs(survey_path=path, review=review, output_root=output)
+    assert json.loads((output / video.GEOMETRY_INPUTS_FILE).read_text())["binding"]["adapter_version"] == 3
+    assert (output / "atlas_view_selection.json").is_file() and (output / "atlas_pose_inputs.json").is_file()
