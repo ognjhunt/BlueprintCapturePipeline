@@ -52,13 +52,14 @@ The job packet has one format for every job:
 1. The site's own sentence for the job, and its constraints.
 2. The video, with the site's rights and permissions recorded.
 3. The first look on paper: which kinds of robot most likely fit, from
-   published specifications and a cited track record.
+   published specifications and a cited track record. It is the site's:
+   deployment companies are not shown it.
 4. The simulation of the site, with the job's object in it.
 5. The success rule: what counts as the job done.
 
 Approved companies can review and respond once the job has a description and
-a playable, sound-free video with the site's permission. The first look and
-simulation appear in the same job as soon as they are ready.
+a playable, sound-free video with the site's permission. The simulation
+appears in the same job as soon as it is ready.
 
 The site's answer is who will take the job, and on what evidence: the
 responses of deployment companies. Until responses exist the site sees the
@@ -66,12 +67,12 @@ first look and the simulation, and is told plainly where the job stands: not
 yet sent, sent and waiting, or no response yet. Nothing promises a response
 that has not been given.
 
-The simulation is core. A deployment company cannot say it can do a job
-without testing on the site's twin, so once a job's simulation exists a company
-downloads it (the site's scene with the job's object in it, and what counts as
-done), tests in its own tools, and answers "Tested it: can do" or "Tested it:
-cannot yet". Before the simulation exists a company may still answer from the
-video: interested, not a fit, or would need something. Connecting a company's
+The simulation lets a company see and measure the site without a visit: once
+a job's simulation exists a company can view it in the browser or download it
+(the site's scene with the job's object in it, and what counts as done) and
+test in its own tools. A company answers Apply, Not a fit or Need more
+details, with or without the simulation (owner, 2026-11-25; an earlier
+"Tested it: can do" answer still counts as applying). Connecting a company's
 own software to Blueprint's simulation, so that Blueprint scores it, comes
 later. The reconstruction and its estimates are treated as accurate enough for
 this; a site is not asked to confirm measurements. When several companies are
@@ -86,8 +87,9 @@ only checks Blueprint's own simulation.
 Sharing is the service. A site that sends a job agrees once, in the statement
 it accepts (recording statement `2026-11-12.v4` or later), that Blueprint
 shares the job with the deployment companies it has approved: the site's
-description, its video without its sound, the simulation built from it, the
-success rule and the first look. There is no share button, no
+description, its video without its sound, the simulation built from it and the
+success rule. The statement also covers the first look, which since
+2026-11-25 stays with the site. There is no share button, no
 share setting and no pause. A job under an older statement is not shown to any
 company until its site accepts the current one.
 
