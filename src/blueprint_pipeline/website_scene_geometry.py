@@ -109,10 +109,13 @@ def prepare_website_geometry_inputs(*, source_video: Path, output_root: Path, ca
                "adapter_version": 2}
     if manifest_path.is_file():
         previous = json.loads(manifest_path.read_text())
-        legacy_binding = {"source_video_digest": binding["source_video_digest"], "model_id": LEGACY_MODEL_ID,
-                          "model_code_revision": LEGACY_MODEL_CODE_REVISION, "adapter_version": 1}
-        accepted_bindings = (binding, legacy_binding) if maximum_frames == 16 else (binding,)
-        if previous.get("binding") in accepted_bindings and previous.get("schema_version") == INPUT_SCHEMA:
+        # A decode of this video kept by an earlier release (another adapter version, the legacy binding) or under
+        # another frame count is the job's source frames, read as written: every later step (SAM's frames, the
+        # pose's inputs) is bound to its digest, so decoding again would buy them again for the same video, and a
+        # version bump or a changed frame count refused every in-flight job (2026-11-24 sweep). Its frames are
+        # checked byte for byte; a decode of another video still refuses.
+        if (previous.get("schema_version") == INPUT_SCHEMA and isinstance(previous.get("binding"), dict)
+                and previous["binding"].get("source_video_digest") == binding["source_video_digest"]):
             _bound_frames(previous, manifest_path.parent, geometry=False)
             return previous
         raise ValueError("website_geometry_input_identity_conflict")
