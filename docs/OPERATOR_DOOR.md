@@ -92,6 +92,13 @@ only `*.json` files can be read at all. Compressed files (gzip, zip, xz,
 bzip2) are scanned after decompression, with the verdict cached per file
 version; zip members are also judged by name, nested archives are refused, and
 formats the standard library cannot decompress (zstd, 7z, rar) are refused.
+A gzip stream that is a Gaussian splat in SPZ v2 form (by its header, and
+exactly as long as that header declares) holds only quantized numbers, and a
+dark colour run in one can read `hf_` and thirty letters. There a bare token
+shape (Hugging Face, OpenAI, GitHub, AWS and the like) counts only where it
+stands as a string, with NUL, whitespace, a quote, `=`, `:` or `,` on both
+sides; every rule that needs a key or other text around it applies unchanged.
+A splat of any other length, and every other binary format, is scanned as text.
 Anything under a `.git` directory is refused, since packed objects hide content.
 Every pattern is bounded, so pathological input scans in linear time.
 
