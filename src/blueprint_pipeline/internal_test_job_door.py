@@ -156,6 +156,12 @@ def month_refusal(environ: Mapping[str, str] | None = None) -> str | None:
 
 def post_test_job(body: Mapping[str, Any]) -> dict[str, Any]:
     """POST the request with the existing signed Pipeline -> WebApp transport (the window extension's)."""
+    return post_signed("/api/internal/pipeline/test-jobs", body, prefix="test_job")
+
+
+def post_signed(path: str, body: Mapping[str, Any], *, prefix: str) -> dict[str, Any]:
+    """POST ``body`` to the website's signed internal ``path``. A failure before sending is ``Refused``
+    (``<prefix>_not_sent:...``); the website's HTTP refusal is ``<prefix>_webapp_http_<status>[:<code>]``."""
     from .safe_outbound_http import pinned_api_policy, request
     from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
     from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
@@ -163,15 +169,15 @@ def post_test_job(body: Mapping[str, Any]) -> dict[str, Any]:
     try:  # nothing is sent until the URL and the token are in hand: a failure here made no job
         configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
         if not configured:
-            raise ValueError("test_job_webapp_url_missing")
+            raise ValueError(f"{prefix}_webapp_url_missing")
         parsed = urlsplit(validated_https_sync_url(configured))
         token = load_pipeline_sync_token()
     except (ValueError, OSError, RuntimeError) as exc:
-        raise Refused(f"test_job_not_sent:{exc}"[:200]) from None
+        raise Refused(f"{prefix}_not_sent:{exc}"[:200]) from None
     origin = f"{parsed.scheme}://{parsed.netloc}"
     data = json.dumps(dict(body), separators=(",", ":"), allow_nan=False).encode()
     try:
-        response = request(f"{origin}/api/internal/pipeline/test-jobs", method="POST", data=data,
+        response = request(f"{origin}{path}", method="POST", data=data,
                            headers=_pipeline_sync_headers(token, data), timeout_seconds=60,
                            policy=pinned_api_policy(origin, max_response_bytes=20_000), max_response_bytes=20_000)
     except HTTPError as exc:
@@ -182,7 +188,7 @@ def post_test_job(body: Mapping[str, Any]) -> dict[str, Any]:
         finally:
             exc.close()
         suffix = f":{code}" if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{1,80}", code) else ""
-        raise ValueError(f"test_job_webapp_http_{exc.code}{suffix}") from None
+        raise ValueError(f"{prefix}_webapp_http_{exc.code}{suffix}") from None
     return json.loads(response.body)
 
 

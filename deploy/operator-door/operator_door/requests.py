@@ -35,6 +35,9 @@ it changes nothing else, deletes nothing, starts no compute and moves no money.
 ``test-job-retry-now`` (``operate``) runs the active release's ``internal_test_job_retry_now`` for one internal test
 job, as the service user, with no network: it sets that job's scheduled Atlas preview and preparation retries due now,
 at most once per release, and changes no count, wall, grant, spend or admission.
+``test-company`` (``operate``) runs the active release's ``internal_test_company_door`` as the service user: one signed
+call to the website for Blueprint's internal test company (ensure it, send it one internal test job, answer for it on
+one, or one test job's site link). The website opens internal test jobs only to that company; nothing is spent.
 """
 
 from __future__ import annotations
@@ -87,6 +90,8 @@ _SCOPES = {
     "test-job": "operate",
     # Brings one internal test job's next attempt forward to now, once per release; timing only, no network.
     "test-job-retry-now": "operate",
+    # Acts for Blueprint's internal test company on internal test jobs only: one signed website call; nothing is spent.
+    "test-company": "operate",
     # Plans, or with apply empties, one owner-approved old experiment folder named in
     # experiment_purge.FOLDERS. It runs the door's own module; nothing can be restored.
     "purge-experiment-folder": "operate",
@@ -138,10 +143,15 @@ if DISPATCHER_HOLD_ONLY:
     # test retry after a fix waits hours." with "i approve") bringing one internal test job's scheduled
     # retries forward to now (test-job-retry-now): at most once per release, as the service user with no
     # network; it changes no count, wall, grant, spend or admission, and the job's next step asks every
-    # one of them again. A site's job is refused: only the door's own test jobs.
+    # one of them again. A site's job is refused: only the door's own test jobs. The owner approved (2026-11-25,
+    # answering how the internal test company's buttons are pressed with "Both": "I add the signed route so I can test
+    # repeatedly by myself, and you click through once") acting for Blueprint's internal test company
+    # (test-company): one signed website call to ensure it, send it one internal test job, answer for it on one, or
+    # get one test job's site link. The website opens internal test jobs to that company only, its emails go to the
+    # owner's own inbox only, and its introductions are never billable; nothing is spent.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "retire-parked-delivery", "test-job", "test-job-retry-now",
+                           "retire-parked-delivery", "test-job", "test-job-retry-now", "test-company",
                            "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TEST_JOB_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
@@ -149,6 +159,8 @@ _TEST_JOB_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}")
 _TEST_JOB_FOOTAGE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 # The website's id for a test job (Blueprint-WebApp server/routes/internal-test-jobs.ts internalTestJobId).
 _TEST_JOB_ID = re.compile(r"itest-[0-9a-f]{40}")
+# The answers a company gives on the website (Blueprint-WebApp client/src/lib/companyResponses.ts).
+_COMPANY_ANSWER_STATES = ("interested", "declined", "needs_something", "tested_can_do", "tested_cannot_yet")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
 ACTIVATION_HOLD_OVERRIDE = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
@@ -561,6 +573,26 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(bucket, str) or not _BUCKET.fullmatch(bucket) or ".." in bucket:
             raise RequestRefused("test_job_retry_now_bucket_invalid")
         return {"kind": kind, "job_id": job_id, "reason": reason, "bucket": bucket}
+    if kind == "test-company":
+        # One action for Blueprint's internal test company, on an internal test job by its website id where it names one.
+        action, job_id = body.get("action"), body.get("job_id")
+        allowed = {"ensure": ("kind", "action"), "send": ("kind", "action", "job_id"),
+                   "site-link": ("kind", "action", "job_id"), "answer": ("kind", "action", "job_id", "state", "inputs")}
+        if action not in allowed:
+            raise RequestRefused("test_company_action_invalid")
+        _only(body, allowed[action])
+        if action == "ensure":
+            return {"kind": kind, "action": action}
+        if not isinstance(job_id, str) or not _TEST_JOB_ID.fullmatch(job_id):
+            raise RequestRefused("test_company_job_invalid")
+        if action != "answer":
+            return {"kind": kind, "action": action, "job_id": job_id}
+        state, inputs = body.get("state"), body.get("inputs", "")
+        if state not in _COMPANY_ANSWER_STATES:
+            raise RequestRefused("test_company_state_invalid")
+        if not isinstance(inputs, str) or len(inputs) > 2000 or not all(ch.isprintable() or ch == "\n" for ch in inputs):
+            raise RequestRefused("test_company_inputs_invalid")
+        return {"kind": kind, "action": action, "job_id": job_id, "state": state, "inputs": inputs}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")
