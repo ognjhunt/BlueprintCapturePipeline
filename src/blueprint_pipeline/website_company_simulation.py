@@ -126,7 +126,12 @@ ROTATIONS_STORED_WRONG = ("In that version each Gaussian's rotation is stored in
 #: is written again from its source splat with the fixed writer (every Gaussian's rotation as given) and also ships
 #: as a standard 3DGS PLY of that source. v4 (2026-11-21): the README speaks to the company in plain words (one name
 #: for the look file, no internal codes, notes as bullets), so packages built with the old README are built once more.
-BUILDER_REVISION = "website_company_simulation_builder.v4"
+#: v5 (2026-11-25): plain zip headers. v4 wrote every member with ``force_zip64``: each local header said its sizes were
+#: in a ZIP64 field while the central directory held them as plain sizes with no such field, and macOS's Archive Utility
+#: refused the package ("Unable to expand simulation.zip", Error 640; the owner, on the internal test company's first
+#: download). Every package is far below ZIP64's 4 GiB, so each member now declares its real size and Python writes
+#: ZIP64 only where it is needed, in both headers alike.
+BUILDER_REVISION = "website_company_simulation_builder.v5"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in
@@ -1421,7 +1426,10 @@ def _build_once(source: Mapping[str, Any], output: Path, *, literals: list[tuple
             for name in names:
                 info = zipfile.ZipInfo(name, date_time=_FIXED_TIME)
                 info.compress_type, info.create_system, info.external_attr = zipfile.ZIP_DEFLATED, 3, 0o100644 << 16
-                with (staging / name).open("rb") as stream, archive.open(info, "w", force_zip64=True) as member:
+                # Its real size, so Python writes plain headers below ZIP64's limit and ZIP64 in both headers above
+                # it, never ZIP64 in the local header alone (which macOS's Archive Utility refuses).
+                info.file_size = (staging / name).stat().st_size
+                with (staging / name).open("rb") as stream, archive.open(info, "w") as member:
                     shutil.copyfileobj(stream, member, 8 << 20)
         size = partial.stat().st_size
         if size > max_bytes:
