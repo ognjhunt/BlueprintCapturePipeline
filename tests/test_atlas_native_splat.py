@@ -572,6 +572,24 @@ def test_with_no_admitted_generated_view_the_minimal_form_is_bought_once(tmp_pat
     assert done["refined_splat"].get("gap_preserving_form_untried") is (False if generated else None)
 
 
+def test_a_root_that_sent_nothing_follows_the_current_request_its_depth_files_too(tmp_path, reviewer):
+    """A purchase refused before any send leaves the root's depth files; a later run whose views carry other depth
+    (fused or merged by another release) posts them, where it refused with atlas_depth_exr_output_changed."""
+    frames, calls = source_frames(), []
+    with pytest.raises(ValueError, match="budget_exhausted"):
+        refined(frames, tmp_path / "draft-refined", ["refused"], calls)
+    root = tmp_path / "draft-refined-minimal"
+    first = json.loads((root / "input_binding.json").read_text())
+    moved = [{**row, "depth": (row["depth"] * 1.01).astype(np.float32)} for row in frames]
+    assert refined(moved, tmp_path / "draft-refined", ["processing"], calls)["status"] == "processing"
+    second = json.loads((root / "input_binding.json").read_text())
+    assert second["uploads"]["frame-0-depth"]["sha256"] != first["uploads"]["frame-0-depth"]["sha256"]
+    assert np.array_equal(depth.read_exr_depth(Path(second["uploads"]["frame-0-depth"]["path"])), moved[0]["depth"])
+    # The file a provider may hold is never rewritten silently: without ``replace`` it still refuses.
+    with pytest.raises(ValueError, match="atlas_depth_exr_output_changed"):
+        depth.write_exr_depth(Path(second["uploads"]["frame-0-depth"]["path"]), frames[0]["depth"])
+
+
 def test_the_whole_view_review_is_one_retained_receipt_never_bought_again(tmp_path, reviewer):
     from blueprint_pipeline import atlas_whole_view_review as review
     frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []

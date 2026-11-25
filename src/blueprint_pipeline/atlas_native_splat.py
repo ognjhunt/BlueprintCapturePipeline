@@ -150,8 +150,11 @@ def _review_views(root: Path, frames):
     return composited_views(frames) if basis == CANDIDATE_BASIS else merge_duplicate_views(frames)
 
 
-def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None):
+def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None, unsent: bool = False):
     """Post each fused view once, in the documented frame shape: image, linear depth and camera.
+
+    ``unsent``: nothing was sent from ``root`` yet, so a depth file an earlier run wrote there is
+    written again from today's views instead of refused.
 
     Duplicate views merge first (``views``, when given, are those merged views,
     as the whole-view review judged them). Real frames go in whole. A partly
@@ -183,7 +186,7 @@ def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None
         for key, (view, _, _) in posted.items():
             rgb, depth = frame_arrays(view, "rgb", "depth")
             Image.fromarray(rgb).save(root / f"{key}.png")
-            views.append((key, root / f"{key}.png", write_exr_depth(root / f"{key}.exr", depth),
+            views.append((key, root / f"{key}.png", write_exr_depth(root / f"{key}.exr", depth, replace=unsent),
                           {"intrinsics": view["intrinsics"], "extrinsics": view["extrinsics"]}))
     else:
         from .atlas_depth_splat import PIXEL_KEYS, LazyFrame, frame_shape
@@ -202,7 +205,8 @@ def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None
             depth = project_source_depth([sources[photo["source_frame_id"]]], photo["camera"])
             if posted[key[:4]][2] is not None and not (np.isfinite(depth) & (depth > 0)).any():
                 continue
-            views.append((key, Path(photo["image_path"]), write_exr_depth(root / f"{key}.exr", depth),
+            views.append((key, Path(photo["image_path"]), write_exr_depth(root / f"{key}.exr", depth,
+                                                                          replace=unsent),
                           photo["camera"]))
     if len(views) < 2:
         raise ValueError("atlas_splat_frames_required")
@@ -393,8 +397,11 @@ def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, 
             raise ValueError("atlas_native_splat_inputs_changed")  # Never derived again.
         admitted = {row["position"]: {"admit_whole": True, "reason": row["reason"]}
                     for row in (review or {}).get("verdicts", []) if form == WHOLE and row["admit_whole"]}
+        # A root that sent nothing follows the current request, its depth files too (an earlier run's views,
+        # fused before a release changed the fusion, refused with atlas_depth_exr_output_changed; 2026-11-24 sweep).
         request, uploads, provenance = prepare_splat_request(frames=frames, root=root / "inputs",
-                                                             admitted_whole=admitted, views=views)
+                                                             admitted_whole=admitted, views=views,
+                                                             unsent=not _bought(root))
         binding = {**identity, "request_digest": canonical_digest(request), "request_form": form,
                    "uploads": uploads, "frames": provenance,
                    **({"input_selection_digest": input_selection_digest} if input_selection_digest else {}),
