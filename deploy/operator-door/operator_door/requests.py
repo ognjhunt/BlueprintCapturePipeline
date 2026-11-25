@@ -134,10 +134,14 @@ if DISPATCHER_HOLD_ONLY:
     # after proving no process, mount or recent write touches it, behind a
     # receipt. g1-841757-development is not admitted: the G1 trial's shared
     # inputs still point at it. It starts no compute and moves no money.
-    # test-job-retry-now is not admitted here: no owner approval of it is recorded yet.
+    # The owner approved (2026-11-25, answering "Approve \"retry now\" for test jobs. Without it, every
+    # test retry after a fix waits hours." with "i approve") bringing one internal test job's scheduled
+    # retries forward to now (test-job-retry-now): at most once per release, as the service user with no
+    # network; it changes no count, wall, grant, spend or admission, and the job's next step asks every
+    # one of them again. A site's job is refused: only the door's own test jobs.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "retire-parked-delivery", "test-job",
+                           "retire-parked-delivery", "test-job", "test-job-retry-now",
                            "retire-scene-workspace", "restore-scene-workspace", "purge-experiment-folder"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _TEST_JOB_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
