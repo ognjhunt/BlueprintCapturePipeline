@@ -962,6 +962,64 @@ def _select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geomet
                                        task_masks: Mapping[str, Any], output_root: Path,
                                        view_plan_root: Path) -> dict[str, Any]:
     """``select_retained_static_task_masks`` with the retained tracks' runs kept compact."""
+    verified_tracks, prompts, registry, provider_digest, result_path, input_digest = _retained_provider_tracks(
+        plan=plan, source_geometry=source_geometry, task_masks=task_masks, output_root=output_root,
+        view_plan_root=view_plan_root)
+    deferred, targets = task_masks["deferred_target_ids"], tracked_task_targets(plan)
+    selected = list(task_masks["targets"])
+    selected_ids = {row["source_track"]["track_id"] for row in selected}
+    frames = [{"frame_id": row["source_frame_id"], "timestamp_seconds": row["decoded_pts_seconds"]}
+              for row in registry]
+    geometry_ids = {frame["frame_id"] for frame in source_geometry["frames"]}
+    for target in targets:
+        if target["target_id"] not in deferred:
+            continue
+        prompt = _retained_prompt(target, prompts)
+        label = prompt["output_label"]
+        identity = select_task_track(target=target,
+            tracks=[{**track, "label": target["target_id"]} for track in verified_tracks
+                    if track.get("label") == label], frames=frames)
+        if identity["track_id"] in selected_ids:
+            raise ValueError("website_task_targets_resolve_to_same_instance")
+        selected_ids.add(identity["track_id"])
+        sampled = {**identity, "observations": [row for row in identity["observations"]
+                     if row["source_frame_id"] in geometry_ids]}
+        if not sampled["observations"]:
+            raise ValueError(f"website_retained_static_geometry_observation_missing:{target['target_id']}")
+        selected.append({"target_id": target["target_id"], "target_role": target.get("target_role"),
+            "semantic_label": target["semantic_label"], "task_effect": target["task_effect"],
+            "segmentation_prompt": prompt["text"],
+            "placement_relation": target.get("placement_relation"),
+            "articulated_part": target.get("articulated_part") or "",
+            "articulation_kind": target.get("articulation_kind") or "",
+            "disposition": target["disposition"], "source_track": identity,
+            "track": track_at_geometry_resolution(sampled, source_geometry["frames"]),
+            "estimated_visible_bounds": None})
+    complete = {**task_masks, "status": "completed", "targets": selected,
+        "retained_static_source": {"provider_binding_digest": provider_digest,
+                                   "provider_result_digest": _sha256_file(result_path),
+                                   "retained_video_receipt_digest": input_digest}}
+    complete.pop("deferred_target_ids")
+    complete["digest"] = canonical_track_digest(complete, digest_field="digest")
+    return complete
+
+
+def _retained_prompt(target: Mapping[str, Any], prompts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """The one retained prompt asked with ``target``'s words."""
+    text = (target.get("segmentation_prompt") or target["semantic_label"]).strip().casefold()
+    matching_prompts = [row for row in prompts if row.get("text", "").strip().casefold() == text]
+    if len(matching_prompts) != 1:
+        raise ValueError(f"website_retained_static_prompt_missing:{target['target_id']}")
+    return matching_prompts[0]
+
+
+def _retained_provider_tracks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
+                              task_masks: Mapping[str, Any], output_root: Path,
+                              view_plan_root: Path) -> tuple[list[Any], list[Any], list[Any], str, Path, str]:
+    """The first paid segmentation answer's tracks, read back with every check of the retained selection.
+
+    Returns its verified tracks (runs compact), prompts, decoded-frame registry, provider binding digest, result
+    path and the retained video receipt's digest. Raises the retained selection's refusals; reads only."""
     deferred = task_masks.get("deferred_target_ids")
     targets = tracked_task_targets(plan)
     if (task_masks.get("status") != "object_removal_ready" or not isinstance(deferred, list) or not deferred
@@ -1067,45 +1125,76 @@ def _select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geomet
         verified_tracks.extend(parsed.get("tracks") or [])
     if verified_tracks != result.get("tracks"):
         raise ValueError("website_retained_static_provider_tracks_changed")
-    selected = list(task_masks["targets"])
-    selected_ids = {row["source_track"]["track_id"] for row in selected}
-    frames = [{"frame_id": row["source_frame_id"], "timestamp_seconds": row["decoded_pts_seconds"]}
-              for row in registry]
-    geometry_ids = {frame["frame_id"] for frame in source_geometry["frames"]}
-    for target in targets:
-        if target["target_id"] not in deferred:
+    return verified_tracks, prompts, registry, provider_digest, result_path, input_digest
+
+
+#: A destination masked in one frame (``segment_grounded_static_target``) and a track of its prompt in the retained
+#: full-video answer are one surface when their masks on that frame overlap at least this much (intersection over
+#: union): two masks of one surface overlap far more (0.91 for job move-the-lamp-2's glass shelf), a neighbouring
+#: object little. The bar a frame's mask meets against an estimated outline (``website_unscanned_surface``).
+SURFACE_VIEWS_MIN_IOU = 0.5
+SURFACE_VIEWS_BASIS = "retained_video_track_matching_the_one_frame_mask"
+
+
+def surface_views(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
+                  completed: Mapping[str, Any], output_root: Path, view_plan_root: Path) -> dict[str, dict[str, Any]]:
+    """The frames that show an "on" destination the completed masks hold in one frame only, by target id.
+
+    Job move-the-lamp-2 (24 Nov): the retained full-video answer tracked the glass shelf in 134 frames, but that
+    track's boxes met the analysis's anchors at 0.234 (``select_task_track`` asks 0.25) and the exact-frame
+    grounding's box, which reached up to the top of the frame, at 0.13. So the shelf was kept as its one-frame
+    image mask, which matches that video track at 0.91 on their frame. One frame cannot place a surface the scan
+    did not show (``website_unscanned_surface`` asks three). The selection stays as kept (``completed`` is the
+    digest-bound manifest every retry compares); this names beside it, for each such destination, the one retained
+    video track of its prompt whose mask on that frame overlaps the one-frame mask by ``SURFACE_VIEWS_MIN_IOU``,
+    with that overlap. ``plan``, ``source_geometry``, ``task_masks`` (the first manifest), ``output_root`` and
+    ``view_plan_root`` are the retained completion's own inputs; the answer is read back with every check of its
+    selection (``_retained_provider_tracks``). Reads only, buys nothing. Empty for a destination with no such
+    track, or more than one, or when that answer cannot be read: it keeps its one frame, as before."""
+    rows = [row for row in completed.get("targets") or [] if row.get("placement_relation") == "on"
+            and isinstance(row.get("source_track"), Mapping)
+            and row["source_track"].get("coverage") == "single_observed_frame"
+            and len(row["source_track"].get("observations") or []) == 1]
+    if not rows:
+        return {}
+    try:
+        tracks, prompts, _, provider_digest, _, _ = _retained_provider_tracks(
+            plan=plan, source_geometry=source_geometry, task_masks=task_masks, output_root=output_root,
+            view_plan_root=view_plan_root)
+    except (OSError, KeyError, TypeError, ValueError):
+        return {}
+    planned = {row["target_id"]: row for row in tracked_task_targets(plan)}
+    taken = {row["source_track"].get("track_id") for row in completed["targets"]
+             if isinstance(row.get("source_track"), Mapping)}
+    views = {}
+    for row in rows:
+        try:
+            label = _retained_prompt(planned[row["target_id"]], prompts)["output_label"]
+        except (KeyError, ValueError):
             continue
-        text = (target.get("segmentation_prompt") or target["semantic_label"]).strip().casefold()
-        matching_prompts = [row for row in prompts if row.get("text", "").strip().casefold() == text]
-        if len(matching_prompts) != 1:
-            raise ValueError(f"website_retained_static_prompt_missing:{target['target_id']}")
-        label = matching_prompts[0]["output_label"]
-        identity = select_task_track(target=target,
-            tracks=[{**track, "label": target["target_id"]} for track in verified_tracks
-                    if track.get("label") == label], frames=frames)
-        if identity["track_id"] in selected_ids:
-            raise ValueError("website_task_targets_resolve_to_same_instance")
-        selected_ids.add(identity["track_id"])
-        sampled = {**identity, "observations": [row for row in identity["observations"]
-                     if row["source_frame_id"] in geometry_ids]}
-        if not sampled["observations"]:
-            raise ValueError(f"website_retained_static_geometry_observation_missing:{target['target_id']}")
-        selected.append({"target_id": target["target_id"], "target_role": target.get("target_role"),
-            "semantic_label": target["semantic_label"], "task_effect": target["task_effect"],
-            "segmentation_prompt": matching_prompts[0]["text"],
-            "placement_relation": target.get("placement_relation"),
-            "articulated_part": target.get("articulated_part") or "",
-            "articulation_kind": target.get("articulation_kind") or "",
-            "disposition": target["disposition"], "source_track": identity,
-            "track": track_at_geometry_resolution(sampled, source_geometry["frames"]),
-            "estimated_visible_bounds": None})
-    complete = {**task_masks, "status": "completed", "targets": selected,
-        "retained_static_source": {"provider_binding_digest": provider_digest,
-                                   "provider_result_digest": _sha256_file(result_path),
-                                   "retained_video_receipt_digest": input_digest}}
-    complete.pop("deferred_target_ids")
-    complete["digest"] = canonical_track_digest(complete, digest_field="digest")
-    return complete
+        observation = row["source_track"]["observations"][0]
+        mask = decode_track_mask(observation)
+        matching = []
+        for track in tracks:
+            seen = next((item for item in track.get("observations") or []
+                         if item.get("source_frame_id") == observation["source_frame_id"]), None)
+            if track.get("label") != label or track.get("track_id") in taken or seen is None:
+                continue
+            other = decode_track_mask(seen)
+            if other.shape != mask.shape:
+                other = np.asarray(Image.fromarray(other).resize(mask.shape[::-1], Image.Resampling.NEAREST))
+            union = int((mask | other).sum())
+            overlap = float((mask & other).sum()) / union if union else 0.0
+            if overlap >= SURFACE_VIEWS_MIN_IOU:
+                matching.append((overlap, track))
+        if len(matching) == 1:
+            overlap, track = matching[0]
+            views[row["target_id"]] = {"basis": SURFACE_VIEWS_BASIS, "track_id": track["track_id"],
+                                       "provider_binding_digest": provider_digest,
+                                       "matched_frame_id": observation["source_frame_id"], "matched_iou": overlap,
+                                       "minimum_iou": SURFACE_VIEWS_MIN_IOU,
+                                       "track": {**track, "label": row["target_id"]}}
+    return views
 
 
 #: The task targets a surface-height prior may measure.
@@ -1194,8 +1283,14 @@ def _registry_frames(task_masks: Mapping[str, Any], source_geometry: Mapping[str
     return True
 
 
-def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> dict[str, Any]:
-    """Lift the retained selected tracks after reconstruction; never call SAM again."""
+def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any],
+                                surface_views: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """Lift the retained selected tracks after reconstruction; never call SAM again.
+
+    ``surface_views`` (``surface_views``, by target id) are lifted the same way beside a destination's own track,
+    as its ``surface_views`` with their basis, where they show it in more geometry frames: only the estimate of a
+    surface the scan did not show reads them (``website_unscanned_surface``). Every other reading of the target
+    keeps its own track and bounds."""
     if task_masks.get("deferred_target_ids"):
         raise ValueError("website_static_task_masks_pending")
     if (task_masks.get("digest") != canonical_track_digest(task_masks, digest_field="digest")
@@ -1214,7 +1309,15 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
         # A removed person is masked out of the views, never rebuilt or placed,
         # and geometry views are chosen without people: no bounds are needed.
         bounds = None if is_person_removal(target) else estimate_target_bounds(track, frames)
-        targets.append({**target, "track": track, "estimated_visible_bounds": bounds})
+        row = {**target, "track": track, "estimated_visible_bounds": bounds}
+        views = (surface_views or {}).get(target["target_id"])
+        if views is not None:
+            lifted = track_at_geometry_resolution({**views["track"], "observations": [
+                item for item in views["track"]["observations"] if item["source_frame_id"] in ids]}, frames)
+            if len(lifted["observations"]) > len(track["observations"]):
+                row["surface_views"] = {**{key: value for key, value in views.items() if key != "track"},
+                                        "track": lifted}
+        targets.append(row)
     value = {**task_masks, "targets": targets, "source_geometry_digest": source_geometry["digest"],
              "binding": {**task_masks["binding"], "geometry_digest": source_geometry["digest"]}}
     value["digest"] = canonical_track_digest(value, digest_field="digest")

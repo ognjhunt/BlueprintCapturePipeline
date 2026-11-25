@@ -11,6 +11,9 @@ When the job's one "on" destination has near-level collider faces over less than
 grounded centre, its top is estimated from the destination's own masks and the frames' cameras. No
 model is asked: the masks already locate it in every frame they were made for.
 
+- Masks: the destination's own track. One kept as a single frame's mask, where the video's track of it did not
+  meet its anchors (job move-the-lamp-2's glass shelf: one frame, ``too_few_masked_frames``), is read in the frames
+  of the retained video track that mask matches (``website_task_masks.surface_views``), recorded under ``masks``.
 - Plane: the level plane on which the destination's outline, cast from each frame's camera, lands in
   the same place in most frames, searched over its visible height range and ``HEIGHT_MARGIN_M``
   around it. Where its masks hold depth (the surface itself, edges, brackets, mounting points), the
@@ -657,8 +660,14 @@ def estimate_unscanned_destination(*, collider: Any, base_scene: Mapping[str, An
         return collider, base_scene, list(rows), {}
     record: dict[str, Any] = {"schema_version": REVISION, "target_id": row["target_id"],
                               "reconstructed_share": share, "reconstructed_min_share": RECONSTRUCTED_MIN_SHARE}
+    track, views = row["track"], row.get("surface_views")
+    if isinstance(views, Mapping) and isinstance(views.get("track"), Mapping):
+        # Masked in one frame only: the retained video track that one-frame mask matches shows it in more.
+        track = views["track"]
+        record["masks"] = {**{key: value for key, value in views.items() if key != "track"},
+                           "own_masked_frames": len(row["track"].get("observations") or [])}
     try:
-        estimate = estimate_surface(track=row["track"], frames=frames, matrix=np.asarray(matrix, dtype=float),
+        estimate = estimate_surface(track=track, frames=frames, matrix=np.asarray(matrix, dtype=float),
                                     collider=collider, low=low, high=high, up=up, up_sign=up_sign,
                                     meters_per_unit=meters_per_unit)
     except (np.linalg.LinAlgError, ArithmeticError) as exc:
@@ -670,7 +679,8 @@ def estimate_unscanned_destination(*, collider: Any, base_scene: Mapping[str, An
     vertices, faces = _slab(polygon, height, up=up, up_sign=up_sign, meters_per_unit=meters_per_unit)
     summary = {"target_id": row["target_id"], "basis": BASIS, "top_z_world_m": record["top_z_world_m"],
                "sides_m": record["sides_m"], "median_boundary_px": record["frames_outline"]["median_boundary_px"],
-               "agreeing_frames": record["frames_outline"]["agreeing_frames"], "masked_frames": record["masked_frames"]}
+               "agreeing_frames": record["frames_outline"]["agreeing_frames"], "masked_frames": record["masked_frames"],
+               **({"masks_basis": record["masks"]["basis"]} if "masks" in record else {})}
     collider, base_scene, sealed = _seal(collider=collider, base_scene=base_scene, vertices=vertices, faces=faces,
                                          summary=summary, output_root=output_root)
     bounds = [vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist()]

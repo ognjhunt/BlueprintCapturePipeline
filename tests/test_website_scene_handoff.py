@@ -458,6 +458,41 @@ def test_full_masks_are_required_before_they_lift_onto_atlas_geometry(tmp_path, 
     assert calls == (["masks", "bind"] if support_ready else ["masks"])
 
 
+def test_a_destination_kept_as_one_frame_lifts_with_the_video_track_its_mask_matches(tmp_path, monkeypatch):
+    """Job move-the-lamp-2 (24 Nov): the glass shelf was kept as one frame's mask and the estimate of a surface the
+    scan missed refused one frame. The retained video track that mask matches is named from the completion's own
+    retained inputs (``website_task_masks.surface_views``) and lifted with the masks, for compile to read."""
+    kwargs = inputs(tmp_path)
+    plan = tmp_path / "pipeline/plan.json"
+    write_json(plan, {"targets": [{"target_id": "shelf"}]})
+    first = {"deferred_target_ids": ["shelf"]}
+    kwargs["clean_plate"].update(source_frames={"digest": "source"}, removal_plan_path=str(plan), task_masks=first)
+    monkeypatch.setattr(ATLAS, lambda **kw: atlas_ready(tmp_path))
+    completed = {"targets": [{"target_id": "object"}, {"target_id": "shelf"}]}
+    named = {"shelf": {"basis": "retained_video_track_matching_the_one_frame_mask"}}
+    calls = []
+
+    def views(**kw):
+        calls.append("views")
+        assert kw == {"plan": {"targets": [{"target_id": "shelf"}]}, "source_geometry": {"digest": "source"},
+                      "task_masks": first, "output_root": plan.parent / "task_masks",
+                      "view_plan_root": plan.parent / "mask_view_plan", "completed": completed}
+        return named
+
+    def bind(**kw):
+        calls.append("bind")
+        assert kw["task_masks"] == completed and kw["surface_views"] is named
+        raise ValueError("binding_pending")
+
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.complete_retained_static_task_masks",
+                        lambda **_: completed)
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.surface_views", views)
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", bind)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["binding_pending"]
+    assert calls == ["views", "bind"]
+
+
 @pytest.mark.parametrize("mode", ["default", "enabled", "missing", "outside", "symlink"])
 def test_retained_static_recovery_requires_explicit_execution_and_capture_source(tmp_path, monkeypatch, mode):
     kwargs = inputs(tmp_path)
@@ -1438,6 +1473,50 @@ def test_the_room_package_names_each_piece_it_could_not_prepare(tmp_path, monkey
         f"{sim.OBJECTS_TAKEN_OUT_ONE}")
     # The blocker codes stay in the record, never in the file a company reads.
     assert not any(code in members["README.txt"] for code in codes)
+
+
+@pytest.mark.parametrize("estimated", [True, False])
+def test_a_room_package_holding_an_estimated_destination_says_the_object_was_not_placed_on_it(tmp_path, monkeypatch,
+                                                                                             estimated):
+    """Job move-the-lamp-2 (24 Nov): the glass shelf's estimate holds, and is sealed in the base scene every package
+    reads, but no spot on it holds the lamp, so compile stops on the destination and the room package ships. Its
+    README says the shelf was estimated without saying an object is placed on it, and says the object could not be
+    placed on that surface rather than that the destination could not be prepared."""
+    from blueprint_pipeline import website_company_simulation as sim
+    from blueprint_pipeline.atlas_scene_estimates import DESTINATION_SURFACE_ESTIMATED
+    from tests.test_website_scene_handoff_navigation import _published, _said, room_job
+    monkeypatch.setattr("blueprint_pipeline.website_target_background_worker.queue_correction",
+                        lambda **_: {"status": "ready"})
+    for name in ("website_assembly_coverage.attach_assembly_coverage",
+                 "website_object_spec_research.attach_object_specs"):
+        monkeypatch.setattr("blueprint_pipeline." + name, lambda **kw: kw["task_masks"])
+    code = "task_destination_surface_contact_required"
+
+    def compiled(**kw):
+        value = {"status": "needs_input", "blockers": [code]}
+        if estimated:  # compile seals the estimate in the base scene it writes (``website_unscanned_surface._seal``)
+            row = {"code": DESTINATION_SURFACE_ESTIMATED, "source": "website_unscanned_surface", "evidence": {}}
+            write_json(kw["output_root"] / "base_scene.json",
+                       {**kw["base_scene"], "scene_estimates": [*kw["base_scene"].get("scene_estimates", []), row]})
+            value["destination_surface_estimate"] = {"status": "estimated"}
+        return value
+
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", compiled)
+    lamp = {"target_id": "cup-1", "task_effect": "manipulated", "semantic_label": "table lamp"}
+    job, _context, result = room_job(tmp_path, monkeypatch, family="rigid_pick_place", removal=[lamp],
+                                     all_targets=True, description="Move the lamp to the glass shelf")
+    assert result["status"] == "room_package_written"
+    _status, members = _published(job)
+    said = _said(members["README.txt"])
+    if estimated:
+        assert said.endswith(f"{sim.SURFACE_ESTIMATED_ROOM_NOTE} {sim.ROOM_NOT_RUN} {sim.NO_RULE} "
+                             f"{sim.NOT_PLACED_ON_ESTIMATED_SURFACE} {sim.OBJECTS_TAKEN_OUT_ONE}")
+        assert "is placed on" not in said and "could not prepare the job's destination" not in said
+    else:
+        assert said.endswith(f"{sim.ROOM_NOT_RUN} {sim.NO_RULE} Blueprint could not prepare the job's destination. "
+                             f"{sim.OBJECTS_TAKEN_OUT_ONE}")
+        assert "estimated from its visible edges" not in said
+    assert code not in members["README.txt"]
 
 
 def test_a_defect_waits_named_and_paged_and_ships_only_at_the_window_end(tmp_path, monkeypatch, ready_atlas):
