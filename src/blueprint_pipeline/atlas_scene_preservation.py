@@ -211,6 +211,19 @@ def _tiles_outside(low, high, camera):
     return (z < -plane[:, None]).all(axis=1) | ((z > plane[:, None]).all(axis=1) & past_edge)
 
 
+def nearest_per_pixel(pixels, depth):
+    """Each pixel's nearest depth, as ``np.minimum.at`` into a float32 buffer leaves it: one sort of packed keys.
+
+    A positive float32's bits order as the number does, and rounding to float32 is monotonic, so the first key of
+    each pixel's run holds the rounded minimum, the depth the unbuffered scatter would have stored.
+    """
+    rounded = np.asarray(depth).astype(np.float32)
+    keys = np.sort((pixels.astype(np.uint64) << np.uint64(32)) | rounded.view(np.uint32).astype(np.uint64))
+    at = keys >> np.uint64(32)
+    first = np.flatnonzero(np.concatenate(([True], at[1:] != at[:-1]))) if len(at) else np.empty(0, np.intp)
+    return at[first].astype(np.intp), (keys[first] & np.uint64(0xFFFFFFFF)).astype(np.uint32).view(np.float32)
+
+
 def _support_masks(frames):
     """Per source frame, the non-edge pixels another frame sees at the same depth and colour (packed bits).
 

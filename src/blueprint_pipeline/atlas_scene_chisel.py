@@ -143,7 +143,8 @@ def project_source_depths(frames, cameras):
     source geometry, confidence, camera selection or unknown-pixel semantics.
     """
     import cv2
-    from .atlas_scene_preservation import _same_center, _valid, _world, _project
+    from .atlas_scene_preservation import (_same_center, _valid, _world, _project, _tile_boxes, _tiles_outside,
+                                           nearest_per_pixel)
     from .atlas_depth_splat import _rotation_matrix, decoded_frame
 
     if len(cameras) > DEPTH_PROJECTION_BATCH_CAMERAS:
@@ -167,10 +168,19 @@ def project_source_depths(frames, cameras):
             width, height = k['width'], k['height']
             if not _same_center(frame, camera):
                 if points is None:
-                    points, _, _ = _world(frame, valid_source)
-                z, u, v, inside = _project(points, camera)
+                    points, rows, cols = _world(frame, valid_source)
+                    boxes = _tile_boxes(points, rows, cols) if len(points) else None
+                # A tile no point of which can land in this camera is not projected (``_tiles_outside``).
+                seen = points
+                if boxes is not None:
+                    culled = _tiles_outside(boxes[0], boxes[1], camera)
+                    if culled.any():
+                        seen = points[~culled[boxes[2]]]
+                z, u, v, inside = _project(seen, camera)
                 pixels = np.floor(v[inside]).astype(int) * width + np.floor(u[inside]).astype(int)
-                np.minimum.at(zbuffer.reshape(-1), pixels, z[inside])
+                at, nearest = nearest_per_pixel(pixels, z[inside])
+                flat = zbuffer.reshape(-1)
+                flat[at] = np.minimum(flat[at], nearest)
                 continue
             if source_depth is None:
                 source = frame['intrinsics']
