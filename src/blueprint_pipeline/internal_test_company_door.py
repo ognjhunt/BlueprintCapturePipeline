@@ -8,8 +8,9 @@ Pipeline -> WebApp transport as ``internal_test_job_door``, to do one thing, and
 - ``ensure``: the one test company record (``POST /api/internal/pipeline/test-company``);
 - ``send``: one test job sent to it, as a site's job is sent to every approved company (``.../test-company/send``);
 - ``answer``: its answer on one test job, through the website's own answer path (``.../test-company/answer``);
-- ``site-link``: one test job's site owner link, so the site's side (Applicants, Accept) can be acted on through the
-  website's own routes (``.../test-jobs/<job>/site-link``).
+- ``accept``: the site's Accept for it on one test job, through the site's own introduction code, so no site token
+  leaves the website (``.../test-company/accept``);
+- ``site-link``: one test job's site owner link (``.../test-jobs/<job>/site-link``).
 
 Nothing here spends, deletes or changes a limit. The website refuses every job that is not an internal test job, and
 every company but the test company; this module names no email address.
@@ -38,7 +39,8 @@ def validated(request: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
         raise Refused("test_company_request_invalid")
     action, job_id = request.get("action"), request.get("job_id")
     keys = {"ensure": {"kind", "action"}, "send": {"kind", "action", "job_id"},
-            "site-link": {"kind", "action", "job_id"}, "answer": {"kind", "action", "job_id", "state", "inputs"}}
+            "site-link": {"kind", "action", "job_id"}, "accept": {"kind", "action", "job_id"},
+            "answer": {"kind", "action", "job_id", "state", "inputs"}}
     if action not in keys or not set(request) <= keys[action] or (action != "answer" and set(request) != keys[action]):
         raise Refused("test_company_request_invalid")
     if action == "ensure":
@@ -49,6 +51,8 @@ def validated(request: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
         return "/api/internal/pipeline/test-company/send", {"job_id": job_id}
     if action == "site-link":
         return f"/api/internal/pipeline/test-jobs/{job_id}/site-link", {}
+    if action == "accept":
+        return "/api/internal/pipeline/test-company/accept", {"job_id": job_id}
     state, inputs = request.get("state"), request.get("inputs", "")
     if state not in STATES:
         raise Refused("test_company_state_invalid")

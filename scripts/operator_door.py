@@ -24,7 +24,7 @@ laptop too. Standard library only.
         --approval-evidence "<owner approval>" [--apply] --wait
     python3 scripts/operator_door.py test-job --idempotency-key K --label L --footage-id F --description "..." --wait
     python3 scripts/operator_door.py test-job-retry-now itest-<40 hex> --reason "the fix it waited for is live" --wait
-    python3 scripts/operator_door.py test-company ensure|send|site-link|answer [itest-<40 hex>] [--state S --inputs T] --wait
+    python3 scripts/operator_door.py test-company ensure|send|answer|accept|site-link [itest-<40 hex>] [--state S --inputs T] --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -864,7 +864,7 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         test_job.add_argument(flag, required=True)
     _add_wait(test_job, 600)
     company = commands.add_parser("test-company", help="act for Blueprint's internal test company on a test job")
-    company.add_argument("action", choices=("ensure", "send", "site-link", "answer"))
+    company.add_argument("action", choices=("ensure", "send", "site-link", "answer", "accept"))
     company.add_argument("job_id", nargs="?", help="the test job's id, itest-<40 hex> (all but ensure)")
     company.add_argument("--state", choices=("interested", "declined", "needs_something", "tested_can_do",
                                              "tested_cannot_yet"), help="the answer (answer only)")
