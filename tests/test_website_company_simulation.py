@@ -995,16 +995,16 @@ def test_the_object_estimates_from_the_video_go_in_the_rule_and_are_left_out_whe
 
 @pytest.mark.parametrize(("physics", "shipped", "said"), [
     ({"basis": "estimated"}, {"mass_kg": [0.4, 1.8], "static_friction": [0.2, 0.9]},
-     "The object's mass range in success_rule.json comes from its size in the video and typical densities; its "
-     "friction range is Blueprint's standard default."),
+     ("The object's mass range in success_rule.json comes from its size in the video and typical densities; its "
+      "friction range is Blueprint's standard default.")),
     ({"basis": "estimated", "mass_authority": "manufacturer_published"}, {"mass_kg": [9.0, 11.0]},
      "The object's mass range in success_rule.json comes from the published weight of its model."),
     ({"basis": "estimated", "mass_authority": "mixed"}, {"mass_kg": [9.0, 11.0], "dynamic_friction": [0.2, 0.6]},
-     "The object's mass range in success_rule.json comes partly from the published weights of its model and partly "
-     "from its size in the video and typical densities; its friction range is Blueprint's standard default."),
+     ("The object's mass range in success_rule.json comes partly from the published weights of its model and partly "
+      "from its size in the video and typical densities; its friction range is Blueprint's standard default.")),
     ({"basis": "synthetic_design"}, {"mass_kg": [0.3, 0.4], "static_friction": [0.5, 0.7]},
-     "The object's mass range in success_rule.json is the one Blueprint designed the object with; its friction range "
-     "is Blueprint's standard default."),
+     ("The object's mass range in success_rule.json is the one Blueprint designed the object with; its friction "
+      "range is Blueprint's standard default.")),
     ({"basis": "estimated"}, {"static_friction": [0.2, 0.9]},
      "The object's friction range in success_rule.json is Blueprint's standard default."),
 ])
