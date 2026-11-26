@@ -193,8 +193,11 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
                                      source_video_digest: str | None = None,
                                      atlas_auxiliary: bool = False,
                                      retained_admission: Mapping[str, Any] | None = None,
-                                     retain_admission: Callable[[Mapping[str, Any]], None] | None = None) -> tuple[dict[str, Any], Any]:
-    """The controller obtains an exact, one-dispatch grant from the shared cap."""
+                                     retain_admission: Callable[[Mapping[str, Any]], None] | None = None,
+                                     held_ahead_usd: float | None = None) -> tuple[dict[str, Any], Any]:
+    """The controller obtains an exact, one-dispatch grant from the shared cap. ``held_ahead_usd``: what the job's
+    scored object still needs, counted beside this quote and never held (a further object's ARTISAN reservation,
+    ``website_build_budget.reserve_at_removal``); the admission must echo it, as every field of the command."""
     import time
 
     from .paid_resource_admission import require_paid_resource_admission, require_paid_resource_budget
@@ -214,6 +217,8 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
         if provider not in {"meta", "google"} or source_video_digest is None:
             raise ValueError("website_atlas_auxiliary_binding_invalid")
         command["atlas_auxiliary"] = True
+    if held_ahead_usd is not None:
+        command["held_ahead_usd"] = held_ahead_usd
     # Avoid an orphaned remote hold when the local monitor already refuses.
     # A report can still expire during the RPC, so this is only a precheck.
     # The account's month must have room for this purchase's quote; the grant

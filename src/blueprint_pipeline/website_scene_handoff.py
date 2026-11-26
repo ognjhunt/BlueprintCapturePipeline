@@ -842,6 +842,9 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         # ``not_prepared``: the blockers it ships for, each with the piece of the job it leaves out (``piece_of``),
         # and ``causes``' typed cause for its code where compile recorded one.
         result.pop("rule_withheld", None)
+        # A paid further object's reservation (stage 6) is settled: no further object ships in a room package.
+        from .website_further_artisan import close_all
+        close_all(capture_root, task_context=context)
         flags = package_flags(flags)
         geometry = atlas.get("source_geometry") or {}  # none for a room whose scale was not measured
         record = write_room_package(task_context=context, base_scene=base, source_geometry=atlas["source_geometry"],
@@ -983,8 +986,10 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         from .website_build_plan import apply_to_removal, further_rows, sealed_decision
         removal, planned = apply_to_removal(filmed, capture_root), sealed_decision(capture_root)
         # Compile's further objects, read as the decision read the plan; none for a decision sealed earlier.
+        from .website_build_plan_notes import budget_root  # where a paid further object's reservation is (stage 6)
         further_objects = further.sealed_inputs(planned, entries=filmed.get("entries") or [], task_context=context,
-                                                library_root=root / "object_library")
+                                                library_root=root / "object_library",
+                                                budget_root=budget_root(capture_root))
         if planned is not None:
             # An object the plan would build that a limit on the job's paid work kept as filmed, named, with the
             # website's refusal code as received; it covers the dollar cap and the paid-request count alike (2026-11-23).

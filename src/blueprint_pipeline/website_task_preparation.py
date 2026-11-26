@@ -1851,7 +1851,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     placed_further = further.place(further_objects, entries=removal_manifest["entries"], targets=targets,
         frames=source_geometry["frames"], matrix=matrix, runtime_to_sim=runtime_to_sim, residual=residual,
         collider=None if independent_object or lookup is None else collider, up=up, up_sign=up_sign, mpu=mpu,
-        scored=(subject_min, subject_max), destination=destination, output_root=output_root,
+        scored=(subject_min, subject_max), destination=destination, output_root=output_root, task_context=task_context,
         strategy="articulated_open_close" if articulated else "pick_and_place", tolerance=DIMENSION_RELATIVE_ERROR,
         origin=geometry_origin(designed=False, atlas_route=atlas_route))  # each was filmed
     rule_success, success_basis = success_with_site_numbers(articulated=articulated, destination=destination, defaults={

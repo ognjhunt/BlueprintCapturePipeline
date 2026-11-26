@@ -196,6 +196,8 @@ LEFT_WORDS = {"further_object_needs_artisan": "it needs a model Blueprint would 
               "further_object_scene_not_registered": "the room scan could not be lined up with the video",
               "further_object_support_not_found": "no surface under it was found in the room scan",
               "further_object_authoring_failed": "Blueprint could not make a shape of its size",
+              # A paid one taken out of the scan whose generated model could not be made (``website_further_artisan``).
+              "further_object_generation_failed": "Blueprint could not generate a model of it",
               "further_object_static_check_failed": "its file did not pass Blueprint's static check",
               "further_object_input_invalid": "the plan's entry for it could not be used",
               "website_preparation_further_objects_left_out": "the simulation's request could not take it",

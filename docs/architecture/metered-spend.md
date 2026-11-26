@@ -644,10 +644,12 @@ under it.
   the scene intake's allowance, held in full on the job's ledger as before.
 - **Each extra paid object is its own reservation.** Every further object
   compile builds with ARTISAN (at its frozen per-object cap, $12) reserves that
-  cap on the job's WebApp ledger, one object at a time in the plan's order, once
-  the scene intake is held. What an object is built with is read from compile's
-  own stage-3 configuration for it (`configurations`, `route_of`), never from
-  the plan's `sourcing` (stress round 2, 2026-11-24): the library comes first
+  cap on the job's WebApp ledger, one object at a time in the plan's order, with
+  the scene intake's allowance counted (held, or held ahead: below). What an
+  object is built with is read from compile's own stage-3 configuration for it (`configurations`, `route_of`), or, reserved
+  before the room is reconstructed (stage 6, below), from the removal's own
+  reading of the object (`free_before_reconstruction`), never from the plan's
+  `sourcing` (stress round 2, 2026-11-24): the library comes first
   whatever the plan said, and a parametric shape that does not fit hands its
   object to ARTISAN. An extra object is authored with ARTISAN only under its own
   admitted reservation (`authoring_allocation` refuses any other entry):
@@ -656,7 +658,8 @@ under it.
   `openai_api_candidate`, provider `openai`, one request) → WebApp
   `reserveWebsitePreparationSpend` → `checkWebsiteJobCeiling`, which counts
   everything the job holds or has settled on every ledger. It is the existing
-  preparation path: no new money channel and no WebApp code change.
+  preparation path: no new money channel. The one WebApp change (stage 6) is the
+  hold ahead it counts beside the quote and never holds.
 - **Free objects reserve nothing:** library objects (Google Scanned Objects,
   SimReady) and parametric shapes (boxes, totes, bins, trays, cans).
 - **When the WebApp refuses** (`website_scene_preparation_budget_exhausted`),
@@ -703,15 +706,88 @@ nominal upstream figure (a $20.50 Atlas hold), and the WebApp holds the intake's
 whole allowance up front, so a bigger allowance is refused at the cap and builds
 nothing.
 
+### Paid further objects, live (several objects per job, stage 6, 2026-11-26)
+
+A paid further object has to leave the scan before the room is reconstructed,
+which is before the scene intake's allowance is held, and only under its own
+admitted reservation, or a refusal could not keep it in the scan as filmed. So
+the reservation moves to the removal, and the WebApp counts the scored
+object's money ahead of it:
+
+- **When.** The Atlas job reserves each paid further object as it seals its
+  job-object decision (`website_atlas_pipeline._build_plan` →
+  `website_build_budget.reserve_at_removal` → `admit_extra_objects`), one at a
+  time in rank order, before the scene editor erases anything. A paid one is a
+  further object the decision would otherwise keep in the scan as needing
+  ARTISAN because no free shape fits it (no parametric shape, or a can that may
+  miss its size); one that opens stays in the scan as filmed, as before (a
+  further object is composed as one rigid body). Ranks are the intake
+  request's: the scored object 1, each further object 2 to 8
+  (`website_build_plan.built_rank`).
+- **The hold ahead.** Each reservation names `held_ahead_usd`: what the scored
+  object still needs from the job's $40, its scene intake's allowance (the
+  grant the capture runs under, `max_total_spend_usd`, the figure its intake
+  holds in full) plus the scan's share left (the Atlas configuration's
+  `remaining_cost_usd`, what the Pipeline still plans Atlas purchases within,
+  never more than the job has left). WebApp `reserveWebsitePreparationSpend`
+  counts it beside the $12 in `checkWebsiteJobCeiling` and never writes it as a
+  hold: the row counts only its quote. That is the guarantee "once the scene
+  intake is held" gave, given before the intake. The figure is frozen once per
+  job (`build_plan/budget/hold_ahead.json`), so a run that asks again asks with
+  the same command. The admission echoes it; a WebApp without the field refuses
+  it (its request schema is strict) and writes nothing, and then that object
+  and each paid one ranked below it are not reserved (`not_reserved`,
+  `website_build_budget_hold_ahead_unconfirmed`) and stay in the scan as filmed
+  under the stage 5 reason, which claims no limit refused them. The owned-capture
+  ledger refuses a reservation that names a hold ahead.
+- **Admitted** → the object leaves the scan with the job's object (its decision
+  row `removed`, naming its reservation under `paid`), and compile authors it
+  with ARTISAN under that reservation alone (`website_further_artisan.author`,
+  from `website_further_objects.place`), one at a time in rank order: what one
+  run may spend is what its frozen cap leaves (`authoring_allocation`), after the
+  capture's current source and the account's month are read again. It settles
+  at what its authoring cost (`settle_object`), before the scene intake is sent,
+  and is composed beside the scored object like a free one (`source: artisan`;
+  the README says it is a 3D model Blueprint generated, the generator's
+  estimate).
+- **Refused** at a limit on the job's paid work → it and each paid one ranked
+  below it stay in the scan as filmed under `spending_cap_reached`, named in the
+  build budget record; the README says "Kept as filmed: <name>, the job reached
+  its limit on paid work."
+- **Every reservation is settled.** A run that fails settles at what it spent
+  (the rest released at once) and its object is named not built
+  (`further_object_generation_failed`, in neither the scan nor the simulation);
+  a failed run is final. An object not built for any other reason (not
+  placeable, the editor could not erase it, no runner) settles at what any
+  earlier run spent, $0 when none started; so does every reservation of a job
+  that ships a room package (`website_further_artisan.close_all`). A run whose
+  spend cannot be read keeps its whole hold (over, never under), as does a row
+  the WebApp cannot settle now (a later pass settles it). A settled reservation
+  is never authored under again.
+- **Never a stop.** A further object's failure never stops the scored object's
+  job. At compile only a privacy or rights stop on its path is raised; anything
+  else leaves that object not built. At the removal the account's month and
+  outages are raised as every reservation raises them: a wait, which every paid
+  step of the job meets too. A hold ahead that cannot be read reserves nothing.
+
+**What is live today.** All of the above is on the live route, and it engages
+only on a host that can run ARTISAN for one further object
+(`website_further_artisan.installed_runner`). None can: ARTISAN runs only inside
+a scene attempt, under that attempt's OpenAI gate and meter, and a further
+object's usage must never be on that meter. So today nothing is reserved, and a
+paid further object stays in the scan as filmed, exactly as since stage 5. A
+runner takes the object, its estimated size and physics bounds, its task
+masks' target and frames, and what its reservation leaves; keeps its spend in
+its own meter; and returns one self-contained USD rigid body.
+
 Known edges:
 
-- **No live route calls it yet.** Since several objects per job stage 5, a job
-  whose Atlas decision is sealed under `atlas_job_object_rule.v3` builds its
-  free further objects (a library model or a parametric shape; nothing is
-  reserved for them), and each one that would need ARTISAN stays in the scan as
-  filmed, named, under a reason that claims no limit refused it
-  (`further_object_needs_artisan`). So no extra object is reserved yet: stage 6
-  builds paid ones under `admit_extra_objects`. Taking a free further object out
+- **No paid further object is reserved on today's hosts** (above). Since
+  several objects per job stage 5, a job whose Atlas decision is sealed under
+  `atlas_job_object_rule.v3` builds its free further objects (a library model
+  or a parametric shape; nothing is reserved for them), and each one that would
+  need ARTISAN stays in the scan as filmed, named, under a reason that claims no
+  limit refused it (`further_object_needs_artisan`). Taking a free further object out
   of the scan does add the scene editor's own visibility checks for it
   (`atlas_removal_visibility`: one retained Gemini call for each selected view
   segmentation left without its outline, at most 12 per object), reserved on the
@@ -725,12 +801,24 @@ Known edges:
   Pipeline cannot tell a dollar-cap refusal from a paid-request-count one, and
   says only what is true of both.
 
+- **The hold ahead covers the scan's Atlas share and the intake, not every
+  later call.** The handoff's own small paid calls after the removal (a build
+  choice, spec research, a clarification; Gemini, cents each) are not in it: at
+  the cap each is refused and flagged as it always was. The native ledger's
+  paid-request count is not held ahead either: each further object's row takes
+  one of the sponsorship's `max_paid_attempts` (a host value not verified).
+- **A job that never reaches its handoff** (withdrawn, its Atlas job ended)
+  keeps its further objects' holds counted: over, never under, on a job that
+  spends nothing more.
+
 Notes for the several-objects build:
 
 1. **Call `admit_extra_objects` only after the scene intake's allowance is
-   held.** The WebApp holds that allowance in full once the intake is admitted;
-   reserving an extra object before it would let the extra object take money
-   the first object's intake needs.
+   held, or with it held ahead.** The WebApp holds that allowance in full once
+   the intake is admitted; reserving an extra object before it, without the hold
+   ahead, would let the extra object take money the first object's intake
+   needs. Stage 6 reserves before it, with the hold ahead
+   (`reserve_at_removal`).
 2. **Settle an extra object's ARTISAN usage through `settle_object` only.** A
    scene attempt's meter must never also record that usage: the object's row
    and the job's journal would count it twice.

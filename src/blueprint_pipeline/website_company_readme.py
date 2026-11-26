@@ -42,8 +42,11 @@ FURTHER_HELD = ("The package also holds /World/{prim} ({name}): {how}. It stands
 FURTHER_HOW = {"library": ("a model of the same kind of object from a public library, picked and sized from the video "
                            "and credited under Library models; it is not the site's own object"),
                "parametric": ("a plain {shape} shape Blueprint made for it, sized from the video, with none of the "
-                              "real object's detail")}
-#: A part of another source (none today; a generated model is stage 6's): said no more of than that Blueprint built it.
+                              "real object's detail"),
+               # Stage 6: a paid one, generated under its own reservation (``website_further_artisan``).
+               "artisan": ("a 3D model Blueprint generated from frames of the video and sized from it: its shape and "
+                           "look are the generator's estimate, not a scan or a measurement")}
+#: A part of another source (none today): said no more of than that Blueprint built it.
 FURTHER_HOW_OTHERWISE = "an object Blueprint built for it"
 #: A further object its preparation built that this package does not hold: the half left it out (its file changed
 #: since, or the scene could not take it). Nothing is said of where else it is.

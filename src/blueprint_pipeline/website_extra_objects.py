@@ -22,7 +22,8 @@ An extra object counts as free only when it has either
 A library model whose fallback is a cylinder counts as free by that rule, flagged (``CYLINDER_FALLBACK``): the two
 can miss together. An object that opens is never free: supplied geometry is one rigid body. Every other object is
 marked as needing ARTISAN at its cap, never reserved here: an extra object's reservation is
-``website_build_budget.admit_extra_objects``'s, which reads compile's own configuration of the object, not this record.
+``website_build_budget.admit_extra_objects``'s, made before the room is reconstructed from the removal's own reading of
+the object (``free_before_reconstruction``, ``website_build_budget.reserve_at_removal``), not from this record.
 """
 from __future__ import annotations
 
