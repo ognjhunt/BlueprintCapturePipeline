@@ -131,7 +131,8 @@ ROTATIONS_STORED_WRONG = ("In that version each Gaussian's rotation is stored in
 #: README. v5 (2026-11-25): plain zip headers; ZIP64 in the local header alone made macOS refuse the zip (Error 640).
 #: v6 (2026-11-25): members dated by the capture, not 1980; an object placed where its box meets the room says so;
 #: the object's simulated variations (``variations.usda``, ``variations.json``); the mass range's basis in words.
-BUILDER_REVISION = "website_company_simulation_builder.v6"
+#: v7: variations seeded only by what the revision covers, so v6's samples are drawn once more.
+BUILDER_REVISION = "website_company_simulation_builder.v7"
 OVER_CAP = "website_company_simulation_over_size_cap"
 BUILD_TIMED_OUT = "website_company_simulation_build_timed_out"
 #: One build's deadline. A real compiled half (211 MiB of USD) copies, scans by spec walk, proves and zips in

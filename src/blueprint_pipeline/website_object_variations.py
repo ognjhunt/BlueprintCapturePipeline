@@ -466,7 +466,10 @@ def write(source: Mapping[str, Any], staging: Path, placed: Mapping[str, str]) -
                 objects.append({"part": f"/World/{part}", "varied": False, "reason": "nothing_to_vary",
                                 "not_varied": not_varied})
                 continue
-            samples = _samples(ranges, f"{source.get('plan_digest')}|{part}|{files[part]['sha256']}")
+            # Seeded only by what the package revision already covers (the part, its file and its evidence), so one
+            # revision always holds the same samples (a review of PR #3752: the plan's digest is not in it).
+            evidence = json.dumps(_mapping(told.get(part)), sort_keys=True, separators=(",", ":"))
+            samples = _samples(ranges, f"{part}|{files[part]['sha256']}|{evidence}")
             rows.append({"part": part, "target": target, "samples": samples})
             objects.append({"part": f"/World/{part}", "varied": True,
                             "ranges": {key: {**row, "prims": [f"/World/{part}/{path}" for path in target[key]["prims"]]}
