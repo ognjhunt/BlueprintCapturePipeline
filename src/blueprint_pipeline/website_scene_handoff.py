@@ -735,7 +735,8 @@ def write_room_package(*, task_context: Mapping[str, Any], base_scene: Mapping[s
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     placements(plan)
     write_json(packet / PLAN_FILENAME, plan)
-    removed = [row for row in removal.get("entries") or [] if row.get("task_effect") == "manipulated"]
+    from .website_build_plan import BUILT_EXTRA  # a further object taken out with the job's, to be built on its own
+    removed = [row for row in removal.get("entries") or [] if row.get("task_effect") in ("manipulated", BUILT_EXTRA)]
     count, objects_in_scan = (len(removed), objects_in_scan) if removed else (taken_out, False)
     record = {"schema_version": "blueprint.room_package_inputs.v1",
               "task_context_digest": task_context["context_digest"], "task_kind": task_kind,
@@ -975,17 +976,24 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
         removal_path = Path(clean_plate["removal_manifest_path"])
         if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
             raise ValueError("website_scene_removal_manifest_outside_capture")
-        removal = json.loads(removal_path.read_text())
-        # The build plan took one object out of the scan: the job's other objects stay in it as filmed (owner, 2026-11-23).
-        from .website_build_plan import apply_to_removal, sealed_decision
-        removal, planned = apply_to_removal(removal, capture_root), sealed_decision(capture_root)
+        filmed = json.loads(removal_path.read_text())
+        # The build plan took the job's object out of the scan: its other objects stay in it as filmed (owner,
+        # 2026-11-23), but each further object a decision sealed under v3 took out with it, to be built on its own.
+        from . import website_further_objects as further
+        from .website_build_plan import apply_to_removal, further_rows, sealed_decision
+        removal, planned = apply_to_removal(filmed, capture_root), sealed_decision(capture_root)
+        # Compile's further objects, read as the decision read the plan; none for a decision sealed earlier.
+        further_objects = further.sealed_inputs(planned, entries=filmed.get("entries") or [], task_context=context,
+                                                library_root=root / "object_library")
         if planned is not None:
             # An object the plan would build that a limit on the job's paid work kept as filmed, named, with the
             # website's refusal code as received; it covers the dollar cap and the paid-request count alike (2026-11-23).
             from .website_build_plan_notes import kept_disclosure, sealed_budget
+            taken = sum(1 for row in further_rows(planned) if row.get("removed") is True)
             result["build_plan"] = {"digest": planned["build_plan"]["digest"],
                                     "built": (planned.get("built") or {}).get("target_id"),
                                     "kept_in_scan": len(planned.get("kept_in_scan_target_ids") or []),
+                                    **({"built_extra": taken} if taken else {}),
                                     **kept_disclosure(sealed_budget(capture_root), planned)}
         # Capture truth applies to held families too. Reading this retained
         # manifest performs no mask, authoring or provider work.
@@ -1210,7 +1218,8 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                     result["website_intake_outbox"] = send(preparation["intake_request"])
             return finish()
         targets = {row["target_id"]: row for row in masks.get("targets", [])}
-        subjects = [row for row in removal.get("entries", []) if row.get("task_effect") == "manipulated"]
+        # The job's own object: a further object composition may take is never held as a second one, as in compile.
+        subjects = further.scored_entries(removal.get("entries", []), further_objects)
         synthetic = removal.get("synthetic_subject")
         inferred = None
         if synthetic is not None:
@@ -1291,6 +1300,7 @@ def _prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate
                 **({"rule_withheld": result["rule_withheld"]} if "rule_withheld" in result else {}),
                 **({"build_choice": override} if override is not None else {}),
                 **({"success_rule": stated_success} if stated_success is not None else {}),
+                **({"further_objects": further_objects} if further_objects else {}),
             )
         except ValueError as exc:
             from .website_build_choice import BINDING_INVALID

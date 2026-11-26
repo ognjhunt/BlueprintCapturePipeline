@@ -1086,8 +1086,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     is cut out of the collider before any lookup.
 
     ``success_rule``: the numbers of the rule the site's words state (``website_build_choice.success_with_site_numbers``).
-    ``further_objects``: a several-object job's further objects (``website_further_objects.further_inputs``), each
-    composed when free and placeable, else left in the scan as filmed, flagged; never a stop or a hold.
+    ``further_objects``: a several-object job's further objects (``website_further_objects.sealed_inputs``), each
+    composed when free and placeable, else named with why and flagged (``compose``); never a stop or a hold.
     """
     if atlas_route not in ("full", "geometry_only"):
         raise ValueError("atlas_route_invalid")

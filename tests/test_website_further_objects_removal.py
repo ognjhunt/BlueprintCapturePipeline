@@ -217,6 +217,24 @@ def test_without_its_record_a_v3_plan_note_says_the_plan_takes_them_out_and_neve
     assert plan_notes(one)[2] == "The plan also takes this out of the scan to build as its own object: mug box."
 
 
+def test_a_room_package_counts_each_further_object_taken_out_with_the_jobs_object(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_native_appearance
+    from blueprint_pipeline import website_scene_handoff as handoff
+    look = tmp_path / "look.usda"
+    look.write_text("#usda 1.0\n")
+    monkeypatch.setattr(website_native_appearance, "prepare_native_appearance",  # the look's render runtime
+                        lambda **_: {"artifact": {"path": str(look)}})
+    capture = tmp_path / "capture"
+    names = ["carton-1", "artisan-1"]
+    arguments = fo._job(tmp_path / "fixture", names)
+    _decided(capture, arguments, names)
+    marked = build_plan.apply_to_removal(arguments["removal_manifest"], capture)
+    record = handoff.write_room_package(task_context=arguments["task_context"], base_scene=arguments["base_scene"],
+                                        source_geometry=arguments["source_geometry"], removal=marked,
+                                        output_root=tmp_path / "room", task_profile=None)
+    assert record["job_objects"] == {"count": 2, "in_package": "taken_out_of_room_scan"}  # the cup and the carton
+
+
 def test_a_further_object_read_otherwise_than_the_decision_read_it_is_never_built(tmp_path):
     capture = tmp_path / "capture"
     names = ["carton-1", "mug-1"]
