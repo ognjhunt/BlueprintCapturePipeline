@@ -705,8 +705,17 @@ nothing.
 
 Known edges:
 
-- **No live route calls it yet.** Today the route builds one object, so no
-  extra object is reserved.
+- **No live route calls it yet.** Since several objects per job stage 5, a job
+  whose Atlas decision is sealed under `atlas_job_object_rule.v3` builds its
+  free further objects (a library model or a parametric shape; nothing is
+  reserved for them), and each one that would need ARTISAN stays in the scan as
+  filmed, named, under a reason that claims no limit refused it
+  (`further_object_needs_artisan`). So no extra object is reserved yet: stage 6
+  builds paid ones under `admit_extra_objects`. Taking a free further object out
+  of the scan does add the scene editor's own visibility checks for it
+  (`atlas_removal_visibility`: one retained Gemini call for each selected view
+  segmentation left without its outline, at most 12 per object), reserved on the
+  job's preparation spend like every other editor call.
 - **One code for two limits.** Above: the WebApp contract is unchanged, so the
   Pipeline cannot tell a dollar-cap refusal from a paid-request-count one, and
   says only what is true of both.
