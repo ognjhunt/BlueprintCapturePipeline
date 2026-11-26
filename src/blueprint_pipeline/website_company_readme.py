@@ -43,6 +43,8 @@ FURTHER_HOW = {"library": ("a model of the same kind of object from a public lib
                            "and credited under Library models; it is not the site's own object"),
                "parametric": ("a plain {shape} shape Blueprint made for it, sized from the video, with none of the "
                               "real object's detail")}
+#: A part of another source (none today; a generated model is stage 6's): said no more of than that Blueprint built it.
+FURTHER_HOW_OTHERWISE = "an object Blueprint built for it"
 #: A further object its preparation built that this package does not hold: the half left it out (its file changed
 #: since, or the scene could not take it). Nothing is said of where else it is.
 FURTHER_NOT_HELD = "Built as {its} own object{s} but not in this package: {names}."
@@ -70,10 +72,10 @@ def further_notes(source: Mapping[str, Any]) -> list[str]:
     notes, said = [], []
     for prim, shipped_as in library_notes.further_prims(source).items():
         row = next((row for row in rows if library_notes.matches(row, shipped_as)), None)
-        if row is None or row.get("source") not in FURTHER_HOW:
+        if row is None:
             continue  # a part no record accounts for never ships (``website_library_notes.refusal``)
         said.append(row)
-        how = FURTHER_HOW[str(row["source"])].format(shape=row.get("shape") or "simple")
+        how = FURTHER_HOW.get(str(row.get("source")), FURTHER_HOW_OTHERWISE).format(shape=row.get("shape") or "simple")
         notes.append(FURTHER_HELD.format(prim=prim, name=row.get("name"), how=how))
     for refused in withheld:
         row = next((row for row in rows if library_notes.matches(refused, row)), None)
@@ -247,5 +249,5 @@ def readme(source: Mapping[str, Any], placed: Mapping[str, str], names: list[str
     return "\n".join(lines)
 
 
-__all__ = ["FURTHER_HELD", "FURTHER_HOW", "FURTHER_NOT_HELD", "FURTHER_WITHHELD", "WITHHELD_OTHERWISE", "WITHHELD_WHY",
+__all__ = ["FURTHER_HELD", "FURTHER_HOW", "FURTHER_HOW_OTHERWISE", "FURTHER_NOT_HELD", "FURTHER_WITHHELD", "WITHHELD_OTHERWISE", "WITHHELD_WHY",
            "further_notes", "readme"]

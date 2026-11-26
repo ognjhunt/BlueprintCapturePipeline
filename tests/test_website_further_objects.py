@@ -945,3 +945,17 @@ def test_each_further_object_is_varied_on_its_own_size_and_mass_evidence_never_t
     renamed = {**source, "variation_evidence": {**source["variation_evidence"], variations.FURTHER_EVIDENCE: [
         {**row, "asset_sha256": "sha256:" + "0" * 64} for row in rows]}}
     assert variations._told(renamed, "Object_02") == {}
+
+
+def test_a_further_part_of_another_source_is_said_to_be_held_and_no_more():
+    """A part the package holds is never said to be missing because its source has no words of its own yet."""
+    from blueprint_pipeline import website_company_readme as company_readme
+    identity = {"runtime_asset_id": "job_02", "asset_sha256": "sha256:" + "1" * 64}
+    pose = {"position_world_m": [0, 0, 0], "orientation_xyzw": [0, 0, 0, 1]}
+    source = {"plan": {"objects": [{"semantic_role": "task_object", "asset_id": "obj", "usd_path": "o.usda", "pose_world": pose},
+                                   {"semantic_role": "job_object", "asset_id": "job_02", "usd_path": "a.usda",
+                                    "pose_world": pose}]},
+              "files": {"Object": {"sha256": "sha256:" + "2" * 64}, "Object_02": {"sha256": identity["asset_sha256"]}},
+              "further_objects": {"composed": [{**identity, "name": "crate", "source": "generated"}]}}
+    assert company_readme.further_notes(source) == [company_readme.FURTHER_HELD.format(
+        prim="Object_02", name="crate", how=company_readme.FURTHER_HOW_OTHERWISE)]
