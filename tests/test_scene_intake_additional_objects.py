@@ -82,6 +82,8 @@ def test_the_pipelines_copy_of_the_webapps_rules():
 def test_further_objects_the_webapp_admits_are_admitted(tmp_path, rows):
     value = preparation(rows)
     assert validate_request(value, now=100) == value
+    assert contracts.additional_objects_problem(value["task"]) is None
+    assert contracts.usable_additional_objects(value["task"]) == rows
     staged = stage_scene_intent(value=value, queue_root=tmp_path, authenticated_client="webapp",
                                 trusted_clients={"webapp"}, now=100)
     intent = json.loads((tmp_path / staged["intent_id"] / "intent.json").read_text())
@@ -127,19 +129,32 @@ def test_a_request_without_further_objects_is_the_request_as_before():
         "no_subject", "no_rank", "rank_1", "rank_0", "rank_9", "float_rank", "text_rank", "bool_rank", "out_of_order",
         "repeated", "not_rising", "empty_subject", "text_subject", "list_subject", "retained_origin", "filmed_origin",
         "no_origin", "test_environment", "null_test_environment"])
-def test_every_shape_the_webapp_refuses_is_refused(rows, code):
-    refused(preparation(rows), code)
+def test_every_shape_the_webapp_refuses_is_flagged_and_not_built_never_a_stop(rows, code, caplog):
+    """Only privacy, rights and money stop a job (a review of PR #3754): the scored object's request is kept, its
+    further objects named otherwise than the WebApp takes them are not built, and the reason is flagged."""
+    value = preparation(rows)
+    with caplog.at_level("WARNING"):
+        assert validate_request(value, now=100) == value
+    assert contracts.additional_objects_problem(value["task"]) == code
+    assert contracts.usable_additional_objects(value["task"]) == []
+    assert [(row.getMessage(), row.reason) for row in caplog.records
+            if row.getMessage() == "scene_intake_task_additional_objects_not_used"] == [
+        ("scene_intake_task_additional_objects_not_used", "scene_intake_" + code)]
 
 
-def test_further_objects_on_any_other_task_are_refused():
+def test_further_objects_on_any_other_task_are_never_built():
     articulated = articulated_request()
     articulated["execution"].update(purpose="scene_preparation", policy_candidates=[])
     articulated["task"]["additional_objects"] = [further(2)]
-    refused(articulated, "task_additional_objects_strategy_invalid")
+    # An articulated job goes on with its mechanism; the further objects are flagged and not built.
+    assert validate_request(articulated, now=100) == articulated
+    assert contracts.additional_objects_problem(articulated["task"]) == "task_additional_objects_strategy_invalid"
+    assert contracts.usable_additional_objects(articulated["task"]) == []
+    # A navigation or family task is checked exactly, as before this field: any key it does not hold is refused there.
     navigation = copy.deepcopy(NAVIGATION)
     assert validate_request(navigation, now=100) == navigation
     navigation["task"]["additional_objects"] = [further(2)]
-    refused(navigation, "task_additional_objects_strategy_invalid")
+    refused(navigation, "task_navigation_invalid")
     family = preparation(task={"task_id": "stack-cups", "strategy": "stacking",
                                "task_success_contract_digest": "sha256:" + "1" * 64,
                                "native_runtime_contract_digest": "sha256:" + "2" * 64,
@@ -147,7 +162,8 @@ def test_further_objects_on_any_other_task_are_refused():
                                                                  "runtime_catalog_digest": "sha256:" + "3" * 64}})
     assert validate_request(family, now=100) == family
     family["task"]["additional_objects"] = [further(2)]
-    refused(family, "task_additional_objects_strategy_invalid")
+    with pytest.raises(SceneIntakeError, match="^scene_intake_task_family_invalid"):
+        validate_request(family, now=100)
 
 
 @pytest.mark.parametrize("articulated", [False, True], ids=["pick_and_place", "articulated"])
@@ -181,7 +197,7 @@ def test_a_task_key_no_release_reads_is_kept_and_flagged_never_refused(articulat
     assert validate_request(evaluation, now=100) == evaluation
 
 
-def test_the_builder_names_each_further_object_by_rank_with_a_subject_built_as_the_scored_ones():
+def test_the_builder_names_each_further_object_by_rank_with_a_subject_built_as_the_scored_ones(caplog):
     records = [{"rank": 2, "entry": {"target_id": "t-plate", "semantic_label": "dinner plate"},
                 "aabb_min": [0.1, 0.2, 0.75], "aabb_max": [0.36, 0.46, 0.77],
                 "origin": "removed_before_reconstruction", "complete": False},
@@ -217,8 +233,12 @@ def test_the_builder_names_each_further_object_by_rank_with_a_subject_built_as_t
         key: item for key, item in alone.items() if key != "task"}
     assert validate_request(several, now=100) == several
     assert validate_request(alone, now=100) == alone
-    # The intake refuses further objects on an articulated task; the builder never drops them in silence.
-    opening = intake_request(**{**arguments, "articulated": True,
-                                "mechanism": {"joint_type": "prismatic", "part_label": "drawer"}},
-                             further_objects=records)
-    refused(opening, "task_additional_objects_strategy_invalid")
+    # Further objects the WebApp would not take (on an articulated task, ranks out of order) are left out of the
+    # request and flagged, never in silence; the scored object's request is the one-object request.
+    closed = {**arguments, "articulated": True, "mechanism": {"joint_type": "prismatic", "part_label": "drawer"}}
+    for kwargs, rows in ((closed, records), (arguments, list(reversed(records)))):
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            left_out = intake_request(**kwargs, further_objects=rows)
+        assert left_out == intake_request(**kwargs) and "additional_objects" not in left_out["task"]
+        assert [row.getMessage() for row in caplog.records] == ["website_preparation_further_objects_left_out"]

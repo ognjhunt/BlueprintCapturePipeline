@@ -14,12 +14,15 @@ subject built as the scored one's is; no live caller names any yet, so every req
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import task_evaluation_scene_intake as intake
-from .task_evaluation_scene_intent_contracts import ADDITIONAL_OBJECTS_FIELD
+from .task_evaluation_scene_intent_contracts import ADDITIONAL_OBJECTS_FIELD, additional_objects_problem
 from .website_preparation_contracts import scene_configuration_max_retries
+
+_LOG = logging.getLogger(__name__)
 
 #: What a website preparation may claim (its ``claim_ceiling``), and so the intake request's ``claim_scope``.
 CLAIM_CEILING = "development_only"
@@ -48,7 +51,7 @@ def additional_objects(further: Sequence[Mapping[str, Any]]) -> list[dict[str, A
     one, in the order given. Each record names the object's ``rank`` in the build plan (2 to 8, rising) and
     ``request_subject``'s own inputs: the removal manifest's ``entry`` for it, its simulator-frame bounds (``aabb_min``,
     ``aabb_max``), its geometry ``origin`` and whether its dimensions are ``complete``. Nothing is ranked, ordered or
-    checked here: the intake refuses a list the WebApp would (``task_evaluation_scene_intake.validate_request``)."""
+    checked here: ``intake_request`` leaves out a list the WebApp would not take."""
     return [{"rank": item["rank"],
              "subject": request_subject(item["entry"], aabb_min=item["aabb_min"], aabb_max=item["aabb_max"],
                                         origin=item["origin"], complete=item["complete"])} for item in further]
@@ -61,8 +64,17 @@ def intake_request(*, capture_id: str, task_context: Mapping[str, Any], base_sce
     """The scene intake's request for the job's object. ``support_aabb``: the support's simulator-frame bounds (each
     None when no support was found); ``anthropic``: whether the authoring writes its text with Anthropic;
     ``further_objects``: a several-object job's further-object records (``additional_objects``). The field is left
-    out entirely when there are none, so a one-object job's request is byte for byte as before; the intake refuses it
-    on an articulated task."""
+    out entirely when there are none, so a one-object job's request is byte for byte as before, and when the WebApp
+    would not take them (an articulated task, a rank out of order, another origin): then the further objects stay in
+    the scan as filmed, flagged ``website_preparation_further_objects_left_out``, and the scored object's job goes on.
+    """
+    strategy = "articulated_open_close" if articulated else "pick_and_place"
+    further = additional_objects(further_objects) if further_objects else []
+    problem = additional_objects_problem({"strategy": strategy, ADDITIONAL_OBJECTS_FIELD: further}) if further else None
+    if problem is not None:
+        _LOG.warning("website_preparation_further_objects_left_out",
+                     extra={"submission_id": capture_id, "reason": "scene_intake_" + problem})
+        further = []
     # Capture consent permits scene preparation; it does not manufacture a
     # paid simulation authorization or accept provider terms on the owner's behalf.
     owner = dict(spend.get("owner") or {})
@@ -75,9 +87,9 @@ def intake_request(*, capture_id: str, task_context: Mapping[str, Any], base_sce
         # registration. This is not an owner-uploaded companion mesh or an
         # owner declaration of its coordinate frame.
         "task": {"task_id": "website-" + task_context["context_digest"][7:27],
-                 "strategy": "articulated_open_close" if articulated else "pick_and_place",
+                 "strategy": strategy,
                  "subject": subject,
-                 **({ADDITIONAL_OBJECTS_FIELD: additional_objects(further_objects)} if further_objects else {}),
+                 **({ADDITIONAL_OBJECTS_FIELD: further} if further else {}),
                  "support": {"description": support_label or "support surface under subject",
                              "aabb_min_xyz": support_aabb[0], "aabb_max_xyz": support_aabb[1]},
                  **({"articulation": mechanism, "success": success} if articulated else

@@ -88,24 +88,38 @@ def _seal(value: Mapping[str, Any], field: str) -> dict[str, Any]:
     return result
 
 
-def _validate_additional_objects(task: Mapping[str, Any]) -> None:
-    """A task's further objects (``ADDITIONAL_OBJECTS_FIELD``), when it names any: only on a pick-and-place task."""
+def additional_objects_problem(task: Mapping[str, Any]) -> str | None:
+    """Why a task's further objects (``ADDITIONAL_OBJECTS_FIELD``) are not as the WebApp takes them, as a code, or None
+    when it names none or names them as it does. Never a stop: only privacy, rights and money stop a job (a review of
+    PR #3754), so the scored object's job goes on and further objects named otherwise are flagged and not built
+    (``usable_additional_objects``)."""
     if ADDITIONAL_OBJECTS_FIELD not in task:
-        return
-    _require(task["strategy"] == "pick_and_place", "task_additional_objects_strategy_invalid")
+        return None
+    if task.get("strategy") != "pick_and_place":
+        return "task_additional_objects_strategy_invalid"
     rows = task[ADDITIONAL_OBJECTS_FIELD]
-    _require(isinstance(rows, list) and 1 <= len(rows) <= ADDITIONAL_OBJECTS_MAX
-             and all(isinstance(row, Mapping) and set(row) == {"rank", "subject"} for row in rows),
-             "task_additional_objects_invalid")
+    if not (isinstance(rows, list) and 1 <= len(rows) <= ADDITIONAL_OBJECTS_MAX
+            and all(isinstance(row, Mapping) and set(row) == {"rank", "subject"} for row in rows)):
+        return "task_additional_objects_invalid"
     low, high = ADDITIONAL_OBJECT_RANKS
     ranks = [row["rank"] for row in rows]
-    _require(all(type(rank) is int and low <= rank <= high for rank in ranks)
-             and all(later > earlier for earlier, later in zip(ranks, ranks[1:])), "task_additional_objects_rank_invalid")
-    _require(all(isinstance(row["subject"], Mapping) and bool(row["subject"])
-                 and row["subject"].get("geometry_origin") in ADDITIONAL_OBJECT_ORIGINS for row in rows),
-             "task_additional_object_subject_invalid")
-    _require(not any(key in row["subject"] for row in rows for key in ADDITIONAL_OBJECT_FORBIDDEN_SUBJECT_FIELDS),
-             "task_additional_object_test_environment_forbidden")
+    if not (all(type(rank) is int and low <= rank <= high for rank in ranks)
+            and all(later > earlier for earlier, later in zip(ranks, ranks[1:]))):
+        return "task_additional_objects_rank_invalid"
+    if not all(isinstance(row["subject"], Mapping) and bool(row["subject"])
+               and row["subject"].get("geometry_origin") in ADDITIONAL_OBJECT_ORIGINS for row in rows):
+        return "task_additional_object_subject_invalid"
+    if any(key in row["subject"] for row in rows for key in ADDITIONAL_OBJECT_FORBIDDEN_SUBJECT_FIELDS):
+        return "task_additional_object_test_environment_forbidden"
+    return None
+
+
+def usable_additional_objects(task: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The further objects composition may build: the task's own list when it is as the WebApp takes it, else none.
+    Objects not built stay in the scan as filmed; the reason is flagged at intake (``additional_objects_problem``)."""
+    if ADDITIONAL_OBJECTS_FIELD not in task or additional_objects_problem(task) is not None:
+        return []
+    return list(task[ADDITIONAL_OBJECTS_FIELD])
 
 
 def task_fields_not_read(task: Mapping[str, Any]) -> list[str]:
@@ -153,7 +167,10 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
              and _identifier(task.get("task_id")), "task_invalid")
     _require(type(task.get("reuse_completed_stages", True)) is bool, "task_reuse_mode_invalid")
     # Before the family and navigation checks, so further objects on either are refused by their own code.
-    _validate_additional_objects(task)
+    problem = additional_objects_problem(task)
+    if problem is not None:
+        _LOG.warning("scene_intake_task_additional_objects_not_used",
+                     extra={"submission_id": value.get("submission_id"), "reason": "scene_intake_" + problem})
     from .task_family_scoring import canonical_task_family
     family = canonical_task_family(task["strategy"])
     if family is not None:
